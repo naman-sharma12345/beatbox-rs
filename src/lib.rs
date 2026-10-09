@@ -13,6 +13,8 @@ pub mod analysis;
 pub mod dsp;
 pub mod engine;
 pub mod fx;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod instruments;
 pub mod mcp;
 pub mod project;

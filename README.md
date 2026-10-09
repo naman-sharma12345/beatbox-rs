@@ -4,6 +4,8 @@
 
 > FL Studio was built for hands on a mouse. Beatbox is built for models: every knob is addressable, every action is undoable, and the engine can *listen back* to its own mix and tell the AI what to fix.
 
+![Beatbox Studio](docs/studio.png)
+
 ## Why it's different
 
 | | Typical DAW | Beatbox |
