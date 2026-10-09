@@ -90,8 +90,15 @@ pub const KITS: &[Kit] = &[
 pub fn kit(name: &str) -> Result<&'static Kit> {
     let n = name.trim().to_lowercase().replace(['-', ' ', '_'], "");
     KITS.iter()
-        .find(|k| k.name == n || (n == "808" && k.name == "tr808") || (n == "linndrum" && k.name == "lm2"))
-        .ok_or_else(|| anyhow!("unknown kit '{name}'. Kits: {}", KITS.iter().map(|k| k.name).collect::<Vec<_>>().join(", ")))
+        .find(|k| {
+            k.name == n || (n == "808" && k.name == "tr808") || (n == "linndrum" && k.name == "lm2")
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "unknown kit '{name}'. Kits: {}",
+                KITS.iter().map(|k| k.name).collect::<Vec<_>>().join(", ")
+            )
+        })
 }
 
 pub fn kit_dir(e: &Engine, k: &Kit) -> PathBuf {
@@ -107,9 +114,16 @@ pub fn install_kit(e: &Engine, name: &str) -> Result<Vec<(String, PathBuf)>> {
     for (role, file) in k.files {
         let ext = file.rsplit('.').next().unwrap_or("ogg");
         let dest = dir.join(format!("{role}.{ext}"));
-        if !dest.exists() || std::fs::metadata(&dest).map(|m| m.len() < 64).unwrap_or(true) {
+        if !dest.exists()
+            || std::fs::metadata(&dest)
+                .map(|m| m.len() < 64)
+                .unwrap_or(true)
+        {
             let url = format!("{SMPLD}{}{file}", k.base);
-            let resp = ureq::get(&url).timeout(std::time::Duration::from_secs(20)).call().with_context(|| format!("download {url}"))?;
+            let resp = ureq::get(&url)
+                .timeout(std::time::Duration::from_secs(20))
+                .call()
+                .with_context(|| format!("download {url}"))?;
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(&mut resp.into_reader(), &mut bytes)?;
             if bytes.len() < 64 {
@@ -119,13 +133,20 @@ pub fn install_kit(e: &Engine, name: &str) -> Result<Vec<(String, PathBuf)>> {
         }
         out.push((role.to_string(), dest));
     }
-    std::fs::write(dir.join("LICENSE.txt"), format!("{}\nSource: {}\n", k.license, k.source))?;
+    std::fs::write(
+        dir.join("LICENSE.txt"),
+        format!("{}\nSource: {}\n", k.license, k.source),
+    )?;
     Ok(out)
 }
 
 /// Register the kit's files that match the palette in the current project;
 /// returns role -> sample name.
-pub fn kit_map(e: &mut Engine, kit_name: &str, palette: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {
+pub fn kit_map(
+    e: &mut Engine,
+    kit_name: &str,
+    palette: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>> {
     let k = kit(kit_name)?;
     let dir = kit_dir(e, k);
     let mut out = BTreeMap::new();
@@ -133,7 +154,9 @@ pub fn kit_map(e: &mut Engine, kit_name: &str, palette: &BTreeMap<String, String
         if !["kick", "snare", "hat", "open_hat", "perc"].contains(&role.as_str()) {
             continue;
         }
-        let Some((_, file)) = k.files.iter().find(|(p, _)| p == preset) else { continue };
+        let Some((_, file)) = k.files.iter().find(|(p, _)| p == preset) else {
+            continue;
+        };
         let ext = file.rsplit('.').next().unwrap_or("ogg");
         let path = dir.join(format!("{preset}.{ext}"));
         if !path.exists() {
@@ -143,7 +166,14 @@ pub fn kit_map(e: &mut Engine, kit_name: &str, palette: &BTreeMap<String, String
         if !e.project.samples.iter().any(|s| s.name == name) {
             crate::tools::register_sample(
                 e,
-                SampleInfo { name: name.clone(), path: path.to_string_lossy().into(), source: k.source.into(), license: k.license.into(), author: String::new(), duration: 0.0 },
+                SampleInfo {
+                    name: name.clone(),
+                    path: path.to_string_lossy().into(),
+                    source: k.source.into(),
+                    license: k.license.into(),
+                    author: String::new(),
+                    duration: 0.0,
+                },
             )?;
         }
         out.insert(role.clone(), name);
@@ -175,7 +205,10 @@ pub fn index_path(e: &Engine) -> PathBuf {
 }
 
 pub fn load_index(e: &Engine) -> Vec<IndexEntry> {
-    std::fs::read_to_string(index_path(e)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    std::fs::read_to_string(index_path(e))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 fn role_from_name(n: &str) -> Option<&'static str> {
@@ -193,7 +226,9 @@ fn role_from_name(n: &str) -> Option<&'static str> {
         "cymbal"
     } else if has(&["hat", "hh", "ch", "shaker", "maraca", "tamb", "cabasa"]) {
         "hat"
-    } else if has(&["tabla", "conga", "bongo", "tom", "perc", "darbuka", "cajon", "cowbell", "clave"]) {
+    } else if has(&[
+        "tabla", "conga", "bongo", "tom", "perc", "darbuka", "cajon", "cowbell", "clave",
+    ]) {
         "perc"
     } else if has(&["vox", "vocal", "voice", "choir", "acapella", "chant"]) {
         "vocal"
@@ -213,7 +248,14 @@ fn role_from_name(n: &str) -> Option<&'static str> {
 fn centroid(x: &[f32]) -> f32 {
     let n = 4096.min(x.len().next_power_of_two() / 2).max(256);
     let start = x.iter().position(|v| v.abs() > 0.01).unwrap_or(0);
-    let frame: Vec<f32> = x.iter().skip(start).take(n).copied().chain(std::iter::repeat(0.0)).take(n).collect();
+    let frame: Vec<f32> = x
+        .iter()
+        .skip(start)
+        .take(n)
+        .copied()
+        .chain(std::iter::repeat(0.0))
+        .take(n)
+        .collect();
     let ps = crate::analysis::power_spectrum(&frame);
     let (mut num, mut den) = (0.0f32, 0.0f32);
     for (i, p) in ps.iter().enumerate() {
@@ -230,7 +272,8 @@ fn centroid(x: &[f32]) -> f32 {
 
 fn pitch_of(x: &[f32]) -> Option<f32> {
     // median YIN over frames after the attack
-    let start = (x.iter().position(|v| v.abs() > 0.02).unwrap_or(0) + (0.03 * SR) as usize).min(x.len());
+    let start =
+        (x.iter().position(|v| v.abs() > 0.02).unwrap_or(0) + (0.03 * SR) as usize).min(x.len());
     let mut fs = Vec::new();
     let hop = 2048;
     let mut i = start;
@@ -266,8 +309,16 @@ pub fn analyze_file(path: &Path) -> Result<IndexEntry> {
     } else {
         None
     };
-    let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("sample").to_string();
-    let parent = path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()).unwrap_or("");
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("sample")
+        .to_string();
+    let parent = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
     let role = role_from_name(&name)
         .or_else(|| role_from_name(parent))
         .unwrap_or(if dur < 0.6 {
@@ -311,7 +362,9 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
             if p.is_dir() {
                 walk(&p, out, depth + 1);
             } else if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
-                if ["wav", "flac", "mp3", "ogg", "aif", "aiff"].contains(&ext.to_lowercase().as_str()) {
+                if ["wav", "flac", "mp3", "ogg", "aif", "aiff"]
+                    .contains(&ext.to_lowercase().as_str())
+                {
                     out.push(p);
                 }
             }
@@ -337,7 +390,11 @@ pub fn index_dirs(e: &Engine, dirs: &[PathBuf], max_files: usize) -> Result<Valu
         match analyze_file(f) {
             Ok(mut ent) => {
                 // credit: a LICENSE.txt next to the file
-                if let Some(l) = f.parent().map(|p| p.join("LICENSE.txt")).and_then(|p| std::fs::read_to_string(p).ok()) {
+                if let Some(l) = f
+                    .parent()
+                    .map(|p| p.join("LICENSE.txt"))
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                {
                     ent.license = l.lines().next().unwrap_or("").to_string();
                 }
                 idx.push(ent);
@@ -352,7 +409,9 @@ pub fn index_dirs(e: &Engine, dirs: &[PathBuf], max_files: usize) -> Result<Valu
     for x in &idx {
         *by_role.entry(x.role.clone()).or_insert(0) += 1;
     }
-    Ok(json!({"indexed": added, "total": idx.len(), "by_role": by_role, "failed": failed.iter().take(5).collect::<Vec<_>>(), "index": index_path(e).to_string_lossy()}))
+    Ok(
+        json!({"indexed": added, "total": idx.len(), "by_role": by_role, "failed": failed.iter().take(5).collect::<Vec<_>>(), "index": index_path(e).to_string_lossy()}),
+    )
 }
 
 pub struct Query {
@@ -373,23 +432,44 @@ pub fn find(e: &Engine, q: &Query) -> Vec<(f32, IndexEntry)> {
     });
     let mut out: Vec<(f32, IndexEntry)> = load_index(e)
         .into_iter()
-        .filter(|x| q.role.as_ref().map(|r| &x.role == r || (r == "snare" && x.role == "clap")).unwrap_or(true))
+        .filter(|x| {
+            q.role
+                .as_ref()
+                .map(|r| &x.role == r || (r == "snare" && x.role == "clap"))
+                .unwrap_or(true)
+        })
         .filter(|x| q.max_duration.map(|d| x.duration <= d).unwrap_or(true))
         .map(|x| {
             let mut s = 1.0f32;
             if let Some(t) = &q.text {
                 let hay = format!("{} {}", x.name, x.path).to_lowercase();
-                let words: Vec<String> = t.to_lowercase().split_whitespace().map(String::from).collect();
+                let words: Vec<String> = t
+                    .to_lowercase()
+                    .split_whitespace()
+                    .map(String::from)
+                    .collect();
                 let hits = words.iter().filter(|w| hay.contains(w.as_str())).count();
-                s += hits as f32 * 2.0 - if hits == 0 && !words.is_empty() { 1.0 } else { 0.0 };
+                s += hits as f32 * 2.0
+                    - if hits == 0 && !words.is_empty() {
+                        1.0
+                    } else {
+                        0.0
+                    };
             }
             if let (Some(pcs), Some(f)) = (&key_pcs, x.pitch_hz) {
                 let (m, _) = hz_to_note(f);
-                s += if pcs.contains(&((m.rem_euclid(12)) as u8)) { 1.0 } else { -0.5 };
+                s += if pcs.contains(&((m.rem_euclid(12)) as u8)) {
+                    1.0
+                } else {
+                    -0.5
+                };
             }
             if let (Some(b), Some(xb)) = (q.bpm, x.bpm) {
                 let r = (xb / b).max(b / xb);
-                let near = [(r - 1.0).abs(), (r - 2.0).abs()].iter().cloned().fold(9.0, f32::min);
+                let near = [(r - 1.0).abs(), (r - 2.0).abs()]
+                    .iter()
+                    .cloned()
+                    .fold(9.0, f32::min);
                 s += (1.0 - near * 10.0).max(-1.0);
             }
             (s, x)
@@ -406,7 +486,11 @@ pub fn find(e: &Engine, q: &Query) -> Vec<(f32, IndexEntry)> {
 /// pitch class is a stable degree (root/third/fifth), within +-6.
 pub fn fit_shift(hz: f32, key_pc: u8, scale: &[u8]) -> i32 {
     let (m, _) = hz_to_note(hz);
-    let stable: Vec<u8> = [0usize, 2, 4].iter().filter_map(|d| scale.get(*d)).map(|i| (key_pc + i) % 12).collect();
+    let stable: Vec<u8> = [0usize, 2, 4]
+        .iter()
+        .filter_map(|d| scale.get(*d))
+        .map(|i| (key_pc + i) % 12)
+        .collect();
     (-6..=6)
         .filter(|s| stable.contains(&((m + s).rem_euclid(12) as u8)))
         .min_by_key(|s| s.abs())
@@ -423,12 +507,28 @@ pub fn repitch(x: &[f32], semis: f32) -> Vec<f32> {
     samples::resample(x, SR * ratio, SR)
 }
 
-fn write_sample(e: &mut Engine, data: &[f32], name: &str, source: &str, license: &str) -> Result<String> {
+fn write_sample(
+    e: &mut Engine,
+    data: &[f32],
+    name: &str,
+    source: &str,
+    license: &str,
+) -> Result<String> {
     let dir = e.samples_dir().join("flips");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.wav", samples::sample_name(name)));
     crate::render::write_wav(&path, data, data)?;
-    let v = crate::tools::register_sample(e, SampleInfo { name: samples::sample_name(name), path: path.to_string_lossy().into(), source: source.into(), license: license.into(), author: String::new(), duration: 0.0 })?;
+    let v = crate::tools::register_sample(
+        e,
+        SampleInfo {
+            name: samples::sample_name(name),
+            path: path.to_string_lossy().into(),
+            source: source.into(),
+            license: license.into(),
+            author: String::new(),
+            duration: 0.0,
+        },
+    )?;
     Ok(v["sample"].as_str().unwrap_or(name).to_string())
 }
 
@@ -446,7 +546,18 @@ pub struct FlipOpts {
 /// and program a new 2-bar phrase from the chops (downbeat anchored,
 /// call/response, a variation on the repeat).
 pub fn flip(e: &mut Engine, o: &FlipOpts) -> Result<Value> {
-    let info = e.project.samples.iter().find(|s| s.name == o.sample).cloned().ok_or_else(|| anyhow!("no sample '{}' (import_sample / download_sample first)", o.sample))?;
+    let info = e
+        .project
+        .samples
+        .iter()
+        .find(|s| s.name == o.sample)
+        .cloned()
+        .ok_or_else(|| {
+            anyhow!(
+                "no sample '{}' (import_sample / download_sample first)",
+                o.sample
+            )
+        })?;
     let data = samples::decode_file(Path::new(&info.path))?;
     let key_pc = crate::theory::pitch_class(&e.project.key_root)?;
     let scale = crate::theory::scale_intervals(&e.project.scale)?.to_vec();
@@ -458,9 +569,21 @@ pub fn flip(e: &mut Engine, o: &FlipOpts) -> Result<Value> {
         }
     }
     let flipped = repitch(&data, shift as f32);
-    let name = write_sample(e, &flipped, &format!("{}_flip", info.name), &info.source, &info.license)?;
+    let name = write_sample(
+        e,
+        &flipped,
+        &format!("{}_flip", info.name),
+        &info.source,
+        &info.license,
+    )?;
     // slice kit on transients
-    let pat = o.pattern.clone().unwrap_or_else(|| e.project.patterns.first().map(|p| p.name.clone()).unwrap_or_else(|| "main".into()));
+    let pat = o.pattern.clone().unwrap_or_else(|| {
+        e.project
+            .patterns
+            .first()
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "main".into())
+    });
     e.call_from("slice_sample", &json!({"sample": name, "track": o.track, "method": "transients", "max_slices": o.max_slices, "write_pattern": false, "root": 36}), "producer")?;
     let ti = e.project.track_index(&o.track)?;
     let nslices = match &e.project.tracks[ti].instrument {
@@ -477,9 +600,20 @@ pub fn flip(e: &mut Engine, o: &FlipOpts) -> Result<Value> {
     while t < 32.0 {
         let on_beat = (t as u32) % 4 == 0;
         if t == 0.0 || t == 16.0 || rng.chance(o.density * if on_beat { 1.0 } else { 0.6 }) {
-            let slice = if t == 0.0 { 0 } else if t == 16.0 { rng.below(nslices.min(3)) } else { rng.below(nslices) };
+            let slice = if t == 0.0 {
+                0
+            } else if t == 16.0 {
+                rng.below(nslices.min(3))
+            } else {
+                rng.below(nslices)
+            };
             let len = if rng.chance(0.3) { 1.0 } else { 2.0 };
-            phrase.push(Note::new(t, len, (36 + slice).min(127) as u8, if on_beat { 0.95 } else { 0.75 }));
+            phrase.push(Note::new(
+                t,
+                len,
+                (36 + slice).min(127) as u8,
+                if on_beat { 0.95 } else { 0.75 },
+            ));
         }
         t += if rng.chance(0.2) { 1.0 } else { 2.0 };
     }
@@ -522,7 +656,13 @@ pub struct ChopOpts {
 /// scale degrees into one chop sheet, map them as a slice kit, and write a
 /// call-and-response chop melody in the key.
 pub fn vocal_chop(e: &mut Engine, o: &ChopOpts) -> Result<Value> {
-    let info = e.project.samples.iter().find(|s| s.name == o.sample).cloned().ok_or_else(|| anyhow!("no sample '{}'", o.sample))?;
+    let info = e
+        .project
+        .samples
+        .iter()
+        .find(|s| s.name == o.sample)
+        .cloned()
+        .ok_or_else(|| anyhow!("no sample '{}'", o.sample))?;
     let data = samples::decode_file(Path::new(&info.path))?;
     let mut on = crate::sc_dsp::detect_transients(&data, 0.5);
     if on.first().copied().unwrap_or(1) > 0 {
@@ -531,7 +671,11 @@ pub fn vocal_chop(e: &mut Engine, o: &ChopOpts) -> Result<Value> {
     // syllables: segments 80-400 ms with the most energy
     let mut segs: Vec<(usize, usize, f32)> = Vec::new();
     for (i, &s) in on.iter().enumerate() {
-        let end = on.get(i + 1).copied().unwrap_or(data.len()).min(s + (0.4 * SR) as usize);
+        let end = on
+            .get(i + 1)
+            .copied()
+            .unwrap_or(data.len())
+            .min(s + (0.4 * SR) as usize);
         if end <= s + (0.08 * SR) as usize {
             continue;
         }
@@ -550,9 +694,14 @@ pub fn vocal_chop(e: &mut Engine, o: &ChopOpts) -> Result<Value> {
     let mut slices = Vec::new();
     for (s, end, _) in &segs {
         let seg = &data[*s..*end];
-        let base_shift = pitch_of(seg).map(|f| fit_shift(f, key_pc, &scale)).unwrap_or(0) as f32;
+        let base_shift = pitch_of(seg)
+            .map(|f| fit_shift(f, key_pc, &scale))
+            .unwrap_or(0) as f32;
         for d in degrees {
-            let semis = base_shift + scale.get(d % scale.len()).copied().unwrap_or(0) as f32 + if d >= scale.len() { 12.0 } else { 0.0 } - scale[0] as f32;
+            let semis = base_shift
+                + scale.get(d % scale.len()).copied().unwrap_or(0) as f32
+                + if d >= scale.len() { 12.0 } else { 0.0 }
+                - scale[0] as f32;
             let mut x = repitch(seg, semis);
             // 5 ms fades: chops never click
             let f = (0.005 * SR) as usize;
@@ -567,13 +716,34 @@ pub fn vocal_chop(e: &mut Engine, o: &ChopOpts) -> Result<Value> {
             sheet.extend(std::iter::repeat(0.0).take((0.02 * SR) as usize));
         }
     }
-    let name = write_sample(e, &sheet, &format!("{}_chops", info.name), &info.source, &info.license)?;
-    let inst = crate::instruments::Instrument::Sampler(crate::instruments::SamplerParams { sample: name.clone(), root: 48, one_shot: true, slices: slices.clone(), ..Default::default() });
+    let name = write_sample(
+        e,
+        &sheet,
+        &format!("{}_chops", info.name),
+        &info.source,
+        &info.license,
+    )?;
+    let inst = crate::instruments::Instrument::Sampler(crate::instruments::SamplerParams {
+        sample: name.clone(),
+        root: 48,
+        one_shot: true,
+        slices: slices.clone(),
+        ..Default::default()
+    });
     match e.project.track_index(&o.track) {
         Ok(i) => e.project.tracks[i].instrument = inst,
-        Err(_) => e.project.tracks.push(crate::project::Track::new(&o.track, inst)),
+        Err(_) => e
+            .project
+            .tracks
+            .push(crate::project::Track::new(&o.track, inst)),
     }
-    let pat = o.pattern.clone().unwrap_or_else(|| e.project.patterns.first().map(|p| p.name.clone()).unwrap_or_else(|| "main".into()));
+    let pat = o.pattern.clone().unwrap_or_else(|| {
+        e.project
+            .patterns
+            .first()
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "main".into())
+    });
     let pi = e.project.pattern_index(&pat)?;
     let steps = e.project.patterns[pi].steps();
     let mut rng = Rng::new(o.seed);
@@ -592,14 +762,21 @@ pub fn vocal_chop(e: &mut Engine, o: &ChopOpts) -> Result<Value> {
         for (t, d) in picks {
             let start = (bar * 16) as f32 + t;
             if start < steps as f32 {
-                notes.push(Note::new(start, 2.0, (48 + chop * nd + d.min(nd - 1)).min(127) as u8, if call { 0.85 } else { 0.75 }));
+                notes.push(Note::new(
+                    start,
+                    2.0,
+                    (48 + chop * nd + d.min(nd - 1)).min(127) as u8,
+                    if call { 0.85 } else { 0.75 },
+                ));
             }
         }
         bar += 1;
     }
     let count = notes.len();
     *e.project.patterns[pi].notes_mut(&o.track) = notes;
-    Ok(json!({"track": o.track, "sample": name, "syllables": segs.len(), "pitched_chops": slices.len(), "notes": count, "pattern": pat, "map": "note 48 + syllable*5 + degree (root, 3rd, 5th, 6th, octave)", "credit": {"source": info.source, "license": info.license}}))
+    Ok(
+        json!({"track": o.track, "sample": name, "syllables": segs.len(), "pitched_chops": slices.len(), "notes": count, "pattern": pat, "map": "note 48 + syllable*5 + degree (root, 3rd, 5th, 6th, octave)", "credit": {"source": info.source, "license": info.license}}),
+    )
 }
 
 #[cfg(test)]
@@ -615,10 +792,12 @@ mod tests {
     fn tone(hz: f32, secs: f32, pulses: usize) -> Vec<f32> {
         let n = (secs * SR) as usize;
         let seg = n / pulses.max(1);
-        (0..n).map(|i| {
-            let t = (i % seg) as f32 / SR;
-            (2.0 * std::f32::consts::PI * hz * i as f32 / SR).sin() * 0.6 * (-t * 6.0).exp()
-        }).collect()
+        (0..n)
+            .map(|i| {
+                let t = (i % seg) as f32 / SR;
+                (2.0 * std::f32::consts::PI * hz * i as f32 / SR).sin() * 0.6 * (-t * 6.0).exp()
+            })
+            .collect()
     }
 
     #[test]
@@ -640,20 +819,66 @@ mod tests {
         let k = tone(50.0, 0.3, 1);
         crate::render::write_wav(&dir.join("big_kick.wav"), &k, &k).unwrap();
         let ent = analyze_file(&dir.join("mellow_pluck.wav")).unwrap();
-        assert!(ent.pitch_hz.map(|f| (f - 220.0).abs() < 5.0).unwrap_or(false), "{:?}", ent.pitch_hz);
+        assert!(
+            ent.pitch_hz
+                .map(|f| (f - 220.0).abs() < 5.0)
+                .unwrap_or(false),
+            "{:?}",
+            ent.pitch_hz
+        );
         std::fs::remove_file(index_path(&e)).ok();
         index_dirs(&e, &[dir.clone()], 100).unwrap();
-        let r = find(&e, &Query { role: Some("kick".into()), text: None, key: None, bpm: None, max_duration: None, limit: 5 });
+        let r = find(
+            &e,
+            &Query {
+                role: Some("kick".into()),
+                text: None,
+                key: None,
+                bpm: None,
+                max_duration: None,
+                limit: 5,
+            },
+        );
         assert_eq!(r.len(), 1);
         assert!(r[0].1.path.ends_with("big_kick.wav"));
         // flip + chop on a synthetic phrase
         e.project.patterns = vec![crate::project::Pattern::new("main", 4)];
         let phr = tone(330.0, 2.0, 8);
         crate::render::write_wav(&dir.join("phrase.wav"), &phr, &phr).unwrap();
-        crate::tools::register_sample(&mut e, SampleInfo { name: "phrase".into(), path: dir.join("phrase.wav").to_string_lossy().into(), ..Default::default() }).unwrap();
-        let f = flip(&mut e, &FlipOpts { sample: "phrase".into(), track: "flip".into(), pattern: None, fit_key: true, max_slices: 8, seed: 1, density: 0.6 }).unwrap();
+        crate::tools::register_sample(
+            &mut e,
+            SampleInfo {
+                name: "phrase".into(),
+                path: dir.join("phrase.wav").to_string_lossy().into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let f = flip(
+            &mut e,
+            &FlipOpts {
+                sample: "phrase".into(),
+                track: "flip".into(),
+                pattern: None,
+                fit_key: true,
+                max_slices: 8,
+                seed: 1,
+                density: 0.6,
+            },
+        )
+        .unwrap();
         assert!(f["notes"].as_u64().unwrap() > 4);
-        let c = vocal_chop(&mut e, &ChopOpts { sample: "phrase".into(), track: "chops".into(), pattern: None, chops: 3, seed: 2 }).unwrap();
+        let c = vocal_chop(
+            &mut e,
+            &ChopOpts {
+                sample: "phrase".into(),
+                track: "chops".into(),
+                pattern: None,
+                chops: 3,
+                seed: 2,
+            },
+        )
+        .unwrap();
         assert!(c["pitched_chops"].as_u64().unwrap() >= 5);
         assert!(e.project.patterns[0].notes("chops").len() > 4);
     }

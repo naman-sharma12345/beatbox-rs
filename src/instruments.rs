@@ -586,11 +586,20 @@ pub const PRESETS: &[(&str, &str)] = &[
     ("cowbell", "808 cowbell (great for phonk)"),
     ("shaker", "Shaker for afro / latin grooves"),
     ("crash", "Crash cymbal"),
-    ("tabla", "Tabla dayan: harmonic ringing treble drum, tuned to the note (soft hits = muted te/ti)"),
-    ("bayan", "Tabla bayan: bass 'ge' with the palm pitch rise (gamak)"),
+    (
+        "tabla",
+        "Tabla dayan: harmonic ringing treble drum, tuned to the note (soft hits = muted te/ti)",
+    ),
+    (
+        "bayan",
+        "Tabla bayan: bass 'ge' with the palm pitch rise (gamak)",
+    ),
     ("sitar", "Karplus-Strong sitar with jawari bridge buzz"),
     ("santoor", "Bright hammered-string santoor"),
-    ("bansuri", "Breathy bamboo flute with vibrato and meend glides (slide_to)"),
+    (
+        "bansuri",
+        "Breathy bamboo flute with vibrato and meend glides (slide_to)",
+    ),
     ("tanpura", "Tanpura-style drone pad (root + fifth shimmer)"),
     ("808", "Long sub 808 with punch and drive"),
     ("sub_bass", "Clean sine sub bass"),
@@ -1271,7 +1280,13 @@ fn render_drum(p: &DrumParams, pitch: f32, vel: f32, rng: &mut Rng) -> Vec<f32> 
             let len = if open { 1.1 * d } else { 0.14 * d };
             out = vec![0.0; secs(len)];
             let f0 = 261.63 * tune;
-            let modes: [(f32, f32, f32); 5] = [(1.0, 1.0, 3.2), (2.0, 0.55, 5.0), (3.0, 0.35, 7.0), (4.0, 0.22, 9.0), (5.0, 0.12, 12.0)];
+            let modes: [(f32, f32, f32); 5] = [
+                (1.0, 1.0, 3.2),
+                (2.0, 0.55, 5.0),
+                (3.0, 0.35, 7.0),
+                (4.0, 0.22, 9.0),
+                (5.0, 0.12, 12.0),
+            ];
             let mut ph = [0.0f32; 5];
             let mut bp = Svf::default();
             let damp = if open { 1.0 } else { 9.0 };
@@ -1284,7 +1299,9 @@ fn render_drum(p: &DrumParams, pitch: f32, vel: f32, rng: &mut Rng) -> Vec<f32> 
                     ph[k] = (ph[k] + f / SR) % 1.0;
                     y += (2.0 * PI * ph[k]).sin() * a * (-t * dec * damp / d).exp();
                 }
-                let slap = bp.process(rng.bipolar(), 3200.0, 0.3, FilterMode::Bandpass) * (-t * 90.0).exp() * 0.6;
+                let slap = bp.process(rng.bipolar(), 3200.0, 0.3, FilterMode::Bandpass)
+                    * (-t * 90.0).exp()
+                    * 0.6;
                 *s = (y * 0.55 + slap).tanh() * 0.9;
             }
         }
@@ -1298,7 +1315,8 @@ fn render_drum(p: &DrumParams, pitch: f32, vel: f32, rng: &mut Rng) -> Vec<f32> 
                 let f = 82.0 * tune * (1.0 + 0.35 * (1.0 - (-t * 7.0).exp()));
                 ph = (ph + f / SR) % 1.0;
                 let body = (2.0 * PI * ph).sin() + 0.25 * (4.0 * PI * ph).sin();
-                let thump = lp.process(rng.bipolar(), 400.0, 0.2, FilterMode::Lowpass) * (-t * 60.0).exp();
+                let thump =
+                    lp.process(rng.bipolar(), 400.0, 0.2, FilterMode::Lowpass) * (-t * 60.0).exp();
                 *s = (body * (-t * 3.5 / d).exp() * 0.8 + thump * 0.5).tanh();
             }
         }
