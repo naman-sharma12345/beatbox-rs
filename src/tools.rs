@@ -32,15 +32,21 @@ reverb/delay on chords & leads, sidechain on bass/pads with source 'kick', eq/fi
 (7) add_pattern with copy_from to make intro/break/drop variants, then set_arrangement; \
 (8) render, then analyze_mix and apply its suggestions; iterate. Use search_samples + download_sample \
 to pull real sounds from Freesound (CC0 by default) or any audio URL, then add_sample_track. \
-undo/redo are always available, so experiment freely.";
+Mix like a pro: add_bus a 'reverb'/'delay' return and set_send leads/pads to it (-12 dB) instead of \
+per-track reverbs; route_track drums into a 'drum' bus for glue. Automation brings sections to life: \
+generate_automation a riser on a filter cutoff (fx.<i>.cutoff) before the drop, fade_in/fade_out on \
+volume, lfo/pump synced to the tempo; times are song beats (list_automation shows sections and every \
+automatable parameter). Before a bold change call snapshot, then diff_project / compare_variants to \
+pick the better version (restore_snapshot to go back). Finish with validate_project and check_master \
+(true peak <= -1 dBTP, about -14 LUFS for streaming). undo/redo are always available, so experiment freely.";
 
-fn obj(props: Value, required: &[&str]) -> Value {
+pub(crate) fn obj(props: Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": props, "required": required, "additionalProperties": false })
 }
 
 // ---------- argument helpers ----------
 
-fn s_req(a: &Value, k: &str) -> Result<String> {
+pub(crate) fn s_req(a: &Value, k: &str) -> Result<String> {
     a.get(k)
         .and_then(|v| {
             v.as_str()
@@ -49,14 +55,14 @@ fn s_req(a: &Value, k: &str) -> Result<String> {
         })
         .ok_or_else(|| anyhow!("missing required argument '{k}'"))
 }
-fn s_opt(a: &Value, k: &str) -> Option<String> {
+pub(crate) fn s_opt(a: &Value, k: &str) -> Option<String> {
     a.get(k).and_then(|v| {
         v.as_str()
             .map(String::from)
             .or_else(|| v.as_i64().map(|n| n.to_string()))
     })
 }
-fn f_opt(a: &Value, k: &str) -> Option<f32> {
+pub(crate) fn f_opt(a: &Value, k: &str) -> Option<f32> {
     a.get(k)
         .and_then(|v| {
             v.as_f64()
@@ -64,15 +70,15 @@ fn f_opt(a: &Value, k: &str) -> Option<f32> {
         })
         .map(|x| x as f32)
 }
-fn f_or(a: &Value, k: &str, d: f32) -> f32 {
+pub(crate) fn f_or(a: &Value, k: &str, d: f32) -> f32 {
     f_opt(a, k).unwrap_or(d)
 }
-fn u_or(a: &Value, k: &str, d: u64) -> u64 {
+pub(crate) fn u_or(a: &Value, k: &str, d: u64) -> u64 {
     a.get(k)
         .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f.max(0.0) as u64)))
         .unwrap_or(d)
 }
-fn b_or(a: &Value, k: &str, d: bool) -> bool {
+pub(crate) fn b_or(a: &Value, k: &str, d: bool) -> bool {
     a.get(k).and_then(|v| v.as_bool()).unwrap_or(d)
 }
 fn pitch_of(v: &Value) -> Result<u8> {
@@ -133,21 +139,13 @@ fn ensure_track(
                 None => instruments::preset(default_preset)
                     .ok_or_else(|| anyhow!("bad preset {default_preset}"))?,
             };
-            p.tracks.push(Track {
-                name: name.to_string(),
-                instrument: inst,
-                volume_db: 0.0,
-                pan: 0.0,
-                mute: false,
-                solo: false,
-                effects: Vec::new(),
-            });
+            p.tracks.push(Track::new(name, inst));
             Ok(name.to_string())
         }
     }
 }
 
-fn merge(base: &mut Value, patch: &Value) {
+pub(crate) fn merge(base: &mut Value, patch: &Value) {
     match (base, patch) {
         (Value::Object(b), Value::Object(p)) => {
             for (k, v) in p {
@@ -161,12 +159,27 @@ fn merge(base: &mut Value, patch: &Value) {
     }
 }
 
-fn effects_of<'a>(p: &'a mut Project, track: &str) -> Result<&'a mut Vec<Effect>> {
+pub(crate) fn effects_of<'a>(p: &'a mut Project, track: &str) -> Result<&'a mut Vec<Effect>> {
     if track.eq_ignore_ascii_case("master") {
         Ok(&mut p.master_effects)
-    } else {
-        let i = p.track_index(track)?;
+    } else if let Ok(i) = p.track_index(track) {
         Ok(&mut p.tracks[i].effects)
+    } else if let Ok(i) = p.bus_index(track) {
+        Ok(&mut p.buses[i].effects)
+    } else {
+        Err(anyhow!(
+            "no track or bus '{track}'. Tracks: [{}], buses: [{}], or 'master'",
+            p.tracks
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            p.buses
+                .iter()
+                .map(|b| b.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
     }
 }
 
@@ -228,6 +241,9 @@ pub fn summary(p: &Project) -> Value {
         "master_effects": p.master_effects.iter().map(|e| e.type_name()).collect::<Vec<_>>(),
         "master_volume_db": p.master_volume_db,
         "samples": p.samples.iter().map(|s| &s.name).collect::<Vec<_>>(),
+        "buses": p.buses.iter().map(|b| json!({"name": b.name, "volume_db": b.volume_db, "effects": b.effects.iter().map(|e| e.type_name()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+        "routing": p.tracks.iter().filter(|t| t.output.is_some() || !t.sends.is_empty()).map(|t| json!({"track": t.name, "output": t.output.clone().unwrap_or_else(|| "master".into()), "sends": t.sends.iter().map(|s| format!("{} {:+.1} dB", s.bus, s.db)).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+        "automation": p.automation.iter().map(|l| format!("{}:{} ({} pts)", l.target, l.param, l.points.len())).collect::<Vec<_>>(),
     })
 }
 
@@ -447,6 +463,12 @@ fn pattern_prop() -> Value {
 }
 
 fn build() -> Vec<Tool> {
+    let mut v = core_tools();
+    v.extend(crate::tools_studio::tools());
+    v
+}
+
+fn core_tools() -> Vec<Tool> {
     vec![
         // ----- discovery -----
         Tool {
@@ -598,14 +620,13 @@ fn build() -> Vec<Tool> {
                     bail!("track '{name}' already exists");
                 }
                 let inst = instrument_from(a)?.unwrap_or_else(|| instruments::preset(&name).unwrap_or_else(|| instruments::preset("pluck_lead").unwrap()));
+                if e.project.bus_index(&name).is_ok() || name.eq_ignore_ascii_case("master") {
+                    bail!("'{name}' is already used by a bus/master; pick another track name");
+                }
                 e.project.tracks.push(Track {
-                    name: name.clone(),
-                    instrument: inst,
                     volume_db: f_or(a, "volume_db", 0.0),
                     pan: f_or(a, "pan", 0.0).clamp(-1.0, 1.0),
-                    mute: false,
-                    solo: false,
-                    effects: Vec::new(),
+                    ..Track::new(&name, inst)
                 });
                 Ok(json!({"added": name, "tracks": e.project.tracks.len()}))
             },
@@ -621,7 +642,9 @@ fn build() -> Vec<Tool> {
                 for p in e.project.patterns.iter_mut() {
                     p.clips.remove(&t.name.to_lowercase());
                 }
-                Ok(json!({"removed": t.name}))
+                let before = e.project.automation.len();
+                e.project.automation.retain(|l| !l.target.eq_ignore_ascii_case(&t.name));
+                Ok(json!({"removed": t.name, "automation_lanes_removed": before - e.project.automation.len()}))
             },
         },
         Tool {
@@ -651,7 +674,7 @@ fn build() -> Vec<Tool> {
         },
         Tool {
             name: "set_mixer",
-            description: "Set a track's volume_db, pan (-1..1), mute and solo. Use track='master' for the master volume.",
+            description: "Set a track's (or bus') volume_db, pan (-1..1), mute and solo. Use track='master' for the master volume.",
             mutates: true,
             schema: || obj(json!({
                 "track": {"type": "string"},
@@ -667,6 +690,21 @@ fn build() -> Vec<Tool> {
                         e.project.master_volume_db = v.clamp(-60.0, 12.0);
                     }
                     return Ok(json!({"master_volume_db": e.project.master_volume_db}));
+                }
+                if e.project.track_index(&name).is_err() {
+                    if let Ok(bi) = e.project.bus_index(&name) {
+                        let b = &mut e.project.buses[bi];
+                        if let Some(v) = f_opt(a, "volume_db") {
+                            b.volume_db = v.clamp(-60.0, 12.0);
+                        }
+                        if let Some(v) = f_opt(a, "pan") {
+                            b.pan = v.clamp(-1.0, 1.0);
+                        }
+                        if let Some(v) = a.get("mute").and_then(|v| v.as_bool()) {
+                            b.mute = v;
+                        }
+                        return Ok(json!({"bus": b.name, "volume_db": b.volume_db, "pan": b.pan, "mute": b.mute}));
+                    }
                 }
                 let i = e.project.track_index(&name)?;
                 let t = &mut e.project.tracks[i];
@@ -740,7 +778,9 @@ fn build() -> Vec<Tool> {
                     bail!("no effect at index {idx}");
                 }
                 let fx = chain.remove(idx);
-                Ok(json!({"removed": fx.type_name(), "chain": chain.iter().map(|x| x.type_name()).collect::<Vec<_>>()}))
+                let names = chain.iter().map(|x| x.type_name()).collect::<Vec<_>>();
+                let lanes = crate::tools_studio::reindex_fx_lanes(&mut e.project, &track, idx);
+                Ok(json!({"removed": fx.type_name(), "chain": names, "automation_lanes_removed": lanes}))
             },
         },
         Tool {
@@ -1321,7 +1361,7 @@ fn build() -> Vec<Tool> {
                 }
                 let root = a.get("root").map(pitch_of).transpose()?.unwrap_or(60);
                 let inst = Instrument::Sampler(instruments::SamplerParams { sample, root, one_shot: b_or(a, "one_shot", true), ..Default::default() });
-                e.project.tracks.push(Track { name: name.clone(), instrument: inst, volume_db: f_or(a, "volume_db", 0.0), pan: 0.0, mute: false, solo: false, effects: Vec::new() });
+                e.project.tracks.push(Track { volume_db: f_or(a, "volume_db", 0.0), ..Track::new(&name, inst) });
                 Ok(json!({"added": name}))
             },
         },
@@ -1423,6 +1463,14 @@ mod tests {
                 g.name,
                 rep.master.peak_dbfs
             );
+            // the true-peak aware master limiter holds the ceiling between samples too
+            assert!(
+                rep.loudness.true_peak_dbtp <= -0.6,
+                "{} true peak {}",
+                g.name,
+                rep.loudness.true_peak_dbtp
+            );
+            assert!(rep.loudness.integrated_lufs > -30.0, "{}", g.name);
         }
     }
 

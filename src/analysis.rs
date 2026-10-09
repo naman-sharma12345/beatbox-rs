@@ -199,10 +199,247 @@ pub struct TrackReport {
     pub dominant_band: &'static str,
 }
 
+/// Broadcast-style loudness and safety metrics of a stereo signal.
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct Loudness {
+    /// Integrated loudness, ITU-R BS.1770 K-weighted with gating (LUFS).
+    pub integrated_lufs: f32,
+    /// Loudest 3 s window (short-term max, LUFS).
+    pub short_term_max_lufs: f32,
+    /// Loudness range estimate (LU): spread of short-term loudness (10th..95th pct).
+    pub loudness_range_lu: f32,
+    /// Inter-sample peak via 4x oversampling (dBTP).
+    pub true_peak_dbtp: f32,
+    /// Mean sample value per channel (DC offset, linear).
+    pub dc_offset: [f32; 2],
+    /// Level change when folded to mono (dB, negative = loss / phase cancellation).
+    pub mono_fold_db: f32,
+    /// Percent of 400 ms blocks below -60 dBFS.
+    pub silent_percent: f32,
+    /// Seconds of silence before the first sound.
+    pub leading_silence_s: f32,
+}
+
+struct Biquad {
+    b: [f64; 3],
+    a: [f64; 2],
+    z: [f64; 2],
+}
+
+impl Biquad {
+    fn run(&mut self, x: f64) -> f64 {
+        let y = self.b[0] * x + self.z[0];
+        self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
+        self.z[1] = self.b[2] * x - self.a[1] * y;
+        y
+    }
+}
+
+/// The two-stage K-weighting filter of BS.1770 for sample rate `fs`.
+fn k_weighting(fs: f64) -> [Biquad; 2] {
+    let (f0, g, q) = (
+        1681.974450955533f64,
+        3.999843853973347f64,
+        0.7071752369554196f64,
+    );
+    let k = (std::f64::consts::PI * f0 / fs).tan();
+    let vh = 10f64.powf(g / 20.0);
+    let vb = vh.powf(0.4996667741545416);
+    let a0 = 1.0 + k / q + k * k;
+    let shelf = Biquad {
+        b: [
+            (vh + vb * k / q + k * k) / a0,
+            2.0 * (k * k - vh) / a0,
+            (vh - vb * k / q + k * k) / a0,
+        ],
+        a: [2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0],
+        z: [0.0; 2],
+    };
+    let (f0, q) = (38.13547087602444f64, 0.5003270373238773f64);
+    let k = (std::f64::consts::PI * f0 / fs).tan();
+    let a0 = 1.0 + k / q + k * k;
+    let hp = Biquad {
+        b: [1.0, -2.0, 1.0],
+        a: [2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0],
+        z: [0.0; 2],
+    };
+    [shelf, hp]
+}
+
+fn lufs_of(ms: f64) -> f64 {
+    -0.691 + 10.0 * ms.max(1e-20).log10()
+}
+
+/// Inter-sample (true) peak of one channel, 4x oversampled with a
+/// Hann-windowed sinc interpolator (32 taps per phase).
+pub fn true_peak(x: &[f32]) -> f32 {
+    const UP: usize = 4;
+    const HALF: isize = 16;
+    let mut phases: Vec<Vec<f32>> = Vec::new();
+    for ph in 1..UP {
+        let frac = ph as f32 / UP as f32;
+        let mut h = Vec::new();
+        for k in -HALF + 1..=HALF {
+            let t = k as f32 - frac;
+            let sinc = if t.abs() < 1e-6 {
+                1.0
+            } else {
+                (PI * t).sin() / (PI * t)
+            };
+            let w = 0.5 + 0.5 * (PI * t / HALF as f32).cos();
+            h.push(sinc * w);
+        }
+        let sum: f32 = h.iter().sum();
+        phases.push(h.into_iter().map(|v| v / sum).collect());
+    }
+    let n = x.len() as isize;
+    let mut peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    for i in 0..n {
+        // only interpolate around loud-ish samples (cheap and exact enough)
+        if x[i as usize].abs() < peak * 0.5 {
+            continue;
+        }
+        for h in &phases {
+            let mut acc = 0.0f32;
+            for (j, c) in h.iter().enumerate() {
+                let idx = i + (j as isize - HALF + 1);
+                if idx >= 0 && idx < n {
+                    acc += c * x[idx as usize];
+                }
+            }
+            peak = peak.max(acc.abs());
+        }
+    }
+    peak
+}
+
+pub fn loudness(l: &[f32], r: &[f32]) -> Loudness {
+    let n = l.len().min(r.len());
+    if n == 0 {
+        return Loudness {
+            integrated_lufs: -70.0,
+            short_term_max_lufs: -70.0,
+            true_peak_dbtp: -120.0,
+            ..Default::default()
+        };
+    }
+    // K-weighted squares, accumulated per 100 ms
+    let hop = (SR * 0.1) as usize;
+    let mut kw = [k_weighting(SR as f64), k_weighting(SR as f64)];
+    let mut hops: Vec<f64> = Vec::new();
+    let mut acc = 0.0f64;
+    for i in 0..n {
+        let a0 = kw[0][0].run(l[i] as f64);
+        let a = kw[0][1].run(a0);
+        let b0 = kw[1][0].run(r[i] as f64);
+        let b = kw[1][1].run(b0);
+        acc += a * a + b * b;
+        if (i + 1) % hop == 0 {
+            hops.push(acc / hop as f64);
+            acc = 0.0;
+        }
+    }
+    if hops.is_empty() {
+        hops.push(acc / n as f64);
+    }
+    let window = |w: usize| -> Vec<f64> {
+        if hops.len() < w {
+            return vec![hops.iter().sum::<f64>() / hops.len() as f64];
+        }
+        (0..=hops.len() - w)
+            .map(|k| hops[k..k + w].iter().sum::<f64>() / w as f64)
+            .collect()
+    };
+    // integrated: 400 ms blocks, absolute gate -70, relative gate -10 LU
+    let blocks = window(4);
+    let abs: Vec<f64> = blocks
+        .iter()
+        .copied()
+        .filter(|m| lufs_of(*m) > -70.0)
+        .collect();
+    let integrated = if abs.is_empty() {
+        -70.0
+    } else {
+        let rel = lufs_of(abs.iter().sum::<f64>() / abs.len() as f64) - 10.0;
+        let g: Vec<f64> = abs.iter().copied().filter(|m| lufs_of(*m) > rel).collect();
+        lufs_of(g.iter().sum::<f64>() / g.len().max(1) as f64)
+    };
+    let short = window(30);
+    let mut st: Vec<f64> = short
+        .iter()
+        .map(|m| lufs_of(*m))
+        .filter(|v| *v > -70.0)
+        .collect();
+    st.sort_by(|a, b| a.total_cmp(b));
+    let st_max = st.last().copied().unwrap_or(-70.0);
+    let lra = if st.len() >= 2 {
+        let at = |q: f64| st[((st.len() - 1) as f64 * q).round() as usize];
+        at(0.95) - at(0.10)
+    } else {
+        0.0
+    };
+    // silence (plain dBFS, unweighted) on 400 ms blocks
+    let blk = (SR * 0.4) as usize;
+    let mut silent = 0usize;
+    let mut nblk = 0usize;
+    let mut lead = None;
+    for (bi, c) in (0..n).step_by(blk).enumerate() {
+        let e = (c + blk).min(n);
+        let pk = (c..e).fold(0.0f32, |m, i| m.max(l[i].abs()).max(r[i].abs()));
+        nblk += 1;
+        if pk < 0.001 {
+            silent += 1;
+        } else if lead.is_none() {
+            lead = Some(bi);
+        }
+    }
+    let lead_s = match lead {
+        Some(bi) => {
+            let s0 = bi * blk;
+            let first = (s0..n)
+                .find(|&i| l[i].abs().max(r[i].abs()) >= 0.001)
+                .unwrap_or(s0);
+            first as f32 / SR
+        }
+        None => n as f32 / SR,
+    };
+    let (mut sl, mut sr_, mut sm, mut el, mut er) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for i in 0..n {
+        sl += l[i] as f64;
+        sr_ += r[i] as f64;
+        let m = 0.5 * (l[i] as f64 + r[i] as f64);
+        sm += m * m;
+        el += (l[i] as f64).powi(2);
+        er += (r[i] as f64).powi(2);
+    }
+    let stereo_ms = 0.5 * (el + er) / n as f64;
+    let mono_fold = if stereo_ms < 1e-14 {
+        0.0
+    } else {
+        10.0 * ((sm / n as f64).max(1e-20) / stereo_ms).log10()
+    };
+    let tp = true_peak(&l[..n]).max(true_peak(&r[..n]));
+    let r2 = |x: f64| ((x * 100.0).round() / 100.0) as f32;
+    Loudness {
+        integrated_lufs: r2(integrated.max(-70.0)),
+        short_term_max_lufs: r2(st_max),
+        loudness_range_lu: r2(lra),
+        true_peak_dbtp: r2(gain_to_db(tp) as f64),
+        dc_offset: [
+            ((sl / n as f64) * 1e5).round() as f32 / 1e5,
+            ((sr_ / n as f64) * 1e5).round() as f32 / 1e5,
+        ],
+        mono_fold_db: r2(mono_fold),
+        silent_percent: r2(100.0 * silent as f64 / nblk.max(1) as f64),
+        leading_silence_s: (lead_s * 100.0).round() / 100.0,
+    }
+}
+
 #[derive(Serialize, Debug)]
 pub struct Report {
     pub seconds: f32,
     pub master: Stats,
+    pub loudness: Loudness,
     pub stereo_correlation: f32,
     pub tracks: Vec<TrackReport>,
     pub suggestions: Vec<String>,
@@ -219,6 +456,7 @@ fn band(s: &Stats, name: &str) -> f32 {
 
 pub fn analyze(mix: &Mix) -> Report {
     let master = stats(&mix.left, &mix.right);
+    let loud = loudness(&mix.left, &mix.right);
     let corr = correlation(&mix.left, &mix.right);
     let energies: Vec<f64> = mix
         .stems
@@ -258,6 +496,7 @@ pub fn analyze(mix: &Mix) -> Report {
         return Report {
             seconds: mix.seconds,
             master,
+            loudness: loud,
             stereo_correlation: corr,
             tracks,
             suggestions: sug,
@@ -267,6 +506,10 @@ pub fn analyze(mix: &Mix) -> Report {
     if master.clipped_samples > 0 || master.peak_dbfs > -0.1 {
         sug.push(format!("Clipping risk ({} samples at full scale). Lower track volumes or keep a limiter on the master.", master.clipped_samples));
         score -= 15;
+    }
+    if loud.true_peak_dbtp > -0.5 {
+        sug.push(format!("True peak {:.1} dBTP: inter-sample overs will clip on streaming encoders. Lower the master limiter ceiling to -1 dB (tweak_effect on master).", loud.true_peak_dbtp));
+        score -= 5;
     }
     if master.rms_dbfs < -20.0 {
         sug.push(format!("Quiet mix (RMS {:.1} dBFS). Raise master_volume_db or add master compression; streaming-ready beats sit around -12 to -9 dBFS RMS.", master.rms_dbfs));
@@ -353,6 +596,7 @@ pub fn analyze(mix: &Mix) -> Report {
     Report {
         seconds: mix.seconds,
         master,
+        loudness: loud,
         stereo_correlation: corr,
         tracks,
         suggestions: sug,
@@ -432,5 +676,41 @@ mod tests {
         assert!(band(&s, "bass") > 90.0, "{:?}", s.bands);
         assert!((s.peak_dbfs - -6.0).abs() < 0.2);
         assert_eq!(correlation(&x, &x), 1.0);
+    }
+}
+
+#[cfg(test)]
+mod loudness_tests {
+    use super::*;
+
+    #[test]
+    fn lufs_and_true_peak_of_a_sine() {
+        // -20 dBFS 1 kHz sine in both channels reads about -20 LUFS
+        let a = 0.1f32;
+        let x: Vec<f32> = (0..(SR as usize * 4))
+            .map(|i| a * (2.0 * PI * 1000.0 * i as f32 / SR).sin())
+            .collect();
+        let l = loudness(&x, &x);
+        assert!(
+            (l.integrated_lufs + 20.0).abs() < 0.6,
+            "{}",
+            l.integrated_lufs
+        );
+        assert!(
+            (l.true_peak_dbtp + 20.0).abs() < 0.3,
+            "{}",
+            l.true_peak_dbtp
+        );
+        assert!(l.mono_fold_db.abs() < 0.01);
+        // a sine at fs/4 sampled off-peak: sample peak under-reads, true peak doesn't
+        let y: Vec<f32> = (0..8192)
+            .map(|i| (2.0 * PI * (SR / 4.0) * i as f32 / SR + PI / 4.0).sin())
+            .collect();
+        let sp = y.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(sp < 0.72);
+        assert!(true_peak(&y) > 0.97, "true peak {}", true_peak(&y));
+        // inverted channels fold to nothing
+        let inv: Vec<f32> = x.iter().map(|v| -v).collect();
+        assert!(loudness(&x, &inv).mono_fold_db < -20.0);
     }
 }

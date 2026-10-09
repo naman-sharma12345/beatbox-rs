@@ -184,12 +184,12 @@ pub fn knob(
     );
     painter.add(Shape::line(
         arc(a0, a1, r),
-        Stroke::new(3.5, Color32::from_rgb(44, 50, 70)),
+        Stroke::new(3.5_f32, Color32::from_rgb(44, 50, 70)),
     ));
     if t > 0.001 {
         painter.add(Shape::line(
             arc(a0, a0 + (a1 - a0) * t, r),
-            Stroke::new(3.5, color),
+            Stroke::new(3.5_f32, color),
         ));
     }
     let a = a0 + (a1 - a0) * t;
@@ -198,7 +198,7 @@ pub fn knob(
             Pos2::new(c.x + (r - 12.0) * a.cos(), c.y + (r - 12.0) * a.sin()),
             Pos2::new(c.x + (r - 4.0) * a.cos(), c.y + (r - 4.0) * a.sin()),
         ],
-        Stroke::new(2.5, TEXT),
+        Stroke::new(2.5_f32, TEXT),
     );
     let text = if hover {
         format_value(*value)
@@ -315,7 +315,7 @@ pub fn score_ring(ui: &mut Ui, score: u32) {
     };
     p.add(Shape::line(
         ring(-PI / 2.0, PI * 1.5),
-        Stroke::new(6.0, Color32::from_rgb(38, 43, 60)),
+        Stroke::new(6.0_f32, Color32::from_rgb(38, 43, 60)),
     ));
     let t = score as f32 / 100.0;
     let col = if score >= 85 {
@@ -327,7 +327,7 @@ pub fn score_ring(ui: &mut Ui, score: u32) {
     };
     p.add(Shape::line(
         ring(-PI / 2.0, -PI / 2.0 + 2.0 * PI * t),
-        Stroke::new(6.0, col),
+        Stroke::new(6.0_f32, col),
     ));
     p.text(
         c - Vec2::new(0.0, 5.0),
@@ -355,4 +355,171 @@ pub fn vgradient_bar(p: &egui::Painter, rect: Rect, bottom: Color32, top: Color3
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(0, 2, 3);
     p.add(Shape::mesh(mesh));
+}
+
+/// Segmented tab control. Returns the index clicked this frame, if any.
+pub fn tabs(ui: &mut Ui, labels: &[&str], current: usize) -> Option<usize> {
+    let mut clicked = None;
+    let h = 28.0;
+    let widths: Vec<f32> = labels.iter().map(|l| 22.0 + l.len() as f32 * 7.4).collect();
+    let total: f32 = widths.iter().sum::<f32>() + 6.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(total, h), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 9.0, PANEL);
+    p.rect_stroke(rect, 9.0, Stroke::new(1.0_f32, LINE));
+    let mut x = rect.left() + 3.0;
+    for (i, (l, w)) in labels.iter().zip(widths.iter()).enumerate() {
+        let r = Rect::from_min_size(Pos2::new(x, rect.top() + 3.0), Vec2::new(*w, h - 6.0));
+        let resp = ui.interact(r, ui.id().with(("tab", i, *l)), Sense::click());
+        let on = i == current;
+        if on {
+            p.rect_filled(r, 7.0, ACCENT.gamma_multiply(0.85));
+        } else if resp.hovered() {
+            p.rect_filled(r, 7.0, PANEL2);
+        }
+        p.text(
+            r.center(),
+            Align2::CENTER_CENTER,
+            *l,
+            FontId::proportional(11.5),
+            if on { Color32::WHITE } else { DIM },
+        );
+        if resp.clicked() {
+            clicked = Some(i);
+        }
+        x += w;
+    }
+    clicked
+}
+
+/// dB -> 0..1 meter position (-60 dB .. +6 dB, with more room at the top).
+pub fn meter_pos(db: f32) -> f32 {
+    let x = ((db + 60.0) / 66.0).clamp(0.0, 1.0);
+    x.powf(1.6)
+}
+
+/// Stereo LED-style level meter with peak hold tick.
+pub fn meter(p: &egui::Painter, rect: Rect, l_db: f32, r_db: f32, peak_db: f32) {
+    p.rect_filled(rect, 3.0, BG);
+    let gap = 2.0;
+    let w = (rect.width() - gap * 3.0) / 2.0;
+    for (i, db) in [l_db, r_db].iter().enumerate() {
+        let col = Rect::from_min_size(
+            Pos2::new(rect.left() + gap + i as f32 * (w + gap), rect.top() + gap),
+            Vec2::new(w, rect.height() - gap * 2.0),
+        );
+        // segments
+        let seg = 3.0;
+        let n = (col.height() / seg) as usize;
+        let lit = (meter_pos(*db) * n as f32) as usize;
+        for k in 0..n {
+            let y = col.bottom() - (k + 1) as f32 * seg;
+            let r = Rect::from_min_size(
+                Pos2::new(col.left(), y + 0.6),
+                Vec2::new(col.width(), seg - 1.2),
+            );
+            let t = k as f32 / n as f32;
+            let c = if t > meter_pos(-1.0) {
+                HOT
+            } else if t > meter_pos(-9.0) {
+                WARN
+            } else {
+                lerp_color(ACCENT2, GOOD, t / meter_pos(-9.0))
+            };
+            p.rect_filled(r, 0.5, if k < lit { c } else { c.gamma_multiply(0.08) });
+        }
+    }
+    let y = rect.bottom() - gap - meter_pos(peak_db) * (rect.height() - gap * 2.0);
+    p.line_segment(
+        [
+            Pos2::new(rect.left() + 1.0, y),
+            Pos2::new(rect.right() - 1.0, y),
+        ],
+        Stroke::new(1.5_f32, Color32::WHITE.gamma_multiply(0.85)),
+    );
+}
+
+/// Vertical fader in dB (-60..+12). Returns (response, committed).
+pub fn fader(
+    ui: &mut Ui,
+    id: egui::Id,
+    db: &mut f32,
+    size: Vec2,
+    color: Color32,
+) -> (Response, bool) {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let resp = ui.interact(rect, id, Sense::click_and_drag());
+    let to_y = |d: f32| rect.bottom() - 8.0 - meter_pos(d) * (rect.height() - 16.0);
+    let from_y = |y: f32| {
+        let t = ((rect.bottom() - 8.0 - y) / (rect.height() - 16.0)).clamp(0.0, 1.0);
+        t.powf(1.0 / 1.6) * 66.0 - 60.0
+    };
+    if resp.dragged() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            *db = from_y(pos.y).clamp(-60.0, 12.0);
+        }
+    }
+    let mut committed = resp.drag_stopped();
+    if resp.double_clicked() {
+        *db = 0.0;
+        committed = true;
+    }
+    let p = ui.painter();
+    let track = Rect::from_center_size(rect.center(), Vec2::new(4.0, rect.height() - 12.0));
+    p.rect_filled(track, 2.0, BG);
+    let fill = Rect::from_min_max(Pos2::new(track.left(), to_y(*db)), track.right_bottom());
+    p.rect_filled(fill, 2.0, color.gamma_multiply(0.7));
+    for mark in [0.0f32, -6.0, -12.0, -24.0, -48.0] {
+        let y = to_y(mark);
+        p.line_segment(
+            [
+                Pos2::new(rect.left() + 2.0, y),
+                Pos2::new(rect.left() + 7.0, y),
+            ],
+            Stroke::new(1.0_f32, LINE),
+        );
+    }
+    let y = to_y(*db);
+    let cap = Rect::from_center_size(
+        Pos2::new(rect.center().x, y),
+        Vec2::new(rect.width() - 6.0, 12.0),
+    );
+    p.rect_filled(
+        cap,
+        3.0,
+        if resp.hovered() || resp.dragged() {
+            TEXT
+        } else {
+            Color32::from_rgb(196, 202, 218)
+        },
+    );
+    p.line_segment(
+        [
+            Pos2::new(cap.left() + 3.0, y),
+            Pos2::new(cap.right() - 3.0, y),
+        ],
+        Stroke::new(1.5_f32, color),
+    );
+    (resp, committed)
+}
+
+/// Small rounded stat chip: dim label + value.
+pub fn stat_chip(ui: &mut Ui, label: &str, value: &str, color: Color32) {
+    egui::Frame::none()
+        .fill(BG)
+        .rounding(7.0)
+        .stroke(Stroke::new(1.0_f32, LINE))
+        .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 5.0;
+                ui.label(egui::RichText::new(label).size(9.5).color(DIM).strong());
+                ui.label(
+                    egui::RichText::new(value)
+                        .size(12.0)
+                        .color(color)
+                        .monospace(),
+                );
+            });
+        });
 }

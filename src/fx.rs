@@ -81,7 +81,8 @@ fx_struct!(WidthFx { amount: f32 = 1.4 });
 fx_struct!(GainFx { db: f32 = 0.0 });
 fx_struct!(LimiterFx {
     ceiling_db: f32 = -1.0,
-    release_ms: f32 = 80.0
+    release_ms: f32 = 80.0,
+    true_peak: bool = true
 });
 fx_struct!(TransientFx {
     attack: f32 = 0.5,
@@ -119,7 +120,7 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("sidechain", "Duck this track whenever `source` track hits (EDM pumping). source, amount 0..1, release_ms"),
     ("width", "Mid/side stereo width. amount 0 = mono, 1 = unchanged, 2 = extra wide"),
     ("gain", "Simple gain. db"),
-    ("limiter", "Brickwall-ish peak limiter. ceiling_db, release_ms"),
+    ("limiter", "Lookahead brickwall limiter. ceiling_db, release_ms, true_peak (default true: detects inter-sample peaks so the ceiling holds in dBTP)"),
     ("transient", "Transient shaper. attack -1..1 (punch), sustain -1..1 (tail)"),
 ];
 
@@ -418,10 +419,54 @@ fn limiter(p: &LimiterFx, l: &mut [f32], r: &mut [f32]) {
     let look = (0.002 * SR) as usize;
     let rel = (-1.0 / (p.release_ms.max(1.0) * 0.001 * SR)).exp();
     let n = l.len();
+    // inter-sample peak estimate: 4x polyphase windowed-sinc (16 taps per
+    // phase) at 1/4, 1/2, 3/4 between samples, plus a hair of margin
+    const HALF: isize = 8;
+    let kernels: Vec<Vec<f32>> = (1..4)
+        .map(|ph| {
+            let frac = ph as f32 / 4.0;
+            let h: Vec<f32> = (-HALF + 1..=HALF)
+                .map(|k| {
+                    let t = k as f32 - frac;
+                    let sinc = (PI * t).sin() / (PI * t);
+                    sinc * (0.5 + 0.5 * (PI * t / HALF as f32).cos())
+                })
+                .collect();
+            let sum: f32 = h.iter().sum();
+            h.into_iter().map(|v| v / sum).collect()
+        })
+        .collect();
+    let isp = |x: &[f32], i: usize| -> f32 {
+        let mut m = x[i].abs();
+        let lo = i as isize - HALF + 1;
+        let inside = lo >= 0 && (i as isize + HALF) < n as isize;
+        for h in &kernels {
+            let mut acc = 0.0f32;
+            if inside {
+                let w = &x[lo as usize..lo as usize + h.len()];
+                for (c, v) in h.iter().zip(w) {
+                    acc += c * v;
+                }
+            } else {
+                for (j, c) in h.iter().enumerate() {
+                    let k = lo + j as isize;
+                    if k >= 0 && k < n as isize {
+                        acc += c * x[k as usize];
+                    }
+                }
+            }
+            m = m.max(acc.abs());
+        }
+        m * 1.06
+    };
     // required gain per sample, then look-ahead min + smoothing
     let mut need: Vec<f32> = (0..n)
         .map(|i| {
-            let x = l[i].abs().max(r[i].abs());
+            let x = if p.true_peak {
+                isp(l, i).max(isp(r, i))
+            } else {
+                l[i].abs().max(r[i].abs())
+            };
             if x > ceiling {
                 ceiling / x
             } else {
@@ -486,6 +531,7 @@ mod tests {
         Effect::Limiter(LimiterFx {
             ceiling_db: -1.0,
             release_ms: 50.0,
+            ..Default::default()
         })
         .process(&mut l, &mut r, &ctx(&t));
         let c = db_to_gain(-1.0) + 1e-6;

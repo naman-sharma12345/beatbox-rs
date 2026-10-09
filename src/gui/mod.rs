@@ -5,6 +5,7 @@
 //! lets `beatbox mcp --connect` drive this window live.
 
 mod player;
+mod views;
 mod widgets;
 
 use crate::analysis::{self, Report};
@@ -28,6 +29,7 @@ struct Rendered {
     spectrum: Vec<f32>,
     report: Report,
     loop_secs: f32,
+    strips: Vec<views::StripMeter>,
 }
 
 #[derive(Clone)]
@@ -57,14 +59,23 @@ pub struct Studio {
     screenshot: Option<PathBuf>,
     frames: u64,
     shot_requested: bool,
+    // central view: 0 sequencer, 1 mixer, 2 automation
+    view: usize,
+    auto_sel: Option<(String, String)>,
 }
+
+const VIEWS: [&str; 3] = ["SEQUENCER", "MIXER", "AUTOMATION"];
 
 pub fn run(
     engine: Engine,
     listen: &str,
     project: Option<PathBuf>,
     screenshot: Option<PathBuf>,
+    view: Option<String>,
 ) -> anyhow::Result<()> {
+    let view = view
+        .and_then(|v| VIEWS.iter().position(|n| n.eq_ignore_ascii_case(&v)))
+        .unwrap_or(0);
     let engine = Arc::new(Mutex::new(engine));
     let server_ok = crate::server::spawn(engine.clone(), listen).is_ok();
     let options = eframe::NativeOptions {
@@ -96,6 +107,8 @@ pub fn run(
                 screenshot,
                 frames: 0,
                 shot_requested: false,
+                view,
+                auto_sel: None,
             }))
         }),
     )
@@ -328,7 +341,15 @@ impl Studio {
                     let spectrum = analysis::log_spectrum_db(&mono, 72);
                     let report = analysis::analyze(&mix);
                     let loop_secs = p.song_seconds();
+                    let mut strips: Vec<views::StripMeter> = mix
+                        .stems
+                        .iter()
+                        .chain(mix.bus_stems.iter())
+                        .map(|s| views::strip_meter(&s.name, &s.left, &s.right))
+                        .collect();
+                    strips.push(views::strip_meter("master", &mix.left, &mix.right));
                     let _ = tx.send(Rendered {
+                        strips,
                         rev,
                         mix: Arc::new(mix),
                         peaks,
@@ -362,7 +383,13 @@ impl Studio {
             ui.label(RichText::new("STUDIO").size(11.0).color(DIM));
             ui.add_space(18.0);
             let playing = self.player.is_playing();
-            if transport_button(ui, playing).clicked() {
+            if transport_button(ui, playing)
+                .on_hover_text(format!(
+                    "Space to play/stop · audio: {}",
+                    self.player.device_name
+                ))
+                .clicked()
+            {
                 if playing {
                     self.player.stop();
                 } else {
@@ -436,7 +463,7 @@ impl Studio {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // live AI badge
-                let (r, _) = ui.allocate_exact_size(Vec2::new(150.0, 26.0), Sense::hover());
+                let (r, _) = ui.allocate_exact_size(Vec2::new(214.0, 26.0), Sense::hover());
                 let t = ui.input(|i| i.time) as f32;
                 let pulse = 0.55 + 0.45 * (t * 2.5).sin().abs();
                 let col = if self.server_ok { GOOD } else { HOT };
@@ -456,6 +483,13 @@ impl Studio {
                     },
                     FontId::proportional(11.5),
                     col,
+                );
+                ui.painter().text(
+                    Pos2::new(r.right() - 12.0, r.center().y),
+                    Align2::RIGHT_CENTER,
+                    format!("{} tools", crate::tools::registry().len()),
+                    FontId::proportional(10.5),
+                    DIM,
                 );
                 ui.add_space(6.0);
                 if ui.button("Render WAV").clicked() {
@@ -513,7 +547,7 @@ impl Studio {
                     let col = lerp_color(ACCENT, ACCENT2, hue);
                     let b = egui::Button::new(RichText::new(s.replace('_', " ")).size(12.5).color(TEXT))
                         .fill(col.gamma_multiply(0.22))
-                        .stroke(Stroke::new(1.0, col.gamma_multiply(0.6)))
+                        .stroke(Stroke::new(1.0_f32, col.gamma_multiply(0.6)))
                         .min_size(Vec2::new(98.0, 30.0));
                     if ui.add(b).on_hover_text(format!("generate_beat style={s}")).clicked() {
                         self.call("generate_beat", json!({"style": s, "seed": (ui.input(|i| i.time) * 1000.0) as u64 % 9973}));
@@ -606,7 +640,7 @@ impl Studio {
                     6.0,
                     col.gamma_multiply(if pi == self.pattern { 0.55 } else { 0.25 }),
                 );
-                painter.rect_stroke(r, 6.0, Stroke::new(1.0, col.gamma_multiply(0.8)));
+                painter.rect_stroke(r, 6.0, Stroke::new(1.0_f32, col.gamma_multiply(0.8)));
                 painter.text(
                     r.left_center() + Vec2::new(8.0, 0.0),
                     Align2::LEFT_CENTER,
@@ -621,7 +655,7 @@ impl Studio {
         let px = rect.left() + 4.0 + w_avail * (pos / p.song_seconds().max(0.01)).min(1.0);
         painter.line_segment(
             [Pos2::new(px, rect.top()), Pos2::new(px, rect.bottom())],
-            Stroke::new(2.0, Color32::WHITE),
+            Stroke::new(2.0_f32, Color32::WHITE),
         );
         if resp.clicked() {
             if let Some(m) = resp.interact_pointer_pos() {
@@ -698,7 +732,7 @@ impl Studio {
                         };
                         painter.rect_filled(r, 3.5, fill);
                         if playing_here.map(|ps| ps as usize == s).unwrap_or(false) {
-                            painter.rect_stroke(r, 3.5, Stroke::new(1.5, Color32::WHITE));
+                            painter.rect_stroke(r, 3.5, Stroke::new(1.5_f32, Color32::WHITE));
                         }
                         let resp = ui.interact(r, ui.id().with(("pad", ti, s)), Sense::click());
                         if resp.clicked() {
@@ -710,7 +744,7 @@ impl Studio {
                     // mini piano roll lane
                     for b in 0..=pat.bars {
                         let x = grid.left() + (b * STEPS_PER_BAR) as f32 * cell;
-                        painter.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.0, LINE));
+                        painter.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.0_f32, LINE));
                     }
                     let (lo, hi) = notes.iter().fold((127u8, 0u8), |(l, h), n| (l.min(n.pitch), h.max(n.pitch)));
                     let span = (hi.saturating_sub(lo)).max(12) as f32;
@@ -726,7 +760,7 @@ impl Studio {
                 }
                 if let Some(ps) = playing_here {
                     let x = grid.left() + ps * cell;
-                    painter.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.5, Color32::WHITE.gamma_multiply(0.8)));
+                    painter.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.5_f32, Color32::WHITE.gamma_multiply(0.8)));
                 }
             }
             if p.tracks.is_empty() {
@@ -816,7 +850,7 @@ impl Studio {
                 painter.line_segment(
                     [Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())],
                     Stroke::new(
-                        1.0,
+                        1.0_f32,
                         if strong {
                             LINE
                         } else {
@@ -846,7 +880,7 @@ impl Studio {
             painter.rect_stroke(
                 r,
                 3.0,
-                Stroke::new(1.0, if hov { Color32::WHITE } else { color }),
+                Stroke::new(1.0_f32, if hov { Color32::WHITE } else { color }),
             );
         }
         if let Some(ps) = locate(p, self.player.position_secs())
@@ -856,7 +890,7 @@ impl Studio {
             let x = grid.left() + ps * cell;
             painter.line_segment(
                 [Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())],
-                Stroke::new(1.5, Color32::WHITE),
+                Stroke::new(1.5_f32, Color32::WHITE),
             );
         }
         painter.text(
@@ -919,11 +953,36 @@ impl Studio {
                     .size(12.0)
                     .color(DIM),
                 );
+                let l = &r.report.loudness;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let lufs_ok = (l.integrated_lufs + 14.0).abs() <= 2.0;
+                    stat_chip(
+                        ui,
+                        "LUFS",
+                        &format!("{:.1}", l.integrated_lufs),
+                        if lufs_ok { GOOD } else { WARN },
+                    );
+                    let tp = l.true_peak_dbtp;
+                    stat_chip(
+                        ui,
+                        "TRUE PEAK",
+                        &format!("{tp:.1} dBTP"),
+                        if tp <= -1.0 {
+                            GOOD
+                        } else if tp <= 0.0 {
+                            WARN
+                        } else {
+                            HOT
+                        },
+                    );
+                    stat_chip(ui, "LRA", &format!("{:.1}", l.loudness_range_lu), TEXT);
+                });
             });
         });
         // waveform
         let (wr, wresp) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), 74.0), Sense::click());
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 66.0), Sense::click());
         let painter = ui.painter_at(wr);
         painter.rect_filled(wr, 8.0, BG);
         let n = r.peaks.len().max(1);
@@ -940,14 +999,14 @@ impl Studio {
             };
             let cy = wr.center().y;
             painter.line_segment(
-                [Pos2::new(x, cy - hi * 33.0), Pos2::new(x, cy - lo * 33.0)],
-                Stroke::new(1.0, col),
+                [Pos2::new(x, cy - hi * 29.0), Pos2::new(x, cy - lo * 29.0)],
+                Stroke::new(1.0_f32, col),
             );
         }
         let px = wr.left() + 4.0 + (wr.width() - 8.0) * frac;
         painter.line_segment(
             [Pos2::new(px, wr.top()), Pos2::new(px, wr.bottom())],
-            Stroke::new(2.0, Color32::WHITE),
+            Stroke::new(2.0_f32, Color32::WHITE),
         );
         if wresp.clicked() {
             if let Some(m) = wresp.interact_pointer_pos() {
@@ -956,7 +1015,7 @@ impl Studio {
             }
         }
         // spectrum
-        let (sr, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), Sense::hover());
+        let (sr, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 54.0), Sense::hover());
         let painter = ui.painter_at(sr);
         painter.rect_filled(sr, 8.0, BG);
         let bins = r.spectrum.len().max(1);
@@ -989,7 +1048,10 @@ impl Studio {
         }
         ui.add_space(4.0);
         ui.label(RichText::new("AI MIX NOTES").size(10.5).color(DIM).strong());
-        for s in r.report.suggestions.iter().take(3) {
+        for s in r.report.suggestions.iter().take(2) {
+            if ui.available_height() < 30.0 {
+                break;
+            }
             ui.label(RichText::new(format!("- {s}")).size(11.5).color(WARN));
         }
         let _ = p;
@@ -1135,7 +1197,11 @@ impl Studio {
                         ui.painter().rect_filled(r, 4.0, col.gamma_multiply(0.25));
                         ui.painter().text(r.center(), Align2::CENTER_CENTER, tag, FontId::proportional(9.5), col);
                         ui.label(RichText::new(&e.tool).monospace().size(11.5).color(if e.ok { TEXT } else { HOT }));
-                        let s: String = e.summary.chars().take(34).collect();
+                        let budget = ((236.0 - e.tool.len() as f32 * 7.2) / 5.6).max(6.0) as usize;
+                        let mut s: String = e.summary.chars().take(budget).collect();
+                        if e.summary.chars().count() > budget {
+                            s.push('…');
+                        }
                         ui.label(RichText::new(s).size(10.5).color(DIM));
                     });
                 }
@@ -1181,15 +1247,18 @@ impl eframe::App for Studio {
                 egui::Frame::none()
                     .fill(BG)
                     .inner_margin(egui::Margin::symmetric(14.0, 8.0))
-                    .stroke(Stroke::new(1.0, LINE)),
+                    .stroke(Stroke::new(1.0_f32, LINE)),
             )
             .show(ctx, |ui| self.top_bar(ui, &p, undo));
 
-        egui::SidePanel::left("browser")
-            .exact_width(232.0)
-            .resizable(false)
-            .frame(egui::Frame::none().fill(PANEL).inner_margin(12.0))
-            .show(ctx, |ui| self.browser(ui, &p));
+        // the mixer takes the browser's space: strips need the width
+        if self.view != 1 {
+            egui::SidePanel::left("browser")
+                .exact_width(232.0)
+                .resizable(false)
+                .frame(egui::Frame::none().fill(PANEL).inner_margin(12.0))
+                .show(ctx, |ui| self.browser(ui, &p));
+        }
 
         egui::SidePanel::right("inspector")
             .exact_width(352.0)
@@ -1203,7 +1272,7 @@ impl eframe::App for Studio {
                 egui::Frame::none()
                     .fill(PANEL)
                     .inner_margin(12.0)
-                    .stroke(Stroke::new(1.0, LINE)),
+                    .stroke(Stroke::new(1.0_f32, LINE)),
             )
             .show(ctx, |ui| {
                 ui.columns(2, |cols| {
@@ -1232,32 +1301,47 @@ impl eframe::App for Studio {
                 self.arrangement(ui, &p);
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
+                    if let Some(v) = tabs(ui, &VIEWS, self.view) {
+                        self.view = v;
+                    }
+                    ui.add_space(10.0);
                     let name = p
                         .patterns
                         .get(self.pattern)
                         .map(|x| x.name.clone())
                         .unwrap_or_default();
-                    ui.label(
-                        RichText::new(format!("PATTERN  {name}"))
-                            .size(12.0)
-                            .strong(),
-                    );
-                    ui.label(
-                        RichText::new(format!(
-                            "{} tracks · {} {} · {:.0} BPM",
+                    let info = match self.view {
+                        1 => format!(
+                            "{} tracks · {} buses · {} sends",
+                            p.tracks.len(),
+                            p.buses.len(),
+                            p.tracks.iter().map(|t| t.sends.len()).sum::<usize>()
+                        ),
+                        2 => format!(
+                            "{} lanes · {:.0} beats · {:.0} BPM",
+                            p.automation.len(),
+                            p.song_beats(),
+                            p.bpm
+                        ),
+                        _ => format!(
+                            "pattern {name} · {} tracks · {} {} · {:.0} BPM",
                             p.tracks.len(),
                             p.key_root,
                             p.scale,
                             p.bpm
-                        ))
-                        .size(11.0)
-                        .color(DIM),
-                    );
+                        ),
+                    };
+                    ui.label(RichText::new(info).size(11.0).color(DIM));
                     if self.rendering.is_some() {
                         ui.spinner();
                     }
                 });
-                self.sequencer(ui, &p);
+                ui.add_space(6.0);
+                match self.view {
+                    1 => self.mixer(ui, &p),
+                    2 => self.automation_view(ui, &p),
+                    _ => self.sequencer(ui, &p),
+                }
             });
 
         // toast

@@ -31,6 +31,9 @@ enum Cmd {
         /// Save a PNG screenshot of the studio after N frames and exit (for docs/CI)
         #[arg(long, hide = true)]
         screenshot: Option<PathBuf>,
+        /// Start in a view: sequencer | mixer | automation
+        #[arg(long, hide = true)]
+        view: Option<String>,
     },
     /// Run the MCP server on stdio (add this to Claude Desktop, Cursor, etc.)
     Mcp {
@@ -107,6 +110,7 @@ fn main() -> Result<()> {
             project,
             listen,
             screenshot,
+            view,
         } => {
             let mut e = engine(&cli.workdir);
             if let Some(p) = &project {
@@ -116,8 +120,9 @@ fn main() -> Result<()> {
                     "generate_beat",
                     &json!({"style": "trap", "key": "A", "seed": 7, "name": "first beat"}),
                 )?;
+                demo_mix(&mut e);
             }
-            beatbox::gui::run(e, &listen, project, screenshot)?;
+            beatbox::gui::run(e, &listen, project, screenshot, view)?;
         }
         Cmd::Mcp { connect, project } => {
             let backend = match connect {
@@ -216,4 +221,75 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Dress the demo beat with a mix setup that shows off buses, sends and
+/// automation (all through tool calls, like an AI would do it).
+#[cfg(feature = "gui")]
+fn demo_mix(e: &mut beatbox::Engine) {
+    let names: Vec<String> = e.project.tracks.iter().map(|t| t.name.clone()).collect();
+    let has = |n: &str| names.iter().any(|x| x == n);
+    let drums: Vec<&str> = ["kick", "snare", "hat", "open_hat", "clap"]
+        .into_iter()
+        .filter(|n| has(n))
+        .collect();
+    let mut calls = vec![
+        (
+            "add_bus",
+            json!({"name": "drums", "preset": "drum", "volume_db": -5}),
+        ),
+        (
+            "add_bus",
+            json!({"name": "verb", "preset": "reverb", "volume_db": -2}),
+        ),
+        (
+            "add_bus",
+            json!({"name": "echo", "preset": "delay", "volume_db": -4}),
+        ),
+        ("route_track", json!({"track": drums, "bus": "drums"})),
+    ];
+    for (t, verb, echo) in [
+        ("chords", -10.0, -18.0),
+        ("lead", -12.0, -11.0),
+        ("snare", -16.0, -60.0),
+    ] {
+        if has(t) {
+            calls.push(("set_send", json!({"track": t, "bus": "verb", "db": verb})));
+            if echo > -60.0 {
+                calls.push(("set_send", json!({"track": t, "bus": "echo", "db": echo})));
+            }
+        }
+    }
+    for (n, a) in calls {
+        let _ = e.call_from(n, &a, "demo");
+    }
+    if has("chords") {
+        let idx = e
+            .project
+            .track_index("chords")
+            .map(|i| e.project.tracks[i].effects.len())
+            .unwrap_or(0);
+        let _ = e.call_from(
+            "add_effect",
+            &json!({"track": "chords", "type": "filter", "params": {"cutoff": 16000, "resonance": 0.25}}),
+            "demo",
+        );
+        let _ = e.call_from(
+            "generate_automation",
+            &json!({"track": "chords", "param": format!("fx.{idx}.cutoff"), "shape": "riser", "section": "break", "min": 300, "max": 16000}),
+            "demo",
+        );
+    }
+    let _ = e.call_from(
+        "generate_automation",
+        &json!({"track": "master", "param": "volume", "shape": "fade_in", "section": "0"}),
+        "demo",
+    );
+    if has("hat") {
+        let _ = e.call_from(
+            "generate_automation",
+            &json!({"track": "hat", "param": "pan", "shape": "lfo", "rate": "2 bars", "min": -0.35, "max": 0.35}),
+            "demo",
+        );
+    }
 }

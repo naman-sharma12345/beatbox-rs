@@ -10,6 +10,8 @@
 )]
 
 pub mod analysis;
+pub mod automation;
+pub mod diff;
 pub mod dsp;
 pub mod engine;
 pub mod fx;
@@ -23,5 +25,7 @@ pub mod samples;
 pub mod server;
 pub mod theory;
 pub mod tools;
+pub mod tools_studio;
+pub mod validate;
 
 pub use engine::Engine;

@@ -1,6 +1,7 @@
 //! The song model: tracks, patterns of notes, an arrangement, a master bus.
 //! Everything is plain serde data so a project is one JSON file.
 
+use crate::automation::AutomationLane;
 use crate::fx::{CompressorFx, Effect, LimiterFx};
 use crate::instruments::Instrument;
 use crate::samples::SampleInfo;
@@ -41,6 +42,66 @@ pub struct Track {
     pub solo: bool,
     #[serde(default)]
     pub effects: Vec<Effect>,
+    /// Bus this track's post-fader signal goes to (None = master).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    /// Aux sends to buses (e.g. a shared reverb return).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<Send>,
+}
+
+impl Track {
+    pub fn new(name: &str, instrument: Instrument) -> Self {
+        Track {
+            name: name.to_string(),
+            instrument,
+            volume_db: 0.0,
+            pan: 0.0,
+            mute: false,
+            solo: false,
+            effects: Vec::new(),
+            output: None,
+            sends: Vec::new(),
+        }
+    }
+}
+
+/// An aux send from a track to a bus.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Send {
+    pub bus: String,
+    /// Send level in dB (0 = unity).
+    pub db: f32,
+    /// Tap before the track fader (true) or after it (false, default).
+    #[serde(default)]
+    pub pre_fader: bool,
+}
+
+/// A mix bus: group (drum bus) or return (reverb/delay). Buses sum into the
+/// master after their own effect chain, fader and pan.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Bus {
+    pub name: String,
+    #[serde(default)]
+    pub effects: Vec<Effect>,
+    #[serde(default = "zero")]
+    pub volume_db: f32,
+    #[serde(default)]
+    pub pan: f32,
+    #[serde(default)]
+    pub mute: bool,
+}
+
+impl Bus {
+    pub fn new(name: &str) -> Self {
+        Bus {
+            name: name.to_string(),
+            effects: Vec::new(),
+            volume_db: 0.0,
+            pan: 0.0,
+            mute: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -105,6 +166,10 @@ pub struct Project {
     pub master_volume_db: f32,
     #[serde(default)]
     pub samples: Vec<SampleInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buses: Vec<Bus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automation: Vec<AutomationLane>,
 }
 
 impl Default for Project {
@@ -135,10 +200,13 @@ impl Project {
                 Effect::Limiter(LimiterFx {
                     ceiling_db: -1.0,
                     release_ms: 80.0,
+                    ..Default::default()
                 }),
             ],
             master_volume_db: 0.0,
             samples: Vec::new(),
+            buses: Vec::new(),
+            automation: Vec::new(),
         }
     }
 
@@ -212,6 +280,52 @@ impl Project {
                     .map(|i| self.patterns[i].steps() * s.repeats)
             })
             .sum()
+    }
+
+    pub fn song_beats(&self) -> f32 {
+        self.song_steps() as f32 / 4.0
+    }
+
+    pub fn bus_index(&self, key: &str) -> Result<usize> {
+        let k = key.trim().to_lowercase();
+        self.buses
+            .iter()
+            .position(|b| b.name.to_lowercase() == k)
+            .ok_or_else(|| {
+                anyhow!(
+                    "no bus '{key}'. Buses: [{}]",
+                    self.buses
+                        .iter()
+                        .map(|b| b.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+    }
+
+    /// Song-beat range of the arrangement section at `index` (0-based),
+    /// or of the first section that plays pattern `name`.
+    pub fn section_beats(&self, key: &str) -> Result<(f32, f32)> {
+        let secs = self.song_sections();
+        let mut start = 0.0f32;
+        let by_index = key.trim().parse::<usize>().ok();
+        for (i, s) in secs.iter().enumerate() {
+            let len = self
+                .pattern_index(&s.pattern)
+                .map(|pi| (self.patterns[pi].steps() * s.repeats.max(1)) as f32 / 4.0)
+                .unwrap_or(0.0);
+            if by_index == Some(i) || (by_index.is_none() && s.pattern.eq_ignore_ascii_case(key)) {
+                return Ok((start, start + len));
+            }
+            start += len;
+        }
+        Err(anyhow!(
+            "no section '{key}'. Arrangement: [{}] (use an index or a pattern name)",
+            secs.iter()
+                .map(|s| s.pattern.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
     }
 
     pub fn song_seconds(&self) -> f32 {

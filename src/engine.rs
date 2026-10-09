@@ -20,8 +20,19 @@ pub struct LogEntry {
     pub source: String,
 }
 
+/// A named version of the project (A/B variants).
+#[derive(Clone, Debug)]
+pub struct Snapshot {
+    pub project: Project,
+    pub note: String,
+    /// Engine revision when the snapshot was taken.
+    pub revision: u64,
+}
+
 pub struct Engine {
     pub project: Project,
+    /// Named versions for A/B comparison, in creation order.
+    pub snapshots: Vec<(String, Snapshot)>,
     pub bank: SampleBank,
     undo: Vec<Project>,
     redo: Vec<Project>,
@@ -38,6 +49,7 @@ impl Engine {
     pub fn new(workdir: PathBuf) -> Self {
         Engine {
             project: Project::default(),
+            snapshots: Vec::new(),
             bank: SampleBank::default(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -175,6 +187,40 @@ impl Engine {
         )?);
         self.cached_mix = Some((self.revision, m.clone()));
         Ok(m)
+    }
+
+    /// Look up a version by name: a snapshot or "current".
+    pub fn version(&self, name: &str) -> Result<Project> {
+        if name.eq_ignore_ascii_case("current") {
+            return Ok(self.project.clone());
+        }
+        self.snapshots
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, s)| s.project.clone())
+            .ok_or_else(|| {
+                anyhow!(
+                    "no snapshot '{name}'. Snapshots: [{}] (or 'current')",
+                    self.snapshots
+                        .iter()
+                        .map(|(n, _)| n.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+    }
+
+    /// Render any project version (not cached) with stems.
+    pub fn render_version(&mut self, p: &Project) -> Result<Mix> {
+        self.bank.sync(&p.samples);
+        render::render(
+            p,
+            &self.bank,
+            &RenderOptions {
+                keep_stems: true,
+                ..Default::default()
+            },
+        )
     }
 
     pub fn analyze(&mut self) -> Result<analysis::Report> {
