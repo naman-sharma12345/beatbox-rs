@@ -23,6 +23,7 @@ pub mod fx_extra;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod instruments;
+pub mod listen;
 pub mod mcp;
 pub mod media;
 pub mod midi_ops;
@@ -42,6 +43,7 @@ pub mod tools;
 pub mod tools_compose;
 pub mod tools_delivery;
 pub mod tools_ears;
+pub mod tools_listen;
 pub mod tools_midi;
 pub mod tools_mix;
 pub mod tools_parity;
