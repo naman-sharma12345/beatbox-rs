@@ -721,6 +721,33 @@ pub fn master(mix: &Mix, loud: &Loudness, t: &MasterTargets) -> Vec<Check> {
             .map(|t| (t.name.clone(), crate::dsp::db_to_gain(t.stats.peak_dbfs)))
             .collect()
     };
+    // the end of the master: no level jump after the fade, no hard cut
+    let tail = (crate::dsp::SR * 8.0) as usize;
+    let n = mix.left.len().min(mix.right.len());
+    let (tl, tr) = (
+        &mix.left[n.saturating_sub(tail)..n],
+        &mix.right[n.saturating_sub(tail)..n],
+    );
+    out.push(match crate::ears::end_level_jump(tl, tr, 8.0) {
+        Some((t, j)) => item(
+            "end_level_jump",
+            Status::Fail,
+            format!(
+                "after the fade-out the level jumps back up {j:.1} dB at {:.2} s",
+                (n.saturating_sub(tail)) as f32 / crate::dsp::SR + t
+            ),
+            Some("find the stray hit with render_preview/detect_artifacts near the end; trim the last section or automate volume to -inf through the tail"),
+        ),
+        None => item("end_level_jump", Status::Pass, "the ending stays down once it fades".into(), None),
+    });
+    if let Some(lv) = crate::ears::truncated_tail(tl, tr) {
+        out.push(item(
+            "truncated_tail",
+            Status::Warn,
+            format!("the master ends while still sounding (last 50 ms at {lv:.1} dBFS)"),
+            Some("render with a longer tail or fade_out the last bar"),
+        ));
+    }
     for (name, pk) in &peaks {
         if *pk < 1e-4 {
             out.push(item(

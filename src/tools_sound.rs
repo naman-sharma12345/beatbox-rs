@@ -495,7 +495,7 @@ pub fn design(desc: &str) -> Result<(Instrument, Vec<Effect>, Vec<String>)> {
 
 // ---------------- sample helpers ----------------
 
-fn sample_data(e: &mut Engine, name: &str) -> Result<(SampleInfo, Vec<f32>)> {
+pub(crate) fn sample_data(e: &mut Engine, name: &str) -> Result<(SampleInfo, Vec<f32>)> {
     let info = e
         .project
         .samples
@@ -544,7 +544,7 @@ fn save_new_sample(
     crate::tools::register_sample(e, info)
 }
 
-fn audio_for(e: &mut Engine, a: &Value) -> Result<(String, Vec<f32>, Vec<f32>)> {
+pub(crate) fn audio_for(e: &mut Engine, a: &Value) -> Result<(String, Vec<f32>, Vec<f32>)> {
     if let Some(n) = s_opt(a, "sample") {
         let (info, d) = sample_data(e, &n)?;
         return Ok((info.name, d.clone(), d));

@@ -150,7 +150,7 @@ fn main() -> Result<()> {
             }
             let a: Value = serde_json::from_str(args.as_deref().unwrap_or("{}"))
                 .context("args must be JSON")?;
-            let r = e.call(&tool, &a)?;
+            let r = beatbox::media::summarize_content(e.call(&tool, &a)?);
             print(&r);
             if let Some(p) = &project {
                 if tools::find(&tool).map(|t| t.mutates).unwrap_or(false) {

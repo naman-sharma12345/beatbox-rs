@@ -57,9 +57,11 @@ pub fn handle(backend: &mut Backend, msg: &Value) -> Option<Value> {
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
             Ok(match backend.call(name, &args) {
                 Ok(v) => {
+                    let (v, blocks) = crate::media::split_content(v);
                     let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                    let mut r =
-                        json!({ "content": [{ "type": "text", "text": text }], "isError": false });
+                    let mut content = vec![json!({ "type": "text", "text": text })];
+                    content.extend(blocks);
+                    let mut r = json!({ "content": content, "isError": false });
                     if v.is_object() {
                         r["structuredContent"] = v;
                     }

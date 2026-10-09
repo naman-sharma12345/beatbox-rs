@@ -514,10 +514,12 @@ name = "beatbox"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "cpal",
  "eframe",
  "image",
+ "png",
  "serde",
  "serde_json",
  "symphonia",

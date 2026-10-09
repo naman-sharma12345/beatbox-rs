@@ -468,6 +468,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_midi::tools());
     v.extend(crate::tools_sound::tools());
     v.extend(crate::tools_compose::tools());
+    v.extend(crate::tools_ears::tools());
     v
 }
 
@@ -1446,10 +1447,23 @@ fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "analyze_mix",
-            description: "Listen to the current mix: peak/RMS loudness, crest factor, spectral balance across sub/bass/low-mid/mid/presence/air, stereo correlation, per-track energy, a 0-100 mix score and concrete suggestions (which tool + params to fix each issue). Use after every big change.",
+            description: "Listen to the current mix (or a window: section / start_beat..end_beat / start_s..end_s): peak/RMS loudness, crest factor, spectral balance across sub/bass/low-mid/mid/presence/air, stereo correlation, per-track energy, a 0-100 mix score and concrete suggestions (which tool + params to fix each issue). Use after every big change.",
             mutates: false,
-            schema: || obj(json!({}), &[]),
-            run: |e, _| Ok(serde_json::to_value(e.analyze()?)?),
+            schema: || obj(crate::tools_ears::region_props(), &[]),
+            run: |e, a| {
+                let windowed = ["section", "start_beat", "end_beat", "start_s", "end_s"].iter().any(|k| a.get(*k).is_some());
+                if !windowed {
+                    return Ok(serde_json::to_value(e.analyze()?)?);
+                }
+                let m = e.mix()?;
+                let p = e.project.clone();
+                let (s0, s1, label) = crate::tools_ears::region(&p, a, m.left.len().min(m.right.len()))?;
+                let sub = crate::tools_ears::window_mix(&m, s0, s1);
+                let mut v = serde_json::to_value(analysis::analyze(&sub))?;
+                v["window"] = json!({"label": label, "start_s": s0 as f32 / crate::dsp::SR, "end_s": s1 as f32 / crate::dsp::SR});
+                v["top_tracks"] = json!(crate::ears::top_tracks(&m.track_info, s0, s1, 5));
+                Ok(v)
+            },
         },
     ]
 }
