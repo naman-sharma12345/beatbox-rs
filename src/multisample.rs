@@ -3,7 +3,7 @@
 //! CC0 instrument packs from VSCO 2 Community Edition (real piano, string
 //! sections, woodwinds, brass) that `install_instrument_pack` downloads.
 
-use crate::dsp::{lerp_read, SR};
+use crate::dsp::SR;
 use crate::samples::SampleBank;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -194,6 +194,8 @@ pub fn render_multisample(
         let att = (p.attack.max(0.0005) * SR).max(1.0);
         let rel_n = (p.release.max(0.005) * SR).max(1.0);
         let gate_n = (gate * SR) as usize;
+        // band-limited pitching (windowed sinc) instead of linear interpolation
+        let src = crate::resample::pitch_read(data, rate as f64, n);
         for (i, o) in out.iter_mut().enumerate().take(n) {
             let a = (i as f32 / att).min(1.0);
             let r = if p.one_shot || i < gate_n {
@@ -203,7 +205,7 @@ pub fn render_multisample(
                 (1.0 - x).max(0.0).powi(2)
             };
             let tail = ((n - i) as f32 / 64.0).min(1.0);
-            *o += lerp_read(data, i as f32 * rate) * a * r * tail * g;
+            *o += src[i] * a * r * tail * g;
         }
     }
     out

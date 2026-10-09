@@ -135,16 +135,12 @@ pub fn decode_stereo(path: &Path) -> Result<(Vec<f32>, Vec<f32>)> {
     ))
 }
 
-/// Linear resampler.
+/// Sample-rate conversion (Kaiser windowed sinc, see `resample.rs`).
 pub fn resample(input: &[f32], from: f32, to: f32) -> Vec<f32> {
     if (from - to).abs() < 0.5 {
         return input.to_vec();
     }
-    let ratio = from / to;
-    let n = (input.len() as f32 / ratio) as usize;
-    (0..n)
-        .map(|i| crate::dsp::lerp_read(input, i as f32 * ratio))
-        .collect()
+    crate::resample::resample(input, from.round() as u32, to.round() as u32)
 }
 
 fn sanitize(name: &str) -> String {
