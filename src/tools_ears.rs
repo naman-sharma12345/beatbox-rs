@@ -270,7 +270,13 @@ pub fn tools() -> Vec<Tool> {
                     max_events: u_or(a, "max_events", 20) as usize,
                     tail_s: f_opt(a, "tail_s").unwrap_or(6.0),
                 };
-                let (mut events, bed) = ears::detect_artifacts(&l[s0..s1], &r[s0..s1], &o);
+                // drum attacks are transients, not clicks: scan deeper, then mask them
+                let onsets = if is_mix || s_opt(a, "track").is_some() { ears::drum_onsets(&p) } else { Vec::new() };
+                let wide = ArtifactOptions { max_events: o.max_events * 8, ..o };
+                let (mut events, bed) = ears::detect_artifacts(&l[s0..s1], &r[s0..s1], &wide);
+                let masked = ears::mask_drum_clicks(&mut events, &onsets, s0);
+                let mut nclick = 0;
+                events.retain(|x| x.kind != "click" || { nclick += 1; nclick <= o.max_events });
                 for ev in events.iter_mut() {
                     ev.time_s += s0 as f32 / SR;
                     if let Some(x) = ev.end_s.as_mut() { *x += s0 as f32 / SR; }
@@ -281,7 +287,10 @@ pub fn tools() -> Vec<Tool> {
                     for t in names {
                         let m = render_track(e, &t)?;
                         let (b0, b1) = ears::clamp_range(m.left.len(), s0, s1);
-                        let (ev, bed) = ears::detect_artifacts(&m.left[b0..b1], &m.right[b0..b1], &o);
+                        let (mut ev, bed) = ears::detect_artifacts(&m.left[b0..b1], &m.right[b0..b1], &wide);
+                        ears::mask_drum_clicks(&mut ev, &onsets, b0);
+                        let mut nc = 0;
+                        ev.retain(|x| x.kind != "click" || { nc += 1; nc <= o.max_events });
                         let worst: Vec<_> = ev.into_iter().filter(|x| x.kind == "noise_bed" || x.kind == "click").collect();
                         if !worst.is_empty() {
                             culprits.push(json!({"track": t, "noise_bed": bed.detected.then_some(&bed), "events": worst}));
@@ -290,7 +299,7 @@ pub fn tools() -> Vec<Tool> {
                 }
                 let fails = events.iter().filter(|x| x.severity == "fail").count();
                 let warns = events.iter().filter(|x| x.severity == "warn").count();
-                Ok(json!({"source": name, "window": label, "clean": fails + warns == 0, "fail": fails, "warn": warns,
+                Ok(json!({"source": name, "window": label, "clean": fails + warns == 0, "fail": fails, "warn": warns, "drum_attack_transients_ignored": masked,
                     "events": events, "noise_bed": bed, "culprits": culprits}))
             },
         },

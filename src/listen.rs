@@ -788,7 +788,15 @@ pub fn ears_report(e: &mut Engine, focus_track: Option<&str>) -> Result<Value> {
     let m = e.mix()?;
     let report = analysis::analyze(&m);
     let sec = crate::ears::analyze_sections(&e.project, &m.left, &m.right, &m.track_info, 3);
-    let (arts, _) = crate::ears::detect_artifacts(&m.left, &m.right, &Default::default());
+    let (mut arts, _) = crate::ears::detect_artifacts(
+        &m.left,
+        &m.right,
+        &crate::ears::ArtifactOptions {
+            max_events: 160,
+            ..Default::default()
+        },
+    );
+    crate::ears::mask_drum_clicks(&mut arts, &crate::ears::drum_onsets(&e.project), 0);
     drop(m);
     let clicks = arts.iter().filter(|a| a.kind == "click").count();
     let (mask, mask_sec) = masking(e, None, 5).unwrap_or_default();

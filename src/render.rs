@@ -452,6 +452,50 @@ fn apply_fader(
     }
 }
 
+/// Fade applied where a voice is cut short (mono choke).
+pub const CHOKE_FADE_S: f32 = 0.005;
+/// Fade-out applied to the last samples of every voice so a buffer that
+/// ends above zero (a truncated tail) never steps to silence.
+pub const END_FADE: usize = 96;
+/// Fade-in on every voice (0.5 ms): kills the step of a sample/oscillator
+/// that starts away from zero without softening the transient audibly.
+pub const START_FADE: usize = 24;
+
+/// Mix one voice into `out` at `at` without discontinuities: a 0.5 ms fade-in, a fade-out over its last
+/// samples, and a raised-cosine choke when a mono voice is cut by the next
+/// note (`choke_after` samples after its start).
+pub fn add_declicked(out: &mut [f32], at: usize, buf: &[f32], choke_after: Option<usize>) {
+    if at >= out.len() || buf.is_empty() {
+        return;
+    }
+    let fade = (CHOKE_FADE_S * SR) as usize;
+    let mut n = buf.len().min(out.len() - at);
+    let mut choke_from = usize::MAX;
+    if let Some(c) = choke_after {
+        if c + fade < n {
+            n = c + fade;
+            choke_from = c;
+        }
+    }
+    let end_fade = END_FADE.min(n / 8).max(1);
+    let start_fade = START_FADE.min(n / 8);
+    for (j, (o, s)) in out[at..at + n].iter_mut().zip(buf.iter()).enumerate() {
+        let mut g = 1.0f32;
+        if j < start_fade {
+            g *= (j as f32 + 0.5) / start_fade as f32;
+        }
+        let left = n - j;
+        if left <= end_fade {
+            g *= (left as f32 - 0.5).max(0.0) / end_fade as f32;
+        }
+        if j >= choke_from {
+            let x = (j - choke_from) as f32 / fade as f32;
+            g *= 0.5 + 0.5 * (std::f32::consts::PI * x.min(1.0)).cos();
+        }
+        *o += *s * g;
+    }
+}
+
 pub fn render(p: &Project, bank: &SampleBank, opts: &RenderOptions) -> Result<Mix> {
     let (events, body_len) = schedule(p, opts);
     let total = body_len + (opts.tail.max(0.0) * SR) as usize;
@@ -505,6 +549,7 @@ pub fn render(p: &Project, bank: &SampleBank, opts: &RenderOptions) -> Result<Mi
         } else {
             Vec::new()
         };
+        let mono_voice = matches!(track.instrument, Instrument::Bass808(_));
         let mut cache: HashMap<(i32, u8, u32, Vec<i64>, i32), (Vec<f32>, Vec<f32>)> =
             HashMap::new();
         for (k, e) in events[ti].iter().enumerate() {
@@ -551,15 +596,19 @@ pub fn render(p: &Project, bank: &SampleBank, opts: &RenderOptions) -> Result<Mi
                 };
                 (a, b)
             });
-            let end = (e.start + buf.len()).min(total);
-            for (o, s) in mono[e.start..end].iter_mut().zip(buf.iter()) {
-                *o += *s;
-            }
+            // mono voices (808s) choke the previous note at the next onset
+            let choke_at = if mono_voice {
+                events[ti][k + 1..]
+                    .iter()
+                    .map(|x| x.start)
+                    .find(|&s| s > e.start)
+                    .map(|s| s - e.start)
+            } else {
+                None
+            };
+            add_declicked(&mut mono, e.start, buf, choke_at);
             if spread > 0.0 {
-                let end = (e.start + buf2.len()).min(total);
-                for (o, s) in mono2[e.start..end].iter_mut().zip(buf2.iter()) {
-                    *o += *s;
-                }
+                add_declicked(&mut mono2, e.start, buf2, choke_at);
             }
         }
         // pan (equal power), optionally automated
@@ -735,4 +784,52 @@ pub fn write_wav(path: &Path, l: &[f32], r: &[f32]) -> Result<()> {
     let mut f = std::fs::File::create(path)?;
     f.write_all(&out)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::{Note, Track};
+
+    #[test]
+    fn declick_fades_truncated_and_offset_voices() {
+        // a buffer that stops at full scale and starts at full scale
+        let buf = vec![0.8f32; 4000];
+        let mut out = vec![0.0f32; 10000];
+        add_declicked(&mut out, 1000, &buf, None);
+        let d: f32 = out
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(d < 0.05, "max step {d}");
+        assert!(crate::ears::clicks(&out, 10).is_empty());
+    }
+
+    #[test]
+    fn mono_808_chokes_without_clicks() {
+        let mut p = Project::new("c", 140.0);
+        let inst = crate::instruments::preset("808").unwrap();
+        p.tracks.push(Track::new("bass", inst));
+        // overlapping long 808s on different pitches: the old note must stop
+        // (mono) and the cut must be smooth
+        let notes = vec![
+            Note::new(0.0, 12.0, 36, 1.0),
+            Note::new(3.0, 12.0, 41, 1.0),
+            Note::new(7.0, 12.0, 43, 1.0),
+            Note::new(10.0, 6.0, 36, 1.0),
+        ];
+        p.patterns[0].clips.insert("bass".into(), notes);
+        p.master_effects.clear();
+        let bank = SampleBank::default();
+        let m = render(&p, &bank, &RenderOptions::default()).unwrap();
+        let c = crate::ears::clicks(&m.left, 50);
+        assert!(c.is_empty(), "clicks at {c:?}");
+        // after the choke point (step 3), the first note is gone: the signal is
+        // a single sine, so its peak stays below two summed voices
+        let step = p.step_secs();
+        let a = ((3.5 * step) * SR) as usize;
+        let b = ((6.5 * step) * SR) as usize;
+        let pk = m.left[a..b].iter().fold(0.0f32, |x, y| x.max(y.abs()));
+        assert!(pk < 1.2, "peak {pk}");
+    }
 }

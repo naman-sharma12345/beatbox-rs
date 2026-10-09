@@ -565,15 +565,22 @@ impl Effect {
                 let att_n = (p.attack_ms.max(0.1) * 0.001 * SR) as usize;
                 let mut ti = 0usize;
                 let mut last: Option<usize> = None;
+                // duck level when the current trigger arrived: a retrigger
+                // during the release ramps on from there (no jump back to 0)
+                let mut from = 0.0f32;
+                let mut prev = 0.0f32;
                 for i in 0..l.len() {
                     while ti < trig.len() && trig[ti] <= i {
+                        if last != Some(trig[ti]) {
+                            from = prev;
+                        }
                         last = Some(trig[ti]);
                         ti += 1;
                     }
                     if let Some(t0) = last {
                         let dt = i - t0;
                         let env = if dt < att_n {
-                            dt as f32 / att_n.max(1) as f32
+                            from + (1.0 - from) * dt as f32 / att_n.max(1) as f32
                         } else {
                             let x = (dt - att_n) as f32 / SR / rel_s;
                             if x >= 1.0 {
@@ -584,6 +591,7 @@ impl Effect {
                         };
                         // env is "how ducked": rises quickly to 1, then recovers
                         let duck = env;
+                        prev = duck;
                         let g = 1.0 - p.amount.clamp(0.0, 1.0) * duck;
                         l[i] *= g;
                         r[i] *= g;
@@ -832,17 +840,31 @@ fn limiter_pass(p: &LimiterFx, ceiling_db: f32, l: &mut [f32], r: &mut [f32]) {
             }
         })
         .collect();
-    // spread minima backwards over the lookahead window
-    let mut run = 1.0f32;
-    let mut countdown = 0usize;
+    // exact sliding minimum over the lookahead window ahead of each sample
+    let mut held = vec![1.0f32; n];
+    let mut dq: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
     for i in (0..n).rev() {
-        if need[i] < run || countdown == 0 {
-            run = need[i];
-            countdown = look;
-        } else {
-            countdown -= 1;
+        while dq.back().map(|&j| need[j] >= need[i]).unwrap_or(false) {
+            dq.pop_back();
         }
-        need[i] = need[i].min(run);
+        dq.push_back(i);
+        while dq.front().map(|&j| j > i + look).unwrap_or(false) {
+            dq.pop_front();
+        }
+        held[i] = need[dq[0]];
+    }
+    // box-average the held curve over the previous `look` samples: every
+    // sample in that box already covers the peak, so the average still
+    // reaches the required gain in time, but as a ramp instead of a step
+    // (a gain step on a loud 808 is an audible click)
+    let mut acc = 0.0f64;
+    for i in 0..n {
+        acc += held[i] as f64;
+        if i > look {
+            acc -= held[i - look - 1] as f64;
+        }
+        let cnt = (i.min(look) + 1) as f64;
+        need[i] = (acc / cnt) as f32;
     }
     let mut g = 1.0f32;
     for i in 0..n {
@@ -940,6 +962,27 @@ mod tests {
     }
 
     #[test]
+    fn limiter_gain_ramps_instead_of_stepping() {
+        // a quiet 60 Hz sine that jumps (at a zero crossing) to a level the
+        // limiter must pull down: the gain change may not be a click
+        let t = HashMap::new();
+        let w = 2.0 * PI * 60.0 / SR;
+        let mut l: Vec<f32> = (0..30000)
+            .map(|i| (i as f32 * w).sin() * if i < 7350 { 0.3 } else { 1.6 })
+            .collect();
+        assert!(crate::ears::clicks(&l, 5).is_empty());
+        let mut r = l.clone();
+        Effect::Limiter(LimiterFx {
+            ceiling_db: -1.0,
+            release_ms: 80.0,
+            ..Default::default()
+        })
+        .process(&mut l, &mut r, &ctx(&t));
+        let c = crate::ears::clicks(&l, 5);
+        assert!(c.is_empty(), "limiter clicks: {c:?}");
+    }
+
+    #[test]
     fn limiter_respects_ceiling() {
         let t = HashMap::new();
         let mut l: Vec<f32> = (0..10000).map(|i| (i as f32 * 0.05).sin() * 3.0).collect();
@@ -952,6 +995,26 @@ mod tests {
         .process(&mut l, &mut r, &ctx(&t));
         let c = db_to_gain(-1.0) + 1e-6;
         assert!(l.iter().all(|x| x.abs() <= c));
+    }
+
+    #[test]
+    fn sidechain_retrigger_is_continuous() {
+        // a second kick inside the release must not snap the gain back up
+        let t = HashMap::from([("kick".to_string(), vec![1000usize, 4000])]);
+        let mut l = vec![1.0f32; 20000];
+        let mut r = l.clone();
+        Effect::Sidechain(SidechainFx {
+            amount: 0.8,
+            release_ms: 300.0,
+            ..Default::default()
+        })
+        .process(&mut l, &mut r, &ctx(&t));
+        let jump = l
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(jump < 0.01, "gain jumps by {jump}");
+        assert!(l[4200] < 0.3);
     }
 
     #[test]

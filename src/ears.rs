@@ -635,6 +635,44 @@ impl Default for ArtifactOptions {
     }
 }
 
+/// Sample positions (in a whole-song render) where a percussive track
+/// (kick, snare, hats, perc) starts a hit. A sharp discontinuity right at a
+/// drum attack is the drum's own transient (a beater click), not a defect.
+pub fn drum_onsets(p: &Project) -> Vec<usize> {
+    let (events, _) = crate::render::schedule(p, &Default::default());
+    let mut out: Vec<usize> = Vec::new();
+    for (t, ev) in p.tracks.iter().zip(events.iter()) {
+        let role = crate::tools_mix::role_of(&t.name, &t.instrument);
+        if matches!(role, "kick" | "snare" | "hats" | "cymbal" | "perc") && !t.mute {
+            out.extend(ev.iter().map(|e| e.start));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Drop click events that sit on a drum attack (-6 ms .. +18 ms of an
+/// onset); `offset` is the window start in samples. Returns how many were
+/// dropped.
+pub fn mask_drum_clicks(arts: &mut Vec<Artifact>, onsets: &[usize], offset: usize) -> usize {
+    let before = arts.len();
+    // time_s is rounded to 10 ms, hence the margins
+    let (pre, post) = ((0.006 * SR) as i64, (0.018 * SR) as i64);
+    arts.retain(|a| {
+        if a.kind != "click" {
+            return true;
+        }
+        let at = (a.time_s * SR) as i64 + offset as i64;
+        let i = onsets.partition_point(|&o| (o as i64) < at - post);
+        !onsets[i..]
+            .iter()
+            .take_while(|&&o| (o as i64) <= at + pre)
+            .any(|_| true)
+    });
+    before - arts.len()
+}
+
 /// Run every detector on a stereo buffer.
 pub fn detect_artifacts(l: &[f32], r: &[f32], o: &ArtifactOptions) -> (Vec<Artifact>, NoiseBed) {
     let mut out = Vec::new();

@@ -245,6 +245,10 @@ pub struct Plan {
     pub seed: u64,
     /// The producer's reasoning, in order.
     pub thinking: Vec<String>,
+    /// Critic iterations: render id, scores, the ears' diff verdict against
+    /// the best render so far, and whether the revision was kept.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<Value>,
 }
 
 pub struct PlanArgs {
@@ -694,6 +698,7 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         flip_sample: a.flip_sample.clone(),
         seed: a.seed,
         thinking,
+        history: Vec::new(),
     })
 }
 
@@ -1340,6 +1345,22 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                     0.7 * mel,
                 )?
             };
+            let mut notes = notes;
+            if is_hook && harmony_style != "drone" {
+                // hook layering: double each chord's top voice an octave up
+                let mut tops: BTreeMap<i64, Note> = BTreeMap::new();
+                for n in &notes {
+                    let k = (n.start * 100.0) as i64;
+                    if tops.get(&k).map(|t| n.pitch > t.pitch).unwrap_or(true) {
+                        tops.insert(k, n.clone());
+                    }
+                }
+                for (_, mut t) in tops {
+                    t.pitch = (t.pitch + 12).min(108);
+                    t.vel *= 0.45;
+                    notes.push(t);
+                }
+            }
             pat.clips.insert(track_name("harmony"), notes);
         }
         let mut lead = Vec::new();
@@ -1489,8 +1510,59 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             )?;
         }
     }
-    if plan.knobs.sidechain > 0.0 && have(e, "bass") && have(e, "kick") {
-        e.call_from("add_effect", &json!({"track": "bass", "type": "sidechain", "params": {"source": "kick", "amount": plan.knobs.sidechain, "release_ms": 120.0}}), "producer")?;
+    if have(e, "bass") && have(e, "kick") {
+        // the 808/bass starts on the kick in most of these grooves: duck it
+        // for the kick's body so the two never stack in the sub (a floor
+        // even when the genre plays it dry; the critic can deepen it)
+        let follows = matches!(pb.bass.style.as_str(), "808_glide" | "follow_kick");
+        let amount = plan.knobs.sidechain.max(if follows { 0.55 } else { 0.4 });
+        let release = if follows { 140.0 } else { 110.0 };
+        e.call_from("add_effect", &json!({"track": "bass", "type": "sidechain", "params": {"source": "kick", "amount": amount, "release_ms": release}}), "producer")?;
+    }
+    // hook lift: melodic beds play filtered in verses and open up in hooks,
+    // with a one-bar sweep into each hook (the classic build)
+    let spans: Vec<(f32, f32, &PlanSection)> = {
+        let mut b = 0.0f32;
+        plan.sections
+            .iter()
+            .map(|s| {
+                let x = (b, b + s.bars as f32 * 4.0, s);
+                b += s.bars as f32 * 4.0;
+                x
+            })
+            .collect()
+    };
+    if plan.sections.iter().any(|s| s.kind == "hook") {
+        for t in ["chords", "counter", "texture"] {
+            if !have(e, t) {
+                continue;
+            }
+            let r = e.call_from(
+                "add_effect",
+                &json!({"track": t, "type": "filter", "params": {"mode": "lowpass", "cutoff": 18000.0, "resonance": 0.15}}),
+                "producer",
+            )?;
+            let idx = r["index"].as_u64().unwrap_or(0);
+            let mut pts: Vec<Value> = Vec::new();
+            for (k, (b0, b1, s)) in spans.iter().enumerate() {
+                let closed = 1400.0 + 4200.0 * s.energy.clamp(0.0, 1.0);
+                let v = if s.kind == "hook" { 18000.0 } else { closed };
+                pts.push(json!({"beat": b0, "value": v, "curve": "step"}));
+                let next_hook = spans
+                    .get(k + 1)
+                    .map(|x| x.2.kind == "hook")
+                    .unwrap_or(false);
+                if next_hook && s.kind != "hook" && b1 - b0 >= 8.0 {
+                    pts.push(json!({"beat": b1 - 4.0, "value": v, "curve": "smooth"}));
+                    pts.push(json!({"beat": b1 - 0.01, "value": 16000.0, "curve": "step"}));
+                }
+            }
+            e.call_from(
+                "add_automation",
+                &json!({"track": t, "param": format!("fx.{idx}.cutoff"), "points": pts}),
+                "producer",
+            )?;
+        }
     }
     if have(e, "harmony")
         && plan
@@ -1586,6 +1658,12 @@ pub struct Critique {
     pub reference: Option<f32>,
     pub findings: Vec<Finding>,
     pub measurements: Value,
+    /// ears_report render id of the critiqued render (feeds diff_renders).
+    #[serde(default)]
+    pub render_id: String,
+    /// ears_report's own technical / musical scores (kept separate).
+    #[serde(default)]
+    pub ears: Value,
 }
 
 fn spearman(a: &[f32], b: &[f32]) -> f32 {
@@ -1710,7 +1788,7 @@ pub fn critique(e: &mut Engine, plan: &Plan, reference: Option<&str>) -> Result<
         let msg = s.as_str().unwrap_or("").to_string();
         let low = msg.to_lowercase();
         let fix = if low.contains("sidechain") || low.contains("overlap") {
-            json!({"action": "low_end", "sidechain": (plan.knobs.sidechain + 0.2).min(0.7)})
+            json!({"action": "low_end", "sidechain": (plan.knobs.sidechain.max(0.55) + 0.15).min(0.85)})
         } else if let Some(t) = ["hat", "snare", "lead", "chords", "counter", "perc", "tabla"]
             .iter()
             .find(|t| {
@@ -1911,8 +1989,39 @@ pub fn critique(e: &mut Engine, plan: &Plan, reference: Option<&str>) -> Result<
             }
         }
     }
-    let tech = tech.clamp(0.0, 100.0);
-    let mus = mus.clamp(0.0, 100.0);
+    // --- the ears: ranked findings + masking, bound to a render id
+    let ears = crate::listen::ears_report(e, None)?;
+    let render_id = ears["render_id"].as_str().unwrap_or("").to_string();
+    let et = ears["scores"]["technical"].as_f64().unwrap_or(tech as f64) as f32;
+    let em = ears["scores"]["musical"].as_f64().unwrap_or(mus as f64) as f32;
+    for pm in ears["details"]["masking"]["pairs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter(|p| p["masking_db"].as_f64().unwrap_or(0.0) >= 4.0)
+        .take(2)
+    {
+        let masker = pm["masker"].as_str().unwrap_or("").to_string();
+        let maskee = pm["maskee"].as_str().unwrap_or("").to_string();
+        let db = pm["masking_db"].as_f64().unwrap_or(0.0) as f32;
+        let fix = match masker.as_str() {
+            "kick" | "bass" if maskee == "kick" || maskee == "bass" => {
+                json!({"action": "low_end", "sidechain": (plan.knobs.sidechain.max(0.55) + 0.15).min(0.85)})
+            }
+            "kick" | "snare" => json!({"action": "none"}),
+            m => json!({"action": "offset", "track": m, "db": -1.5}),
+        };
+        findings.push(Finding {
+            id: "masking".into(),
+            severity: (db / 14.0).min(0.7),
+            message: format!("'{masker}' masks '{maskee}' by {db:.1} dB"),
+            fix,
+        });
+    }
+    // blend: the producer's checks lead, the ears refine (both stay visible)
+    let tech = (0.7 * tech + 0.3 * et).clamp(0.0, 100.0);
+    let mus = (0.8 * mus + 0.2 * em).clamp(0.0, 100.0);
     let score = match refscore {
         Some(r) => 0.4 * tech + 0.4 * mus + 0.2 * r,
         None => 0.5 * tech + 0.5 * mus,
@@ -1933,44 +2042,69 @@ pub fn critique(e: &mut Engine, plan: &Plan, reference: Option<&str>) -> Result<
             "section_short_term_max_lufs": measured, "energy_rank_corr": (rho * 100.0).round() / 100.0,
             "detected_key": found, "lead_notes_per_bar": {"hook": dh, "verse": dv}, "seconds": secs,
         }),
+        render_id,
+        ears: json!({"technical": et, "musical": em, "top_findings": ears["top_findings"].as_array().map(|v| v.iter().take(4).map(|f| f["message"].clone()).collect::<Vec<_>>())}),
     })
 }
 
 /// Apply the critic's fixes to the plan. Returns what changed; an empty
 /// list means nothing actionable was left.
 pub fn revise(plan: &mut Plan, c: &Critique, max_fixes: usize) -> Vec<String> {
-    let mut done = Vec::new();
+    revise_skipping(plan, c, max_fixes, &Default::default())
+        .into_iter()
+        .map(|x| x.1)
+        .collect()
+}
+
+/// Key of a fix: action + track (what a rejected revision is remembered by).
+pub fn fix_key(f: &Finding) -> String {
+    format!(
+        "{}:{}",
+        f.fix["action"].as_str().unwrap_or("none"),
+        f.fix["track"].as_str().unwrap_or("")
+    )
+}
+
+/// `revise`, skipping fixes whose key is in `skip` (tried and rejected by
+/// the ears). Returns (fix key, description) per applied change.
+pub fn revise_skipping(
+    plan: &mut Plan,
+    c: &Critique,
+    max_fixes: usize,
+    skip: &std::collections::HashSet<String>,
+) -> Vec<(String, String)> {
+    let mut done: Vec<(String, String)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for f in &c.findings {
         if done.len() >= max_fixes {
             break;
         }
         let action = f.fix["action"].as_str().unwrap_or("none");
-        if action == "none"
-            || !seen.insert(action.to_string() + f.fix["track"].as_str().unwrap_or(""))
-        {
+        let key = fix_key(f);
+        if action == "none" || skip.contains(&key) || !seen.insert(key.clone()) {
             continue;
         }
+        let mut done_s: Vec<String> = Vec::new();
         let k = &mut plan.knobs;
         match action {
             "remaster" => {
                 if let Some(t) = f.fix["target_lufs"].as_f64() {
                     k.target_lufs = t as f32;
                 }
-                done.push(format!("{}: re-master at {:.1} LUFS", f.id, k.target_lufs));
+                done_s.push(format!("{}: re-master at {:.1} LUFS", f.id, k.target_lufs));
             }
             "low_end" => {
                 let s = f.fix["sidechain"].as_f64().unwrap_or(0.5) as f32;
                 if s > k.sidechain + 0.01 {
                     k.sidechain = s;
-                    done.push(format!(
+                    done_s.push(format!(
                         "{}: sidechain 808/bass to the kick at {s:.2}",
                         f.id
                     ));
                 } else {
                     let o = k.offsets.entry("bass".into()).or_insert(0.0);
                     *o -= 1.5;
-                    done.push(format!("{}: bass -1.5 dB", f.id));
+                    done_s.push(format!("{}: bass -1.5 dB", f.id));
                 }
             }
             "offset" => {
@@ -1978,7 +2112,7 @@ pub fn revise(plan: &mut Plan, c: &Critique, max_fixes: usize) -> Vec<String> {
                 let db = f.fix["db"].as_f64().unwrap_or(0.0) as f32;
                 let o = k.offsets.entry(t.clone()).or_insert(0.0);
                 *o = (*o + db).clamp(-8.0, 8.0);
-                done.push(format!("{}: {t} {db:+.1} dB vs genre target", f.id));
+                done_s.push(format!("{}: {t} {db:+.1} dB vs genre target", f.id));
             }
             "contrast" => {
                 let v = f.fix["verse_velocity"].as_f64().unwrap_or(0.85) as f32;
@@ -1998,7 +2132,7 @@ pub fn revise(plan: &mut Plan, c: &Critique, max_fixes: usize) -> Vec<String> {
                     }
                     let o = k.offsets.entry("counter".into()).or_insert(0.0);
                     *o = (*o + 1.0).min(4.0);
-                    done.push(format!(
+                    done_s.push(format!(
                         "{}: verse velocity {v:.2}, hooks get counter-melody + open hats",
                         f.id
                     ));
@@ -2006,7 +2140,7 @@ pub fn revise(plan: &mut Plan, c: &Critique, max_fixes: usize) -> Vec<String> {
             }
             "vary" => {
                 k.variation_seed += 1;
-                done.push(format!(
+                done_s.push(format!(
                     "{}: develop the motif differently (variation {})",
                     f.id, k.variation_seed
                 ));
@@ -2014,12 +2148,12 @@ pub fn revise(plan: &mut Plan, c: &Critique, max_fixes: usize) -> Vec<String> {
             "density" => {
                 let d = f.fix["lead_density"].as_f64().unwrap_or(0.5) as f32;
                 k.lead_density = d;
-                done.push(format!("{}: lead density {d:.2}", f.id));
+                done_s.push(format!("{}: lead density {d:.2}", f.id));
             }
             "tonic" => {
                 if !k.tonic_anchor {
                     k.tonic_anchor = true;
-                    done.push(format!(
+                    done_s.push(format!(
                         "{}: anchor the tonic (bass resolves home in the last section)",
                         f.id
                     ));
@@ -2027,12 +2161,15 @@ pub fn revise(plan: &mut Plan, c: &Critique, max_fixes: usize) -> Vec<String> {
             }
             "declick" if k.humanize > 0.0 => {
                 k.humanize = 0.0;
-                done.push(format!(
+                done_s.push(format!(
                     "{}: remove timing humanize (overlapping retriggers)",
                     f.id
                 ));
             }
             _ => {}
+        }
+        for m in done_s {
+            done.push((key.clone(), m));
         }
     }
     done
@@ -2064,39 +2201,76 @@ pub fn produce(e: &mut Engine, args: &PlanArgs, o: &ProduceOpts) -> Result<Value
             }
         }
     }
-    let mut log = Vec::new();
+    // critic loop: render -> critique (+ears) -> diff_renders against the
+    // best render so far -> keep the revision only if the ears agree it is
+    // better, otherwise roll back and try the next fix
+    let mut log: Vec<Value> = Vec::new();
     let mut best: Option<(f32, Project, Plan, Critique)> = None;
-    let mut last_score = -1.0f32;
-    let mut stale = 0;
+    let mut rejected: std::collections::HashSet<String> = Default::default();
+    let mut pending: Vec<String> = Vec::new();
+    let mut misses = 0;
     for it in 0..o.max_iterations.max(1) {
         let ti = std::time::Instant::now();
         apply_plan(e, &plan)?;
         let c = critique(e, &plan, o.reference.as_deref())?;
-        let entry = json!({
-            "iteration": it + 1, "score": c.score, "technical": c.technical, "musical": c.musical, "reference": c.reference,
+        let mut entry = json!({
+            "iteration": it + 1, "render_id": c.render_id, "score": c.score, "technical": c.technical, "musical": c.musical,
+            "ears": {"technical": c.ears["technical"], "musical": c.ears["musical"]}, "reference": c.reference,
             "top_findings": c.findings.iter().take(5).map(|f| f.message.clone()).collect::<Vec<_>>(),
-            "seconds": (ti.elapsed().as_secs_f32() * 10.0).round() / 10.0,
         });
-        let improved = c.score > last_score + 0.5;
-        if best.as_ref().map(|b| c.score > b.0).unwrap_or(true) {
+        let (accepted, verdict) = match &best {
+            None => (true, "baseline".to_string()),
+            Some(b) => {
+                let d = match (
+                    crate::listen::recall(&b.3.render_id),
+                    crate::listen::recall(&c.render_id),
+                ) {
+                    (Some(x), Some(y)) => crate::listen::diff(&x, &y),
+                    _ => json!({"verdict": "unknown"}),
+                };
+                let v = d["verdict"].as_str().unwrap_or("unknown").to_string();
+                entry["diff"] = json!({"vs": b.3.render_id, "verdict": v, "improvements": d["improvements"], "regressions": d["regressions"]});
+                let ok = match v.as_str() {
+                    "better" => c.score >= b.0 - 0.5,
+                    "worse" => false,
+                    _ => c.score > b.0 + 0.3,
+                };
+                (ok, v)
+            }
+        };
+        entry["accepted"] = json!(accepted);
+        entry["verdict"] = json!(verdict);
+        if accepted {
+            misses = 0;
             best = Some((c.score, e.project.clone(), plan.clone(), c.clone()));
+        } else {
+            misses += 1;
+            // roll back and never retry the fixes that made it worse
+            for k in pending.drain(..) {
+                rejected.insert(k);
+            }
+            if let Some(b) = &best {
+                plan = b.2.clone();
+            }
         }
-        stale = if improved { 0 } else { stale + 1 };
-        last_score = last_score.max(c.score);
-        let mut entry = entry;
-        if it + 1 < o.max_iterations && stale < 2 {
-            let changes = revise(&mut plan, &c, 3);
-            entry["revisions"] = json!(changes);
+        if it + 1 < o.max_iterations && misses < 2 {
+            let base = best.as_ref().map(|b| b.3.clone()).unwrap_or(c);
+            let changes = revise_skipping(&mut plan, &base, 2, &rejected);
+            pending = changes.iter().map(|x| x.0.clone()).collect();
+            entry["revisions"] = json!(changes.iter().map(|x| x.1.clone()).collect::<Vec<_>>());
+            entry["seconds"] = json!((ti.elapsed().as_secs_f32() * 10.0).round() / 10.0);
             log.push(entry);
             if changes.is_empty() {
                 break;
             }
         } else {
+            entry["seconds"] = json!((ti.elapsed().as_secs_f32() * 10.0).round() / 10.0);
             log.push(entry);
             break;
         }
     }
-    let (score, proj, plan, crit) = best.ok_or_else(|| anyhow!("no iteration ran"))?;
+    let (score, proj, mut plan, crit) = best.ok_or_else(|| anyhow!("no iteration ran"))?;
+    plan.history = log.clone();
     e.replace_project(proj);
     e.revision += 1;
     // deliver
@@ -2322,6 +2496,8 @@ mod tests {
             musical: 50.0,
             reference: None,
             measurements: json!({}),
+            render_id: String::new(),
+            ears: json!({}),
             findings: vec![
                 Finding {
                     id: "hook_lift".into(),
@@ -2370,5 +2546,39 @@ mod tests {
         assert!(!r["iterations"].as_array().unwrap().is_empty());
         assert!(e.project.tracks.len() >= 5);
         assert!(r["measurements"]["integrated_lufs"].as_f64().unwrap() > -30.0);
+        // the critic loop is recorded in the plan: render ids, verdicts, kept or not
+        let h = r["plan"]["history"].as_array().unwrap();
+        assert_eq!(h.len(), r["iterations"].as_array().unwrap().len());
+        assert_eq!(h[0]["verdict"], "baseline");
+        assert!(h[0]["render_id"].as_str().unwrap().starts_with('r'));
+        assert!(h.iter().all(|x| x["accepted"].is_boolean()));
+        if h.len() > 1 {
+            assert!(h[1]["diff"]["verdict"].is_string());
+        }
+    }
+
+    #[test]
+    fn rejected_fixes_are_not_retried() {
+        let mut plan = plan_track(&args("trap", Some("trap"), 1)).unwrap();
+        let f = Finding {
+            id: "mix".into(),
+            severity: 0.3,
+            message: "z".into(),
+            fix: json!({"action": "offset", "track": "hat", "db": 2.0}),
+        };
+        let c = Critique {
+            score: 60.0,
+            technical: 70.0,
+            musical: 50.0,
+            reference: None,
+            measurements: json!({}),
+            render_id: String::new(),
+            ears: json!({}),
+            findings: vec![f.clone()],
+        };
+        let skip: std::collections::HashSet<String> = [fix_key(&f)].into_iter().collect();
+        assert!(revise_skipping(&mut plan, &c, 3, &skip).is_empty());
+        let done = revise_skipping(&mut plan, &c, 3, &Default::default());
+        assert_eq!(done[0].0, "offset:hat");
     }
 }
