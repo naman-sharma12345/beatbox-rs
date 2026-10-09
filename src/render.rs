@@ -452,6 +452,39 @@ fn apply_fader(
     }
 }
 
+/// Bus processing order: a bus is processed after every bus that feeds
+/// it. Cycles (rejected by route_bus) fall back to declaration order.
+pub fn bus_order(p: &Project) -> Vec<usize> {
+    let n = p.buses.len();
+    let out_of = |i: usize| {
+        p.buses[i]
+            .output
+            .as_deref()
+            .and_then(|o| p.bus_index(o).ok())
+    };
+    let mut indeg = vec![0usize; n];
+    for i in 0..n {
+        if let Some(d) = out_of(i) {
+            if d != i {
+                indeg[d] += 1;
+            }
+        }
+    }
+    let mut order = Vec::with_capacity(n);
+    let mut done = vec![false; n];
+    while let Some(i) = (0..n).find(|&i| !done[i] && indeg[i] == 0) {
+        done[i] = true;
+        order.push(i);
+        if let Some(d) = out_of(i) {
+            if d != i {
+                indeg[d] -= 1;
+            }
+        }
+    }
+    order.extend((0..n).filter(|&i| !done[i]));
+    order
+}
+
 /// Fade applied where a voice is cut short (mono choke).
 pub const CHOKE_FADE_S: f32 = 0.005;
 /// Fade-out applied to the last samples of every voice so a buffer that
@@ -691,16 +724,34 @@ pub fn render(p: &Project, bank: &SampleBank, opts: &RenderOptions) -> Result<Mi
         }
     }
 
-    // buses: own chain + fader + balance, then into the master
+    // buses: own chain + fader + balance, then into their output (another
+    // bus = mixer insert routing, or the master), feeders before receivers
     let mut bus_stems = Vec::new();
-    for (bus, (mut l, mut r)) in p.buses.iter().zip(bus_in) {
+    let mut bus_in: Vec<Option<(Vec<f32>, Vec<f32>)>> = bus_in.into_iter().map(Some).collect();
+    for bi in bus_order(p) {
+        let bus = &p.buses[bi];
+        let Some((mut l, mut r)) = bus_in[bi].take() else {
+            continue;
+        };
         let lanes = owner_lanes(p, &bus.name);
         process_chain(&bus.effects, &lanes, &mut l, &mut r, &ctx, &tl);
         apply_fader(&mut l, &mut r, bus.volume_db, &lanes, &tl, Some(bus.pan));
         if !bus.mute {
+            let dest = bus
+                .output
+                .as_deref()
+                .and_then(|o| p.bus_index(o).ok())
+                .filter(|d| bus_in[*d].is_some());
+            let (dl, dr) = match dest {
+                Some(d) => {
+                    let (a, b) = bus_in[d].as_mut().unwrap();
+                    (a, b)
+                }
+                None => (&mut ml, &mut mr),
+            };
             for i in 0..total {
-                ml[i] += l[i];
-                mr[i] += r[i];
+                dl[i] += l[i];
+                dr[i] += r[i];
             }
         }
         if opts.keep_stems {

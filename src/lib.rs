@@ -45,6 +45,7 @@ pub mod tools_compose;
 pub mod tools_delivery;
 pub mod tools_ears;
 pub mod tools_ears_pro;
+pub mod tools_fl;
 pub mod tools_listen;
 pub mod tools_midi;
 pub mod tools_mix;

@@ -193,7 +193,9 @@ pub fn punch_tool(e: &mut Engine, a: &Value) -> Result<Value> {
             tracks.push(ep::punch_json(&t, &ep::punch_at(&mm.left, &mm.right, &on)));
         }
         let drum_bus = e.project.buses.iter().any(|b| b.name == "drums");
-        let loss = pre.as_ref().map(|p| r1(p.transient_to_sustain_db - pm.transient_to_sustain_db));
+        let loss = pre
+            .as_ref()
+            .map(|p| r1(p.transient_to_sustain_db - pm.transient_to_sustain_db));
         Ok(json!({
             "master": ep::punch_json("kick+snare", &pm),
             "kick": ep::punch_json("kick", &pk),
@@ -289,8 +291,8 @@ pub fn vocal_pocket_tool(e: &mut Engine, a: &Value) -> Result<Value> {
                         .map(|(x, y)| 0.5 * (x + y))
                         .collect();
                     let z = ep::band(&mono, 1000.0, 4000.0);
-                    let en: f64 = z.iter().map(|v| (*v as f64).powi(2)).sum::<f64>()
-                        / z.len().max(1) as f64;
+                    let en: f64 =
+                        z.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / z.len().max(1) as f64;
                     competing.push((t.clone(), (10.0 * en.max(1e-12).log10()) as f32));
                 }
                 competing.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap());
@@ -340,8 +342,17 @@ pub fn reference_match_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         spans
             .iter()
             .filter(|s| ears::role(&s.pattern) == kind)
-            .max_by(|x, y| (x.end_s - x.start_s).partial_cmp(&(y.end_s - y.start_s)).unwrap())
-            .map(|s| (((s.start_s * SR) as usize).min(n), ((s.end_s * SR) as usize).min(n)))
+            .max_by(|x, y| {
+                (x.end_s - x.start_s)
+                    .partial_cmp(&(y.end_s - y.start_s))
+                    .unwrap()
+            })
+            .map(|s| {
+                (
+                    ((s.start_s * SR) as usize).min(n),
+                    ((s.end_s * SR) as usize).min(n),
+                )
+            })
     };
     let hook = pick("hook");
     let verse = pick("verse");
@@ -408,7 +419,10 @@ pub fn reference_match_tool(e: &mut Engine, a: &Value) -> Result<Value> {
                 penalty += (-dp - 2.0) * 2.0;
                 actions.push(((-dp) / 6.0, json!({"why": format!("{kind}: PSR {pm:.1} dB vs reference {pr:.1}: the master is squashed harder"), "tool": "master_assistant", "args": {"target_lufs": r1(lr.integrated_lufs.max(lm.integrated_lufs - 1.0))}})));
             }
-            if punch_r.hits > 2 && punch_m.hits > 2 && punch_m.punch_index_db + 2.0 < punch_r.punch_index_db {
+            if punch_r.hits > 2
+                && punch_m.hits > 2
+                && punch_m.punch_index_db + 2.0 < punch_r.punch_index_db
+            {
                 penalty += 5.0;
                 actions.push((0.5, json!({"why": format!("{kind}: drums punch {:.1} dB vs reference {:.1}", punch_m.punch_index_db, punch_r.punch_index_db), "tool": "add_effect", "args": {"track": "kick", "type": "transient", "params": {"attack": 0.4}}})));
             }
@@ -542,14 +556,18 @@ mod tests {
         let p = e.call("punch", &json!({"tracks": ["kick"]})).unwrap();
         assert!(p["master"]["hits"].as_u64().unwrap() > 4, "{p}");
         assert!(p["limiter_transient_loss_db"].as_f64().is_some());
-        let v = e.call("vocal_pocket", &json!({"per_track": false})).unwrap();
+        let v = e
+            .call("vocal_pocket", &json!({"per_track": false}))
+            .unwrap();
         let sec = v["sections"].as_array().unwrap();
         assert!(!sec.is_empty());
         let fs = sec[0]["free_space_score"].as_f64().unwrap();
         assert!((0.0..=100.0).contains(&fs));
         // a snapshot as the reference: the same project matches itself
         e.call("snapshot", &json!({"name": "a"})).unwrap();
-        let r = e.call("reference_match", &json!({"reference": "a"})).unwrap();
+        let r = e
+            .call("reference_match", &json!({"reference": "a"}))
+            .unwrap();
         assert!(r["match_score"].as_f64().unwrap() >= 90.0, "{r}");
     }
 }

@@ -382,6 +382,7 @@ fn routing_json(p: &Project) -> Value {
         })).collect::<Vec<_>>(),
         "buses": p.buses.iter().map(|b| json!({
             "bus": b.name,
+            "output": b.output.clone().unwrap_or_else(|| "master".into()),
             "volume_db": b.volume_db,
             "pan": b.pan,
             "mute": b.mute,

@@ -542,6 +542,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_producer::tools());
     v.extend(crate::tools_listen::tools());
     v.extend(crate::tools_ears_pro::tools());
+    v.extend(crate::tools_fl::tools());
     v
 }
 

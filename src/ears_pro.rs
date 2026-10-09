@@ -44,12 +44,26 @@ impl Biquad {
     pub fn lowpass(f: f32) -> Self {
         let w = 2.0 * PI * f.min(SR * 0.45) / SR;
         let (c, al) = (w.cos(), w.sin() / (2.0 * std::f32::consts::FRAC_1_SQRT_2));
-        Self::new((1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0, 1.0 + al, -2.0 * c, 1.0 - al)
+        Self::new(
+            (1.0 - c) / 2.0,
+            1.0 - c,
+            (1.0 - c) / 2.0,
+            1.0 + al,
+            -2.0 * c,
+            1.0 - al,
+        )
     }
     pub fn highpass(f: f32) -> Self {
         let w = 2.0 * PI * f.max(5.0) / SR;
         let (c, al) = (w.cos(), w.sin() / (2.0 * std::f32::consts::FRAC_1_SQRT_2));
-        Self::new((1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0, 1.0 + al, -2.0 * c, 1.0 - al)
+        Self::new(
+            (1.0 + c) / 2.0,
+            -(1.0 + c),
+            (1.0 + c) / 2.0,
+            1.0 + al,
+            -2.0 * c,
+            1.0 - al,
+        )
     }
     #[inline]
     pub fn run(&mut self, x: f32) -> f32 {
@@ -252,10 +266,11 @@ pub fn punch_at(l: &[f32], r: &[f32], onsets: &[usize]) -> Punch {
         }
         // attack: 10% -> 90% of the peak amplitude in the first 30 ms
         let w = &env[k..k + 30];
-        let (pi, pk) = w
-            .iter()
-            .enumerate()
-            .fold((0, -200.0f32), |a, (i, v)| if *v > a.1 { (i, *v) } else { a });
+        let (pi, pk) =
+            w.iter().enumerate().fold(
+                (0, -200.0f32),
+                |a, (i, v)| if *v > a.1 { (i, *v) } else { a },
+            );
         let lin: Vec<f32> = w.iter().map(|d| 10f32.powf(d / 20.0)).collect();
         let p = 10f32.powf(pk / 20.0);
         let t10 = lin.iter().position(|v| *v >= 0.1 * p).unwrap_or(0);
@@ -272,7 +287,10 @@ pub fn punch_at(l: &[f32], r: &[f32], onsets: &[usize]) -> Punch {
         let s0 = o;
         let s1 = (o + (0.05 * SR) as usize).min(n);
         let pkv = mono[s0..s1].iter().fold(0.0f32, |a, v| a.max(v.abs()));
-        let rms = (mono[s0..s1].iter().map(|v| (*v as f64).powi(2)).sum::<f64>()
+        let rms = (mono[s0..s1]
+            .iter()
+            .map(|v| (*v as f64).powi(2))
+            .sum::<f64>()
             / (s1 - s0).max(1) as f64)
             .sqrt();
         crest.push(gain_to_db(pkv) - gain_to_db(rms as f32));
@@ -353,7 +371,9 @@ pub fn proxy_vocal(n: usize, bpm: f32, seed: u64) -> Vec<f32> {
     let sib = band(&raw, 4500.0, 7500.0);
     let step = (60.0 / bpm / 4.0 * SR) as usize;
     // a flow: syllables on most 16ths, breaths every bar end
-    let pattern = [1.0, 0.7, 1.0, 0.0, 1.0, 0.8, 0.9, 0.6, 1.0, 0.7, 1.0, 0.0, 1.0, 0.9, 0.0, 0.0];
+    let pattern = [
+        1.0, 0.7, 1.0, 0.0, 1.0, 0.8, 0.9, 0.6, 1.0, 0.7, 1.0, 0.0, 1.0, 0.9, 0.0, 0.0,
+    ];
     let mut out = vec![0.0f32; n];
     for i in 0..n {
         let s = i / step.max(1);
@@ -412,19 +432,18 @@ pub struct PocketSection {
     pub free_space: f32,
 }
 
-pub fn vocal_pocket_section(
-    name: &str,
-    bl: &[f32],
-    br: &[f32],
-    vocal: &[f32],
-) -> PocketSection {
+pub fn vocal_pocket_section(name: &str, bl: &[f32], br: &[f32], vocal: &[f32]) -> PocketSection {
     let mono: Vec<f32> = bl.iter().zip(br).map(|(a, b)| 0.5 * (a + b)).collect();
-    let total: f64 = mono.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / mono.len().max(1) as f64;
+    let total: f64 =
+        mono.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / mono.len().max(1) as f64;
     let mut occ = Vec::new();
     let mut masked = Vec::new();
     let mut intel = 0.5;
     for (z, lo, hi) in ZONES {
-        occ.push((z.to_string(), r1(db(zone_energy(&mono, lo, hi) / total.max(1e-12)))));
+        occ.push((
+            z.to_string(),
+            r1(db(zone_energy(&mono, lo, hi) / total.max(1e-12))),
+        ));
         let (m, _) = zone_masking(&mono, vocal, lo, hi);
         if z == "intelligibility" {
             intel = m;
@@ -471,7 +490,12 @@ pub fn ref_windows(l: &[f32], r: &[f32], len_s: f32) -> Vec<(String, usize, usiz
     sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     let hook = sorted.last().unwrap().0;
     let verse = sorted[sorted.len() / 2].0;
-    let to = |s: usize| ((s as f32 * SR) as usize, (((s + w) as f32 + 2.0) * SR) as usize);
+    let to = |s: usize| {
+        (
+            (s as f32 * SR) as usize,
+            (((s + w) as f32 + 2.0) * SR) as usize,
+        )
+    };
     let (h0, h1) = to(hook);
     let (v0, v1) = to(verse);
     vec![
@@ -493,7 +517,10 @@ pub const TONAL: [(&str, f32, f32); 6] = [
 
 pub fn tonal_shape(l: &[f32], r: &[f32]) -> Vec<f32> {
     let mono: Vec<f32> = l.iter().zip(r).map(|(a, b)| 0.5 * (a + b)).collect();
-    let es: Vec<f64> = TONAL.iter().map(|(_, lo, hi)| zone_energy(&mono, *lo, *hi)).collect();
+    let es: Vec<f64> = TONAL
+        .iter()
+        .map(|(_, lo, hi)| zone_energy(&mono, *lo, *hi))
+        .collect();
     let tot: f64 = es.iter().sum::<f64>().max(1e-12);
     es.iter().map(|e| db(e / tot)).collect()
 }
@@ -532,7 +559,9 @@ mod tests {
     use super::*;
 
     fn sine(f: f32, n: usize, a: f32) -> Vec<f32> {
-        (0..n).map(|i| (2.0 * PI * f * i as f32 / SR).sin() * a).collect()
+        (0..n)
+            .map(|i| (2.0 * PI * f * i as f32 / SR).sin() * a)
+            .collect()
     }
 
     #[test]
@@ -600,10 +629,19 @@ mod tests {
         let mut rng = Rng::new(5);
         let busy_noise: Vec<f32> = (0..n).map(|_| rng.bipolar()).collect();
         let busy_mid = band(&busy_noise, 1000.0, 4000.0);
-        let busy: Vec<f32> = empty.iter().zip(&busy_mid).map(|(a, b)| a + 2.0 * b).collect();
+        let busy: Vec<f32> = empty
+            .iter()
+            .zip(&busy_mid)
+            .map(|(a, b)| a + 2.0 * b)
+            .collect();
         let a = vocal_pocket_section("a", &empty, &empty, &v);
         let b = vocal_pocket_section("b", &busy, &busy, &v);
-        assert!(a.free_space > b.free_space + 20.0, "{} vs {}", a.free_space, b.free_space);
+        assert!(
+            a.free_space > b.free_space + 20.0,
+            "{} vs {}",
+            a.free_space,
+            b.free_space
+        );
     }
 
     #[test]

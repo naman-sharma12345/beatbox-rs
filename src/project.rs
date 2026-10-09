@@ -140,6 +140,10 @@ pub struct Bus {
     pub pan: f32,
     #[serde(default)]
     pub mute: bool,
+    /// Where this bus goes: another bus (mixer insert routing, e.g. a
+    /// "drums" insert into a "beat" group) or the master (None).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
 impl Bus {
@@ -150,8 +154,38 @@ impl Bus {
             volume_db: 0.0,
             pan: 0.0,
             mute: false,
+            output: None,
         }
     }
+}
+
+/// A pattern placed on the playlist (FL-style pattern clip): `pattern`
+/// plays from `start_bar` for `bars` bars (looping the pattern when the
+/// clip is longer), optionally only some of its tracks.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PlaylistClip {
+    pub pattern: String,
+    pub start_bar: u32,
+    pub bars: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracks: Vec<String>,
+    /// Playlist lane, for display only (clips on any lane all play).
+    #[serde(default)]
+    pub lane: u32,
+}
+
+/// A reusable automation clip: a shape for one parameter, in beats from
+/// the clip start, that can be placed anywhere in the song.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AutomationClip {
+    pub name: String,
+    pub target: String,
+    pub param: String,
+    pub length_beats: f32,
+    pub points: Vec<crate::automation::AutoPoint>,
+    /// Song beats where the clip is placed.
+    #[serde(default)]
+    pub placements: Vec<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -223,6 +257,13 @@ pub struct Project {
     /// Macro knobs: one 0..1 value driving several parameters.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub macros: Vec<Macro>,
+    /// FL-style playlist of pattern clips. When non-empty it is compiled
+    /// into the arrangement (generated "pl:" patterns) by the playlist tools.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub playlist: Vec<PlaylistClip>,
+    /// Reusable automation clips (compiled into automation lanes).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automation_clips: Vec<AutomationClip>,
 }
 
 /// One parameter a macro drives, mapped from the macro's 0..1 value.
@@ -284,6 +325,8 @@ impl Project {
             buses: Vec::new(),
             automation: Vec::new(),
             macros: Vec::new(),
+            playlist: Vec::new(),
+            automation_clips: Vec::new(),
         }
     }
 
