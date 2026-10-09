@@ -378,8 +378,8 @@ pub fn make_motif(rng: &mut Rng, density: f32, scale_len: usize) -> Vec<MotifNot
         }
     }
     onsets.sort();
-    let stable = [0, 2, 4];
-    let mut deg = stable[rng.below(3)];
+    let stable: [i32; 3] = [0, 2, 4];
+    let mut deg: i32 = stable[rng.below(3)];
     let leap_at = 1 + rng.below(n.max(2) - 1);
     let mut out = Vec::new();
     for (i, &t) in onsets.iter().enumerate() {
@@ -930,7 +930,7 @@ fn counter_notes(cx: &Ctx, sec: &PlanSection, octave: i32, lead: &[Note]) -> Vec
         let t = half as f32 * 8.0;
         let ch = chord_at(chords, bpc, t);
         // pick the chord tone (3rd/5th/7th preferred) nearest to the previous note
-        let base = ((octave + 1) * 12) as i32;
+        let base = (octave + 1) * 12;
         let cands: Vec<u8> = ch
             .intervals
             .iter()
@@ -973,7 +973,7 @@ fn bass_notes(
     let end = (sec.bars * STEPS_PER_BAR) as f32;
     let root_of = |t: f32| -> u8 {
         let c = chord_at(chords, bpc, t);
-        (((octave + 1) * 12) as i32 + c.root_pc as i32).clamp(0, 127) as u8
+        ((octave + 1) * 12 + c.root_pc as i32).clamp(0, 127) as u8
     };
     let mut out = Vec::new();
     match style {
@@ -1979,14 +1979,12 @@ pub fn revise(plan: &mut Plan, c: &Critique, max_fixes: usize) -> Vec<String> {
                     ));
                 }
             }
-            "declick" => {
-                if k.humanize > 0.0 {
-                    k.humanize = 0.0;
-                    done.push(format!(
-                        "{}: remove timing humanize (overlapping retriggers)",
-                        f.id
-                    ));
-                }
+            "declick" if k.humanize > 0.0 => {
+                k.humanize = 0.0;
+                done.push(format!(
+                    "{}: remove timing humanize (overlapping retriggers)",
+                    f.id
+                ));
             }
             _ => {}
         }
@@ -2186,7 +2184,7 @@ mod tests {
     }
 
     #[test]
-    fn genre_guessing_and_bII_reference() {
+    fn genre_guessing_and_flat_two_reference() {
         assert_eq!(
             guess_genre("dark desi hip-hop with sitar and tabla")
                 .unwrap()

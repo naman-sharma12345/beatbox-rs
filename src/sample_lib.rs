@@ -713,7 +713,7 @@ pub fn vocal_chop(e: &mut Engine, o: &ChopOpts) -> Result<Value> {
             }
             slices.push(sheet.len() as f32 / SR);
             sheet.extend_from_slice(&x);
-            sheet.extend(std::iter::repeat(0.0).take((0.02 * SR) as usize));
+            sheet.extend(std::iter::repeat_n(0.0, (0.02 * SR) as usize));
         }
     }
     let name = write_sample(
@@ -827,7 +827,7 @@ mod tests {
             ent.pitch_hz
         );
         std::fs::remove_file(index_path(&e)).ok();
-        index_dirs(&e, &[dir.clone()], 100).unwrap();
+        index_dirs(&e, std::slice::from_ref(&dir), 100).unwrap();
         let r = find(
             &e,
             &Query {
