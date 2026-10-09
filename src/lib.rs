@@ -5,6 +5,7 @@
 
 #![allow(
     clippy::manual_is_multiple_of,
+    clippy::needless_range_loop,
     clippy::too_many_arguments,
     clippy::type_complexity
 )]

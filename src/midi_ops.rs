@@ -598,7 +598,7 @@ pub fn key_from_chroma(chroma: &[f32; 12]) -> Vec<(u8, &'static str, f32)> {
 pub fn chroma_of(notes: &[Note]) -> [f32; 12] {
     let mut c = [0.0f32; 12];
     for n in notes {
-        c[(n.pitch % 12) as usize] += n.len.max(0.25).min(16.0) * (0.3 + n.vel);
+        c[(n.pitch % 12) as usize] += n.len.clamp(0.25, 16.0) * (0.3 + n.vel);
     }
     c
 }

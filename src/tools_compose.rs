@@ -120,7 +120,7 @@ pub fn tools() -> Vec<Tool> {
                                     5 if ch.intervals.len() > 2 => (root + ch.intervals[2] as i32).clamp(0, 127) as u8,
                                     7 if ch.intervals.len() > 3 => (root + ch.intervals[3] as i32).clamp(0, 127) as u8,
                                     8 => (root + 12).clamp(0, 127) as u8,
-                                    d => mo::diatonic_shift(mo::snap_to_scale(rootp, key, &scale), if d >= 1 { d - 1 } else { d - 1 }, key, &scale),
+                                    d => mo::diatonic_shift(mo::snap_to_scale(rootp, key, &scale), d - 1, key, &scale),
                                 };
                                 let first = off == 0.0 && *s == hits[0].0;
                                 let v = (vel * vf + if *vf >= 1.0 || first { acc } else { 0.0 }).clamp(0.05, 1.0);
