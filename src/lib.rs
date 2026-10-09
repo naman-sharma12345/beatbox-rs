@@ -1,0 +1,25 @@
+//! Beatbox: an AI-native beat-making engine.
+//!
+//! Every feature is a tool in [`tools::registry`], callable from the CLI,
+//! the desktop studio, or any MCP client.
+
+#![allow(
+    clippy::manual_is_multiple_of,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
+
+pub mod analysis;
+pub mod dsp;
+pub mod engine;
+pub mod fx;
+pub mod instruments;
+pub mod mcp;
+pub mod project;
+pub mod render;
+pub mod samples;
+pub mod server;
+pub mod theory;
+pub mod tools;
+
+pub use engine::Engine;
