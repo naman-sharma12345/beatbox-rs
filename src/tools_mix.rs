@@ -25,7 +25,7 @@ pub fn role_of(name: &str, inst: &Instrument) -> &'static str {
             DrumKind::Snare | DrumKind::Clap | DrumKind::Rim => "snare",
             DrumKind::ClosedHat | DrumKind::Shaker => "hats",
             DrumKind::OpenHat | DrumKind::Crash => "cymbal",
-            DrumKind::Tom | DrumKind::Cowbell => "perc",
+            DrumKind::Tom | DrumKind::Cowbell | DrumKind::Tabla | DrumKind::Bayan => "perc",
         };
     }
     let n = name.to_lowercase();

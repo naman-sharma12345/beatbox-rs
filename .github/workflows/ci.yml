@@ -1,18 +1,37 @@
-name: CI
+name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
+env:
+  CARGO_TERM_COLOR: always
 jobs:
-  test:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: System deps
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libxkbcommon-dev libwayland-dev libx11-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: system deps (GUI build)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - run: cargo fmt --check
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo test --no-default-features
+  beats:
+    # prove the producer: render the reference beats with produce_track
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: cargo build --release --no-default-features
+      - name: produce beats
+        run: bash scripts/produce_beats.sh target/release/beatbox beats
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beats
+          path: beats/

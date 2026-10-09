@@ -249,6 +249,8 @@ fn gm_drum_note(t: &Track) -> Option<u8> {
         DrumKind::Cowbell => 56,
         DrumKind::Shaker => 70,
         DrumKind::Crash => 49,
+        DrumKind::Tabla => 60,
+        DrumKind::Bayan => 61,
     })
 }
 

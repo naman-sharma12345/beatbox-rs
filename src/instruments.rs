@@ -20,10 +20,16 @@ pub enum DrumKind {
     Cowbell,
     Shaker,
     Crash,
+    /// Tabla dayan (treble drum): ringing harmonic membrane, tuned to the
+    /// note played (tune it to Sa). Velocity < 0.5 gives a muted "te/ti".
+    Tabla,
+    /// Tabla bayan (bass drum): "ge"/"dha" bass with the palm-pressure
+    /// pitch rise (gamak).
+    Bayan,
 }
 
 impl DrumKind {
-    pub const ALL: [DrumKind; 10] = [
+    pub const ALL: [DrumKind; 12] = [
         DrumKind::Kick,
         DrumKind::Snare,
         DrumKind::Clap,
@@ -34,6 +40,8 @@ impl DrumKind {
         DrumKind::Cowbell,
         DrumKind::Shaker,
         DrumKind::Crash,
+        DrumKind::Tabla,
+        DrumKind::Bayan,
     ];
 }
 
@@ -165,6 +173,14 @@ pub struct PluckParams {
     /// Excitation brightness 0..1.
     pub brightness: f32,
     pub gain: f32,
+    /// Jawari bridge buzz 0..1 (sitar/tanpura sizzle): a curved-bridge
+    /// nonlinearity that keeps re-exciting the upper partials.
+    #[serde(default, skip_serializing_if = "is_zero_f")]
+    pub buzz: f32,
+}
+
+fn is_zero_f(x: &f32) -> bool {
+    *x == 0.0
 }
 
 impl Default for PluckParams {
@@ -173,6 +189,7 @@ impl Default for PluckParams {
             damping: 0.4,
             brightness: 0.7,
             gain: 0.7,
+            buzz: 0.0,
         }
     }
 }
@@ -569,6 +586,12 @@ pub const PRESETS: &[(&str, &str)] = &[
     ("cowbell", "808 cowbell (great for phonk)"),
     ("shaker", "Shaker for afro / latin grooves"),
     ("crash", "Crash cymbal"),
+    ("tabla", "Tabla dayan: harmonic ringing treble drum, tuned to the note (soft hits = muted te/ti)"),
+    ("bayan", "Tabla bayan: bass 'ge' with the palm pitch rise (gamak)"),
+    ("sitar", "Karplus-Strong sitar with jawari bridge buzz"),
+    ("santoor", "Bright hammered-string santoor"),
+    ("bansuri", "Breathy bamboo flute with vibrato and meend glides (slide_to)"),
+    ("tanpura", "Tanpura-style drone pad (root + fifth shimmer)"),
     ("808", "Long sub 808 with punch and drive"),
     ("sub_bass", "Clean sine sub bass"),
     ("acid_bass", "Resonant 303-style acid bass"),
@@ -654,6 +677,48 @@ pub fn preset(name: &str) -> Option<Instrument> {
         "cowbell" => drum(DrumKind::Cowbell),
         "shaker" | "perc" => drum(DrumKind::Shaker),
         "crash" | "cymbal" => drum(DrumKind::Crash),
+        "tabla" | "tabla_dayan" | "dayan" => drum(DrumKind::Tabla),
+        "bayan" | "tabla_bayan" | "dagga" => drum(DrumKind::Bayan),
+        "sitar" => Instrument::Pluck(PluckParams {
+            damping: 0.25,
+            brightness: 0.95,
+            gain: 0.6,
+            buzz: 0.7,
+        }),
+        "santoor" => Instrument::Pluck(PluckParams {
+            damping: 0.45,
+            brightness: 1.0,
+            gain: 0.55,
+            buzz: 0.15,
+        }),
+        "bansuri" | "flute" | "indian_flute" => synth(|p| {
+            p.osc1 = Wave::Sine;
+            p.osc2 = Wave::Triangle;
+            p.osc2_semitones = 12.0;
+            p.osc_mix = 0.12;
+            p.noise_level = 0.06;
+            p.cutoff = 3800.0;
+            p.amp_env = Adsr::new(0.06, 0.2, 0.85, 0.25);
+            p.lfo_rate = 5.2;
+            p.lfo_to_pitch = 0.12;
+            p.glide_ms = 140.0;
+            p.gain = 0.55;
+        }),
+        "tanpura" | "drone" => synth(|p| {
+            p.osc1 = Wave::Saw;
+            p.osc2 = Wave::Saw;
+            p.osc2_semitones = 7.0;
+            p.osc_mix = 0.4;
+            p.unison = 3;
+            p.unison_spread_cents = 6.0;
+            p.stereo_spread = 0.6;
+            p.cutoff = 1500.0;
+            p.resonance = 0.35;
+            p.amp_env = Adsr::new(0.8, 0.5, 0.9, 1.5);
+            p.lfo_rate = 0.25;
+            p.lfo_to_cutoff = 0.6;
+            p.gain = 0.3;
+        }),
         "808" | "bass808" => Instrument::Bass808(Bass808Params::default()),
         "sub_bass" | "sub" => synth(|p| {
             p.osc1 = Wave::Sine;
@@ -809,6 +874,7 @@ pub fn preset(name: &str) -> Option<Instrument> {
             damping: 0.7,
             brightness: 0.95,
             gain: 0.7,
+            buzz: 0.0,
         }),
         "grand_piano" | "piano" | "acoustic_piano" => Instrument::Piano(PianoParams::default()),
         "felt_piano" => Instrument::Piano(PianoParams {
@@ -1198,6 +1264,44 @@ fn render_drum(p: &DrumParams, pitch: f32, vel: f32, rng: &mut Rng) -> Vec<f32> 
                 *s = n * (-t * 2.0 / d).exp() * 0.7;
             }
         }
+        DrumKind::Tabla => {
+            // dayan: near-harmonic modes (Raman), the fundamental rings,
+            // a bright finger slap on top; soft hits are damped (te/ti)
+            let open = vel >= 0.5;
+            let len = if open { 1.1 * d } else { 0.14 * d };
+            out = vec![0.0; secs(len)];
+            let f0 = 261.63 * tune;
+            let modes: [(f32, f32, f32); 5] = [(1.0, 1.0, 3.2), (2.0, 0.55, 5.0), (3.0, 0.35, 7.0), (4.0, 0.22, 9.0), (5.0, 0.12, 12.0)];
+            let mut ph = [0.0f32; 5];
+            let mut bp = Svf::default();
+            let damp = if open { 1.0 } else { 9.0 };
+            for (i, s) in out.iter_mut().enumerate() {
+                let t = i as f32 / SR;
+                let mut y = 0.0;
+                for (k, (r, a, dec)) in modes.iter().enumerate() {
+                    // the head settles: pitch glides down a touch at the onset
+                    let f = f0 * r * (1.0 + 0.012 * (-t * 40.0).exp());
+                    ph[k] = (ph[k] + f / SR) % 1.0;
+                    y += (2.0 * PI * ph[k]).sin() * a * (-t * dec * damp / d).exp();
+                }
+                let slap = bp.process(rng.bipolar(), 3200.0, 0.3, FilterMode::Bandpass) * (-t * 90.0).exp() * 0.6;
+                *s = (y * 0.55 + slap).tanh() * 0.9;
+            }
+        }
+        DrumKind::Bayan => {
+            out = vec![0.0; secs(0.9 * d)];
+            let mut ph = 0.0f32;
+            let mut lp = Svf::default();
+            for (i, s) in out.iter_mut().enumerate() {
+                let t = i as f32 / SR;
+                // ge: starts low and the palm pushes the pitch up (gamak)
+                let f = 82.0 * tune * (1.0 + 0.35 * (1.0 - (-t * 7.0).exp()));
+                ph = (ph + f / SR) % 1.0;
+                let body = (2.0 * PI * ph).sin() + 0.25 * (4.0 * PI * ph).sin();
+                let thump = lp.process(rng.bipolar(), 400.0, 0.2, FilterMode::Lowpass) * (-t * 60.0).exp();
+                *s = (body * (-t * 3.5 / d).exp() * 0.8 + thump * 0.5).tanh();
+            }
+        }
     }
     let drive = 1.0 + p.drive.clamp(0.0, 1.0) * 6.0;
     for s in out.iter_mut() {
@@ -1336,7 +1440,18 @@ fn render_pluck(p: &PluckParams, pitch: f32, vel: f32, gate: f32, rng: &mut Rng)
         let t = i as f32 / SR;
         let cur = buf[idx];
         let nxt = buf[(idx + 1) % len];
-        buf[idx] = decay * 0.5 * (cur + nxt);
+        let mut y = decay * 0.5 * (cur + nxt);
+        if p.buzz > 0.0 {
+            // jawari: the string wraps onto a curved bridge, folding energy
+            // upward; the folded part is mixed back into the loop
+            let b = p.buzz.clamp(0.0, 1.0);
+            let th = 0.25 * (1.0 - 0.8 * b);
+            if y.abs() > th {
+                let over = y.abs() - th;
+                y = y.signum() * (th + over * (1.0 - 0.6 * b)) - y.signum() * over * over * b * 0.8;
+            }
+        }
+        buf[idx] = y;
         idx = (idx + 1) % len;
         let rel = if t > gate + 0.05 {
             (-(t - gate - 0.05) * 6.0).exp()

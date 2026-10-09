@@ -1,0 +1,1724 @@
+[
+ {
+  "name": "trap",
+  "aliases": [
+   "atl",
+   "trap_beat",
+   "rap"
+  ],
+  "description": "Modern Atlanta trap: half-time snare on 3, rolling hats with triplet/32nd rolls, long gliding 808s locked to the kick, dark minor pads and a bell/pluck hook.",
+  "bpm": [
+   130,
+   150
+  ],
+  "swing": 0.0,
+  "scales": [
+   "minor",
+   "harmonic_minor"
+  ],
+  "progressions": {
+   "dark": [
+    "i VI III VII",
+    "i iv VI V",
+    "i VI iv V",
+    "i i VI VII"
+   ],
+   "sad": [
+    "i VI III VII",
+    "VI VII i i",
+    "i v VI iv"
+   ],
+   "hype": [
+    "i i VI VII",
+    "i bII i VII"
+   ],
+   "default": [
+    "i VI III VII",
+    "i iv VI V"
+   ]
+  },
+  "bars_per_chord": 1,
+  "drums": {
+   "kit": {
+    "kick": "kick",
+    "snare": "clap",
+    "hat": "hat",
+    "open_hat": "open_hat",
+    "perc": "rim"
+   },
+   "sample_kit": "tr808",
+   "kick": [
+    "X......x..x.....",
+    "X.....x...x..x..",
+    "X......xx.....x.",
+    "X..x......x....."
+   ],
+   "snare": [
+    "........X.......",
+    "........X.......",
+    "........X......o"
+   ],
+   "hat": [
+    "x.x.x.x.x.x.x.x.",
+    "xxx.x.x.xxx.x.x.",
+    "x.xxx.x.x.x.xxx."
+   ],
+   "open_hat": [
+    "..............x.",
+    "......x.........",
+    ""
+   ],
+   "perc": [
+    "...o.......o....",
+    ""
+   ],
+   "ghost_snare": 0.15,
+   "hat_rolls": 0.55,
+   "hat_vel_accent": 0.25,
+   "half_time": true
+  },
+  "bass": {
+   "preset": "808",
+   "style": "808_glide",
+   "octave": 1,
+   "glide": 0.35,
+   "follow_kick": true
+  },
+  "harmony": {
+   "presets": [
+    "dark_pad",
+    "wt_pad",
+    "choir"
+   ],
+   "style": "block",
+   "octave": 4
+  },
+  "lead": {
+   "presets": [
+    "fm_bell",
+    "pluck_lead",
+    "koto",
+    "wt_vocal"
+   ],
+   "density": 0.55,
+   "octave": 5,
+   "ornament": "none"
+  },
+  "counter": {
+   "presets": [
+    "strings",
+    "felt_piano"
+   ],
+   "octave": 4
+  },
+  "texture": null,
+  "arrangement": [
+   {
+    "kind": "intro",
+    "bars": 4,
+    "energy": 0.3,
+    "layers": [
+     "harmony",
+     "lead",
+     "hat"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 0.95,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.7,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "perc",
+     "bass",
+     "harmony"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 1.0,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "bridge",
+    "bars": 4,
+    "energy": 0.45,
+    "layers": [
+     "harmony",
+     "lead",
+     "bass"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 1.0,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "outro",
+    "bars": 4,
+    "energy": 0.25,
+    "layers": [
+     "harmony",
+     "lead"
+    ]
+   }
+  ],
+  "mix": {
+   "balance_genre": "trap",
+   "target_lufs": -11.0,
+   "reverb_send": -14.0,
+   "delay_send": -18.0,
+   "drum_bus": true,
+   "sidechain_bass": 0.35,
+   "master_style": "punchy",
+   "crush": false
+  }
+ },
+ {
+  "name": "melodic_rap",
+  "aliases": [
+   "melodic",
+   "emotional",
+   "emotional_rap",
+   "melodic_trap",
+   "sad_rap"
+  ],
+  "description": "Melodic / emotional rap: trap drums with softer hats, piano or guitar chords that carry the emotion, a vocal-like lead, 808s that sing the roots.",
+  "bpm": [
+   135,
+   160
+  ],
+  "swing": 0.0,
+  "scales": [
+   "minor"
+  ],
+  "progressions": {
+   "sad": [
+    "VI VII i i",
+    "i VI III VII",
+    "iv VI i VII",
+    "VI III VII i"
+   ],
+   "dark": [
+    "i VI iv V",
+    "i iv VI V"
+   ],
+   "hopeful": [
+    "VI VII III i",
+    "III VII i VI"
+   ],
+   "default": [
+    "VI VII i i",
+    "i VI III VII"
+   ]
+  },
+  "bars_per_chord": 1,
+  "drums": {
+   "kit": {
+    "kick": "kick",
+    "snare": "layered_snare",
+    "hat": "hat",
+    "open_hat": "open_hat",
+    "perc": "rim"
+   },
+   "sample_kit": "tr808",
+   "kick": [
+    "X.......x.x.....",
+    "X......x..x.....",
+    "X.........x..x.."
+   ],
+   "snare": [
+    "........X......."
+   ],
+   "hat": [
+    "x...x...x...x...",
+    "x.x.x.x.x.x.x.x.",
+    "x.x.x.xxx.x.x.x."
+   ],
+   "open_hat": [
+    "..............x.",
+    ""
+   ],
+   "perc": [
+    "",
+    "......o.......o."
+   ],
+   "ghost_snare": 0.1,
+   "hat_rolls": 0.35,
+   "hat_vel_accent": 0.2,
+   "half_time": true
+  },
+  "bass": {
+   "preset": "808",
+   "style": "808_glide",
+   "octave": 1,
+   "glide": 0.25,
+   "follow_kick": true
+  },
+  "harmony": {
+   "presets": [
+    "felt_piano",
+    "grand_piano",
+    "guitar_pluck"
+   ],
+   "style": "arp_updown",
+   "octave": 4
+  },
+  "lead": {
+   "presets": [
+    "wt_vocal",
+    "choir_aah",
+    "fm_bell"
+   ],
+   "density": 0.45,
+   "octave": 5,
+   "ornament": "glide"
+  },
+  "counter": {
+   "presets": [
+    "string_section",
+    "warm_pad"
+   ],
+   "octave": 4
+  },
+  "texture": {
+   "preset": "granular_pad",
+   "octave": 4
+  },
+  "arrangement": [
+   {
+    "kind": "intro",
+    "bars": 4,
+    "energy": 0.25,
+    "layers": [
+     "harmony",
+     "texture"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 0.9,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.65,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "perc",
+     "bass",
+     "harmony",
+     "texture"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 1.0,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "bass",
+     "harmony",
+     "lead",
+     "counter",
+     "texture"
+    ]
+   },
+   {
+    "kind": "bridge",
+    "bars": 4,
+    "energy": 0.4,
+    "layers": [
+     "harmony",
+     "lead",
+     "texture"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 1.0,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "outro",
+    "bars": 4,
+    "energy": 0.2,
+    "layers": [
+     "harmony",
+     "texture"
+    ]
+   }
+  ],
+  "mix": {
+   "balance_genre": "trap",
+   "target_lufs": -11.0,
+   "reverb_send": -12.0,
+   "delay_send": -16.0,
+   "drum_bus": true,
+   "sidechain_bass": 0.3,
+   "master_style": "punchy",
+   "crush": false
+  }
+ },
+ {
+  "name": "drill",
+  "aliases": [
+   "uk_drill",
+   "ny_drill",
+   "brooklyn_drill"
+  ],
+  "description": "UK/NY drill: sliding 808s with big octave glides, snares on 2 and 4 of the half-time bar with offbeat snares, skippy triplet hats, dark strings/choir.",
+  "bpm": [
+   138,
+   146
+  ],
+  "swing": 0.0,
+  "scales": [
+   "minor",
+   "harmonic_minor"
+  ],
+  "progressions": {
+   "dark": [
+    "i i VI V",
+    "i VI VII V",
+    "i iv i V"
+   ],
+   "default": [
+    "i VI VII V",
+    "i i VI V"
+   ]
+  },
+  "bars_per_chord": 2,
+  "drums": {
+   "kit": {
+    "kick": "kick",
+    "snare": "snare",
+    "hat": "hat",
+    "open_hat": "open_hat",
+    "perc": "rim"
+   },
+   "sample_kit": "tr808",
+   "kick": [
+    "X.........x.....X.......x.x.....",
+    "X.....x...x.....X.......x......."
+   ],
+   "snare": [
+    "......X........X......X......X..",
+    "......X.........X.....X......X.."
+   ],
+   "hat": [
+    "x..x..x.x..x..x.x..x..x.x.x..x..",
+    "x..x..x...x.x..xx..x..x...x.x..x"
+   ],
+   "open_hat": [
+    "",
+    "..............x."
+   ],
+   "perc": [
+    "...o.......o....",
+    ""
+   ],
+   "ghost_snare": 0.2,
+   "hat_rolls": 0.4,
+   "hat_vel_accent": 0.3,
+   "half_time": true
+  },
+  "bass": {
+   "preset": "808",
+   "style": "808_glide",
+   "octave": 1,
+   "glide": 0.6,
+   "follow_kick": true
+  },
+  "harmony": {
+   "presets": [
+    "string_section",
+    "choir",
+    "dark_pad"
+   ],
+   "style": "block",
+   "octave": 4
+  },
+  "lead": {
+   "presets": [
+    "staccato_strings",
+    "fm_bell",
+    "felt_piano"
+   ],
+   "density": 0.5,
+   "octave": 5,
+   "ornament": "none"
+  },
+  "counter": {
+   "presets": [
+    "choir_aah",
+    "cello_section"
+   ],
+   "octave": 3
+  },
+  "texture": null,
+  "arrangement": [
+   {
+    "kind": "intro",
+    "bars": 4,
+    "energy": 0.3,
+    "layers": [
+     "harmony",
+     "lead"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 0.95,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.75,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "perc",
+     "bass",
+     "harmony"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 1.0,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "outro",
+    "bars": 4,
+    "energy": 0.25,
+    "layers": [
+     "harmony",
+     "lead"
+    ]
+   }
+  ],
+  "mix": {
+   "balance_genre": "drill",
+   "target_lufs": -10.5,
+   "reverb_send": -14.0,
+   "delay_send": -20.0,
+   "drum_bus": true,
+   "sidechain_bass": 0.3,
+   "master_style": "punchy",
+   "crush": false
+  }
+ },
+ {
+  "name": "boom_bap",
+  "aliases": [
+   "boombap",
+   "hiphop",
+   "hip_hop",
+   "90s",
+   "golden_era",
+   "east_coast"
+  ],
+  "description": "90s boom-bap: swung kicks with ghost snares, a hard backbeat on 2 and 4, dusty keys/jazz chords, a walking or root bass, vinyl crunch on the master.",
+  "bpm": [
+   86,
+   96
+  ],
+  "swing": 0.28,
+  "scales": [
+   "minor"
+  ],
+  "progressions": {
+   "dark": [
+    "i7 iv7 i7 v7",
+    "i7 VImaj7 iv7 v7"
+   ],
+   "jazzy": [
+    "ii7 V7 Imaj7 VImaj7",
+    "i9 iv9 VII7 IIImaj7",
+    "imaj7 iv7 VII7 IIImaj7"
+   ],
+   "sad": [
+    "i7 VImaj7 III VII7",
+    "iv7 i7 VImaj7 v7"
+   ],
+   "default": [
+    "i7 iv7 VII7 IIImaj7",
+    "i7 VImaj7 iv7 v7"
+   ]
+  },
+  "bars_per_chord": 1,
+  "drums": {
+   "kit": {
+    "kick": "kick",
+    "snare": "snare",
+    "hat": "hat",
+    "open_hat": "open_hat",
+    "perc": "shaker"
+   },
+   "sample_kit": "lm2",
+   "kick": [
+    "X.....x...x.x...",
+    "X......xx.x.....",
+    "X.x.......x..x..",
+    "X.....x.x.....x."
+   ],
+   "snare": [
+    "....X.......X...",
+    "....X.......X..o",
+    "....X..o....X..."
+   ],
+   "hat": [
+    "x.x.x.x.x.x.x.x.",
+    "x.xox.x.x.xox.x.",
+    "xxx.x.xxx.x.x.x."
+   ],
+   "open_hat": [
+    "",
+    "......x.........",
+    "..............x."
+   ],
+   "perc": [
+    "",
+    "..o...o...o...o."
+   ],
+   "ghost_snare": 0.35,
+   "hat_rolls": 0.0,
+   "hat_vel_accent": 0.35,
+   "half_time": false
+  },
+  "bass": {
+   "preset": "sub_bass",
+   "style": "follow_kick",
+   "octave": 2,
+   "glide": 0.0,
+   "follow_kick": true
+  },
+  "harmony": {
+   "presets": [
+    "epiano",
+    "upright_keys",
+    "layered_keys"
+   ],
+   "style": "stabs",
+   "octave": 4
+  },
+  "lead": {
+   "presets": [
+    "felt_piano",
+    "brass_stab",
+    "marimba",
+    "bansuri"
+   ],
+   "density": 0.4,
+   "octave": 5,
+   "ornament": "none"
+  },
+  "counter": {
+   "presets": [
+    "strings",
+    "organ"
+   ],
+   "octave": 4
+  },
+  "texture": null,
+  "arrangement": [
+   {
+    "kind": "intro",
+    "bars": 4,
+    "energy": 0.35,
+    "layers": [
+     "harmony",
+     "hat"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.7,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "bass",
+     "harmony"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 0.95,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.75,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 1.0,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "outro",
+    "bars": 4,
+    "energy": 0.3,
+    "layers": [
+     "harmony",
+     "lead"
+    ]
+   }
+  ],
+  "mix": {
+   "balance_genre": "boom_bap",
+   "target_lufs": -11.0,
+   "reverb_send": -16.0,
+   "delay_send": -20.0,
+   "drum_bus": true,
+   "sidechain_bass": 0.0,
+   "master_style": "punchy",
+   "crush": true
+  }
+ },
+ {
+  "name": "desi_hiphop",
+  "aliases": [
+   "desi",
+   "raag",
+   "indian",
+   "desi_hip_hop",
+   "bollywood_rap",
+   "gully",
+   "punjabi"
+  ],
+  "description": "Desi hip-hop: boom-bap/trap hybrid at 88-96 BPM with tabla (dayan + bayan) bols, a sitar or bansuri lead in a raag-flavoured scale (bhairav, phrygian dominant, harmonic minor) with meend glides, a tanpura drone, and punchy 808/kick under it.",
+  "bpm": [
+   88,
+   96
+  ],
+  "swing": 0.12,
+  "scales": [
+   "bhairav",
+   "phrygian_dominant"
+  ],
+  "progressions": {
+   "dark": [
+    "I bII I I",
+    "I bII iv I",
+    "iv bII I I"
+   ],
+   "devotional": [
+    "I bII I I",
+    "I iv bII I"
+   ],
+   "default": [
+    "I bII I I",
+    "I bII iv I",
+    "I iv bII I"
+   ]
+  },
+  "bars_per_chord": 2,
+  "drums": {
+   "kit": {
+    "kick": "kick",
+    "snare": "snare",
+    "hat": "hat",
+    "open_hat": "open_hat",
+    "perc": "shaker",
+    "tabla": "tabla",
+    "bayan": "bayan"
+   },
+   "sample_kit": "tr808",
+   "kick": [
+    "X.....x...x.....",
+    "X......x..x..x..",
+    "X.....x.x.......",
+    "X.........x....."
+   ],
+   "snare": [
+    "....X.......X...",
+    "....X.......X..o"
+   ],
+   "hat": [
+    "x.x.x.x.x.x.x.x.",
+    "x.xxx.x.x.xxx.x."
+   ],
+   "open_hat": [
+    "",
+    "..............x."
+   ],
+   "perc": [
+    "",
+    "x.x.x.x.x.x.x.x."
+   ],
+   "tabla": [
+    "X.xxX.x.X.xxX.x.",
+    "X.x.xxX.X.x.xxX.",
+    "XxxXx.x.XxxXx.xx"
+   ],
+   "bayan": [
+    "X.....x...X.....",
+    "X.......X..x....",
+    "X..x....X......."
+   ],
+   "ghost_snare": 0.2,
+   "hat_rolls": 0.2,
+   "hat_vel_accent": 0.3,
+   "half_time": false
+  },
+  "bass": {
+   "preset": "808",
+   "style": "808_glide",
+   "octave": 1,
+   "glide": 0.25,
+   "follow_kick": true
+  },
+  "harmony": {
+   "presets": [
+    "tanpura"
+   ],
+   "style": "drone",
+   "octave": 3
+  },
+  "lead": {
+   "presets": [
+    "sitar",
+    "bansuri",
+    "santoor"
+   ],
+   "density": 0.55,
+   "octave": 5,
+   "ornament": "meend"
+  },
+  "counter": {
+   "presets": [
+    "bansuri",
+    "string_section",
+    "sitar"
+   ],
+   "octave": 5
+  },
+  "texture": {
+   "preset": "choir_aah",
+   "octave": 4
+  },
+  "arrangement": [
+   {
+    "kind": "intro",
+    "bars": 4,
+    "energy": 0.3,
+    "layers": [
+     "harmony",
+     "lead",
+     "tabla"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.7,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "tabla",
+     "bayan",
+     "bass",
+     "harmony"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 0.95,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "tabla",
+     "bayan",
+     "bass",
+     "harmony",
+     "lead",
+     "counter",
+     "texture"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.75,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "perc",
+     "tabla",
+     "bayan",
+     "bass",
+     "harmony",
+     "lead"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 1.0,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "tabla",
+     "bayan",
+     "bass",
+     "harmony",
+     "lead",
+     "counter",
+     "texture"
+    ]
+   },
+   {
+    "kind": "outro",
+    "bars": 4,
+    "energy": 0.3,
+    "layers": [
+     "harmony",
+     "lead",
+     "tabla"
+    ]
+   }
+  ],
+  "mix": {
+   "balance_genre": "boom_bap",
+   "target_lufs": -11.0,
+   "reverb_send": -14.0,
+   "delay_send": -18.0,
+   "drum_bus": true,
+   "sidechain_bass": 0.3,
+   "master_style": "punchy",
+   "crush": false
+  }
+ },
+ {
+  "name": "lofi",
+  "aliases": [
+   "lo_fi",
+   "lofi_hiphop",
+   "chillhop",
+   "study"
+  ],
+  "description": "Lo-fi hip-hop: lazy swung drums, jazzy 7th/9th chords on felt piano or Rhodes, soft sub, mellow lead, bit-crushed vinyl warmth.",
+  "bpm": [
+   72,
+   88
+  ],
+  "swing": 0.35,
+  "scales": [
+   "major"
+  ],
+  "progressions": {
+   "chill": [
+    "IVmaj7 iii7 ii7 Imaj7",
+    "ii7 V7 Imaj7 vi7",
+    "Imaj7 vi7 ii7 V7"
+   ],
+   "sad": [
+    "vi7 IVmaj7 Imaj7 V",
+    "ii7 iii7 IVmaj7 V7"
+   ],
+   "default": [
+    "ii7 V7 Imaj7 vi7",
+    "IVmaj7 iii7 ii7 Imaj7"
+   ]
+  },
+  "bars_per_chord": 1,
+  "drums": {
+   "kit": {
+    "kick": "kick",
+    "snare": "snare",
+    "hat": "hat",
+    "open_hat": "open_hat",
+    "perc": "shaker"
+   },
+   "sample_kit": "rz1",
+   "kick": [
+    "X......x..x.....",
+    "X.......x.x.....",
+    "X..x......x....."
+   ],
+   "snare": [
+    "....x.......x...",
+    "....x.......x..o"
+   ],
+   "hat": [
+    "x.xox.x.x.xox.xo",
+    "x.x.x.x.x.x.x.x."
+   ],
+   "open_hat": [
+    "",
+    ""
+   ],
+   "perc": [
+    "..o...o...o...o.",
+    ""
+   ],
+   "ghost_snare": 0.25,
+   "hat_rolls": 0.0,
+   "hat_vel_accent": 0.4,
+   "half_time": false
+  },
+  "bass": {
+   "preset": "sub_bass",
+   "style": "root",
+   "octave": 2,
+   "glide": 0.0,
+   "follow_kick": false
+  },
+  "harmony": {
+   "presets": [
+    "felt_piano",
+    "epiano",
+    "layered_keys"
+   ],
+   "style": "block",
+   "octave": 4
+  },
+  "lead": {
+   "presets": [
+    "marimba",
+    "guitar_pluck",
+    "fm_bell"
+   ],
+   "density": 0.35,
+   "octave": 5,
+   "ornament": "none"
+  },
+  "counter": {
+   "presets": [
+    "warm_pad"
+   ],
+   "octave": 4
+  },
+  "texture": {
+   "preset": "granular_pad",
+   "octave": 4
+  },
+  "arrangement": [
+   {
+    "kind": "intro",
+    "bars": 4,
+    "energy": 0.3,
+    "layers": [
+     "harmony",
+     "texture"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.65,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "bass",
+     "harmony",
+     "texture"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 0.85,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.7,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead"
+    ]
+   },
+   {
+    "kind": "outro",
+    "bars": 4,
+    "energy": 0.3,
+    "layers": [
+     "harmony",
+     "texture"
+    ]
+   }
+  ],
+  "mix": {
+   "balance_genre": "lofi",
+   "target_lufs": -13.0,
+   "reverb_send": -12.0,
+   "delay_send": -18.0,
+   "drum_bus": true,
+   "sidechain_bass": 0.0,
+   "master_style": "clean",
+   "crush": true
+  }
+ },
+ {
+  "name": "rnb",
+  "aliases": [
+   "r&b",
+   "r_and_b",
+   "neo_soul",
+   "rnb_soul"
+  ],
+  "description": "Modern R&B: laid-back half-time groove with rimshots and finger snaps, lush extended chords (maj9/min9), a smooth sub, airy pads and a vocal-like lead.",
+  "bpm": [
+   64,
+   80
+  ],
+  "swing": 0.18,
+  "scales": [
+   "major"
+  ],
+  "progressions": {
+   "smooth": [
+    "Imaj7 iii7 vi7 IVmaj7",
+    "ii9 V7 Imaj9 vi7",
+    "IVmaj7 V7 iii7 vi7"
+   ],
+   "sad": [
+    "vi9 IVmaj7 Imaj7 V7",
+    "ii7 iii7 IVmaj7 iii7"
+   ],
+   "default": [
+    "Imaj7 iii7 vi7 IVmaj7",
+    "ii9 V7 Imaj9 vi7"
+   ]
+  },
+  "bars_per_chord": 1,
+  "drums": {
+   "kit": {
+    "kick": "kick",
+    "snare": "rim",
+    "hat": "hat",
+    "open_hat": "open_hat",
+    "perc": "clap"
+   },
+   "sample_kit": "tr808",
+   "kick": [
+    "X.......x.x.....",
+    "X..x......x....."
+   ],
+   "snare": [
+    "........X.......",
+    "........X......."
+   ],
+   "hat": [
+    "x.x.x.x.x.x.x.x.",
+    "x.xxx.x.x.x.xxx."
+   ],
+   "open_hat": [
+    "",
+    "..............x."
+   ],
+   "perc": [
+    "........x.......",
+    ""
+   ],
+   "ghost_snare": 0.15,
+   "hat_rolls": 0.3,
+   "hat_vel_accent": 0.3,
+   "half_time": true
+  },
+  "bass": {
+   "preset": "sub_bass",
+   "style": "808_glide",
+   "octave": 1,
+   "glide": 0.2,
+   "follow_kick": true
+  },
+  "harmony": {
+   "presets": [
+    "epiano",
+    "layered_keys",
+    "warm_pad"
+   ],
+   "style": "block",
+   "octave": 4
+  },
+  "lead": {
+   "presets": [
+    "wt_vocal",
+    "fm_bell",
+    "guitar_pluck"
+   ],
+   "density": 0.4,
+   "octave": 5,
+   "ornament": "glide"
+  },
+  "counter": {
+   "presets": [
+    "string_section",
+    "choir"
+   ],
+   "octave": 4
+  },
+  "texture": {
+   "preset": "granular_shimmer",
+   "octave": 5
+  },
+  "arrangement": [
+   {
+    "kind": "intro",
+    "bars": 4,
+    "energy": 0.3,
+    "layers": [
+     "harmony",
+     "texture"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.65,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "bass",
+     "harmony"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 0.9,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead",
+     "counter",
+     "texture"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.7,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "bass",
+     "harmony",
+     "lead"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 1.0,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead",
+     "counter",
+     "texture"
+    ]
+   },
+   {
+    "kind": "outro",
+    "bars": 4,
+    "energy": 0.3,
+    "layers": [
+     "harmony",
+     "texture"
+    ]
+   }
+  ],
+  "mix": {
+   "balance_genre": "rnb",
+   "target_lufs": -12.0,
+   "reverb_send": -11.0,
+   "delay_send": -16.0,
+   "drum_bus": true,
+   "sidechain_bass": 0.2,
+   "master_style": "clean",
+   "crush": false
+  }
+ },
+ {
+  "name": "phonk",
+  "aliases": [
+   "drift_phonk",
+   "memphis"
+  ],
+  "description": "Drift phonk: cowbell melodies, distorted 808s, Memphis-style hats, aggressive and loud.",
+  "bpm": [
+   125,
+   140
+  ],
+  "swing": 0.0,
+  "scales": [
+   "phrygian",
+   "minor"
+  ],
+  "progressions": {
+   "default": [
+    "i i bII i",
+    "i VI bII i"
+   ]
+  },
+  "bars_per_chord": 1,
+  "drums": {
+   "kit": {
+    "kick": "kick",
+    "snare": "clap",
+    "hat": "hat",
+    "open_hat": "open_hat",
+    "perc": "cowbell"
+   },
+   "sample_kit": "tr808",
+   "kick": [
+    "X..x..X...x.x...",
+    "X.....X...x..x.."
+   ],
+   "snare": [
+    "....X.......X..."
+   ],
+   "hat": [
+    "x.x.x.x.x.x.xxxx",
+    "xxx.xxx.xxx.xxxx"
+   ],
+   "open_hat": [
+    ""
+   ],
+   "perc": [
+    ""
+   ],
+   "ghost_snare": 0.0,
+   "hat_rolls": 0.3,
+   "hat_vel_accent": 0.2,
+   "half_time": false
+  },
+  "bass": {
+   "preset": "808",
+   "style": "808_glide",
+   "octave": 1,
+   "glide": 0.3,
+   "follow_kick": true
+  },
+  "harmony": {
+   "presets": [
+    "dark_pad"
+   ],
+   "style": "block",
+   "octave": 4
+  },
+  "lead": {
+   "presets": [
+    "cowbell"
+   ],
+   "density": 0.7,
+   "octave": 5,
+   "ornament": "none"
+  },
+  "counter": {
+   "presets": [
+    "wt_growl"
+   ],
+   "octave": 3
+  },
+  "texture": null,
+  "arrangement": [
+   {
+    "kind": "intro",
+    "bars": 4,
+    "energy": 0.4,
+    "layers": [
+     "lead",
+     "hat"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 1.0,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "bass",
+     "harmony",
+     "lead"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.8,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "bass",
+     "lead"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 1.0,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "outro",
+    "bars": 4,
+    "energy": 0.3,
+    "layers": [
+     "lead"
+    ]
+   }
+  ],
+  "mix": {
+   "balance_genre": "trap",
+   "target_lufs": -9.5,
+   "reverb_send": -18.0,
+   "delay_send": -22.0,
+   "drum_bus": true,
+   "sidechain_bass": 0.3,
+   "master_style": "loud",
+   "crush": false
+  }
+ },
+ {
+  "name": "afrobeats",
+  "aliases": [
+   "afro",
+   "amapiano",
+   "afropop"
+  ],
+  "description": "Afrobeats: syncopated kick and rim pattern, shakers, warm major chords, plucky guitar lead, log-drum-ish bass.",
+  "bpm": [
+   100,
+   112
+  ],
+  "swing": 0.15,
+  "scales": [
+   "major"
+  ],
+  "progressions": {
+   "default": [
+    "I V vi IV",
+    "ii7 V7 Imaj7 Imaj7",
+    "vi IV I V"
+   ]
+  },
+  "bars_per_chord": 1,
+  "drums": {
+   "kit": {
+    "kick": "kick",
+    "snare": "clap",
+    "hat": "shaker",
+    "open_hat": "open_hat",
+    "perc": "rim"
+   },
+   "sample_kit": "tr808",
+   "kick": [
+    "X..x..x...x..x..",
+    "X...X...X...X..."
+   ],
+   "snare": [
+    "....x.......x..."
+   ],
+   "hat": [
+    "xoxxxoxxxoxxxoxx"
+   ],
+   "open_hat": [
+    "",
+    "......x.......x."
+   ],
+   "perc": [
+    "...x..x....x..x."
+   ],
+   "ghost_snare": 0.0,
+   "hat_rolls": 0.0,
+   "hat_vel_accent": 0.3,
+   "half_time": false
+  },
+  "bass": {
+   "preset": "pluck_bass",
+   "style": "follow_kick",
+   "octave": 2,
+   "glide": 0.0,
+   "follow_kick": true
+  },
+  "harmony": {
+   "presets": [
+    "epiano",
+    "layered_keys"
+   ],
+   "style": "offbeat",
+   "octave": 4
+  },
+  "lead": {
+   "presets": [
+    "guitar_pluck",
+    "marimba"
+   ],
+   "density": 0.55,
+   "octave": 5,
+   "ornament": "none"
+  },
+  "counter": {
+   "presets": [
+    "warm_pad"
+   ],
+   "octave": 4
+  },
+  "texture": null,
+  "arrangement": [
+   {
+    "kind": "intro",
+    "bars": 4,
+    "energy": 0.35,
+    "layers": [
+     "harmony",
+     "hat"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.7,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "perc",
+     "bass",
+     "harmony"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 0.95,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "verse",
+    "bars": 8,
+    "energy": 0.75,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead"
+    ]
+   },
+   {
+    "kind": "hook",
+    "bars": 8,
+    "energy": 1.0,
+    "layers": [
+     "kick",
+     "snare",
+     "hat",
+     "open_hat",
+     "perc",
+     "bass",
+     "harmony",
+     "lead",
+     "counter"
+    ]
+   },
+   {
+    "kind": "outro",
+    "bars": 4,
+    "energy": 0.3,
+    "layers": [
+     "harmony",
+     "perc"
+    ]
+   }
+  ],
+  "mix": {
+   "balance_genre": "afrobeats",
+   "target_lufs": -11.0,
+   "reverb_send": -15.0,
+   "delay_send": -19.0,
+   "drum_bus": true,
+   "sidechain_bass": 0.0,
+   "master_style": "punchy",
+   "crush": false
+  }
+ }
+]
