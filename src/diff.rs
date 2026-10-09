@@ -55,12 +55,15 @@ fn key_of(path: &str, item: &Value) -> Option<String> {
 
 fn note_key(n: &Value) -> String {
     let f = |k: &str| n.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let prob = n.get("prob").and_then(|v| v.as_f64()).unwrap_or(1.0);
     format!(
-        "{:.3}/{:.3}/{}/{:.2}",
+        "{:.3}/{:.3}/{}/{:.2}/{:.2}/{:.3}",
         f("start"),
         f("len"),
         f("pitch") as i64,
-        f("vel")
+        f("vel"),
+        prob,
+        f("offset")
     )
 }
 
@@ -263,6 +266,7 @@ mod tests {
             len: 1.0,
             pitch: 60,
             vel: 1.0,
+            ..Default::default()
         });
         let d = diff(&a, &b);
         let paths: Vec<&str> = d.iter().map(|c| c.path.as_str()).collect();

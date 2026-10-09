@@ -81,7 +81,7 @@ pub(crate) fn u_or(a: &Value, k: &str, d: u64) -> u64 {
 pub(crate) fn b_or(a: &Value, k: &str, d: bool) -> bool {
     a.get(k).and_then(|v| v.as_bool()).unwrap_or(d)
 }
-fn pitch_of(v: &Value) -> Result<u8> {
+pub(crate) fn pitch_of(v: &Value) -> Result<u8> {
     if let Some(n) = v.as_f64() {
         return Ok(n.clamp(0.0, 127.0) as u8);
     }
@@ -90,11 +90,11 @@ fn pitch_of(v: &Value) -> Result<u8> {
     }
     bail!("pitch must be a MIDI number or a note name like C4")
 }
-fn seed_of(a: &Value) -> u64 {
+pub(crate) fn seed_of(a: &Value) -> u64 {
     u_or(a, "seed", 0x5EED)
 }
 
-fn pattern_idx(p: &Project, a: &Value) -> Result<usize> {
+pub(crate) fn pattern_idx(p: &Project, a: &Value) -> Result<usize> {
     match s_opt(a, "pattern") {
         Some(name) => p.pattern_index(&name),
         None => {
@@ -106,7 +106,7 @@ fn pattern_idx(p: &Project, a: &Value) -> Result<usize> {
     }
 }
 
-fn instrument_from(a: &Value) -> Result<Option<Instrument>> {
+pub(crate) fn instrument_from(a: &Value) -> Result<Option<Instrument>> {
     if let Some(inst) = a.get("instrument").filter(|v| v.is_object()) {
         let i: Instrument =
             serde_json::from_value(inst.clone()).context("invalid instrument object")?;
@@ -120,7 +120,7 @@ fn instrument_from(a: &Value) -> Result<Option<Instrument>> {
     Ok(None)
 }
 
-fn ensure_track(
+pub(crate) fn ensure_track(
     p: &mut Project,
     name: &str,
     default_preset: &str,
@@ -183,11 +183,11 @@ pub(crate) fn effects_of<'a>(p: &'a mut Project, track: &str) -> Result<&'a mut 
     }
 }
 
-fn key_pc(p: &Project) -> u8 {
+pub(crate) fn key_pc(p: &Project) -> u8 {
     theory::pitch_class(&p.key_root).unwrap_or(0)
 }
 
-fn notes_json(notes: &[Note]) -> Value {
+pub(crate) fn notes_json(notes: &[Note]) -> Value {
     Value::Array(
         notes
             .iter()
@@ -196,7 +196,7 @@ fn notes_json(notes: &[Note]) -> Value {
     )
 }
 
-fn grid(notes: &[Note], steps: u32) -> String {
+pub(crate) fn grid(notes: &[Note], steps: u32) -> String {
     let mut g: Vec<char> = vec!['.'; steps as usize];
     for n in notes {
         let i = n.start.round() as usize;
@@ -270,19 +270,19 @@ fn catalog() -> Value {
 
 // ---------- genre profiles for generate_beat ----------
 
-struct Profile {
-    progression: &'static str,
-    bass_preset: &'static str,
-    bass_style: &'static str,
-    bass_octave: i32,
-    chord_preset: &'static str,
-    chord_style: &'static str,
-    lead_preset: &'static str,
-    lead_density: f32,
-    sidechain: bool,
+pub(crate) struct Profile {
+    pub(crate) progression: &'static str,
+    pub(crate) bass_preset: &'static str,
+    pub(crate) bass_style: &'static str,
+    pub(crate) bass_octave: i32,
+    pub(crate) chord_preset: &'static str,
+    pub(crate) chord_style: &'static str,
+    pub(crate) lead_preset: &'static str,
+    pub(crate) lead_density: f32,
+    pub(crate) sidechain: bool,
 }
 
-fn profile(style: &str) -> Profile {
+pub(crate) fn profile(style: &str) -> Profile {
     let p = |progression,
              bass_preset,
              bass_style,
@@ -458,13 +458,16 @@ pub fn tools_json() -> Value {
     )
 }
 
-fn pattern_prop() -> Value {
+pub(crate) fn pattern_prop() -> Value {
     json!({"type": "string", "description": "Pattern name (default: first pattern)"})
 }
 
 fn build() -> Vec<Tool> {
     let mut v = core_tools();
     v.extend(crate::tools_studio::tools());
+    v.extend(crate::tools_midi::tools());
+    v.extend(crate::tools_sound::tools());
+    v.extend(crate::tools_compose::tools());
     v
 }
 
@@ -495,9 +498,10 @@ fn core_tools() -> Vec<Tool> {
         // ----- project -----
         Tool {
             name: "new_project",
-            description: "Start a fresh project (one empty 4-bar pattern 'A', master compressor + limiter).",
+            description: "Start a fresh project (master compressor + limiter). patterns=[{name, bars}] creates your sections up front (default one empty 4-bar pattern 'A').",
             mutates: true,
             schema: || obj(json!({
+                "patterns": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "bars": {"type": "integer"}}}},
                 "name": {"type": "string"},
                 "bpm": {"type": "number", "minimum": 40, "maximum": 300},
                 "key": {"type": "string", "description": "Root note, e.g. C, F#, Bb"},
@@ -512,6 +516,15 @@ fn core_tools() -> Vec<Tool> {
                 if let Some(s) = s_opt(a, "scale") {
                     theory::scale_intervals(&s)?;
                     p.scale = s;
+                }
+                if let Some(Value::Array(ps)) = a.get("patterns") {
+                    let mut v = Vec::new();
+                    for x in ps {
+                        let n = x.get("name").and_then(|n| n.as_str()).ok_or_else(|| anyhow!("pattern needs a name"))?;
+                        if v.iter().any(|q: &Pattern| q.name.eq_ignore_ascii_case(n)) { bail!("duplicate pattern '{n}'"); }
+                        v.push(Pattern::new(n, x.get("bars").and_then(|b| b.as_u64()).unwrap_or(4) as u32));
+                    }
+                    if !v.is_empty() { p.patterns = v; }
                 }
                 e.project = p;
                 Ok(summary(&e.project))
@@ -532,7 +545,7 @@ fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "save_project",
-            description: "Save the project as JSON.",
+            description: "Save the project as JSON. Snapshots (A/B versions) are saved alongside in <path>.snapshots.json and come back with load_project, so compare_variants works across sessions.",
             mutates: false,
             schema: || obj(json!({"path": {"type": "string", "description": "File path, e.g. mybeat.beatbox.json"}}), &["path"]),
             run: |e, a| {
@@ -541,7 +554,14 @@ fn core_tools() -> Vec<Tool> {
                     std::fs::create_dir_all(parent).ok();
                 }
                 std::fs::write(&path, serde_json::to_string_pretty(&e.project)?)?;
-                Ok(json!({"saved": path}))
+                let side = snapshots_path(&path);
+                if e.snapshots.is_empty() {
+                    let _ = std::fs::remove_file(&side);
+                } else {
+                    let snaps: Vec<Value> = e.snapshots.iter().map(|(n, s)| json!({"name": n, "note": s.note, "revision": s.revision, "project": s.project})).collect();
+                    std::fs::write(&side, serde_json::to_string(&snaps)?)?;
+                }
+                Ok(json!({"saved": path, "snapshots": e.snapshots.len()}))
             },
         },
         Tool {
@@ -554,7 +574,21 @@ fn core_tools() -> Vec<Tool> {
                 let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
                 let p: Project = serde_json::from_str(&text).context("not a beatbox project")?;
                 e.replace_project(p);
-                Ok(summary(&e.project))
+                let mut loaded = 0;
+                if let Ok(t) = std::fs::read_to_string(snapshots_path(&path)) {
+                    if let Ok(Value::Array(v)) = serde_json::from_str::<Value>(&t) {
+                        e.snapshots.clear();
+                        for s in v {
+                            if let (Some(n), Ok(pr)) = (s["name"].as_str(), serde_json::from_value::<Project>(s["project"].clone())) {
+                                e.snapshots.push((n.to_string(), crate::engine::Snapshot { project: pr, note: s["note"].as_str().unwrap_or("").to_string(), revision: s["revision"].as_u64().unwrap_or(0) }));
+                                loaded += 1;
+                            }
+                        }
+                    }
+                }
+                let mut out = summary(&e.project);
+                out["snapshots_loaded"] = json!(loaded);
+                Ok(out)
             },
         },
         Tool {
@@ -720,7 +754,16 @@ fn core_tools() -> Vec<Tool> {
                 if let Some(v) = a.get("solo").and_then(|v| v.as_bool()) {
                     t.solo = v;
                 }
-                Ok(json!({"track": t.name, "volume_db": t.volume_db, "pan": t.pan, "mute": t.mute, "solo": t.solo}))
+                let mut out = json!({"track": t.name, "volume_db": t.volume_db, "pan": t.pan, "mute": t.mute, "solo": t.solo});
+                let tname = t.name.clone();
+                let mut warn = Vec::new();
+                for (k, param) in [("volume_db", "volume"), ("pan", "pan")] {
+                    if a.get(k).is_some() && e.project.automation.iter().any(|l| l.enabled && !l.points.is_empty() && l.is_target(&tname, param)) {
+                        warn.push(format!("automation on '{param}' overrides this fader: edit the lane (set_automation_points / clear_automation {{track: '{tname}', param: '{param}'}}) instead"));
+                    }
+                }
+                if !warn.is_empty() { out["warnings"] = json!(warn); }
+                Ok(out)
             },
         },
         // ----- effects -----
@@ -823,11 +866,12 @@ fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "remove_pattern",
-            description: "Delete a pattern (also removes it from the arrangement).",
+            description: "Delete a pattern (also removes it from the arrangement). Accepts `pattern` or `name`.",
             mutates: true,
-            schema: || obj(json!({"pattern": {"type": "string"}}), &["pattern"]),
+            schema: || obj(json!({"pattern": {"type": "string"}, "name": {"type": "string"}}), &[]),
             run: |e, a| {
-                let i = e.project.pattern_index(&s_req(a, "pattern")?)?;
+                let key = s_opt(a, "pattern").or_else(|| s_opt(a, "name")).ok_or_else(|| anyhow!("missing required argument 'pattern'"))?;
+                let i = e.project.pattern_index(&key)?;
                 if e.project.patterns.len() == 1 {
                     bail!("can't remove the only pattern");
                 }
@@ -897,7 +941,7 @@ fn core_tools() -> Vec<Tool> {
                 notes.retain(|n| !(n.start >= step && n.start < step + 1.0));
                 let on = notes.len() == before;
                 if on {
-                    notes.push(Note { start: step, len: 1.0, pitch, vel });
+                    notes.push(Note::new(step, 1.0, pitch, vel));
                     notes.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
                 }
                 Ok(json!({"track": track, "step": step, "on": on}))
@@ -905,14 +949,15 @@ fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "add_notes",
-            description: "Write notes into a track: notes=[{start (steps), len (steps, default 1), pitch (MIDI or 'C4'), vel (0-1, default 0.8)}]. replace=true clears the track in that pattern first. Use this to hand-write melodies, chords, basslines or drum hits.",
+            description: "Write notes into a track: notes=[{start (steps), len (steps, default 1), pitch (MIDI or 'C4'), vel (0-1, default 0.8), prob (0-1 chance per pass, default 1), offset (microtiming in steps -0.5..0.5), slide_to (pitch the note glides into by its end: 808 / synth slides, glide time = instrument glide_ms)}]. Starts may be fractional (12.5 = a 32nd after step 12) (aliases: duration, velocity 0-127). replace=true clears the track in that pattern first. Use this to hand-write melodies, chords, basslines or drum hits.",
             mutates: true,
             schema: || obj(json!({
                 "track": {"type": "string"},
                 "pattern": pattern_prop(),
                 "replace": {"type": "boolean"},
                 "notes": {"type": "array", "items": {"type": "object", "properties": {
-                    "start": {"type": "number"}, "len": {"type": "number"}, "pitch": {}, "vel": {"type": "number"}
+                    "start": {"type": "number"}, "len": {"type": "number"}, "pitch": {}, "vel": {"type": "number"},
+                    "prob": {"type": "number", "minimum": 0, "maximum": 1}, "offset": {"type": "number", "minimum": -0.5, "maximum": 0.5}, "slide_to": {}
                 }, "required": ["start", "pitch"]}}
             }), &["track", "notes"]),
             run: |e, a| {
@@ -923,9 +968,15 @@ fn core_tools() -> Vec<Tool> {
                 for n in arr {
                     new.push(Note {
                         start: f_opt(n, "start").ok_or_else(|| anyhow!("note missing start"))?.max(0.0),
-                        len: f_or(n, "len", 1.0).max(0.05),
+                        len: f_opt(n, "len").or(f_opt(n, "duration")).unwrap_or(1.0).max(0.05),
                         pitch: pitch_of(n.get("pitch").ok_or_else(|| anyhow!("note missing pitch"))?)?,
-                        vel: f_or(n, "vel", 0.8).clamp(0.0, 1.0),
+                        vel: f_opt(n, "vel")
+                            .or(f_opt(n, "velocity").map(|v| if v > 1.0 { v / 127.0 } else { v }))
+                            .unwrap_or(0.8)
+                            .clamp(0.0, 1.0),
+                        prob: f_or(n, "prob", 1.0).clamp(0.0, 1.0),
+                        offset: f_or(n, "offset", 0.0).clamp(-0.5, 0.5),
+                        slide_to: n.get("slide_to").map(pitch_of).transpose()?,
                     });
                 }
                 let pat = &mut e.project.patterns[pi];
@@ -1403,7 +1454,13 @@ fn core_tools() -> Vec<Tool> {
     ]
 }
 
-fn register_sample(e: &mut Engine, mut info: SampleInfo) -> Result<Value> {
+pub(crate) fn snapshots_path(p: &std::path::Path) -> std::path::PathBuf {
+    let mut s = p.as_os_str().to_owned();
+    s.push(".snapshots.json");
+    std::path::PathBuf::from(s)
+}
+
+pub(crate) fn register_sample(e: &mut Engine, mut info: SampleInfo) -> Result<Value> {
     let data = samples::decode_file(std::path::Path::new(&info.path))?;
     info.duration = (data.len() as f32 / crate::dsp::SR * 100.0).round() / 100.0;
     let mut name = info.name.clone();

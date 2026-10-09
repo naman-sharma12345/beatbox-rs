@@ -3,7 +3,7 @@
 use crate::automation::{self, parse_target, AutomationLane, Target};
 use crate::dsp::*;
 use crate::fx::{Effect, FxContext};
-use crate::instruments::{render_note, Instrument};
+use crate::instruments::{render_note_slide, Instrument};
 use crate::project::Project;
 use crate::samples::SampleBank;
 use anyhow::Result;
@@ -19,6 +19,8 @@ pub struct Event {
     pub gate: f32,
     pub pitch: f32,
     pub vel: f32,
+    /// Glide target pitch (808 / synth slides).
+    pub slide_to: Option<f32>,
 }
 
 pub struct Stem {
@@ -27,10 +29,63 @@ pub struct Stem {
     pub right: Vec<f32>,
 }
 
+/// Per-track measurements taken during the render (no audio kept), so the
+/// analyzer works on 30+ track songs without holding every stem in RAM.
+#[derive(Clone, Debug)]
+pub struct TrackInfo {
+    pub name: String,
+    pub stats: crate::analysis::Stats,
+    /// Sum of squares over both channels.
+    pub energy: f64,
+    /// RMS (dBFS) measured only over 400 ms blocks where the track sounds.
+    pub active_rms_db: f32,
+    /// Percent of the song where the track sounds.
+    pub active_percent: f32,
+    /// Mean-square energy per 400 ms block (for per-section analysis).
+    pub blocks: Vec<f32>,
+}
+
+/// Length of the analysis blocks in `TrackInfo::blocks`.
+pub const INFO_BLOCK: usize = (SR as usize) * 2 / 5;
+
+pub fn track_info(name: &str, l: &[f32], r: &[f32]) -> TrackInfo {
+    let stats = crate::analysis::stats(l, r);
+    let n = l.len().min(r.len());
+    let mut energy = 0.0f64;
+    let mut blocks = Vec::with_capacity(n / INFO_BLOCK + 1);
+    for c in 0..n.div_ceil(INFO_BLOCK) {
+        let (a, b) = (c * INFO_BLOCK, ((c + 1) * INFO_BLOCK).min(n));
+        let mut e = 0.0f64;
+        for i in a..b {
+            e += (l[i] as f64).powi(2) + (r[i] as f64).powi(2);
+        }
+        energy += e;
+        blocks.push((e / (2.0 * (b - a).max(1) as f64)) as f32);
+    }
+    let gate = 1e-6f32; // -60 dBFS mean square
+    let active: Vec<f32> = blocks.iter().copied().filter(|b| *b > gate).collect();
+    let active_rms_db = if active.is_empty() {
+        -120.0
+    } else {
+        let ms = active.iter().sum::<f32>() / active.len() as f32;
+        ((10.0 * ms.max(1e-12).log10()) * 10.0).round() / 10.0
+    };
+    TrackInfo {
+        name: name.to_string(),
+        stats,
+        energy,
+        active_rms_db,
+        active_percent: (100.0 * active.len() as f32 / blocks.len().max(1) as f32).round(),
+        blocks,
+    }
+}
+
 pub struct Mix {
     pub left: Vec<f32>,
     pub right: Vec<f32>,
     pub stems: Vec<Stem>,
+    /// Per-track measurements (with `keep_stems` or `track_stats`).
+    pub track_info: Vec<TrackInfo>,
     /// Post-fader output of every bus (only with `keep_stems`).
     pub bus_stems: Vec<Stem>,
     pub seconds: f32,
@@ -43,6 +98,8 @@ pub struct RenderOptions {
     /// Seconds of tail after the last bar (reverb/delay ring-out).
     pub tail: f32,
     pub keep_stems: bool,
+    /// Measure every track (TrackInfo) without keeping its audio.
+    pub track_stats: bool,
     /// Render only this section range of the song (in steps), if set.
     pub step_range: Option<(u32, u32)>,
 }
@@ -53,9 +110,22 @@ impl Default for RenderOptions {
             loops: 1,
             tail: 1.5,
             keep_stems: false,
+            track_stats: false,
             step_range: None,
         }
     }
+}
+
+/// Deterministic per-pass dice roll for a note with probability `p`
+/// (same project = same render, but each pattern pass rolls differently).
+pub fn chance_hit(track: usize, note: usize, pass_offset: u32, p: f32) -> bool {
+    let mut x = (track as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (note as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+        ^ (pass_offset as u64).wrapping_mul(0x1656_67B1_9E37_79F9);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    x ^= x >> 33;
+    ((x >> 11) as f64 / (1u64 << 53) as f64) < p as f64
 }
 
 /// Build the event list for every track (index aligned with project.tracks).
@@ -73,12 +143,16 @@ pub fn schedule(p: &Project, opts: &RenderOptions) -> (Vec<Vec<Event>>, usize) {
             let pat = &p.patterns[pi];
             for _ in 0..sec.repeats.max(1) {
                 for (ti, track) in p.tracks.iter().enumerate() {
-                    for n in pat.notes(&track.name) {
+                    for (ni, n) in pat.notes(&track.name).iter().enumerate() {
+                        if n.prob < 1.0 && !chance_hit(ti, ni, offset, n.prob) {
+                            continue;
+                        }
                         let mut s = n.start;
                         if s.fract() == 0.0 && (s as i64) % 2 == 1 {
                             s += swing_steps;
                         }
-                        let abs = offset as f32 + s;
+                        s += n.offset.clamp(-0.5, 0.5);
+                        let abs = (offset as f32 + s).max(0.0);
                         if abs < r0 as f32 || abs >= r1 as f32 {
                             continue;
                         }
@@ -88,6 +162,7 @@ pub fn schedule(p: &Project, opts: &RenderOptions) -> (Vec<Vec<Event>>, usize) {
                             gate: (n.len * step).max(0.01),
                             pitch: n.pitch as f32,
                             vel: n.vel,
+                            slide_to: n.slide_to.map(|x| x as f32),
                         });
                     }
                 }
@@ -111,6 +186,9 @@ pub struct Timeline {
     pub beats_per_sample: f32,
     /// Song length in beats (automation wraps on multi-loop renders).
     pub song_beats: f32,
+    /// Number of loops rendered; past the last one (the reverb tail) every
+    /// lane holds its final value instead of wrapping back to the start.
+    pub loops: u32,
 }
 
 impl Timeline {
@@ -120,15 +198,19 @@ impl Timeline {
             beat0: r0 as f32 / 4.0,
             beats_per_sample: 1.0 / (4.0 * p.step_secs() * SR),
             song_beats: p.song_beats(),
+            loops: opts.loops.max(1),
         }
     }
     pub fn beat_at(&self, sample: usize) -> f32 {
         let b = self.beat0 + sample as f32 * self.beats_per_sample;
-        if self.song_beats > 0.0 && b >= self.song_beats {
-            b % self.song_beats
-        } else {
-            b
+        if self.song_beats <= 0.0 || b < self.song_beats {
+            return b;
         }
+        if b >= self.song_beats * self.loops as f32 {
+            // tail: hold the end of the song
+            return self.song_beats;
+        }
+        b % self.song_beats
     }
 }
 
@@ -349,10 +431,11 @@ pub fn render(p: &Project, bank: &SampleBank, opts: &RenderOptions) -> Result<Mi
         .map(|_| (vec![0.0f32; total], vec![0.0f32; total]))
         .collect();
     let mut stems = Vec::new();
+    let mut track_infos = Vec::new();
 
     for (ti, track) in p.tracks.iter().enumerate() {
         let audible = !track.mute && (!any_solo || track.solo);
-        if !audible && !opts.keep_stems {
+        if !audible && !opts.keep_stems && !opts.track_stats {
             continue;
         }
         let lanes = owner_lanes(p, &track.name);
@@ -368,8 +451,16 @@ pub fn render(p: &Project, bank: &SampleBank, opts: &RenderOptions) -> Result<Mi
         } else {
             serde_json::to_value(&track.instrument).unwrap_or_default()
         };
+        let spread = track.instrument.stereo_spread().clamp(0.0, 1.0);
         let mut mono = vec![0.0f32; total];
-        let mut cache: HashMap<(i32, u8, u32, Vec<i64>), Vec<f32>> = HashMap::new();
+        // decorrelated second render for stereo unison spread
+        let mut mono2 = if spread > 0.0 {
+            vec![0.0f32; total]
+        } else {
+            Vec::new()
+        };
+        let mut cache: HashMap<(i32, u8, u32, Vec<i64>, i32), (Vec<f32>, Vec<f32>)> =
+            HashMap::new();
         for (k, e) in events[ti].iter().enumerate() {
             if e.start >= total {
                 continue;
@@ -385,23 +476,44 @@ pub fn render(p: &Project, bank: &SampleBank, opts: &RenderOptions) -> Result<Mi
                 (e.vel * 127.0) as u8,
                 (e.gate * 1000.0) as u32,
                 vals.iter().map(|v| (v * 1000.0).round() as i64).collect(),
+                e.slide_to.map(|x| (x * 10.0) as i32).unwrap_or(-1),
             );
             let seed = (ti as u64) << 32 | (k as u64 % 7);
-            let buf = cache.entry(key).or_insert_with(|| {
-                if inst_lanes.is_empty() {
-                    return render_note(&track.instrument, e.pitch, e.vel, e.gate, bank, seed);
-                }
-                let mut v = base_inst.clone();
-                for ((_, path), x) in inst_lanes.iter().zip(vals.iter()) {
-                    automation::set_path(&mut v, path, *x);
-                }
-                let inst: Instrument =
-                    serde_json::from_value(v).unwrap_or_else(|_| track.instrument.clone());
-                render_note(&inst, e.pitch, e.vel, e.gate, bank, seed)
+            let (buf, buf2) = cache.entry(key).or_insert_with(|| {
+                let inst: Instrument = if inst_lanes.is_empty() {
+                    track.instrument.clone()
+                } else {
+                    let mut v = base_inst.clone();
+                    for ((_, path), x) in inst_lanes.iter().zip(vals.iter()) {
+                        automation::set_path(&mut v, path, *x);
+                    }
+                    serde_json::from_value(v).unwrap_or_else(|_| track.instrument.clone())
+                };
+                let a = render_note_slide(&inst, e.pitch, e.vel, e.gate, bank, seed, e.slide_to);
+                let b = if spread > 0.0 {
+                    render_note_slide(
+                        &inst,
+                        e.pitch,
+                        e.vel,
+                        e.gate,
+                        bank,
+                        seed ^ 0xA5A5_5A5A,
+                        e.slide_to,
+                    )
+                } else {
+                    Vec::new()
+                };
+                (a, b)
             });
             let end = (e.start + buf.len()).min(total);
             for (o, s) in mono[e.start..end].iter_mut().zip(buf.iter()) {
                 *o += *s;
+            }
+            if spread > 0.0 {
+                let end = (e.start + buf2.len()).min(total);
+                for (o, s) in mono2[e.start..end].iter_mut().zip(buf2.iter()) {
+                    *o += *s;
+                }
             }
         }
         // pan (equal power), optionally automated
@@ -424,10 +536,17 @@ pub fn render(p: &Project, bank: &SampleBank, opts: &RenderOptions) -> Result<Mi
                 Some(c) => gains(c[i]),
                 None => (gl, gr),
             };
+            let xr = if spread > 0.0 {
+                // left = voice set A, right = blend toward the independent set B
+                x * (1.0 - spread) + mono2[i] * spread
+            } else {
+                *x
+            };
             l.push(x * a);
-            r.push(x * b);
+            r.push(xr * b);
         }
         drop(mono);
+        drop(mono2);
         process_chain(&track.effects, &lanes, &mut l, &mut r, &ctx, &tl);
         let pre: Option<(Vec<f32>, Vec<f32>)> =
             if audible && track.sends.iter().any(|s| s.pre_fader) {
@@ -464,6 +583,9 @@ pub fn render(p: &Project, bank: &SampleBank, opts: &RenderOptions) -> Result<Mi
                 dl[i] += l[i];
                 dr[i] += r[i];
             }
+        }
+        if opts.keep_stems || opts.track_stats {
+            track_infos.push(track_info(&track.name, &l, &r));
         }
         if opts.keep_stems {
             stems.push(Stem {
@@ -531,6 +653,7 @@ pub fn render(p: &Project, bank: &SampleBank, opts: &RenderOptions) -> Result<Mi
         left: ml,
         right: mr,
         stems,
+        track_info: track_infos,
         bus_stems,
     })
 }

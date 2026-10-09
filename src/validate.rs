@@ -702,17 +702,31 @@ pub fn master(mix: &Mix, loud: &Loudness, t: &MasterTargets) -> Vec<Check> {
             None,
         ));
     }
-    for s in &mix.stems {
-        let pk = s
-            .left
+    let peaks: Vec<(String, f32)> = if mix.track_info.is_empty() {
+        mix.stems
             .iter()
-            .chain(s.right.iter())
-            .fold(0.0f32, |m, v| m.max(v.abs()));
-        if pk < 1e-4 {
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    s.left
+                        .iter()
+                        .chain(s.right.iter())
+                        .fold(0.0f32, |m, v| m.max(v.abs())),
+                )
+            })
+            .collect()
+    } else {
+        mix.track_info
+            .iter()
+            .map(|t| (t.name.clone(), crate::dsp::db_to_gain(t.stats.peak_dbfs)))
+            .collect()
+    };
+    for (name, pk) in &peaks {
+        if *pk < 1e-4 {
             out.push(item(
                 "empty_tracks",
                 Status::Warn,
-                format!("track '{}' renders silent", s.name),
+                format!("track '{name}' renders silent"),
                 Some("check notes, mute/solo, volume, routing"),
             ));
         }

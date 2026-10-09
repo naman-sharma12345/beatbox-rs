@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 // ---------- helpers ----------
 
 /// Canonical owner name: a track, a bus or "master".
-fn owner_of(p: &Project, key: &str) -> Result<String> {
+pub(crate) fn owner_of(p: &Project, key: &str) -> Result<String> {
     if key.eq_ignore_ascii_case("master") {
         return Ok("master".into());
     }
@@ -42,7 +42,7 @@ fn owner_of(p: &Project, key: &str) -> Result<String> {
     )
 }
 
-fn chain_of<'a>(p: &'a Project, owner: &str) -> &'a [Effect] {
+pub(crate) fn chain_of<'a>(p: &'a Project, owner: &str) -> &'a [Effect] {
     if owner.eq_ignore_ascii_case("master") {
         &p.master_effects
     } else if let Ok(i) = p.track_index(owner) {
@@ -55,7 +55,7 @@ fn chain_of<'a>(p: &'a Project, owner: &str) -> &'a [Effect] {
 }
 
 /// The current static value of an automation target (validates it too).
-fn static_value(p: &Project, owner: &str, param: &str) -> Result<f32> {
+pub(crate) fn static_value(p: &Project, owner: &str, param: &str) -> Result<f32> {
     let t = parse_target(param).ok_or_else(|| {
         anyhow!("unknown parameter '{param}'. Use volume, pan, instrument.<param> (e.g. instrument.cutoff) or fx.<index>.<param> (e.g. fx.0.cutoff). list_automation shows every option.")
     })?;
@@ -123,7 +123,7 @@ fn static_value(p: &Project, owner: &str, param: &str) -> Result<f32> {
 }
 
 /// Every numeric leaf under `v` as `prefix.path`.
-fn numeric_paths(v: &Value, prefix: &str) -> Vec<String> {
+pub(crate) fn numeric_paths(v: &Value, prefix: &str) -> Vec<String> {
     let mut out = Vec::new();
     if let Value::Object(o) = v {
         for (k, x) in o {
@@ -196,7 +196,7 @@ fn points_from(a: &Value, default_curve: Curve) -> Result<Vec<AutoPoint>> {
         .collect()
 }
 
-fn clamp_value(param: &str, v: f32) -> f32 {
+pub(crate) fn clamp_value(param: &str, v: f32) -> f32 {
     match parse_target(param) {
         Some(Target::Volume) => v.clamp(-100.0, 12.0),
         Some(Target::Pan) => v.clamp(-1.0, 1.0),
@@ -226,7 +226,7 @@ fn lane_json(l: &AutomationLane) -> Value {
     })
 }
 
-fn lane_mut<'a>(p: &'a mut Project, owner: &str, param: &str) -> &'a mut AutomationLane {
+pub(crate) fn lane_mut<'a>(p: &'a mut Project, owner: &str, param: &str) -> &'a mut AutomationLane {
     let pos = p.automation.iter().position(|l| l.is_target(owner, param));
     match pos {
         Some(i) => &mut p.automation[i],
@@ -260,7 +260,7 @@ pub fn reindex_fx_lanes(p: &mut Project, owner: &str, removed: usize) -> usize {
 
 /// Parse a tempo-synced rate: number of beats, or "1/4", "1/8", "1/16",
 /// "1/2", "1 bar", "2 bars", "1/8t" (triplet), "1/4." (dotted).
-fn parse_rate(v: Option<&Value>) -> Result<f32> {
+pub(crate) fn parse_rate(v: Option<&Value>) -> Result<f32> {
     let Some(v) = v else { return Ok(1.0) };
     if let Some(n) = v.as_f64() {
         return Ok(n as f32);
@@ -301,6 +301,7 @@ fn bus_preset(kind: &str) -> Result<Vec<Effect>> {
                 mode: crate::dsp::FilterMode::Highpass,
                 cutoff: 280.0,
                 resonance: 0.1,
+                ..Default::default()
             }),
             fx(
                 "reverb",
@@ -312,6 +313,7 @@ fn bus_preset(kind: &str) -> Result<Vec<Effect>> {
                 mode: crate::dsp::FilterMode::Highpass,
                 cutoff: 220.0,
                 resonance: 0.1,
+                ..Default::default()
             }),
             fx(
                 "reverb",
@@ -323,6 +325,7 @@ fn bus_preset(kind: &str) -> Result<Vec<Effect>> {
                 mode: crate::dsp::FilterMode::Highpass,
                 cutoff: 350.0,
                 resonance: 0.1,
+                ..Default::default()
             }),
             fx(
                 "delay",
@@ -410,7 +413,7 @@ fn variant_metrics(e: &mut Engine, name: &str) -> Result<Value> {
     }))
 }
 
-fn targets_from(a: &Value) -> validate::MasterTargets {
+pub(crate) fn targets_from(a: &Value) -> validate::MasterTargets {
     let d = validate::MasterTargets::default();
     validate::MasterTargets {
         lufs: f_opt(a, "target_lufs").unwrap_or(d.lufs),
@@ -567,7 +570,8 @@ pub fn tools() -> Vec<Tool> {
                 "bars": {"type": "number"},
                 "min": {"type": "number"},
                 "max": {"type": "number"},
-                "rate": {"description": "pump/lfo period: beats (number) or '1/4', '1/8', '1/16', '1/8t', '1/4.', '1 bar'"}
+                "rate": {"description": "pump/lfo period: beats (number) or '1/4', '1/8', '1/16', '1/8t', '1/4.', '1 bar'"},
+                "hold": {"type": "boolean", "description": "keep the final value after the range (default false: the parameter returns to its static value)"}
             }), &["track", "param", "shape"]),
             run: |e, a| {
                 let owner = owner_of(&e.project, &s_req(a, "track")?)?;
@@ -609,12 +613,28 @@ pub fn tools() -> Vec<Tool> {
                 let log = automation::is_log_param(&param) && lo > 0.0 && hi > 0.0;
                 let pts = automation::generate(shape, start, end, lo, hi, rate, log);
                 let n = pts.len();
+                let song_end = e.project.song_beats();
+                let hold = crate::tools::b_or(a, "hold", false);
                 let lane = lane_mut(&mut e.project, &owner, &param);
+                let had_before = lane.points.iter().any(|q| q.beat < start - 1e-4);
                 lane.points.retain(|q| q.beat < start - 1e-4 || q.beat > end + 1e-4);
+                // a lane that didn't exist before starts at the static value
+                if !had_before && start > 0.01 {
+                    lane.points.push(AutoPoint { beat: 0.0, value: current, curve: Curve::Step });
+                    lane.points.push(AutoPoint { beat: start - 0.01, value: current, curve: Curve::Linear });
+                }
                 lane.points.extend(pts);
+                // restore the static value after the range unless asked to hold
+                let restored = !hold && end < song_end - 0.01 && !lane.points.iter().any(|q| q.beat > end + 1e-4);
+                if restored {
+                    if let Some(last) = lane.points.iter_mut().filter(|q| (q.beat - end).abs() < 1e-3).last() {
+                        last.curve = Curve::Step;
+                    }
+                    lane.points.push(AutoPoint { beat: end + 0.01, value: current, curve: Curve::Step });
+                }
                 lane.enabled = true;
                 lane.sort();
-                Ok(json!({"lane": lane_json(lane), "shape": shape_s, "beats": [start, end], "range": [lo, hi], "rate_beats": rate, "points_written": n}))
+                Ok(json!({"lane": lane_json(lane), "shape": shape_s, "beats": [start, end], "range": [lo, hi], "rate_beats": rate, "points_written": n, "restores_to": if restored { json!(current) } else { Value::Null }}))
             },
         },
         // ----- buses / sends / routing -----

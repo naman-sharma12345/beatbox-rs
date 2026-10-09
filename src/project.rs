@@ -21,6 +21,56 @@ pub struct Note {
     pub pitch: u8,
     /// Velocity 0..1.
     pub vel: f32,
+    /// Chance this note plays on each pass, 0..1 (1 = always). Lets a loop
+    /// breathe: ghost hats at 0.6, a fill hit at 0.3.
+    #[serde(default = "one_f32", skip_serializing_if = "is_one")]
+    pub prob: f32,
+    /// Microtiming nudge in steps (-0.5..0.5) applied after swing:
+    /// negative = push (early), positive = lay back (late).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub offset: f32,
+    /// Glide into this pitch by the end of the note (808 / synth slides).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slide_to: Option<u8>,
+}
+
+impl Default for Note {
+    fn default() -> Self {
+        Note {
+            start: 0.0,
+            len: 1.0,
+            pitch: 60,
+            vel: 0.8,
+            prob: 1.0,
+            offset: 0.0,
+            slide_to: None,
+        }
+    }
+}
+
+impl Note {
+    pub fn new(start: f32, len: f32, pitch: u8, vel: f32) -> Self {
+        Note {
+            start,
+            len,
+            pitch,
+            vel,
+            ..Default::default()
+        }
+    }
+    pub fn end(&self) -> f32 {
+        self.start + self.len
+    }
+}
+
+fn one_f32() -> f32 {
+    1.0
+}
+fn is_one(x: &f32) -> bool {
+    (*x - 1.0).abs() < 1e-9
+}
+fn is_zero(x: &f32) -> bool {
+    *x == 0.0
 }
 
 fn zero() -> f32 {
@@ -170,6 +220,31 @@ pub struct Project {
     pub buses: Vec<Bus>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub automation: Vec<AutomationLane>,
+    /// Macro knobs: one 0..1 value driving several parameters.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub macros: Vec<Macro>,
+}
+
+/// One parameter a macro drives, mapped from the macro's 0..1 value.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MacroTarget {
+    /// Track, bus or "master".
+    pub track: String,
+    /// volume, pan, instrument.<path> or fx.<i>.<path>
+    pub param: String,
+    pub min: f32,
+    pub max: f32,
+    /// 1 = linear, >1 = slow start (exponential feel), <1 = fast start.
+    #[serde(default = "one_f32")]
+    pub curve: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Macro {
+    pub name: String,
+    #[serde(default)]
+    pub value: f32,
+    pub targets: Vec<MacroTarget>,
 }
 
 impl Default for Project {
@@ -196,6 +271,7 @@ impl Project {
                     attack_ms: 25.0,
                     release_ms: 150.0,
                     makeup_db: 2.0,
+                    ..Default::default()
                 }),
                 Effect::Limiter(LimiterFx {
                     ceiling_db: -1.0,
@@ -207,6 +283,7 @@ impl Project {
             samples: Vec::new(),
             buses: Vec::new(),
             automation: Vec::new(),
+            macros: Vec::new(),
         }
     }
 

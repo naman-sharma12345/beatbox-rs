@@ -1,5 +1,8 @@
 //! Stereo effects rack: filter, EQ, drive, bitcrush, tempo-synced delay,
-//! reverb, chorus, compressor, sidechain ducking, stereo width, gain, limiter.
+//! reverb, chorus, compressor, sidechain ducking, stereo width, gain, limiter,
+//! plus the studio processors in `fx_extra` (parametric/dynamic EQ,
+//! multiband, de-esser, soft clipper, gate, phaser, flanger, stutter,
+//! pitch shift, convolution reverb, auto-pan). Any effect can be bypassed.
 
 use crate::dsp::*;
 use serde::{Deserialize, Serialize};
@@ -13,13 +16,22 @@ pub struct FxContext<'a> {
     pub triggers: &'a HashMap<String, Vec<usize>>,
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 macro_rules! fx_struct {
     ($name:ident { $($field:ident : $ty:ty = $def:expr),* $(,)? }) => {
         #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
         #[serde(default)]
-        pub struct $name { $(pub $field: $ty),* }
+        pub struct $name {
+            $(pub $field: $ty,)*
+            /// Bypassed effects stay in the chain but pass audio untouched.
+            #[serde(skip_serializing_if = "is_false")]
+            pub bypass: bool,
+        }
         impl Default for $name {
-            fn default() -> Self { $name { $($field: $def),* } }
+            fn default() -> Self { $name { $($field: $def,)* bypass: false } }
         }
     };
 }
@@ -89,6 +101,164 @@ fx_struct!(TransientFx {
     sustain: f32 = 0.0
 });
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EqBandKind {
+    #[default]
+    Bell,
+    LowShelf,
+    HighShelf,
+    LowCut,
+    HighCut,
+    Notch,
+}
+
+/// One band of the parametric EQ.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct EqBand {
+    pub kind: EqBandKind,
+    pub freq: f32,
+    pub gain_db: f32,
+    pub q: f32,
+    /// Cut filters only: 1 = 12 dB/oct, 2 = 24, 4 = 48.
+    pub stages: u32,
+    pub enabled: bool,
+}
+
+impl Default for EqBand {
+    fn default() -> Self {
+        EqBand {
+            kind: EqBandKind::Bell,
+            freq: 1000.0,
+            gain_db: 0.0,
+            q: 0.707,
+            stages: 1,
+            enabled: true,
+        }
+    }
+}
+
+fx_struct!(ParametricEqFx {
+    bands: Vec<EqBand> = vec![EqBand::default()],
+    output_db: f32 = 0.0
+});
+fx_struct!(MultibandFx {
+    low_freq: f32 = 200.0,
+    high_freq: f32 = 3000.0,
+    low_threshold_db: f32 = -20.0,
+    mid_threshold_db: f32 = -20.0,
+    high_threshold_db: f32 = -22.0,
+    low_ratio: f32 = 3.0,
+    mid_ratio: f32 = 2.0,
+    high_ratio: f32 = 2.5,
+    attack_ms: f32 = 15.0,
+    release_ms: f32 = 150.0,
+    low_gain_db: f32 = 0.0,
+    mid_gain_db: f32 = 0.0,
+    high_gain_db: f32 = 0.0,
+    mix: f32 = 1.0
+});
+fx_struct!(DynamicEqFx {
+    freq: f32 = 3000.0,
+    q: f32 = 1.5,
+    threshold_db: f32 = -26.0,
+    ratio: f32 = 3.0,
+    range_db: f32 = -8.0,
+    attack_ms: f32 = 3.0,
+    release_ms: f32 = 90.0
+});
+fx_struct!(DeesserFx {
+    freq: f32 = 6000.0,
+    threshold_db: f32 = -30.0,
+    range_db: f32 = -10.0,
+    release_ms: f32 = 60.0
+});
+fx_struct!(SoftClipFx {
+    threshold_db: f32 = -4.0,
+    ceiling_db: f32 = -0.3,
+    drive_db: f32 = 0.0,
+    mix: f32 = 1.0,
+    oversample: bool = true
+});
+fx_struct!(GateFx {
+    threshold_db: f32 = -40.0,
+    range_db: f32 = -60.0,
+    attack_ms: f32 = 0.5,
+    hold_ms: f32 = 30.0,
+    release_ms: f32 = 80.0
+});
+fx_struct!(PhaserFx {
+    rate_hz: f32 = 0.4,
+    sync_steps: f32 = 0.0,
+    depth: f32 = 0.7,
+    center_hz: f32 = 900.0,
+    feedback: f32 = 0.4,
+    stages: u32 = 6,
+    mix: f32 = 0.5
+});
+fx_struct!(FlangerFx {
+    rate_hz: f32 = 0.2,
+    sync_steps: f32 = 0.0,
+    delay_ms: f32 = 1.5,
+    depth_ms: f32 = 2.5,
+    feedback: f32 = 0.5,
+    mix: f32 = 0.5
+});
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StutterMode {
+    #[default]
+    Gate,
+    Stutter,
+    HalfTime,
+    Reverse,
+    TapeStop,
+}
+
+fx_struct!(StutterFx {
+    mode: StutterMode = StutterMode::Gate,
+    pattern: String = "x.x.xx.xx.x.x.xx".to_string(),
+    slice_steps: f32 = 1.0,
+    cycle_steps: f32 = 4.0,
+    smooth_ms: f32 = 3.0,
+    mix: f32 = 1.0
+});
+fx_struct!(PitchShiftFx {
+    semitones: f32 = 12.0,
+    cents: f32 = 0.0,
+    window_ms: f32 = 60.0,
+    mix: f32 = 1.0
+});
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IrSpace {
+    Room,
+    #[default]
+    Hall,
+    Plate,
+    Chamber,
+    Spring,
+    Cathedral,
+}
+
+fx_struct!(ConvolutionFx {
+    space: IrSpace = IrSpace::Hall,
+    decay_s: f32 = 2.0,
+    predelay_ms: f32 = 15.0,
+    damping: f32 = 0.4,
+    early: f32 = 0.5,
+    width: f32 = 1.0,
+    mix: f32 = 0.25
+});
+fx_struct!(AutopanFx {
+    steps: f32 = 8.0,
+    depth: f32 = 0.7,
+    tremolo: bool = false
+});
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Effect {
@@ -105,6 +275,50 @@ pub enum Effect {
     Gain(GainFx),
     Limiter(LimiterFx),
     Transient(TransientFx),
+    ParametricEq(ParametricEqFx),
+    Multiband(MultibandFx),
+    DynamicEq(DynamicEqFx),
+    Deesser(DeesserFx),
+    SoftClipper(SoftClipFx),
+    Gate(GateFx),
+    Phaser(PhaserFx),
+    Flanger(FlangerFx),
+    Stutter(StutterFx),
+    PitchShift(PitchShiftFx),
+    Convolution(ConvolutionFx),
+    Autopan(AutopanFx),
+}
+
+macro_rules! each_fx {
+    ($e:expr, $p:ident => $body:expr) => {
+        match $e {
+            Effect::Filter($p) => $body,
+            Effect::Eq($p) => $body,
+            Effect::Distortion($p) => $body,
+            Effect::Bitcrush($p) => $body,
+            Effect::Delay($p) => $body,
+            Effect::Reverb($p) => $body,
+            Effect::Chorus($p) => $body,
+            Effect::Compressor($p) => $body,
+            Effect::Sidechain($p) => $body,
+            Effect::Width($p) => $body,
+            Effect::Gain($p) => $body,
+            Effect::Limiter($p) => $body,
+            Effect::Transient($p) => $body,
+            Effect::ParametricEq($p) => $body,
+            Effect::Multiband($p) => $body,
+            Effect::DynamicEq($p) => $body,
+            Effect::Deesser($p) => $body,
+            Effect::SoftClipper($p) => $body,
+            Effect::Gate($p) => $body,
+            Effect::Phaser($p) => $body,
+            Effect::Flanger($p) => $body,
+            Effect::Stutter($p) => $body,
+            Effect::PitchShift($p) => $body,
+            Effect::Convolution($p) => $body,
+            Effect::Autopan($p) => $body,
+        }
+    };
 }
 
 /// (type, description) for every effect — surfaced to AIs.
@@ -122,6 +336,18 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("gain", "Simple gain. db"),
     ("limiter", "Lookahead brickwall limiter. ceiling_db, release_ms, true_peak (default true: detects inter-sample peaks so the ceiling holds in dBTP)"),
     ("transient", "Transient shaper. attack -1..1 (punch), sustain -1..1 (tail)"),
+    ("parametric_eq", "Up to 8-band parametric EQ. bands=[{kind bell|low_shelf|high_shelf|low_cut|high_cut|notch, freq Hz, gain_db, q, stages (cuts: 1=12 dB/oct, 2=24, 4=48), enabled}], output_db"),
+    ("multiband", "3-band compressor (Maximus-style). low_freq/high_freq crossovers, {low,mid,high}_threshold_db, _ratio, _gain_db, attack_ms, release_ms, mix"),
+    ("dynamic_eq", "Dynamic bell: cuts (range_db<0) or boosts (range_db>0) a band only when it exceeds threshold_db. freq, q, threshold_db, ratio, range_db, attack_ms, release_ms. Tames harsh resonances, boomy notes"),
+    ("deesser", "De-esser: dynamically ducks highs above freq when they spike. freq Hz, threshold_db, range_db (max cut), release_ms"),
+    ("soft_clipper", "Smooth soft clipper for loud drums/masters. threshold_db (knee start), ceiling_db, drive_db, mix, oversample"),
+    ("gate", "Noise gate / expander. threshold_db, range_db (closed attenuation), attack_ms, hold_ms, release_ms"),
+    ("phaser", "Allpass phaser. rate_hz or sync_steps (16ths per cycle), depth 0..1, center_hz, feedback, stages 2-12, mix"),
+    ("flanger", "Through-zero-style flanger. rate_hz or sync_steps, delay_ms, depth_ms, feedback -0.95..0.95, mix"),
+    ("stutter", "Tempo-synced gross-beat style FX. mode gate|stutter|half_time|reverse|tape_stop, pattern (gate: 'x.x.xx..' one char per 16th), slice_steps (stutter repeat length), cycle_steps, smooth_ms, mix (automate fx.<i>.mix 0->1 to apply only at a transition)"),
+    ("pitch_shift", "Granular pitch shifter. semitones -24..24, cents, window_ms, mix (octave-up doubles, chipmunk/dark vocal FX)"),
+    ("convolution", "Convolution reverb with synthesized impulse responses. space room|hall|plate|chamber|spring|cathedral, decay_s, predelay_ms, damping, early (reflections), width, mix"),
+    ("autopan", "Tempo-synced auto-pan or tremolo. steps (16ths per cycle), depth 0..1, tremolo (true = volume instead of pan)"),
 ];
 
 impl Effect {
@@ -137,8 +363,32 @@ impl Effect {
             .unwrap_or_default()
     }
 
+    pub fn bypassed(&self) -> bool {
+        each_fx!(self, p => p.bypass)
+    }
+
+    pub fn set_bypass(&mut self, on: bool) {
+        each_fx!(self, p => p.bypass = on)
+    }
+
     pub fn process(&self, l: &mut [f32], r: &mut [f32], ctx: &FxContext) {
+        if self.bypassed() {
+            return;
+        }
+        use crate::fx_extra as x;
         match self {
+            Effect::ParametricEq(p) => x::parametric_eq(p, l, r),
+            Effect::Multiband(p) => x::multiband(p, l, r),
+            Effect::DynamicEq(p) => x::dynamic_eq(p, l, r),
+            Effect::Deesser(p) => x::deesser(p, l, r),
+            Effect::SoftClipper(p) => x::soft_clipper(p, l, r),
+            Effect::Gate(p) => x::gate(p, l, r),
+            Effect::Phaser(p) => x::phaser(p, l, r, ctx.step_secs),
+            Effect::Flanger(p) => x::flanger(p, l, r, ctx.step_secs),
+            Effect::Stutter(p) => x::stutter(p, l, r, ctx.step_secs),
+            Effect::PitchShift(p) => x::pitch_shift(p, l, r),
+            Effect::Convolution(p) => x::convolution(p, l, r),
+            Effect::Autopan(p) => x::autopan(p, l, r, ctx.step_secs),
             Effect::Filter(p) => {
                 let (mut fl, mut fr) = (Svf::default(), Svf::default());
                 for i in 0..l.len() {

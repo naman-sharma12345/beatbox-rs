@@ -233,6 +233,201 @@ impl DcBlock {
     }
 }
 
+/// RBJ-cookbook biquad (transposed direct form II).
+#[derive(Clone, Copy, Debug)]
+pub struct Biquad {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    z1: f32,
+    z2: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BiquadKind {
+    Bell,
+    LowShelf,
+    HighShelf,
+    LowCut,
+    HighCut,
+    Notch,
+    Bandpass,
+}
+
+impl Biquad {
+    pub fn new(kind: BiquadKind, freq: f32, q: f32, gain_db: f32) -> Self {
+        let f = freq.clamp(10.0, SR * 0.49);
+        let w = 2.0 * PI * f / SR;
+        let (sw, cw) = (w.sin(), w.cos());
+        let q = q.clamp(0.1, 30.0);
+        let alpha = sw / (2.0 * q);
+        let a = 10f32.powf(gain_db / 40.0);
+        let (b0, b1, b2, a0, a1, a2) = match kind {
+            BiquadKind::Bell => (
+                1.0 + alpha * a,
+                -2.0 * cw,
+                1.0 - alpha * a,
+                1.0 + alpha / a,
+                -2.0 * cw,
+                1.0 - alpha / a,
+            ),
+            BiquadKind::LowShelf | BiquadKind::HighShelf => {
+                let sa = 2.0 * a.sqrt() * alpha;
+                if kind == BiquadKind::LowShelf {
+                    (
+                        a * ((a + 1.0) - (a - 1.0) * cw + sa),
+                        2.0 * a * ((a - 1.0) - (a + 1.0) * cw),
+                        a * ((a + 1.0) - (a - 1.0) * cw - sa),
+                        (a + 1.0) + (a - 1.0) * cw + sa,
+                        -2.0 * ((a - 1.0) + (a + 1.0) * cw),
+                        (a + 1.0) + (a - 1.0) * cw - sa,
+                    )
+                } else {
+                    (
+                        a * ((a + 1.0) + (a - 1.0) * cw + sa),
+                        -2.0 * a * ((a - 1.0) + (a + 1.0) * cw),
+                        a * ((a + 1.0) + (a - 1.0) * cw - sa),
+                        (a + 1.0) - (a - 1.0) * cw + sa,
+                        2.0 * ((a - 1.0) - (a + 1.0) * cw),
+                        (a + 1.0) - (a - 1.0) * cw - sa,
+                    )
+                }
+            }
+            BiquadKind::LowCut => (
+                (1.0 + cw) / 2.0,
+                -(1.0 + cw),
+                (1.0 + cw) / 2.0,
+                1.0 + alpha,
+                -2.0 * cw,
+                1.0 - alpha,
+            ),
+            BiquadKind::HighCut => (
+                (1.0 - cw) / 2.0,
+                1.0 - cw,
+                (1.0 - cw) / 2.0,
+                1.0 + alpha,
+                -2.0 * cw,
+                1.0 - alpha,
+            ),
+            BiquadKind::Notch => (1.0, -2.0 * cw, 1.0, 1.0 + alpha, -2.0 * cw, 1.0 - alpha),
+            // constant 0 dB peak gain band-pass
+            BiquadKind::Bandpass => (alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cw, 1.0 - alpha),
+        };
+        Biquad {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    #[inline]
+    pub fn process(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.z1;
+        self.z1 = self.b1 * x - self.a1 * y + self.z2;
+        self.z2 = self.b2 * x - self.a2 * y;
+        if !self.z1.is_finite() || !self.z2.is_finite() {
+            self.z1 = 0.0;
+            self.z2 = 0.0;
+        }
+        y
+    }
+
+    /// Magnitude response in dB at `freq`.
+    pub fn response_db(&self, freq: f32) -> f32 {
+        let w = 2.0 * PI * freq / SR;
+        let (c1, s1, c2, s2) = (w.cos(), w.sin(), (2.0 * w).cos(), (2.0 * w).sin());
+        let nr = self.b0 + self.b1 * c1 + self.b2 * c2;
+        let ni = -(self.b1 * s1 + self.b2 * s2);
+        let dr = 1.0 + self.a1 * c1 + self.a2 * c2;
+        let di = -(self.a1 * s1 + self.a2 * s2);
+        10.0 * ((nr * nr + ni * ni) / (dr * dr + di * di).max(1e-20)).log10()
+    }
+}
+
+/// Radix-2 complex FFT with precomputed twiddles and bit-reversal, for
+/// repeated transforms of one size (convolution, wavetables, analysis).
+pub struct Fft {
+    n: usize,
+    rev: Vec<usize>,
+    cos: Vec<f32>,
+    sin: Vec<f32>,
+}
+
+impl Fft {
+    pub fn new(n: usize) -> Self {
+        assert!(n.is_power_of_two() && n >= 2);
+        let bits = n.trailing_zeros();
+        let rev = (0..n)
+            .map(|i| i.reverse_bits() >> (usize::BITS - bits))
+            .collect();
+        let cos = (0..n / 2)
+            .map(|k| (2.0 * std::f64::consts::PI * k as f64 / n as f64).cos() as f32)
+            .collect();
+        let sin = (0..n / 2)
+            .map(|k| -(2.0 * std::f64::consts::PI * k as f64 / n as f64).sin() as f32)
+            .collect();
+        Fft { n, rev, cos, sin }
+    }
+
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// Forward transform in place (inverse = conjugate trick, see `inverse`).
+    pub fn forward(&self, re: &mut [f32], im: &mut [f32]) {
+        let n = self.n;
+        for i in 0..n {
+            let j = self.rev[i];
+            if i < j {
+                re.swap(i, j);
+                im.swap(i, j);
+            }
+        }
+        let mut len = 2;
+        while len <= n {
+            let half = len / 2;
+            let step = n / len;
+            for start in (0..n).step_by(len) {
+                for k in 0..half {
+                    let (wr, wi) = (self.cos[k * step], self.sin[k * step]);
+                    let a = start + k;
+                    let b = a + half;
+                    let tr = re[b] * wr - im[b] * wi;
+                    let ti = re[b] * wi + im[b] * wr;
+                    re[b] = re[a] - tr;
+                    im[b] = im[a] - ti;
+                    re[a] += tr;
+                    im[a] += ti;
+                }
+            }
+            len <<= 1;
+        }
+    }
+
+    /// Inverse transform in place, scaled by 1/n.
+    pub fn inverse(&self, re: &mut [f32], im: &mut [f32]) {
+        for v in im.iter_mut() {
+            *v = -*v;
+        }
+        self.forward(re, im);
+        let s = 1.0 / self.n as f32;
+        for (r, i) in re.iter_mut().zip(im.iter_mut()) {
+            *r *= s;
+            *i = -*i * s;
+        }
+    }
+}
+
 /// Linear-interpolated read from a buffer at a fractional index.
 pub fn lerp_read(buf: &[f32], pos: f32) -> f32 {
     if pos < 0.0 {
@@ -262,6 +457,22 @@ mod tests {
         assert!(e.level(0.05, 1.0) > 0.4 && e.level(0.05, 1.0) < 0.6);
         assert!((e.level(0.5, 1.0) - 0.5).abs() < 1e-4);
         assert_eq!(e.level(1.3, 1.0), 0.0);
+    }
+
+    #[test]
+    fn fft_roundtrip_and_biquad_response() {
+        let f = Fft::new(64);
+        let orig: Vec<f32> = (0..64).map(|i| (i as f32 * 0.3).sin()).collect();
+        let mut re = orig.clone();
+        let mut im = vec![0.0; 64];
+        f.forward(&mut re, &mut im);
+        f.inverse(&mut re, &mut im);
+        for (a, b) in re.iter().zip(orig.iter()) {
+            assert!((a - b).abs() < 1e-4);
+        }
+        let b = Biquad::new(BiquadKind::Bell, 1000.0, 1.0, 6.0);
+        assert!((b.response_db(1000.0) - 6.0).abs() < 0.1);
+        assert!(b.response_db(50.0).abs() < 0.5);
     }
 
     #[test]

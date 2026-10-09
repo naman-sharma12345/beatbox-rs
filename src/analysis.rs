@@ -197,6 +197,10 @@ pub struct TrackReport {
     pub energy_share_percent: f32,
     pub spectral_centroid_hz: f32,
     pub dominant_band: &'static str,
+    /// RMS while the track actually sounds (sparse parts read honestly).
+    pub active_rms_db: f32,
+    /// Share of the song where the track sounds (%).
+    pub active_percent: f32,
 }
 
 /// Broadcast-style loudness and safety metrics of a stereo signal.
@@ -458,34 +462,37 @@ pub fn analyze(mix: &Mix) -> Report {
     let master = stats(&mix.left, &mix.right);
     let loud = loudness(&mix.left, &mix.right);
     let corr = correlation(&mix.left, &mix.right);
-    let energies: Vec<f64> = mix
-        .stems
-        .iter()
-        .map(|s| {
-            s.left
-                .iter()
-                .chain(s.right.iter())
-                .map(|x| (*x as f64).powi(2))
-                .sum()
-        })
-        .collect();
-    let etotal: f64 = energies.iter().sum::<f64>().max(1e-12);
+    let infos: Vec<crate::render::TrackInfo> = if mix.track_info.is_empty() {
+        mix.stems
+            .iter()
+            .map(|s| crate::render::track_info(&s.name, &s.left, &s.right))
+            .collect()
+    } else {
+        mix.track_info.clone()
+    };
+    let etotal: f64 = infos.iter().map(|t| t.energy).sum::<f64>().max(1e-12);
     let mut tracks = Vec::new();
-    for (stem, e) in mix.stems.iter().zip(energies.iter()) {
-        let st = stats(&stem.left, &stem.right);
+    for t in &infos {
+        let st = &t.stats;
         let dom = st
             .bands
             .iter()
-            .max_by(|a, b| a.percent.partial_cmp(&b.percent).unwrap())
+            .max_by(|a, b| {
+                a.percent
+                    .partial_cmp(&b.percent)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .map(|b| b.band)
             .unwrap_or("mid");
         tracks.push(TrackReport {
-            track: stem.name.clone(),
+            track: t.name.clone(),
             rms_dbfs: st.rms_dbfs,
             peak_dbfs: st.peak_dbfs,
-            energy_share_percent: ((e / etotal) as f32 * 1000.0).round() / 10.0,
+            energy_share_percent: ((t.energy / etotal) as f32 * 1000.0).round() / 10.0,
             spectral_centroid_hz: st.spectral_centroid_hz,
             dominant_band: dom,
+            active_rms_db: t.active_rms_db,
+            active_percent: t.active_percent,
         });
     }
 

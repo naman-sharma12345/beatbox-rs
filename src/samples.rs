@@ -59,6 +59,12 @@ impl SampleBank {
 
 /// Decode any supported audio file to mono f32 at the engine sample rate.
 pub fn decode_file(path: &Path) -> Result<Vec<f32>> {
+    let (l, r) = decode_stereo(path)?;
+    Ok(l.iter().zip(r.iter()).map(|(a, b)| 0.5 * (a + b)).collect())
+}
+
+/// Decode to stereo (mono files are duplicated) at the engine sample rate.
+pub fn decode_stereo(path: &Path) -> Result<(Vec<f32>, Vec<f32>)> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::DecoderOptions;
     use symphonia::core::errors::Error as SErr;
@@ -89,7 +95,8 @@ pub fn decode_file(path: &Path) -> Result<Vec<f32>> {
     let src_rate = track.codec_params.sample_rate.unwrap_or(44_100) as f32;
     let mut decoder =
         symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())?;
-    let mut mono = Vec::new();
+    let mut left = Vec::new();
+    let mut right = Vec::new();
     loop {
         let packet = match format.next_packet() {
             Ok(p) => p,
@@ -106,17 +113,26 @@ pub fn decode_file(path: &Path) -> Result<Vec<f32>> {
                 let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
                 sb.copy_interleaved_ref(buf);
                 for frame in sb.samples().chunks(ch) {
-                    mono.push(frame.iter().sum::<f32>() / ch as f32);
+                    if ch == 1 {
+                        left.push(frame[0]);
+                        right.push(frame[0]);
+                    } else {
+                        left.push(frame[0]);
+                        right.push(frame[1]);
+                    }
                 }
             }
             Err(SErr::DecodeError(_)) => continue,
             Err(e) => return Err(e.into()),
         }
     }
-    if mono.is_empty() {
+    if left.is_empty() {
         bail!("file decoded to zero samples");
     }
-    Ok(resample(&mono, src_rate, SR))
+    Ok((
+        resample(&left, src_rate, SR),
+        resample(&right, src_rate, SR),
+    ))
 }
 
 /// Linear resampler.

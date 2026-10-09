@@ -338,6 +338,7 @@ pub fn steps_to_notes(
                 len,
                 pitch,
                 vel: v,
+                ..Default::default()
             });
         }
     }
@@ -518,6 +519,7 @@ pub fn add_fill(notes: &mut Vec<Note>, total_steps: u32, rng: &mut Rng, density:
                 len: 1.0,
                 pitch: 60,
                 vel,
+                ..Default::default()
             });
             if rng.chance(0.4) {
                 notes.push(Note {
@@ -525,6 +527,7 @@ pub fn add_fill(notes: &mut Vec<Note>, total_steps: u32, rng: &mut Rng, density:
                     len: 0.5,
                     pitch: 60,
                     vel: vel * 0.7,
+                    ..Default::default()
                 });
             }
         }
@@ -553,6 +556,7 @@ pub fn chord_notes(
                     len: len.min(t1 - start),
                     pitch: p,
                     vel: v,
+                    ..Default::default()
                 });
             }
         };
@@ -641,6 +645,7 @@ pub fn bass_notes(
                     len: len.min(t1 - start),
                     pitch: p,
                     vel: v,
+                    ..Default::default()
                 });
             }
         };
@@ -784,6 +789,7 @@ pub fn melody_notes(spec: &MelodySpec, rng: &mut Rng) -> Vec<Note> {
                     len: spec.note_len,
                     pitch: pitch.clamp(0, 127) as u8,
                     vel: if s % 4 == 0 { 0.9 } else { 0.72 },
+                    ..Default::default()
                 });
             }
             s += 1;

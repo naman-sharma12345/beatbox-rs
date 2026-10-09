@@ -10,21 +10,30 @@
 )]
 
 pub mod analysis;
+pub mod audio_edit;
 pub mod automation;
 pub mod diff;
 pub mod dsp;
 pub mod engine;
 pub mod fx;
+pub mod fx_extra;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod instruments;
 pub mod mcp;
+pub mod midi_ops;
+pub mod multisample;
 pub mod project;
 pub mod render;
 pub mod samples;
 pub mod server;
+pub mod smf;
+pub mod synth_extra;
 pub mod theory;
 pub mod tools;
+pub mod tools_compose;
+pub mod tools_midi;
+pub mod tools_sound;
 pub mod tools_studio;
 pub mod validate;
 

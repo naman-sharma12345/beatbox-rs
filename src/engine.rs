@@ -93,18 +93,56 @@ impl Engine {
         } else {
             None
         };
-        let result = (tool.run)(self, args).map(clean_floats);
+        // a panicking tool must never take the MCP server down with it
+        let run = tool.run;
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(self, args)
+        })) {
+            Ok(r) => r.map(clean_floats),
+            Err(p) => {
+                let msg = p
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "unknown panic".into());
+                Err(anyhow!("internal error in '{name}': {msg}. The project was rolled back; please report this."))
+            }
+        };
         let summary = summarize_args(args);
-        match &result {
-            Ok(_) => {
+        let mut result = result;
+        match &mut result {
+            Ok(v) => {
                 if let Some(s) = snapshot {
                     if s != self.project {
+                        // every mutation reports its state version and an exact change list
+                        if let Value::Object(m) = v {
+                            if name != "undo" && name != "redo" && !m.contains_key("changes") {
+                                let ch = crate::diff::diff(&s, &self.project);
+                                let mut list: Vec<Value> = ch
+                                    .iter()
+                                    .take(12)
+                                    .map(|c| Value::String(crate::diff::describe(c)))
+                                    .collect();
+                                if ch.len() > 12 {
+                                    list.push(Value::String(format!(
+                                        "... and {} more",
+                                        ch.len() - 12
+                                    )));
+                                }
+                                m.insert("changes".into(), Value::Array(list));
+                            }
+                        }
                         self.undo.push(s);
                         if self.undo.len() > MAX_UNDO {
                             self.undo.remove(0);
                         }
                         self.redo.clear();
                         self.revision += 1;
+                    }
+                }
+                if tool.mutates {
+                    if let Value::Object(m) = v {
+                        m.insert("revision".into(), Value::from(self.revision));
                     }
                 }
             }
@@ -181,7 +219,8 @@ impl Engine {
             &self.project,
             &self.bank,
             &RenderOptions {
-                keep_stems: true,
+                // measure tracks without holding every stem in RAM (31-track songs)
+                track_stats: true,
                 ..Default::default()
             },
         )?);
@@ -217,7 +256,7 @@ impl Engine {
             p,
             &self.bank,
             &RenderOptions {
-                keep_stems: true,
+                track_stats: true,
                 ..Default::default()
             },
         )
