@@ -1187,6 +1187,12 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         } else {
             plan.knobs.verse_velocity
         } * (0.8 + 0.2 * sec.energy);
+        // melodic parts follow the energy curve harder than drums
+        let mel = if is_hook {
+            1.0
+        } else {
+            plan.knobs.verse_velocity
+        } * (0.55 + 0.45 * sec.energy);
         let has = |l: &str| sec.layers.iter().any(|x| x == l) && roles.iter().any(|r| r == l);
         let pat_of = |part: &str| {
             plan.drum_patterns
@@ -1313,7 +1319,7 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                             t + k as f32 * 0.5,
                             32.0f32.min(end - t) - k as f32 * 0.5,
                             (base + d) as u8,
-                            0.6,
+                            0.6 * mel,
                         ));
                     }
                     t += 32.0;
@@ -1331,7 +1337,7 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                     plan.bars_per_chord,
                     sec.bars * STEPS_PER_BAR,
                     style,
-                    0.7 * vel,
+                    0.7 * mel,
                 )?
             };
             pat.clips.insert(track_name("harmony"), notes);
@@ -1339,13 +1345,28 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         let mut lead = Vec::new();
         if has("lead") {
             lead = lead_notes(&cx, sec, lead_oct, &ornament, &mut rng);
-            pat.clips.insert(track_name("lead"), lead.clone());
+            for n in lead.iter_mut() {
+                n.vel = (n.vel * mel).clamp(0.05, 1.0);
+            }
+            let mut layered = lead.clone();
+            if is_hook {
+                // hooks: an octave double underneath the lead for weight
+                for n in &lead {
+                    let mut d = n.clone();
+                    d.pitch = d.pitch.saturating_sub(12);
+                    d.vel *= 0.5;
+                    d.slide_to = d.slide_to.map(|x| x.saturating_sub(12));
+                    layered.push(d);
+                }
+            }
+            pat.clips.insert(track_name("lead"), layered);
         }
         if has("counter") {
-            pat.clips.insert(
-                track_name("counter"),
-                counter_notes(&cx, sec, pb.counter.octave, &lead),
-            );
+            let mut c = counter_notes(&cx, sec, pb.counter.octave, &lead);
+            for n in c.iter_mut() {
+                n.vel *= mel;
+            }
+            pat.clips.insert(track_name("counter"), c);
         }
         if has("texture") {
             let tex_oct = pb.texture.as_ref().map(|t| t.octave).unwrap_or(4);
@@ -1355,8 +1376,8 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             while t < end {
                 let c = chord_at(chords, plan.bars_per_chord, t);
                 let r = ((tex_oct + 1) * 12) as i32 + c.root_pc as i32;
-                v.push(Note::new(t, span.min(end - t), r as u8, 0.45));
-                v.push(Note::new(t, span.min(end - t), (r + 7) as u8, 0.4));
+                v.push(Note::new(t, span.min(end - t), r as u8, 0.45 * mel));
+                v.push(Note::new(t, span.min(end - t), (r + 7) as u8, 0.4 * mel));
                 t += span;
             }
             pat.clips.insert(track_name("texture"), v);
@@ -1392,6 +1413,20 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         }
     }
 
+    // tracks that never play (an empty grammar variation) only add noise
+    let silent: Vec<String> = e
+        .project
+        .tracks
+        .iter()
+        .filter(|t| {
+            e.project
+                .patterns
+                .iter()
+                .all(|p| p.notes(&t.name).is_empty())
+        })
+        .map(|t| t.name.clone())
+        .collect();
+    e.project.tracks.retain(|t| !silent.contains(&t.name));
     // ---- mix bus architecture
     let have = |e: &Engine, t: &str| e.project.track_index(t).is_ok();
     e.call_from(
@@ -1504,7 +1539,7 @@ pub fn mix_and_master(e: &mut Engine, plan: &Plan) -> Result<Value> {
         &json!({"genre": pb.mix.balance_genre, "iterations": 2, "offsets": offsets}),
         "producer",
     )?;
-    let master = e.call_from("master_assistant", &json!({"target_lufs": plan.knobs.target_lufs, "style": pb.mix.master_style, "max_iterations": 3}), "producer")?;
+    let master = e.call_from("master_assistant", &json!({"target_lufs": plan.knobs.target_lufs, "style": pb.mix.master_style, "max_iterations": 3, "true_peak_ceiling": -1.6}), "producer")?;
     Ok(json!({"balance": compact(&bal, 600), "master": compact(&master, 600)}))
 }
 
@@ -1587,6 +1622,17 @@ fn same_key_family(a: &str, b: &str) -> bool {
         v.sort();
         Some(v)
     };
+    let tonic_third = |k: &str| -> Option<(u8, bool)> {
+        let mut it = k.split_whitespace();
+        let root = theory::pitch_class(it.next()?).ok()?;
+        let iv = theory::scale_intervals(it.next().unwrap_or("major")).ok()?;
+        Some((root, iv.contains(&4)))
+    };
+    if let (Some(x), Some(y)) = (tonic_third(a), tonic_third(b)) {
+        if x == y {
+            return true;
+        }
+    }
     match (set(a), set(b)) {
         (Some(x), Some(y)) => {
             let common = x.iter().filter(|p| y.contains(p)).count();
@@ -1664,7 +1710,7 @@ pub fn critique(e: &mut Engine, plan: &Plan, reference: Option<&str>) -> Result<
         let msg = s.as_str().unwrap_or("").to_string();
         let low = msg.to_lowercase();
         let fix = if low.contains("sidechain") || low.contains("overlap") {
-            json!({"action": "low_end", "sidechain": (plan.knobs.sidechain + 0.2).min(0.85)})
+            json!({"action": "low_end", "sidechain": (plan.knobs.sidechain + 0.2).min(0.7)})
         } else if let Some(t) = ["hat", "snare", "lead", "chords", "counter", "perc", "tabla"]
             .iter()
             .find(|t| {
@@ -2070,7 +2116,7 @@ pub fn produce(e: &mut Engine, args: &PlanArgs, o: &ProduceOpts) -> Result<Value
             "wav"
         };
         let audio = dir.join(format!("{stem}.{fmt}"));
-        let ex = e.call_from("export_audio", &json!({"path": audio.to_string_lossy(), "format": fmt, "target_lufs": plan.knobs.target_lufs, "true_peak_ceiling": -1.0}), "producer")?;
+        let ex = e.call_from("export_audio", &json!({"path": audio.to_string_lossy(), "format": fmt, "target_lufs": plan.knobs.target_lufs, "true_peak_ceiling": -1.2}), "producer")?;
         files["audio"] = json!(audio.to_string_lossy());
         files["export"] = compact(&ex, 700);
     }
