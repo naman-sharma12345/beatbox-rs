@@ -140,7 +140,15 @@ pub(crate) fn ensure_track(
                 None => instruments::preset(default_preset)
                     .ok_or_else(|| anyhow!("bad preset {default_preset}"))?,
             };
-            p.tracks.push(Track::new(name, inst));
+            let (vol, _, _) = crate::tools_mix::calibrated_volume(
+                name,
+                &inst,
+                &crate::samples::SampleBank::default(),
+            );
+            p.tracks.push(Track {
+                volume_db: vol,
+                ..Track::new(name, inst)
+            });
             Ok(name.to_string())
         }
     }
@@ -529,6 +537,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_compose::tools());
     v.extend(crate::tools_ears::tools());
     v.extend(crate::tools_delivery::tools());
+    v.extend(crate::tools_mix::tools());
     v
 }
 
@@ -700,7 +709,7 @@ fn core_tools() -> Vec<Tool> {
         // ----- tracks -----
         Tool {
             name: "add_track",
-            description: "Add a track with an instrument preset (see list_presets) or a full instrument object {type: synth|fm|drum|pluck|bass808|sampler, ...params}.",
+            description: "Add a track with an instrument preset (see list_presets) or a full instrument object {type: synth|fm|drum|pluck|bass808|sampler, ...params}. Without volume_db the fader is CALIBRATED so the preset sits at its role level (kick, bass, snare, hats, lead, keys, pad, fx); level_hints checks levels without rendering.",
             mutates: true,
             schema: || obj(json!({
                 "name": {"type": "string"},
@@ -718,12 +727,15 @@ fn core_tools() -> Vec<Tool> {
                 if e.project.bus_index(&name).is_ok() || name.eq_ignore_ascii_case("master") {
                     bail!("'{name}' is already used by a bus/master; pick another track name");
                 }
+                // calibrated start: the fader puts the preset at its role's level
+                let (cal, role, _) = crate::tools_mix::calibrated_volume(&name, &inst, &e.bank);
+                let vol = f_opt(a, "volume_db").unwrap_or(cal);
                 e.project.tracks.push(Track {
-                    volume_db: f_or(a, "volume_db", 0.0),
+                    volume_db: vol,
                     pan: f_or(a, "pan", 0.0).clamp(-1.0, 1.0),
                     ..Track::new(&name, inst)
                 });
-                Ok(json!({"added": name, "tracks": e.project.tracks.len()}))
+                Ok(json!({"added": name, "tracks": e.project.tracks.len(), "role": role, "volume_db": vol, "calibrated": f_opt(a, "volume_db").is_none()}))
             },
         },
         Tool {

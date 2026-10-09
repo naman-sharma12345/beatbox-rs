@@ -501,7 +501,15 @@ mod tests {
             .iter()
             .find(|l| l.target == "hat")
             .unwrap();
-        assert_eq!(lane.value_at(8.0), Some(0.0));
+        // outside the hook the lane holds the track's own (calibrated) fader
+        let base = e
+            .project
+            .tracks
+            .iter()
+            .find(|t| t.name == "hat")
+            .unwrap()
+            .volume_db;
+        assert_eq!(lane.value_at(8.0), Some(base));
         assert_eq!(lane.value_at(24.0), Some(3.0));
     }
 }
