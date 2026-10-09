@@ -31,6 +31,7 @@ pub mod project;
 pub mod render;
 pub mod resample;
 pub mod samples;
+pub mod sc_dsp;
 pub mod server;
 pub mod smf;
 pub mod synth_extra;

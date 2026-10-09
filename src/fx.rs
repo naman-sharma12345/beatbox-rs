@@ -69,8 +69,24 @@ fx_struct!(ReverbFx {
     damping: f32 = 0.5,
     mix: f32 = 0.25,
     predelay_ms: f32 = 10.0,
-    width: f32 = 1.0
+    width: f32 = 1.0,
+    mode: ReverbMode = ReverbMode::Freeverb,
+    decay_s: f32 = 0.0,
+    diffusion: f32 = 0.75,
+    low_cut_hz: f32 = 20.0
 });
+
+/// Reverb algorithm: the classic Freeverb, or a SoundCraft-derived 8-line
+/// feedback delay network (smoother, denser, decay in seconds).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReverbMode {
+    #[default]
+    Freeverb,
+    FdnRoom,
+    FdnPlate,
+    FdnHall,
+}
 fx_struct!(ChorusFx {
     rate_hz: f32 = 0.8,
     depth_ms: f32 = 3.0,
@@ -81,7 +97,11 @@ fx_struct!(CompressorFx {
     ratio: f32 = 4.0,
     attack_ms: f32 = 10.0,
     release_ms: f32 = 120.0,
-    makeup_db: f32 = 0.0
+    makeup_db: f32 = 0.0,
+    knee_db: f32 = 0.0,
+    lookahead_ms: f32 = 0.0,
+    sc_hpf_hz: f32 = 0.0,
+    mix: f32 = 1.0
 });
 fx_struct!(SidechainFx {
     source: String = "kick".to_string(),
@@ -328,9 +348,9 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("distortion", "Tanh saturation. drive 0..1, mix 0..1"),
     ("bitcrush", "Lo-fi crusher. bits 1..16, downsample 1..64, mix"),
     ("delay", "Tempo-synced stereo delay. steps (16ths, 3 = dotted 8th), feedback, mix, ping_pong, tone Hz"),
-    ("reverb", "Freeverb-style room. size 0..1, damping 0..1, mix, predelay_ms, width"),
+    ("reverb", "Reverb. mode freeverb (default) | fdn_room | fdn_plate | fdn_hall (8-line feedback delay network: smoother, denser). size 0..1, damping 0..1, mix, predelay_ms, width; FDN only: decay_s (RT60 seconds, 0 = from size), diffusion 0..1, low_cut_hz"),
     ("chorus", "Stereo chorus. rate_hz, depth_ms, mix"),
-    ("compressor", "Feed-forward compressor. threshold_db, ratio, attack_ms, release_ms, makeup_db"),
+    ("compressor", "Feed-forward compressor. threshold_db, ratio, attack_ms, release_ms, makeup_db; soft-knee lookahead mode when any of knee_db (e.g. 6), lookahead_ms (0-10), sc_hpf_hz (sidechain high-pass, e.g. 120 so the kick does not pump), mix (<1 = parallel) is set"),
     ("sidechain", "Duck this track whenever `source` track hits (EDM pumping). source, amount 0..1, release_ms"),
     ("width", "Mid/side stereo width. amount 0 = mono, 1 = unchanged, 2 = extra wide"),
     ("gain", "Simple gain. db"),
@@ -485,6 +505,25 @@ impl Effect {
                     r[i] = r[i] * (1.0 - p.mix * 0.5) + wr * p.mix;
                 }
             }
+            Effect::Compressor(p)
+                if p.knee_db > 0.0 || p.lookahead_ms > 0.0 || p.sc_hpf_hz > 0.0 || p.mix < 1.0 =>
+            {
+                crate::sc_dsp::compress(
+                    &crate::sc_dsp::CompParams {
+                        threshold_db: p.threshold_db,
+                        ratio: p.ratio,
+                        attack_ms: p.attack_ms,
+                        release_ms: p.release_ms,
+                        knee_db: p.knee_db,
+                        makeup_db: p.makeup_db,
+                        sc_hpf_hz: p.sc_hpf_hz,
+                        lookahead_ms: p.lookahead_ms,
+                        mix: p.mix,
+                    },
+                    l,
+                    r,
+                );
+            }
             Effect::Compressor(p) => {
                 let att = (-1.0 / (p.attack_ms.max(0.1) * 0.001 * SR)).exp();
                 let rel = (-1.0 / (p.release_ms.max(1.0) * 0.001 * SR)).exp();
@@ -622,6 +661,31 @@ impl Allpass {
 }
 
 fn reverb(p: &ReverbFx, l: &mut [f32], r: &mut [f32]) {
+    if p.mode != ReverbMode::Freeverb {
+        use crate::sc_dsp::{fdn_reverb, FdnParams, HALL, PLATE, ROOM};
+        let (cfg, default_decay) = match p.mode {
+            ReverbMode::FdnPlate => (&PLATE, 2.5),
+            ReverbMode::FdnHall => (&HALL, 3.5),
+            _ => (&ROOM, 1.2),
+        };
+        let decay = if p.decay_s > 0.0 {
+            p.decay_s
+        } else {
+            default_decay * (0.4 + 1.2 * p.size.clamp(0.0, 1.0))
+        };
+        let fp = FdnParams {
+            decay_s: decay,
+            size: p.size,
+            damping_hz: 18000.0 * 0.12f32.powf(p.damping.clamp(0.0, 1.0)),
+            diffusion: p.diffusion,
+            predelay_ms: p.predelay_ms,
+            width: p.width,
+            low_cut_hz: p.low_cut_hz,
+            mix: p.mix,
+        };
+        fdn_reverb(cfg, &fp, l, r);
+        return;
+    }
     const COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
     const APS: [usize; 4] = [556, 441, 341, 225];
     const SPREAD: usize = 23;

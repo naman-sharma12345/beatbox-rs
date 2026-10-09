@@ -212,6 +212,8 @@ pub fn default_range(param: &str) -> (f32, f32) {
         "resonance" | "mix" | "amount" | "drive" | "damping" | "size" | "feedback" => (0.0, 1.0),
         "db" | "low_db" | "mid_db" | "high_db" | "makeup_db" => (-12.0, 6.0),
         "bits" => (4.0, 16.0),
+        "decay_s" => (0.3, 6.0),
+        "knee_db" => (0.0, 12.0),
         "rate_hz" | "lfo_rate" => (0.1, 8.0),
         _ => (0.0, 1.0),
     }

@@ -308,6 +308,22 @@ fn bus_preset(kind: &str) -> Result<Vec<Effect>> {
                 json!({"size": 0.85, "damping": 0.45, "mix": 1.0, "predelay_ms": 25.0, "width": 1.0}),
             ),
         ],
+        "plate" | "fdn_plate" | "fdn_hall" | "big_hall" => vec![
+            Effect::Filter(FilterFx {
+                mode: crate::dsp::FilterMode::Highpass,
+                cutoff: 250.0,
+                resonance: 0.1,
+                ..Default::default()
+            }),
+            fx(
+                "reverb",
+                if kind.to_lowercase().contains("plate") {
+                    json!({"mode": "fdn_plate", "decay_s": 2.2, "damping": 0.3, "mix": 1.0, "predelay_ms": 20.0})
+                } else {
+                    json!({"mode": "fdn_hall", "decay_s": 3.8, "damping": 0.45, "mix": 1.0, "predelay_ms": 30.0})
+                },
+            ),
+        ],
         "room" => vec![
             Effect::Filter(FilterFx {
                 mode: crate::dsp::FilterMode::Highpass,
@@ -352,7 +368,7 @@ fn bus_preset(kind: &str) -> Result<Vec<Effect>> {
             json!({"threshold_db": -18.0, "ratio": 2.0, "attack_ms": 30.0, "release_ms": 200.0, "makeup_db": 1.5}),
         )],
         other => bail!(
-            "unknown bus preset '{other}'. Use reverb, room, delay, drum, parallel, glue or none."
+            "unknown bus preset '{other}'. Use reverb, room, plate, fdn_hall, delay, drum, parallel, glue or none."
         ),
     })
 }
