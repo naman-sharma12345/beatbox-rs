@@ -1152,6 +1152,12 @@ impl Studio {
                         egui::Frame::none().fill(BG).rounding(8.0).inner_margin(8.0).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(ty.to_uppercase()).size(11.5).strong().color(ACCENT2));
+                                if let Some(m) = fxv.get("mode").and_then(|s| s.as_str()).filter(|m| *m != "freeverb") {
+                                    ui.label(RichText::new(m.replace('_', " ").to_uppercase()).size(10.5).color(ACCENT));
+                                }
+                                if let Some(id) = fxv.get("id").and_then(|s| s.as_str()) {
+                                    ui.label(RichText::new(format!("#{id}")).size(10.0).color(DIM));
+                                }
                                 if let Some(src) = fxv.get("source").and_then(|s| s.as_str()) {
                                     ui.label(RichText::new(format!("← {src}")).size(11.0).color(DIM));
                                 }
@@ -1217,7 +1223,7 @@ impl eframe::App for Studio {
         {
             let mut e = self.engine.lock().unwrap();
             e.transport.attached = true;
-            let cmds: Vec<crate::engine::TransportCmd> = e.transport.pending.drain(..).collect();
+            let cmds: Vec<crate::engine::TransportCmd> = std::mem::take(&mut e.transport.pending);
             for c in cmds {
                 match c {
                     crate::engine::TransportCmd::Play => self.player.play(),

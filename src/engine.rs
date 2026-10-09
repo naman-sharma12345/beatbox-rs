@@ -66,7 +66,7 @@ const MAX_UNDO: usize = 100;
 
 impl Engine {
     pub fn new(workdir: PathBuf) -> Self {
-        Engine {
+        let mut e = Engine {
             transport: Transport::default(),
             project: Project::default(),
             snapshots: Vec::new(),
@@ -77,7 +77,9 @@ impl Engine {
             revision: 0,
             log: Vec::new(),
             cached_mix: None,
-        }
+        };
+        e.project.ensure_fx_ids();
+        e
     }
 
     pub fn samples_dir(&self) -> PathBuf {
@@ -139,6 +141,9 @@ impl Engine {
                 }
             }
         }
+        // stable effect ids: rewrite id references to positions for the tools
+        let resolved = resolve_effect_refs(&self.project, args)?;
+        let args = &resolved;
         let snapshot = if tool.mutates {
             Some(self.project.clone())
         } else {
@@ -159,6 +164,9 @@ impl Engine {
                 Err(anyhow!("internal error in '{name}': {msg}. The project was rolled back; please report this."))
             }
         };
+        if result.is_ok() && tool.mutates {
+            self.project.ensure_fx_ids();
+        }
         let summary = summarize_args(args);
         let mut result = result;
         match &mut result {
@@ -242,7 +250,9 @@ impl Engine {
     }
 
     /// Replace the project wholesale (load), keeping undo.
-    pub fn replace_project(&mut self, p: Project) {
+    pub fn replace_project(&mut self, mut p: Project) {
+        // migrate legacy projects: positional effects get stable ids
+        p.ensure_fx_ids();
         let old = std::mem::replace(&mut self.project, p);
         self.undo.push(old);
         self.redo.clear();
@@ -359,6 +369,68 @@ impl Engine {
         }
         Ok(rep)
     }
+}
+
+/// Rewrite stable effect ids in tool arguments to chain positions:
+/// `index`/`from`/`to`/`effect` given as an id, and `fx.<id>.<param>` in
+/// `param`, `target_param`, and the keys of `changes`.
+pub fn resolve_effect_refs(p: &Project, args: &Value) -> Result<Value> {
+    let mut a = args.clone();
+    let owner = ["track", "owner", "target", "bus"]
+        .iter()
+        .find_map(|k| args.get(*k).and_then(|v| v.as_str()))
+        .map(String::from);
+    let Some(owner) = owner else { return Ok(a) };
+    let Some(chain) = p.chain_of(&owner) else {
+        return Ok(a);
+    };
+    let fix_param = |s: &str| -> Option<String> {
+        let mut parts = s.splitn(3, '.');
+        let (head, key, rest) = (parts.next()?, parts.next()?, parts.next()?);
+        if !(head.eq_ignore_ascii_case("fx") || head.eq_ignore_ascii_case("effect"))
+            || key.parse::<usize>().is_ok()
+        {
+            return None;
+        }
+        crate::fx::find(chain, key).map(|i| format!("fx.{i}.{rest}"))
+    };
+    if let Value::Object(m) = &mut a {
+        for k in ["index", "from", "to"] {
+            if let Some(Value::String(s)) = m.get(k) {
+                match crate::fx::find(chain, s).or_else(|| s.trim().parse::<usize>().ok()) {
+                    Some(i) => {
+                        m.insert(k.into(), Value::from(i));
+                    }
+                    None => {
+                        return Err(anyhow!(
+                            "no effect '{s}' on '{owner}'. Effects: [{}]",
+                            chain
+                                .iter()
+                                .enumerate()
+                                .map(|(i, e)| format!("{i}:{}", e.id()))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                    }
+                }
+            }
+        }
+        for k in ["param", "target_param"] {
+            if let Some(Value::String(s)) = m.get(k) {
+                if let Some(n) = fix_param(s) {
+                    m.insert(k.into(), Value::String(n));
+                }
+            }
+        }
+        if let Some(Value::Object(ch)) = m.get("changes").cloned() {
+            let mut out = serde_json::Map::new();
+            for (k, v) in ch {
+                out.insert(fix_param(&k).unwrap_or(k), v);
+            }
+            m.insert("changes".into(), Value::Object(out));
+        }
+    }
+    Ok(a)
 }
 
 fn summarize_args(v: &Value) -> String {

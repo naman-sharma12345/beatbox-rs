@@ -178,4 +178,81 @@ mod tests {
         let want = 4.0 * 60.0 / e.project.bpm as f64 + 0.5;
         assert!((r["seconds"].as_f64().unwrap() - want).abs() < 0.11, "{r}");
     }
+
+    #[test]
+    fn stable_effect_ids_survive_reorder_and_migrate_old_projects() {
+        let mut e = Engine::new(std::env::temp_dir().join("beatbox_id_tests"));
+        e.call("add_track", &json!({"name": "pad", "preset": "warm_pad"}))
+            .unwrap();
+        e.call("add_effect", &json!({"track": "pad", "type": "filter"}))
+            .unwrap();
+        e.call("add_effect", &json!({"track": "pad", "type": "reverb"}))
+            .unwrap();
+        e.call("add_effect", &json!({"track": "pad", "type": "filter"}))
+            .unwrap();
+        let ids: Vec<String> = e.project.tracks[0]
+            .effects
+            .iter()
+            .map(|f| f.id().to_string())
+            .collect();
+        assert_eq!(ids, vec!["filter1", "reverb1", "filter2"]);
+        // address by id, then reorder: the id follows the effect
+        e.call(
+            "tweak_effect",
+            &json!({"track": "pad", "index": "reverb1", "params": {"mix": 0.5}}),
+        )
+        .unwrap();
+        e.call(
+            "reorder_effects",
+            &json!({"track": "pad", "from": "reverb1", "to": 0}),
+        )
+        .unwrap();
+        assert_eq!(e.project.tracks[0].effects[0].id(), "reverb1");
+        e.call(
+            "tweak_effect",
+            &json!({"track": "pad", "index": "filter2", "params": {"cutoff": 900}}),
+        )
+        .unwrap();
+        let f2 = e.project.tracks[0]
+            .effects
+            .iter()
+            .find(|f| f.id() == "filter2")
+            .unwrap();
+        assert!(
+            serde_json::to_value(f2).unwrap()["cutoff"]
+                .as_f64()
+                .unwrap()
+                == 900.0
+        );
+        // automation by id
+        e.call(
+            "add_automation",
+            &json!({"track": "pad", "param": "fx.filter1.cutoff", "points": [[0, 200], [8, 4000]]}),
+        )
+        .unwrap();
+        assert!(
+            e.project
+                .automation
+                .iter()
+                .any(|l| l.param.starts_with("fx.1.")),
+            "{:?}",
+            e.project.automation
+        );
+        assert!(e
+            .call("bypass_effect", &json!({"track": "pad", "index": "nope9"}))
+            .is_err());
+        // a legacy project (no ids) is migrated on load
+        let mut legacy = serde_json::to_value(&e.project).unwrap();
+        for f in legacy["tracks"][0]["effects"].as_array_mut().unwrap() {
+            f.as_object_mut().unwrap().remove("id");
+        }
+        let path = std::env::temp_dir().join("beatbox_id_tests/legacy.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, legacy.to_string()).unwrap();
+        e.call("load_project", &json!({"path": path})).unwrap();
+        assert!(e.project.tracks[0]
+            .effects
+            .iter()
+            .all(|f| !f.id().is_empty()));
+    }
 }

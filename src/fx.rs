@@ -26,12 +26,16 @@ macro_rules! fx_struct {
         #[serde(default)]
         pub struct $name {
             $(pub $field: $ty,)*
+            /// Stable id within its chain (e.g. "reverb1"); assigned by the
+            /// engine, survives reordering, usable wherever an index is.
+            #[serde(default, skip_serializing_if = "String::is_empty")]
+            pub id: String,
             /// Bypassed effects stay in the chain but pass audio untouched.
             #[serde(skip_serializing_if = "is_false")]
             pub bypass: bool,
         }
         impl Default for $name {
-            fn default() -> Self { $name { $($field: $def,)* bypass: false } }
+            fn default() -> Self { $name { $($field: $def,)* id: String::new(), bypass: false } }
         }
     };
 }
@@ -381,6 +385,14 @@ impl Effect {
             .ok()
             .and_then(|v| v["type"].as_str().map(String::from))
             .unwrap_or_default()
+    }
+
+    pub fn id(&self) -> &str {
+        each_fx!(self, p => p.id.as_str())
+    }
+
+    pub fn set_id(&mut self, id: &str) {
+        each_fx!(self, p => p.id = id.to_string())
     }
 
     pub fn bypassed(&self) -> bool {
@@ -843,6 +855,42 @@ fn limiter_pass(p: &LimiterFx, ceiling_db: f32, l: &mut [f32], r: &mut [f32]) {
         l[i] = (l[i] * g).clamp(-ceiling, ceiling);
         r[i] = (r[i] * g).clamp(-ceiling, ceiling);
     }
+}
+
+/// Give every effect in a chain a unique stable id ("<type><n>"); returns
+/// true when anything changed (new effects, legacy projects, duplicates).
+pub fn ensure_ids(chain: &mut [Effect]) -> bool {
+    let mut seen: Vec<String> = Vec::new();
+    let mut changed = false;
+    for i in 0..chain.len() {
+        let cur = chain[i].id().to_string();
+        if cur.is_empty() || seen.contains(&cur) {
+            let t = chain[i].type_name();
+            let mut n = 1;
+            let id = loop {
+                let cand = format!("{t}{n}");
+                if !seen.contains(&cand) && !chain.iter().any(|e| e.id() == cand) {
+                    break cand;
+                }
+                n += 1;
+            };
+            chain[i].set_id(&id);
+            seen.push(id);
+            changed = true;
+        } else {
+            seen.push(cur);
+        }
+    }
+    changed
+}
+
+/// Position of an effect addressed by index ("2", 2) or stable id ("reverb1").
+pub fn find(chain: &[Effect], key: &str) -> Option<usize> {
+    let k = key.trim();
+    if let Ok(i) = k.parse::<usize>() {
+        return (i < chain.len()).then_some(i);
+    }
+    chain.iter().position(|e| e.id().eq_ignore_ascii_case(k))
 }
 
 #[cfg(test)]

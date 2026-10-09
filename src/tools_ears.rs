@@ -401,7 +401,7 @@ pub fn tools() -> Vec<Tool> {
             mutates: false,
             schema: || obj(json!({
                 "track": {"type": "string", "description": "Track, bus or 'master'"},
-                "index": {"type": "integer", "description": "Only this effect index"},
+                "index": {"type": ["integer", "string"], "description": "Only this effect (position or stable id)"},
                 "points": {"type": "integer", "description": "default 40"},
             }), &["track"]),
             run: |e, a| {

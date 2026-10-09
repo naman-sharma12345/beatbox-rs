@@ -877,7 +877,7 @@ fn core_tools() -> Vec<Tool> {
             name: "tweak_effect",
             description: "Change parameters of an effect at `index` in a track's chain (or 'master').",
             mutates: true,
-            schema: || obj(json!({"track": {"type": "string"}, "index": {"type": "integer"}, "params": {"type": "object"}}), &["track", "index", "params"]),
+            schema: || obj(json!({"track": {"type": "string"}, "index": {"type": ["integer", "string"], "description": "Effect position (0-based) or its stable id, e.g. \"reverb1\" (see get_effects)"}, "params": {"type": "object"}}), &["track", "index", "params"]),
             run: |e, a| {
                 let track = s_req(a, "track")?;
                 let idx = u_or(a, "index", 0) as usize;
@@ -896,7 +896,7 @@ fn core_tools() -> Vec<Tool> {
             name: "remove_effect",
             description: "Remove the effect at `index` from a track's chain (or 'master').",
             mutates: true,
-            schema: || obj(json!({"track": {"type": "string"}, "index": {"type": "integer"}}), &["track", "index"]),
+            schema: || obj(json!({"track": {"type": "string"}, "index": {"type": ["integer", "string"], "description": "Effect position (0-based) or its stable id, e.g. \"reverb1\" (see get_effects)"}}), &["track", "index"]),
             run: |e, a| {
                 let track = s_req(a, "track")?;
                 let idx = u_or(a, "index", 0) as usize;

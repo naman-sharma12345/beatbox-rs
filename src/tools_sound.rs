@@ -774,7 +774,7 @@ pub fn tools() -> Vec<Tool> {
             name: "describe_effect",
             description: "Parameter schema of an effect (plugin.describe): every parameter with type, current/default value, min/max, unit, log-scale flag, enum options and whether it is automatable. Give track + index for a live instance (shows current values and its automation path fx.<i>.<param>), or type for the defaults of any effect type (omit both to list all types).",
             mutates: false,
-            schema: || obj(json!({"track": {"type": "string"}, "index": {"type": "integer"}, "type": {"type": "string"}}), &[]),
+            schema: || obj(json!({"track": {"type": "string"}, "index": {"type": ["integer", "string"], "description": "Effect position (0-based) or its stable id, e.g. \"reverb1\" (see get_effects)"}, "type": {"type": "string"}}), &[]),
             run: |e, a| {
                 let (fxv, prefix, owner) = match (s_opt(a, "track"), s_opt(a, "type")) {
                     (Some(t), _) => {
@@ -837,7 +837,7 @@ pub fn tools() -> Vec<Tool> {
             name: "bypass_effect",
             description: "Bypass (or re-enable) an effect without removing it: A/B an effect in place. on=true bypasses, false enables; omit to toggle.",
             mutates: true,
-            schema: || obj(json!({"track": {"type": "string"}, "index": {"type": "integer"}, "on": {"type": "boolean"}}), &["track", "index"]),
+            schema: || obj(json!({"track": {"type": "string"}, "index": {"type": ["integer", "string"], "description": "Effect position (0-based) or its stable id, e.g. \"reverb1\" (see get_effects)"}, "on": {"type": "boolean"}}), &["track", "index"]),
             run: |e, a| {
                 let owner = owner_of(&e.project, &s_req(a, "track")?)?;
                 let idx = u_or(a, "index", 0) as usize;
@@ -852,7 +852,7 @@ pub fn tools() -> Vec<Tool> {
             name: "reorder_effects",
             description: "Reorder an effect chain: move from -> to, or give the full new order as indices (order: [2,0,1]). Automation lanes on fx.<i> follow their effects.",
             mutates: true,
-            schema: || obj(json!({"track": {"type": "string"}, "from": {"type": "integer"}, "to": {"type": "integer"}, "order": {"type": "array", "items": {"type": "integer"}}}), &["track"]),
+            schema: || obj(json!({"track": {"type": "string"}, "from": {"type": ["integer", "string"], "description": "position or stable id"}, "to": {"type": ["integer", "string"]}, "order": {"type": "array", "items": {"type": "integer"}}}), &["track"]),
             run: |e, a| {
                 let owner = owner_of(&e.project, &s_req(a, "track")?)?;
                 let n = chain_of(&e.project, &owner).len();

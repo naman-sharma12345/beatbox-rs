@@ -405,6 +405,31 @@ impl Project {
         ))
     }
 
+    /// Assign stable effect ids everywhere (new effects, legacy projects).
+    pub fn ensure_fx_ids(&mut self) -> bool {
+        let mut ch = crate::fx::ensure_ids(&mut self.master_effects);
+        for t in self.tracks.iter_mut() {
+            ch |= crate::fx::ensure_ids(&mut t.effects);
+        }
+        for b in self.buses.iter_mut() {
+            ch |= crate::fx::ensure_ids(&mut b.effects);
+        }
+        ch
+    }
+
+    /// The effect chain of a track, bus or "master".
+    pub fn chain_of(&self, owner: &str) -> Option<&Vec<crate::fx::Effect>> {
+        if owner.eq_ignore_ascii_case("master") {
+            Some(&self.master_effects)
+        } else if let Ok(i) = self.track_index(owner) {
+            Some(&self.tracks[i].effects)
+        } else if let Ok(i) = self.bus_index(owner) {
+            Some(&self.buses[i].effects)
+        } else {
+            None
+        }
+    }
+
     pub fn song_seconds(&self) -> f32 {
         self.song_steps() as f32 * self.step_secs()
     }

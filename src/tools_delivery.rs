@@ -129,7 +129,7 @@ pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Val
         ceiling_db: o.ceiling_dbtp - 0.5,
         release_ms: 80.0,
         true_peak: true,
-        bypass: false,
+        ..Default::default()
     });
     // gain -> (limit) -> measure, repeated so the limiter's loudness loss is made up
     let mut gain = o
@@ -433,14 +433,14 @@ pub fn tools() -> Vec<Tool> {
                         plan.push(json!({"step": "limiter_last", "ceiling_db": lim_ceiling, "moved_from": i}));
                     }
                     None => {
-                        p.master_effects.push(Effect::Limiter(LimiterFx { ceiling_db: lim_ceiling, release_ms: 80.0, true_peak: true, bypass: false }));
+                        p.master_effects.push(Effect::Limiter(LimiterFx { ceiling_db: lim_ceiling, release_ms: 80.0, true_peak: true, ..Default::default() }));
                         plan.push(json!({"step": "add_limiter", "ceiling_db": lim_ceiling}));
                     }
                 }
                 // gain stage directly before the limiter
                 let li = p.master_effects.len() - 1;
                 if !(li > 0 && matches!(p.master_effects[li - 1], Effect::Gain(_))) {
-                    p.master_effects.insert(li, Effect::Gain(GainFx { db: 0.0, bypass: false }));
+                    p.master_effects.insert(li, Effect::Gain(GainFx::default()));
                 }
                 let gi = p.master_effects.len() - 2;
                 let mut iters = Vec::new();
