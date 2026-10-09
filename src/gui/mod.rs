@@ -1213,6 +1213,22 @@ impl Studio {
 impl eframe::App for Studio {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frames += 1;
+        // live link: apply transport commands from MCP and publish the state
+        {
+            let mut e = self.engine.lock().unwrap();
+            e.transport.attached = true;
+            let cmds: Vec<crate::engine::TransportCmd> = e.transport.pending.drain(..).collect();
+            for c in cmds {
+                match c {
+                    crate::engine::TransportCmd::Play => self.player.play(),
+                    crate::engine::TransportCmd::Stop => self.player.stop(),
+                    crate::engine::TransportCmd::Seek(s) => self.player.seek(s.max(0.0)),
+                }
+            }
+            e.transport.playing = self.player.is_playing();
+            e.transport.position_s = self.player.position_secs();
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
         let (p, rev, log, undo) = self.snapshot();
         if self.pattern >= p.patterns.len() {
             self.pattern = 0;

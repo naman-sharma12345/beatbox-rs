@@ -538,6 +538,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_ears::tools());
     v.extend(crate::tools_delivery::tools());
     v.extend(crate::tools_mix::tools());
+    v.extend(crate::tools_parity::tools());
     v
 }
 
@@ -1502,9 +1503,12 @@ fn core_tools() -> Vec<Tool> {
         // ----- output -----
         Tool {
             name: "render",
-            description: "Render the arranged song to a WAV file (44.1 kHz stereo). Optionally export every track as stems. Returns loudness/peak so you can sanity-check.",
+            description: "Render the arranged song (or a region: section / start_beat..end_beat) to a 16-bit WAV (44.1 kHz stereo) with `tail` seconds of ring-out (default 1.5). Optionally export every track as stems. Returns loudness/peak so you can sanity-check. For delivery formats use export_audio.",
             mutates: false,
-            schema: || obj(json!({"path": {"type": "string", "description": "default renders/<project>.wav"}, "loops": {"type": "integer"}, "stems_dir": {"type": "string"}}), &[]),
+            schema: || obj(json!({"path": {"type": "string", "description": "default renders/<project>.wav"}, "loops": {"type": "integer"}, "stems_dir": {"type": "string"},
+                "section": {"description": "Render only this arrangement section (index or pattern name)", "type": ["string", "integer"]},
+                "start_beat": {"type": "number", "description": "Region start in song beats"}, "end_beat": {"type": "number"},
+                "tail": {"type": "number", "description": "Seconds of ring-out after the last bar (default 1.5, max 30)"}}), &[]),
             run: |e, a| {
                 let path = match s_opt(a, "path") {
                     Some(p) => e.resolve(&p),
@@ -1512,8 +1516,20 @@ fn core_tools() -> Vec<Tool> {
                 };
                 let loops = u_or(a, "loops", 1) as u32;
                 let stems_dir = s_opt(a, "stems_dir").map(|s| e.resolve(&s));
+                // region -> step range
+                let sec = a.get("section").and_then(|v| v.as_str().map(String::from).or_else(|| v.as_u64().map(|n| n.to_string())));
+                let range = if let Some(s) = sec {
+                    let (b0, b1) = e.project.section_beats(&s)?;
+                    Some(((b0 * 4.0).round() as u32, (b1 * 4.0).round() as u32))
+                } else if f_opt(a, "start_beat").is_some() || f_opt(a, "end_beat").is_some() {
+                    let b0 = f_opt(a, "start_beat").unwrap_or(0.0).max(0.0);
+                    let b1 = f_opt(a, "end_beat").unwrap_or(e.project.song_beats());
+                    if b1 <= b0 { bail!("end_beat must be after start_beat"); }
+                    Some(((b0 * 4.0).round() as u32, (b1 * 4.0).round() as u32))
+                } else { None };
+                let tail = f_opt(a, "tail").unwrap_or(1.5).clamp(0.0, 30.0);
                 e.bank.sync(&e.project.samples);
-                let mix = render::render(&e.project, &e.bank, &RenderOptions { loops, keep_stems: stems_dir.is_some(), ..Default::default() })?;
+                let mix = render::render(&e.project, &e.bank, &RenderOptions { loops, keep_stems: stems_dir.is_some(), step_range: range, tail, ..Default::default() })?;
                 render::write_wav(&path, &mix.left, &mix.right)?;
                 let mut stems = Vec::new();
                 if let Some(d) = stems_dir {
@@ -1524,7 +1540,8 @@ fn core_tools() -> Vec<Tool> {
                     }
                 }
                 let st = analysis::stats(&mix.left, &mix.right);
-                Ok(json!({"path": path, "seconds": (mix.seconds * 10.0).round() / 10.0, "peak_dbfs": st.peak_dbfs, "rms_dbfs": st.rms_dbfs, "stems": stems}))
+                Ok(json!({"path": path, "seconds": (mix.seconds * 10.0).round() / 10.0, "peak_dbfs": st.peak_dbfs, "rms_dbfs": st.rms_dbfs, "stems": stems,
+                    "region_steps": range.map(|r| json!([r.0, r.1])), "tail_s": tail}))
             },
         },
         Tool {

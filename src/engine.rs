@@ -29,7 +29,26 @@ pub struct Snapshot {
     pub revision: u64,
 }
 
+/// A transport command for an attached studio (applied on its next frame).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TransportCmd {
+    Play,
+    Stop,
+    Seek(f32),
+}
+
+/// Playback state shared with Beatbox Studio over the live link.
+#[derive(Clone, Debug, Default)]
+pub struct Transport {
+    /// True once a studio GUI is driving this engine.
+    pub attached: bool,
+    pub playing: bool,
+    pub position_s: f32,
+    pub pending: Vec<TransportCmd>,
+}
+
 pub struct Engine {
+    pub transport: Transport,
     pub project: Project,
     /// Named versions for A/B comparison, in creation order.
     pub snapshots: Vec<(String, Snapshot)>,
@@ -48,6 +67,7 @@ const MAX_UNDO: usize = 100;
 impl Engine {
     pub fn new(workdir: PathBuf) -> Self {
         Engine {
+            transport: Transport::default(),
             project: Project::default(),
             snapshots: Vec::new(),
             bank: SampleBank::default(),

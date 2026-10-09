@@ -885,7 +885,18 @@ pub fn tools() -> Vec<Tool> {
             run: |e, a| {
                 let mix = e.mix()?;
                 let loud = analysis::loudness(&mix.left, &mix.right);
-                let mut items = validate::master(&mix, &loud, &targets_from(a));
+                let tg = targets_from(a);
+                let mut items = validate::master(&mix, &loud, &tg);
+                // make the true-peak fix concrete: the exact limiter call
+                if loud.true_peak_dbtp > tg.true_peak_ceiling {
+                    let lim = e.project.master_effects.iter().rposition(|x| matches!(x, Effect::Limiter(_)));
+                    for it in items.iter_mut().filter(|i| i.check == "true_peak") {
+                        it.fix = Some(match lim {
+                            Some(i) => format!("tweak_effect {{\"track\":\"master\",\"index\":{i},\"params\":{{\"true_peak\":true,\"ceiling_db\":{:.1}}}}}", tg.true_peak_ceiling),
+                            None => format!("add_effect {{\"track\":\"master\",\"type\":\"limiter\",\"params\":{{\"true_peak\":true,\"ceiling_db\":{:.1}}}}} (or master_assistant)", tg.true_peak_ceiling),
+                        });
+                    }
+                }
                 items.sort_by_key(|x| std::cmp::Reverse(x.status));
                 let mut out = validate::summarize(&items);
                 out["loudness"] = serde_json::to_value(&loud)?;

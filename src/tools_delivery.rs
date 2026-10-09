@@ -279,18 +279,21 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "export_stems",
-            description: "Export every track (and optionally every bus return) as its own file, post-fader and post-FX, all the same length and aligned at 0 so they line up in any DAW. Formats wav/flac/mp3 with dither; no loudness normalisation (stems keep their mix balance). Returns per-stem peak/LUFS and silent stems.",
+            description: "Export every track AND every bus/return (reverb, delay, drum group) as its own file, all the same length and aligned at 0. mode pre_master (default): post-fader, before the master chain; the track stems routed straight to master plus the bus stems SUM BACK to the pre-master mix, and the residual is reported. mode post_master: each stem is also run through the master chain + master fader (approximate: compressors/limiters react to each stem alone, so the sum will not null against the real master; the report says how far off it is). Formats wav/flac/mp3 with dither; no loudness normalisation.",
             mutates: false,
             schema: || obj(merge_props(delivery_props(), json!({
                 "dir": {"type": "string", "description": "Output folder (default renders/<project>_stems)"},
-                "include_buses": {"type": "boolean", "description": "Also export bus outputs (default true)"},
-                "tracks": {"type": "array", "items": {"type": "string"}, "description": "Only these tracks"},
+                "mode": {"type": "string", "enum": ["pre_master", "post_master"], "description": "default pre_master"},
+                "include_buses": {"type": "boolean", "description": "Also export bus/return outputs (default true)"},
+                "tracks": {"type": "array", "items": {"type": "string"}, "description": "Only these tracks/buses"},
             })), &[]),
             run: |e, a| {
                 let mut o = opts_from(a, "wav")?;
                 o.limit = false;
                 o.target_lufs = None;
                 o.ceiling_dbtp = 0.0;
+                let mode = s_opt(a, "mode").unwrap_or_else(|| "pre_master".into());
+                if mode != "pre_master" && mode != "post_master" { bail!("mode must be pre_master or post_master"); }
                 let p = e.project.clone();
                 let dir = match s_opt(a, "dir") {
                     Some(d) => e.resolve(&d),
@@ -298,21 +301,74 @@ pub fn tools() -> Vec<Tool> {
                 };
                 e.bank.sync(&p.samples);
                 let mix = render::render(&p, &e.bank, &RenderOptions { keep_stems: true, ..Default::default() })?;
-                let only: Option<Vec<String>> = a.get("tracks").and_then(|v| v.as_array()).map(|x| x.iter().filter_map(|s| s.as_str().map(|s| s.to_lowercase())).collect());
-                let mut out = Vec::new();
-                let mut stems: Vec<(&str, &render::Stem)> = mix.stems.iter().map(|s| ("track", s)).collect();
-                if b_or(a, "include_buses", true) {
-                    stems.extend(mix.bus_stems.iter().map(|s| ("bus", s)));
+                // the pre-master reference: same song with an empty master chain at 0 dB
+                let mut pm = p.clone();
+                pm.master_effects.clear();
+                pm.master_volume_db = 0.0;
+                pm.automation.retain(|l| !l.target.eq_ignore_ascii_case("master"));
+                let pre = render::render(&pm, &e.bank, &RenderOptions::default())?;
+                let any_solo = p.tracks.iter().any(|t| t.solo);
+                let n = mix.left.len();
+                let (mut sl, mut sr) = (vec![0.0f32; n], vec![0.0f32; n]);
+                let mut add = |s: &render::Stem| { for i in 0..n.min(s.left.len()) { sl[i] += s.left[i]; sr[i] += s.right[i]; } };
+                for (t, s) in p.tracks.iter().zip(mix.stems.iter()) {
+                    let audible = !t.mute && (!any_solo || t.solo);
+                    let direct = t.output.as_deref().map(|b| p.bus_index(b).is_err()).unwrap_or(true);
+                    if audible && direct { add(s); }
                 }
-                for (kind, s) in stems {
+                for (b, s) in p.buses.iter().zip(mix.bus_stems.iter()) {
+                    if !b.mute { add(s); }
+                }
+                let resid = |rl: &[f32], rr: &[f32], al: &[f32], ar: &[f32]| -> f32 {
+                    let (mut e1, mut e0) = (0.0f64, 0.0f64);
+                    for i in 0..rl.len().min(al.len()) {
+                        e0 += (rl[i] as f64).powi(2) + (rr[i] as f64).powi(2);
+                        e1 += ((rl[i] - al[i]) as f64).powi(2) + ((rr[i] - ar[i]) as f64).powi(2);
+                    }
+                    if e0 < 1e-12 { -120.0 } else { ((10.0 * (e1.max(1e-20) / e0).log10()) * 10.0).round() as f32 / 10.0 }
+                };
+                let pre_resid = resid(&pre.left, &pre.right, &sl, &sr);
+                let master_fx = |l: &mut Vec<f32>, r: &mut Vec<f32>| {
+                    let trig = HashMap::new();
+                    let ctx = FxContext { step_secs: p.step_secs(), triggers: &trig };
+                    let g = db_to_gain(p.master_volume_db);
+                    for v in l.iter_mut().chain(r.iter_mut()) { *v *= g; }
+                    for fx in &p.master_effects { fx.process(l, r, &ctx); }
+                };
+                let only: Option<Vec<String>> = a.get("tracks").and_then(|v| v.as_array()).map(|x| x.iter().filter_map(|s| s.as_str().map(|s| s.to_lowercase())).collect());
+                let mut stems: Vec<(&str, &render::Stem, bool)> = p.tracks.iter().zip(mix.stems.iter()).map(|(t, s)| ("track", s, !t.mute && (!any_solo || t.solo))).collect();
+                if b_or(a, "include_buses", true) {
+                    stems.extend(p.buses.iter().zip(mix.bus_stems.iter()).map(|(b, s)| ("bus", s, !b.mute)));
+                }
+                let mut out = Vec::new();
+                let (mut ql, mut qr) = (vec![0.0f32; n], vec![0.0f32; n]);
+                for (kind, s, audible) in stems {
                     if let Some(o) = &only {
                         if !o.contains(&s.name.to_lowercase()) { continue; }
                     }
+                    let (mut l, mut r) = (s.left.clone(), s.right.clone());
+                    if mode == "post_master" {
+                        master_fx(&mut l, &mut r);
+                    }
+                    let direct = kind == "bus" || p.tracks.iter().find(|t| t.name == s.name).and_then(|t| t.output.as_deref()).map(|b| p.bus_index(b).is_err()).unwrap_or(true);
+                    if audible && direct {
+                        for i in 0..n.min(l.len()) { ql[i] += l[i]; qr[i] += r[i]; }
+                    }
                     let path: PathBuf = dir.join(format!("{}{}.{}", if kind == "bus" { "bus_" } else { "" }, samples::sample_name(&s.name), ext(&o.format)));
-                    let v = deliver(&s.left, &s.right, &path, &o)?;
-                    out.push(json!({"name": s.name, "kind": kind, "path": path, "lufs": v["after"]["integrated_lufs"], "true_peak_dbtp": v["after"]["true_peak_dbtp"], "silent": v["after"]["integrated_lufs"].as_f64().unwrap_or(-70.0) <= -69.0}));
+                    let v = deliver(&l, &r, &path, &o)?;
+                    out.push(json!({"name": s.name, "kind": kind, "path": path, "audible": audible, "in_sum": audible && direct,
+                        "routed_to": if kind == "bus" { json!("master") } else { json!(p.tracks.iter().find(|t| t.name == s.name).and_then(|t| t.output.clone()).unwrap_or_else(|| "master".into())) },
+                        "lufs": v["after"]["integrated_lufs"], "true_peak_dbtp": v["after"]["true_peak_dbtp"], "silent": v["after"]["integrated_lufs"].as_f64().unwrap_or(-70.0) <= -69.0}));
                 }
-                Ok(json!({"dir": dir, "format": o.format, "count": out.len(), "seconds": (mix.seconds * 100.0).round() / 100.0, "stems": out}))
+                let (sum_check, verdict) = if mode == "pre_master" {
+                    (pre_resid, if pre_resid < -60.0 { "stems sum back to the pre-master mix (null within -60 dB)" } else { "stems do NOT fully null against the pre-master mix (check pre-fader sends / bus routing)" })
+                } else {
+                    let r = resid(&mix.left, &mix.right, &ql, &qr);
+                    (r, if r < -40.0 { "post-master stems sum close to the master" } else { "post-master stems do not sum to the master: the master chain is nonlinear (compressor/limiter/clipper react to the full mix)" })
+                };
+                Ok(json!({"dir": dir, "mode": mode, "format": o.format, "count": out.len(), "seconds": (mix.seconds * 100.0).round() / 100.0,
+                    "sum_residual_db": sum_check, "sums_to": if mode == "pre_master" { "pre-master mix" } else { "master" }, "verdict": verdict,
+                    "master_chain": p.master_effects.iter().map(|x| x.type_name()).collect::<Vec<_>>(), "stems": out}))
             },
         },
         Tool {

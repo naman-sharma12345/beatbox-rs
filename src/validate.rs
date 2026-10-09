@@ -566,7 +566,7 @@ pub fn master(mix: &Mix, loud: &Loudness, t: &MasterTargets) -> Vec<Check> {
                 "true peak {:.2} dBTP > 0: inter-sample clipping",
                 loud.true_peak_dbtp
             ),
-            Some("tweak_effect master limiter ceiling_db -1"),
+            Some("master_assistant {true_peak_ceiling: -1} (puts a true_peak limiter last), or tweak_effect {track:'master', index:<limiter>, params:{true_peak:true, ceiling_db:-1}}"),
         )
     } else if loud.true_peak_dbtp > t.true_peak_ceiling {
         item(
@@ -576,7 +576,7 @@ pub fn master(mix: &Mix, loud: &Loudness, t: &MasterTargets) -> Vec<Check> {
                 "true peak {:.2} dBTP above the {:.1} dBTP ceiling",
                 loud.true_peak_dbtp, t.true_peak_ceiling
             ),
-            Some("lower master limiter ceiling_db"),
+            Some("tweak_effect {track:'master', index:<limiter>, params:{true_peak:true, ceiling_db:<ceiling>}} (the limiter verifies its output with a 4x oversampled true-peak meter), or master_assistant"),
         )
     } else {
         item(

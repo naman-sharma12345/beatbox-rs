@@ -951,11 +951,12 @@ pub fn tools() -> Vec<Tool> {
             name: "slice_sample",
             description: "Slice a sample (breakbeat, vocal phrase, loop) at its transients into a playable slice kit: creates a sampler track where note root+i plays slice i. sensitivity 0..1, min_gap_ms, max_slices, or equal=N for an even grid. write_pattern=true writes the original order into the current pattern at the project tempo so you can rearrange it with note edits.",
             mutates: true,
-            schema: || obj(json!({"sample": {"type": "string"}, "track": {"type": "string"}, "sensitivity": {"type": "number"}, "min_gap_ms": {"type": "number"}, "max_slices": {"type": "integer"}, "equal": {"type": "integer"}, "root": {}, "write_pattern": {"type": "boolean"}, "pattern": {"type": "string"}}), &["sample"]),
+            schema: || obj(json!({"sample": {"type": "string"}, "track": {"type": "string"}, "method": {"type": "string", "enum": ["onsets", "transients"], "description": "onsets (energy, default) or transients (spectral flux, better on dense breaks)"}, "sensitivity": {"type": "number"}, "min_gap_ms": {"type": "number"}, "max_slices": {"type": "integer"}, "equal": {"type": "integer"}, "root": {}, "write_pattern": {"type": "boolean"}, "pattern": {"type": "string"}}), &["sample"]),
             run: |e, a| {
                 let (info, data) = sample_data(e, &s_req(a, "sample")?)?;
                 let mut on: Vec<usize> = match a.get("equal").and_then(|v| v.as_u64()) {
                     Some(nn) => { let nn = nn.clamp(2, 64) as usize; (0..nn).map(|i| i * data.len() / nn).collect() }
+                    None if s_opt(a, "method").as_deref() == Some("transients") => crate::sc_dsp::detect_transients(&data, f_or(a, "sensitivity", 0.5)),
                     None => audio_edit::onsets(&data, f_or(a, "sensitivity", 0.5), f_or(a, "min_gap_ms", 70.0)),
                 };
                 if on.first().copied().unwrap_or(1) > (0.02 * SR) as usize { on.insert(0, 0); }

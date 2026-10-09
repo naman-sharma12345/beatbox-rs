@@ -42,6 +42,7 @@ pub mod tools_delivery;
 pub mod tools_ears;
 pub mod tools_midi;
 pub mod tools_mix;
+pub mod tools_parity;
 pub mod tools_sound;
 pub mod tools_studio;
 pub mod validate;
