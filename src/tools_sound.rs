@@ -1067,7 +1067,8 @@ pub fn tools() -> Vec<Tool> {
                 let on = audio_edit::onsets(&mono, 0.5, 60.0);
                 let keys = audio_edit::estimate_key(&mono);
                 let mut v = serde_json::to_value(&prof)?;
-                v["key_candidates"] = json!(keys.iter().map(|(k, c)| json!({"key": k, "r": c})).collect::<Vec<_>>());
+                v["key_candidates"] = json!(keys.iter().map(|(k, c)| json!({"key": k, "score": c})).collect::<Vec<_>>());
+                v["key_detail"] = audio_edit::key_report(&mono);
                 v["onsets"] = json!(on.len());
                 v["onset_times_s"] = json!(on.iter().take(u_or(a, "max_onsets", 32) as usize).map(|s| (*s as f32 / SR * 1000.0).round() / 1000.0).collect::<Vec<_>>());
                 Ok(v)

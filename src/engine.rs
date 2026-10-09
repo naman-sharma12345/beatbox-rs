@@ -88,6 +88,37 @@ impl Engine {
         })?;
         let empty = Value::Object(Default::default());
         let args = if args.is_null() { &empty } else { args };
+        // unknown top-level arguments are an error, never silently ignored
+        let schema = (tool.schema)();
+        if schema["additionalProperties"] == Value::Bool(false) {
+            if let (Some(props), Some(given)) = (schema["properties"].as_object(), args.as_object())
+            {
+                let bad: Vec<&String> = given.keys().filter(|k| !props.contains_key(*k)).collect();
+                if !bad.is_empty() {
+                    let mut valid: Vec<&String> = props.keys().collect();
+                    valid.sort();
+                    let err = anyhow!(
+                        "unknown argument(s) {} for '{name}'. Valid: {}",
+                        bad.iter()
+                            .map(|k| format!("'{k}'"))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        valid
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    self.log.push(LogEntry {
+                        tool: name.to_string(),
+                        summary: summarize_args(args),
+                        ok: false,
+                        source: source.to_string(),
+                    });
+                    return Err(err);
+                }
+            }
+        }
         let snapshot = if tool.mutates {
             Some(self.project.clone())
         } else {
@@ -265,6 +296,26 @@ impl Engine {
     pub fn analyze(&mut self) -> Result<analysis::Report> {
         let m = self.mix()?;
         let mut rep = analysis::analyze(&m);
+        // arrangement-aware: don't suggest sections the song already has
+        let roles: Vec<&str> = self
+            .project
+            .song_sections()
+            .iter()
+            .map(|s| crate::ears::role(&s.pattern))
+            .collect();
+        let has_break = roles.contains(&"break");
+        let has_hook = roles.contains(&"hook");
+        for s in rep.suggestions.iter_mut() {
+            if s.contains("a breakdown pattern without drums") && (has_break || has_hook) {
+                *s = if has_break && has_hook {
+                    "Balanced mix. The arrangement already has a breakdown and a hook: check their contrast with analyze_sections (hook should be +1..3 LU over the verse).".into()
+                } else if has_break {
+                    "Balanced mix. The arrangement has a breakdown; make sure the section after it hits harder (analyze_sections deltas).".into()
+                } else {
+                    "Balanced mix. Try a breakdown before the last hook for contrast (vary_section / add_pattern copy_from without drums).".into()
+                };
+            }
+        }
         // make suggestions aware of what's already in place
         for s in rep.suggestions.iter_mut() {
             if let Some(rest) = s.strip_prefix('\'') {

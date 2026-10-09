@@ -728,8 +728,40 @@ fn reverb(p: &ReverbFx, l: &mut [f32], r: &mut [f32]) {
     }
 }
 
+/// Brickwall limiter. With `true_peak` the output is verified with a 4x
+/// oversampled (Kaiser windowed-sinc) true-peak meter and re-limited with a
+/// tighter internal ceiling until the measured dBTP meets the setting.
 fn limiter(p: &LimiterFx, l: &mut [f32], r: &mut [f32]) {
-    let ceiling = db_to_gain(p.ceiling_db.min(0.0));
+    if !p.true_peak {
+        limiter_pass(p, p.ceiling_db.min(0.0), l, r);
+        return;
+    }
+    let (l0, r0) = (l.to_vec(), r.to_vec());
+    let target = p.ceiling_db.min(0.0);
+    let mut internal = target;
+    for _ in 0..4 {
+        l.copy_from_slice(&l0);
+        r.copy_from_slice(&r0);
+        limiter_pass(p, internal, l, r);
+        let tp = crate::resample::true_peak(l).max(crate::resample::true_peak(r));
+        let tp_db = gain_to_db(tp);
+        if tp_db <= target + 0.01 {
+            return;
+        }
+        internal -= tp_db - target + 0.05;
+    }
+    // last resort: static trim so the ceiling holds exactly
+    let tp = crate::resample::true_peak(l).max(crate::resample::true_peak(r));
+    let g = db_to_gain(target) / tp.max(1e-9);
+    if g < 1.0 {
+        for v in l.iter_mut().chain(r.iter_mut()) {
+            *v *= g;
+        }
+    }
+}
+
+fn limiter_pass(p: &LimiterFx, ceiling_db: f32, l: &mut [f32], r: &mut [f32]) {
+    let ceiling = db_to_gain(ceiling_db);
     let look = (0.002 * SR) as usize;
     let rel = (-1.0 / (p.release_ms.max(1.0) * 0.001 * SR)).exp();
     let n = l.len();
@@ -822,6 +854,28 @@ mod tests {
             step_secs: 0.125,
             triggers: t,
         }
+    }
+
+    #[test]
+    fn limiter_holds_true_peak_ceiling() {
+        // bright, dense material slammed 8 dB into a -1.2 dB ceiling
+        let t = HashMap::new();
+        let mut rng = crate::dsp::Rng::new(9);
+        let mut l: Vec<f32> = (0..44100)
+            .map(|i| {
+                let s = (i as f32 * 0.31).sin() + 0.6 * (i as f32 * 1.7).sin();
+                (s + 0.5 * rng.bipolar()) * 1.6
+            })
+            .collect();
+        let mut r = l.clone();
+        Effect::Limiter(LimiterFx {
+            ceiling_db: -1.2,
+            release_ms: 60.0,
+            ..Default::default()
+        })
+        .process(&mut l, &mut r, &ctx(&t));
+        let tp = gain_to_db(crate::analysis::true_peak(&l).max(crate::analysis::true_peak(&r)));
+        assert!(tp <= -1.15, "true peak {tp} dBTP over a -1.2 ceiling");
     }
 
     #[test]

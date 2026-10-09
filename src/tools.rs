@@ -110,6 +110,7 @@ pub(crate) fn instrument_from(a: &Value) -> Result<Option<Instrument>> {
     if let Some(inst) = a.get("instrument").filter(|v| v.is_object()) {
         let i: Instrument =
             serde_json::from_value(inst.clone()).context("invalid instrument object")?;
+        reject_unknown(inst, &serde_json::to_value(&i)?, "instrument")?;
         return Ok(Some(i));
     }
     if let Some(p) = s_opt(a, "preset") {
@@ -142,6 +143,64 @@ pub(crate) fn ensure_track(
             p.tracks.push(Track::new(name, inst));
             Ok(name.to_string())
         }
+    }
+}
+
+/// Keys in `patch` that did not survive deserialization into `effective`
+/// (serde silently drops unknown fields). Missing keys whose value is a
+/// default-looking null/false/""/[] are accepted (skipped when serialized).
+pub(crate) fn unknown_keys(patch: &Value, effective: &Value, path: &str, out: &mut Vec<String>) {
+    match (patch, effective) {
+        (Value::Object(p), Value::Object(e)) => {
+            for (k, v) in p {
+                if k == "type" {
+                    continue;
+                }
+                let here = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
+                match e.get(k) {
+                    Some(ev) => unknown_keys(v, ev, &here, out),
+                    None => {
+                        let defaultish = v.is_null()
+                            || v == &Value::Bool(false)
+                            || v.as_str() == Some("")
+                            || v.as_array().is_some_and(|a| a.is_empty());
+                        if !defaultish {
+                            let mut valid: Vec<&String> = e.keys().collect();
+                            valid.sort();
+                            out.push(format!(
+                                "unknown parameter '{here}' (valid here: {})",
+                                valid
+                                    .iter()
+                                    .map(|s| s.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        (Value::Array(p), Value::Array(e)) => {
+            for (i, (a, b)) in p.iter().zip(e.iter()).enumerate() {
+                unknown_keys(a, b, &format!("{path}[{i}]"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Error out when a parameter patch contains keys the target type ignores.
+pub(crate) fn reject_unknown(patch: &Value, effective: &Value, what: &str) -> Result<()> {
+    let mut bad = Vec::new();
+    unknown_keys(patch, effective, "", &mut bad);
+    if bad.is_empty() {
+        Ok(())
+    } else {
+        bail!("{what}: {}. Nothing was changed. Call describe_effect / describe_instrument for the parameter names.", bad.join("; "))
     }
 }
 
@@ -703,9 +762,12 @@ fn core_tools() -> Vec<Tool> {
             run: |e, a| {
                 let i = e.project.track_index(&s_req(a, "track")?)?;
                 let mut v = serde_json::to_value(&e.project.tracks[i].instrument)?;
-                merge(&mut v, a.get("params").ok_or_else(|| anyhow!("missing params"))?);
+                let patch = a.get("params").ok_or_else(|| anyhow!("missing params"))?;
+                merge(&mut v, patch);
                 e.project.tracks[i].instrument = serde_json::from_value(v).context("invalid parameter value")?;
-                Ok(serde_json::to_value(&e.project.tracks[i].instrument)?)
+                let eff = serde_json::to_value(&e.project.tracks[i].instrument)?;
+                reject_unknown(patch, &eff, "tweak_instrument")?;
+                Ok(eff)
             },
         },
         Tool {
@@ -785,13 +847,17 @@ fn core_tools() -> Vec<Tool> {
                     merge(&mut v, p);
                 }
                 let fx: Effect = serde_json::from_value(v).with_context(|| format!("bad effect '{t}'"))?;
+                let effective = serde_json::to_value(&fx)?;
+                if let Some(p) = a.get("params") {
+                    reject_unknown(p, &effective, &format!("add_effect {t}"))?;
+                }
                 let track = s_req(a, "track")?;
                 if let Effect::Sidechain(sc) = &fx {
                     e.project.track_index(&sc.source).context("sidechain source track")?;
                 }
                 let chain = effects_of(&mut e.project, &track)?;
                 chain.push(fx);
-                Ok(json!({"track": track, "index": chain.len() - 1, "chain": chain.iter().map(|x| x.type_name()).collect::<Vec<_>>()}))
+                Ok(json!({"track": track, "index": chain.len() - 1, "chain": chain.iter().map(|x| x.type_name()).collect::<Vec<_>>(), "effective": effective}))
             },
         },
         Tool {
@@ -805,9 +871,12 @@ fn core_tools() -> Vec<Tool> {
                 let chain = effects_of(&mut e.project, &track)?;
                 let fx = chain.get_mut(idx).ok_or_else(|| anyhow!("no effect at index {idx}"))?;
                 let mut v = serde_json::to_value(&*fx)?;
-                merge(&mut v, a.get("params").ok_or_else(|| anyhow!("missing params"))?);
+                let patch = a.get("params").ok_or_else(|| anyhow!("missing params"))?;
+                merge(&mut v, patch);
                 *fx = serde_json::from_value(v)?;
-                Ok(serde_json::to_value(&*fx)?)
+                let eff = serde_json::to_value(&*fx)?;
+                reject_unknown(patch, &eff, "tweak_effect")?;
+                Ok(eff)
             },
         },
         Tool {

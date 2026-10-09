@@ -43,6 +43,51 @@ pub struct TrackInfo {
     pub active_percent: f32,
     /// Mean-square energy per 400 ms block (for per-section analysis).
     pub blocks: Vec<f32>,
+    /// Mean-square energy below ~150 Hz per 10 ms block (kick/bass masking).
+    pub low_env: Vec<f32>,
+}
+
+/// Length of the blocks in `TrackInfo::low_env`.
+pub const LOW_BLOCK: usize = 441;
+
+/// Low-band (< ~150 Hz, 2-pole) mean-square envelope in 10 ms blocks.
+pub fn low_envelope(l: &[f32], r: &[f32]) -> Vec<f32> {
+    let n = l.len().min(r.len());
+    let a = (-2.0 * std::f32::consts::PI * 150.0 / SR).exp();
+    let (mut y1, mut y2) = (0.0f32, 0.0f32);
+    let mut out = Vec::with_capacity(n / LOW_BLOCK + 1);
+    let mut acc = 0.0f32;
+    for i in 0..n {
+        let x = 0.5 * (l[i] + r[i]);
+        y1 = x + (y1 - x) * a;
+        y2 = y1 + (y2 - y1) * a;
+        acc += y2 * y2;
+        if (i + 1) % LOW_BLOCK == 0 {
+            out.push(acc / LOW_BLOCK as f32);
+            acc = 0.0;
+        }
+    }
+    out
+}
+
+/// Share of `b`'s low-band energy that sounds while `a` is also loud in the
+/// low band (within 6 dB of `b` or louder): the masking that sidechain
+/// ducking should remove. 0..1.
+pub fn low_overlap(a: &[f32], b: &[f32]) -> f32 {
+    let n = a.len().min(b.len());
+    let (mut tot, mut ov) = (0.0f64, 0.0f64);
+    for i in 0..n {
+        let (x, y) = (a[i] as f64, b[i] as f64);
+        tot += y;
+        if x > y * 0.25 && x > 1e-7 {
+            ov += y.min(x);
+        }
+    }
+    if tot < 1e-12 {
+        0.0
+    } else {
+        (ov / tot) as f32
+    }
 }
 
 /// Length of the analysis blocks in `TrackInfo::blocks`.
@@ -77,6 +122,7 @@ pub fn track_info(name: &str, l: &[f32], r: &[f32]) -> TrackInfo {
         active_rms_db,
         active_percent: (100.0 * active.len() as f32 / blocks.len().max(1) as f32).round(),
         blocks,
+        low_env: low_envelope(l, r),
     }
 }
 

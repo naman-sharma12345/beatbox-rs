@@ -133,25 +133,40 @@ pub fn estimate_bpm(x: &[f32]) -> (f32, f32) {
 
 /// Pitch-class energy (C..B) from the spectrum between ~55 Hz and 5 kHz.
 pub fn chroma(x: &[f32]) -> [f32; 12] {
+    chroma_split(x).0
+}
+
+/// (full-range chroma 60 Hz-5 kHz, bass chroma 30-260 Hz). Each frame is
+/// log-compressed and normalised to its own maximum, so a few loud frames
+/// (kicks, a crash) cannot outvote the harmony of the whole piece.
+pub fn chroma_split(x: &[f32]) -> ([f32; 12], [f32; 12]) {
     const N: usize = 8192;
     let mut c = [0.0f32; 12];
+    let mut bass = [0.0f32; 12];
     if x.len() < N {
-        return c;
+        return (c, bass);
     }
     let fft = Fft::new(N);
     let w = hann(N);
     let frames = (x.len() - N) / (N / 2) + 1;
-    let stride = (frames / 200).max(1);
+    let stride = (frames / 300).max(1);
     let mut re = vec![0.0f32; N];
     let mut im = vec![0.0f32; N];
     for f in (0..frames).step_by(stride) {
         let off = f * N / 2;
+        let mut energy = 0.0f32;
         for i in 0..N {
             re[i] = x[off + i] * w[i];
             im[i] = 0.0;
+            energy += re[i] * re[i];
+        }
+        if energy < 1e-6 {
+            continue;
         }
         fft.forward(&mut re, &mut im);
-        for k in 10..N / 2 {
+        let mut fc = [0.0f32; 12];
+        let mut fb = [0.0f32; 12];
+        for k in 5..N / 2 {
             let hz = k as f32 * SR / N as f32;
             if hz > 5000.0 {
                 break;
@@ -159,29 +174,100 @@ pub fn chroma(x: &[f32]) -> [f32; 12] {
             let m = (re[k] * re[k] + im[k] * im[k]).sqrt();
             let midi = 69.0 + 12.0 * (hz / 440.0).log2();
             let pc = (midi.round() as i32).rem_euclid(12) as usize;
-            // weight by closeness to the semitone centre
             let d = (midi - midi.round()).abs();
-            c[pc] += m * (1.0 - d);
+            let v = (1.0 + 10.0 * m).ln() * (1.0 - 2.0 * d).max(0.0);
+            if (30.0..260.0).contains(&hz) {
+                fb[pc] += v;
+            }
+            if hz >= 60.0 {
+                fc[pc] += v;
+            }
+        }
+        for (acc, fr) in [(&mut c, fc), (&mut bass, fb)] {
+            let mx = fr.iter().cloned().fold(0.0f32, f32::max);
+            if mx > 1e-6 {
+                for i in 0..12 {
+                    acc[i] += fr[i] / mx;
+                }
+            }
         }
     }
-    c
+    (c, bass)
 }
 
-/// Best key guesses for audio: [(name like "A minor", confidence)].
+/// One ranked key hypothesis.
+#[derive(Clone, Debug, Serialize)]
+pub struct KeyCandidate {
+    pub key: String,
+    /// Combined score (profile correlation + bass-tonic evidence).
+    pub score: f32,
+    /// Plain Krumhansl profile correlation.
+    pub profile_r: f32,
+    /// How strongly the bass sits on this key's tonic (0..1).
+    pub bass_tonic: f32,
+}
+
+/// Rank keys from (full, bass) chroma: Krumhansl-Schmuckler correlation on
+/// the full chroma plus bass-tonic evidence (the bass sits on the tonic and
+/// dominant far more than on other degrees), which separates relative
+/// major/minor and neighbouring keys that share most of their notes.
+pub fn rank_keys(full: &[f32; 12], bass: &[f32; 12]) -> Vec<KeyCandidate> {
+    let bsum: f32 = bass.iter().sum::<f32>().max(1e-9);
+    let bn: Vec<f32> = bass.iter().map(|v| v / bsum).collect();
+    let bmax = bn.iter().cloned().fold(0.0f32, f32::max).max(1e-9);
+    let mut out: Vec<KeyCandidate> = midi_ops::key_from_chroma(full)
+        .into_iter()
+        .map(|(pc, mode, r)| {
+            let t = pc as usize;
+            let third = if mode == "minor" { 3 } else { 4 };
+            // tonic dominates, fifth supports, the modal third breaks ties
+            let ev = (bn[t] + 0.35 * bn[(t + 7) % 12] + 0.2 * bn[(t + third) % 12]) / (1.55 * bmax);
+            let has_bass = bsum > 1e-6 && bass.iter().any(|v| *v > 0.0);
+            let score = if has_bass { 0.6 * r + 0.4 * ev } else { r };
+            KeyCandidate {
+                key: format!("{} {mode}", theory::NOTE_NAMES[t]),
+                score: (score * 1000.0).round() / 1000.0,
+                profile_r: (r * 1000.0).round() / 1000.0,
+                bass_tonic: (ev * 1000.0).round() / 1000.0,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| b.score.total_cmp(&a.score));
+    out
+}
+
+/// Top-3 keys plus the margin between the first two and a confidence label.
+pub fn key_report(x: &[f32]) -> serde_json::Value {
+    let (c, b) = chroma_split(x);
+    if c.iter().all(|v| *v == 0.0) {
+        return serde_json::json!({"candidates": [], "confidence": "none"});
+    }
+    let r = rank_keys(&c, &b);
+    let margin = r[0].score - r[1].score;
+    let conf = if margin > 0.08 {
+        "high"
+    } else if margin > 0.03 {
+        "medium"
+    } else {
+        "low"
+    };
+    serde_json::json!({
+        "key": r[0].key, "margin": (margin * 1000.0).round() / 1000.0, "confidence": conf,
+        "candidates": r.iter().take(3).collect::<Vec<_>>(),
+        "note": if conf == "low" { "low margin: check the bass line / a stated key before trusting this" } else { "" },
+    })
+}
+
+/// Best key guesses for audio: [(name like "A minor", score)], top 3.
 pub fn estimate_key(x: &[f32]) -> Vec<(String, f32)> {
-    let ch = chroma(x);
-    if ch.iter().all(|v| *v == 0.0) {
+    let (c, b) = chroma_split(x);
+    if c.iter().all(|v| *v == 0.0) {
         return vec![];
     }
-    midi_ops::key_from_chroma(&ch)
+    rank_keys(&c, &b)
         .into_iter()
         .take(3)
-        .map(|(pc, mode, r)| {
-            (
-                format!("{} {mode}", theory::NOTE_NAMES[pc as usize]),
-                (r * 100.0).round() / 100.0,
-            )
-        })
+        .map(|k| (k.key, (k.score * 100.0).round() / 100.0))
         .collect()
 }
 
@@ -615,6 +701,47 @@ mod tests {
         }
         let k = estimate_key(&x);
         assert!(k[0].0 == "A minor" || k[0].0 == "C major", "{:?}", k);
+    }
+
+    /// i-VI-III-VII in C# minor (C#m A E B, one bar each, bass on the roots,
+    /// a melody leaning on C#/G#): plain Krumhansl tends to pick A major or
+    /// E major here; bass-tonic evidence must put C# minor first.
+    #[test]
+    fn c_sharp_minor_progression_beats_its_neighbours() {
+        let bar = (SR * 2.0) as usize;
+        let chords: [[f32; 4]; 4] = [
+            [49.0, 61.0, 64.0, 68.0], // C#m
+            [45.0, 57.0, 61.0, 64.0], // A
+            [40.0, 59.0, 64.0, 68.0], // E
+            [47.0, 59.0, 63.0, 66.0], // B
+        ];
+        let mel = [73.0f32, 68.0, 73.0, 71.0];
+        let mut x = Vec::new();
+        for rep in 0..3 {
+            for (ci, ch) in chords.iter().enumerate() {
+                for i in 0..bar {
+                    let t = i as f32 / SR;
+                    let env = (-t * 1.5).exp();
+                    let mut v = 0.0;
+                    for (k, m) in ch.iter().enumerate() {
+                        let a = if k == 0 { 0.35 } else { 0.1 };
+                        v += a * env * (2.0 * PI * crate::dsp::midi_to_hz(*m) * t).sin();
+                    }
+                    if i < bar / 2 {
+                        v += 0.08 * (2.0 * PI * crate::dsp::midi_to_hz(mel[ci]) * t).sin();
+                    }
+                    // tonic pedal in the last bar of each pass
+                    if rep < 3 && ci == 3 && i > bar / 2 {
+                        v += 0.2 * (2.0 * PI * crate::dsp::midi_to_hz(49.0) * t).sin();
+                    }
+                    x.push(v);
+                }
+            }
+        }
+        let rep = key_report(&x);
+        assert_eq!(rep["key"], "C# minor", "{rep}");
+        assert_eq!(rep["candidates"].as_array().unwrap().len(), 3);
+        assert!(rep["margin"].as_f64().unwrap() > 0.0);
     }
 
     #[test]

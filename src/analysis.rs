@@ -574,19 +574,35 @@ pub fn analyze(mix: &Mix) -> Report {
             (t.dominant_band == "sub" || t.dominant_band == "bass") && t.energy_share_percent > 15.0
         })
         .collect();
+    let mut low_ok = false;
     if lows.len() >= 2 {
         let names: Vec<&str> = lows.iter().map(|t| t.track.as_str()).collect();
         let kick = names.iter().find(|n| n.contains("kick"));
         let other = names.iter().find(|n| !n.contains("kick"));
         if let (Some(k), Some(o)) = (kick, other) {
-            sug.push(format!("'{k}' and '{o}' fight in the low end. Add a sidechain effect on '{o}' with source '{k}'."));
+            // measure the real (post-sidechain) overlap instead of guessing
+            let env = |n: &str| {
+                infos
+                    .iter()
+                    .find(|t| t.name == n)
+                    .map(|t| t.low_env.clone())
+                    .unwrap_or_default()
+            };
+            let ov = crate::render::low_overlap(&env(k), &env(o));
+            if ov > 0.12 {
+                sug.push(format!("'{k}' and '{o}' fight in the low end: {:.0}% of '{o}' low-end energy sounds under the '{k}'. Add (or deepen) a sidechain effect on '{o}' with source '{k}', or shorten '{o}' notes under kicks.", ov * 100.0));
+            } else {
+                low_ok = true;
+            }
         } else {
             sug.push(format!(
                 "Low-end masking between {}. Give each its own octave or sidechain one.",
                 names.join(" and ")
             ));
         }
-        score -= 6;
+        if !low_ok {
+            score -= 6;
+        }
     }
     for t in &tracks {
         if t.energy_share_percent > 65.0 && tracks.len() > 2 {

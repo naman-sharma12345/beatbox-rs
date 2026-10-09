@@ -124,6 +124,32 @@ pub fn pitch_read(x: &[f32], rate: f64, n: usize) -> Vec<f32> {
     resample_with(x, ratio, n, &table_for(ratio, ZC_NOTE))
 }
 
+/// Inter-sample (true) peak, 4x oversampled with the Kaiser sinc kernel.
+/// Only neighbourhoods of samples above half the sample peak are
+/// interpolated, which is exact for the maximum and cheap on full songs.
+pub fn true_peak(x: &[f32]) -> f32 {
+    let table = SincTable::new(0.97, 16.0);
+    let hw = table.half_width as i64;
+    let n = x.len() as i64;
+    let mut peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let gate = peak * 0.5;
+    for i in 0..n {
+        if x[i as usize].abs() < gate {
+            continue;
+        }
+        for ph in 1..4 {
+            let t = i as f64 + ph as f64 / 4.0;
+            let (lo, hi) = ((t as i64 - hw).max(0), (t as i64 + hw + 1).min(n - 1));
+            let mut acc = 0.0f32;
+            for j in lo..=hi {
+                acc += x[j as usize] * table.at(t - j as f64);
+            }
+            peak = peak.max(acc.abs());
+        }
+    }
+    peak
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +172,16 @@ mod tests {
             im += (v * w) as f64 * ph.sin();
         }
         ((re * re + im * im) / (n as f64 * n as f64)) as f32
+    }
+
+    #[test]
+    fn true_peak_finds_intersample_overs() {
+        let y: Vec<f32> = (0..8192)
+            .map(|i| (2.0 * PI32 * (44100.0 / 4.0) * i as f32 / 44100.0 + PI32 / 4.0).sin())
+            .collect();
+        let sp = y.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(sp < 0.72);
+        assert!(true_peak(&y) > 0.97, "{}", true_peak(&y));
     }
 
     #[test]
