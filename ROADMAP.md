@@ -15,6 +15,7 @@ Each sprint ends by re-rendering a reference beat with the new tools and compari
 - expected_revision, dry_run, scoped_edit with diff verification
 ## Sprint 7 — Autonomy
 - produce_track, critique_mix, candidate branches with loudness-matched A/B, golden-render tests, haas, saturation types, place_fx, Wikimedia sample search
+- DONE: saturator (tape/tube/transistor/diode/fold/exciter), haas widener, place_fx, move_effect, ab_compare (loudness-matched). TODO: golden-render tests, Wikimedia sample search
 ## Sprint 8 — Real-time engine
 - Block-based cpal audio graph shared by playback and offline render, live meters, PDC
 ## Sprint 9 — Plugins

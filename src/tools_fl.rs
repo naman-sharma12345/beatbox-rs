@@ -406,10 +406,10 @@ pub fn tools() -> Vec<Tool> {
             name: "route_bus",
             description: "Mixer insert routing: send a bus's output into another bus (e.g. 'drums' and 'bass' inserts into a 'beat' group with glue compression) or back to the master. Cycles are rejected. list_routing shows the result.",
             mutates: true,
-            schema: || obj(json!({"bus": {"type": "string"}, "to": {"type": "string", "description": "another bus, or 'master'"}}), &["bus", "to"]),
+            schema: || obj(json!({"bus": {"type": "string"}, "destination": {"type": "string", "description": "another bus, or 'master'"}}), &["bus", "destination"]),
             run: |e, a| {
                 let b = s_req(a, "bus")?;
-                let to = s_req(a, "to")?;
+                let to = s_req(a, "destination")?;
                 let bi = e.project.bus_index(&b)?;
                 if to == "master" {
                     e.project.buses[bi].output = None;
@@ -643,11 +643,11 @@ mod tests {
         e.call("route_track", &json!({"track": "kick", "bus": "drums"}))
             .unwrap();
         let r = e
-            .call("route_bus", &json!({"bus": "drums", "to": "beat"}))
+            .call("route_bus", &json!({"bus": "drums", "destination": "beat"}))
             .unwrap();
         assert_eq!(r["processing_order"][0], "drums");
         assert!(e
-            .call("route_bus", &json!({"bus": "beat", "to": "drums"}))
+            .call("route_bus", &json!({"bus": "beat", "destination": "drums"}))
             .is_err());
         // muting the group silences the insert routed into it
         let loud = e.call("render", &json!({})).unwrap();

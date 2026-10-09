@@ -277,6 +277,34 @@ fx_struct!(ConvolutionFx {
     width: f32 = 1.0,
     mix: f32 = 0.25
 });
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SatMode {
+    #[default]
+    Tape,
+    Tube,
+    Transistor,
+    Diode,
+    Fold,
+    Exciter,
+}
+
+fx_struct!(SaturatorFx {
+    mode: SatMode = SatMode::Tape,
+    drive_db: f32 = 6.0,
+    tone_hz: f32 = 16000.0,
+    bias: f32 = 0.0,
+    mix: f32 = 1.0,
+    output_db: f32 = 0.0,
+    oversample: bool = true
+});
+fx_struct!(HaasFx {
+    delay_ms: f32 = 14.0,
+    side: i32 = 1,
+    mix: f32 = 1.0,
+    low_cut_hz: f32 = 150.0,
+    level_db: f32 = 0.0
+});
 fx_struct!(AutopanFx {
     steps: f32 = 8.0,
     depth: f32 = 0.7,
@@ -311,6 +339,8 @@ pub enum Effect {
     PitchShift(PitchShiftFx),
     Convolution(ConvolutionFx),
     Autopan(AutopanFx),
+    Saturator(SaturatorFx),
+    Haas(HaasFx),
 }
 
 macro_rules! each_fx {
@@ -341,6 +371,8 @@ macro_rules! each_fx {
             Effect::PitchShift($p) => $body,
             Effect::Convolution($p) => $body,
             Effect::Autopan($p) => $body,
+            Effect::Saturator($p) => $body,
+            Effect::Haas($p) => $body,
         }
     };
 }
@@ -372,6 +404,8 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("pitch_shift", "Granular pitch shifter. semitones -24..24, cents, window_ms, mix (octave-up doubles, chipmunk/dark vocal FX)"),
     ("convolution", "Convolution reverb with synthesized impulse responses. space room|hall|plate|chamber|spring|cathedral, decay_s, predelay_ms, damping, early (reflections), width, mix"),
     ("autopan", "Tempo-synced auto-pan or tremolo. steps (16ths per cycle), depth 0..1, tremolo (true = volume instead of pan)"),
+    ("saturator", "Character saturator. mode tape (soft, even+odd warmth, high-end roll-off) | tube (asymmetric, even harmonics) | transistor (hard odd-harmonic edge) | diode (clipped, gritty) | fold (wavefolder, metallic) | exciter (adds only new harmonics above a corner of tone_hz, capped 1.5-8 kHz). drive_db 0..36, tone_hz (post low-pass), bias -0.5..0.5 (asymmetry), mix, output_db, oversample (2x, less aliasing)"),
+    ("haas", "Haas widener: delays one side by delay_ms (1..40) for width without comb filtering the mix. side 1 = delay right, -1 = delay left, low_cut_hz keeps bass centred (only highs are widened), level_db trims the delayed side, mix"),
 ];
 
 impl Effect {
@@ -421,6 +455,8 @@ impl Effect {
             Effect::PitchShift(p) => x::pitch_shift(p, l, r),
             Effect::Convolution(p) => x::convolution(p, l, r),
             Effect::Autopan(p) => x::autopan(p, l, r, ctx.step_secs),
+            Effect::Saturator(p) => crate::fx_sat::saturator(p, l, r),
+            Effect::Haas(p) => crate::fx_sat::haas(p, l, r),
             Effect::Filter(p) => {
                 let (mut fl, mut fr) = (Svf::default(), Svf::default());
                 for i in 0..l.len() {

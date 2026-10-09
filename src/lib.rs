@@ -21,6 +21,7 @@ pub mod engine;
 pub mod export;
 pub mod fx;
 pub mod fx_extra;
+pub mod fx_sat;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod instruments;
@@ -46,6 +47,7 @@ pub mod tools_delivery;
 pub mod tools_ears;
 pub mod tools_ears_pro;
 pub mod tools_fl;
+pub mod tools_fx2;
 pub mod tools_listen;
 pub mod tools_midi;
 pub mod tools_mix;
