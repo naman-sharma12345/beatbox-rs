@@ -60,6 +60,19 @@ fn make_beat(e: &mut Engine, a: &Value) -> Result<Value> {
         if l.sections.iter().filter(|s| s.kind == "hook").count() >= 1 && !contrasts.iter().any(|c| c == "sparse_to_dense") {
             contrasts.push("sparse_to_dense".into());
         }
+        // the arrangement follows the words: intro, one section per stanza, outro
+        if l.sections.len() >= 2 && p.duration_s.is_none() {
+            let mut form = vec![json!({"kind": "intro", "bars": 4})];
+            for s in &l.sections {
+                form.push(json!({"kind": s.kind, "bars": s.bars}));
+            }
+            form.push(json!({"kind": "outro", "bars": 4}));
+            reasons.push(format!(
+                "arrangement from the lyrics: intro 4 > {} > outro 4",
+                l.sections.iter().map(|s| format!("{} {}", s.kind, s.bars)).collect::<Vec<_>>().join(" > ")
+            ));
+            intent.insert("form".into(), json!(form));
+        }
     } else if let Some(d) = &p.density {
         intent.insert("density".into(), json!(d));
     }
@@ -102,7 +115,7 @@ fn make_beat(e: &mut Engine, a: &Value) -> Result<Value> {
     let res = run(e, &Value::Object(args.clone()))?;
     // compact answer for small models; the full producer result rides under "details"
     let summary = json!({
-        "genre": e.project.name.clone(),
+        "genre": genre.clone().unwrap_or_else(|| e.project.name.clone()),
         "bpm": e.project.bpm,
         "key": format!("{} {}", e.project.key_root, e.project.scale),
         "seconds": (e.project.song_seconds() * 10.0).round() / 10.0,

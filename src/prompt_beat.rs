@@ -252,17 +252,46 @@ pub fn syllables(word: &str) -> usize {
     n.max(1)
 }
 
+/// A rough sound-alike key for the line's last word: the last vowel sound
+/// plus what follows it (pain/lane -> "an", high/why/lie/goodbye -> "i").
 fn rhyme_key(line: &str) -> String {
     let last = line.split_whitespace().last().unwrap_or("").to_lowercase();
-    let w: String = last.chars().filter(|c| c.is_alphabetic()).collect();
-    let n = w.chars().count();
-    w.chars().skip(n.saturating_sub(2)).collect()
+    let mut w: String = last.chars().filter(|c| c.is_alphabetic()).collect();
+    if w.is_empty() {
+        return w;
+    }
+    for (a, b) in [("igh", "i"), ("ie", "i"), ("ye", "i"), ("y", "i"), ("ee", "i"), ("ea", "i")] {
+        if w.ends_with(a) && w.len() > a.len() {
+            w.truncate(w.len() - a.len());
+            w.push_str(b);
+            break;
+        }
+    }
+    if w.len() > 2 && w.ends_with('e') {
+        w.pop();
+    }
+    let ch: Vec<char> = w.chars().collect();
+    let vowel = |c: char| "aeiou".contains(c);
+    let Some(last_v) = ch.iter().rposition(|c| vowel(*c)) else {
+        return w;
+    };
+    let mut start = last_v;
+    while start > 0 && vowel(ch[start - 1]) {
+        start -= 1;
+    }
+    // the vowel group collapses to its first letter: "ai" ~ "a"
+    let mut k = String::new();
+    k.push(ch[start]);
+    k.extend(&ch[last_v + 1..]);
+    k
 }
+
+const DESI_WORDS: &[&str] = &["main", "hoon", "mera", "meri", "tera", "teri", "tere", "da", "di", "de", "nu", "vich", "sab", "dil", "raja", "sheher", "gali", "yaar", "jatt", "pind", "nahi", "hai", "kya", "ki", "ke", "raat", "raatan", "jaan", "rab", "munde", "kudi", "apna", "sadda", "tu", "mainu", "tainu"];
 
 const LEX: &[(&str, &[&str])] = &[
     ("dark", &["dark", "blood", "gun", "kill", "death", "die", "grave", "street", "war", "night", "devil", "cold", "smoke", "enemy", "knife", "shadow"]),
     ("sad", &["tears", "cry", "alone", "lonely", "miss", "broken", "gone", "goodbye", "pain", "hurt", "lost", "empty", "sorry"]),
-    ("hype", &["money", "boss", "king", "fire", "win", "hustle", "grind", "racks", "drip", "flex", "run", "top", "crown", "power"]),
+    ("hype", &["money", "boss", "king", "fire", "win", "hustle", "grind", "racks", "drip", "flex", "run", "top", "crown", "power", "raja", "baadshah", "game", "name", "block", "bars", "city", "paper", "haters", "bouncing", "bottom", "goat", "legend", "stack", "whip", "gang"]),
     ("smooth", &["love", "heart", "baby", "kiss", "forever", "touch", "eyes", "dil", "pyaar", "jaan", "ishq", "mohabbat", "tere", "sajna"]),
     ("devotional", &["god", "rab", "prayer", "lord", "allah", "waheguru", "soul", "heaven", "faith"]),
     ("hopeful", &["dream", "rise", "shine", "light", "sun", "hope", "fly", "free", "tomorrow"]),
@@ -302,16 +331,70 @@ pub fn analyze_lyrics(text: &str) -> LyricsReport {
             best = (m, n);
         }
     }
+    // longing phrases outweigh the love words they contain ("tere bina" = without you)
+    let longing = ["let you go", "without you", "tere bina", "never pick up", "miss you", "yaad", "judaa", "dard", "tanha", "bichad", "on my own", "you're gone", "come back"]
+        .iter()
+        .filter(|p| all.contains(*p))
+        .count();
+    if longing > 0 {
+        let sad = r.mood_scores.get("sad").and_then(|v| v.as_u64()).unwrap_or(0) as usize + 3 * longing;
+        r.mood_scores.insert("sad".into(), json!(sad));
+        if sad >= best.1 {
+            best = ("sad", sad);
+        }
+    }
     r.mood = if best.1 == 0 { if rap { "dark".into() } else { "smooth".into() } } else { best.0.into() };
     // sections: repeated stanzas are hooks
     let norm = |s: &[&str]| s.join(" ").to_lowercase().chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect::<String>();
+    // one block with no blank lines: lines that come back are hook lines;
+    // runs of them become hook stanzas, the rest verses of up to 8 lines
+    let stanzas: Vec<Vec<&str>> = if stanzas.len() == 1 && lines.len() > 8 {
+        let nl: Vec<String> = lines.iter().map(|l| norm(&[l])).collect();
+        let first_word = |s: &str| s.split_whitespace().next().unwrap_or("").to_string();
+        let hooky: Vec<bool> = (0..lines.len())
+            .map(|i| {
+                (0..lines.len()).any(|j| {
+                    j != i && (crate::vocal::lyric_similarity(&nl[i], &nl[j]) > 0.75 || (i.abs_diff(j) > 3 && nl[i] == nl[j]))
+                }) || {
+                    // a chant: the line's first two words repeat inside the line ("raja raja")
+                    let w: Vec<&str> = nl[i].split_whitespace().collect();
+                    w.len() >= 2 && w[0] == w[1] && (0..lines.len()).filter(|j| first_word(&nl[*j]) == w[0]).count() >= 3
+                }
+            })
+            .collect();
+        let mut out: Vec<Vec<&str>> = Vec::new();
+        let mut cur: Vec<&str> = Vec::new();
+        let mut cur_h = hooky[0];
+        for (i, l) in lines.iter().enumerate() {
+            if hooky[i] != cur_h || (!cur_h && cur.len() >= 8) {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                cur_h = hooky[i];
+            }
+            cur.push(l);
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+        if out.len() > 1 {
+            r.reasons.push(format!("no blank lines: split into {} sections by the lines that come back", out.len()));
+        }
+        out
+    } else {
+        stanzas
+    };
     let ns: Vec<String> = stanzas.iter().map(|s| norm(s)).collect();
     let line_bars = if rap { 1 } else { 2 };
     for (i, s) in stanzas.iter().enumerate() {
         let repeated = ns.iter().enumerate().any(|(j, o)| j != i && crate::vocal::lyric_similarity(o, &ns[i]) > 0.6);
         let short_and_repetitive = s.len() <= 4 && { let mut u: Vec<String> = s.iter().map(|l| l.to_lowercase()).collect(); u.sort(); u.dedup(); u.len() < s.len() };
         let kind = if repeated || short_and_repetitive { "hook" } else { "verse" };
-        let bars = ((s.len() as u32 * line_bars).div_ceil(4) * 4).clamp(4, 32);
+        let mut bars = ((s.len() as u32 * line_bars).div_ceil(4) * 4).clamp(4, 32);
+        if kind == "hook" {
+            // a hook needs room to land (and usually goes round twice)
+            bars = bars.max(8);
+        }
         r.sections.push(LyricSection { kind: kind.into(), lines: s.len(), bars, first_line: s[0].to_string() });
     }
     if !r.sections.iter().any(|s| s.kind == "hook") && r.sections.len() > 1 {
@@ -341,6 +424,18 @@ pub fn analyze_lyrics(text: &str) -> LyricsReport {
             "hype" => ("melodic_rap", 140.0),
             _ => ("rnb", 84.0),
         }
+    };
+    // Punjabi/Hindi in the lyrics: the desi palette (tumbi/flute/tabla over the 808)
+    let desi = words.iter().filter(|w| DESI_WORDS.contains(&w.as_str())).count();
+    let (genre, bpm) = if desi >= 4 && desi * 12 >= words.len() / 4 {
+        r.reasons.push(format!("{desi} Punjabi/Hindi words -> desi palette"));
+        if rap {
+            ("desi_hiphop", if r.mood == "hype" { 94.0 } else { 90.0 })
+        } else {
+            ("desi_hiphop", 84.0)
+        }
+    } else {
+        (genre, bpm)
     };
     r.genre = genre.into();
     r.bpm = bpm;
@@ -385,4 +480,28 @@ mod tests {
         assert_eq!(s.delivery, "melodic", "{s:?}");
         assert_eq!(s.mood, "smooth");
     }
+
+    #[test]
+    fn one_block_of_desi_rap_finds_its_hook() {
+        let t = "Yeah, main hoon sheher da raja, raatan nu jaage\nGali gali vich naam mera, sab de agge\nHustle in the rain, never stop for the pain\nEvery single bar, I'm a whole different lane\nMom said son, keep your head up high\nPaper in my pocket, never ask me why\nHaters on the side, let 'em talk, let 'em lie\nI just keep it moving while they wave goodbye\nRaja raja, sheher da raja\nRaja raja, sheher da raja\nRaja raja, everybody know my name\nRaja raja, never gonna change the game\nStarted from the bottom of a small town street\nNow the whole block bouncing to the sound of my beat\nNever had a key, so I built my own door\nEvery time they doubt me, I just come back with more\nRaja raja, sheher da raja\nRaja raja, sheher da raja\nRaja raja, everybody know my name\nRaja raja, never gonna change the game";
+        let r = analyze_lyrics(t);
+        assert_eq!(r.delivery, "rap");
+        assert_eq!(r.mood, "hype");
+        assert_eq!(r.genre, "desi_hiphop");
+        assert_eq!(r.sections.iter().filter(|s| s.kind == "hook").count(), 2, "{:?}", r.sections);
+        assert!(r.rhyme_density > 0.4, "{}", r.rhyme_density);
+        assert_eq!(rhyme_key("pain"), rhyme_key("lane"));
+        assert_eq!(rhyme_key("high"), rhyme_key("goodbye"));
+    }
+
+
+    #[test]
+    fn sung_longing_reads_sad_and_melodic() {
+        let t = "I still see your face in the morning light\nEvery little thing reminds me of the night\nOh I tried to let you go\nBut my heart don't know\n\nTere bina dil nahi lagda\nTere bina, oh, kuch nahi chalda\nStay with me, stay with me tonight\nHold me close till the morning light\n\nEmpty rooms and a song on the radio\nEvery word that I never said, oh\n\nTere bina dil nahi lagda\nTere bina, oh, kuch nahi chalda\nStay with me, stay with me tonight\nHold me close till the morning light";
+        let r = analyze_lyrics(t);
+        assert_eq!(r.delivery, "melodic");
+        assert_eq!(r.mood, "sad");
+        assert_eq!(r.sections.iter().filter(|s| s.kind == "hook").count(), 2);
+    }
+
 }

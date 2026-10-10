@@ -1219,6 +1219,37 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
             }
         }
     }
+    // a form the words dictate (make_beat with lyrics: one section per stanza,
+    // sized to its lines) replaces the playbook's arrangement
+    if let Some(form) = a.intent.get("form").and_then(|v| v.as_array()) {
+        let mut out: Vec<SectionTemplate> = Vec::new();
+        for f in form {
+            let kind = f["kind"].as_str().unwrap_or("verse").to_string();
+            let bars = f["bars"].as_u64().unwrap_or(8).clamp(1, 64) as u32;
+            let like = match kind.as_str() {
+                "pre" | "prechorus" | "bridge" | "breakdown" => "verse",
+                k => k,
+            };
+            let base = tmpl
+                .iter()
+                .find(|s| s.kind == kind)
+                .or_else(|| tmpl.iter().find(|s| s.kind == like))
+                .or_else(|| tmpl.iter().find(|s| s.kind == "verse"))
+                .cloned();
+            if let Some(mut s) = base {
+                s.kind = kind;
+                s.bars = bars;
+                out.push(s);
+            }
+        }
+        if out.len() >= 2 {
+            thinking.push(format!(
+                "Form from the words: {}.",
+                out.iter().map(|s| format!("{}({})", s.kind, s.bars)).collect::<Vec<_>>().join(" > ")
+            ));
+            tmpl = out;
+        }
+    }
     let mut counts: BTreeMap<String, u32> = BTreeMap::new();
     let hooks = tmpl.iter().filter(|s| s.kind == "hook").count();
     let mut hook_no = 0;

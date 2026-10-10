@@ -2517,6 +2517,10 @@ pub fn parse_intent(v: &serde_json::Value, cons: &mut Vec<Constraint>) -> Intent
                     }
                 }
             }
+            "form" => match x.as_array() {
+                Some(v) if v.len() >= 2 => constraint(cons, "intent.form", x.clone(), "applied", format!("{} sections from the words", v.len())),
+                _ => constraint(cons, "intent.form", x.clone(), "ignored", "form is [{kind, bars}, ...] with 2 or more sections"),
+            },
             "target_lufs" => match x.as_f64() {
                 Some(v) => constraint(cons, "intent.target_lufs", x.clone(), "applied", format!("master to {v:.1} LUFS")),
                 None => constraint(cons, "intent.target_lufs", x.clone(), "ignored", "target_lufs is a number like -14"),
