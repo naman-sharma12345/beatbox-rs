@@ -1601,7 +1601,6 @@ pub fn track_name(role: &str) -> String {
     }
 }
 
-/// Gain staging + mastering for the plan (balance_mix then master_assistant).
 // ---------------------------------------------------------------- step timing
 
 fn prof_store() -> &'static std::sync::Mutex<Vec<(String, f64)>> {
@@ -1638,6 +1637,7 @@ fn prof_drain() -> Value {
     Value::Object(m)
 }
 
+/// Gain staging + mastering for the plan (balance_mix then master_assistant).
 pub fn mix_and_master(e: &mut Engine, plan: &Plan) -> Result<Value> {
     let pb = playbook(&plan.genre)?;
     let offsets: serde_json::Map<String, Value> = plan
@@ -2343,7 +2343,7 @@ fn produce_inner(
         entry["accepted"] = json!(accepted);
         entry["verdict"] = json!(verdict);
         prof("diff", tc);
-        let gained = best.as_ref().map_or(true, |b| c.score > b.0 + PLATEAU_GAIN);
+        let gained = best.as_ref().is_none_or(|b| c.score > b.0 + PLATEAU_GAIN);
         if accepted {
             misses = if gained { 0 } else { misses + 1 };
             best = Some((c.score, e.project.clone(), plan.clone(), c.clone()));
