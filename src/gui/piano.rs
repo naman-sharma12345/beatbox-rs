@@ -115,19 +115,24 @@ impl Studio {
             FontId::proportional(10.5),
             tk.header_text,
         );
-        painter.text(
-            pos2(header.min.x + 84.0, header.center().y),
-            Align2::LEFT_CENTER,
-            format!(
-                "{} · {} · {} notes · {} sel",
-                t.name,
-                pat.name,
-                notes.len(),
-                self.piano.selected.len()
-            ),
-            FontId::proportional(10.0),
-            tk.text_dim,
-        );
+        painter
+            .with_clip_rect(Rect::from_min_max(
+                header.min,
+                pos2(header.max.x - 292.0, header.max.y),
+            ))
+            .text(
+                pos2(header.min.x + 84.0, header.center().y),
+                Align2::LEFT_CENTER,
+                format!(
+                    "{} · {} · {} notes · {} sel",
+                    t.name,
+                    pat.name,
+                    notes.len(),
+                    self.piano.selected.len()
+                ),
+                FontId::proportional(10.0),
+                tk.text_dim,
+            );
         let bar = Rect::from_min_max(
             pos2(header.max.x - 290.0, header.min.y + 1.0),
             pos2(header.max.x - 4.0, header.max.y - 1.0),

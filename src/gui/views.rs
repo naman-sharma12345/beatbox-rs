@@ -76,8 +76,15 @@ impl StripMeter {
 // used here under MIT). See THIRD_PARTY_NOTICES.md.
 const STRIP_W: f32 = 96.0;
 const MASTER_W: f32 = 150.0;
-const INSERT_ROWS: usize = 4;
-const SEND_ROWS: usize = 3;
+/// Insert / send slot rows: (inserts, sends) for a strip of height `h`. Short windows get
+/// fewer rows so the fader keeps a usable throw.
+fn slot_rows(h: f32) -> (usize, usize) {
+    if h < 560.0 {
+        (2, 2)
+    } else {
+        (4, 3)
+    }
+}
 
 fn fmt_db(db: f32) -> String {
     if db <= -59.5 {
@@ -218,6 +225,7 @@ impl Studio {
         pos: Option<f32>,
     ) {
         let t = Tokens::DARK;
+        let (insert_rows, send_rows) = slot_rows(h);
         let is_bus = matches!(s.kind, StripKind::Bus);
         let selected = matches!(s.kind, StripKind::Track(i) if i == self.selected);
         let name = s.name.as_str();
@@ -257,10 +265,10 @@ impl Studio {
         // INSERTS
         let sec = Rect::from_min_size(
             Pos2::new(x0, y),
-            Vec2::new(iw, 16.0 + INSERT_ROWS as f32 * 17.0),
+            Vec2::new(iw, 16.0 + insert_rows as f32 * 17.0),
         );
         let area = section(&pt, sec, "INSERTS");
-        for k in 0..INSERT_ROWS {
+        for k in 0..insert_rows {
             let sr = slot_rect(area, k);
             let ins = s.inserts.get(k);
             let resp = ui.interact(sr, ui.id().with(("ins", name, k)), Sense::click());
@@ -303,11 +311,11 @@ impl Studio {
                 }
             }
         }
-        if s.inserts.len() > INSERT_ROWS {
+        if s.inserts.len() > insert_rows {
             pt.text(
                 Pos2::new(sec.max.x - 3.0, sec.min.y + 7.0),
                 Align2::RIGHT_CENTER,
-                format!("+{}", s.inserts.len() - INSERT_ROWS),
+                format!("+{}", s.inserts.len() - insert_rows),
                 FontId::proportional(8.5),
                 ACCENT,
             );
@@ -316,10 +324,10 @@ impl Studio {
         // SENDS (drag horizontally to change)
         let sec = Rect::from_min_size(
             Pos2::new(x0, y),
-            Vec2::new(iw, 16.0 + SEND_ROWS as f32 * 17.0),
+            Vec2::new(iw, 16.0 + send_rows as f32 * 17.0),
         );
         let area = section(&pt, sec, "SENDS");
-        for k in 0..SEND_ROWS {
+        for k in 0..send_rows {
             let sr = slot_rect(area, k);
             let Some((bus, db)) = s.sends.get(k) else {
                 pt.rect(
@@ -1055,25 +1063,4 @@ fn denorm(t: f32, lo: f32, hi: f32, log: bool) -> f32 {
     } else {
         lo + (hi - lo) * t
     }
-}
-
-/// Compact M / S toggle for mixer strips.
-fn mini_pill(ui: &mut egui::Ui, text: &str, on: bool, color: Color32) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(18.0, 16.0), Sense::click());
-    let fill = if on {
-        color
-    } else if resp.hovered() {
-        Color32::from_rgb(60, 60, 63)
-    } else {
-        Color32::from_rgb(58, 58, 60)
-    };
-    ui.painter().rect_filled(rect, 4.0, fill);
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        text,
-        FontId::proportional(9.5),
-        if on { BG } else { DIM },
-    );
-    resp
 }

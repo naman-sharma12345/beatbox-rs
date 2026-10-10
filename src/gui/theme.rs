@@ -12,7 +12,6 @@ use eframe::egui::{self, Color32, FontFamily, FontId, Stroke, Vec2};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Tokens {
-    pub window_bg: Color32,
     pub panel_bg: Color32,
     pub panel_bg2: Color32,
     pub toolbar_bg: Color32,
@@ -39,13 +38,11 @@ pub struct Tokens {
     pub playlist_alt: Color32,
     pub grid_line: Color32,
     pub bar_line: Color32,
-    pub selection: Color32,
     pub playhead: Color32,
     pub solo: Color32,
     pub mute: Color32,
     pub rec: Color32,
     pub auto_read: Color32,
-    pub auto_write: Color32,
     pub meter_green: Color32,
     pub meter_yellow: Color32,
     pub meter_red: Color32,
@@ -57,7 +54,6 @@ pub struct Tokens {
 
 impl Tokens {
     pub const DARK: Tokens = Tokens {
-        window_bg: Color32::from_rgb(30, 30, 30),
         panel_bg: Color32::from_rgb(37, 37, 38),
         panel_bg2: Color32::from_rgb(44, 44, 45),
         toolbar_bg: Color32::from_rgb(30, 30, 31),
@@ -84,13 +80,11 @@ impl Tokens {
         playlist_alt: Color32::from_rgb(40, 40, 41),
         grid_line: Color32::from_rgb(52, 52, 54),
         bar_line: Color32::from_rgb(66, 66, 70),
-        selection: Color32::from_rgba_premultiplied(40, 70, 110, 110),
         playhead: Color32::from_rgb(232, 60, 50),
         solo: Color32::from_rgb(222, 196, 52),
         mute: Color32::from_rgb(232, 148, 40),
         rec: Color32::from_rgb(214, 52, 46),
         auto_read: Color32::from_rgb(96, 200, 110),
-        auto_write: Color32::from_rgb(220, 70, 60),
         meter_green: Color32::from_rgb(60, 200, 80),
         meter_yellow: Color32::from_rgb(230, 210, 60),
         meter_red: Color32::from_rgb(230, 50, 40),

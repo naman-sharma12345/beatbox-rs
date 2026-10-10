@@ -234,8 +234,10 @@ mod tests {
 
     #[test]
     fn project_map_matches_renderer_step_length() {
-        let mut p = crate::project::Project::default();
-        p.bpm = 92.0;
+        let mut p = crate::project::Project {
+            bpm: 92.0,
+            ..Default::default()
+        };
         let m = TempoMap::for_project(&p);
         let sr = SampleRate::default();
         // 16 steps (one bar) in samples == the renderer's step_secs * 16

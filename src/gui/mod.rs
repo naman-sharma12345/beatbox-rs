@@ -16,7 +16,7 @@ mod widgets;
 use crate::analysis::{self, Report};
 use crate::engine::{Engine, LogEntry};
 use crate::instruments;
-use crate::project::{Note, Project, STEPS_PER_BAR};
+use crate::project::{Project, STEPS_PER_BAR};
 use crate::render::{self, Mix, RenderOptions};
 use crate::{fx, theory};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2};
@@ -799,7 +799,7 @@ impl Studio {
                     if pill(ui, "M", t.mute, WARN).clicked() {
                         self.call("set_mixer", json!({"track": t.name, "mute": !t.mute}));
                     }
-                    if pill(ui, "S", t.solo, GOOD).clicked() {
+                    if pill(ui, "S", t.solo, SOLO).clicked() {
                         self.call("set_mixer", json!({"track": t.name, "solo": !t.solo}));
                     }
                 });
