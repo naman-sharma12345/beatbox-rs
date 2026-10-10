@@ -298,7 +298,7 @@ pub fn audio_summary(l: &[f32], r: &[f32], key_pc: u8) -> (Vec<f32>, Vec<f32>) {
     let edges = [
         30.0f32, 60.0, 120.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 16000.0,
     ];
-    let mut bands = vec![0.0f32; 8];
+    let mut bands = [0.0f32; 8];
     for (i, p) in acc.iter().enumerate().skip(1) {
         let f = hz(i);
         if (55.0..2000.0).contains(&f) {

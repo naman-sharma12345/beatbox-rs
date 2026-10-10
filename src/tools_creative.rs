@@ -8,6 +8,8 @@ use crate::tools::{b_or, obj, s_opt, s_req, Tool};
 use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
 
+const PREFS: &str = "beatbox_history/blind_preferences.jsonl";
+
 fn current_fp(e: &mut crate::engine::Engine, with_audio: bool) -> Result<Fingerprint> {
     let mut f = novelty::fingerprint(&e.project);
     f.label = "current".into();
@@ -171,8 +173,15 @@ pub fn tools() -> Vec<Tool> {
             schema: || obj(json!({"session": {"type": "string"}}), &["session"]),
             run: |e, a| {
                 let d = blind_ab::session_dir(e, a)?;
-                blind_ab::reveal(&d)
+                blind_ab::reveal(&d, Some(&e.resolve(PREFS)))
             },
+        },
+        Tool {
+            name: "blind_ab_preferences",
+            description: "The quality signal, tracked separately from diagnostic scores: a running tally of blind A/B preferences per beat across revealed sessions.",
+            mutates: false,
+            schema: || obj(json!({}), &[]),
+            run: |e, _| Ok(blind_ab::preferences(&e.resolve(PREFS))),
         },
         Tool {
             name: "author_midi",

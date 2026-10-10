@@ -158,7 +158,30 @@ impl Engine {
         }
         // stable effect ids: rewrite id references to positions for the tools
         let resolved = resolve_effect_refs(&self.project, args)?;
-        let args = &resolved;
+        // an omitted seed is fresh (OS entropy + time) on every top-level call
+        // of a seeded tool, and the chosen seed is returned; explicit seeds
+        // (and seeds a tool passes to the tools it calls) stay deterministic
+        let depth = tools::CallDepth::enter();
+        let mut fresh_seed = None;
+        let seeded;
+        let args = if depth.top()
+            && schema["properties"].get("seed").is_some()
+            && args.get("seed").is_none_or(|v| v.is_null())
+        {
+            let s = crate::creative::fresh_seed();
+            let mut a = resolved.clone();
+            if let Value::Object(m) = &mut a {
+                m.insert("seed".into(), Value::from(s));
+            }
+            fresh_seed = Some(s);
+            seeded = a;
+            &seeded
+        } else {
+            &resolved
+        };
+        if depth.top() {
+            tools::set_seed_fresh(fresh_seed.is_some());
+        }
         let snapshot = if tool.mutates {
             Some(self.project.clone())
         } else {
@@ -184,6 +207,11 @@ impl Engine {
         }
         let summary = summarize_args(args);
         let mut result = result;
+        if let (Some(s), Ok(Value::Object(m))) = (fresh_seed, &mut result) {
+            m.entry("seed").or_insert(Value::from(s));
+            m.insert("seed_source".into(), Value::from("fresh"));
+        }
+        drop(depth);
         match &mut result {
             Ok(v) => {
                 if let Some(s) = snapshot {

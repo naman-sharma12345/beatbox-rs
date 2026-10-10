@@ -306,6 +306,10 @@ pub struct Plan {
     /// Played verbatim in place of the generated part.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub authored: BTreeMap<String, BTreeMap<String, Vec<Note>>>,
+    /// Every requested constraint (args and structured intent) and whether
+    /// it was applied, adjusted or ignored, with why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<crate::creative::Constraint>,
     /// Seed, seed source, generator version, config and asset manifest.
     #[serde(default)]
     pub provenance: Value,
@@ -334,6 +338,8 @@ pub struct PlanArgs {
     pub reference: Option<String>,
     /// AI-authored notes (see Plan::authored).
     pub authored: BTreeMap<String, BTreeMap<String, Vec<Note>>>,
+    /// Structured intent filled in by the connected model (see creative::parse_intent).
+    pub intent: Value,
 }
 
 const MOODS: &[(&str, &[&str])] = &[
@@ -559,7 +565,47 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         }
         None => guess_genre(&a.brief).unwrap_or_else(|| playbook("trap").unwrap()),
     };
-    let sp = cr::spec(pb);
+    // what was asked for, and what happens to each request
+    let mut cons: Vec<cr::Constraint> = Vec::new();
+    match &a.genre {
+        Some(g) if g.as_str() == pb.name || pb.aliases.contains(g) => cr::constraint(
+            &mut cons,
+            "genre",
+            json!(g),
+            "applied",
+            format!("playbook {}", pb.name),
+        ),
+        Some(g) => cr::constraint(
+            &mut cons,
+            "genre",
+            json!(g),
+            "adjusted",
+            format!("matched to playbook {}", pb.name),
+        ),
+        None => cr::constraint(
+            &mut cons,
+            "genre",
+            Value::Null,
+            "adjusted",
+            format!(
+                "not given; {} guessed from the brief (keyword match)",
+                pb.name
+            ),
+        ),
+    }
+    for (k, v) in [
+        ("bpm", json!(a.bpm)),
+        ("key", json!(a.key)),
+        ("scale", json!(a.scale)),
+        ("duration_s", json!(a.duration_s)),
+    ] {
+        if !v.is_null() {
+            cr::constraint(&mut cons, k, v, "applied", "used as given");
+        }
+    }
+    let intent = cr::parse_intent(&a.intent, &mut cons);
+    let mut sp = cr::spec(pb);
+    cr::apply_feel(&mut sp, &intent.rhythmic_feel);
     thinking.push(format!("Genre: {} - {}", pb.name, pb.description));
     // ---- 0. how this beat is generated
     let tw = sp.template_weight.unwrap_or(0.3);
@@ -617,11 +663,42 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
             }
         }
     }
+    let mut why = why;
+    if method == "template" && intent.shapes_material() {
+        if a.method.is_some() {
+            for c in cons.iter_mut().filter(|c| {
+                c.field.starts_with("intent.rhythmic_feel")
+                    || c.field.starts_with("intent.motif.contour")
+                    || c.field.starts_with("intent.motif.rhythm")
+            }) {
+                c.status = "ignored".into();
+                c.note =
+                    "method=template keeps the playbook's drum patterns and motif generator".into();
+            }
+        } else {
+            method = "procedural".into();
+            why = "the intent constrains rhythm/motif, which the template method cannot honour"
+                .into();
+        }
+    }
     cr::decide(&mut dec, "method", "generation method", &method, why);
     let template = method == "template";
     // ---- 1. creative direction
+    if let (Some(m), Some(im)) = (&a.mood, &intent.mood) {
+        if m != im {
+            for c in cons.iter_mut().filter(|c| c.field == "intent.mood") {
+                c.status = "ignored".into();
+                c.note = format!("the mood argument '{m}' wins over intent.mood");
+            }
+        }
+    }
+    if let Some(m) = &a.mood {
+        cr::constraint(&mut cons, "mood", json!(m), "applied", "used as given");
+    }
     let mood = if let Some(m) = &a.mood {
         (m.clone(), "asked for".to_string())
+    } else if let Some(m) = &intent.mood {
+        (m.clone(), "asked for in the structured intent".to_string())
     } else if let Some(m) = detect_mood(&a.brief) {
         (m.to_string(), "read from the brief".to_string())
     } else {
@@ -642,6 +719,37 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         }
     };
     let mut dir = cr::direct(pb, &a.brief, mood, &mut rng, &mut dec);
+    // the structured intent overrides what the keyword reading guessed
+    let mut overridden = Vec::new();
+    if let Some(e) = intent.energy {
+        dir.energy = e;
+        overridden.push(format!("energy {e:.2}"));
+    }
+    if let Some(h) = &intent.hero {
+        dir.hero = h.clone();
+        overridden.push(format!("hero {h}"));
+    }
+    if let Some(d) = &intent.density {
+        dir.density = d.clone();
+        overridden.push(format!("density {d}"));
+    }
+    if let Some(em) = &intent.emotion {
+        dir.intent = em.clone();
+        overridden.push(format!("emotion '{em}'"));
+    }
+    if !overridden.is_empty() {
+        dir.identity = format!(
+            "{}: {}-led, {} (from the structured intent)",
+            dir.intent, dir.hero, dir.density
+        );
+        cr::decide(
+            &mut dec,
+            "direction",
+            "intent overrides",
+            overridden.join(", "),
+            "asked for in the structured intent",
+        );
+    }
     if let Some(r) = &refx {
         dir.energy = (0.5 * dir.energy + 0.5 * ((r.lufs + 22.0) / 14.0)).clamp(0.15, 1.0);
         cr::decide(
@@ -753,7 +861,9 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
     let iv = theory::scale_intervals(&scale)?;
     // the main motif: its density and shape serve the hero element and mood
     let base_d = pb.lead.density.unwrap_or(0.5);
-    let lead_density = if template {
+    let lead_density = if let Some(d) = intent.motif_density {
+        d
+    } else if template {
         base_d
     } else {
         let d = match dir.hero.as_str() {
@@ -806,8 +916,9 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
                 ("leap_fall", 0.6),
             ],
         };
-        let contour = cw[rng.weighted(&cw.iter().map(|x| x.1).collect::<Vec<_>>())].0;
-        let mut rw = vec![
+        let drawn = cw[rng.weighted(&cw.iter().map(|x| x.1).collect::<Vec<_>>())].0;
+        let contour = intent.motif_contour.as_deref().unwrap_or(drawn);
+        let mut rw = [
             ("on_grid", 1.0f32),
             ("syncopated", 1.0),
             ("long_short", 0.6),
@@ -822,7 +933,8 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         if pb.swing > 0.2 {
             rw[0].1 += 0.6;
         }
-        let cell = rw[rng.weighted(&rw.iter().map(|x| x.1).collect::<Vec<_>>())].0;
+        let drawn = rw[rng.weighted(&rw.iter().map(|x| x.1).collect::<Vec<_>>())].0;
+        let cell = intent.motif_rhythm.as_deref().unwrap_or(drawn);
         let m = cr::shaped_motif(&mut rng, lead_density, iv.len(), contour, cell);
         cr::decide(
             &mut dec,
@@ -862,6 +974,16 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
                 }
             }
         }
+    }
+    for (r, p) in &intent.palette {
+        cr::decide(
+            &mut dec,
+            "core",
+            "sound (intent)",
+            format!("{r}={p}"),
+            "asked for in the structured intent",
+        );
+        palette.insert(r.clone(), p.clone());
     }
     let sample_kit = if a.use_samples {
         let k = if template {
@@ -1089,6 +1211,7 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         genre_presets.extend(r.preset.iter().cloned());
     }
     let mut switch = false;
+    let mut skipped = Vec::new();
     let mut section_transpose = BTreeMap::new();
     let wildcards = cr::apply_wildcards(
         cr::WildTargets {
@@ -1099,11 +1222,32 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
             genre_presets,
         },
         &dir,
+        &intent.contrasts,
+        &mut skipped,
         &mut rng,
         &mut dec,
     );
+    for c in &intent.contrasts {
+        if wildcards.iter().any(|w| &w.name == c) {
+            cr::constraint(
+                &mut cons,
+                "intent.contrasts",
+                json!(c),
+                "applied",
+                "placed as a wildcard (see wildcards)",
+            );
+        } else {
+            cr::constraint(
+                &mut cons,
+                "intent.contrasts",
+                json!(c),
+                "ignored",
+                "not possible in this arrangement (e.g. needs two hooks or a long verse)",
+            );
+        }
+    }
     let groove_b = if switch {
-        let mut r2 = Rng::new(a.seed ^ 0x5717_C4);
+        let mut r2 = Rng::new(a.seed ^ 0x0057_17C4);
         let mut d2 = dir.clone();
         d2.density = if dir.density == "dense" {
             "balanced".into()
@@ -1261,6 +1405,7 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         authored: a.authored.clone(),
         provenance,
         novelty: Value::Null,
+        constraints: cons,
     })
 }
 
@@ -3262,11 +3407,20 @@ fn produce_inner(
     Ok(json!({
         "title": plan.title,
         "genre": plan.genre, "key": format!("{} {}", plan.key, plan.scale), "bpm": plan.bpm,
-        "score": score, "technical": crit.technical, "musical": crit.musical, "reference_match": crit.reference,
+        "score": score, "score_kind": "diagnostic heuristic, not musical quality (see quality)", "technical": crit.technical, "musical": crit.musical, "reference_match": crit.reference,
         "iterations": log, "final_review": final_review, "thinking": plan.thinking, "plan": plan,
         "remaining_findings": crit.findings.iter().take(6).map(|f| f.message.clone()).collect::<Vec<_>>(),
         "measurements": crit.measurements,
         "seed": plan.seed,
+        "constraints": {
+            "applied": plan.constraints.iter().filter(|c| c.status != "ignored").collect::<Vec<_>>(),
+            "ignored": plan.constraints.iter().filter(|c| c.status == "ignored").collect::<Vec<_>>(),
+        },
+        "diagnostics": {
+            "note": "Technical and musical numbers are heuristic diagnostics (delivery gates and pointers), not a measure of musical quality. Quality is judged by blind A/B listening (blind_ab_create / blind_ab_rate), tracked separately.",
+            "score": score, "technical": crit.technical, "musical": crit.musical,
+        },
+        "quality": {"measure": "blind A/B listener preference", "status": "unrated", "how": "blind_ab_create with this render and another, then blind_ab_rate; blind_ab_preferences shows the running tally"},
         "method": plan.method,
         "direction": plan.direction,
         "wildcards": plan.wildcards,
@@ -3777,5 +3931,79 @@ mod tests {
         let b = crate::creative::fresh_seed();
         assert_ne!(a, b);
         assert!(a < (1u64 << 53));
+    }
+
+    #[test]
+    fn omitted_seed_is_fresh_and_returned_explicit_is_deterministic() {
+        let mut e = engine();
+        let a = e
+            .call("plan_track", &json!({"genre": "trap", "brief": "x"}))
+            .unwrap();
+        let b = e
+            .call("plan_track", &json!({"genre": "trap", "brief": "x"}))
+            .unwrap();
+        assert_ne!(a["seed"], b["seed"]);
+        assert_eq!(a["seed_source"], "fresh");
+        assert_eq!(a["plan"]["provenance"]["seed_source"], "entropy");
+        let c = e
+            .call(
+                "plan_track",
+                &json!({"genre": "trap", "brief": "x", "seed": 5}),
+            )
+            .unwrap();
+        let d = e
+            .call(
+                "plan_track",
+                &json!({"genre": "trap", "brief": "x", "seed": 5}),
+            )
+            .unwrap();
+        assert_eq!(c["plan"], d["plan"]);
+        assert_eq!(c["seed"], 5);
+        assert_eq!(c["plan"]["provenance"]["seed_source"], "explicit");
+        assert!(c.get("seed_source").is_none());
+    }
+
+    #[test]
+    fn structured_intent_is_applied_and_reported() {
+        let mut a = args("beat", Some("trap"), 31);
+        a.duration_s = None;
+        a.intent = json!({
+            "mood": "sad", "energy": 0.4, "hero": "bass", "density": "sparse",
+            "rhythmic_feel": ["triplet", "straight"],
+            "motif": {"contour": "ascending", "rhythm": "syncopated"},
+            "palette": {"lead": "koto", "snare": "rim", "lead2": "koto"},
+            "contrasts": ["key_change", "nonsense"],
+            "vibe": "x"
+        });
+        let p = plan_track(&a).unwrap();
+        assert_eq!(p.mood, "sad");
+        let d = p.direction.as_ref().unwrap();
+        assert!((d.energy - 0.4).abs() < 1e-6);
+        assert_eq!(d.hero, "bass");
+        assert_eq!(d.density, "sparse");
+        assert_eq!(p.method, "procedural");
+        assert_eq!(p.groove.as_ref().unwrap().hat_rate, "8t");
+        assert_eq!(p.swing, 0.0);
+        assert_eq!(p.palette["lead"], "koto");
+        assert_eq!(p.palette["snare"], "rim");
+        assert_eq!(p.wildcards.len(), 1);
+        assert_eq!(p.wildcards[0].name, "key_change");
+        assert!(p
+            .decisions
+            .iter()
+            .any(|x| x.what == "motif" && x.choice.contains("ascending contour, syncopated")));
+        let ignored: Vec<&str> = p
+            .constraints
+            .iter()
+            .filter(|c| c.status == "ignored")
+            .map(|c| c.field.as_str())
+            .collect();
+        assert!(ignored.contains(&"intent.vibe"), "{ignored:?}");
+        assert!(ignored.contains(&"intent.contrasts"), "{ignored:?}");
+        assert!(ignored.contains(&"intent.palette.lead2"), "{ignored:?}");
+        assert!(p
+            .constraints
+            .iter()
+            .any(|c| c.field == "intent.rhythmic_feel" && c.status == "applied"));
     }
 }
