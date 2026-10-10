@@ -2029,10 +2029,17 @@ pub fn apply_wildcards(
     let mut fi = 0;
     let mut w: Vec<f32> = WILDCARDS
         .iter()
-        .map(|(_, role)| {
-            let mut x = 1.0f32;
+        .map(|(name, role)| {
+            // base weights: the more drastic or the more generic a move, the rarer
+            let mut x = match *name {
+                "sparse_to_dense" => 0.45,
+                "drum_dropout" => 0.6,
+                "silence_before_drop" => 0.7,
+                "odd_phrase" => 0.8,
+                _ => 1.0f32,
+            };
             match (*role, dir.mood.as_str()) {
-                ("tension", "dark" | "hype") => x *= 1.6,
+                ("tension", "dark" | "hype") => x *= 1.3,
                 ("emotion", "sad" | "hopeful" | "smooth") => x *= 1.6,
                 ("release", "chill" | "devotional") => x *= 1.5,
                 _ => {}

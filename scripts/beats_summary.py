@@ -70,7 +70,7 @@ L.append("**Listen blind first.** The two trap beats are loudness-matched in `bl
          "Rate them with the MCP tool `blind_ab_rate` (or just tell Hark which you prefer and why, per groove / identity / development / memorability / emotion / production) before reading the A/B section below. "
          "**Novelty scores only show the beats are not repeats of each other or of s8; they are not a measure of quality. Naman's blind ratings are the quality test.**\n")
 L.append("Seeds are fresh per beat (OS entropy + time) and recorded in each plan; passing the same seed back reproduces the beat exactly.\n")
-L.append("| beat | seed | method | BPM | key | progression (verse / hook) | wildcards [role] | LUFS | dBTP | wall s | guardrail score | nearest earlier beat (distance) | regenerated |")
+L.append("| beat | seed | method | BPM | key | progression (verse / hook) | wildcards [role] | LUFS | dBTP | wall s | diagnostic score (not quality) | nearest earlier beat (distance) | regenerated |")
 L.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 L += rows
 L.append("")
