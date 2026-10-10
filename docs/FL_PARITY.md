@@ -4,9 +4,9 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 62 have, 13 partial, 16 missing of 91** (parity 62/91; counting partial as half: 68.5/91).
+**Score: 63 have, 13 partial, 15 missing of 91** (parity 63/91; counting partial as half: 69.5/91).
 
-Build order for the gaps, by musical impact: vocoder, flam/flip/chop note tools, frequency shifter and
+Build order for the gaps, by musical impact: flam/flip/chop note tools, frequency shifter and
 ring mod, stereo shaper, noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
 hosting.
@@ -71,7 +71,7 @@ hosting.
 | Effects | Transient Processor | have | transient |
 | Effects | Soundgoodizer | partial | master_assistant, multiband |
 | Effects | Love Philter / Fruity Filter | have | filter + automation |
-| Effects | Vocoder / Vocodex | missing |  |
+| Effects | Vocoder / Vocodex | have | add_effect type vocoder: the track's own vocal modulates a built-in saw chord (notes), 4-40 bands, carrier noise + sibilance pass-through |
 | Effects | Pitcher / NewTone (pitch correction) | have | tune_vocal (PSOLA autotune), pitch_shift |
 | Effects | Newtime (time warping) | partial | stretch_sample, vocal warp in vocal_to_song |
 | Effects | Gate | have | gate |

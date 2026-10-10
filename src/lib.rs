@@ -27,6 +27,7 @@ pub mod fx;
 pub mod fx_extra;
 pub mod fx_sat;
 pub mod fx_time;
+pub mod fx_vocoder;
 pub mod groove_extract;
 #[cfg(feature = "gui")]
 pub mod gui;
