@@ -1,0 +1,59 @@
+name: sound-audit
+# Render one-shots of every preset on a base revision and on this commit,
+# run Beatbox's ears + scripts/sound_audit.py on both, and render an 8-bar
+# demo per sound palette. Artifacts: oneshots/{before,after}, audit, demos.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: base revision for the "before" renders
+        default: ee0a526
+  push:
+    branches: [sprint9-palette]
+env:
+  CARGO_TERM_COLOR: always
+  BASE: ${{ github.event.inputs.base || 'ee0a526' }}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: pip install numpy scipy
+      - name: after (this commit)
+        run: |
+          cargo build --no-default-features --bin beatbox --example oneshots
+          target/debug/examples/oneshots out/oneshots/after
+      - name: before (base revision)
+        run: |
+          git worktree add ../base "$BASE"
+          mkdir -p ../base/examples
+          cp examples/oneshots.rs ../base/examples/oneshots.rs
+          (cd ../base && CARGO_TARGET_DIR=$GITHUB_WORKSPACE/target-base cargo build --no-default-features --example oneshots)
+          target-base/debug/examples/oneshots out/oneshots/before
+      - name: Beatbox ears on every one-shot
+        run: |
+          for side in before after; do
+            mkdir -p out/ears/$side
+            for f in $PWD/out/oneshots/$side/*.wav; do
+              b=$(basename "$f")
+              target/debug/beatbox call analyze_audio "{\"path\":\"$f\",\"max_onsets\":4}" > "out/ears/$side/$b.json" 2>/dev/null || true
+            done
+          done
+      - name: audit
+        run: |
+          mkdir -p out/audit
+          python3 scripts/sound_audit.py out/oneshots/before --ears out/ears/before --out out/audit/before
+          python3 scripts/sound_audit.py out/oneshots/after --ears out/ears/after --compare out/oneshots/before --out out/audit/after
+      - name: palette demos (8 bars each)
+        run: |
+          if target/debug/beatbox tools | grep -q list_palettes; then
+            bash scripts/palette_demos.sh target/debug/beatbox out/palette
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sound-audit
+          path: out/
