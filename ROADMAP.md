@@ -16,6 +16,13 @@ Each sprint ends by re-rendering a reference beat with the new tools and compari
 ## Sprint 7 — Autonomy
 - produce_track, critique_mix, candidate branches with loudness-matched A/B, golden-render tests, haas, saturation types, place_fx, Wikimedia sample search
 - DONE: saturator (tape/tube/transistor/diode/fold/exciter), haas widener, place_fx, move_effect, ab_compare (loudness-matched). TODO: golden-render tests, Wikimedia sample search
+## Sprint 6-7 — Status (shipped)
+- Autonomy: produce_track / plan_track / apply_plan / critique_track / revise_track; revisions kept only when diff_renders agrees
+- Ears: ears_report, diff_renders, loudness_report, masking_matrix, groove/hook/structure analysis, stereo_image, punch, vocal_pocket, reference_match
+- Nine genre playbooks (incl. desi_hiphop: sitar, tabla, tanpura); flip_sample, vocal_chop, sample index/kits
+- FL parity: playlist pattern clips, automation clips, route_bus with cycle check, scale_snap, ghost notes; saturator, haas, place_fx, move_effect, ab_compare
+- Registry: 163 MCP tools
+- Still open: persistent IDs + clip timeline (Sprint 6 identity work), golden-render tests, Wikimedia sample search
 ## Sprint 8 — Real-time engine
 - Block-based cpal audio graph shared by playback and offline render, live meters, PDC
 ## Sprint 9 — Plugins
