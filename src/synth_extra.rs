@@ -171,6 +171,7 @@ pub fn render_wavetable(
     let mut filt = Svf::default();
     let lfo0 = rng.f32();
     let drive = 1.0 + p.drive.max(0.0) * 8.0;
+    let mut dcb = crate::voice_pro::SubDc::default();
     for (i, s) in out.iter_mut().enumerate() {
         let t = i as f32 / SR;
         let pos = (p.position
@@ -197,6 +198,7 @@ pub fn render_wavetable(
         if drive > 1.01 {
             y = (y * drive).tanh() / drive.tanh().max(0.5);
         }
+        let y = dcb.process(y);
         *s = y * p.amp_env.level(t, gate) * vel * p.gain;
     }
     out

@@ -626,6 +626,7 @@ fn impact_layer() -> Instrument {
                     tune: -3.0,
                     decay: 2.5,
                     drive: 0.3,
+                    ..Default::default()
                 }))
             },
             instruments::Layer {
@@ -635,6 +636,7 @@ fn impact_layer() -> Instrument {
                     tune: -2.0,
                     decay: 2.0,
                     drive: 0.0,
+                    ..Default::default()
                 }))
             },
         ],
