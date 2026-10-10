@@ -70,6 +70,8 @@ pub struct Engine {
     /// Pre-fader track audio reused across renders that only move faders or
     /// the master (the producer turns it on for its loop; it costs memory).
     pub track_cache: Option<render::TrackCache>,
+    /// The same for the ears' masking stem renders (one hook section).
+    pub mask_cache: Option<render::TrackCache>,
 }
 
 const MAX_UNDO: usize = 100;
@@ -89,6 +91,7 @@ impl Engine {
             cached_mix: None,
             render_cache: Vec::new(),
             track_cache: None,
+            mask_cache: None,
         };
         e.project.ensure_fx_ids();
         e

@@ -1771,8 +1771,9 @@ pub fn critique(e: &mut Engine, plan: &Plan, reference: Option<&str>) -> Result<
     critique_mode(e, plan, reference, false)
 }
 
-/// `critique` with the fast ears (`fast: true`) for choosing between
-/// candidates in the produce loop; see `listen::ears_report_mode`.
+/// `critique` with the fast ears (`fast: true`, identical scores, no
+/// display-only payload) for choosing between candidates in the produce
+/// loop; see `listen::ears_report_mode`.
 pub fn critique_mode(
     e: &mut Engine,
     plan: &Plan,
@@ -2265,11 +2266,13 @@ pub fn produce(e: &mut Engine, args: &PlanArgs, o: &ProduceOpts) -> Result<Value
     // gain staging + mastering re-render with only faders/master moved:
     // synthesise each track once per composition (dropped when we return)
     let prev_cache = e.track_cache.replace(Default::default());
+    let prev_mask = e.mask_cache.replace(Default::default());
     PROFILING.store(true, std::sync::atomic::Ordering::Relaxed);
     let r = produce_inner(e, args, o, t0);
     PROFILING.store(false, std::sync::atomic::Ordering::Relaxed);
     prof_drain();
     e.track_cache = prev_cache;
+    e.mask_cache = prev_mask;
     r
 }
 

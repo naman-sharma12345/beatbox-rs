@@ -840,7 +840,6 @@ pub fn render_cached(
         }
     }
 
-    drop(render_track);
     if let Some(c) = cache {
         c.tracks.extend(fresh_tracks);
     }

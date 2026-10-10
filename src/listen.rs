@@ -295,10 +295,8 @@ pub fn masking(
     masking_hop(e, section, top_k, MASK_HOP)
 }
 
-/// Analysis hop of the masking matrix (full ears).
+/// Analysis hop of the masking matrix.
 pub const MASK_HOP: usize = 1024;
-/// Coarser hop for the producer's fast ears (half the frames, same render).
-pub const MASK_HOP_FAST: usize = 2048;
 
 /// `masking` with an explicit analysis hop (frames every `hop` samples).
 pub fn masking_hop(
@@ -331,7 +329,7 @@ pub fn masking_hop(
     let a = (span.start_beat * 4.0).round() as u32;
     let b = (span.end_beat * 4.0).round() as u32;
     e.bank.sync(&p.samples);
-    let m = render::render(
+    let m = render::render_cached(
         &p,
         &e.bank,
         &RenderOptions {
@@ -340,6 +338,7 @@ pub fn masking_hop(
             step_range: Some((a, b.min(a + 16 * STEPS_PER_BAR))),
             ..Default::default()
         },
+        e.mask_cache.as_mut(),
     )?;
     let edges = erb_edges();
     use rayon::prelude::*;
@@ -811,10 +810,10 @@ pub fn ears_report(e: &mut Engine, focus_track: Option<&str>) -> Result<Value> {
 }
 
 /// The ears digest. `fast` is for choosing between candidate renders in the
-/// producer loop: the SAME full-quality render and DSP, but the masking
-/// matrix is analysed at half the frame rate and the display-only loudness
-/// series is skipped. Every other number is identical to the full report;
-/// the kept render always gets the full report.
+/// producer loop: the SAME full-quality render, DSP and analyses, minus the
+/// display-only parts (the 1 s loudness series and the per-area details
+/// payload). Every score, finding and summary number is identical to the
+/// full report; the kept render always gets the full report.
 pub fn ears_report_mode(e: &mut Engine, focus_track: Option<&str>, fast: bool) -> Result<Value> {
     use crate::producer::prof;
     let t = std::time::Instant::now();
@@ -844,8 +843,7 @@ pub fn ears_report_mode(e: &mut Engine, focus_track: Option<&str>, fast: bool) -
     prof("ears.artifacts", t);
     let clicks = arts.iter().filter(|a| a.kind == "click").count();
     let t = std::time::Instant::now();
-    let hop = if fast { MASK_HOP_FAST } else { MASK_HOP };
-    let (mask, mask_sec) = masking_hop(e, None, 5, hop).unwrap_or_default();
+    let (mask, mask_sec) = masking_hop(e, None, 5, MASK_HOP).unwrap_or_default();
     prof("ears.masking", t);
     let t = std::time::Instant::now();
     let lead = focus_track.map(String::from).or_else(|| {
@@ -987,7 +985,7 @@ pub fn ears_report_mode(e: &mut Engine, focus_track: Option<&str>, fast: bool) -
         "scores": {"technical": r1(technical), "musical": r1(musical), "by_area": {"mix": report.score, "loudness_lufs": summary.integrated_lufs, "true_peak_dbtp": tp, "psr_min_db": summary.psr_min_db, "masking_pairs": mask.len(), "distinct_sections": distinct, "hook_score": hook.as_ref().map(|h| h["hook_score"].clone())}},
         "top_findings": f.iter().take(7).map(|x| json!({"severity": r2(x.0), "message": x.1, "suggested_call": x.2})).collect::<Vec<_>>(),
         "next_best_action": f.iter().find(|x| !x.2.is_null()).map(|x| x.2.clone()),
-        "details": {"loudness": lr, "masking": {"section": mask_sec, "pairs": mask}, "hook": hook, "groove": groove, "structure": st},
+        "details": if fast { json!({"masking": {"section": mask_sec, "pairs": mask}}) } else { json!({"loudness": lr, "masking": {"section": mask_sec, "pairs": mask}, "hook": hook, "groove": groove, "structure": st}) },
         "note": "technical and musical scores are kept separate; pass this render_id to diff_renders after your next change",
     }))
 }
@@ -1140,23 +1138,10 @@ mod tests {
             assert_eq!(f.sections, u.sections);
             assert_eq!(f.bands, u.bands);
             assert_eq!(f.musical, u.musical);
-            // masking is analysed at half the frame rate: within tolerance
-            let sum = |x: &RenderSummary| x.masking.iter().map(|m| m.1).sum::<f32>();
-            assert!(
-                (sum(f) - sum(u)).abs() <= 1.0,
-                "masking fast {:?} vs full {:?}",
-                f.masking,
-                u.masking
-            );
-            assert!(
-                (f.technical - u.technical).abs() <= 1.0,
-                "technical fast {} vs full {}",
-                f.technical,
-                u.technical
-            );
-            if let (Some(a), Some(b)) = (f.masking.first(), u.masking.first()) {
-                assert!((a.1 - b.1).abs() <= 1.0, "{a:?} vs {b:?}");
-            }
+            // same masking matrix and the same scores
+            assert_eq!(f.masking, u.masking);
+            assert_eq!(f.technical, u.technical);
+            assert_eq!(f.findings, u.findings);
         }
         // the decision: same diff verdict either way
         let (vf, vu) = (diff(&fa, &fb), diff(&ua, &ub));
