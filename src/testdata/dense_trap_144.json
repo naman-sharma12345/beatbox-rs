@@ -1,0 +1,380 @@
+[
+ {
+  "tool": "new_project",
+  "args": {
+   "name": "dense trap 144",
+   "bpm": 144,
+   "key": "F#",
+   "scale": "minor",
+   "patterns": [
+    {
+     "name": "hook",
+     "bars": 4
+    }
+   ]
+  }
+ },
+ {
+  "tool": "add_track",
+  "args": {
+   "name": "kick",
+   "preset": "kick"
+  }
+ },
+ {
+  "tool": "add_track",
+  "args": {
+   "name": "snare",
+   "preset": "snare"
+  }
+ },
+ {
+  "tool": "add_track",
+  "args": {
+   "name": "hat",
+   "preset": "hat"
+  }
+ },
+ {
+  "tool": "add_track",
+  "args": {
+   "name": "open_hat",
+   "preset": "open_hat"
+  }
+ },
+ {
+  "tool": "add_track",
+  "args": {
+   "name": "808",
+   "preset": "808"
+  }
+ },
+ {
+  "tool": "add_track",
+  "args": {
+   "name": "bell",
+   "preset": "fm_bell"
+  }
+ },
+ {
+  "tool": "set_steps",
+  "args": {
+   "track": "kick",
+   "pattern": "hook",
+   "steps": "X.....x...X..x..X.....x.x.....x.."
+  }
+ },
+ {
+  "tool": "set_steps",
+  "args": {
+   "track": "snare",
+   "pattern": "hook",
+   "steps": "........X...............X......."
+  }
+ },
+ {
+  "tool": "set_steps",
+  "args": {
+   "track": "hat",
+   "pattern": "hook",
+   "steps": "x.x.xxx.x.x.x.xxx.x.xx.xx.x.x.x."
+  }
+ },
+ {
+  "tool": "set_steps",
+  "args": {
+   "track": "open_hat",
+   "pattern": "hook",
+   "steps": "......x.......x.......x.....x..."
+  }
+ },
+ {
+  "tool": "add_roll",
+  "args": {
+   "track": "hat",
+   "pattern": "hook",
+   "at_step": 12,
+   "length_steps": 4,
+   "rate": "1/32",
+   "vel_from": 0.35,
+   "vel_to": 0.9
+  }
+ },
+ {
+  "tool": "add_roll",
+  "args": {
+   "track": "hat",
+   "pattern": "hook",
+   "at_step": 28,
+   "length_steps": 4,
+   "rate": "1/32",
+   "vel_from": 0.35,
+   "vel_to": 0.9
+  }
+ },
+ {
+  "tool": "add_roll",
+  "args": {
+   "track": "hat",
+   "pattern": "hook",
+   "at_step": 44,
+   "length_steps": 4,
+   "rate": "1/32",
+   "vel_from": 0.35,
+   "vel_to": 0.9
+  }
+ },
+ {
+  "tool": "add_roll",
+  "args": {
+   "track": "hat",
+   "pattern": "hook",
+   "at_step": 60,
+   "length_steps": 4,
+   "rate": "1/32",
+   "vel_from": 0.35,
+   "vel_to": 0.9
+  }
+ },
+ {
+  "tool": "add_notes",
+  "args": {
+   "track": "808",
+   "pattern": "hook",
+   "replace": true,
+   "notes": [
+    {
+     "start": 0,
+     "len": 6,
+     "pitch": 42,
+     "vel": 0.9
+    },
+    {
+     "start": 6,
+     "len": 4,
+     "pitch": 42,
+     "vel": 0.9,
+     "slide_to": 45
+    },
+    {
+     "start": 10,
+     "len": 3,
+     "pitch": 45,
+     "vel": 0.9
+    },
+    {
+     "start": 13,
+     "len": 3,
+     "pitch": 45,
+     "vel": 0.9,
+     "slide_to": 37
+    },
+    {
+     "start": 16,
+     "len": 6,
+     "pitch": 42,
+     "vel": 0.9
+    },
+    {
+     "start": 22,
+     "len": 2,
+     "pitch": 42,
+     "vel": 0.9
+    },
+    {
+     "start": 24,
+     "len": 6,
+     "pitch": 49,
+     "vel": 0.9,
+     "slide_to": 47
+    },
+    {
+     "start": 30,
+     "len": 2,
+     "pitch": 47,
+     "vel": 0.9
+    },
+    {
+     "start": 32,
+     "len": 6,
+     "pitch": 42,
+     "vel": 0.9
+    },
+    {
+     "start": 38,
+     "len": 4,
+     "pitch": 42,
+     "vel": 0.9,
+     "slide_to": 40
+    },
+    {
+     "start": 42,
+     "len": 6,
+     "pitch": 40,
+     "vel": 0.9
+    },
+    {
+     "start": 48,
+     "len": 6,
+     "pitch": 42,
+     "vel": 0.9,
+     "slide_to": 49
+    },
+    {
+     "start": 54,
+     "len": 4,
+     "pitch": 49,
+     "vel": 0.9
+    },
+    {
+     "start": 58,
+     "len": 6,
+     "pitch": 47,
+     "vel": 0.9,
+     "slide_to": 42
+    }
+   ]
+  }
+ },
+ {
+  "tool": "add_notes",
+  "args": {
+   "track": "bell",
+   "pattern": "hook",
+   "replace": true,
+   "notes": [
+    {
+     "start": 0,
+     "len": 2,
+     "pitch": 66,
+     "vel": 0.7
+    },
+    {
+     "start": 2,
+     "len": 2,
+     "pitch": 69,
+     "vel": 0.7
+    },
+    {
+     "start": 4,
+     "len": 2,
+     "pitch": 73,
+     "vel": 0.7
+    },
+    {
+     "start": 6,
+     "len": 2,
+     "pitch": 71,
+     "vel": 0.7
+    },
+    {
+     "start": 8,
+     "len": 2,
+     "pitch": 69,
+     "vel": 0.7
+    },
+    {
+     "start": 17,
+     "len": 2,
+     "pitch": 66,
+     "vel": 0.7
+    },
+    {
+     "start": 19,
+     "len": 2,
+     "pitch": 69,
+     "vel": 0.7
+    },
+    {
+     "start": 21,
+     "len": 2,
+     "pitch": 73,
+     "vel": 0.7
+    },
+    {
+     "start": 23,
+     "len": 2,
+     "pitch": 71,
+     "vel": 0.7
+    },
+    {
+     "start": 25,
+     "len": 2,
+     "pitch": 69,
+     "vel": 0.7
+    },
+    {
+     "start": 32,
+     "len": 2,
+     "pitch": 71,
+     "vel": 0.7
+    },
+    {
+     "start": 34,
+     "len": 2,
+     "pitch": 74,
+     "vel": 0.7
+    },
+    {
+     "start": 36,
+     "len": 2,
+     "pitch": 78,
+     "vel": 0.7
+    },
+    {
+     "start": 38,
+     "len": 2,
+     "pitch": 76,
+     "vel": 0.7
+    },
+    {
+     "start": 40,
+     "len": 2,
+     "pitch": 74,
+     "vel": 0.7
+    },
+    {
+     "start": 49,
+     "len": 2,
+     "pitch": 66,
+     "vel": 0.7
+    },
+    {
+     "start": 51,
+     "len": 2,
+     "pitch": 69,
+     "vel": 0.7
+    },
+    {
+     "start": 53,
+     "len": 2,
+     "pitch": 73,
+     "vel": 0.7
+    },
+    {
+     "start": 55,
+     "len": 2,
+     "pitch": 71,
+     "vel": 0.7
+    },
+    {
+     "start": 57,
+     "len": 2,
+     "pitch": 69,
+     "vel": 0.7
+    }
+   ]
+  }
+ },
+ {
+  "tool": "set_arrangement",
+  "args": {
+   "sections": [
+    {
+     "pattern": "hook",
+     "repeats": 4
+    }
+   ]
+  }
+ }
+]

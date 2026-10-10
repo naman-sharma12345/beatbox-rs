@@ -10,16 +10,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # keep in step with rust-toolchain.toml
+      - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: system deps (GUI build)
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libxkbcommon-dev libwayland-dev libx11-dev ffmpeg
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets --no-default-features -- -D warnings
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --no-default-features
+      - run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --no-default-features
+      - name: rust-toolchain.toml matches the CI toolchain
+        run: grep -q 'channel = "1.99.0"' rust-toolchain.toml
   beats:
     # prove the producer: render the reference beats with produce_track
     # (fresh seeds), compare them with the previous sprint, build a blind A/B
@@ -29,10 +32,10 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: cargo build --release --no-default-features
+      - run: cargo build --release --no-default-features --locked
       - name: previous sprint's beats (s8, main ee0a526) for the novelty comparison
         continue-on-error: true
         env:

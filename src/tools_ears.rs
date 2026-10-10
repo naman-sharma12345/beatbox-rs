@@ -287,7 +287,17 @@ pub fn tools() -> Vec<Tool> {
                     for t in names {
                         let m = render_track(e, &t)?;
                         let (b0, b1) = ears::clamp_range(m.left.len(), s0, s1);
-                        let (mut ev, bed) = ears::detect_artifacts(&m.left[b0..b1], &m.right[b0..b1], &wide);
+                        let (mut ev, mut bed) = ears::detect_artifacts(&m.left[b0..b1], &m.right[b0..b1], &wide);
+                        // a solo noise-percussion track is judged between its own hits
+                        if bed.detected {
+                            if let Some(spans) = ears::own_hit_spans(&p, &e.bank, p.track_index(&t)?) {
+                                let local: Vec<(usize, usize)> = spans.iter().filter(|s| s.1 > b0 && s.0 < b1).map(|s| (s.0.saturating_sub(b0), s.1 - b0)).collect();
+                                bed = ears::noise_bed_gated(&m.left[b0..b1], &m.right[b0..b1], &local);
+                                if !bed.detected {
+                                    ev.retain(|x| x.kind != "noise_bed");
+                                }
+                            }
+                        }
                         ears::mask_drum_clicks(&mut ev, &onsets, b0);
                         let mut nc = 0;
                         ev.retain(|x| x.kind != "click" || { nc += 1; nc <= o.max_events });
@@ -431,8 +441,8 @@ pub fn tools() -> Vec<Tool> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::engine::Engine;
-    use serde_json::json;
 
     fn eng() -> Engine {
         let mut e = Engine::new(std::env::temp_dir().join("beatbox_ears_tests"));
@@ -495,5 +505,50 @@ mod tests {
         let pts = c["points_hz_db"].as_array().unwrap();
         assert!(pts[0][1].as_f64().unwrap() < -20.0, "{c}");
         assert!(pts[19][1].as_f64().unwrap().abs() < 1.0, "{c}");
+    }
+
+    /// Regression for the external review's artifact scan (22 DC-step
+    /// warnings, a lone click, noise beds on solo hat tracks): a dense
+    /// 144 BPM half-time trap pattern with a gliding 808, a five-note bell
+    /// motif, 1/32 hat rolls and open hats must scan clean, mix and every
+    /// solo track. Documented false positives allowed here: none.
+    #[test]
+    fn dense_trap_144_artifact_scan_is_clean() {
+        let mut e = Engine::new(std::env::temp_dir().join("beatbox_artifact_regress"));
+        let calls: Vec<Value> =
+            serde_json::from_str(include_str!("testdata/dense_trap_144.json")).unwrap();
+        for c in &calls {
+            e.call(c["tool"].as_str().unwrap(), &c["args"])
+                .unwrap_or_else(|err| panic!("{c}: {err:#}"));
+        }
+        let a = e
+            .call(
+                "detect_artifacts",
+                &json!({"per_track": true, "max_events": 50}),
+            )
+            .unwrap();
+        assert_eq!(a["clean"], true, "{a:#}");
+        assert_eq!(a["noise_bed"]["detected"], false, "{a:#}");
+        assert!(a["culprits"].as_array().unwrap().is_empty(), "{a:#}");
+        // the percussion gating did not just blind the detector: the same
+        // hat track with a constant hiss under it is still caught
+        let hat = render_track(&mut e, "hat").unwrap();
+        let mut rng = crate::dsp::Rng::new(9);
+        let hiss: Vec<f32> = (0..hat.left.len()).map(|_| rng.bipolar() * 0.004).collect();
+        let l: Vec<f32> = hat.left.iter().zip(&hiss).map(|(a, b)| a + b).collect();
+        let r: Vec<f32> = hat.right.iter().zip(&hiss).map(|(a, b)| a + b).collect();
+        let ti = e.project.track_index("hat").unwrap();
+        let spans = ears::own_hit_spans(&e.project, &e.bank, ti).unwrap();
+        let open = spans
+            .windows(2)
+            .map(|w| w[1].0.saturating_sub(w[0].1))
+            .sum::<usize>();
+        let bed = ears::noise_bed_gated(&l, &r, &spans);
+        if open > (SR * 2.0) as usize {
+            assert!(
+                bed.detected,
+                "hiss under the hats must still be found: {bed:?}"
+            );
+        }
     }
 }

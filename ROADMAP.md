@@ -31,7 +31,20 @@ Each sprint ends by re-rendering a reference beat with the new tools and compari
 - Timebase groundwork (`src/timebase/`): 960 PPQ ticks, tempo + meter map, grids, timecode, five counter formats, step↔tick bridge; renderer not rewired yet
 - Playlist view: arrangement as clips per track lane on the tick timebase with Bars|Beats + tempo rulers
 - Next: native clips on the tick timeline (move/resize clips), tempo changes in the renderer, CLAP host
-## Sprint 8 — Real-time engine
+## Sprint 8 — Producer speed (shipped)
+Numbering note: this slot was planned as "real-time engine"; what actually shipped as Sprint 8 is producer speed. The real-time engine and plugin hosting move to Sprints 10 and 11 below.
+- Per-track parallel render (rayon, bit-identical sum order), pre-fader track cache for fader/master-only re-renders, renders cached by project hash
+- Fast ears for choosing candidates with the full ears always on the kept render (final_review); iterations capped at 4 with a plateau stop; per-iteration timings in the plan history
+- Tests: fast/full ears parity, track cache + parallel render bit-identical to a plain render
+## Sprint 9 — Creative generator, UI port, review fixes (in progress)
+- Creative generator (in progress): fresh seeds when none is given (the chosen seed is returned; explicit seeds stay deterministic), explicit structured intent (feel, motif, density, palette, contrasts) with a report of which constraints were applied, novelty tracking, blind A/B listening alongside the heuristic scores
+- UI port (in progress): SoundCraft studio UI (status above; native clips on the tick timeline, tempo changes in the renderer still to do)
+- External review fixes:
+  - `batch` runs every call through the same validated dispatch as a standalone call (unknown arguments rejected, stable effect ids resolved, panic guard) inside one outer undo step; atomic and partial-success semantics are documented and tested
+  - delivery QC decodes the written file at its own sample rate (48 kHz WAV/MP3 loudness, true peak and duration come from the output, not the pre-encode buffer)
+  - artifact sources fixed at the synth/render level, with a dense 144 BPM trap regression render
+  - pinned toolchain (`rust-toolchain.toml`) and reproducible build instructions (`--locked`, LTO fallback)
+## Sprint 10 — Real-time engine (planned)
 - Block-based cpal audio graph shared by playback and offline render, live meters, PDC
-## Sprint 9 — Plugins
+## Sprint 11 — Plugins (planned)
 - CLAP/VST3 hosting with crash isolation and parameter discovery as MCP tools

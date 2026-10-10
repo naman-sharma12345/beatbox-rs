@@ -367,20 +367,59 @@ pub fn clicks(x: &[f32], max: usize) -> Vec<(usize, f32)> {
     out
 }
 
-/// Sudden steps in the DC level between 100 ms blocks.
+/// Sudden steps in the DC (sub-audio) level.
+///
+/// The DC level is a cascade of two moving averages (100 ms and 137 ms,
+/// incommensurate so their response nulls interleave): a 30-60 Hz 808 or
+/// kick body leaks at most ~1/(pi f T) per stage, so full-scale sub bass
+/// stays well under the threshold, while a real offset step passes at full
+/// size. A step is the change of that level across 250 ms, reported once
+/// per event at its largest point. (Plain 100 ms block means let a loud 808
+/// read as +/-0.03..0.07 "DC" and tripped on every long sub note.)
 pub fn dc_steps(x: &[f32]) -> Vec<(usize, f32)> {
-    let blk = (SR * 0.1) as usize;
-    let means: Vec<f32> = x
-        .chunks(blk)
-        .filter(|c| c.len() == blk)
-        .map(|c| c.iter().sum::<f32>() / blk as f32)
-        .collect();
-    let mut out = Vec::new();
-    for k in 1..means.len() {
-        let d = means[k] - means[k - 1];
-        if d.abs() > 0.03 {
-            out.push((k * blk, d));
+    const THRESH: f32 = 0.03;
+    let w1 = (SR * 0.100) as usize;
+    let w2 = (SR * 0.137) as usize;
+    let span = (SR * 0.250) as usize;
+    let hop = (SR * 0.010) as usize;
+    if x.len() < w1 + w2 + span + hop {
+        return Vec::new();
+    }
+    // running-sum moving average (f64 accumulator, f32 storage: low RAM)
+    let boxcar = |v: &mut dyn Iterator<Item = f32>, n: usize, w: usize| -> Vec<f32> {
+        let mut ring = vec![0.0f32; w];
+        let mut acc = 0.0f64;
+        let mut out = Vec::with_capacity(n.saturating_sub(w) + 1);
+        for (i, a) in v.enumerate() {
+            acc += a as f64 - ring[i % w] as f64;
+            ring[i % w] = a;
+            if i + 1 >= w {
+                out.push((acc / w as f64) as f32);
+            }
         }
+        out
+    };
+    let first = boxcar(&mut x.iter().copied(), x.len(), w1);
+    let lvl = boxcar(&mut first.iter().copied(), first.len(), w2);
+    drop(first);
+    // lvl[i] is centred at sample i + (w1 + w2) / 2
+    let centre = (w1 + w2) / 2;
+    let mut out: Vec<(usize, f32)> = Vec::new();
+    let mut i = span;
+    while i < lvl.len() {
+        let d = lvl[i] - lvl[i - span];
+        if d.abs() > THRESH {
+            let at = i - span / 2 + centre;
+            match out.last_mut() {
+                Some(last) if at - last.0 < span => {
+                    if d.abs() > last.1.abs() {
+                        *last = (at, d);
+                    }
+                }
+                _ => out.push((at, d)),
+            }
+        }
+        i += hop;
     }
     out
 }
@@ -511,6 +550,17 @@ fn frame_spec(x: &[f32], at: usize, win: &[f32]) -> Vec<f32> {
 }
 
 pub fn noise_bed(l: &[f32], r: &[f32]) -> NoiseBed {
+    noise_bed_gated(l, r, &[])
+}
+
+/// `noise_bed` judged only on frames clear of `busy` sample spans. For a
+/// solo noise-percussion track (hats, snare, shaker) the spans are its own
+/// hits until they decay below -60 dB: hats ARE broadband noise, so frames
+/// inside their own decay always look like a "bed" (a dense closed-hat
+/// pattern sits at its own -54 dB decay when the next hit lands). A real
+/// hiss shows up in the gaps; with no gaps at all there is nothing to
+/// judge and nothing is reported.
+pub fn noise_bed_gated(l: &[f32], r: &[f32], busy: &[(usize, usize)]) -> NoiseBed {
     let n = l.len().min(r.len());
     let mono: Vec<f32> = (0..n).map(|i| 0.5 * (l[i] + r[i])).collect();
     let hop = (SR * 0.05) as usize; // 50 ms frames
@@ -519,7 +569,21 @@ pub fn noise_bed(l: &[f32], r: &[f32]) -> NoiseBed {
     let (k0, k1) = ((6000.0 / bin_hz) as usize, (16000.0 / bin_hz) as usize);
     let mut frames: Vec<(f32, f32, f32)> = Vec::new(); // (full dB, hf dB, flatness)
     let mut at = 0;
+    let mut bi = 0usize;
     while at + NFRAME <= n {
+        // skip frames that overlap a busy span (spans sorted by start)
+        while bi < busy.len() && busy[bi].1 <= at {
+            bi += 1;
+        }
+        if busy[bi..]
+            .iter()
+            .take_while(|b| b.0 < at + NFRAME)
+            .any(|b| b.1 > at)
+        {
+            frames.push((-200.0, -200.0, 0.0));
+            at += hop;
+            continue;
+        }
         let sp = frame_spec(&mono, at, &win);
         let full: f32 = sp.iter().skip(1).sum();
         let hf = &sp[k0..k1];
@@ -579,7 +643,11 @@ pub fn noise_bed(l: &[f32], r: &[f32]) -> NoiseBed {
         }
     }
     // a looped bed repeats its HF envelope: autocorrelation of the hf track
-    let hf_env: Vec<f32> = frames.iter().map(|f| f.1).collect();
+    let hf_env: Vec<f32> = frames
+        .iter()
+        .filter(|f| f.0 > -150.0)
+        .map(|f| f.1)
+        .collect();
     let (loop_score, period) = periodicity(&hf_env, 10, 400);
     let detected = floor > -75.0 && flatness > 0.35 && coverage > 50.0;
     NoiseBed {
@@ -650,6 +718,54 @@ pub fn drum_onsets(p: &Project) -> Vec<usize> {
     out.sort_unstable();
     out.dedup();
     out
+}
+
+/// For a percussion track, the sample spans where its own hits are still
+/// sounding (onset until the voice decays below -60 dB of its peak),
+/// merged and sorted; None for tonal tracks. Used to judge a solo drum
+/// track's noise bed only in the gaps between its hits.
+pub fn own_hit_spans(
+    p: &Project,
+    bank: &crate::samples::SampleBank,
+    ti: usize,
+) -> Option<Vec<(usize, usize)>> {
+    let t = p.tracks.get(ti)?;
+    let role = crate::tools_mix::role_of(&t.name, &t.instrument);
+    if !matches!(role, "kick" | "snare" | "hats" | "cymbal" | "perc") {
+        return None;
+    }
+    let (events, _) = crate::render::schedule(p, &Default::default());
+    let mut tails: std::collections::HashMap<(i32, u32), usize> = Default::default();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for e in events.get(ti)? {
+        let key = ((e.pitch * 10.0) as i32, (e.gate * 1000.0) as u32);
+        let tail = *tails.entry(key).or_insert_with(|| {
+            let v = crate::instruments::render_note_slide(
+                &t.instrument,
+                e.pitch,
+                1.0,
+                e.gate,
+                bank,
+                0,
+                None,
+            );
+            let pk = v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+            v.iter()
+                .rposition(|x| x.abs() > pk * 1e-3)
+                .map(|i| i + 1)
+                .unwrap_or(0)
+        });
+        spans.push((e.start, e.start + tail));
+    }
+    spans.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (a, b) in spans {
+        match merged.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    Some(merged)
 }
 
 /// Drop click events that sit on a drum attack (-6 ms .. +18 ms of an
@@ -946,5 +1062,51 @@ mod tests {
         let img = spectrogram_rgb(&x, &x, 64, 32, -100.0, &[0.5]);
         assert_eq!(img.len(), 64 * 32 * 3);
         assert!(img.iter().any(|v| *v > 100));
+    }
+
+    /// A loud sub (808 / kick body, 30-60 Hz, gliding) has no DC, but plain
+    /// 100 ms block means read it as +/-0.03..0.07 "DC": the old detector
+    /// flagged every long sub note. The cascaded-average level must not,
+    /// and a real 0.05 offset step must still be found where it happens.
+    #[test]
+    fn dc_steps_ignore_sub_bass_but_find_real_offsets() {
+        let n = (SR * 4.0) as usize;
+        let mut ph = 0.0f32;
+        let sub: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                // 46 Hz gliding down to 31 Hz and back, full scale
+                let f = 46.0 - 15.0 * (0.5 - 0.5 * (PI * t / 2.0).cos());
+                ph = (ph + f / SR) % 1.0;
+                0.9 * (2.0 * PI * ph).sin()
+            })
+            .collect();
+        // what the old 100 ms block-mean check saw on this signal
+        let blk = (SR * 0.1) as usize;
+        let means: Vec<f32> = sub
+            .chunks(blk)
+            .map(|c| c.iter().sum::<f32>() / c.len() as f32)
+            .collect();
+        let naive = means
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(
+            naive > 0.03,
+            "precondition: block means trip on sub bass ({naive})"
+        );
+        assert!(dc_steps(&sub).is_empty(), "{:?}", dc_steps(&sub));
+        let mut stepped = sub.clone();
+        let at = (SR * 2.0) as usize;
+        for v in stepped[at..].iter_mut() {
+            *v += 0.05;
+        }
+        let st = dc_steps(&stepped);
+        assert_eq!(st.len(), 1, "{st:?}");
+        assert!(
+            (st[0].0 as i64 - at as i64).abs() < (SR * 0.15) as i64,
+            "{st:?}"
+        );
+        assert!((st[0].1 - 0.05).abs() < 0.01, "{st:?}");
     }
 }

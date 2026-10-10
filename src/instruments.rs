@@ -1329,7 +1329,51 @@ fn render_drum(p: &DrumParams, pitch: f32, vel: f32, rng: &mut Rng) -> Vec<f32> 
             *s
         } * vel;
     }
+    // every generator above stops at a fixed length while still sounding
+    // (kick body -29 dB, bayan -26 dB, open hat / crash noise -35..-39 dB
+    // below the peak): close the tail with a raised-cosine fade so the
+    // voice decays to zero instead of being cut
+    fade_tail(&mut out, 0.25);
     out
+}
+
+/// Raised-cosine fade over the last `frac` of a voice (at least 5 ms).
+pub(crate) fn fade_tail(out: &mut [f32], frac: f32) {
+    let n = out.len();
+    let f = ((n as f32 * frac) as usize).max(secs(0.005)).min(n);
+    if f == 0 {
+        return;
+    }
+    let start = n - f;
+    for (j, v) in out[start..].iter_mut().enumerate() {
+        let x = (j as f32 + 0.5) / f as f32;
+        *v *= 0.5 + 0.5 * (PI * x).cos();
+    }
+}
+
+/// One-pole DC blocker with a sub-audio corner (`hz`), for voices whose
+/// waveshaping turns an asymmetric waveform into a DC offset.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SubDcBlock {
+    r: f32,
+    x1: f32,
+    y1: f32,
+}
+
+impl SubDcBlock {
+    pub(crate) fn new(hz: f32) -> Self {
+        SubDcBlock {
+            r: (-2.0 * PI * hz / SR).exp(),
+            x1: 0.0,
+            y1: 0.0,
+        }
+    }
+    pub(crate) fn process(&mut self, x: f32) -> f32 {
+        let y = x - self.x1 + self.r * self.y1;
+        self.x1 = x;
+        self.y1 = y;
+        y
+    }
 }
 
 fn render_synth(p: &SynthParams, pitch: f32, vel: f32, gate: f32, rng: &mut Rng) -> Vec<f32> {
@@ -1346,8 +1390,15 @@ fn render_synth_slide(
 ) -> Vec<f32> {
     let glide = if p.glide_ms > 0.0 { p.glide_ms } else { 80.0 } * 0.001;
     let total = p.amp_env.total(gate).min(12.0);
-    let n = secs(total);
+    let drive = 1.0 + p.drive.max(0.0) * 8.0;
+    // tanh drive on a resonant / filtered saw (an asymmetric waveform)
+    // creates a DC offset (acid_bass: 5-11% of its peak), stepping on at
+    // every note-on and off at every note-off: block it below 10 Hz and let
+    // the blocker settle inside the voice
+    let dc_tail = if drive > 1.01 { 0.08 } else { 0.0 };
+    let n = secs(total + dc_tail);
     let mut out = vec![0.0f32; n];
+    let mut dcb = SubDcBlock::new(10.0);
     let voices = p.unison.clamp(1, 9) as usize;
     let base = midi_to_hz(pitch);
     let mut phases1: Vec<f32> = (0..voices).map(|_| rng.f32()).collect();
@@ -1366,7 +1417,6 @@ fn render_synth_slide(
     let mut filt = Svf::default();
     let mut filt2 = Svf::default();
     let lfo_ph0 = rng.f32();
-    let drive = 1.0 + p.drive.max(0.0) * 8.0;
     for (i, s) in out.iter_mut().enumerate() {
         let t = i as f32 / SR;
         let lfo = (2.0 * PI * (p.lfo_rate * t + lfo_ph0)).sin();
@@ -1402,10 +1452,20 @@ fn render_synth_slide(
             // 4-pole-ish for acid squelch
             y = filt2.process(y, cutoff * 1.2, 0.0, FilterMode::Lowpass);
         }
+        let mut v = if drive > 1.01 {
+            (y * drive).tanh() / drive.tanh().max(0.5)
+        } else {
+            y
+        } * p.amp_env.level(t, gate)
+            * vel
+            * p.gain;
         if drive > 1.01 {
-            y = (y * drive).tanh() / drive.tanh().max(0.5);
+            v = dcb.process(v);
         }
-        *s = y * p.amp_env.level(t, gate) * vel * p.gain;
+        *s = v;
+    }
+    if dc_tail > 0.0 {
+        fade_tail(&mut out, dc_tail / (total + dc_tail));
     }
     out
 }
@@ -1492,10 +1552,71 @@ fn render_808_slide(
     gate: f32,
     slide_to: Option<f32>,
 ) -> Vec<f32> {
+    render_808_voice(p, pitch, vel, gate, slide_to, None)
+}
+
+/// Where a mono 808 voice that was slid into continues from: the phase the
+/// previous (gliding) voice had reached at the hand-off and how long it had
+/// been sounding (so the sustain envelope carries on instead of
+/// re-triggering).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Legato808 {
+    pub phase: f32,
+    pub elapsed_s: f32,
+}
+
+/// Instantaneous frequency of an 808 voice at time `t` (punch pitch
+/// envelope plus the glide toward `slide_to`).
+fn freq_808(
+    p: &Bass808Params,
+    pitch: f32,
+    gate: f32,
+    slide_to: Option<f32>,
+    punch: bool,
+) -> impl Fn(f32) -> f32 + '_ {
     let f = midi_to_hz(pitch);
-    let glide = if p.glide_ms > 0.0 { p.glide_ms } else { 90.0 } * 0.001;
+    let glide = (if p.glide_ms > 0.0 { p.glide_ms } else { 90.0 }) * 0.001;
+    move |t| {
+        let pe = if punch {
+            p.punch * (-t * 40.0).exp()
+        } else {
+            0.0
+        };
+        f * 2f32.powf((pe + glide_semis(t, pitch, slide_to, glide, gate)) / 12.0)
+    }
+}
+
+/// Oscillator phase of an 808 voice after `n` samples (exactly the
+/// accumulation `render_808_voice` does), for a legato hand-off.
+pub fn phase_808_after(
+    p: &Bass808Params,
+    pitch: f32,
+    gate: f32,
+    slide_to: Option<f32>,
+    n: usize,
+) -> f32 {
+    let fr = freq_808(p, pitch, gate, slide_to, true);
+    let mut ph = 0.0f32;
+    for i in 0..n {
+        ph = (ph + fr(i as f32 / SR) / SR) % 1.0;
+    }
+    ph
+}
+
+/// An 808 voice. With `legato` it continues a voice that glided into this
+/// pitch: same phase, no punch, no attack and no sustain re-trigger, so the
+/// slide lands instead of re-attacking (which read as a +4..5 dB bump and,
+/// with the old voice choked at a different phase, a cancellation dip).
+pub fn render_808_voice(
+    p: &Bass808Params,
+    pitch: f32,
+    vel: f32,
+    gate: f32,
+    slide_to: Option<f32>,
+    legato: Option<Legato808>,
+) -> Vec<f32> {
     // a sliding 808 is held through the slide
-    let sustain = p.sustain || slide_to.is_some();
+    let sustain = p.sustain || slide_to.is_some() || legato.is_some();
     let total = if sustain {
         gate + 0.15
     } else {
@@ -1504,27 +1625,32 @@ fn render_808_slide(
     .min(8.0);
     let mut out = vec![0.0f32; secs(total)];
     let drive = 1.0 + p.drive.clamp(0.0, 1.0) * 5.0;
-    let mut ph = 0.0f32;
+    let (mut ph, t0) = match legato {
+        Some(l) => (l.phase, l.elapsed_s),
+        None => (0.0f32, 0.0),
+    };
+    let punch = legato.is_none();
+    let freq = freq_808(p, pitch, gate, slide_to, punch);
     for (i, s) in out.iter_mut().enumerate() {
         let t = i as f32 / SR;
-        let fr = f * 2f32.powf(
-            (p.punch * (-t * 40.0).exp() + glide_semis(t, pitch, slide_to, glide, gate)) / 12.0,
-        );
-        ph = (ph + fr / SR) % 1.0;
+        ph = (ph + freq(t) / SR) % 1.0;
         let env = if sustain {
             let r = if t > gate {
                 (-(t - gate) * 30.0).exp()
             } else {
                 1.0
             };
-            (0.75 + 0.25 * (-t * 8.0).exp()) * r
+            (0.75 + 0.25 * (-(t + t0) * 8.0).exp()) * r
         } else {
             (-t * 4.5 / p.decay.max(0.1)).exp()
         };
-        let attack = (t / 0.002).min(1.0);
+        let attack = if punch { (t / 0.002).min(1.0) } else { 1.0 };
         let y = (2.0 * PI * ph).sin();
         *s = (y * drive).tanh() / drive.tanh() * env * attack * vel * p.gain;
     }
+    // the release / decay ends ~-40 dB down: fade the last 60 ms to zero
+    let f60 = secs(0.06) as f32 / out.len().max(1) as f32;
+    fade_tail(&mut out, f60.min(0.5));
     out
 }
 

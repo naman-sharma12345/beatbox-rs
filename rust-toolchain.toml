@@ -1,0 +1,5 @@
+# Pinned to the toolchain CI builds and tests with (see .github/workflows/ci.yml).
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -50,8 +50,18 @@
 
 ## Quick start
 
+The toolchain is pinned in `rust-toolchain.toml` (the version CI builds with); rustup picks it up automatically. Build against the committed lockfile:
+
 ```bash
-cargo install --path .
+cargo install --path . --locked                         # desktop studio + CLI + MCP
+cargo build --release --no-default-features --locked    # headless (CLI + MCP only, no GUI deps)
+# if release linking fails with LTO (some linkers / low-RAM machines):
+CARGO_PROFILE_RELEASE_LTO=false cargo build --release --no-default-features --locked
+```
+
+MP3 export needs `ffmpeg` on PATH; WAV and FLAC are built in.
+
+```bash
 
 # a full trap beat, rendered and scored
 beatbox beat trap --key A -o trap.wav --save trap.json

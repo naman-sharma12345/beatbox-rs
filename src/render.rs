@@ -498,6 +498,19 @@ pub const START_FADE: usize = 24;
 /// samples, and a raised-cosine choke when a mono voice is cut by the next
 /// note (`choke_after` samples after its start).
 pub fn add_declicked(out: &mut [f32], at: usize, buf: &[f32], choke_after: Option<usize>) {
+    add_voice(out, at, buf, choke_after, false);
+}
+
+/// `add_declicked`, optionally fading the voice in with the exact
+/// complement of the choke fade (`xfade_in`): a legato voice that continues
+/// the choked one at the same phase then sums to a constant level.
+pub fn add_voice(
+    out: &mut [f32],
+    at: usize,
+    buf: &[f32],
+    choke_after: Option<usize>,
+    xfade_in: bool,
+) {
     if at >= out.len() || buf.is_empty() {
         return;
     }
@@ -514,7 +527,12 @@ pub fn add_declicked(out: &mut [f32], at: usize, buf: &[f32], choke_after: Optio
     let start_fade = START_FADE.min(n / 8);
     for (j, (o, s)) in out[at..at + n].iter_mut().zip(buf.iter()).enumerate() {
         let mut g = 1.0f32;
-        if j < start_fade {
+        if xfade_in {
+            if j < fade {
+                let x = j as f32 / fade as f32;
+                g *= 0.5 - 0.5 * (std::f32::consts::PI * x).cos();
+            }
+        } else if j < start_fade {
             g *= (j as f32 + 0.5) / start_fade as f32;
         }
         let left = n - j;
@@ -658,6 +676,35 @@ pub fn render_cached(
                     Vec::new()
                 };
                 let mono_voice = matches!(track.instrument, Instrument::Bass808(_));
+                // phase / time a slid-into 808 note continues from (legato)
+                let legato_of = |k: usize| -> Option<crate::instruments::Legato808> {
+                    let Instrument::Bass808(b) = &track.instrument else {
+                        return None;
+                    };
+                    let e = &events[ti][k];
+                    let prev = events[ti][..k].iter().rev().find(|x| x.start < e.start)?;
+                    let target = prev.slide_to?;
+                    let off = e.start - prev.start;
+                    // the previous voice glided into this pitch and is still
+                    // held (its gate runs up to this onset) when it is choked
+                    let held = (off as f32) <= (prev.gate * SR) + 0.01 * SR;
+                    let next_of_prev = events[ti][..=k]
+                        .iter()
+                        .map(|x| x.start)
+                        .find(|&s| s > prev.start);
+                    ((target - e.pitch).abs() < 0.5 && held && next_of_prev == Some(e.start)).then(
+                        || crate::instruments::Legato808 {
+                            phase: crate::instruments::phase_808_after(
+                                b,
+                                prev.pitch,
+                                prev.gate,
+                                prev.slide_to,
+                                off,
+                            ),
+                            elapsed_s: off as f32 / SR,
+                        },
+                    )
+                };
                 let mut cache: HashMap<(i32, u8, u32, Vec<i64>, i32), (Vec<f32>, Vec<f32>)> =
                     HashMap::new();
                 for (k, e) in events[ti].iter().enumerate() {
@@ -678,34 +725,55 @@ pub fn render_cached(
                         e.slide_to.map(|x| (x * 10.0) as i32).unwrap_or(-1),
                     );
                     let seed = (ti as u64) << 32 | (k as u64 % 7);
-                    let (buf, buf2) = cache.entry(key).or_insert_with(|| {
-                        let inst: Instrument = if inst_lanes.is_empty() {
-                            track.instrument.clone()
+                    let legato = if mono_voice { legato_of(k) } else { None };
+                    let legato_buf;
+                    let (buf, buf2) =
+                        if let (Some(lg), Instrument::Bass808(b)) = (legato, &track.instrument) {
+                            // legato voices depend on the hand-off phase: not cached
+                            legato_buf = (
+                                crate::instruments::render_808_voice(
+                                    b,
+                                    e.pitch,
+                                    e.vel.clamp(0.0, 1.0),
+                                    e.gate,
+                                    e.slide_to,
+                                    Some(lg),
+                                ),
+                                Vec::new(),
+                            );
+                            (&legato_buf.0, &legato_buf.1)
                         } else {
-                            let mut v = base_inst.clone();
-                            for ((_, path), x) in inst_lanes.iter().zip(vals.iter()) {
-                                automation::set_path(&mut v, path, *x);
-                            }
-                            serde_json::from_value(v).unwrap_or_else(|_| track.instrument.clone())
+                            let (a, b) = cache.entry(key).or_insert_with(|| {
+                                let inst: Instrument = if inst_lanes.is_empty() {
+                                    track.instrument.clone()
+                                } else {
+                                    let mut v = base_inst.clone();
+                                    for ((_, path), x) in inst_lanes.iter().zip(vals.iter()) {
+                                        automation::set_path(&mut v, path, *x);
+                                    }
+                                    serde_json::from_value(v)
+                                        .unwrap_or_else(|_| track.instrument.clone())
+                                };
+                                let a = render_note_slide(
+                                    &inst, e.pitch, e.vel, e.gate, bank, seed, e.slide_to,
+                                );
+                                let b = if spread > 0.0 {
+                                    render_note_slide(
+                                        &inst,
+                                        e.pitch,
+                                        e.vel,
+                                        e.gate,
+                                        bank,
+                                        seed ^ 0xA5A5_5A5A,
+                                        e.slide_to,
+                                    )
+                                } else {
+                                    Vec::new()
+                                };
+                                (a, b)
+                            });
+                            (&*a, &*b)
                         };
-                        let a = render_note_slide(
-                            &inst, e.pitch, e.vel, e.gate, bank, seed, e.slide_to,
-                        );
-                        let b = if spread > 0.0 {
-                            render_note_slide(
-                                &inst,
-                                e.pitch,
-                                e.vel,
-                                e.gate,
-                                bank,
-                                seed ^ 0xA5A5_5A5A,
-                                e.slide_to,
-                            )
-                        } else {
-                            Vec::new()
-                        };
-                        (a, b)
-                    });
                     // mono voices (808s) choke the previous note at the next onset
                     let choke_at = if mono_voice {
                         events[ti][k + 1..]
@@ -716,9 +784,9 @@ pub fn render_cached(
                     } else {
                         None
                     };
-                    add_declicked(&mut mono, e.start, buf, choke_at);
-                    if spread > 0.0 {
-                        add_declicked(&mut mono2, e.start, buf2, choke_at);
+                    add_voice(&mut mono, e.start, buf, choke_at, legato.is_some());
+                    if spread > 0.0 && !buf2.is_empty() {
+                        add_voice(&mut mono2, e.start, buf2, choke_at, legato.is_some());
                     }
                 }
                 // pan (equal power), optionally automated
@@ -1055,5 +1123,46 @@ mod tests {
         let b = ((6.5 * step) * SR) as usize;
         let pk = m.left[a..b].iter().fold(0.0f32, |x, y| x.max(y.abs()));
         assert!(pk < 1.2, "peak {pk}");
+    }
+
+    /// An 808 that glides into its next note continues it (legato): no
+    /// punch / attack re-trigger and no phase-mismatched crossfade at the
+    /// hand-off. Before, the level jumped ~+4.7 dB and dipped where the
+    /// choked voice cancelled the new one.
+    #[test]
+    fn gliding_808_lands_legato() {
+        let mut p = Project::new("glide", 144.0);
+        p.patterns[0].bars = 1;
+        let inst = crate::instruments::preset("808").unwrap();
+        p.tracks.push(Track::new("808", inst));
+        let mut a = Note::new(0.0, 6.0, 42, 0.9);
+        a.slide_to = Some(45);
+        let b = Note::new(6.0, 6.0, 45, 0.9);
+        *p.patterns[0].notes_mut("808") = vec![a, b];
+        let m = render(&p, &SampleBank::default(), &RenderOptions::default()).unwrap();
+        let hand = (6.0 * p.step_secs() * SR) as usize;
+        // RMS over two periods of the target pitch
+        let w = (2.0 * SR / crate::dsp::midi_to_hz(45.0)) as usize;
+        let rms = |c: usize| -> f32 {
+            let s: f32 = m.left[c - w / 2..c + w / 2].iter().map(|x| x * x).sum();
+            10.0 * (s / w as f32).max(1e-12).log10()
+        };
+        let before = rms(hand - (0.03 * SR) as usize);
+        let lv: Vec<f32> = (0..12)
+            .map(|k| rms(hand - (0.02 * SR) as usize + k * (0.005 * SR) as usize))
+            .collect();
+        let (lo, hi) = lv
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+        assert!(
+            hi - before < 1.0,
+            "re-attack bump {:.2} dB: {lv:?}",
+            hi - before
+        );
+        assert!(
+            before - lo < 1.0,
+            "hand-off dip {:.2} dB: {lv:?}",
+            before - lo
+        );
     }
 }

@@ -424,11 +424,19 @@ pub fn render_piano(p: &PianoParams, pitch: f32, vel: f32, gate: f32, rng: &mut 
         }
     }
     let g = vel.powf(0.7) * p.gain;
-    let fade = (0.003 * SR) as usize;
+    // the voice stops at hold + 3 releases (or the decay cap) while low
+    // strings still ring ~-26..-31 dB below the peak: a 3 ms linear cut read
+    // as a tick, so close with a raised-cosine fade (up to 30 ms)
     let len = out.len();
+    let fade = ((0.03 * SR) as usize).min(len / 4).max(1);
     for (i, v) in out.iter_mut().enumerate() {
         let a = (i as f32 / 20.0).min(1.0);
-        let e = ((len - i) as f32 / fade as f32).min(1.0);
+        let left = len - i;
+        let e = if left <= fade {
+            0.5 - 0.5 * (PI * (left as f32 - 0.5) / fade as f32).cos()
+        } else {
+            1.0
+        };
         *v *= g * a * e;
     }
     out
