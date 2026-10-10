@@ -52,3 +52,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Sound palette samples (downloaded on first use, not bundled)
+
+53 CC0 1.0 one-shots from Sonic Pi's bundled freesound CC0 set and Michael Fischer's 1994 TR-808 set (tidalcycles/sounds-tr808-fischer, CC0). Per-file author, source page, pinned URL and SHA-256: [SAMPLES_LICENSES.md](SAMPLES_LICENSES.md).

@@ -9,7 +9,7 @@ on:
         description: base revision for the "before" renders
         default: ee0a526
   push:
-    branches: [sprint9-palette]
+    branches: [sprint9-palette, sprint9-palette-r]
 env:
   CARGO_TERM_COLOR: always
   BASE: ${{ github.event.inputs.base || 'ee0a526' }}
@@ -53,6 +53,7 @@ jobs:
           if target/debug/beatbox tools | grep -q list_palettes; then
             bash scripts/palette_demos.sh target/debug/beatbox out/palette
           fi
+          python3 scripts/sound_audit.py out/oneshots/after --compare out/oneshots/before --out out/audit/after >/dev/null
       - uses: actions/upload-artifact@v4
         with:
           name: sound-audit

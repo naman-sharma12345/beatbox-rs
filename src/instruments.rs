@@ -1228,7 +1228,7 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.amp_env = Adsr::new(0.004, 0.4, 0.6, 0.08);
             p.vel_to_cutoff = 1.0;
             p.drift_cents = 2.0;
-            p.drive = 0.2;
+            p.drive = 0.1;
             p.gain = 0.6;
         }),
         "keys_airy" => fm(|p| {
