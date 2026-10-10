@@ -1,0 +1,61 @@
+name: screenshots
+# Fresh GUI screenshots of Beatbox Studio with a real produced beat loaded.
+# Uses the repo's own `screenshot` tool (tools_parity.rs), which spawns
+# `beatbox studio --screenshot` under xvfb-run when there is no display.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+env:
+  CARGO_TERM_COLOR: always
+  SHOT_TAG: s7
+jobs:
+  shots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: system deps (GUI build + headless X)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config libxkbcommon-dev libwayland-dev libx11-dev \
+            xvfb xauth libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcursor1 libxrandr2 libxi6 python3
+      - name: build (release, GUI feature)
+        run: cargo build --release
+      - name: produce demo beats (rich projects)
+        run: |
+          mkdir -p demo
+          ./target/release/beatbox call produce_track '{"brief":"dark desi hip-hop with sitar, tabla and a hard 808, for a gully rap verse","genre":"desi_hiphop","bpm":92,"seed":21,"max_iterations":2,"out_dir":"demo/desi"}' > demo/desi.result.json
+          ./target/release/beatbox call produce_track '{"brief":"sad melodic trap with piano and gliding 808s","genre":"melodic_rap","bpm":144,"seed":7,"max_iterations":2,"out_dir":"demo/melodic"}' > demo/melodic.result.json
+          for b in desi melodic; do
+            p=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['files']['project'])" demo/$b.result.json)
+            echo "$b project: $p"
+            cp "$p" demo/$b.json
+          done
+          ls -la demo
+      - name: screenshots via the screenshot tool
+        run: |
+          mkdir -p shots
+          ok=0
+          shoot() { # project view outname
+            if ./target/release/beatbox call screenshot "{\"view\":\"$2\",\"out\":\"$GITHUB_WORKSPACE/shots/$3.png\",\"inline\":false}" --project "$1"; then
+              ok=$((ok+1))
+            else
+              echo "::warning::screenshot $3 failed"
+            fi
+          }
+          shoot demo/desi.json sequencer ${SHOT_TAG}_sequencer
+          shoot demo/desi.json mixer ${SHOT_TAG}_mixer
+          shoot demo/desi.json automation ${SHOT_TAG}_automation
+          shoot demo/melodic.json sequencer ${SHOT_TAG}_sequencer_melodic
+          shoot demo/melodic.json mixer ${SHOT_TAG}_mixer_melodic
+          shoot demo/melodic.json automation ${SHOT_TAG}_automation_melodic
+          ls -la shots
+          [ "$ok" -gt 0 ]
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: shots/
+          if-no-files-found: warn
