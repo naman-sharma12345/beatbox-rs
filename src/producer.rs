@@ -103,6 +103,10 @@ pub struct Playbook {
     pub texture: Option<PartRule>,
     pub arrangement: Vec<SectionTemplate>,
     pub mix: MixRule,
+    /// The genre as a distribution (ranges and weights) for the procedural
+    /// generator; missing fields are derived from the fields above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generative: Option<crate::creative::GenSpec>,
 }
 
 pub fn playbooks() -> &'static [Playbook] {
@@ -198,6 +202,14 @@ pub struct PlanSection {
     pub lead: String,
     /// Fill/transition at the end of the section into the next one.
     pub transition: String,
+    /// How the main motif is developed here (statement, call_response,
+    /// inversion, retrograde, displace, fragment, sequence, register_up/down).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub development: Vec<String>,
+    /// Creative tags from wildcards: half_time, switch, dropout,
+    /// sparse_to_dense, bass_call_response.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 /// Knobs the critic turns between iterations.
@@ -216,6 +228,9 @@ pub struct Knobs {
     pub target_lufs: f32,
     pub tonic_anchor: bool,
     pub humanize: f32,
+    /// Reverb send offset in dB (the beat's sense of space).
+    #[serde(default)]
+    pub space_db: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -253,8 +268,53 @@ pub struct Plan {
     /// ears; the delivered score always comes from the full report).
     #[serde(default)]
     pub final_review: Value,
+    // ---- sprint 9: the creative layer (all optional so older plans load)
+    /// template, procedural, reference_guided or ai_authored.
+    #[serde(default)]
+    pub method: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<crate::creative::Direction>,
+    /// Every decision with its level and reason, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<crate::creative::Decision>,
+    /// The drum identity (2-bar core per voice); sections vary it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groove: Option<crate::creative::Groove>,
+    /// A second groove for sections tagged `switch` (beat switch wildcard).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groove_b: Option<crate::creative::Groove>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wildcards: Vec<crate::creative::Wildcard>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub progression_bridge: String,
+    /// as_written, sevenths, add9, sus, power.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub harmony_color: String,
+    /// Chord rhythm style (overrides the playbook's when set).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub harmony_style: String,
+    /// lock (808 on the kick), independent, sustain.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bass_mode: String,
+    /// pad_lines or motif_echo.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub counter_mode: String,
+    /// Semitones per section (key change wildcard).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub section_transpose: BTreeMap<String, i32>,
+    /// AI-authored MIDI: section name or kind (or "*") -> role -> notes.
+    /// Played verbatim in place of the generated part.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub authored: BTreeMap<String, BTreeMap<String, Vec<Note>>>,
+    /// Seed, seed source, generator version, config and asset manifest.
+    #[serde(default)]
+    pub provenance: Value,
+    /// The novelty check: distance to recent outputs, regenerations.
+    #[serde(default)]
+    pub novelty: Value,
 }
 
+#[derive(Clone, Debug, Default)]
 pub struct PlanArgs {
     pub brief: String,
     pub genre: Option<String>,
@@ -266,6 +326,14 @@ pub struct PlanArgs {
     pub seed: u64,
     pub use_samples: bool,
     pub flip_sample: Option<String>,
+    /// "explicit" (reproduce exactly) or "entropy" (fresh per produce).
+    pub seed_source: String,
+    /// Force a generation method (template, procedural, reference_guided).
+    pub method: Option<String>,
+    /// Reference recording for the reference-guided method.
+    pub reference: Option<String>,
+    /// AI-authored notes (see Plan::authored).
+    pub authored: BTreeMap<String, BTreeMap<String, Vec<Note>>>,
 }
 
 const MOODS: &[(&str, &[&str])] = &[
@@ -476,8 +544,14 @@ fn layer_part_presets(pb: &Playbook, rng: &mut Rng, brief: &str) -> BTreeMap<Str
     pal
 }
 
+/// The hierarchical planner: direction first, then core material chosen by
+/// the direction, then controlled variation (see creative.rs). Every choice
+/// is recorded in `decisions` with its reason; the same seed (and args)
+/// always gives the same plan.
 pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
+    use crate::creative as cr;
     let mut rng = Rng::new(a.seed ^ 0xB00B5);
+    let mut dec: Vec<cr::Decision> = Vec::new();
     let mut thinking = Vec::new();
     let pb = match &a.genre {
         Some(g) => {
@@ -485,99 +559,441 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         }
         None => guess_genre(&a.brief).unwrap_or_else(|| playbook("trap").unwrap()),
     };
+    let sp = cr::spec(pb);
     thinking.push(format!("Genre: {} - {}", pb.name, pb.description));
-    let mood = a
-        .mood
-        .clone()
-        .or_else(|| detect_mood(&a.brief).map(String::from))
-        .unwrap_or_else(|| "default".into());
-    let bpm = a
-        .bpm
-        .unwrap_or_else(|| (pb.bpm[0] + rng.f32() * (pb.bpm[1] - pb.bpm[0])).round());
+    // ---- 0. how this beat is generated
+    let tw = sp.template_weight.unwrap_or(0.3);
+    let (mut method, why) = if !a.authored.is_empty() {
+        (
+            "ai_authored".to_string(),
+            "notes were authored by an agent through MCP; generated parts fill the rest"
+                .to_string(),
+        )
+    } else if let Some(m) = &a.method {
+        if !["template", "procedural", "reference_guided"].contains(&m.as_str()) {
+            bail!("unknown method '{m}' (template, procedural, reference_guided; ai_authored comes from passing 'authored' notes)");
+        }
+        (m.clone(), "asked for".to_string())
+    } else if a.reference.is_some() {
+        (
+            "reference_guided".to_string(),
+            "a reference recording was given: its density and loudness steer the groove and energy"
+                .to_string(),
+        )
+    } else if rng.chance(tw) {
+        ("template".to_string(), format!("drawn: the genre's templates are one starting point ({:.0}% of beats), varied by the same development and wildcards", tw * 100.0))
+    } else {
+        (
+            "procedural".to_string(),
+            format!(
+                "drawn: generated from the genre's distributions ({:.0}% of beats)",
+                (1.0 - tw) * 100.0
+            ),
+        )
+    };
+    let mut refx = None;
+    if method == "reference_guided" {
+        match a.reference.as_deref().map(cr::reference_features) {
+            Some(Ok(f)) => refx = Some(f),
+            Some(Err(err)) => {
+                cr::decide(
+                    &mut dec,
+                    "method",
+                    "reference",
+                    "unreadable",
+                    format!("{err}; falling back to procedural"),
+                );
+                method = "procedural".into();
+            }
+            None => {
+                cr::decide(
+                    &mut dec,
+                    "method",
+                    "reference",
+                    "missing",
+                    "method reference_guided needs reference_path; falling back to procedural",
+                );
+                method = "procedural".into();
+            }
+        }
+    }
+    cr::decide(&mut dec, "method", "generation method", &method, why);
+    let template = method == "template";
+    // ---- 1. creative direction
+    let mood = if let Some(m) = &a.mood {
+        (m.clone(), "asked for".to_string())
+    } else if let Some(m) = detect_mood(&a.brief) {
+        (m.to_string(), "read from the brief".to_string())
+    } else {
+        let moods: Vec<&String> = pb.progressions.keys().filter(|k| *k != "default").collect();
+        if moods.is_empty() {
+            (
+                "default".to_string(),
+                "the genre has a single harmonic mood".to_string(),
+            )
+        } else {
+            (
+                moods[rng.below(moods.len())].clone(),
+                format!(
+                    "the brief names no mood; drawn from the moods {} supports",
+                    pb.name
+                ),
+            )
+        }
+    };
+    let mut dir = cr::direct(pb, &a.brief, mood, &mut rng, &mut dec);
+    if let Some(r) = &refx {
+        dir.energy = (0.5 * dir.energy + 0.5 * ((r.lufs + 22.0) / 14.0)).clamp(0.15, 1.0);
+        cr::decide(
+            &mut dec,
+            "direction",
+            "energy (reference)",
+            format!("{:.2}", dir.energy),
+            format!("blended with the reference's loudness ({:.1} LUFS)", r.lufs),
+        );
+    }
+    let mood = dir.mood.clone();
+    thinking.push(format!(
+        "Direction: {} (mood {mood}, energy {:.2}).",
+        dir.identity, dir.energy
+    ));
+    // ---- 2. core material, chosen by the direction
+    let bpm = match a.bpm {
+        Some(b) => {
+            cr::decide(&mut dec, "core", "tempo", format!("{b}"), "asked for");
+            b
+        }
+        None => {
+            let x = (0.15 + 0.7 * dir.energy + rng.range(-0.2, 0.2)).clamp(0.0, 1.0);
+            let b = (pb.bpm[0] + x * (pb.bpm[1] - pb.bpm[0])).round();
+            cr::decide(
+                &mut dec,
+                "core",
+                "tempo",
+                format!("{b}"),
+                format!(
+                    "{}-{} for {}; energy {:.2} places it at {:.0}% of the range",
+                    pb.bpm[0],
+                    pb.bpm[1],
+                    pb.name,
+                    dir.energy,
+                    x * 100.0
+                ),
+            );
+            b
+        }
+    };
     if bpm < pb.bpm[0] - 10.0 || bpm > pb.bpm[1] + 10.0 {
         thinking.push(format!(
             "Note: {bpm} BPM is outside the usual {}-{} for {}; keeping it as asked.",
             pb.bpm[0], pb.bpm[1], pb.name
         ));
     }
-    let scale = a.scale.clone().unwrap_or_else(|| {
-        pick(&pb.scales, &mut rng)
-            .cloned()
-            .unwrap_or_else(|| "minor".into())
-    });
-    theory::scale_intervals(&scale)?;
-    let key = a.key.clone().unwrap_or_else(|| {
-        [
-            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-        ][rng.below(12)]
-        .to_string()
-    });
-    theory::pitch_class(&key)?;
-    let progs = pb
-        .progressions
-        .get(&mood)
-        .or_else(|| pb.progressions.get("default"))
-        .ok_or_else(|| anyhow!("playbook {} has no progressions", pb.name))?;
-    let pv = pick(progs, &mut rng).unwrap().clone();
-    // hook: a different progression when there is one (contrast), else the same
-    let ph = if progs.len() > 1 && rng.chance(0.6) {
-        progs
-            .iter()
-            .find(|p| **p != pv)
-            .cloned()
-            .unwrap_or(pv.clone())
-    } else {
-        pv.clone()
+    let scale = match &a.scale {
+        Some(s) => s.clone(),
+        None => {
+            let mut allowed: Vec<String> = pb.scales.clone();
+            if !template {
+                for m in &sp.modes {
+                    if !allowed.contains(m) {
+                        allowed.push(m.clone());
+                    }
+                }
+            }
+            let prefs = cr::mood_modes(&mood);
+            let w: Vec<f32> = allowed
+                .iter()
+                .map(|s| {
+                    if prefs.contains(&s.as_str()) {
+                        3.0
+                    } else {
+                        1.0
+                    }
+                })
+                .collect();
+            let s = allowed
+                .get(rng.weighted(&w))
+                .cloned()
+                .unwrap_or_else(|| "minor".into());
+            cr::decide(
+                &mut dec,
+                "core",
+                "mode",
+                &s,
+                format!("from {:?}; modes that suit '{mood}' weigh 3x", allowed),
+            );
+            s
+        }
     };
+    theory::scale_intervals(&scale)?;
+    let key = match &a.key {
+        Some(k) => k.clone(),
+        None => {
+            // any tonic, slightly favouring keys whose 808 sits in the sweet spot
+            let names = [
+                "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+            ];
+            let w = [1.0, 1.0, 1.0, 1.0, 1.4, 1.4, 1.4, 1.4, 1.2, 1.2, 1.0, 1.0];
+            let k = names[rng.weighted(&w)].to_string();
+            cr::decide(
+                &mut dec,
+                "core",
+                "key",
+                &k,
+                "any tonic; E-A weigh a little more (808 fundamentals around 41-55 Hz)",
+            );
+            k
+        }
+    };
+    theory::pitch_class(&key)?;
+    let hc = cr::choose_harmony(pb, &sp, &dir, &scale, template, &mut rng, &mut dec);
+    let pv = hc.verse.clone();
+    let ph = hc.hook.clone();
     thinking.push(format!("Mood '{mood}': {key} {scale} at {bpm} BPM; verse progression '{pv}', hook '{ph}' (numerals relative to parallel {}).", harmony_ref(&scale)));
     let iv = theory::scale_intervals(&scale)?;
-    let lead_density = pb.lead.density.unwrap_or(0.5);
-    let motif = make_motif(&mut rng, lead_density, iv.len());
+    // the main motif: its density and shape serve the hero element and mood
+    let base_d = pb.lead.density.unwrap_or(0.5);
+    let lead_density = if template {
+        base_d
+    } else {
+        let d = match dir.hero.as_str() {
+            "motif" => rng.range(0.55, 0.8),
+            "groove" => rng.range(0.3, 0.5),
+            "bass" => rng.range(0.35, 0.55),
+            _ => rng.range(0.25, 0.45),
+        };
+        (0.5 * d + 0.5 * base_d + 0.1 * (dir.energy - 0.5)).clamp(0.2, 0.95)
+    };
+    let motif = if template {
+        let m = make_motif(&mut rng, lead_density, iv.len());
+        cr::decide(
+            &mut dec,
+            "core",
+            "motif",
+            format!("{:?}", m.iter().map(|x| x.deg).collect::<Vec<_>>()),
+            "template method: the classic motif generator",
+        );
+        m
+    } else {
+        let cw: Vec<(&str, f32)> = match mood.as_str() {
+            "dark" => vec![
+                ("descending", 2.0),
+                ("wave", 1.5),
+                ("static", 1.5),
+                ("leap_fall", 1.0),
+                ("arch", 0.5),
+            ],
+            "sad" => vec![
+                ("descending", 2.0),
+                ("arch", 1.5),
+                ("leap_fall", 1.5),
+                ("wave", 0.7),
+            ],
+            "hype" => vec![
+                ("static", 2.0),
+                ("wave", 1.5),
+                ("ascending", 1.0),
+                ("leap_fall", 0.7),
+            ],
+            "hopeful" => vec![("ascending", 2.0), ("arch", 2.0), ("wave", 0.7)],
+            "devotional" => vec![("arch", 2.0), ("wave", 1.5), ("descending", 0.8)],
+            _ => vec![
+                ("arch", 1.2),
+                ("wave", 1.5),
+                ("descending", 1.0),
+                ("ascending", 0.8),
+                ("static", 0.6),
+                ("leap_fall", 0.6),
+            ],
+        };
+        let contour = cw[rng.weighted(&cw.iter().map(|x| x.1).collect::<Vec<_>>())].0;
+        let mut rw = vec![
+            ("on_grid", 1.0f32),
+            ("syncopated", 1.0),
+            ("long_short", 0.6),
+            ("triplet", 0.2),
+        ];
+        if dir.hero == "groove" {
+            rw[1].1 += 1.0;
+        }
+        if pb.drums.half_time {
+            rw[3].1 += 0.5;
+        }
+        if pb.swing > 0.2 {
+            rw[0].1 += 0.6;
+        }
+        let cell = rw[rng.weighted(&rw.iter().map(|x| x.1).collect::<Vec<_>>())].0;
+        let m = cr::shaped_motif(&mut rng, lead_density, iv.len(), contour, cell);
+        cr::decide(
+            &mut dec,
+            "core",
+            "motif",
+            format!(
+                "{contour} contour, {cell} rhythm, {} notes, degrees {:?}",
+                m.len(),
+                m.iter().map(|x| x.deg).collect::<Vec<_>>()
+            ),
+            format!(
+                "a {contour} line suits '{}'; density {lead_density:.2} because the beat is {}-led",
+                dir.intent, dir.hero
+            ),
+        );
+        m
+    };
     thinking.push(format!(
-        "Motif ({} notes, one bar): degrees {:?} - hooks state it in full, verses only call it and leave space for vocals, the last hook lifts it an octave, the bridge augments it.",
+        "Motif ({} notes, one bar): degrees {:?} - developed per section (statement, call and response, fragments, inversion, displacement, register).",
         motif.len(),
         motif.iter().map(|m| m.deg).collect::<Vec<_>>()
     ));
-    let palette = layer_part_presets(pb, &mut rng, &a.brief);
-    thinking.push(format!(
-        "Palette: {}",
-        palette
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    ));
-    // drum grammar: different verse/hook variations
-    let mut drum_patterns = BTreeMap::new();
-    for (part, list) in [
-        ("kick", &pb.drums.kick),
-        ("snare", &pb.drums.snare),
-        ("hat", &pb.drums.hat),
-        ("open_hat", &pb.drums.open_hat),
-        ("perc", &pb.drums.perc),
-        ("tabla", &pb.drums.tabla),
-        ("bayan", &pb.drums.bayan),
-    ] {
-        if list.is_empty() {
-            continue;
+    let mut palette = layer_part_presets(pb, &mut rng, &a.brief);
+    if !template {
+        for (voice, alts) in &sp.drum_sounds {
+            if !alts.is_empty() && palette.contains_key(voice) && rng.chance(0.4) {
+                let p = alts[rng.below(alts.len())].clone();
+                if crate::instruments::preset(&p).is_some() {
+                    cr::decide(
+                        &mut dec,
+                        "core",
+                        "kit sound",
+                        format!("{voice}={p}"),
+                        "a different drum voice from the genre's alternatives",
+                    );
+                    palette.insert(voice.clone(), p);
+                }
+            }
         }
-        let v = rng.below(list.len());
-        let mut h = rng.below(list.len());
-        if list.len() > 1 && h == v && part != "snare" {
-            h = (v + 1) % list.len();
-        }
-        drum_patterns.insert(part.to_string(), [list[v].clone(), list[h].clone()]);
     }
-    // arrangement: playbook template scaled to the requested duration
-    let mut tmpl = pb.arrangement.clone();
+    let sample_kit = if a.use_samples {
+        let k = if template {
+            pb.drums.sample_kit.clone()
+        } else {
+            cr::wmap_pub(&sp.kits, &mut rng).or_else(|| pb.drums.sample_kit.clone())
+        };
+        if let Some(k) = &k {
+            cr::decide(
+                &mut dec,
+                "core",
+                "drum kit",
+                k,
+                "real public-domain kit drawn from the genre's kits",
+            );
+        }
+        k
+    } else {
+        None
+    };
+    // groove: the drum identity
+    let groove = cr::build_groove(
+        pb,
+        &sp,
+        &dir,
+        template,
+        bpm,
+        refx.as_ref(),
+        &mut rng,
+        &mut dec,
+    );
+    let swing = if template {
+        pb.swing
+    } else {
+        let [lo, hi] = sp.swing.unwrap_or([pb.swing, pb.swing]);
+        let mut x = rng.f32();
+        if matches!(mood.as_str(), "chill" | "jazzy" | "smooth") {
+            x = x.max(rng.f32());
+        }
+        let s = ((lo + (hi - lo) * x) * 100.0).round() / 100.0;
+        cr::decide(
+            &mut dec,
+            "core",
+            "swing",
+            format!("{s:.2}"),
+            format!("drawn from {lo:.2}-{hi:.2}; laid-back moods lean late"),
+        );
+        s
+    };
+    // the 808 / bass
+    let mut bm = sp.bass_modes.clone();
+    if dir.hero == "bass" {
+        if let Some(v) = bm.get_mut("independent") {
+            *v *= 2.0;
+        }
+    }
+    if dir.hero == "texture" {
+        if let Some(v) = bm.get_mut("sustain") {
+            *v *= 2.0;
+        }
+    }
+    let bass_mode = if template {
+        "lock".to_string()
+    } else {
+        cr::wmap_pub(&bm, &mut rng).unwrap_or_else(|| "lock".into())
+    };
+    let [gl, gh] = sp.glide.unwrap_or([pb.bass.glide, pb.bass.glide]);
+    let glide = if template {
+        pb.bass.glide
+    } else {
+        gl + (gh - gl) * rng.f32()
+    };
+    cr::decide(
+        &mut dec,
+        "core",
+        "808/bass",
+        format!("{bass_mode}, glide {glide:.2}"),
+        match bass_mode.as_str() {
+            "independent" => "the 808 keeps the kick's anchors but adds its own pushes",
+            "sustain" => "long held 808 notes: weight under an atmospheric beat",
+            _ => "the 808 locks to the kick",
+        },
+    );
+    let harmony_style = if template {
+        String::new()
+    } else {
+        let mut hs = sp.harmony_styles.clone();
+        if dir.hero == "groove" {
+            for k in ["stabs", "pulse", "offbeat"] {
+                if let Some(v) = hs.get_mut(k) {
+                    *v *= 2.0;
+                }
+            }
+        }
+        if dir.hero == "texture" {
+            if let Some(v) = hs.get_mut("block") {
+                *v *= 2.0;
+            }
+        }
+        let s = cr::wmap_pub(&hs, &mut rng).unwrap_or_default();
+        cr::decide(
+            &mut dec,
+            "core",
+            "chord rhythm",
+            &s,
+            format!("{}-led beat", dir.hero),
+        );
+        s
+    };
+    let counter_mode = if !template && (dir.hero == "motif" && rng.chance(0.6) || rng.chance(0.2)) {
+        cr::decide(&mut dec, "variation", "counter-melody", "motif_echo", "the counter line answers the hook with an inverted fragment of the motif (call and response)");
+        "motif_echo".to_string()
+    } else {
+        "pad_lines".to_string()
+    };
+    // arrangement
+    let mut tmpl =
+        cr::generate_arrangement(pb, &sp, &dir, &palette, bpm, template, &mut rng, &mut dec);
     let bar_s = 240.0 / bpm;
     let total_bars: u32 = tmpl.iter().map(|s| s.bars).sum();
     if let Some(d) = a.duration_s {
         let want = (d / bar_s).round().max(8.0) as u32;
         if want < total_bars {
-            // drop middle sections until it fits (keep intro, first hook, outro)
+            // drop sections from the back until it fits (keep intro, outro, one hook)
             while tmpl.iter().map(|s| s.bars).sum::<u32>() > want && tmpl.len() > 3 {
-                let idx = tmpl.len() - 2;
+                let hooks = tmpl.iter().filter(|s| s.kind == "hook").count();
+                let Some(idx) = (1..tmpl.len() - 1)
+                    .rev()
+                    .find(|i| tmpl[*i].kind != "hook" || hooks > 1)
+                else {
+                    break;
+                };
                 tmpl.remove(idx);
             }
         } else if want > total_bars + 8 {
@@ -604,6 +1020,7 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
     for (i, s) in tmpl.iter().enumerate() {
         let c = counts.entry(s.kind.clone()).or_insert(0);
         *c += 1;
+        let nth = *c as usize;
         let name = format!("{}{}", s.kind, c);
         let lead = match s.kind.as_str() {
             "hook" => {
@@ -621,23 +1038,35 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
                     "none"
                 }
             }
-            "bridge" => "augment",
-            "intro" | "outro" => "call",
+            "bridge" | "breakdown" => "augment",
             _ => "call",
         };
         let next = tmpl.get(i + 1);
-        let transition = match next {
-            Some(n) if n.energy > s.energy + 0.15 => {
-                if pb.drums.hat_rolls > 0.3 {
-                    "drop_and_roll"
-                } else {
-                    "snare_fill"
+        let transition = if template {
+            match next {
+                Some(n) if n.energy > s.energy + 0.15 => {
+                    if pb.drums.hat_rolls > 0.3 {
+                        "drop_and_roll".to_string()
+                    } else {
+                        "snare_fill".to_string()
+                    }
                 }
+                Some(n) if n.energy + 0.3 < s.energy => "fade_down".to_string(),
+                Some(_) => "turnaround".to_string(),
+                None => "end".to_string(),
             }
-            Some(n) if n.energy + 0.3 < s.energy => "fade_down",
-            Some(_) => "turnaround",
-            None => "end",
+        } else {
+            cr::draw_transition(s.energy, next.map(|n| n.energy), groove.hat_rolls, &mut rng)
         };
+        let last_hook = s.kind == "hook" && hook_no == hooks && hooks > 1;
+        let (development, why) = cr::development_for(&s.kind, nth, last_hook, &mut rng);
+        cr::decide(
+            &mut dec,
+            "variation",
+            &format!("motif in {name}"),
+            development.join("+"),
+            why,
+        );
         sections.push(PlanSection {
             name,
             kind: s.kind.clone(),
@@ -645,33 +1074,108 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
             energy: s.energy,
             layers: s.layers.clone(),
             lead: lead.into(),
-            transition: transition.into(),
+            transition,
+            development,
+            tags: Vec::new(),
         });
     }
-    let secs: f32 = sections.iter().map(|s| s.bars as f32 * bar_s).sum();
-    thinking.push(format!(
-        "Structure ({:.0} s): {} - energy {:?}; transitions into higher-energy sections drop the kick and roll/fill, hooks add counter-melody and open hats.",
-        secs,
-        sections.iter().map(|s| format!("{}({})", s.name, s.bars)).collect::<Vec<_>>().join(" > "),
-        sections.iter().map(|s| (s.energy * 10.0).round() / 10.0).collect::<Vec<_>>()
-    ));
-    let sample_kit = if a.use_samples {
-        pb.drums.sample_kit.clone()
+    // ---- 3. purposeful wildcards
+    let mut genre_presets: Vec<String> = Vec::new();
+    for r in [&pb.harmony, &pb.lead, &pb.counter]
+        .into_iter()
+        .chain(pb.texture.iter())
+    {
+        genre_presets.extend(r.presets.iter().cloned());
+        genre_presets.extend(r.preset.iter().cloned());
+    }
+    let mut switch = false;
+    let mut section_transpose = BTreeMap::new();
+    let wildcards = cr::apply_wildcards(
+        cr::WildTargets {
+            sections: &mut sections,
+            palette: &mut palette,
+            transpose: &mut section_transpose,
+            switch_groove: &mut switch,
+            genre_presets,
+        },
+        &dir,
+        &mut rng,
+        &mut dec,
+    );
+    let groove_b = if switch {
+        let mut r2 = Rng::new(a.seed ^ 0x5717_C4);
+        let mut d2 = dir.clone();
+        d2.density = if dir.density == "dense" {
+            "balanced".into()
+        } else {
+            "dense".into()
+        };
+        Some(cr::build_groove(
+            pb, &sp, &d2, false, bpm, None, &mut r2, &mut dec,
+        ))
     } else {
         None
     };
+    for w in &wildcards {
+        thinking.push(format!(
+            "Wildcard [{}] {} on {}: {}",
+            w.role, w.name, w.target, w.why
+        ));
+    }
+    let secs: f32 = sections.iter().map(|s| s.bars as f32 * bar_s).sum();
+    thinking.push(format!(
+        "Structure ({:.0} s): {} - energy {:?}.",
+        secs,
+        sections
+            .iter()
+            .map(|s| format!("{}({})", s.name, s.bars))
+            .collect::<Vec<_>>()
+            .join(" > "),
+        sections
+            .iter()
+            .map(|s| (s.energy * 10.0).round() / 10.0)
+            .collect::<Vec<_>>()
+    ));
+    thinking.push(format!("Drums: {}", groove.summary));
+    // mix character: the hero element sits a little forward, the space varies
+    let mut offsets = BTreeMap::new();
+    let space_db = if template {
+        0.0
+    } else {
+        (rng.range(-3.0, 3.0) * 10.0).round() / 10.0
+    };
+    if !template {
+        let (t, db) = match dir.hero.as_str() {
+            "motif" => ("lead", 1.5),
+            "groove" => ("hat", 1.0),
+            "bass" => ("bass", 1.0),
+            _ => ("chords", 1.5),
+        };
+        offsets.insert(t.to_string(), db);
+        cr::decide(
+            &mut dec,
+            "core",
+            "mix character",
+            format!("{t} {db:+.1} dB, reverb sends {space_db:+.1} dB"),
+            format!(
+                "the hero ({}) sits forward; the space is part of this beat's identity",
+                dir.hero
+            ),
+        );
+    }
     let knobs = Knobs {
         lead_density,
-        hat_rolls: pb.drums.hat_rolls,
-        ghost_snare: pb.drums.ghost_snare,
-        glide: pb.bass.glide,
+        hat_rolls: groove.hat_rolls,
+        ghost_snare: groove.ghosts,
+        glide,
         verse_velocity: 0.9,
         sidechain: pb.mix.sidechain_bass,
         variation_seed: 0,
-        offsets: BTreeMap::new(),
+        offsets,
         target_lufs: pb.mix.target_lufs,
         tonic_anchor: false,
         humanize: 0.04,
+        space_db,
     };
     let title = {
         let words: Vec<&str> = a.brief.split_whitespace().take(4).collect();
@@ -681,6 +1185,44 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
             words.join(" ")
         }
     };
+    let mut drum_patterns = BTreeMap::new();
+    for (k, h) in [
+        ("kick", &groove.kick),
+        ("snare", &groove.snare),
+        ("hat", &groove.hat),
+        ("open_hat", &groove.open_hat),
+        ("perc", &groove.perc),
+        ("tabla", &groove.tabla),
+        ("bayan", &groove.bayan),
+    ] {
+        if !h.is_empty() {
+            let b = groove_b
+                .as_ref()
+                .map(|g| match k {
+                    "kick" => cr::grid_string(&g.kick),
+                    "snare" => cr::grid_string(&g.snare),
+                    "hat" => cr::grid_string(&g.hat),
+                    "open_hat" => cr::grid_string(&g.open_hat),
+                    "perc" => cr::grid_string(&g.perc),
+                    _ => cr::grid_string(h),
+                })
+                .unwrap_or_else(|| cr::grid_string(h));
+            drum_patterns.insert(k.to_string(), [cr::grid_string(h), b]);
+        }
+    }
+    let provenance = json!({
+        "seed": a.seed,
+        "seed_source": if a.seed_source.is_empty() { "explicit" } else { a.seed_source.as_str() },
+        "generator_version": cr::GENERATOR_VERSION,
+        "build": option_env!("GITHUB_SHA"),
+        "config": {
+            "brief": a.brief, "genre": a.genre, "bpm": a.bpm, "key": a.key, "scale": a.scale, "mood": a.mood,
+            "duration_s": a.duration_s, "use_samples": a.use_samples, "method": a.method, "reference": a.reference,
+            "authored_parts": a.authored.iter().map(|(k, v)| format!("{k}:{}", v.keys().cloned().collect::<Vec<_>>().join("+"))).collect::<Vec<_>>(),
+        },
+        "assets": {"presets": palette, "sample_kit": sample_kit},
+        "reproduce": format!("produce_track with the same config and seed {} (generator {})", a.seed, cr::GENERATOR_VERSION),
+    });
     Ok(Plan {
         title,
         brief: a.brief.clone(),
@@ -689,10 +1231,10 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         bpm,
         key,
         scale,
-        swing: pb.swing,
+        swing,
         progression_verse: pv,
         progression_hook: ph,
-        bars_per_chord: pb.bars_per_chord,
+        bars_per_chord: hc.bars_per_chord,
         motif,
         palette,
         drum_patterns,
@@ -704,6 +1246,21 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         thinking,
         history: Vec::new(),
         final_review: Value::Null,
+        method,
+        direction: Some(dir),
+        decisions: dec,
+        groove: Some(groove),
+        groove_b,
+        wildcards,
+        progression_bridge: hc.bridge,
+        harmony_color: hc.color,
+        harmony_style,
+        bass_mode,
+        counter_mode,
+        section_transpose,
+        authored: a.authored.clone(),
+        provenance,
+        novelty: Value::Null,
     })
 }
 
@@ -795,14 +1352,15 @@ struct Ctx<'a> {
     iv: &'a [u8],
     verse_chords: Vec<theory::Chord>,
     hook_chords: Vec<theory::Chord>,
+    bridge_chords: Vec<theory::Chord>,
 }
 
 impl Ctx<'_> {
     fn chords(&self, kind: &str) -> &[theory::Chord] {
-        if kind == "hook" {
-            &self.hook_chords
-        } else {
-            &self.verse_chords
+        match kind {
+            "hook" => &self.hook_chords,
+            "bridge" | "breakdown" if !self.bridge_chords.is_empty() => &self.bridge_chords,
+            _ => &self.verse_chords,
         }
     }
 }
@@ -828,6 +1386,9 @@ fn lead_notes(
         return out;
     }
     let dens = cx.plan.knobs.lead_density;
+    // the main motif, developed for this section (same idea, transformed)
+    let (motif, dev_oct) = crate::creative::develop(&cx.plan.motif, &sec.development, rng);
+    let oct = oct + dev_oct;
     let phrase_bars = 4u32;
     let bar_len = STEPS_PER_BAR as f32;
     let mut bar = 0u32;
@@ -851,15 +1412,14 @@ fn lead_notes(
                 2 => root_deg,
                 _ => 0,
             };
-            let mut notes: Vec<MotifNote> = cx.plan.motif.clone();
+            let mut notes: Vec<MotifNote> = motif.clone();
             match pos {
                 1 => {
                     // answer: same rhythm start, contour inverted at the end
                     let k = notes.len() / 2;
                     for (i, m) in notes.iter_mut().enumerate() {
                         if i >= k {
-                            m.deg =
-                                notes_first(&cx.plan.motif) - (m.deg - notes_first(&cx.plan.motif));
+                            m.deg = notes_first(&motif) - (m.deg - notes_first(&motif));
                         }
                     }
                 }
@@ -923,6 +1483,25 @@ fn lead_notes(
     for n in out.iter_mut() {
         n.len = n.len.min(end - n.start);
     }
+    out
+}
+
+/// Counter-melody that answers the lead: an inverted fragment of the main
+/// motif in the second half of every other bar.
+fn motif_echo(cx: &Ctx, sec: &PlanSection, octave: i32) -> Vec<Note> {
+    let m = &cx.plan.motif;
+    let k = m.len().div_ceil(2).max(1);
+    let f = notes_first(m);
+    let mut out = Vec::new();
+    for bar in (1..sec.bars).step_by(2) {
+        for x in m.iter().take(k) {
+            let t = bar as f32 * 16.0 + 8.0 + x.t * 0.5;
+            let p = scale_pitch(cx.root_pc, cx.iv, octave, f - (x.deg - f));
+            out.push(Note::new(t, (x.len * 0.5).max(0.5), p, 0.55));
+        }
+    }
+    let end = (sec.bars * STEPS_PER_BAR) as f32;
+    out.retain(|n| n.start < end);
     out
 }
 
@@ -1021,6 +1600,21 @@ fn bass_notes(
                     }
                 }
                 out.push(n);
+            }
+        }
+        "sustain" => {
+            // long 808s, one per chord, gliding into the next root
+            let span = bpc * STEPS_PER_BAR as f32;
+            let mut t = 0.0;
+            while t < end {
+                let p = root_of(t);
+                let mut n = Note::new(t, span.min(end - t), p, 0.9);
+                let np = root_of(t + span);
+                if np != p && t + span < end && rng.chance(glide + 0.4) {
+                    n.slide_to = Some(np);
+                }
+                out.push(n);
+                t += span;
             }
         }
         _ => {
@@ -1125,12 +1719,28 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     let key_pc = theory::pitch_class(&plan.key)?;
     let iv: Vec<u8> = theory::scale_intervals(&plan.scale)?.to_vec();
     let href = harmony_ref(&plan.scale);
+    let mut chord_sets = [
+        theory::parse_progression(&plan.progression_verse, key_pc, href)?,
+        theory::parse_progression(&plan.progression_hook, key_pc, href)?,
+        if plan.progression_bridge.is_empty() {
+            Vec::new()
+        } else {
+            theory::parse_progression(&plan.progression_bridge, key_pc, href)?
+        },
+    ];
+    if !plan.harmony_color.is_empty() {
+        for c in chord_sets.iter_mut() {
+            crate::creative::color_chords(c, &plan.harmony_color, key_pc);
+        }
+    }
+    let [verse_chords, hook_chords, bridge_chords] = chord_sets;
     let cx = Ctx {
         plan,
         root_pc: key_pc,
         iv: &iv,
-        verse_chords: theory::parse_progression(&plan.progression_verse, key_pc, href)?,
-        hook_chords: theory::parse_progression(&plan.progression_hook, key_pc, href)?,
+        verse_chords,
+        hook_chords,
+        bridge_chords,
     };
     let pb = playbook(&plan.genre)?;
     let mut p = Project::new(&plan.title, plan.bpm);
@@ -1146,6 +1756,14 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         for l in &s.layers {
             if !roles.contains(l) && (plan.palette.contains_key(l) || l == "harmony") {
                 roles.push(l.clone());
+            }
+        }
+    }
+    // AI-authored parts need their tracks even where no layer asks for them
+    for parts in plan.authored.values() {
+        for r in parts.keys() {
+            if !roles.contains(r) && plan.palette.contains_key(r) {
+                roles.push(r.clone());
             }
         }
     }
@@ -1184,7 +1802,11 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     let mut rng = Rng::new(plan.seed ^ 0x5EC7 ^ plan.knobs.variation_seed.wrapping_mul(0x9E37));
     let lead_oct = pb.lead.octave;
     let ornament = pb.lead.ornament.clone().unwrap_or_default();
-    let harmony_style = pb.harmony.style.clone().unwrap_or_else(|| "block".into());
+    let harmony_style = if plan.harmony_style.is_empty() {
+        pb.harmony.style.clone().unwrap_or_else(|| "block".into())
+    } else {
+        plan.harmony_style.clone()
+    };
     let tabla_pitch = (60 + key_pc as i32 - if key_pc > 6 { 12 } else { 0 }) as u8;
     let bayan_pitch =
         (60 + key_pc as i32 - 4 - if key_pc > 8 { 12 } else { 0 }).clamp(40, 80) as u8;
@@ -1211,15 +1833,49 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                 .unwrap_or_default()
         };
         let mut kick = Vec::new();
-        if has("kick") {
+        if let Some(g0) = &plan.groove {
+            // generated drums: the groove varied for this section, with its fill
+            let g = if sec.tags.iter().any(|t| t == "switch") {
+                plan.groove_b.as_ref().unwrap_or(g0)
+            } else {
+                g0
+            };
+            for (voice, mut notes) in crate::creative::section_drums(g, sec, plan.seed, si) {
+                if !has(voice.as_str()) || notes.is_empty() {
+                    continue;
+                }
+                let scale = match voice.as_str() {
+                    "hat" => 0.75 + 0.25 * sec.energy,
+                    "open_hat" | "perc" => vel * 0.85,
+                    _ => vel,
+                };
+                for n in notes.iter_mut() {
+                    n.vel = (n.vel * scale).clamp(0.05, 1.0);
+                    if voice == "tabla" {
+                        n.pitch = tabla_pitch;
+                        if (n.start as u32) % 2 == 1 {
+                            n.vel = n.vel.min(0.42);
+                        }
+                    } else if voice == "bayan" {
+                        n.pitch = bayan_pitch;
+                    }
+                }
+                if voice == "kick" {
+                    kick = notes;
+                } else {
+                    pat.clips.insert(track_name(&voice), notes);
+                }
+            }
+        } else if has("kick") {
             kick = grid_notes(&pat_of("kick"), sec.bars, 60, vel);
         }
-        if has("snare") {
+        let legacy = plan.groove.is_none();
+        if legacy && has("snare") {
             let mut sn = grid_notes(&pat_of("snare"), sec.bars, 60, vel);
             add_ghosts(&mut sn, sec.bars, plan.knobs.ghost_snare, &mut rng);
             pat.clips.insert(track_name("snare"), sn);
         }
-        if has("hat") {
+        if legacy && has("hat") {
             pat.clips.insert(
                 track_name("hat"),
                 hat_notes(
@@ -1232,7 +1888,7 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                 ),
             );
         }
-        if has("open_hat") {
+        if legacy && has("open_hat") {
             let mut oh = grid_notes(&pat_of("open_hat"), sec.bars, 60, vel * 0.8);
             if is_hook {
                 // crash-like open hat on the downbeat of the hook
@@ -1240,13 +1896,13 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             }
             pat.clips.insert(track_name("open_hat"), oh);
         }
-        if has("perc") {
+        if legacy && has("perc") {
             pat.clips.insert(
                 track_name("perc"),
                 grid_notes(&pat_of("perc"), sec.bars, 60, vel * 0.85),
             );
         }
-        if has("tabla") {
+        if legacy && has("tabla") {
             let mut t = grid_notes(&pat_of("tabla"), sec.bars, tabla_pitch, vel);
             for n in t.iter_mut() {
                 // muted bols on the weak 16ths
@@ -1261,15 +1917,15 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             }
             pat.clips.insert(track_name("tabla"), t);
         }
-        if has("bayan") {
+        if legacy && has("bayan") {
             pat.clips.insert(
                 track_name("bayan"),
                 grid_notes(&pat_of("bayan"), sec.bars, bayan_pitch, vel),
             );
         }
-        // transitions
+        // transitions (generated drums carry their own fills)
         let end = (sec.bars * 16) as f32;
-        match sec.transition.as_str() {
+        match if legacy { sec.transition.as_str() } else { "" } {
             "drop_and_roll" => {
                 // pull the kick out of the last half bar so the next downbeat hits harder
                 kick.retain(|n| n.start < end - 8.0);
@@ -1305,12 +1961,51 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             pat.clips.insert(track_name("kick"), kick.clone());
         }
         if has("bass") {
+            let mode = plan.bass_mode.as_str();
+            let style = if mode == "sustain" {
+                "sustain"
+            } else {
+                pb.bass.style.as_str()
+            };
+            let mut hits = kick.clone();
+            if sec.tags.iter().any(|t| t == "bass_call_response") {
+                // the 808 answers in the kick's gaps instead of doubling it
+                let mut ks: Vec<f32> = kick.iter().map(|n| n.start).collect();
+                ks.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                ks.dedup();
+                hits.clear();
+                for (i, t) in ks.iter().enumerate() {
+                    if t % 16.0 == 0.0 {
+                        hits.push(Note::new(*t, 1.0, 60, 1.0));
+                    }
+                    let next = ks.get(i + 1).copied().unwrap_or(end);
+                    if next - t >= 4.0 {
+                        hits.push(Note::new(
+                            (t + ((next - t) / 2.0).floor()).min(end - 1.0),
+                            1.0,
+                            60,
+                            0.9,
+                        ));
+                    }
+                }
+            } else if mode == "independent" {
+                if let Some(g) = &plan.groove {
+                    for bar in 0..sec.bars {
+                        for s in &g.kick_spare {
+                            let lo = (bar % 2) as f32 * 16.0;
+                            if *s >= lo && *s < lo + 16.0 && rng.chance(0.5) {
+                                hits.push(Note::new(bar as f32 * 16.0 + s - lo, 1.0, 60, 0.85));
+                            }
+                        }
+                    }
+                }
+            }
             let bass = bass_notes(
                 &cx,
                 sec,
-                &pb.bass.style,
+                style,
                 pb.bass.octave,
-                &kick,
+                &hits,
                 plan.knobs.glide,
                 &mut rng,
             );
@@ -1337,7 +2032,10 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                 v
             } else {
                 let voiced = theory::voice_chords(chords, pb.harmony.octave, true);
-                let style = if sec.kind == "intro" || sec.kind == "outro" || sec.kind == "bridge" {
+                let style = if matches!(
+                    sec.kind.as_str(),
+                    "intro" | "outro" | "bridge" | "breakdown"
+                ) {
                     "block"
                 } else {
                     harmony_style.as_str()
@@ -1388,7 +2086,11 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             pat.clips.insert(track_name("lead"), layered);
         }
         if has("counter") {
-            let mut c = counter_notes(&cx, sec, pb.counter.octave, &lead);
+            let mut c = if plan.counter_mode == "motif_echo" && is_hook {
+                motif_echo(&cx, sec, pb.counter.octave)
+            } else {
+                counter_notes(&cx, sec, pb.counter.octave, &lead)
+            };
             for n in c.iter_mut() {
                 n.vel *= mel;
             }
@@ -1419,6 +2121,42 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                     (((pb.bass.octave + 1) * 12) as i32 + key_pc as i32) as u8,
                     0.9,
                 ));
+            }
+        }
+        // key change: everything pitched moves; drums stay
+        if let Some(st) = plan.section_transpose.get(&sec.name) {
+            for t in ["bass", "chords", "lead", "counter", "texture"] {
+                if let Some(v) = pat.clips.get_mut(t) {
+                    for n in v.iter_mut() {
+                        n.pitch = (n.pitch as i32 + st).clamp(0, 127) as u8;
+                        n.slide_to = n.slide_to.map(|x| (x as i32 + st).clamp(0, 127) as u8);
+                    }
+                }
+            }
+        }
+        // a beat of silence before the drop: everything stops
+        if sec.transition == "silence" {
+            for v in pat.clips.values_mut() {
+                v.retain(|n| n.start < end - 4.0);
+                for n in v.iter_mut() {
+                    n.len = n.len.min(end - 4.0 - n.start).max(0.1);
+                }
+            }
+        }
+        // AI-authored MIDI replaces the generated part verbatim
+        for (k, parts) in &plan.authored {
+            if k != &sec.name && k != &sec.kind && k != "*" {
+                continue;
+            }
+            for (role, notes) in parts {
+                if roles.iter().any(|r| r == role) {
+                    let v: Vec<Note> = notes
+                        .iter()
+                        .filter(|n| n.start >= 0.0 && n.start < end)
+                        .cloned()
+                        .collect();
+                    pat.clips.insert(track_name(role), v);
+                }
             }
         }
         pat.clips.retain(|_, v| !v.is_empty());
@@ -1465,13 +2203,14 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         &json!({"name": "echo", "preset": "delay"}),
         "producer",
     )?;
+    let rs = pb.mix.reverb_send + plan.knobs.space_db;
     for (t, db) in [
-        ("lead", pb.mix.reverb_send),
-        ("counter", pb.mix.reverb_send - 2.0),
-        ("harmony", pb.mix.reverb_send + 1.0),
-        ("texture", pb.mix.reverb_send),
-        ("snare", pb.mix.reverb_send - 6.0),
-        ("tabla", pb.mix.reverb_send - 4.0),
+        ("lead", rs),
+        ("counter", rs - 2.0),
+        ("harmony", rs + 1.0),
+        ("texture", rs),
+        ("snare", rs - 6.0),
+        ("tabla", rs - 4.0),
     ] {
         if have(e, t) {
             e.call_from(
@@ -1908,7 +2647,8 @@ pub fn critique_mode(
     };
     if rho < 0.6 {
         mus -= (0.6 - rho) * 30.0;
-        findings.push(Finding { id: "energy_curve".into(), severity: 0.6, message: format!("measured loudness follows the planned energy curve weakly (rank corr {rho:.2})"), fix: json!({"action": "contrast", "verse_velocity": (plan.knobs.verse_velocity - 0.08).max(0.7)}) });
+        // advisory only: wildcards (dropouts, half-time hooks) bend the curve on purpose
+        findings.push(Finding { id: "energy_curve".into(), severity: 0.3, message: format!("measured loudness follows the planned energy curve weakly (rank corr {rho:.2}) - advisory"), fix: json!({"action": "none"}) });
     }
     let hook_l: Vec<f32> = plan
         .sections
@@ -1927,6 +2667,8 @@ pub fn critique_mode(
     if !hook_l.is_empty() && !verse_l.is_empty() {
         let h = hook_l.iter().sum::<f32>() / hook_l.len() as f32;
         let v = verse_l.iter().sum::<f32>() / verse_l.len() as f32;
+        // guardrail: a dead hook (no lift at all); fixed with dynamics only,
+        // never by changing which instruments play where
         if h < v + 0.8 {
             mus -= 12.0;
             findings.push(Finding { id: "hook_lift".into(), severity: 0.8, message: format!("hook ({h:.1} LUFS short-term) does not lift over the verse ({v:.1})"), fix: json!({"action": "contrast", "verse_velocity": (plan.knobs.verse_velocity - 0.1).max(0.65)}) });
@@ -1998,7 +2740,9 @@ pub fn critique_mode(
         }
     };
     let (dh, dv) = (density("hook"), density("verse"));
-    if dh < 2.0
+    // guardrail: a dead hook melody (under one note per bar); how busy a
+    // verse is relative to the hook is taste, so it is only reported
+    if dh < 1.0
         && plan
             .sections
             .iter()
@@ -2008,7 +2752,14 @@ pub fn critique_mode(
         findings.push(Finding { id: "thin_hook".into(), severity: 0.5, message: format!("hook melody is thin ({dh:.1} notes/bar)"), fix: json!({"action": "density", "lead_density": (plan.knobs.lead_density + 0.15).min(1.0)}) });
     } else if dv > dh && dh > 0.0 {
         mus -= 5.0;
-        findings.push(Finding { id: "busy_verse".into(), severity: 0.4, message: format!("verse lead ({dv:.1}/bar) busier than the hook ({dh:.1}/bar): crowds the vocal"), fix: json!({"action": "density", "lead_density": (plan.knobs.lead_density - 0.1).max(0.25)}) });
+        findings.push(Finding {
+            id: "busy_verse".into(),
+            severity: 0.2,
+            message: format!(
+                "verse lead ({dv:.1}/bar) busier than the hook ({dh:.1}/bar) - advisory"
+            ),
+            fix: json!({"action": "none"}),
+        });
     }
     // --- key: rendered notes should read as the planned key family
     let t = std::time::Instant::now();
@@ -2030,8 +2781,8 @@ pub fn critique_mode(
         findings.push(Finding {
             id: "key".into(),
             severity: 0.3,
-            message: format!("notes read as {found}, planned {want}"),
-            fix: json!({"action": "tonic"}),
+            message: format!("notes read as {found}, planned {want} - advisory (modal/borrowed harmony and key changes are intended)"),
+            fix: json!({"action": "none"}),
         });
     }
     // --- duration
@@ -2181,32 +2932,18 @@ pub fn revise_skipping(
             "offset" => {
                 let t = f.fix["track"].as_str().unwrap_or("").to_string();
                 let db = f.fix["db"].as_f64().unwrap_or(0.0) as f32;
+                // capped: a guardrail against masking/burying, not a mix template
                 let o = k.offsets.entry(t.clone()).or_insert(0.0);
-                *o = (*o + db).clamp(-8.0, 8.0);
+                *o = (*o + db).clamp(-3.0, 3.0);
                 done_s.push(format!("{}: {t} {db:+.1} dB vs genre target", f.id));
             }
             "contrast" => {
                 let v = f.fix["verse_velocity"].as_f64().unwrap_or(0.85) as f32;
                 if v < k.verse_velocity - 0.01 {
+                    // dynamics only: the critic never rewrites which parts play
+                    // where (that pulled every beat toward one arrangement)
                     k.verse_velocity = v;
-                    // a hook needs a lift: give it the counter line and open hats
-                    for s in plan.sections.iter_mut().filter(|s| s.kind == "hook") {
-                        for l in ["counter", "open_hat"] {
-                            if !s.layers.iter().any(|x| x == l) && plan.palette.contains_key(l) {
-                                s.layers.push(l.into());
-                            }
-                        }
-                    }
-                    // and verses breathe: drop the open hat / counter there
-                    for s in plan.sections.iter_mut().filter(|s| s.kind == "verse") {
-                        s.layers.retain(|l| l != "open_hat" && l != "counter");
-                    }
-                    let o = k.offsets.entry("counter".into()).or_insert(0.0);
-                    *o = (*o + 1.0).min(4.0);
-                    done_s.push(format!(
-                        "{}: verse velocity {v:.2}, hooks get counter-melody + open hats",
-                        f.id
-                    ));
+                    done_s.push(format!("{}: verse velocity {v:.2} (dynamics only)", f.id));
                 }
             }
             "vary" => {
@@ -2218,7 +2955,8 @@ pub fn revise_skipping(
             }
             "density" => {
                 let d = f.fix["lead_density"].as_f64().unwrap_or(0.5) as f32;
-                k.lead_density = d;
+                // only ever rescues a dead hook, and only up to a modest density
+                k.lead_density = d.max(k.lead_density).min(0.7);
                 done_s.push(format!("{}: lead density {d:.2}", f.id));
             }
             "tonic" => {
@@ -2259,6 +2997,41 @@ pub struct ProduceOpts {
     pub reference: Option<String>,
     pub out_dir: Option<std::path::PathBuf>,
     pub mp3: bool,
+    /// Novelty check against recent outputs (None = off).
+    pub novelty: Option<crate::novelty::NoveltyOpts>,
+}
+
+/// Fetch the plan's sample kit (falls back to the synth kit offline) and
+/// record the files in the plan's asset manifest.
+fn prepare_kit(e: &mut Engine, plan: &mut Plan) {
+    if let Some(k) = plan.sample_kit.clone() {
+        match crate::sample_lib::install_kit(e, &k) {
+            Ok(files) => {
+                plan.thinking.push(format!(
+                    "Drums: real {k} samples (public domain/CC0, credits kept in the project)."
+                ));
+                let lic = crate::sample_lib::kit(&k).map(|x| x.license).unwrap_or("");
+                if plan.provenance.is_object() {
+                    plan.provenance["assets"]["sample_files"] = json!(files
+                        .iter()
+                        .map(|(r, p)| format!(
+                            "{r}={}",
+                            p.file_name()
+                                .map(|x| x.to_string_lossy().to_string())
+                                .unwrap_or_default()
+                        ))
+                        .collect::<Vec<_>>());
+                    plan.provenance["assets"]["sample_license"] = json!(lic);
+                }
+            }
+            Err(err) => {
+                plan.thinking.push(format!(
+                    "Drums: synth kit ({k} samples unavailable: {err})."
+                ));
+                plan.sample_kit = None;
+            }
+        }
+    }
 }
 
 pub fn produce(e: &mut Engine, args: &PlanArgs, o: &ProduceOpts) -> Result<Value> {
@@ -2283,18 +3056,61 @@ fn produce_inner(
     t0: std::time::Instant,
 ) -> Result<Value> {
     let mut plan = plan_track(args)?;
-    if let Some(k) = &plan.sample_kit {
-        // fetch the CC0/PD kit once; fall back to the synth kit offline
-        match crate::sample_lib::install_kit(e, k) {
-            Ok(_) => plan.thinking.push(format!(
-                "Drums: real {k} samples (public domain/CC0, credits kept in the project)."
-            )),
-            Err(err) => {
-                plan.thinking.push(format!(
-                    "Drums: synth kit ({k} samples unavailable: {err})."
-                ));
-                plan.sample_kit = None;
+    prepare_kit(e, &mut plan);
+    // novelty: a candidate too close to a recent beat is regenerated with a
+    // new seed (fresh seeds only: an explicit seed must reproduce exactly)
+    let mut nov_hist = Vec::new();
+    let mut nov_path = None;
+    if let Some(no) = o.novelty.as_ref().filter(|n| n.enabled) {
+        let hp = crate::novelty::history_path(e, no);
+        nov_hist = crate::novelty::load_history(&hp, no.window);
+        nov_path = Some(hp);
+        let regenerate = args.seed_source == "entropy";
+        let check = |e: &mut Engine, plan: &Plan| -> Result<(f32, Value)> {
+            compose(e, plan)?;
+            let mut f = crate::novelty::fingerprint(&e.project);
+            f.genre = plan.genre.clone();
+            Ok(match crate::novelty::nearest(&f, &nov_hist) {
+                Some((h, d)) => (
+                    d.total,
+                    json!({"label": h.label, "seed": h.seed, "genre": h.genre, "distance": crate::novelty::round_d(&d)}),
+                ),
+                None => (1.0, Value::Null),
+            })
+        };
+        let (mut best_d, mut best_near) = check(e, &plan)?;
+        let mut rejected = Vec::new();
+        let mut attempt = 0;
+        while regenerate
+            && best_d < no.threshold
+            && attempt < no.max_attempts
+            && !nov_hist.is_empty()
+        {
+            attempt += 1;
+            let mut a2 = args.clone();
+            a2.seed = crate::creative::splitmix(args.seed.wrapping_add(attempt as u64))
+                & ((1u64 << 53) - 1);
+            let mut p2 = plan_track(&a2)?;
+            prepare_kit(e, &mut p2);
+            let (d2, n2) = check(e, &p2)?;
+            if d2 > best_d {
+                rejected.push(json!({"seed": plan.seed, "distance": best_d, "nearest": best_near}));
+                plan = p2;
+                best_d = d2;
+                best_near = n2;
+            } else {
+                rejected.push(json!({"seed": p2.seed, "distance": d2, "nearest": n2}));
             }
+        }
+        plan.novelty = json!({
+            "threshold": no.threshold, "history_entries": nov_hist.len(),
+            "nearest_distance": if nov_hist.is_empty() { Value::Null } else { json!((best_d * 1000.0).round() / 1000.0) },
+            "nearest": best_near, "regenerated": rejected,
+            "accepted": nov_hist.is_empty() || best_d >= no.threshold,
+            "mode": if regenerate { "regenerate near-repeats" } else { "report only (explicit seed)" },
+        });
+        if !rejected.is_empty() {
+            plan.thinking.push(format!("Novelty: {} candidate(s) were too close to recent beats and were regenerated; kept seed {} at distance {best_d:.3}.", rejected.len(), plan.seed));
         }
     }
     // critic loop: render -> critique (+ears) -> diff_renders against the
@@ -2396,6 +3212,32 @@ fn produce_inner(
     });
     plan.history = log.clone();
     plan.final_review = final_review.clone();
+    // the delivered beat joins the novelty history (with its audio summary)
+    let mut novelty_out = plan.novelty.clone();
+    if let (Some(no), Some(hp)) = (o.novelty.as_ref().filter(|n| n.enabled), &nov_path) {
+        let mut f = crate::novelty::fingerprint(&e.project);
+        f.genre = plan.genre.clone();
+        f.seed = Some(plan.seed);
+        f.label = format!("{}_{}", plan.genre, plan.seed);
+        f.created_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Ok(m) = e.mix() {
+            let (c, s) = crate::novelty::audio_summary(&m.left, &m.right, f.key_pc);
+            f.chroma = c;
+            f.spectrum = s;
+        }
+        if let Some((h, d)) = crate::novelty::nearest(&f, &nov_hist) {
+            novelty_out["final_nearest"] =
+                json!({"label": h.label, "seed": h.seed, "distance": crate::novelty::round_d(&d)});
+        }
+        if no.record {
+            crate::novelty::append_history(hp, &f)?;
+            novelty_out["history"] = json!(hp.to_string_lossy());
+        }
+        novelty_out["fingerprint"] = crate::novelty::summary(&f);
+    }
     // deliver
     let mut files = json!({});
     if let Some(dir) = &o.out_dir {
@@ -2424,6 +3266,14 @@ fn produce_inner(
         "iterations": log, "final_review": final_review, "thinking": plan.thinking, "plan": plan,
         "remaining_findings": crit.findings.iter().take(6).map(|f| f.message.clone()).collect::<Vec<_>>(),
         "measurements": crit.measurements,
+        "seed": plan.seed,
+        "method": plan.method,
+        "direction": plan.direction,
+        "wildcards": plan.wildcards,
+        "groove": plan.groove.as_ref().map(|g| g.summary.clone()),
+        "progressions": {"verse": plan.progression_verse, "hook": plan.progression_hook, "bridge": plan.progression_bridge, "color": plan.harmony_color, "bars_per_chord": plan.bars_per_chord},
+        "sections": plan.sections.iter().map(|s| json!({"name": s.name, "bars": s.bars, "development": s.development, "tags": s.tags, "transition": s.transition})).collect::<Vec<_>>(),
+        "novelty": novelty_out,
         "files": files,
         "wall_seconds": (t0.elapsed().as_secs_f32() * 10.0).round() / 10.0,
     }))
@@ -2452,6 +3302,8 @@ mod tests {
             seed,
             use_samples: false,
             flip_sample: None,
+            seed_source: "explicit".into(),
+            ..Default::default()
         }
     }
 
@@ -2662,6 +3514,7 @@ mod tests {
                 reference: None,
                 out_dir: None,
                 mp3: false,
+                novelty: None,
             },
         )
         .unwrap();
@@ -2713,5 +3566,216 @@ mod tests {
         assert!(revise_skipping(&mut plan, &c, 3, &skip).is_empty());
         let done = revise_skipping(&mut plan, &c, 3, &Default::default());
         assert_eq!(done[0].0, "offset:hat");
+    }
+
+    fn fp_of(seed: u64, genre: &str) -> (Plan, crate::novelty::Fingerprint) {
+        let mut e = engine();
+        let mut a = args(&format!("{genre} beat"), Some(genre), seed);
+        a.duration_s = None;
+        let plan = plan_track(&a).unwrap();
+        compose(&mut e, &plan).unwrap();
+        let mut f = crate::novelty::fingerprint(&e.project);
+        f.genre = plan.genre.clone();
+        (plan, f)
+    }
+
+    #[test]
+    fn same_seed_gives_identical_output() {
+        let mut a = args("dark trap", Some("trap"), 4242);
+        a.duration_s = None;
+        let p1 = plan_track(&a).unwrap();
+        let p2 = plan_track(&a).unwrap();
+        assert_eq!(p1, p2);
+        let (mut e1, mut e2) = (engine(), engine());
+        compose(&mut e1, &p1).unwrap();
+        compose(&mut e2, &p2).unwrap();
+        assert_eq!(
+            serde_json::to_string(&e1.project.patterns).unwrap(),
+            serde_json::to_string(&e2.project.patterns).unwrap()
+        );
+        assert_eq!(p1.provenance["seed"], 4242);
+        assert_eq!(
+            p1.provenance["generator_version"],
+            crate::creative::GENERATOR_VERSION
+        );
+    }
+
+    #[test]
+    fn different_seeds_give_clearly_different_beats() {
+        // procedural beats of one genre: drum grids, harmony and section maps must differ
+        let seeds = [101u64, 202, 303, 404, 505];
+        let fps: Vec<(Plan, crate::novelty::Fingerprint)> =
+            seeds.iter().map(|s| fp_of(*s, "trap")).collect();
+        let (mut r, mut h, mut ar, mut n) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        for i in 0..fps.len() {
+            for j in (i + 1)..fps.len() {
+                let d = crate::novelty::distance(&fps[i].1, &fps[j].1);
+                assert!(
+                    d.rhythm.unwrap() > 0.1,
+                    "drum grids too close: {} vs {}: {:?}",
+                    seeds[i],
+                    seeds[j],
+                    d
+                );
+                assert!(
+                    d.total > 0.15,
+                    "beats too close: {} vs {}: {:?}",
+                    seeds[i],
+                    seeds[j],
+                    d
+                );
+                assert_ne!(fps[i].1.rhythm.get("kick"), fps[j].1.rhythm.get("kick"));
+                r += d.rhythm.unwrap();
+                h += d.harmony.unwrap_or(0.0);
+                ar += d.arrangement.unwrap_or(0.0);
+                n += 1.0;
+            }
+        }
+        assert!(r / n > 0.25, "mean drum distance {}", r / n);
+        assert!(h / n > 0.15, "mean harmony distance {}", h / n);
+        assert!(ar / n > 0.15, "mean section-map distance {}", ar / n);
+        // and the plans say why: direction, decisions, wildcards with roles
+        for (p, _) in &fps {
+            assert!(p.direction.is_some());
+            assert!(p.decisions.len() > 8);
+            assert!(!p.wildcards.is_empty() && p.wildcards.len() <= 3);
+            assert!(p
+                .wildcards
+                .iter()
+                .all(|w| ["tension", "release", "contrast", "groove", "emotion"]
+                    .contains(&w.role.as_str())));
+            assert!(p.sections.iter().all(|s| !s.development.is_empty()));
+        }
+        let progs: std::collections::BTreeSet<String> = fps
+            .iter()
+            .map(|(p, _)| format!("{}|{}", p.progression_verse, p.progression_hook))
+            .collect();
+        assert!(progs.len() >= 3, "progressions barely vary: {progs:?}");
+        let maps: std::collections::BTreeSet<String> = fps
+            .iter()
+            .map(|(_, f)| format!("{:?}", f.sections))
+            .collect();
+        assert!(maps.len() >= 4, "section maps barely vary: {maps:?}");
+    }
+
+    #[test]
+    fn templates_remain_a_starting_point() {
+        let mut a = args("trap", Some("trap"), 9);
+        a.method = Some("template".into());
+        let p = plan_track(&a).unwrap();
+        assert_eq!(p.method, "template");
+        assert_eq!(p.groove.as_ref().unwrap().source, "template");
+        assert_eq!(
+            p.sections.len(),
+            playbook("trap")
+                .unwrap()
+                .arrangement
+                .len()
+                .min(p.sections.len())
+        );
+        a.method = Some("bogus".into());
+        assert!(plan_track(&a).is_err());
+    }
+
+    #[test]
+    fn motif_development_keeps_the_idea() {
+        let m = vec![
+            MotifNote {
+                t: 0.0,
+                deg: 0,
+                len: 2.0,
+            },
+            MotifNote {
+                t: 4.0,
+                deg: 2,
+                len: 2.0,
+            },
+            MotifNote {
+                t: 8.0,
+                deg: 4,
+                len: 2.0,
+            },
+            MotifNote {
+                t: 12.0,
+                deg: 2,
+                len: 2.0,
+            },
+        ];
+        let mut rng = Rng::new(1);
+        let (inv, _) = crate::creative::develop(&m, &["inversion".to_string()], &mut rng);
+        assert_eq!(
+            inv.iter().map(|x| x.deg).collect::<Vec<_>>(),
+            vec![0, -2, -4, -2]
+        );
+        let (frag, _) = crate::creative::develop(&m, &["fragment".to_string()], &mut rng);
+        assert_eq!(frag.len(), 2);
+        let (_, oct) = crate::creative::develop(&m, &["register_up".to_string()], &mut rng);
+        assert_eq!(oct, 1);
+        let (disp, _) = crate::creative::develop(&m, &["displace".to_string()], &mut rng);
+        assert_eq!(disp.len(), 4);
+        assert_ne!(
+            disp.iter().map(|x| x.t).collect::<Vec<_>>(),
+            m.iter().map(|x| x.t).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn authored_midi_is_played_verbatim() {
+        let mut e = engine();
+        let mut a = args("trap", Some("trap"), 77);
+        a.duration_s = None;
+        let notes = vec![Note::new(0.0, 4.0, 72, 0.9), Note::new(8.0, 4.0, 75, 0.9)];
+        a.authored
+            .entry("hook".into())
+            .or_default()
+            .insert("lead".into(), notes.clone());
+        let plan = plan_track(&a).unwrap();
+        assert_eq!(plan.method, "ai_authored");
+        compose(&mut e, &plan).unwrap();
+        let h = &e.project.patterns[e.project.pattern_index("hook1").unwrap()];
+        let lead = h.notes("lead");
+        assert_eq!(lead.len(), 2, "{lead:?}");
+        assert_eq!(lead[1].pitch, 75);
+    }
+
+    #[test]
+    fn critic_never_rewrites_musical_content() {
+        let mut plan = plan_track(&args("trap", Some("trap"), 1)).unwrap();
+        let before: Vec<Vec<String>> = plan.sections.iter().map(|s| s.layers.clone()).collect();
+        let c = Critique {
+            score: 60.0,
+            technical: 70.0,
+            musical: 50.0,
+            reference: None,
+            measurements: json!({}),
+            render_id: String::new(),
+            ears: json!({}),
+            findings: vec![
+                Finding {
+                    id: "hook_lift".into(),
+                    severity: 0.8,
+                    message: "x".into(),
+                    fix: json!({"action": "contrast", "verse_velocity": 0.7}),
+                },
+                Finding {
+                    id: "mix".into(),
+                    severity: 0.3,
+                    message: "z".into(),
+                    fix: json!({"action": "offset", "track": "hat", "db": 9.0}),
+                },
+            ],
+        };
+        revise(&mut plan, &c, 3);
+        let after: Vec<Vec<String>> = plan.sections.iter().map(|s| s.layers.clone()).collect();
+        assert_eq!(before, after, "layers changed by the critic");
+        assert!(plan.knobs.offsets["hat"] <= 3.0);
+    }
+
+    #[test]
+    fn fresh_seeds_differ() {
+        let a = crate::creative::fresh_seed();
+        let b = crate::creative::fresh_seed();
+        assert_ne!(a, b);
+        assert!(a < (1u64 << 53));
     }
 }

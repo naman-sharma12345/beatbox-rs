@@ -22,15 +22,24 @@ jobs:
       - run: cargo test --no-default-features
   beats:
     # prove the producer: render the reference beats with produce_track
+    # (fresh seeds), compare them with the previous sprint, build a blind A/B
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: cargo build --release --no-default-features
+      - name: previous sprint's beats (s8, main ee0a526) for the novelty comparison
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download 38017732891 -n beats -D prev_beats -R ${{ github.repository }} && ls prev_beats
       - name: produce beats
-        run: bash scripts/produce_beats.sh target/release/beatbox beats s8
+        run: bash scripts/produce_beats.sh target/release/beatbox beats s9 prev_beats
       - uses: actions/upload-artifact@v4
         with:
           name: beats
