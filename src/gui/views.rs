@@ -1,9 +1,15 @@
 //! Mixer and Automation views of the central panel. Like everything else in
 //! the studio, every edit is an `Engine` tool call.
 
+use super::console::{
+    console_fader, counter_box, meter_scale, name_plate, pan_knob, selector_box, text_toggle,
+    zoned_meter,
+};
+use super::theme::Tokens;
 use super::widgets::*;
 use super::Studio;
 use crate::automation::{self, AutomationLane};
+use crate::console_law::{db_text, fader_db_to_pos, pan_text};
 use crate::dsp::gain_to_db;
 use crate::dsp::SR;
 use crate::project::Project;
@@ -62,7 +68,16 @@ impl StripMeter {
     }
 }
 
-const STRIP_W: f32 = 86.0;
+// Strip layout and metering adapted from SoundCraft `crates/ui-egui/src/mix_window.rs`
+// (commit eac0edd): flat console strips with labelled sections, insert/send slots,
+// I/O selector, pan knob over a counter readout, S/M toggles, fader + zoned meters
+// with peak hold and clip LED, a dB counter and a name plate.
+// Copyright (c) 2026 ArtCraft Team and the SoundCraft contributors (MIT OR Apache-2.0,
+// used here under MIT). See THIRD_PARTY_NOTICES.md.
+const STRIP_W: f32 = 96.0;
+const MASTER_W: f32 = 150.0;
+const INSERT_ROWS: usize = 4;
+const SEND_ROWS: usize = 3;
 
 fn fmt_db(db: f32) -> String {
     if db <= -59.5 {
@@ -70,6 +85,42 @@ fn fmt_db(db: f32) -> String {
     } else {
         format!("{db:+.1}")
     }
+}
+
+/// What one mixer strip shows.
+struct StripData {
+    kind: StripKind,
+    name: String,
+    sub: String,
+    color: Color32,
+    volume_db: f32,
+    pan: f32,
+    mute: bool,
+    solo: bool,
+    out: String,
+    sends: Vec<(String, f32)>,
+    inserts: Vec<(String, bool)>,
+}
+
+/// A labelled strip section background; returns the content rect under its title.
+fn section(p: &egui::Painter, r: Rect, title: &str) -> Rect {
+    let t = Tokens::DARK;
+    p.rect_filled(r, 2.0, t.strip_section);
+    p.text(
+        Pos2::new(r.center().x, r.min.y + 7.0),
+        Align2::CENTER_CENTER,
+        title,
+        FontId::proportional(9.0),
+        t.header_text,
+    );
+    Rect::from_min_max(Pos2::new(r.min.x + 2.0, r.min.y + 15.0), r.max)
+}
+
+fn slot_rect(area: Rect, k: usize) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(area.min.x, area.min.y + k as f32 * 17.0),
+        Vec2::new(area.width() - 2.0, 15.0),
+    )
 }
 
 impl Studio {
@@ -81,75 +132,62 @@ impl Studio {
 
     // ---------------- mixer ----------------
     pub(super) fn mixer(&mut self, ui: &mut egui::Ui, p: &Project) {
-        let h = ui.available_height().max(260.0);
+        let h = ui.available_height().max(300.0);
         let pos = self.live_pos();
+        let bus_names: Vec<String> = p.buses.iter().map(|b| b.name.clone()).collect();
+        let mut strips: Vec<StripData> = p
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(ti, t)| StripData {
+                kind: StripKind::Track(ti),
+                name: t.name.clone(),
+                sub: t.instrument.kind_name().to_string(),
+                color: track_color(&t.name, t.instrument.kind_name()),
+                volume_db: t.volume_db,
+                pan: t.pan,
+                mute: t.mute,
+                solo: t.solo,
+                out: t.output.clone().unwrap_or_else(|| "master".into()),
+                sends: t.sends.iter().map(|s| (s.bus.clone(), s.db)).collect(),
+                inserts: t
+                    .effects
+                    .iter()
+                    .map(|e| (e.type_name(), e.bypassed()))
+                    .collect(),
+            })
+            .collect();
+        strips.extend(p.buses.iter().map(|b| {
+            StripData {
+                kind: StripKind::Bus,
+                name: b.name.clone(),
+                sub: "bus".into(),
+                color: ACCENT2,
+                volume_db: b.volume_db,
+                pan: b.pan,
+                mute: b.mute,
+                solo: false,
+                out: b.output.clone().unwrap_or_else(|| "master".into()),
+                sends: Vec::new(),
+                inserts: b
+                    .effects
+                    .iter()
+                    .map(|e| (e.type_name(), e.bypassed()))
+                    .collect(),
+            }
+        }));
         ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            let scroll_w = ui.available_width() - 158.0;
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let scroll_w = ui.available_width() - MASTER_W - 8.0;
             ui.allocate_ui(Vec2::new(scroll_w, h), |ui| {
                 egui::ScrollArea::horizontal()
                     .id_salt("mixer")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.horizontal_top(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            for (ti, t) in p.tracks.iter().enumerate() {
-                                let color = track_color(&t.name, t.instrument.kind_name());
-                                let out = t.output.clone().unwrap_or_else(|| "master".into());
-                                let sends: Vec<(String, f32)> =
-                                    t.sends.iter().map(|s| (s.bus.clone(), s.db)).collect();
-                                self.strip(
-                                    ui,
-                                    p,
-                                    h,
-                                    StripKind::Track(ti),
-                                    &t.name,
-                                    t.instrument.kind_name(),
-                                    color,
-                                    t.volume_db,
-                                    t.pan,
-                                    t.mute,
-                                    t.solo,
-                                    &out,
-                                    &sends,
-                                    pos,
-                                );
-                            }
-                            if !p.buses.is_empty() {
-                                let (r, _) =
-                                    ui.allocate_exact_size(Vec2::new(10.0, h), Sense::hover());
-                                ui.painter().line_segment(
-                                    [
-                                        Pos2::new(r.center().x, r.top() + 10.0),
-                                        Pos2::new(r.center().x, r.bottom() - 10.0),
-                                    ],
-                                    Stroke::new(1.0_f32, LINE),
-                                );
-                            }
-                            for b in p.buses.iter() {
-                                let fxs: Vec<String> =
-                                    b.effects.iter().map(|e| e.type_name()).collect();
-                                let label = if fxs.is_empty() {
-                                    "bus".to_string()
-                                } else {
-                                    fxs.join(" / ")
-                                };
-                                self.strip(
-                                    ui,
-                                    p,
-                                    h,
-                                    StripKind::Bus,
-                                    &b.name,
-                                    &label,
-                                    ACCENT2,
-                                    b.volume_db,
-                                    b.pan,
-                                    b.mute,
-                                    false,
-                                    "master",
-                                    &[],
-                                    pos,
-                                );
+                            ui.spacing_mut().item_spacing.x = 1.0;
+                            for s in &strips {
+                                self.strip(ui, p, h, s, &bus_names, pos);
                             }
                         });
                     });
@@ -158,377 +196,480 @@ impl Studio {
         });
     }
 
+    fn strip_meter_levels(&self, name: &str, pos: Option<f32>) -> ((f32, f32), f32) {
+        self.rendered
+            .as_ref()
+            .and_then(|r| {
+                r.strips
+                    .iter()
+                    .find(|m| m.name == name)
+                    .map(|m| (m.level_at(pos), m.peak_db))
+            })
+            .unwrap_or(((-120.0, -120.0), -120.0))
+    }
+
     fn strip(
         &mut self,
         ui: &mut egui::Ui,
         p: &Project,
         h: f32,
-        kind: StripKind,
-        name: &str,
-        sub: &str,
-        color: Color32,
-        volume_db: f32,
-        pan: f32,
-        mute: bool,
-        solo: bool,
-        out: &str,
-        sends: &[(String, f32)],
+        s: &StripData,
+        buses: &[String],
         pos: Option<f32>,
     ) {
-        let is_bus = matches!(kind, StripKind::Bus);
-        let selected = matches!(kind, StripKind::Track(i) if i == self.selected);
-        let meter = self.rendered.as_ref().and_then(|r| {
-            r.strips
-                .iter()
-                .find(|m| m.name == name && (m.name != "master"))
-                .map(|m| (m.level_at(pos), m.peak_db))
-        });
-        let frame = egui::Frame::none()
-            .fill(if selected {
-                Color32::from_rgb(30, 28, 52)
+        let t = Tokens::DARK;
+        let is_bus = matches!(s.kind, StripKind::Bus);
+        let selected = matches!(s.kind, StripKind::Track(i) if i == self.selected);
+        let name = s.name.as_str();
+        let ((lv_l, lv_r), peak) = if name == "master" {
+            ((-120.0, -120.0), -120.0)
+        } else {
+            self.strip_meter_levels(name, pos)
+        };
+        let (r, _) = ui.allocate_exact_size(Vec2::new(STRIP_W, h), Sense::hover());
+        let pt = ui.painter().clone();
+        pt.rect_filled(
+            r,
+            0.0,
+            if selected {
+                Color32::from_rgb(54, 58, 64)
             } else {
-                PANEL
-            })
-            .rounding(10.0)
-            .stroke(Stroke::new(
-                1.0_f32,
-                if selected {
-                    ACCENT.gamma_multiply(0.7)
+                t.strip_bg
+            },
+        );
+        pt.rect_filled(
+            Rect::from_min_size(r.min, Vec2::new(STRIP_W, 4.0)),
+            0.0,
+            s.color,
+        );
+        let x0 = r.min.x + 4.0;
+        let iw = STRIP_W - 8.0;
+        let mut y = r.min.y + 8.0;
+        // kind line
+        pt.text(
+            Pos2::new(r.center().x, y + 5.0),
+            Align2::CENTER_CENTER,
+            &s.sub,
+            FontId::proportional(9.0),
+            if is_bus { ACCENT2 } else { t.text_dim },
+        );
+        y += 14.0;
+        // INSERTS
+        let sec = Rect::from_min_size(
+            Pos2::new(x0, y),
+            Vec2::new(iw, 16.0 + INSERT_ROWS as f32 * 17.0),
+        );
+        let area = section(&pt, sec, "INSERTS");
+        for k in 0..INSERT_ROWS {
+            let sr = slot_rect(area, k);
+            let ins = s.inserts.get(k);
+            let resp = ui.interact(sr, ui.id().with(("ins", name, k)), Sense::click());
+            let fill = match ins {
+                Some((_, true)) => Color32::from_rgb(70, 56, 30),
+                Some(_) => Color32::from_rgb(52, 62, 80),
+                None => t.slot_bg,
+            };
+            pt.rect(
+                sr,
+                2.0,
+                if resp.hovered() {
+                    fill.gamma_multiply(1.3)
                 } else {
-                    LINE
+                    fill
                 },
-            ))
-            .inner_margin(egui::Margin::symmetric(8.0, 8.0));
-        let resp = frame.show(ui, |ui| {
-            ui.vertical(|ui| {
-                ui.set_width(STRIP_W - 16.0);
-                ui.set_max_width(STRIP_W - 16.0);
-                ui.set_height(h - 18.0);
-                ui.spacing_mut().item_spacing.y = 4.0;
-                // header
-                let (hr, hresp) =
-                    ui.allocate_exact_size(Vec2::new(STRIP_W - 16.0, 34.0), Sense::click());
-                let pt = ui.painter();
-                pt.rect_filled(
-                    Rect::from_min_size(hr.min, Vec2::new(hr.width(), 3.0)),
+                Stroke::new(1.0_f32, Color32::from_rgb(16, 16, 16)),
+            );
+            match ins {
+                Some((label, bypass)) => {
+                    pt.with_clip_rect(sr).text(
+                        sr.center(),
+                        Align2::CENTER_CENTER,
+                        label,
+                        FontId::proportional(10.0),
+                        if *bypass { t.text_dim } else { t.text },
+                    );
+                    let resp = resp.on_hover_text(format!(
+                        "{label}{} · click: edit in the inspector",
+                        if *bypass { " (bypassed)" } else { "" }
+                    ));
+                    if resp.clicked() {
+                        if let StripKind::Track(i) = s.kind {
+                            self.selected = i;
+                        }
+                    }
+                }
+                None => {
+                    pt.circle_filled(Pos2::new(sr.min.x + 6.0, sr.center().y), 1.5, t.text_dim);
+                }
+            }
+        }
+        if s.inserts.len() > INSERT_ROWS {
+            pt.text(
+                Pos2::new(sec.max.x - 3.0, sec.min.y + 7.0),
+                Align2::RIGHT_CENTER,
+                format!("+{}", s.inserts.len() - INSERT_ROWS),
+                FontId::proportional(8.5),
+                ACCENT,
+            );
+        }
+        y = sec.max.y + 4.0;
+        // SENDS (drag horizontally to change)
+        let sec = Rect::from_min_size(
+            Pos2::new(x0, y),
+            Vec2::new(iw, 16.0 + SEND_ROWS as f32 * 17.0),
+        );
+        let area = section(&pt, sec, "SENDS");
+        for k in 0..SEND_ROWS {
+            let sr = slot_rect(area, k);
+            let Some((bus, db)) = s.sends.get(k) else {
+                pt.rect(
+                    sr,
                     2.0,
-                    color,
+                    t.slot_bg,
+                    Stroke::new(1.0_f32, Color32::from_rgb(16, 16, 16)),
                 );
-                pt.text(
-                    hr.left_top() + Vec2::new(0.0, 10.0),
-                    Align2::LEFT_TOP,
-                    name,
-                    FontId::proportional(13.0),
-                    if mute { DIM } else { TEXT },
-                );
-                let mut subtxt = sub.to_string();
-                if subtxt.len() > 14 {
-                    subtxt.truncate(13);
-                    subtxt.push('.');
-                }
-                pt.text(
-                    hr.left_top() + Vec2::new(0.0, 25.0),
-                    Align2::LEFT_TOP,
-                    subtxt,
-                    FontId::proportional(9.5),
-                    if is_bus {
-                        ACCENT2.gamma_multiply(0.8)
-                    } else {
-                        DIM
-                    },
-                );
-                if hresp.clicked() {
-                    if let StripKind::Track(i) = kind {
-                        self.selected = i;
-                    }
-                }
-                // routing chip
-                let (orr, _) =
-                    ui.allocate_exact_size(Vec2::new(STRIP_W - 16.0, 17.0), Sense::hover());
-                let pt = ui.painter();
-                pt.rect_filled(orr, 5.0, BG);
-                pt.text(
-                    orr.left_center() + Vec2::new(6.0, 0.0),
-                    Align2::LEFT_CENTER,
-                    "OUT",
-                    FontId::proportional(8.5),
-                    DIM,
-                );
-                pt.text(
-                    orr.right_center() - Vec2::new(6.0, 0.0),
-                    Align2::RIGHT_CENTER,
-                    out,
-                    FontId::proportional(10.0),
-                    if out == "master" { TEXT } else { ACCENT2 },
-                );
-                // sends (drag horizontally to change)
-                let rows = 2usize;
-                for k in 0..rows {
-                    let (sr, _) =
-                        ui.allocate_exact_size(Vec2::new(STRIP_W - 16.0, 16.0), Sense::hover());
-                    let Some((bus, db)) = sends.get(k) else {
-                        ui.painter().rect_stroke(
-                            sr,
-                            4.0,
-                            Stroke::new(1.0_f32, LINE.gamma_multiply(0.5)),
-                        );
-                        ui.painter().text(
-                            sr.center(),
-                            Align2::CENTER_CENTER,
-                            if k == 0 && !is_bus { "no sends" } else { "" },
-                            FontId::proportional(9.0),
-                            DIM.gamma_multiply(0.6),
-                        );
-                        continue;
-                    };
-                    let id = egui::Id::new(("send", name.to_string(), bus.clone()));
-                    let r = ui.interact(sr, id, Sense::drag());
-                    let mut v: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(*db);
-                    if r.dragged() {
-                        v = (v + r.drag_delta().x * 0.25).clamp(-60.0, 6.0);
-                        ui.ctx().data_mut(|d| d.insert_temp(id, v));
-                        self.dragging = true;
-                    }
-                    if r.drag_stopped() {
-                        ui.ctx().data_mut(|d| d.remove::<f32>(id));
-                        self.call("set_send", json!({"track": name, "bus": bus, "db": v}));
-                        self.dragging = false;
-                    }
-                    let pt = ui.painter();
-                    pt.rect_filled(sr, 4.0, BG);
-                    let frac = meter_pos(v);
-                    pt.rect_filled(
-                        Rect::from_min_size(sr.min, Vec2::new(sr.width() * frac, sr.height())),
-                        4.0,
-                        ACCENT2.gamma_multiply(0.28),
-                    );
-                    pt.text(
-                        sr.left_center() + Vec2::new(5.0, 0.0),
-                        Align2::LEFT_CENTER,
-                        bus,
-                        FontId::proportional(9.5),
-                        TEXT,
-                    );
-                    pt.text(
-                        sr.right_center() - Vec2::new(5.0, 0.0),
-                        Align2::RIGHT_CENTER,
-                        format!("{v:.0}"),
-                        FontId::monospace(9.5),
-                        ACCENT2,
-                    );
-                    r.on_hover_text(format!("send to {bus}: drag to change"));
-                }
-                // pan knob (centered)
-                let pid = egui::Id::new(("pan", name.to_string()));
-                let mut pv: f32 = ui.ctx().data(|d| d.get_temp(pid)).unwrap_or(pan);
-                let before = pv;
-                let done = ui
-                    .horizontal(|ui| {
-                        ui.add_space((STRIP_W - 16.0 - 50.0) / 2.0);
-                        knob(ui, "pan", &mut pv, -1.0, 1.0, false, color).1
-                    })
-                    .inner;
-                if (pv - before).abs() > 1e-6 {
-                    ui.ctx().data_mut(|d| d.insert_temp(pid, pv));
-                    self.dragging = true;
-                }
-                if done {
-                    ui.ctx().data_mut(|d| d.remove::<f32>(pid));
-                    self.call("set_mixer", json!({"track": name, "pan": pv}));
-                    self.dragging = false;
-                }
-                // meter + fader
-                let fh = (ui.available_height() - 44.0).max(80.0);
-                let vid = egui::Id::new(("fader", name.to_string()));
-                let mut vv: f32 = ui.ctx().data(|d| d.get_temp(vid)).unwrap_or(volume_db);
-                let auto_vol = p.automation.iter().any(|l| {
-                    l.enabled && l.target.eq_ignore_ascii_case(name) && l.param == "volume"
-                });
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    ui.add_space(4.0);
-                    let (mr, _) = ui.allocate_exact_size(Vec2::new(22.0, fh), Sense::hover());
-                    let ((l, r), peak) = meter.unwrap_or(((-120.0, -120.0), -120.0));
-                    super::widgets::meter(ui.painter(), mr, l, r, peak);
-                    let (resp, done) = fader(
-                        ui,
-                        vid,
-                        &mut vv,
-                        Vec2::new(32.0, fh),
-                        if auto_vol { WARN } else { color },
-                    );
-                    if resp.dragged() {
-                        ui.ctx().data_mut(|d| d.insert_temp(vid, vv));
-                        self.dragging = true;
-                    }
-                    if done {
-                        ui.ctx().data_mut(|d| d.remove::<f32>(vid));
-                        self.call("set_mixer", json!({"track": name, "volume_db": vv}));
-                        self.dragging = false;
-                    }
-                    if auto_vol {
-                        resp.on_hover_text("volume is automated: the lane overrides this fader");
-                    }
-                });
-                // readout + mute/solo
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    ui.label(
-                        RichText::new(fmt_db(vv))
-                            .monospace()
-                            .size(11.0)
-                            .color(if auto_vol { WARN } else { TEXT }),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if !is_bus && mini_pill(ui, "S", solo, GOOD).clicked() {
-                            self.call("set_mixer", json!({"track": name, "solo": !solo}));
+                continue;
+            };
+            let id = egui::Id::new(("send", name.to_string(), bus.clone()));
+            let rr = ui.interact(sr, id, Sense::drag());
+            let mut v: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(*db);
+            if rr.dragged() {
+                v = (v + rr.drag_delta().x * 0.25).clamp(-60.0, 6.0);
+                ui.ctx().data_mut(|d| d.insert_temp(id, v));
+                self.dragging = true;
+            }
+            if rr.drag_stopped() {
+                ui.ctx().data_mut(|d| d.remove::<f32>(id));
+                self.call("set_send", json!({"track": name, "bus": bus, "db": v}));
+                self.dragging = false;
+            }
+            pt.rect(
+                sr,
+                2.0,
+                t.slot_bg,
+                Stroke::new(1.0_f32, Color32::from_rgb(16, 16, 16)),
+            );
+            let frac = fader_db_to_pos(v);
+            pt.rect_filled(
+                Rect::from_min_size(sr.min, Vec2::new(sr.width() * frac, sr.height())).shrink(1.0),
+                1.0,
+                t.accent_dark,
+            );
+            pt.with_clip_rect(sr).text(
+                sr.left_center() + Vec2::new(4.0, 0.0),
+                Align2::LEFT_CENTER,
+                bus,
+                FontId::proportional(9.5),
+                t.text,
+            );
+            pt.text(
+                sr.right_center() - Vec2::new(3.0, 0.0),
+                Align2::RIGHT_CENTER,
+                format!("{v:.0}"),
+                FontId::monospace(9.0),
+                t.counter_text,
+            );
+            rr.on_hover_text(format!("send to {bus}: drag to change"));
+        }
+        y = sec.max.y + 4.0;
+        // I / O
+        let sec = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(iw, 16.0 + 18.0));
+        let area = section(&pt, sec, "OUTPUT");
+        let out_r = Rect::from_min_size(area.min, Vec2::new(iw - 4.0, 16.0));
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(out_r));
+        let resp = selector_box(
+            &mut c,
+            out_r.width(),
+            out_r.height(),
+            &s.out,
+            if s.out == "master" { t.text } else { ACCENT2 },
+        );
+        let popup = ui.id().with(("route", name));
+        if resp.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(popup));
+        }
+        egui::popup_below_widget(
+            ui,
+            popup,
+            &resp,
+            egui::PopupCloseBehavior::CloseOnClick,
+            |ui| {
+                ui.set_min_width(110.0);
+                let dests = std::iter::once("master".to_string())
+                    .chain(buses.iter().filter(|b| b.as_str() != name).cloned());
+                for d in dests {
+                    if ui.selectable_label(d == s.out, &d).clicked() && d != s.out {
+                        if is_bus {
+                            self.call("route_bus", json!({"bus": name, "destination": d}));
+                        } else {
+                            self.call("route_track", json!({"track": name, "bus": d}));
                         }
-                        if mini_pill(ui, "M", mute, WARN).clicked() {
-                            self.call("set_mixer", json!({"track": name, "mute": !mute}));
-                        }
-                    });
-                });
-                let pk = meter.map(|m| m.1).unwrap_or(-120.0);
-                ui.label(
-                    RichText::new(format!("peak {}", fmt_db(pk)))
-                        .size(9.5)
-                        .color(if pk > -0.5 { HOT } else { DIM }),
-                );
-            })
-        });
-        let _ = resp;
+                    }
+                }
+            },
+        );
+        y = sec.max.y + 6.0;
+        // pan knob + counter readout
+        let ks = 34.0;
+        let pid = egui::Id::new(("pan", name.to_string()));
+        let mut pv: f32 = ui.ctx().data(|d| d.get_temp(pid)).unwrap_or(s.pan);
+        let kr = Rect::from_center_size(Pos2::new(r.center().x, y + ks * 0.5), Vec2::splat(ks));
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(kr));
+        let (kresp, changed) = pan_knob(&mut c, ks, &mut pv, "Pan (drag; double-click centres)");
+        if changed {
+            ui.ctx().data_mut(|d| d.insert_temp(pid, pv));
+            self.dragging = true;
+        }
+        if kresp.drag_stopped() || kresp.double_clicked() {
+            ui.ctx().data_mut(|d| d.remove::<f32>(pid));
+            self.call("set_mixer", json!({"track": name, "pan": pv}));
+            self.dragging = false;
+        }
+        let pr = Rect::from_center_size(
+            Pos2::new(r.center().x, y + ks + 8.0),
+            Vec2::new(ks + 10.0, 13.0),
+        );
+        counter_box(&pt, pr, &pan_text(pv), 9.5);
+        y += ks + 20.0;
+        // Solo / Mute
+        let bw = (iw - 6.0) / 2.0;
+        let mut row = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_size(Pos2::new(x0, y), Vec2::new(iw, 20.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Min)),
+        );
+        row.spacing_mut().item_spacing.x = 6.0;
+        if is_bus {
+            row.add_space(bw + 6.0);
+        } else if text_toggle(&mut row, Vec2::new(bw, 18.0), "S", s.solo, t.solo, "Solo").clicked()
+        {
+            self.call("set_mixer", json!({"track": name, "solo": !s.solo}));
+        }
+        if text_toggle(&mut row, Vec2::new(bw, 18.0), "M", s.mute, t.mute, "Mute").clicked() {
+            self.call("set_mixer", json!({"track": name, "mute": !s.mute}));
+        }
+        y += 26.0;
+        // fader + stereo meter
+        let bottom_h = 58.0;
+        let fh = (r.max.y - bottom_h - y).max(90.0);
+        let vid = egui::Id::new(("fader", name.to_string()));
+        let mut vv: f32 = ui.ctx().data(|d| d.get_temp(vid)).unwrap_or(s.volume_db);
+        let auto_vol = p
+            .automation
+            .iter()
+            .any(|l| l.enabled && l.target.eq_ignore_ascii_case(name) && l.param == "volume");
+        let fr = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(iw * 0.6, fh));
+        let (fresp, done) = console_fader(ui, fr, vid, &mut vv);
+        if fresp.dragged() {
+            ui.ctx().data_mut(|d| d.insert_temp(vid, vv));
+            self.dragging = true;
+        }
+        if done {
+            ui.ctx().data_mut(|d| d.remove::<f32>(vid));
+            self.call("set_mixer", json!({"track": name, "volume_db": vv}));
+            self.dragging = false;
+        }
+        if auto_vol {
+            fresp.on_hover_text("volume is automated: the lane overrides this fader");
+        }
+        let mr = Rect::from_min_max(
+            Pos2::new(fr.max.x + 4.0, fr.min.y + 6.0),
+            Pos2::new(x0 + iw - 2.0, fr.max.y - 6.0),
+        );
+        let mw = mr.width() / 2.0 - 1.0;
+        let clip = peak > -0.1;
+        zoned_meter(
+            &pt,
+            Rect::from_min_size(mr.min, Vec2::new(mw, mr.height())),
+            lv_l,
+            peak,
+            clip,
+        );
+        zoned_meter(
+            &pt,
+            Rect::from_min_size(
+                Pos2::new(mr.min.x + mw + 2.0, mr.min.y),
+                Vec2::new(mw, mr.height()),
+            ),
+            lv_r,
+            peak,
+            clip,
+        );
+        // dB counter, peak, name plate
+        let vr = Rect::from_min_size(
+            Pos2::new(x0 + 4.0, r.max.y - bottom_h + 4.0),
+            Vec2::new(iw - 8.0, 15.0),
+        );
+        counter_box(&pt, vr, &db_text(vv), 10.5);
+        if auto_vol {
+            pt.rect_stroke(vr, 2.0, Stroke::new(1.0_f32, t.auto_read));
+        }
+        pt.text(
+            Pos2::new(vr.center().x, vr.max.y + 8.0),
+            Align2::CENTER_CENTER,
+            format!("pk {}", fmt_db(peak)),
+            FontId::proportional(9.0),
+            if clip { HOT } else { t.text_dim },
+        );
+        let nr = Rect::from_min_size(Pos2::new(x0, r.max.y - 24.0), Vec2::new(iw, 18.0));
+        name_plate(&pt, nr, name, selected);
+        let nresp = ui.interact(nr, ui.id().with(("plate", name)), Sense::click());
+        if nresp.clicked() {
+            if let StripKind::Track(i) = s.kind {
+                self.selected = i;
+            }
+        }
+        pt.line_segment(
+            [Pos2::new(r.max.x, r.min.y), Pos2::new(r.max.x, r.max.y)],
+            Stroke::new(1.0_f32, t.border),
+        );
     }
 
     fn master_strip(&mut self, ui: &mut egui::Ui, p: &Project, h: f32, pos: Option<f32>) {
-        let w = 150.0;
-        let (lv, peak) = self
-            .rendered
-            .as_ref()
-            .and_then(|r| {
-                r.strips
-                    .iter()
-                    .find(|m| m.name == "master")
-                    .map(|m| (m.level_at(pos), m.peak_db))
-            })
-            .unwrap_or(((-120.0, -120.0), -120.0));
+        let t = Tokens::DARK;
+        let ((lv_l, lv_r), peak) = self.strip_meter_levels("master", pos);
         let loud = self.rendered.as_ref().map(|r| r.report.loudness.clone());
-        egui::Frame::none()
-            .fill(Color32::from_rgb(26, 22, 44))
-            .rounding(10.0)
-            .stroke(Stroke::new(1.0_f32, ACCENT.gamma_multiply(0.6)))
-            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
-            .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(w - 20.0);
-                    ui.set_height(h - 18.0);
-                    ui.spacing_mut().item_spacing.y = 4.0;
-                    let (hr, _) = ui.allocate_exact_size(Vec2::new(w - 20.0, 34.0), Sense::hover());
-                    let pt = ui.painter();
-                    pt.rect_filled(
-                        Rect::from_min_size(hr.min, Vec2::new(hr.width(), 3.0)),
-                        2.0,
-                        ACCENT,
-                    );
-                    pt.text(
-                        hr.left_top() + Vec2::new(0.0, 10.0),
-                        Align2::LEFT_TOP,
-                        "MASTER",
-                        FontId::proportional(13.0),
-                        TEXT,
-                    );
-                    pt.text(
-                        hr.left_top() + Vec2::new(0.0, 25.0),
-                        Align2::LEFT_TOP,
-                        p.master_effects
-                            .iter()
-                            .map(|e| e.type_name())
-                            .collect::<Vec<_>>()
-                            .join(" / "),
-                        FontId::proportional(9.5),
-                        ACCENT.gamma_multiply(1.3),
-                    );
-                    if let Some(l) = &loud {
-                        let rows = [
-                            (
-                                "LUFS",
-                                format!("{:.1}", l.integrated_lufs),
-                                if (l.integrated_lufs + 14.0).abs() <= 2.0 {
-                                    GOOD
-                                } else {
-                                    WARN
-                                },
-                            ),
-                            (
-                                "TRUE PK",
-                                format!("{:.1}", l.true_peak_dbtp),
-                                if l.true_peak_dbtp <= -1.0 {
-                                    GOOD
-                                } else if l.true_peak_dbtp <= 0.0 {
-                                    WARN
-                                } else {
-                                    HOT
-                                },
-                            ),
-                            ("LRA", format!("{:.1} LU", l.loudness_range_lu), TEXT),
-                            (
-                                "MONO",
-                                format!("{:+.1} dB", l.mono_fold_db),
-                                if l.mono_fold_db > -3.0 { GOOD } else { WARN },
-                            ),
-                        ];
-                        for (k, v, c) in rows {
-                            let (r, _) =
-                                ui.allocate_exact_size(Vec2::new(w - 20.0, 17.0), Sense::hover());
-                            let pt = ui.painter();
-                            pt.rect_filled(r, 5.0, BG);
-                            pt.text(
-                                r.left_center() + Vec2::new(6.0, 0.0),
-                                Align2::LEFT_CENTER,
-                                k,
-                                FontId::proportional(8.5),
-                                DIM,
-                            );
-                            pt.text(
-                                r.right_center() - Vec2::new(6.0, 0.0),
-                                Align2::RIGHT_CENTER,
-                                v,
-                                FontId::monospace(10.5),
-                                c,
-                            );
-                        }
-                    }
-                    let fh = (ui.available_height() - 26.0).max(80.0);
-                    let vid = egui::Id::new("fader-master");
-                    let mut vv: f32 = ui
-                        .ctx()
-                        .data(|d| d.get_temp(vid))
-                        .unwrap_or(p.master_volume_db);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        ui.add_space(20.0);
-                        let (mr, _) = ui.allocate_exact_size(Vec2::new(30.0, fh), Sense::hover());
-                        super::widgets::meter(ui.painter(), mr, lv.0, lv.1, peak);
-                        let (resp, done) = fader(ui, vid, &mut vv, Vec2::new(36.0, fh), ACCENT);
-                        if resp.dragged() {
-                            ui.ctx().data_mut(|d| d.insert_temp(vid, vv));
-                            self.dragging = true;
-                        }
-                        if done {
-                            ui.ctx().data_mut(|d| d.remove::<f32>(vid));
-                            self.call("set_mixer", json!({"track": "master", "volume_db": vv}));
-                            self.dragging = false;
-                        }
-                    });
-                    ui.label(
-                        RichText::new(format!("{} dB", fmt_db(vv)))
-                            .monospace()
-                            .size(11.0),
-                    );
-                })
-            });
+        let (r, _) = ui.allocate_exact_size(Vec2::new(MASTER_W, h), Sense::hover());
+        let pt = ui.painter().clone();
+        pt.rect_filled(r, 0.0, Color32::from_rgb(44, 44, 46));
+        pt.rect_filled(
+            Rect::from_min_size(r.min, Vec2::new(MASTER_W, 4.0)),
+            0.0,
+            ACCENT,
+        );
+        let x0 = r.min.x + 5.0;
+        let iw = MASTER_W - 10.0;
+        let mut y = r.min.y + 8.0;
+        pt.with_clip_rect(r).text(
+            Pos2::new(r.center().x, y + 5.0),
+            Align2::CENTER_CENTER,
+            p.master_effects
+                .iter()
+                .map(|e| e.type_name())
+                .collect::<Vec<_>>()
+                .join(" / "),
+            FontId::proportional(9.0),
+            ACCENT,
+        );
+        y += 14.0;
+        if let Some(l) = &loud {
+            let rows = [
+                (
+                    "LUFS",
+                    format!("{:.1}", l.integrated_lufs),
+                    if (l.integrated_lufs + 14.0).abs() <= 2.0 {
+                        GOOD
+                    } else {
+                        WARN
+                    },
+                ),
+                (
+                    "TRUE PK",
+                    format!("{:.1}", l.true_peak_dbtp),
+                    if l.true_peak_dbtp <= -1.0 {
+                        GOOD
+                    } else if l.true_peak_dbtp <= 0.0 {
+                        WARN
+                    } else {
+                        HOT
+                    },
+                ),
+                ("LRA", format!("{:.1} LU", l.loudness_range_lu), TEXT),
+                (
+                    "MONO",
+                    format!("{:+.1} dB", l.mono_fold_db),
+                    if l.mono_fold_db > -3.0 { GOOD } else { WARN },
+                ),
+            ];
+            let sec = Rect::from_min_size(
+                Pos2::new(x0, y),
+                Vec2::new(iw, 16.0 + rows.len() as f32 * 17.0),
+            );
+            let area = section(&pt, sec, "LOUDNESS");
+            for (k, (label, v, c)) in rows.into_iter().enumerate() {
+                let sr = slot_rect(area, k);
+                pt.rect_filled(sr, 2.0, t.counter_bg);
+                pt.text(
+                    sr.left_center() + Vec2::new(5.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    label,
+                    FontId::proportional(8.5),
+                    t.text_dim,
+                );
+                pt.text(
+                    sr.right_center() - Vec2::new(5.0, 0.0),
+                    Align2::RIGHT_CENTER,
+                    v,
+                    FontId::monospace(10.0),
+                    c,
+                );
+            }
+            y = sec.max.y + 6.0;
+        }
+        let bottom_h = 58.0;
+        let fh = (r.max.y - bottom_h - y).max(90.0);
+        let vid = egui::Id::new("fader-master");
+        let mut vv: f32 = ui
+            .ctx()
+            .data(|d| d.get_temp(vid))
+            .unwrap_or(p.master_volume_db);
+        let fr = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(54.0, fh));
+        let (fresp, done) = console_fader(ui, fr, vid, &mut vv);
+        if fresp.dragged() {
+            ui.ctx().data_mut(|d| d.insert_temp(vid, vv));
+            self.dragging = true;
+        }
+        if done {
+            ui.ctx().data_mut(|d| d.remove::<f32>(vid));
+            self.call("set_mixer", json!({"track": "master", "volume_db": vv}));
+            self.dragging = false;
+        }
+        let mr = Rect::from_min_max(
+            Pos2::new(fr.max.x + 6.0, fr.min.y + 6.0),
+            Pos2::new(fr.max.x + 40.0, fr.max.y - 6.0),
+        );
+        let mw = mr.width() / 2.0 - 1.0;
+        let clip = peak > -0.1;
+        zoned_meter(
+            &pt,
+            Rect::from_min_size(mr.min, Vec2::new(mw, mr.height())),
+            lv_l,
+            peak,
+            clip,
+        );
+        zoned_meter(
+            &pt,
+            Rect::from_min_size(
+                Pos2::new(mr.min.x + mw + 2.0, mr.min.y),
+                Vec2::new(mw, mr.height()),
+            ),
+            lv_r,
+            peak,
+            clip,
+        );
+        meter_scale(
+            &pt,
+            Rect::from_min_max(
+                Pos2::new(mr.max.x + 2.0, mr.min.y),
+                Pos2::new(r.max.x - 2.0, mr.max.y),
+            ),
+        );
+        let vr = Rect::from_min_size(
+            Pos2::new(x0 + 10.0, r.max.y - bottom_h + 4.0),
+            Vec2::new(iw - 20.0, 15.0),
+        );
+        counter_box(&pt, vr, &format!("{} dB", db_text(vv)), 10.5);
+        pt.text(
+            Pos2::new(vr.center().x, vr.max.y + 8.0),
+            Align2::CENTER_CENTER,
+            format!("pk {}", fmt_db(peak)),
+            FontId::proportional(9.0),
+            if clip { HOT } else { t.text_dim },
+        );
+        let nr = Rect::from_min_size(Pos2::new(x0, r.max.y - 24.0), Vec2::new(iw, 18.0));
+        name_plate(&pt, nr, "MASTER", false);
     }
 
-    // ---------------- automation ----------------
     pub(super) fn automation_view(&mut self, ui: &mut egui::Ui, p: &Project) {
         let lanes: Vec<(usize, &AutomationLane)> = p.automation.iter().enumerate().collect();
         if let Some(sel) = &self.auto_sel {
@@ -922,9 +1063,9 @@ fn mini_pill(ui: &mut egui::Ui, text: &str, on: bool, color: Color32) -> egui::R
     let fill = if on {
         color
     } else if resp.hovered() {
-        Color32::from_rgb(44, 50, 70)
+        Color32::from_rgb(60, 60, 63)
     } else {
-        Color32::from_rgb(33, 38, 54)
+        Color32::from_rgb(58, 58, 60)
     };
     ui.painter().rect_filled(rect, 4.0, fill);
     ui.painter().text(

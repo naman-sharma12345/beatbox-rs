@@ -5,64 +5,24 @@ use eframe::egui::{
 };
 use std::f32::consts::PI;
 
-pub const BG: Color32 = Color32::from_rgb(11, 13, 19);
-pub const PANEL: Color32 = Color32::from_rgb(18, 21, 30);
-pub const PANEL2: Color32 = Color32::from_rgb(24, 28, 40);
-pub const LINE: Color32 = Color32::from_rgb(38, 43, 60);
-pub const TEXT: Color32 = Color32::from_rgb(226, 230, 240);
-pub const DIM: Color32 = Color32::from_rgb(128, 136, 160);
-pub const ACCENT: Color32 = Color32::from_rgb(139, 92, 246);
-pub const ACCENT2: Color32 = Color32::from_rgb(34, 211, 238);
-pub const GOOD: Color32 = Color32::from_rgb(74, 222, 128);
-pub const WARN: Color32 = Color32::from_rgb(251, 191, 36);
-pub const HOT: Color32 = Color32::from_rgb(255, 92, 122);
+// The studio palette, mapped onto the ported SoundCraft design tokens (see theme.rs):
+// neutral charcoal surfaces, one blue accent, console green for counters.
+use super::theme::Tokens;
+pub const BG: Color32 = Color32::from_rgb(24, 24, 25);
+pub const PANEL: Color32 = Tokens::DARK.panel_bg;
+pub const PANEL2: Color32 = Tokens::DARK.panel_bg2;
+pub const LINE: Color32 = Color32::from_rgb(58, 58, 61);
+pub const TEXT: Color32 = Tokens::DARK.text;
+pub const DIM: Color32 = Tokens::DARK.text_dim;
+pub const ACCENT: Color32 = Tokens::DARK.accent;
+pub const ACCENT2: Color32 = Tokens::DARK.counter_text;
+pub const GOOD: Color32 = Tokens::DARK.meter_green;
+pub const WARN: Color32 = Tokens::DARK.mute;
+pub const HOT: Color32 = Tokens::DARK.rec;
+pub const SOLO: Color32 = Tokens::DARK.solo;
 
 pub fn apply_theme(ctx: &egui::Context) {
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = PANEL;
-    v.window_fill = PANEL;
-    v.extreme_bg_color = BG;
-    v.faint_bg_color = PANEL2;
-    v.override_text_color = Some(TEXT);
-    v.selection.bg_fill = ACCENT.gamma_multiply(0.6);
-    v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
-    v.window_rounding = egui::Rounding::same(10.0);
-    v.widgets.noninteractive.bg_fill = PANEL2;
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE);
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT);
-    for w in [
-        &mut v.widgets.inactive,
-        &mut v.widgets.hovered,
-        &mut v.widgets.active,
-        &mut v.widgets.open,
-    ] {
-        w.rounding = egui::Rounding::same(6.0);
-    }
-    v.widgets.inactive.bg_fill = PANEL2;
-    v.widgets.inactive.weak_bg_fill = PANEL2;
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE);
-    v.widgets.hovered.bg_fill = Color32::from_rgb(34, 39, 56);
-    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(34, 39, 56);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, ACCENT.gamma_multiply(0.7));
-    v.widgets.active.bg_fill = ACCENT.gamma_multiply(0.5);
-    v.widgets.active.weak_bg_fill = ACCENT.gamma_multiply(0.5);
-    ctx.set_visuals(v);
-    let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = Vec2::new(8.0, 6.0);
-    style.spacing.button_padding = Vec2::new(10.0, 5.0);
-    style
-        .text_styles
-        .insert(egui::TextStyle::Body, FontId::proportional(13.5));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Button, FontId::proportional(13.5));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Small, FontId::proportional(11.0));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Heading, FontId::proportional(18.0));
-    ctx.set_style(style);
+    super::theme::apply(ctx);
 }
 
 pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -114,8 +74,8 @@ pub fn section_label(ui: &mut Ui, text: &str) {
 pub fn card() -> egui::Frame {
     egui::Frame::none()
         .fill(PANEL2)
-        .rounding(egui::Rounding::same(10.0))
-        .stroke(Stroke::new(1.0_f32, LINE))
+        .rounding(egui::Rounding::same(4.0))
+        .stroke(Stroke::new(1.0_f32, Tokens::DARK.border))
         .inner_margin(egui::Margin::same(10.0))
 }
 
@@ -177,14 +137,14 @@ pub fn knob(
         c,
         r - 3.0,
         if hover {
-            Color32::from_rgb(40, 46, 66)
+            Color32::from_rgb(54, 54, 57)
         } else {
-            Color32::from_rgb(31, 36, 52)
+            Color32::from_rgb(42, 42, 44)
         },
     );
     painter.add(Shape::line(
         arc(a0, a1, r),
-        Stroke::new(3.5_f32, Color32::from_rgb(44, 50, 70)),
+        Stroke::new(3.5_f32, Color32::from_rgb(60, 60, 63)),
     ));
     if t > 0.001 {
         painter.add(Shape::line(
@@ -244,23 +204,25 @@ fn short(label: &str) -> String {
     }
 }
 
-/// Pill-shaped toggle button (M / S style).
+/// Square console toggle (M / S style), drawn like SoundCraft's `text_toggle`.
 pub fn pill(ui: &mut Ui, text: &str, on: bool, color: Color32) -> Response {
+    let t = Tokens::DARK;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(22.0, 18.0), Sense::click());
     let fill = if on {
         color
     } else if resp.hovered() {
-        Color32::from_rgb(44, 50, 70)
+        t.button_hi
     } else {
-        Color32::from_rgb(33, 38, 54)
+        t.button
     };
-    ui.painter().rect_filled(rect, 5.0, fill);
+    ui.painter()
+        .rect(rect, 2.0, fill, Stroke::new(1.0_f32, t.button_border));
     ui.painter().text(
         rect.center(),
         Align2::CENTER_CENTER,
         text,
-        FontId::proportional(10.5),
-        if on { BG } else { DIM },
+        FontId::proportional(11.0),
+        if on { t.text_dark } else { t.text },
     );
     resp
 }
@@ -315,7 +277,7 @@ pub fn score_ring(ui: &mut Ui, score: u32) {
     };
     p.add(Shape::line(
         ring(-PI / 2.0, PI * 1.5),
-        Stroke::new(6.0_f32, Color32::from_rgb(38, 43, 60)),
+        Stroke::new(6.0_f32, Color32::from_rgb(52, 52, 54)),
     ));
     let t = score as f32 / 100.0;
     let col = if score >= 85 {
@@ -365,17 +327,17 @@ pub fn tabs(ui: &mut Ui, labels: &[&str], current: usize) -> Option<usize> {
     let total: f32 = widths.iter().sum::<f32>() + 6.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(total, h), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 9.0, PANEL);
-    p.rect_stroke(rect, 9.0, Stroke::new(1.0_f32, LINE));
+    p.rect_filled(rect, 3.0, Tokens::DARK.toolbar_bg);
+    p.rect_stroke(rect, 3.0, Stroke::new(1.0_f32, Tokens::DARK.border));
     let mut x = rect.left() + 3.0;
     for (i, (l, w)) in labels.iter().zip(widths.iter()).enumerate() {
         let r = Rect::from_min_size(Pos2::new(x, rect.top() + 3.0), Vec2::new(*w, h - 6.0));
         let resp = ui.interact(r, ui.id().with(("tab", i, *l)), Sense::click());
         let on = i == current;
         if on {
-            p.rect_filled(r, 7.0, ACCENT.gamma_multiply(0.85));
+            p.rect_filled(r, 2.0, ACCENT);
         } else if resp.hovered() {
-            p.rect_filled(r, 7.0, PANEL2);
+            p.rect_filled(r, 2.0, Tokens::DARK.button);
         }
         p.text(
             r.center(),
@@ -490,7 +452,7 @@ pub fn fader(
         if resp.hovered() || resp.dragged() {
             TEXT
         } else {
-            Color32::from_rgb(196, 202, 218)
+            Color32::from_rgb(200, 200, 202)
         },
     );
     p.line_segment(
@@ -507,8 +469,8 @@ pub fn fader(
 pub fn stat_chip(ui: &mut Ui, label: &str, value: &str, color: Color32) {
     egui::Frame::none()
         .fill(BG)
-        .rounding(7.0)
-        .stroke(Stroke::new(1.0_f32, LINE))
+        .rounding(2.0)
+        .stroke(Stroke::new(1.0_f32, Tokens::DARK.border))
         .inner_margin(egui::Margin::symmetric(8.0, 3.0))
         .show(ui, |ui| {
             ui.horizontal(|ui| {

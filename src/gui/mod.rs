@@ -4,7 +4,12 @@
 //! studio and MCP clients always see the same project. A local control server
 //! lets `beatbox mcp --connect` drive this window live.
 
+mod console;
+mod piano;
 mod player;
+mod playlist;
+mod shortcuts;
+mod theme;
 mod views;
 mod widgets;
 
@@ -59,12 +64,13 @@ pub struct Studio {
     screenshot: Option<PathBuf>,
     frames: u64,
     shot_requested: bool,
-    // central view: 0 sequencer, 1 mixer, 2 automation
+    // central view: 0 sequencer, 1 mixer, 2 automation, 3 playlist
     view: usize,
     auto_sel: Option<(String, String)>,
+    piano: piano::PianoState,
 }
 
-const VIEWS: [&str; 3] = ["SEQUENCER", "MIXER", "AUTOMATION"];
+const VIEWS: [&str; 4] = ["SEQUENCER", "MIXER", "AUTOMATION", "PLAYLIST"];
 
 pub fn run(
     engine: Engine,
@@ -109,6 +115,10 @@ pub fn run(
                 shot_requested: false,
                 view,
                 auto_sel: None,
+                piano: piano::PianoState {
+                    snap: 2,
+                    ..Default::default()
+                },
             }))
         }),
     )
@@ -364,6 +374,75 @@ impl Studio {
         }
     }
 
+    fn save(&mut self) {
+        let path = self
+            .project_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("beat.beatbox.json"));
+        self.call("save_project", json!({"path": path}));
+        self.project_path = Some(path.clone());
+        self.toast = Some((format!("Saved {}", path.display()), 0.0, true));
+    }
+
+    fn render_wav(&mut self) {
+        let r = self
+            .engine
+            .lock()
+            .unwrap()
+            .call_from("render", &json!({}), "you");
+        match r {
+            Ok(v) => {
+                self.toast = Some((
+                    format!("Rendered {}", v["path"].as_str().unwrap_or("")),
+                    0.0,
+                    true,
+                ))
+            }
+            Err(e) => self.toast = Some((format!("{e:#}"), 0.0, false)),
+        }
+    }
+
+    fn shortcut(&mut self, a: shortcuts::Action, p: &Project) {
+        use shortcuts::Action;
+        match a {
+            Action::PlayStop => {
+                if self.player.is_playing() {
+                    self.player.stop();
+                } else {
+                    self.player.play();
+                }
+            }
+            Action::Undo => self.call("undo", json!({})),
+            Action::Redo => self.call("redo", json!({})),
+            Action::Save => self.save(),
+            Action::Render => self.render_wav(),
+            Action::View(v) => {
+                if v < VIEWS.len() {
+                    self.view = v;
+                }
+            }
+            Action::PrevPattern => self.pattern = self.pattern.saturating_sub(1),
+            Action::NextPattern => {
+                self.pattern = (self.pattern + 1).min(p.patterns.len().saturating_sub(1))
+            }
+            Action::PrevTrack => self.selected = self.selected.saturating_sub(1),
+            Action::NextTrack => {
+                self.selected = (self.selected + 1).min(p.tracks.len().saturating_sub(1))
+            }
+            Action::MuteSelected => {
+                if let Some(t) = p.tracks.get(self.selected) {
+                    self.call("set_mixer", json!({"track": t.name, "mute": !t.mute}));
+                }
+            }
+            Action::SoloSelected => {
+                if let Some(t) = p.tracks.get(self.selected) {
+                    self.call("set_mixer", json!({"track": t.name, "solo": !t.solo}));
+                }
+            }
+            Action::SeekStart => self.player.seek(0.0),
+        }
+    }
+
     // ---------------- top bar ----------------
     fn top_bar(&mut self, ui: &mut egui::Ui, p: &Project, undo: (usize, usize)) {
         ui.horizontal_centered(|ui| {
@@ -385,8 +464,9 @@ impl Studio {
             let playing = self.player.is_playing();
             if transport_button(ui, playing)
                 .on_hover_text(format!(
-                    "Space to play/stop · audio: {}",
-                    self.player.device_name
+                    "audio: {}\n\nShortcuts:\n{}",
+                    self.player.device_name,
+                    shortcuts::help_line()
                 ))
                 .clicked()
             {
@@ -399,28 +479,55 @@ impl Studio {
             let pos = self.player.position_secs();
             let total = p.song_seconds();
             ui.add_space(6.0);
-            egui::Frame::none()
-                .fill(BG)
-                .rounding(8.0)
-                .inner_margin(egui::Margin::symmetric(12.0, 6.0))
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new(format!("{:02}:{:04.1}", (pos / 60.0) as u32, pos % 60.0))
-                            .monospace()
-                            .size(18.0)
-                            .color(ACCENT2),
-                    );
-                    ui.label(
-                        RichText::new(format!(
-                            "/ {:02}:{:04.1}",
-                            (total / 60.0) as u32,
-                            total % 60.0
-                        ))
-                        .monospace()
-                        .size(12.0)
-                        .color(DIM),
-                    );
-                });
+            // console counters: Bars|Beats (PPQ timebase) and Min:Secs
+            {
+                use crate::timebase::{
+                    format_position, FrameRate, SampleRate, TempoMap, TimeFormat,
+                };
+                let sr = SampleRate::default();
+                let map = TempoMap::for_project(p);
+                let at = sr.samples(f64::from(pos));
+                let bb = format_position(at, TimeFormat::BarsBeats, sr, &map, FrameRate::Fps30, 0);
+                let ms = format_position(at, TimeFormat::MinSecs, sr, &map, FrameRate::Fps30, 0);
+                let len = format_position(
+                    sr.samples(f64::from(total)),
+                    TimeFormat::MinSecs,
+                    sr,
+                    &map,
+                    FrameRate::Fps30,
+                    0,
+                );
+                let (r, _) = ui.allocate_exact_size(Vec2::new(300.0, 34.0), Sense::hover());
+                let pt = ui.painter();
+                let main = Rect::from_min_size(r.min, Vec2::new(150.0, 34.0));
+                console::counter_box(pt, main, &bb, 17.0);
+                pt.text(
+                    main.left_top() + Vec2::new(5.0, 2.0),
+                    Align2::LEFT_TOP,
+                    "BARS|BEATS",
+                    FontId::proportional(7.5),
+                    DIM,
+                );
+                let sub = Rect::from_min_size(
+                    Pos2::new(main.right() + 4.0, r.top()),
+                    Vec2::new(146.0, 34.0),
+                );
+                console::counter_box(pt, sub, &ms, 13.0);
+                pt.text(
+                    sub.left_top() + Vec2::new(5.0, 2.0),
+                    Align2::LEFT_TOP,
+                    "MIN:SECS",
+                    FontId::proportional(7.5),
+                    DIM,
+                );
+                pt.text(
+                    sub.right_bottom() - Vec2::new(5.0, 2.0),
+                    Align2::RIGHT_BOTTOM,
+                    format!("/ {len}"),
+                    FontId::proportional(8.0),
+                    DIM,
+                );
+            }
             ui.add_space(10.0);
             let mut bpm = p.bpm;
             ui.label(RichText::new("BPM").size(11.0).color(DIM));
@@ -492,31 +599,11 @@ impl Studio {
                     DIM,
                 );
                 ui.add_space(6.0);
-                if ui.button("Render WAV").clicked() {
-                    match self
-                        .engine
-                        .lock()
-                        .unwrap()
-                        .call_from("render", &json!({}), "you")
-                    {
-                        Ok(v) => {
-                            self.toast = Some((
-                                format!("Rendered {}", v["path"].as_str().unwrap_or("")),
-                                0.0,
-                                true,
-                            ))
-                        }
-                        Err(e) => self.toast = Some((format!("{e:#}"), 0.0, false)),
-                    }
+                if ui.button("Render WAV").on_hover_text("Cmd+R").clicked() {
+                    self.render_wav();
                 }
-                if ui.button("Save").clicked() {
-                    let path = self
-                        .project_path
-                        .clone()
-                        .unwrap_or_else(|| PathBuf::from("beat.beatbox.json"));
-                    self.call("save_project", json!({"path": path}));
-                    self.project_path = Some(path.clone());
-                    self.toast = Some((format!("Saved {}", path.display()), 0.0, true));
+                if ui.button("Save").on_hover_text("Cmd+S").clicked() {
+                    self.save();
                 }
                 if ui
                     .add_enabled(undo.1 > 0, egui::Button::new("Redo"))
@@ -697,7 +784,7 @@ impl Studio {
                 let selected = ti == self.selected;
                 // header
                 let head = Rect::from_min_size(row.min, Vec2::new(header_w - 8.0, row_h - 4.0));
-                painter.rect_filled(head, 7.0, if selected { Color32::from_rgb(36, 32, 62) } else { PANEL2 });
+                painter.rect_filled(head, 7.0, if selected { Color32::from_rgb(54, 58, 64) } else { PANEL2 });
                 painter.rect_filled(Rect::from_min_size(head.min, Vec2::new(4.0, head.height())), 2.0, color);
                 painter.text(head.left_center() + Vec2::new(14.0, -6.0), Align2::LEFT_CENTER, &t.name, FontId::proportional(13.0), if t.mute { DIM } else { TEXT });
                 painter.text(head.left_center() + Vec2::new(14.0, 8.0), Align2::LEFT_CENTER, kind, FontId::proportional(10.0), DIM);
@@ -725,7 +812,7 @@ impl Studio {
                         let r = Rect::from_min_size(Pos2::new(grid.left() + s as f32 * cell + 1.5, grid.top() + 3.0), Vec2::new(cell - 3.0, grid.height() - 6.0));
                         let hit = notes.iter().find(|n| n.start >= s as f32 && n.start < s as f32 + 1.0);
                         let beat = (s / 4) % 2 == 0;
-                        let base = if beat { Color32::from_rgb(30, 34, 48) } else { Color32::from_rgb(24, 27, 39) };
+                        let base = if beat { Color32::from_rgb(54, 54, 57) } else { Color32::from_rgb(46, 46, 48) };
                         let fill = match hit {
                             Some(n) => color.gamma_multiply(0.35 + 0.65 * n.vel),
                             None => base,
@@ -770,162 +857,6 @@ impl Studio {
                 });
             }
         });
-    }
-
-    // ---------------- piano roll ----------------
-    fn piano_roll(&mut self, ui: &mut egui::Ui, p: &Project) {
-        let Some(t) = p.tracks.get(self.selected) else {
-            return;
-        };
-        let Some(pat) = p.patterns.get(self.pattern) else {
-            return;
-        };
-        let color = track_color(&t.name, t.instrument.kind_name());
-        let notes: Vec<Note> = pat.notes(&t.name).to_vec();
-        let (lo, hi) = if t.instrument.is_drum() {
-            (48u8, 72u8)
-        } else {
-            let (l, h) = notes
-                .iter()
-                .fold((127u8, 0u8), |(l, h), n| (l.min(n.pitch), h.max(n.pitch)));
-            if notes.is_empty() {
-                (48, 72)
-            } else {
-                (l.saturating_sub(3), (h + 3).min(127))
-            }
-        };
-        let rows = (hi - lo + 1) as f32;
-        let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 8.0, BG);
-        let keys_w = 44.0;
-        let grid = Rect::from_min_max(
-            Pos2::new(rect.left() + keys_w, rect.top() + 4.0),
-            rect.max - Vec2::new(4.0, 4.0),
-        );
-        let row_h = grid.height() / rows;
-        let steps = pat.steps() as f32;
-        let cell = grid.width() / steps;
-        for i in 0..(rows as u8) {
-            let pitch = hi - i;
-            let y = grid.top() + i as f32 * row_h;
-            let black = matches!(pitch % 12, 1 | 3 | 6 | 8 | 10);
-            painter.rect_filled(
-                Rect::from_min_size(Pos2::new(grid.left(), y), Vec2::new(grid.width(), row_h)),
-                0.0,
-                if black {
-                    Color32::from_rgb(16, 18, 26)
-                } else {
-                    Color32::from_rgb(21, 24, 34)
-                },
-            );
-            let key = Rect::from_min_size(
-                Pos2::new(rect.left() + 4.0, y + 0.5),
-                Vec2::new(keys_w - 8.0, row_h - 1.0),
-            );
-            painter.rect_filled(
-                key,
-                2.0,
-                if black {
-                    Color32::from_rgb(40, 44, 60)
-                } else {
-                    Color32::from_rgb(200, 205, 220)
-                },
-            );
-            if pitch % 12 == 0 && row_h > 7.0 {
-                painter.text(
-                    key.right_center() - Vec2::new(3.0, 0.0),
-                    Align2::RIGHT_CENTER,
-                    theory::note_name(pitch),
-                    FontId::proportional((row_h * 0.8).min(10.0)),
-                    BG,
-                );
-            }
-        }
-        for s in 0..=(steps as usize) {
-            let x = grid.left() + s as f32 * cell;
-            let strong = s % 16 == 0;
-            let beat = s % 4 == 0;
-            if strong || beat {
-                painter.line_segment(
-                    [Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())],
-                    Stroke::new(
-                        1.0_f32,
-                        if strong {
-                            LINE
-                        } else {
-                            Color32::from_rgb(30, 34, 48)
-                        },
-                    ),
-                );
-            }
-        }
-        let resp = ui.interact(grid, ui.id().with("pianoroll"), Sense::click());
-        let mut hovered_note: Option<usize> = None;
-        let pointer = ui.input(|i| i.pointer.hover_pos());
-        for (i, n) in notes.iter().enumerate() {
-            if n.pitch < lo || n.pitch > hi {
-                continue;
-            }
-            let y = grid.top() + (hi - n.pitch) as f32 * row_h;
-            let r = Rect::from_min_size(
-                Pos2::new(grid.left() + n.start * cell + 0.5, y + 1.0),
-                Vec2::new((n.len * cell - 1.0).max(3.0), (row_h - 2.0).max(2.0)),
-            );
-            let hov = pointer.map(|pp| r.contains(pp)).unwrap_or(false);
-            if hov {
-                hovered_note = Some(i);
-            }
-            painter.rect_filled(r, 3.0, color.gamma_multiply(0.45 + 0.55 * n.vel));
-            painter.rect_stroke(
-                r,
-                3.0,
-                Stroke::new(1.0_f32, if hov { Color32::WHITE } else { color }),
-            );
-        }
-        if let Some(ps) = locate(p, self.player.position_secs())
-            .filter(|(pi, _)| *pi == self.pattern)
-            .map(|(_, s)| s)
-        {
-            let x = grid.left() + ps * cell;
-            painter.line_segment(
-                [Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())],
-                Stroke::new(1.5_f32, Color32::WHITE),
-            );
-        }
-        painter.text(
-            rect.right_top() + Vec2::new(-10.0, 10.0),
-            Align2::RIGHT_TOP,
-            format!(
-                "{} · {} · click to add, right-click to delete",
-                t.name, pat.name
-            ),
-            FontId::proportional(11.0),
-            DIM,
-        );
-        if let Some(pos) = resp.interact_pointer_pos() {
-            if resp.clicked() && hovered_note.is_none() {
-                let step = ((pos.x - grid.left()) / cell).floor().max(0.0);
-                let pitch = hi - (((pos.y - grid.top()) / row_h).floor() as u8).min(hi - lo);
-                self.call("add_notes", json!({"track": t.name, "pattern": pat.name, "notes": [{"start": step, "len": if t.instrument.is_drum() { 1.0 } else { 2.0 }, "pitch": pitch, "vel": 0.85}]}));
-            }
-        }
-        if resp.secondary_clicked() {
-            if let Some(i) = hovered_note {
-                let mut rest = notes.clone();
-                rest.remove(i);
-                let arr: Vec<Value> = rest
-                    .iter()
-                    .map(
-                        |n| json!({"start": n.start, "len": n.len, "pitch": n.pitch, "vel": n.vel}),
-                    )
-                    .collect();
-                self.call(
-                    "add_notes",
-                    json!({"track": t.name, "pattern": pat.name, "replace": true, "notes": arr}),
-                );
-            }
-        }
     }
 
     // ---------------- master section ----------------
@@ -1247,27 +1178,16 @@ impl eframe::App for Studio {
         }
         self.pump_render(&p, rev, ctx);
 
-        // keyboard shortcuts
-        if ctx.input(|i| i.key_pressed(egui::Key::Space)) && !ctx.wants_keyboard_input() {
-            if self.player.is_playing() {
-                self.player.stop();
-            } else {
-                self.player.play();
-            }
-        }
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
-            if ctx.input(|i| i.modifiers.shift) {
-                self.call("redo", json!({}));
-            } else {
-                self.call("undo", json!({}));
-            }
+        // keyboard shortcuts (ported table: shortcuts.rs)
+        for a in shortcuts::pressed(ctx) {
+            self.shortcut(a, &p);
         }
 
         egui::TopBottomPanel::top("top")
             .exact_height(58.0)
             .frame(
                 egui::Frame::none()
-                    .fill(BG)
+                    .fill(theme::Tokens::DARK.toolbar_bg)
                     .inner_margin(egui::Margin::symmetric(14.0, 8.0))
                     .stroke(Stroke::new(1.0_f32, LINE)),
             )
@@ -1298,7 +1218,6 @@ impl eframe::App for Studio {
             )
             .show(ctx, |ui| {
                 ui.columns(2, |cols| {
-                    cols[0].label(RichText::new("PIANO ROLL").size(10.5).color(DIM).strong());
                     self.piano_roll(&mut cols[0], &p);
                     self.master(&mut cols[1], &p);
                 });
@@ -1339,6 +1258,12 @@ impl eframe::App for Studio {
                             p.buses.len(),
                             p.tracks.iter().map(|t| t.sends.len()).sum::<usize>()
                         ),
+                        3 => format!(
+                            "{} clips · {} PPQ · {:.0} BPM",
+                            playlist::placed_clips(&p).len(),
+                            crate::timebase::TICKS_PER_QUARTER,
+                            p.bpm
+                        ),
                         2 => format!(
                             "{} lanes · {:.0} beats · {:.0} BPM",
                             p.automation.len(),
@@ -1361,6 +1286,7 @@ impl eframe::App for Studio {
                 ui.add_space(6.0);
                 match self.view {
                     1 => self.mixer(ui, &p),
+                    3 => self.playlist_view(ui, &p),
                     2 => self.automation_view(ui, &p),
                     _ => self.sequencer(ui, &p),
                 }

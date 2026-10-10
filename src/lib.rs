@@ -13,6 +13,7 @@
 pub mod analysis;
 pub mod audio_edit;
 pub mod automation;
+pub mod console_law;
 pub mod diff;
 pub mod dsp;
 pub mod ears;
@@ -30,6 +31,7 @@ pub mod mcp;
 pub mod media;
 pub mod midi_ops;
 pub mod multisample;
+pub mod note_edit;
 pub mod producer;
 pub mod project;
 pub mod render;
