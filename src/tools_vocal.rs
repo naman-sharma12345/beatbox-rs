@@ -89,6 +89,7 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
         bail!("the vocal is shorter than 2 seconds");
     }
     let (lyrics, lyr_note) = lyrics_for(e, &path, a);
+    let tune_amount = f_opt(a, "tune").unwrap_or(0.0).clamp(0.0, 1.0);
     let words = lyrics.as_ref().map(|l| l.words()).unwrap_or_default();
     let an = vocal::analyze(&x, SR, &words, f_opt(a, "bpm"));
     if an.notes.len() < 4 {
@@ -117,6 +118,16 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     // a bar line and the take is time-stretched between them (pitch kept), so a
     // free-time singer locks to the grid; without it the take keeps its own
     // timing and its first bar line lands on bar `intro_bars`.
+    // optional pitch correction to the song key, before the warp
+    let mut tune_stats = None;
+    let x = if tune_amount > 0.0 {
+        let ivs = theory::scale_intervals(if scale == "major" { "major" } else { "minor" })?;
+        let (y, st) = vocal::autotune(&x, SR, key_pc, ivs, tune_amount, f_opt(a, "tune_hard").unwrap_or(0.1), 35.0);
+        tune_stats = Some(st);
+        y
+    } else {
+        x
+    };
     let anchors = vocal::phrase_anchors(&an.notes, 0.28, 1.4);
     let warp = if b_or(a, "warp", true) && anchors.len() >= 3 {
         let w = vocal::fit_warp(&anchors, bpm);
@@ -277,6 +288,12 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
             let p = e.samples_dir().join(format!("{}_warped.wav", samples::sample_name(&stem)));
             crate::render::write_wav(&p, &y, &y)?;
             (p, format!("vocal_{stem}_warped"))
+        }
+        None if tune_amount > 0.0 => {
+            std::fs::create_dir_all(e.samples_dir())?;
+            let p = e.samples_dir().join(format!("{}_tuned.wav", samples::sample_name(&stem)));
+            crate::render::write_wav(&p, &x, &x)?;
+            (p, format!("vocal_{stem}_tuned"))
         }
         None => (path.clone(), format!("vocal_{stem}")),
     };
@@ -442,6 +459,7 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
         "key": format!("{} {}", e.project.key_root, e.project.scale),
         "vocal": analysis_json(&an, 0),
         "vocal_clip": {"track": "vocal", "sample": sample, "start_beat": (clip_start_beat * 1000.0).round() / 1000.0},
+        "tune": tune_stats,
         "warp": warp.as_ref().map(|w| json!({"phrases_pinned": w.anchors.len(), "bpm": w.bpm, "stretch_range": [(w.min_stretch * 1000.0).round() / 1000.0, (w.max_stretch * 1000.0).round() / 1000.0]})),
         "harmonic_rhythm_beats": slot_beats,
         "sections": sec_json,
@@ -507,6 +525,8 @@ pub fn tools() -> Vec<Tool> {
                 "outro_bars": {"type": "integer"},
                 "section_bars": {"type": "integer"},
                 "lyrics": {"type": "boolean", "description": "transcribe lyrics to find the hook (default true)"},
+                "tune": {"type": "number", "description": "auto-tune the take to the key first: 0 = off (default), 1 = full correction"},
+                "tune_hard": {"type": "number", "description": "0..1 how much of the singer's wobble/vibrato to flatten (default 0.1)"},
                 "warp": {"type": "boolean", "description": "pin each sung phrase to a bar line and time-stretch between them (default true; false keeps the singer's own timing)"},
                 "known_lyrics": {"type": "string"},
                 "model": {"type": "string"},
@@ -518,6 +538,54 @@ pub fn tools() -> Vec<Tool> {
                 "seed": {"type": "integer"}
             }), &["path"]),
             run: vocal_to_song,
+        },
+        Tool {
+            name: "tune_vocal",
+            description: "Auto-tune a sung take to the key (TD-PSOLA pitch correction, formants kept). Every sung note moves to the nearest scale note; amount 0..1 (default 1) scales the move, hard 0..1 (default 0.15) also flattens wobble/vibrato toward the note (1 = the hard T-Pain effect), speed_ms (default 35) is how fast it follows. Give a sample name (its audio clips switch to the tuned take, undoable) or a path (writes <name>_tuned.wav). key/scale default to the project's.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "path": {"type": "string"}, "key": {"type": "string"}, "scale": {"type": "string"}, "amount": {"type": "number"}, "hard": {"type": "number"}, "speed_ms": {"type": "number"}}), &[]),
+            run: |e, a| {
+                let key = s_opt(a, "key").unwrap_or_else(|| e.project.key_root.clone());
+                let scale = s_opt(a, "scale").unwrap_or_else(|| e.project.scale.clone());
+                let key_pc = theory::pitch_class(&key)?;
+                let ivs = theory::scale_intervals(&scale)?;
+                let (x, src_name, src_path) = match (s_opt(a, "sample"), s_opt(a, "path")) {
+                    (Some(n), _) => {
+                        let info = e.project.samples.iter().find(|s| s.name == n).cloned().ok_or_else(|| anyhow::anyhow!("no sample '{n}'"))?;
+                        let d = e.bank.get(&n).map(|d| d.to_vec()).map(Ok).unwrap_or_else(|| samples::decode_file(std::path::Path::new(&info.path)))?;
+                        (d, Some(n), std::path::PathBuf::from(info.path))
+                    }
+                    (None, Some(p)) => {
+                        let p = e.resolve(&p);
+                        (samples::decode_file(&p)?, None, p)
+                    }
+                    _ => bail!("give sample (a project sample name) or path"),
+                };
+                let (y, st) = vocal::autotune(&x, SR, key_pc, ivs, f_opt(a, "amount").unwrap_or(1.0), f_opt(a, "hard").unwrap_or(0.15), f_opt(a, "speed_ms").unwrap_or(35.0));
+                let stem = src_path.file_stem().and_then(|s| s.to_str()).unwrap_or("vocal").to_string();
+                std::fs::create_dir_all(e.samples_dir())?;
+                let out = e.samples_dir().join(format!("{}_tuned.wav", samples::sample_name(&stem)));
+                crate::render::write_wav(&out, &y, &y)?;
+                let mut res = json!({"path": out.to_string_lossy(), "key": format!("{key} {scale}"), "stats": st});
+                if let Some(n) = src_name {
+                    let info = SampleInfo { name: format!("{n}_tuned"), path: out.to_string_lossy().into(), source: format!("{n}, auto-tuned to {key} {scale}"), license: String::new(), author: String::new(), duration: 0.0 };
+                    let reg = register_sample(e, info)?;
+                    let tuned = reg["sample"].as_str().unwrap_or_default().to_string();
+                    let mut switched = 0;
+                    for c in e.project.audio_clips.iter_mut().filter(|c| c.sample == n) {
+                        c.sample = tuned.clone();
+                        switched += 1;
+                    }
+                    if let Some(m) = e.project.vocal_map.as_mut() {
+                        if m.sample == n {
+                            m.sample = tuned.clone();
+                        }
+                    }
+                    res["sample"] = json!(tuned);
+                    res["clips_switched"] = json!(switched);
+                }
+                Ok(res)
+            },
         },
         Tool {
             name: "get_vocal_map",

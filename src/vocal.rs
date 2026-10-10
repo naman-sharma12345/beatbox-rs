@@ -726,6 +726,177 @@ pub fn warp_audio(x: &[f32], sr: f32, out_len_s: f32, map: impl Fn(f32) -> f32) 
     out
 }
 
+// ------------------------------------------------------------ auto-tune
+
+#[derive(Clone, Debug, Serialize, Default)]
+pub struct TuneStats {
+    pub notes: usize,
+    pub notes_moved: usize,
+    /// Mean absolute distance from the key's nearest note, cents, before / after.
+    pub off_key_cents_before: f32,
+    pub off_key_cents_after: f32,
+}
+
+/// Nearest pitch (fractional MIDI) of `m` that is in the scale.
+pub fn snap_to_scale(m: f32, key_pc: u8, scale: &[u8]) -> f32 {
+    let base = m.round() as i32;
+    let mut best = (base as f32, f32::INFINITY);
+    for d in -2..=2 {
+        let c = base + d;
+        let pc = (c - key_pc as i32).rem_euclid(12) as u8;
+        if scale.contains(&pc) {
+            let dist = (c as f32 - m).abs();
+            if dist < best.1 {
+                best = (c as f32, dist);
+            }
+        }
+    }
+    best.0
+}
+
+fn off_key_cents(notes: &[VNote], key_pc: u8, scale: &[u8]) -> f32 {
+    let (mut s, mut w) = (0.0, 0.0);
+    for n in notes {
+        s += (n.midi - snap_to_scale(n.midi, key_pc, scale)).abs() * 100.0 * n.dur();
+        w += n.dur();
+    }
+    if w > 0.0 { s / w } else { 0.0 }
+}
+
+/// Pitch-correct a sung take to a key (TD-PSOLA, formants kept). Each sung
+/// note is moved to the nearest scale note: `amount` (0..1) scales the move,
+/// `hard` (0..1) also flattens the note's own wobble/vibrato toward the
+/// target (1 = the hard, robotic effect), `speed_ms` smooths how fast the
+/// correction follows (glides between notes stay natural).
+pub fn autotune(x: &[f32], sr: f32, key_pc: u8, scale: &[u8], amount: f32, hard: f32, speed_ms: f32) -> (Vec<f32>, TuneStats) {
+    let frames = pitch_track(x, sr);
+    // absolute pitch (A440): the beat is in concert tuning even if the singer is not
+    let mut notes = segment_notes(&frames, 0.0);
+    retune_and_merge(&mut notes);
+    let before = off_key_cents(&notes, key_pc, scale);
+    // per-frame correction in semitones
+    let mut corr = vec![0.0f32; frames.len()];
+    let mut moved = 0usize;
+    for n in &notes {
+        let target = snap_to_scale(n.midi, key_pc, scale);
+        if (target - n.midi).abs() > 0.03 {
+            moved += 1;
+        }
+        let i0 = ((n.start - 0.02) / HOP_S).max(0.0) as usize;
+        let i1 = (((n.end - 0.02) / HOP_S) as usize).min(frames.len());
+        for i in i0..i1 {
+            let m = frames[i].midi;
+            if m <= 0.0 {
+                continue;
+            }
+            // the frame's own octave (the median was folded)
+            let mut fm = m;
+            while fm - n.midi > 6.0 { fm -= 12.0; }
+            while n.midi - fm > 6.0 { fm += 12.0; }
+            let soft = target - n.midi;
+            let firm = (target - fm).clamp(-1.0, 1.0);
+            corr[i] = amount.clamp(0.0, 1.0) * ((1.0 - hard) * soft + hard * firm);
+        }
+    }
+    // smooth the correction (one-pole both ways, so it does not lag)
+    let a = (-HOP_S / (speed_ms.max(1.0) / 1000.0)).exp();
+    let mut f = corr.clone();
+    for i in 1..f.len() {
+        f[i] = a * f[i - 1] + (1.0 - a) * f[i];
+    }
+    for i in (0..f.len().saturating_sub(1)).rev() {
+        f[i] = a * f[i + 1] + (1.0 - a) * f[i];
+    }
+    let frame_at = |s: usize| -> usize { ((s as f32 / sr - 0.02) / HOP_S).max(0.0) as usize };
+    let f0_at = |s: usize| -> f32 { frames.get(frame_at(s)).map(|fr| fr.hz).unwrap_or(0.0) };
+    let ratio_at = |s: usize| -> f32 { 2f32.powf(f.get(frame_at(s)).copied().unwrap_or(0.0) / 12.0) };
+    // analysis epochs: one per period in voiced parts (on the waveform's
+    // local peak), every 5 ms elsewhere
+    let mut epochs: Vec<(usize, usize)> = Vec::new(); // (position, period)
+    let mut pos = 0usize;
+    let mut prev_peak: Option<usize> = None;
+    while pos < x.len() {
+        let hz = f0_at(pos);
+        if hz > 0.0 {
+            let t = ((sr / hz) as usize).clamp(20, 1200);
+            // snap to the local maximum within +-t/4, following the previous epoch
+            let lo = pos.saturating_sub(t / 4);
+            let hi = (pos + t / 4).min(x.len().saturating_sub(1));
+            let mut best = pos;
+            for k in lo..=hi {
+                if x[k] > x[best] {
+                    best = k;
+                }
+            }
+            if let Some(pp) = prev_peak {
+                if best <= pp + t / 2 {
+                    best = pp + t;
+                }
+            }
+            if best >= x.len() {
+                break;
+            }
+            epochs.push((best, t));
+            prev_peak = Some(best);
+            pos = best + t;
+        } else {
+            let t = (sr * 0.005) as usize;
+            epochs.push((pos, t));
+            prev_peak = None;
+            pos += t;
+        }
+    }
+    let mut out = vec![0.0f32; x.len()];
+    let mut wsum = vec![0.0f32; x.len()];
+    if epochs.is_empty() {
+        return (x.to_vec(), TuneStats { notes: notes.len(), ..Default::default() });
+    }
+    // synthesis: output epochs at the corrected period, each takes the grain
+    // of the nearest analysis epoch
+    let mut o = epochs[0].0 as f32;
+    let mut ai = 0usize;
+    while (o as usize) < x.len() {
+        let oi = o as usize;
+        while ai + 1 < epochs.len() && (epochs[ai + 1].0 as f32 - o).abs() < (epochs[ai].0 as f32 - o).abs() {
+            ai += 1;
+        }
+        let (ae, t) = epochs[ai];
+        let voiced = f0_at(ae) > 0.0;
+        let r = if voiced { ratio_at(ae).clamp(0.7, 1.45) } else { 1.0 };
+        let half = t;
+        for k in 0..(2 * half) {
+            let src = ae as i64 - half as i64 + k as i64;
+            let dst = oi as i64 - half as i64 + k as i64;
+            if src < 0 || dst < 0 || src as usize >= x.len() || dst as usize >= x.len() {
+                continue;
+            }
+            let w = 0.5 - 0.5 * (std::f32::consts::TAU * k as f32 / (2 * half) as f32).cos();
+            out[dst as usize] += x[src as usize] * w;
+            wsum[dst as usize] += w;
+        }
+        o += t as f32 / r;
+    }
+    for (v, s) in out.iter_mut().zip(wsum.iter()) {
+        if *s > 0.05 {
+            *v /= *s;
+        }
+    }
+    // measure what the listener gets
+    let fr2 = pitch_track(&out, sr);
+    let mut n2 = segment_notes(&fr2, 0.0);
+    retune_and_merge(&mut n2);
+    let after = off_key_cents(&n2, key_pc, scale);
+    (
+        out,
+        TuneStats {
+            notes: notes.len(),
+            notes_moved: moved,
+            off_key_cents_before: (before * 10.0).round() / 10.0,
+            off_key_cents_after: (after * 10.0).round() / 10.0,
+        },
+    )
+}
+
 // ------------------------------------------------------------ lyrics
 
 /// The lyrics helper, shipped inside the binary and written next to the
@@ -1017,6 +1188,25 @@ mod tests {
         assert!((f - 330.0).abs() < 3.0, "pitch {f}");
         let rms = (y[20000..80000].iter().map(|v| v * v).sum::<f32>() / 60000.0).sqrt();
         assert!(rms > 0.3, "no holes: rms {rms}");
+    }
+
+    #[test]
+    fn autotune_pulls_a_flat_singer_into_key() {
+        // C major line sung 40 cents flat
+        let mel: Vec<(f32, f32, f32)> = [60.0, 62.0, 64.0, 65.0, 67.0, 65.0, 64.0, 62.0]
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (0.3 + i as f32 * 0.5, 0.42, m - 0.4))
+            .collect();
+        let x = sing(&mel, 4.8);
+        let sc = theory::scale_intervals("major").unwrap();
+        let (y, st) = autotune(&x, SR, 0, sc, 1.0, 0.0, 30.0);
+        assert_eq!(y.len(), x.len());
+        assert!(st.off_key_cents_before > 30.0, "{st:?}");
+        assert!(st.off_key_cents_after < 12.0, "{st:?}");
+        // no dropouts: the tuned take keeps its level
+        let rms = |v: &[f32]| (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt();
+        assert!(rms(&y) > rms(&x) * 0.8);
     }
 
     #[test]
