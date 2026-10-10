@@ -8,8 +8,8 @@ OUT=${2:-beats}
 TAG=${3:-${BEATS_TAG:-dev}}
 mkdir -p "$OUT"
 SUMMARY="$OUT/SUMMARY.md"
-echo "| beat | score | technical | musical | iterations (kept) | wall s | LUFS | dBTP | file |" > "$SUMMARY"
-echo "|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
+echo "| beat | score (full ears) | technical | musical | fast-ears delta | iterations (kept) | wall s | LUFS | dBTP | file |" > "$SUMMARY"
+echo "|---|---|---|---|---|---|---|---|---|---|" >> "$SUMMARY"
 run() {
   local name=$1 args=$2
   local dir="$OUT/${name}_${TAG}"
@@ -34,10 +34,11 @@ print(f"{name}: score {r['score']} (tech {r['technical']}, musical {r['musical']
       f"{len(its)} iterations ({kept} kept), {wall:.1f} s wall, LUFS {meas[0]} TP {meas[1]}, "
       f"{r['genre']} {r['key']} {r['bpm']} BPM -> {final}")
 for it in its:
-    print("   iter", it['iteration'], it['score'], it.get('verdict'), 'kept' if it.get('accepted', True) else 'ROLLED BACK', it.get('revisions', []))
+    print("   iter", it['iteration'], it['score'], it.get('verdict'), 'kept' if it.get('accepted', True) else 'ROLLED BACK', f"{it.get('ms', 0)} ms", it.get('revisions', []))
 print("   remaining:", r.get('remaining_findings', [])[:4])
 with open(summ, 'a') as f:
-    f.write(f"| {name} | {r['score']} | {r['technical']} | {r['musical']} | {len(its)} ({kept}) | {wall:.0f} | {meas[0]} | {meas[1]} | {final.split('/')[-1]} |\n")
+    fr = r.get('final_review') or {}
+    f.write(f"| {name} | {r['score']} | {r['technical']} | {r['musical']} | {fr.get('fast_vs_full_delta', 'n/a')} | {len(its)} ({kept}) | {wall:.0f} | {meas[0]} | {meas[1]} | {final.split('/')[-1]} |\n")
 PY
 }
 run desi_hiphop '{"brief":"dark desi hip-hop with sitar, tabla and a hard 808, for a gully rap verse","genre":"desi_hiphop","bpm":92,"seed":21,"max_iterations":4,"out_dir":"__OUT__"}'

@@ -249,6 +249,10 @@ pub struct Plan {
     /// the best render so far, and whether the revision was kept.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<Value>,
+    /// The kept render's full-ears critique (the loop chooses with the fast
+    /// ears; the delivered score always comes from the full report).
+    #[serde(default)]
+    pub final_review: Value,
 }
 
 pub struct PlanArgs {
@@ -699,6 +703,7 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         seed: a.seed,
         thinking,
         history: Vec::new(),
+        final_review: Value::Null,
     })
 }
 
@@ -1597,6 +1602,42 @@ pub fn track_name(role: &str) -> String {
 }
 
 /// Gain staging + mastering for the plan (balance_mix then master_assistant).
+// ---------------------------------------------------------------- step timing
+
+fn prof_store() -> &'static std::sync::Mutex<Vec<(String, f64)>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<Vec<(String, f64)>>> =
+        std::sync::OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// Record how long a producer step took (ms since `t0`); drained per
+/// iteration into the plan history so slow steps are visible.
+static PROFILING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn prof(label: &str, t0: std::time::Instant) {
+    if !PROFILING.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+    if std::env::var_os("BEATBOX_PROFILE").is_some() {
+        eprintln!("[prof] {label}: {ms:.0} ms");
+    }
+    if let Ok(mut v) = prof_store().lock() {
+        v.push((label.to_string(), ms));
+    }
+}
+
+fn prof_drain() -> Value {
+    let mut m = serde_json::Map::new();
+    if let Ok(mut v) = prof_store().lock() {
+        for (k, ms) in v.drain(..) {
+            let e = m.entry(k).or_insert(json!(0.0));
+            *e = json!((e.as_f64().unwrap_or(0.0) + ms).round());
+        }
+    }
+    Value::Object(m)
+}
+
 pub fn mix_and_master(e: &mut Engine, plan: &Plan) -> Result<Value> {
     let pb = playbook(&plan.genre)?;
     let offsets: serde_json::Map<String, Value> = plan
@@ -1606,12 +1647,16 @@ pub fn mix_and_master(e: &mut Engine, plan: &Plan) -> Result<Value> {
         .filter(|(t, _)| e.project.track_index(t).is_ok())
         .map(|(k, v)| (k.clone(), json!(v)))
         .collect();
+    let t = std::time::Instant::now();
     let bal = e.call_from(
         "balance_mix",
         &json!({"genre": pb.mix.balance_genre, "iterations": 2, "offsets": offsets}),
         "producer",
     )?;
+    prof("balance_mix", t);
+    let t = std::time::Instant::now();
     let master = e.call_from("master_assistant", &json!({"target_lufs": plan.knobs.target_lufs, "style": pb.mix.master_style, "max_iterations": 3, "true_peak_ceiling": -1.6}), "producer")?;
+    prof("master_assistant", t);
     Ok(json!({"balance": compact(&bal, 600), "master": compact(&master, 600)}))
 }
 
@@ -1634,7 +1679,9 @@ fn compact(v: &Value, max: usize) -> Value {
 
 /// compose + mix in one go.
 pub fn apply_plan(e: &mut Engine, plan: &Plan) -> Result<Value> {
+    let t = std::time::Instant::now();
     let c = compose(e, plan)?;
+    prof("compose", t);
     let m = mix_and_master(e, plan)?;
     Ok(json!({"compose": c, "mix": m}))
 }
@@ -1721,15 +1768,28 @@ fn same_key_family(a: &str, b: &str) -> bool {
 }
 
 pub fn critique(e: &mut Engine, plan: &Plan, reference: Option<&str>) -> Result<Critique> {
+    critique_mode(e, plan, reference, false)
+}
+
+/// `critique` with the fast ears (`fast: true`) for choosing between
+/// candidates in the produce loop; see `listen::ears_report_mode`.
+pub fn critique_mode(
+    e: &mut Engine,
+    plan: &Plan,
+    reference: Option<&str>,
+    fast: bool,
+) -> Result<Critique> {
     let mut findings = Vec::new();
     let mut tech = 100.0f32;
     let mut mus = 100.0f32;
     // --- delivery QC
+    let t = std::time::Instant::now();
     let cm = e.call_from(
         "check_master",
         &json!({"target_lufs": plan.knobs.target_lufs, "lufs_tolerance": 1.5}),
         "producer",
     )?;
+    prof("check_master", t);
     let lufs = cm["loudness"]["integrated_lufs"].as_f64().unwrap_or(-99.0) as f32;
     let tp = cm["loudness"]["true_peak_dbtp"]
         .as_f64()
@@ -1757,7 +1817,9 @@ pub fn critique(e: &mut Engine, plan: &Plan, reference: Option<&str>) -> Result<
         });
     }
     // --- artifacts (clicks are what listeners notice; DC steps under 808s are usually benign)
+    let t = std::time::Instant::now();
     let art = e.call_from("detect_artifacts", &json!({}), "producer")?;
+    prof("detect_artifacts", t);
     let clicks = art["events"]
         .as_array()
         .map(|v| v.iter().filter(|x| x["kind"] == "click").count())
@@ -1775,7 +1837,9 @@ pub fn critique(e: &mut Engine, plan: &Plan, reference: Option<&str>) -> Result<
         tech -= 5.0;
     }
     // --- mix balance from the analyzer
+    let t = std::time::Instant::now();
     let am = e.call_from("analyze_mix", &json!({}), "producer")?;
+    prof("analyze_mix", t);
     let mix_score = am["score"].as_f64().unwrap_or(70.0) as f32;
     tech = tech * 0.6 + mix_score * 0.4;
     for s in am["suggestions"]
@@ -1820,7 +1884,9 @@ pub fn critique(e: &mut Engine, plan: &Plan, reference: Option<&str>) -> Result<
         });
     }
     // --- sections: contrast and energy flow
+    let t = std::time::Instant::now();
     let sec = e.call_from("analyze_sections", &json!({"top_tracks": 3}), "producer")?;
+    prof("analyze_sections", t);
     let measured: Vec<f32> = sec["sections"]
         .as_array()
         .map(|v| {
@@ -1944,7 +2010,9 @@ pub fn critique(e: &mut Engine, plan: &Plan, reference: Option<&str>) -> Result<
         findings.push(Finding { id: "busy_verse".into(), severity: 0.4, message: format!("verse lead ({dv:.1}/bar) busier than the hook ({dh:.1}/bar): crowds the vocal"), fix: json!({"action": "density", "lead_density": (plan.knobs.lead_density - 0.1).max(0.25)}) });
     }
     // --- key: rendered notes should read as the planned key family
+    let t = std::time::Instant::now();
     let dk = e.call_from("detect_key", &json!({}), "producer")?;
+    prof("detect_key", t);
     let found = dk["key"].as_str().unwrap_or("").to_string();
     let want = format!("{} {}", plan.key, plan.scale);
     let key_ok = same_key_family(&found, &want)
@@ -1990,7 +2058,9 @@ pub fn critique(e: &mut Engine, plan: &Plan, reference: Option<&str>) -> Result<
         }
     }
     // --- the ears: ranked findings + masking, bound to a render id
-    let ears = crate::listen::ears_report(e, None)?;
+    let t = std::time::Instant::now();
+    let ears = crate::listen::ears_report_mode(e, None, fast)?;
+    prof("ears_report", t);
     let render_id = ears["render_id"].as_str().unwrap_or("").to_string();
     let et = ears["scores"]["technical"].as_f64().unwrap_or(tech as f64) as f32;
     let em = ears["scores"]["musical"].as_f64().unwrap_or(mus as f64) as f32;
@@ -2177,6 +2247,12 @@ pub fn revise_skipping(
 
 // ---------------------------------------------------------------- produce
 
+/// Hard cap on critic iterations per produce_track call.
+pub const MAX_ITERATIONS: usize = 4;
+/// A kept revision must raise the best score by more than this to count as
+/// progress; two iterations in a row without progress end the loop.
+pub const PLATEAU_GAIN: f32 = 0.2;
+
 pub struct ProduceOpts {
     pub max_iterations: usize,
     pub reference: Option<String>,
@@ -2186,6 +2262,23 @@ pub struct ProduceOpts {
 
 pub fn produce(e: &mut Engine, args: &PlanArgs, o: &ProduceOpts) -> Result<Value> {
     let t0 = std::time::Instant::now();
+    // gain staging + mastering re-render with only faders/master moved:
+    // synthesise each track once per composition (dropped when we return)
+    let prev_cache = e.track_cache.replace(Default::default());
+    PROFILING.store(true, std::sync::atomic::Ordering::Relaxed);
+    let r = produce_inner(e, args, o, t0);
+    PROFILING.store(false, std::sync::atomic::Ordering::Relaxed);
+    prof_drain();
+    e.track_cache = prev_cache;
+    r
+}
+
+fn produce_inner(
+    e: &mut Engine,
+    args: &PlanArgs,
+    o: &ProduceOpts,
+    t0: std::time::Instant,
+) -> Result<Value> {
     let mut plan = plan_track(args)?;
     if let Some(k) = &plan.sample_kit {
         // fetch the CC0/PD kit once; fall back to the synth kit offline
@@ -2206,13 +2299,19 @@ pub fn produce(e: &mut Engine, args: &PlanArgs, o: &ProduceOpts) -> Result<Value
     // better, otherwise roll back and try the next fix
     let mut log: Vec<Value> = Vec::new();
     let mut best: Option<(f32, Project, Plan, Critique)> = None;
+    let mut best_mix = None;
     let mut rejected: std::collections::HashSet<String> = Default::default();
     let mut pending: Vec<String> = Vec::new();
     let mut misses = 0;
-    for it in 0..o.max_iterations.max(1) {
+    // the critic loop is capped; it also stops early on a plateau (two
+    // iterations in a row that did not raise the best score)
+    let max_it = o.max_iterations.clamp(1, MAX_ITERATIONS);
+    for it in 0..max_it {
         let ti = std::time::Instant::now();
+        prof_drain();
         apply_plan(e, &plan)?;
-        let c = critique(e, &plan, o.reference.as_deref())?;
+        let c = critique_mode(e, &plan, o.reference.as_deref(), true)?;
+        let tc = std::time::Instant::now();
         let mut entry = json!({
             "iteration": it + 1, "render_id": c.render_id, "score": c.score, "technical": c.technical, "musical": c.musical,
             "ears": {"technical": c.ears["technical"], "musical": c.ears["musical"]}, "reference": c.reference,
@@ -2240,9 +2339,12 @@ pub fn produce(e: &mut Engine, args: &PlanArgs, o: &ProduceOpts) -> Result<Value
         };
         entry["accepted"] = json!(accepted);
         entry["verdict"] = json!(verdict);
+        prof("diff", tc);
+        let gained = best.as_ref().map_or(true, |b| c.score > b.0 + PLATEAU_GAIN);
         if accepted {
-            misses = 0;
+            misses = if gained { 0 } else { misses + 1 };
             best = Some((c.score, e.project.clone(), plan.clone(), c.clone()));
+            best_mix = e.mix().ok();
         } else {
             misses += 1;
             // roll back and never retry the fixes that made it worse
@@ -2253,26 +2355,44 @@ pub fn produce(e: &mut Engine, args: &PlanArgs, o: &ProduceOpts) -> Result<Value
                 plan = b.2.clone();
             }
         }
-        if it + 1 < o.max_iterations && misses < 2 {
+        if it + 1 < max_it && misses < 2 {
             let base = best.as_ref().map(|b| b.3.clone()).unwrap_or(c);
             let changes = revise_skipping(&mut plan, &base, 2, &rejected);
             pending = changes.iter().map(|x| x.0.clone()).collect();
             entry["revisions"] = json!(changes.iter().map(|x| x.1.clone()).collect::<Vec<_>>());
             entry["seconds"] = json!((ti.elapsed().as_secs_f32() * 10.0).round() / 10.0);
+            entry["ms"] = json!(ti.elapsed().as_millis() as u64);
+            entry["ms_by_step"] = prof_drain();
             log.push(entry);
             if changes.is_empty() {
                 break;
             }
         } else {
             entry["seconds"] = json!((ti.elapsed().as_secs_f32() * 10.0).round() / 10.0);
+            entry["ms"] = json!(ti.elapsed().as_millis() as u64);
+            entry["ms_by_step"] = prof_drain();
             log.push(entry);
             break;
         }
     }
-    let (score, proj, mut plan, crit) = best.ok_or_else(|| anyhow!("no iteration ran"))?;
-    plan.history = log.clone();
+    let (fast_score, proj, mut plan, _) = best.ok_or_else(|| anyhow!("no iteration ran"))?;
+    if let Some(m) = best_mix {
+        e.prime_render(&proj, m);
+    }
     e.replace_project(proj);
     e.revision += 1;
+    // the kept render always gets the full ears (same render, from the cache)
+    let tf = std::time::Instant::now();
+    let crit = critique_mode(e, &plan, o.reference.as_deref(), false)?;
+    let score = crit.score;
+    let final_review = json!({
+        "render_id": crit.render_id, "ears_mode": "full",
+        "score": crit.score, "technical": crit.technical, "musical": crit.musical,
+        "fast_score": fast_score, "fast_vs_full_delta": ((crit.score - fast_score) * 10.0).round() / 10.0,
+        "ms": tf.elapsed().as_millis() as u64, "ms_by_step": prof_drain(),
+    });
+    plan.history = log.clone();
+    plan.final_review = final_review.clone();
     // deliver
     let mut files = json!({});
     if let Some(dir) = &o.out_dir {
@@ -2298,7 +2418,7 @@ pub fn produce(e: &mut Engine, args: &PlanArgs, o: &ProduceOpts) -> Result<Value
         "title": plan.title,
         "genre": plan.genre, "key": format!("{} {}", plan.key, plan.scale), "bpm": plan.bpm,
         "score": score, "technical": crit.technical, "musical": crit.musical, "reference_match": crit.reference,
-        "iterations": log, "thinking": plan.thinking, "plan": plan,
+        "iterations": log, "final_review": final_review, "thinking": plan.thinking, "plan": plan,
         "remaining_findings": crit.findings.iter().take(6).map(|f| f.message.clone()).collect::<Vec<_>>(),
         "measurements": crit.measurements,
         "files": files,
@@ -2555,6 +2675,16 @@ mod tests {
         if h.len() > 1 {
             assert!(h[1]["diff"]["verdict"].is_string());
         }
+        // every iteration records its time; the kept render got the full ears
+        assert!(h.iter().all(|x| x["ms"].is_u64()));
+        let fr = &r["final_review"];
+        assert_eq!(fr["ears_mode"], "full");
+        assert_eq!(fr["score"], r["score"]);
+        assert!(
+            fr["fast_vs_full_delta"].as_f64().unwrap().abs() <= 1.0,
+            "{fr}"
+        );
+        assert_eq!(r["plan"]["final_review"]["ears_mode"], "full");
     }
 
     #[test]

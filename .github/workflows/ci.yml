@@ -30,7 +30,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: cargo build --release --no-default-features
       - name: produce beats
-        run: bash scripts/produce_beats.sh target/release/beatbox beats s7
+        run: bash scripts/produce_beats.sh target/release/beatbox beats s8
       - uses: actions/upload-artifact@v4
         with:
           name: beats

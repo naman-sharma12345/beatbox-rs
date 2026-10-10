@@ -45,6 +45,9 @@ pub struct RenderSummary {
     pub technical: f32,
     pub musical: f32,
     pub findings: Vec<String>,
+    /// Measured by the fast (candidate-choosing) ears.
+    #[serde(default)]
+    pub fast: bool,
 }
 
 fn store() -> &'static Mutex<BTreeMap<String, RenderSummary>> {
@@ -97,13 +100,19 @@ fn st_series(l: &[f32], r: &[f32]) -> Vec<f32> {
 }
 
 pub fn loudness_report(e: &mut Engine, codec: bool) -> Result<Value> {
+    loudness_report_opts(e, codec, true)
+}
+
+/// `loudness_report`; `series: false` skips the 1 s short-term series
+/// (display only: no score or verdict reads it).
+pub fn loudness_report_opts(e: &mut Engine, codec: bool, series: bool) -> Result<Value> {
     let m = e.mix()?;
     let (l, r) = (&m.left, &m.right);
     let lo = analysis::loudness(l, r);
     let peak = l.iter().chain(r.iter()).fold(0.0f32, |a, x| a.max(x.abs()));
     let peak_db = 20.0 * peak.max(1e-9).log10();
     let plr = lo.true_peak_dbtp - lo.integrated_lufs;
-    let st = st_series(l, r);
+    let st = if series { st_series(l, r) } else { Vec::new() };
     let spans = crate::ears::spans(&e.project);
     let mut per = Vec::new();
     let mut psr_min = f32::MAX;
@@ -214,9 +223,8 @@ fn erb_edges() -> Vec<f32> {
 }
 
 /// Per-frame ERB band energies (dB) of a mono signal.
-fn band_frames(x: &[f32], edges: &[f32]) -> Vec<[f32; NB]> {
+fn band_frames(x: &[f32], edges: &[f32], hop: usize) -> Vec<[f32; NB]> {
     const N: usize = 2048;
-    let hop = 1024;
     let win: Vec<f32> = (0..N)
         .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos())
         .collect();
@@ -284,6 +292,21 @@ pub fn masking(
     section: Option<&str>,
     top_k: usize,
 ) -> Result<(Vec<MaskPair>, String)> {
+    masking_hop(e, section, top_k, MASK_HOP)
+}
+
+/// Analysis hop of the masking matrix (full ears).
+pub const MASK_HOP: usize = 1024;
+/// Coarser hop for the producer's fast ears (half the frames, same render).
+pub const MASK_HOP_FAST: usize = 2048;
+
+/// `masking` with an explicit analysis hop (frames every `hop` samples).
+pub fn masking_hop(
+    e: &mut Engine,
+    section: Option<&str>,
+    top_k: usize,
+    hop: usize,
+) -> Result<(Vec<MaskPair>, String)> {
     let p = e.project.clone();
     let spans = crate::ears::spans(&p);
     if spans.is_empty() {
@@ -319,9 +342,10 @@ pub fn masking(
         },
     )?;
     let edges = erb_edges();
+    use rayon::prelude::*;
     let frames: Vec<(String, Vec<[f32; NB]>)> = m
         .stems
-        .iter()
+        .par_iter()
         .map(|s| {
             let mono: Vec<f32> = s
                 .left
@@ -329,7 +353,7 @@ pub fn masking(
                 .zip(&s.right)
                 .map(|(a, b)| 0.5 * (a + b))
                 .collect();
-            (s.name.clone(), band_frames(&mono, &edges))
+            (s.name.clone(), band_frames(&mono, &edges, hop))
         })
         .filter(|(_, f)| !f.is_empty())
         .collect();
@@ -783,11 +807,30 @@ pub fn structure(p: &Project) -> Value {
 // ---------------------------------------------------------------- digest + diff
 
 pub fn ears_report(e: &mut Engine, focus_track: Option<&str>) -> Result<Value> {
+    ears_report_mode(e, focus_track, false)
+}
+
+/// The ears digest. `fast` is for choosing between candidate renders in the
+/// producer loop: the SAME full-quality render and DSP, but the masking
+/// matrix is analysed at half the frame rate and the display-only loudness
+/// series is skipped. Every other number is identical to the full report;
+/// the kept render always gets the full report.
+pub fn ears_report_mode(e: &mut Engine, focus_track: Option<&str>, fast: bool) -> Result<Value> {
+    use crate::producer::prof;
+    let t = std::time::Instant::now();
     let rid = project_hash(&e.project);
-    let lr = loudness_report(e, false)?;
+    prof("ears.hash", t);
+    let t = std::time::Instant::now();
+    let lr = loudness_report_opts(e, false, !fast)?;
+    prof("ears.loudness", t);
+    let t = std::time::Instant::now();
     let m = e.mix()?;
     let report = analysis::analyze(&m);
+    prof("ears.analyze", t);
+    let t = std::time::Instant::now();
     let sec = crate::ears::analyze_sections(&e.project, &m.left, &m.right, &m.track_info, 3);
+    prof("ears.sections", t);
+    let t = std::time::Instant::now();
     let (mut arts, _) = crate::ears::detect_artifacts(
         &m.left,
         &m.right,
@@ -798,8 +841,13 @@ pub fn ears_report(e: &mut Engine, focus_track: Option<&str>) -> Result<Value> {
     );
     crate::ears::mask_drum_clicks(&mut arts, &crate::ears::drum_onsets(&e.project), 0);
     drop(m);
+    prof("ears.artifacts", t);
     let clicks = arts.iter().filter(|a| a.kind == "click").count();
-    let (mask, mask_sec) = masking(e, None, 5).unwrap_or_default();
+    let t = std::time::Instant::now();
+    let hop = if fast { MASK_HOP_FAST } else { MASK_HOP };
+    let (mask, mask_sec) = masking_hop(e, None, 5, hop).unwrap_or_default();
+    prof("ears.masking", t);
+    let t = std::time::Instant::now();
     let lead = focus_track.map(String::from).or_else(|| {
         ["lead", "melody", "chops", "flip"]
             .iter()
@@ -811,6 +859,7 @@ pub fn ears_report(e: &mut Engine, focus_track: Option<&str>) -> Result<Value> {
         .and_then(|t| hook_analysis(&e.project, t).ok());
     let groove = groove_analysis(&e.project);
     let st = structure(&e.project);
+    prof("ears.symbolic", t);
     let mut f: Vec<(f32, String, Value)> = Vec::new();
     for x in lr["findings"].as_array().cloned().unwrap_or_default() {
         f.push((
@@ -929,10 +978,12 @@ pub fn ears_report(e: &mut Engine, focus_track: Option<&str>) -> Result<Value> {
         technical,
         musical,
         findings: f.iter().take(7).map(|x| x.1.clone()).collect(),
+        fast,
     };
     remember(summary.clone());
     Ok(json!({
         "render_id": rid,
+        "mode": if fast { "fast" } else { "full" },
         "scores": {"technical": r1(technical), "musical": r1(musical), "by_area": {"mix": report.score, "loudness_lufs": summary.integrated_lufs, "true_peak_dbtp": tp, "psr_min_db": summary.psr_min_db, "masking_pairs": mask.len(), "distinct_sections": distinct, "hook_score": hook.as_ref().map(|h| h["hook_score"].clone())}},
         "top_findings": f.iter().take(7).map(|x| json!({"severity": r2(x.0), "message": x.1, "suggested_call": x.2})).collect::<Vec<_>>(),
         "next_best_action": f.iter().find(|x| !x.2.is_null()).map(|x| x.2.clone()),
@@ -1056,6 +1107,60 @@ mod tests {
         let h1 = project_hash(&p);
         p.bpm = 121.0;
         assert_ne!(h1, project_hash(&p));
+    }
+
+    /// The fast ears (producer loop) must agree with the full ears on every
+    /// number the loop decides with, and reach the same keep/reject verdict.
+    #[test]
+    fn fast_ears_agree_with_full_ears() {
+        let d = std::env::temp_dir().join("beatbox_listen_fast_tests");
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        e.call("generate_beat", &json!({"style": "trap", "seed": 4}))
+            .unwrap();
+        let measure = |e: &mut Engine, fast: bool| {
+            let r = ears_report_mode(e, None, fast).unwrap();
+            assert_eq!(r["mode"], if fast { "fast" } else { "full" });
+            recall(r["render_id"].as_str().unwrap()).unwrap()
+        };
+        let (fa, ua) = (measure(&mut e, true), measure(&mut e, false));
+        // a candidate revision: lead up, hats down
+        e.call("set_mixer", &json!({"track": "lead", "volume_db": 4.0}))
+            .unwrap();
+        e.call("set_mixer", &json!({"track": "hat", "volume_db": -6.0}))
+            .unwrap();
+        let (fb, ub) = (measure(&mut e, true), measure(&mut e, false));
+        for (f, u) in [(&fa, &ua), (&fb, &ub)] {
+            assert!(f.fast && !u.fast);
+            // same render, same loudness numbers
+            assert_eq!(f.integrated_lufs, u.integrated_lufs);
+            assert_eq!(f.true_peak_dbtp, u.true_peak_dbtp);
+            assert_eq!(f.psr_min_db, u.psr_min_db);
+            assert_eq!(f.lra_lu, u.lra_lu);
+            assert_eq!(f.sections, u.sections);
+            assert_eq!(f.bands, u.bands);
+            assert_eq!(f.musical, u.musical);
+            // masking is analysed at half the frame rate: within tolerance
+            let sum = |x: &RenderSummary| x.masking.iter().map(|m| m.1).sum::<f32>();
+            assert!(
+                (sum(f) - sum(u)).abs() <= 1.0,
+                "masking fast {:?} vs full {:?}",
+                f.masking,
+                u.masking
+            );
+            assert!(
+                (f.technical - u.technical).abs() <= 1.0,
+                "technical fast {} vs full {}",
+                f.technical,
+                u.technical
+            );
+            if let (Some(a), Some(b)) = (f.masking.first(), u.masking.first()) {
+                assert!((a.1 - b.1).abs() <= 1.0, "{a:?} vs {b:?}");
+            }
+        }
+        // the decision: same diff verdict either way
+        let (vf, vu) = (diff(&fa, &fb), diff(&ua, &ub));
+        assert_eq!(vf["verdict"], vu["verdict"], "fast {vf}\nfull {vu}");
     }
 
     #[test]

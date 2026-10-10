@@ -47,6 +47,9 @@ pub struct Transport {
     pub pending: Vec<TransportCmd>,
 }
 
+/// Full renders kept by project hash.
+const RENDER_CACHE: usize = 3;
+
 pub struct Engine {
     pub transport: Transport,
     pub project: Project,
@@ -60,6 +63,13 @@ pub struct Engine {
     pub revision: u64,
     pub log: Vec<LogEntry>,
     cached_mix: Option<(u64, Arc<Mix>)>,
+    /// Full renders keyed by project hash (the same project renders to the
+    /// same audio), so a tool that renders a candidate and then applies it
+    /// does not make the next listener render it again.
+    render_cache: Vec<(String, Arc<Mix>)>,
+    /// Pre-fader track audio reused across renders that only move faders or
+    /// the master (the producer turns it on for its loop; it costs memory).
+    pub track_cache: Option<render::TrackCache>,
 }
 
 const MAX_UNDO: usize = 100;
@@ -77,6 +87,8 @@ impl Engine {
             revision: 0,
             log: Vec::new(),
             cached_mix: None,
+            render_cache: Vec::new(),
+            track_cache: None,
         };
         e.project.ensure_fx_ids();
         e
@@ -268,24 +280,55 @@ impl Engine {
         }
     }
 
-    /// Render the song (cached per revision) with stems.
+    /// Render the song (cached per revision and by project hash) with
+    /// per-track stats.
     pub fn mix(&mut self) -> Result<Arc<Mix>> {
         if let Some((rev, m)) = &self.cached_mix {
             if *rev == self.revision {
                 return Ok(m.clone());
             }
         }
-        self.bank.sync(&self.project.samples);
-        let m = Arc::new(render::render(
-            &self.project,
+        let p = self.project.clone();
+        let m = self.render_version(&p)?;
+        self.cached_mix = Some((self.revision, m.clone()));
+        Ok(m)
+    }
+
+    /// Remember a full render of `p` made earlier (same options as `mix`).
+    pub fn prime_render(&mut self, p: &Project, m: Arc<Mix>) {
+        let key = crate::listen::project_hash(p);
+        self.render_cache.retain(|(k, _)| *k != key);
+        if self.render_cache.len() >= RENDER_CACHE {
+            self.render_cache.remove(0);
+        }
+        self.render_cache.push((key, m));
+    }
+
+    /// Render any project version with per-track stats. Full-quality render;
+    /// the last couple of renders are kept by project hash and reused.
+    pub fn render_version(&mut self, p: &Project) -> Result<Arc<Mix>> {
+        let key = crate::listen::project_hash(p);
+        if let Some(i) = self.render_cache.iter().position(|(k, _)| *k == key) {
+            let hit = self.render_cache.remove(i);
+            let m = hit.1.clone();
+            self.render_cache.push(hit);
+            return Ok(m);
+        }
+        self.bank.sync(&p.samples);
+        let m = Arc::new(render::render_cached(
+            p,
             &self.bank,
             &RenderOptions {
                 // measure tracks without holding every stem in RAM (31-track songs)
                 track_stats: true,
                 ..Default::default()
             },
+            self.track_cache.as_mut(),
         )?);
-        self.cached_mix = Some((self.revision, m.clone()));
+        if self.render_cache.len() >= RENDER_CACHE {
+            self.render_cache.remove(0);
+        }
+        self.render_cache.push((key, m.clone()));
         Ok(m)
     }
 
@@ -308,19 +351,6 @@ impl Engine {
                         .join(", ")
                 )
             })
-    }
-
-    /// Render any project version (not cached) with stems.
-    pub fn render_version(&mut self, p: &Project) -> Result<Mix> {
-        self.bank.sync(&p.samples);
-        render::render(
-            p,
-            &self.bank,
-            &RenderOptions {
-                track_stats: true,
-                ..Default::default()
-            },
-        )
     }
 
     pub fn analyze(&mut self) -> Result<analysis::Report> {

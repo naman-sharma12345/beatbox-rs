@@ -443,6 +443,9 @@ pub fn tools() -> Vec<Tool> {
                     p.master_effects.insert(li, Effect::Gain(GainFx::default()));
                 }
                 let gi = p.master_effects.len() - 2;
+                // name new effects now, as applying will: the rendered
+                // candidate and the applied project then hash the same
+                p.ensure_fx_ids();
                 let mut iters = Vec::new();
                 let max_it = u_or(a, "max_iterations", 4).clamp(1, 8);
                 let mut last = analysis::loudness(&[], &[]);
