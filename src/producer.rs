@@ -2241,9 +2241,15 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         let chords = cx.chords(&sec.kind);
         if has("harmony") {
             let notes = if harmony_style == "drone" {
-                // tanpura: root + fifth (+ upper root), re-struck every 2 bars
+                // tanpura: root + fifth (+ upper root), re-struck every 2 bars;
+                // an octave up when a bass/808 owns the low end
                 let mut v = Vec::new();
-                let base = (pb.harmony.octave + 1) * 12 + key_pc as i32;
+                let lift = if roles.iter().any(|r| r == "bass") {
+                    1
+                } else {
+                    0
+                };
+                let base = (pb.harmony.octave + 1 + lift) * 12 + key_pc as i32;
                 let mut t = 0.0;
                 while t < end {
                     for (k, d) in [0, 7, 12].iter().enumerate() {
@@ -2439,7 +2445,8 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     for (t, db) in [
         ("lead", rs),
         ("counter", rs - 2.0),
-        ("harmony", rs + 1.0),
+        // the harmony role's track is "chords" (track_name)
+        ("chords", rs + 1.0),
         ("texture", rs),
         ("snare", rs - 6.0),
         ("tabla", rs - 4.0),
@@ -2477,7 +2484,7 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         )?;
     }
     // carve: low cut on everything melodic so the low end belongs to kick + bass
-    for t in ["harmony", "lead", "counter", "texture"] {
+    for t in ["chords", "lead", "counter", "texture"] {
         if have(e, t) {
             e.call_from(
                 "add_effect",
@@ -2540,7 +2547,7 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             )?;
         }
     }
-    if have(e, "harmony")
+    if have(e, "chords")
         && plan
             .palette
             .get("harmony")
@@ -2549,7 +2556,7 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     {
         e.call_from(
             "add_effect",
-            &json!({"track": "harmony", "type": "width", "params": {"amount": 1.3}}),
+            &json!({"track": "chords", "type": "width", "params": {"amount": 1.3}}),
             "producer",
         )?;
     }
@@ -2619,13 +2626,28 @@ fn prof_drain() -> Value {
 /// Gain staging + mastering for the plan (balance_mix then master_assistant).
 pub fn mix_and_master(e: &mut Engine, plan: &Plan) -> Result<Value> {
     let pb = playbook(&plan.genre)?;
-    let offsets: serde_json::Map<String, Value> = plan
+    let mut offsets: serde_json::Map<String, Value> = plan
         .knobs
         .offsets
         .iter()
         .filter(|(t, _)| e.project.track_index(t).is_ok())
         .map(|(k, v)| (k.clone(), json!(v)))
         .collect();
+    // sustained beds read as "keys" by track name but fill the low mids like
+    // pads: sit a pad-like harmony 4 dB under the keys target; the tabla
+    // dayan rings at Sa (~260-350 Hz) and plays densely, so 4 dB under perc
+    let padlike = |p: &str| {
+        ["pad", "choir", "string", "tanpura", "drone", "organ"]
+            .iter()
+            .any(|w| p.contains(w))
+    };
+    let have = |t: &str| e.project.track_index(t).is_ok();
+    if have("chords") && plan.palette.get("harmony").is_some_and(|h| padlike(h)) {
+        offsets.entry("chords").or_insert(json!(-4.0));
+    }
+    if have("tabla") {
+        offsets.entry("tabla").or_insert(json!(-4.0));
+    }
     let t = std::time::Instant::now();
     let bal = e.call_from(
         "balance_mix",

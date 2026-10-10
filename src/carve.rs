@@ -41,7 +41,12 @@ pub fn carve_for(
         return None;
     }
     let mud = |g: f32| if bass_present { Some((320.0, g)) } else { None };
-    Some(match role_of(name, inst) {
+    // a slow-attack synth on a "chords" track is a pad, whatever its name says
+    let role = match (role_of(name, inst), first) {
+        ("keys" | "lead", Instrument::Synth(s)) if s.amp_env.attack >= 0.25 => "pad",
+        (r, _) => r,
+    };
+    Some(match role {
         "kick" | "bass" | "fx" => return None,
         "snare" => (110.0, None),
         "hats" => (320.0, None),
