@@ -14,7 +14,7 @@
 use super::theme::Tokens;
 use super::widgets::*;
 use super::Studio;
-use crate::note_edit::{apply_shift, notes_json, snap_to, NoteShift};
+use crate::note_edit::{apply_shift, keys_of, notes_json, reselect, snap_to, NoteKey, NoteShift};
 use crate::project::{Note, Project};
 use crate::theory;
 use crate::timebase::{tick_to_step, NoteValue};
@@ -54,6 +54,9 @@ pub struct PianoState {
     pub snap: usize,
     /// (pattern, track) the selection belongs to.
     pub owner: (usize, usize),
+    /// After a move: the moved notes to select again once the engine has
+    /// stored (and possibly re-sorted) them.
+    pub reselect: Option<Vec<NoteKey>>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +89,9 @@ impl Studio {
         let pname = pat.name.clone();
         let color = track_color(&t.name, t.instrument.kind_name());
         let notes: Vec<Note> = pat.notes(&t.name).to_vec();
+        if let Some(keys) = self.piano.reselect.take() {
+            self.piano.selected = reselect(&notes, &keys);
+        }
         self.piano.selected.retain(|i| *i < notes.len());
         let steps = pat.steps() as f32;
         let is_drum = t.instrument.is_drum();
@@ -103,6 +109,13 @@ impl Studio {
             }
         };
         let (full, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+        // never draw past the visible panel (the velocity lane sat under its edge)
+        let vis = full.intersect(ui.clip_rect());
+        let full = if vis.width() > 120.0 && vis.height() > HEADER_H + VEL_H + 40.0 {
+            vis
+        } else {
+            full
+        };
         let painter = ui.painter_at(full);
         painter.rect_filled(full, 0.0, tk.panel_bg);
         // ---- header: title, hint, snap selector, ops ----
@@ -115,26 +128,8 @@ impl Studio {
             FontId::proportional(10.5),
             tk.header_text,
         );
-        painter
-            .with_clip_rect(Rect::from_min_max(
-                header.min,
-                pos2(header.max.x - 292.0, header.max.y),
-            ))
-            .text(
-                pos2(header.min.x + 84.0, header.center().y),
-                Align2::LEFT_CENTER,
-                format!(
-                    "{} · {} · {} notes · {} sel",
-                    t.name,
-                    pat.name,
-                    notes.len(),
-                    self.piano.selected.len()
-                ),
-                FontId::proportional(10.0),
-                tk.text_dim,
-            );
         let bar = Rect::from_min_max(
-            pos2(header.max.x - 290.0, header.min.y + 1.0),
+            pos2(header.min.x + 84.0, header.min.y + 1.0),
             pos2(header.max.x - 4.0, header.max.y - 1.0),
         );
         let mut tb = ui.new_child(
@@ -192,6 +187,28 @@ impl Studio {
                     ui.selectable_value(&mut self.piano.snap, i, *label);
                 }
             });
+        // the title takes what the toolbar leaves (the toolbar grows right to left)
+        let title_end = tb.min_rect().min.x - 6.0;
+        if title_end > header.min.x + 90.0 {
+            painter
+                .with_clip_rect(Rect::from_min_max(
+                    header.min,
+                    pos2(title_end, header.max.y),
+                ))
+                .text(
+                    pos2(header.min.x + 84.0, header.center().y),
+                    Align2::LEFT_CENTER,
+                    format!(
+                        "{} · {} · {} notes · {} sel",
+                        t.name,
+                        pat.name,
+                        notes.len(),
+                        self.piano.selected.len()
+                    ),
+                    FontId::proportional(10.0),
+                    tk.text_dim,
+                );
+        }
         if let Some((id, mut a)) = op {
             if let (Some(obj), Value::Object(sel)) =
                 (a.as_object_mut(), sel_or_all(&self.piano.selected))
@@ -391,7 +408,12 @@ impl Studio {
                 if d.shift.d_steps.abs() > 1e-4 || d.shift.d_semi != 0 {
                     let moved = apply_shift(&notes, &self.piano.selected, &d.shift, steps, g);
                     self.write_notes(&tname, &pname, &moved);
-                    self.piano.selected.clear();
+                    // keep the moved notes selected
+                    let mut sel = self.piano.selected.clone();
+                    if !sel.contains(&d.shift.index) {
+                        sel.push(d.shift.index);
+                    }
+                    self.piano.reselect = Some(keys_of(&moved, &sel));
                 }
             }
             self.dragging = false;
@@ -460,8 +482,8 @@ impl Studio {
                 };
                 let moved = apply_shift(&notes, &self.piano.selected, &d, steps, g);
                 self.write_notes(&tname, &pname, &moved);
-                // keep the selection: notes stay in the same order unless they cross
-                self.piano.selected.clear();
+                // keep the selection, re-found by value once the engine re-sorts
+                self.piano.reselect = Some(keys_of(&moved, &self.piano.selected));
             }
             if del && !self.piano.selected.is_empty() {
                 let rest: Vec<Note> = notes

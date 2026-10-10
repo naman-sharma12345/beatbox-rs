@@ -448,7 +448,8 @@ impl Studio {
         );
         row.spacing_mut().item_spacing.x = 6.0;
         if is_bus {
-            row.add_space(bw + 6.0);
+            // keep M in the same column as on track strips (item spacing adds the gap)
+            row.add_space(bw);
         } else if text_toggle(&mut row, Vec2::new(bw, 18.0), "S", s.solo, t.solo, "Solo").clicked()
         {
             self.call("set_mixer", json!({"track": name, "solo": !s.solo}));

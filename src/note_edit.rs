@@ -50,6 +50,38 @@ pub fn apply_shift(
     out
 }
 
+/// Identity of a note for re-finding it after an edit: (start, pitch, len).
+pub type NoteKey = (f32, u8, f32);
+
+/// Keys of the selected notes in `notes` (taken after a move, before the
+/// engine re-sorts them).
+pub fn keys_of(notes: &[Note], selected: &[usize]) -> Vec<NoteKey> {
+    selected
+        .iter()
+        .filter_map(|i| notes.get(*i))
+        .map(|n| (n.start, n.pitch, n.len))
+        .collect()
+}
+
+/// Indices in `notes` of the notes matching `keys` (each key used once), so a
+/// selection survives a drag or arrow-key move even when the engine re-sorts
+/// the note list.
+pub fn reselect(notes: &[Note], keys: &[NoteKey]) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::new();
+    for k in keys {
+        if let Some(i) = notes.iter().enumerate().position(|(i, n)| {
+            !out.contains(&i)
+                && (n.start - k.0).abs() < 1e-3
+                && n.pitch == k.1
+                && (n.len - k.2).abs() < 1e-3
+        }) {
+            out.push(i);
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
 /// Notes as `add_notes` JSON (keeps probability, microtiming and slides).
 pub fn notes_json(notes: &[Note]) -> Vec<Value> {
     notes
@@ -151,5 +183,31 @@ mod tests {
         let v = notes_json(&[n]);
         assert_eq!(v[0]["prob"], json!(0.6f32));
         assert_eq!(v[0]["slide_to"], json!(38));
+    }
+    #[test]
+    fn selection_survives_a_move_and_a_resort() {
+        let n = |s: f32, p: u8| Note::new(s, 1.0, p, 0.8);
+        let notes = vec![n(0.0, 60), n(4.0, 62), n(8.0, 64)];
+        let d = NoteShift {
+            index: 2,
+            resize: false,
+            d_steps: -6.0,
+            d_semi: 1,
+        };
+        let moved = apply_shift(&notes, &[0, 2], &d, 16.0, 0.25);
+        let keys = keys_of(&moved, &[0, 2]);
+        // the engine stores notes sorted by start
+        let mut stored = moved.clone();
+        stored.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+        let sel = reselect(&stored, &keys);
+        assert_eq!(sel.len(), 2);
+        let got: Vec<(f32, u8)> = sel
+            .iter()
+            .map(|i| (stored[*i].start, stored[*i].pitch))
+            .collect();
+        assert!(
+            got.contains(&(0.0, 61)) && got.contains(&(2.0, 65)),
+            "{got:?}"
+        );
     }
 }

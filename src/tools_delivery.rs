@@ -667,7 +667,9 @@ mod tests {
         }
         let mut e = eng("beatbox_delivery_48k_mp3");
         // a hot master: the limiter sits at -1.5 dBTP and LAME overshoots it
-        let m = e.call("export_audio", &json!({"format": "mp3", "sample_rate": 48000, "target_lufs": -8, "true_peak_ceiling": -1, "path": "out/c48.mp3", "section": 0})).unwrap();
+        // (-9 LUFS: since the EQ carve the lofi loop has less low-mid energy
+        // and -8 is past what the limiter reaches in four passes)
+        let m = e.call("export_audio", &json!({"format": "mp3", "sample_rate": 48000, "target_lufs": -9, "true_peak_ceiling": -1, "path": "out/c48.mp3", "section": 0})).unwrap();
         assert_eq!(m["decoded"]["sample_rate"], 48000, "{m}");
         let path = e.resolve("out/c48.mp3");
         let (rate, secs, tp, lufs) = file_stats(&path);

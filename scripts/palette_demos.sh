@@ -14,7 +14,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 # palette  style  key  bpm  seed
 DEMOS="dark_trap trap F 140 11
-dhh_grit boom_bap D 92 21
+dhh_grit desi_hiphop D 92 21
 boom_bap_dusty boom_bap A 90 3
 drill_slide drill G 142 5
 melodic_airy trap C 136 7"
