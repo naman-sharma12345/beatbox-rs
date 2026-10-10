@@ -19,6 +19,17 @@ fn plan_props() -> Value {
         "mood": {"type": "string", "description": "dark, sad, hype, chill, jazzy, hopeful, devotional, smooth (default: read from the brief)"},
         "duration_s": {"type": "number", "description": "Approximate song length; sections are dropped/added to fit"},
         "seed": {"type": "integer", "description": "Omit for a fresh random seed (OS entropy + time, recorded in the plan). Give one to reproduce a beat exactly (same seed + args + generator version = same song)"},
+        "intent": {"type": "object", "description": "Structured creative intent - fill this in rather than relying on keywords in the brief. The plan's 'constraints' lists what was applied, adjusted or ignored.", "properties": {
+            "mood": {"type": "string", "description": "dark, sad, hype, chill, jazzy, hopeful, devotional, smooth (others are kept but use the genre's default harmony)"},
+            "energy": {"type": "number", "description": "0..1"},
+            "emotion": {"type": "string", "description": "The emotional intent in a few words ('cold confidence', 'bittersweet memory')"},
+            "hero": {"type": "string", "enum": ["motif", "groove", "bass", "texture"], "description": "What carries the beat"},
+            "density": {"type": "string", "enum": ["sparse", "balanced", "dense"]},
+            "rhythmic_feel": {"type": "array", "items": {"type": "string", "enum": ["half_time", "backbeat", "triplet", "swing", "straight", "bounce", "driving", "rolling", "sparse_hats"]}},
+            "motif": {"type": "object", "properties": {"contour": {"type": "string", "enum": ["arch", "descending", "ascending", "wave", "static", "leap_fall"]}, "rhythm": {"type": "string", "enum": ["on_grid", "syncopated", "long_short", "triplet"]}, "density": {"type": "number", "description": "0..1 notes in the motif"}}},
+            "palette": {"type": "object", "description": "{role: preset}, roles lead, harmony, counter, texture, bass, kick, snare, hat, open_hat, perc, tabla, bayan; presets from get_guide"},
+            "contrasts": {"type": "array", "items": {"type": "string", "enum": ["half_time_hook", "silence_before_drop", "beat_switch", "odd_phrase", "drum_dropout", "unusual_instrument", "key_change", "bass_kick_call_response", "sparse_to_dense"]}, "description": "Purposeful contrasts to place (replace the random wildcards)"}
+        }},
         "method": {"type": "string", "description": "Force a generation method: template (the genre's patterns, varied), procedural (generated from the genre's distributions), reference_guided (needs reference_path). Default: drawn per beat"},
         "authored": {"type": "object", "description": "AI-authored MIDI: {section name|kind|'*': {role: [{start, len, pitch, vel}]}} played verbatim (see author_midi)"},
         "use_samples": {"type": "boolean", "description": "Use the genre's real public-domain drum kit (downloaded once, cached). Default true; falls back to synth drums offline"},
@@ -39,7 +50,9 @@ fn plan_args(a: &Value) -> PlanArgs {
         } else {
             crate::creative::fresh_seed()
         },
-        seed_source: if a.get("seed").map(|v| !v.is_null()).unwrap_or(false) {
+        seed_source: if a.get("seed").map(|v| !v.is_null()).unwrap_or(false)
+            && !crate::tools::seed_was_fresh()
+        {
             "explicit".into()
         } else {
             "entropy".into()
@@ -49,6 +62,7 @@ fn plan_args(a: &Value) -> PlanArgs {
         method: s_opt(a, "method"),
         reference: None,
         authored: parse_authored(&a["authored"]),
+        intent: a["intent"].clone(),
     }
 }
 
@@ -112,7 +126,9 @@ pub fn tools() -> Vec<Tool> {
             schema: || obj(plan_props(), &[]),
             run: |_, a| {
                 let p = producer::plan_track(&plan_args(a))?;
-                Ok(json!({"plan": p, "next": "apply_plan {plan} then critique_track"}))
+                let applied: Vec<&crate::creative::Constraint> = p.constraints.iter().filter(|c| c.status != "ignored").collect();
+                let ignored: Vec<&crate::creative::Constraint> = p.constraints.iter().filter(|c| c.status == "ignored").collect();
+                Ok(json!({"seed": p.seed, "constraints": {"applied": applied, "ignored": ignored}, "plan": p, "next": "apply_plan {plan} then critique_track"}))
             },
         },
         Tool {
@@ -136,7 +152,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "critique_track",
-            description: "Step 3: listen to the current project as a producer would and score it: technical (delivery QC, artifacts, mix analyzer) and musical (hook lift vs verse, energy curve vs the plan, motif repetition across section kinds, hook vs verse melodic density, key clarity, length), plus reference match when given. Every finding carries the concrete fix revise_track will apply. Pass the plan for plan-aware checks.",
+            description: "Step 3: diagnostics, not a quality rating. Listen to the current project and report heuristic numbers: technical (delivery QC, artifacts, mix analyzer) and musical (hook lift vs verse, energy curve vs the plan, motif repetition across section kinds, hook vs verse melodic density, key clarity, length), plus reference match when given. Every finding carries the concrete fix revise_track will apply. Pass the plan for plan-aware checks.",
             mutates: false,
             schema: || obj(json!({"plan": {"type": "object"}, "reference_path": {"type": "string"}}), &["plan"]),
             run: |e, a| {

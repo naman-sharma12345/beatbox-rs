@@ -314,7 +314,7 @@ pub fn judge(dir: &Path, backend: Option<&str>, command: Option<String>) -> Resu
 
 /// Join every rating and judgment to its source and turn the notes into
 /// revision hints. This is the only step that reads the key.
-pub fn reveal(dir: &Path) -> Result<Value> {
+pub fn reveal(dir: &Path, preferences: Option<&Path>) -> Result<Value> {
     let key: Value = serde_json::from_str(&std::fs::read_to_string(key_path(dir))?)?;
     let map = key["mapping"].as_object().cloned().unwrap_or_default();
     let ratings = read_jsonl(&dir.join("ratings.jsonl"));
@@ -378,7 +378,41 @@ pub fn reveal(dir: &Path) -> Result<Value> {
         dir.with_file_name(format!("{id}.feedback.json")),
         serde_json::to_string_pretty(&out)?,
     )?;
+    // blind preference is tracked on its own, apart from any diagnostic score
+    if let Some(p) = preferences {
+        let done = read_jsonl(p).iter().any(|x| x["session"] == id);
+        if !done {
+            if let Some(d) = p.parent() {
+                std::fs::create_dir_all(d)?;
+            }
+            for (label, v) in &per {
+                append(
+                    p,
+                    &json!({"session": id, "label": label, "name": v["name"], "source": v["source"], "preferred_by": v["preferred_by"], "listeners": ratings.len() + judgments.len(), "at_unix": now()}),
+                )?;
+            }
+        }
+    }
     Ok(out)
+}
+
+/// Running tally of blind preferences per beat name (the quality signal).
+pub fn preferences(path: &Path) -> Value {
+    let rows = read_jsonl(path);
+    let mut by: std::collections::BTreeMap<String, (u64, u64, u64)> = Default::default();
+    for r in &rows {
+        let e = by
+            .entry(r["name"].as_str().unwrap_or("?").to_string())
+            .or_default();
+        e.0 += r["preferred_by"].as_u64().unwrap_or(0);
+        e.1 += r["listeners"].as_u64().unwrap_or(0);
+        e.2 += 1;
+    }
+    json!({
+        "path": path.to_string_lossy(),
+        "beats": by.iter().map(|(k, (w, n, s))| json!({"name": k, "preferred": w, "listener_votes": n, "sessions": s})).collect::<Vec<_>>(),
+        "note": "Blind listener preference is the quality signal; diagnostic scores and novelty are tracked separately.",
+    })
 }
 
 #[cfg(test)]
@@ -435,7 +469,11 @@ mod tests {
             judge(&dir, Some("stub"), None).unwrap()["status"],
             "no_backend"
         );
-        let r = reveal(&dir).unwrap();
+        let prefs = d.join("prefs.jsonl");
+        let r = reveal(&dir, Some(&prefs)).unwrap();
+        reveal(&dir, Some(&prefs)).unwrap();
+        let t = preferences(&prefs);
+        assert_eq!(t["beats"].as_array().unwrap().len(), 2, "{t}");
         assert_eq!(r["by_label"]["A"]["preferred_by"], 1);
         assert!(!r["revision_hints"].as_array().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(d);

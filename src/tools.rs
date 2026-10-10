@@ -90,8 +90,47 @@ pub(crate) fn pitch_of(v: &Value) -> Result<u8> {
     }
     bail!("pitch must be a MIDI number or a note name like C4")
 }
+/// The call's seed. Top-level calls that omit it get a fresh one injected by
+/// `Engine::call_from` (returned in the result as `seed`); the fallback only
+/// applies to nested calls a tool makes without one.
 pub(crate) fn seed_of(a: &Value) -> u64 {
     u_or(a, "seed", 0x5EED)
+}
+
+thread_local! {
+    static CALL_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static SEED_FRESH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Nesting depth of tool calls on this thread (top level = 1).
+pub struct CallDepth(u32);
+
+impl CallDepth {
+    pub fn enter() -> Self {
+        let d = CALL_DEPTH.with(|c| {
+            c.set(c.get() + 1);
+            c.get()
+        });
+        CallDepth(d)
+    }
+    pub fn top(&self) -> bool {
+        self.0 == 1
+    }
+}
+
+impl Drop for CallDepth {
+    fn drop(&mut self) {
+        CALL_DEPTH.with(|c| c.set(c.get().saturating_sub(1)));
+    }
+}
+
+pub(crate) fn set_seed_fresh(v: bool) {
+    SEED_FRESH.with(|c| c.set(v));
+}
+
+/// Whether the current top-level call's seed was injected (not given).
+pub(crate) fn seed_was_fresh() -> bool {
+    SEED_FRESH.with(|c| c.get())
 }
 
 pub(crate) fn pattern_idx(p: &Project, a: &Value) -> Result<usize> {

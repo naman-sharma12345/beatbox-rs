@@ -2010,12 +2010,23 @@ pub struct WildTargets<'a> {
 /// Pick 1-3 wildcards (weighted toward roles that serve the direction),
 /// apply them and say what each is for.
 pub fn apply_wildcards(
-    mut t: WildTargets,
+    t: WildTargets,
     dir: &Direction,
+    forced: &[String],
+    skipped: &mut Vec<String>,
     rng: &mut Rng,
     dec: &mut Vec<Decision>,
 ) -> Vec<Wildcard> {
-    let n = 1 + rng.weighted(&[0.35, 0.45, 0.2]);
+    let mut n = 1 + rng.weighted(&[0.35, 0.45, 0.2]);
+    // contrasts the intent asked for come first and replace the random draw
+    let forced_idx: Vec<usize> = forced
+        .iter()
+        .filter_map(|f| WILDCARDS.iter().position(|w| w.0 == f))
+        .collect();
+    if !forced_idx.is_empty() {
+        n = forced_idx.len();
+    }
+    let mut fi = 0;
     let mut w: Vec<f32> = WILDCARDS
         .iter()
         .map(|(_, role)| {
@@ -2037,12 +2048,20 @@ pub fn apply_wildcards(
         .collect();
     let mut out = Vec::new();
     let mut tries = 0;
-    while out.len() < n && tries < 20 {
+    while out.len() < n && tries < 20 + forced_idx.len() {
         tries += 1;
-        let i = rng.weighted(&w);
-        if w[i] <= 0.0 {
+        let (i, is_forced) = if fi < forced_idx.len() {
+            fi += 1;
+            (forced_idx[fi - 1], true)
+        } else if !forced_idx.is_empty() {
             break;
-        }
+        } else {
+            let i = rng.weighted(&w);
+            if w[i] <= 0.0 {
+                break;
+            }
+            (i, false)
+        };
         w[i] = 0.0;
         let (name, role) = WILDCARDS[i];
         let hooks: Vec<usize> = (0..t.sections.len())
@@ -2183,7 +2202,272 @@ pub fn apply_wildcards(
                 target,
                 why,
             });
+        } else if is_forced {
+            skipped.push(name.to_string());
         }
     }
     out
+}
+
+// ---------------------------------------------------------------- structured intent
+
+/// What was asked for and what happened to it (applied / adjusted / ignored).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Constraint {
+    pub field: String,
+    pub requested: serde_json::Value,
+    pub status: String,
+    pub note: String,
+}
+
+pub fn constraint(
+    v: &mut Vec<Constraint>,
+    field: &str,
+    requested: serde_json::Value,
+    status: &str,
+    note: impl Into<String>,
+) {
+    v.push(Constraint {
+        field: field.into(),
+        requested,
+        status: status.into(),
+        note: note.into(),
+    });
+}
+
+/// A structured creative intent, filled in by the connected model instead of
+/// relying on keyword matching of the brief.
+#[derive(Clone, Debug, Default)]
+pub struct Intent {
+    pub mood: Option<String>,
+    pub energy: Option<f32>,
+    pub emotion: Option<String>,
+    pub hero: Option<String>,
+    pub density: Option<String>,
+    pub rhythmic_feel: Vec<String>,
+    pub motif_contour: Option<String>,
+    pub motif_rhythm: Option<String>,
+    pub motif_density: Option<f32>,
+    pub palette: BTreeMap<String, String>,
+    pub contrasts: Vec<String>,
+}
+
+impl Intent {
+    /// Constrains the musical material (rhythm or motif), which the
+    /// template method cannot honour.
+    pub fn shapes_material(&self) -> bool {
+        !self.rhythmic_feel.is_empty()
+            || self.motif_contour.is_some()
+            || self.motif_rhythm.is_some()
+    }
+}
+
+pub const FEELS: &[&str] = &[
+    "half_time",
+    "backbeat",
+    "triplet",
+    "swing",
+    "straight",
+    "bounce",
+    "driving",
+    "rolling",
+    "sparse_hats",
+];
+pub const CONTOURS: &[&str] = &[
+    "arch",
+    "descending",
+    "ascending",
+    "wave",
+    "static",
+    "leap_fall",
+];
+pub const CELLS: &[&str] = &["on_grid", "syncopated", "long_short", "triplet"];
+pub const ROLES: &[&str] = &[
+    "lead", "harmony", "counter", "texture", "bass", "kick", "snare", "hat", "open_hat", "perc",
+    "tabla", "bayan",
+];
+
+pub fn contrast_alias(s: &str) -> Option<&'static str> {
+    let n = s.trim().to_lowercase().replace([' ', '-'], "_");
+    Some(match n.as_str() {
+        "half_time_hook" | "half_time" | "halftime" | "half_time_breakdown" => "half_time_hook",
+        "silence_before_drop" | "drop_silence" | "silence" | "pause_before_drop" => {
+            "silence_before_drop"
+        }
+        "beat_switch" | "switch" | "groove_switch" => "beat_switch",
+        "odd_phrase" | "odd_length" | "odd_bars" => "odd_phrase",
+        "drum_dropout" | "dropout" | "drop_out" | "breakdown" => "drum_dropout",
+        "unusual_instrument" | "unexpected_instrument" => "unusual_instrument",
+        "key_change" | "modulation" | "key_lift" => "key_change",
+        "bass_kick_call_response"
+        | "call_response"
+        | "808_call_response"
+        | "kick_808_call_response" => "bass_kick_call_response",
+        "sparse_to_dense" | "build" | "build_up" | "sparse_verse_dense_hook" => "sparse_to_dense",
+        _ => return None,
+    })
+}
+
+fn strs(v: &serde_json::Value) -> Vec<String> {
+    match v {
+        serde_json::Value::String(s) => s
+            .split([',', '+'])
+            .map(|x| x.trim().to_lowercase().replace([' ', '-'], "_"))
+            .filter(|x| !x.is_empty())
+            .collect(),
+        serde_json::Value::Array(a) => a
+            .iter()
+            .filter_map(|x| x.as_str())
+            .map(|x| x.trim().to_lowercase().replace([' ', '-'], "_"))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Parse and validate an intent object; every field lands in `cons` as
+/// applied/adjusted/ignored (contrasts are confirmed once applied).
+pub fn parse_intent(v: &serde_json::Value, cons: &mut Vec<Constraint>) -> Intent {
+    use serde_json::json;
+    let mut it = Intent::default();
+    let Some(m) = v.as_object() else {
+        if !v.is_null() {
+            constraint(
+                cons,
+                "intent",
+                v.clone(),
+                "ignored",
+                "intent must be an object",
+            );
+        }
+        return it;
+    };
+    for (k, x) in m {
+        match k.as_str() {
+            "mood" => match x.as_str() {
+                Some(s) => {
+                    let s = s.trim().to_lowercase();
+                    let known = INTENTS.iter().any(|(m, _)| *m == s);
+                    constraint(cons, "intent.mood", x.clone(), "applied", if known { "drives harmony pool, modes, energy and intent".to_string() } else { format!("'{s}' has no harmony pool of its own; the genre's default progressions are used") });
+                    it.mood = Some(s);
+                }
+                None => constraint(cons, "intent.mood", x.clone(), "ignored", "not a string"),
+            },
+            "energy" => match x.as_f64() {
+                Some(e) => {
+                    let c = (e as f32).clamp(0.15, 1.0);
+                    let st = if (c - e as f32).abs() > 1e-4 { "adjusted" } else { "applied" };
+                    constraint(cons, "intent.energy", x.clone(), st, format!("energy {c:.2} (0..1, floor 0.15)"));
+                    it.energy = Some(c);
+                }
+                None => constraint(cons, "intent.energy", x.clone(), "ignored", "energy is a number 0..1"),
+            },
+            "emotion" | "emotional_intent" => match x.as_str() {
+                Some(s) => {
+                    constraint(cons, "intent.emotion", x.clone(), "applied", "recorded as the direction's intent");
+                    it.emotion = Some(s.to_string());
+                }
+                None => constraint(cons, "intent.emotion", x.clone(), "ignored", "not a string"),
+            },
+            "hero" => match x.as_str().map(|s| s.to_lowercase()) {
+                Some(s) if ["motif", "groove", "bass", "texture"].contains(&s.as_str()) => {
+                    constraint(cons, "intent.hero", x.clone(), "applied", "the hero element shapes motif density, kick density, 808 mode, chord rhythm and mix");
+                    it.hero = Some(s);
+                }
+                _ => constraint(cons, "intent.hero", x.clone(), "ignored", "hero is motif, groove, bass or texture"),
+            },
+            "density" => match x.as_str().map(|s| s.to_lowercase()) {
+                Some(s) if ["sparse", "balanced", "dense"].contains(&s.as_str()) => {
+                    constraint(cons, "intent.density", x.clone(), "applied", "drives kick count, hat rate and harmonic rhythm");
+                    it.density = Some(s);
+                }
+                _ => constraint(cons, "intent.density", x.clone(), "ignored", "density is sparse, balanced or dense"),
+            },
+            "rhythmic_feel" | "feel" => {
+                for f in strs(x) {
+                    let f = if f == "halftime" { "half_time".to_string() } else { f };
+                    if FEELS.contains(&f.as_str()) {
+                        constraint(cons, "intent.rhythmic_feel", json!(f), "applied", "restricts the groove distribution");
+                        it.rhythmic_feel.push(f);
+                    } else {
+                        constraint(cons, "intent.rhythmic_feel", json!(f), "ignored", format!("unknown feel (known: {})", FEELS.join(", ")));
+                    }
+                }
+            }
+            "motif" => {
+                let Some(mo) = x.as_object() else {
+                    constraint(cons, "intent.motif", x.clone(), "ignored", "motif is {contour, rhythm, density}");
+                    continue;
+                };
+                for (mk, mv) in mo {
+                    match (mk.as_str(), mv) {
+                        ("contour", serde_json::Value::String(s)) if CONTOURS.contains(&s.as_str()) => {
+                            constraint(cons, "intent.motif.contour", mv.clone(), "applied", "main motif contour");
+                            it.motif_contour = Some(s.clone());
+                        }
+                        ("rhythm", serde_json::Value::String(s)) if CELLS.contains(&s.as_str()) => {
+                            constraint(cons, "intent.motif.rhythm", mv.clone(), "applied", "main motif rhythm cell");
+                            it.motif_rhythm = Some(s.clone());
+                        }
+                        ("density", serde_json::Value::Number(n)) => {
+                            let d = (n.as_f64().unwrap_or(0.5) as f32).clamp(0.2, 0.95);
+                            constraint(cons, "intent.motif.density", mv.clone(), "applied", format!("lead density {d:.2}"));
+                            it.motif_density = Some(d);
+                        }
+                        _ => constraint(cons, &format!("intent.motif.{mk}"), mv.clone(), "ignored", format!("contour: {}; rhythm: {}; density: 0..1", CONTOURS.join("/"), CELLS.join("/"))),
+                    }
+                }
+            }
+            "palette" | "sound_palette" => {
+                let Some(pm) = x.as_object() else {
+                    constraint(cons, "intent.palette", x.clone(), "ignored", "palette is {role: preset}");
+                    continue;
+                };
+                for (role, pv) in pm {
+                    let r = role.to_lowercase();
+                    match pv.as_str() {
+                        Some(p) if ROLES.contains(&r.as_str()) && crate::instruments::preset(p).is_some() => {
+                            constraint(cons, &format!("intent.palette.{r}"), pv.clone(), "applied", "sound for that role");
+                            it.palette.insert(r, p.to_string());
+                        }
+                        Some(p) if !ROLES.contains(&r.as_str()) => constraint(cons, &format!("intent.palette.{r}"), pv.clone(), "ignored", format!("unknown role (roles: {}); '{p}' not used", ROLES.join(", "))),
+                        _ => constraint(cons, &format!("intent.palette.{r}"), pv.clone(), "ignored", "unknown preset (see get_guide for presets)"),
+                    }
+                }
+            }
+            "contrasts" => {
+                for c in strs(x) {
+                    match contrast_alias(&c) {
+                        Some(w) => it.contrasts.push(w.to_string()),
+                        None => constraint(cons, "intent.contrasts", json!(c), "ignored", format!("unknown contrast (known: {})", WILDCARDS.iter().map(|w| w.0).collect::<Vec<_>>().join(", "))),
+                    }
+                }
+            }
+            other => constraint(cons, &format!("intent.{other}"), x.clone(), "ignored", "unknown intent field (mood, energy, emotion, hero, density, rhythmic_feel, motif, palette, contrasts)"),
+        }
+    }
+    it
+}
+
+/// Narrow the genre distribution to the requested rhythmic feel.
+pub fn apply_feel(sp: &mut GenSpec, feels: &[String]) {
+    for f in feels {
+        match f.as_str() {
+            "half_time" => sp.snare_modes = m(&[("half_time", 1.0)]),
+            "backbeat" => sp.snare_modes = m(&[("backbeat", 1.0)]),
+            "triplet" => sp.hat_rates = m(&[("8t", 1.0)]),
+            "driving" => sp.hat_rates = m(&[("16", 1.0)]),
+            "sparse_hats" => sp.hat_rates = m(&[("8", 1.0), ("4", 0.6)]),
+            "rolling" => sp.hat_rolls = Some([0.6, 0.9]),
+            "swing" => {
+                let [lo, hi] = sp.swing.unwrap_or([0.0, 0.2]);
+                sp.swing = Some([lo.max(0.15), (hi + 0.12).min(0.55)]);
+            }
+            "straight" => sp.swing = Some([0.0, 0.0]),
+            "bounce" => {
+                sp.kick_per_bar = Some([3.5, 5.5]);
+                sp.snare_variations = m(&[("pickup", 1.0), ("displaced", 1.0)]);
+            }
+            _ => {}
+        }
+    }
 }
