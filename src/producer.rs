@@ -3862,7 +3862,12 @@ mod tests {
             vec![0, -2, -4, -2]
         );
         let (frag, _) = crate::creative::develop(&m, &["fragment".to_string()], &mut rng);
-        assert_eq!(frag.len(), 2);
+        // the first half, repeated in the second half of the bar
+        assert_eq!(
+            frag.iter().map(|x| x.deg).collect::<Vec<_>>(),
+            vec![0, 2, 0, 2]
+        );
+        assert_eq!(frag[2].t, 8.0);
         let (_, oct) = crate::creative::develop(&m, &["register_up".to_string()], &mut rng);
         assert_eq!(oct, 1);
         let (disp, _) = crate::creative::develop(&m, &["displace".to_string()], &mut rng);
