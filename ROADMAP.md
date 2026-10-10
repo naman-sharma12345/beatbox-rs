@@ -23,6 +23,14 @@ Each sprint ends by re-rendering a reference beat with the new tools and compari
 - FL parity: playlist pattern clips, automation clips, route_bus with cycle check, scale_snap, ghost notes; saturator, haas, place_fx, move_effect, ab_compare
 - Registry: 163 MCP tools
 - Still open: persistent IDs + clip timeline (Sprint 6 identity work), golden-render tests, Wikimedia sample search
+## Studio UI port (SoundCraft) — Status (shipped)
+- Studio look: SoundCraft design tokens (`gui/theme.rs`) and console widgets (`gui/console.rs`): flat charcoal surfaces, square S/M toggles, selector boxes, pan knob over a counter, zoned peak meters with hold + clip LED, console fader with dB scale, Bars|Beats + Min:Secs LCD counters
+- Shortcut table (`gui/shortcuts.rs`): Space, Cmd+Z / Cmd+Shift+Z, Cmd+S, Cmd+R, Cmd+1..4 / F5-F9 views, [ ] patterns, Alt+Up/Down tracks, M / S, Home
+- Mixer: console strips (INSERTS, SENDS, OUTPUT routing menu, pan, S/M, fader + stereo meters, dB counter, name plate) and a master strip with loudness rows
+- Piano roll: velocity-shaded notes, snap (1/4..1/32, off) from the timebase, drag move/resize, rubber-band + shift selection, arrows (Shift = octave/bar), Delete, Quantize / Vel± / Legato, velocity lane; every gesture is one engine call (one undo step)
+- Timebase groundwork (`src/timebase/`): 960 PPQ ticks, tempo + meter map, grids, timecode, five counter formats, step↔tick bridge; renderer not rewired yet
+- Playlist view: arrangement as clips per track lane on the tick timebase with Bars|Beats + tempo rulers
+- Next: native clips on the tick timeline (move/resize clips), tempo changes in the renderer, CLAP host
 ## Sprint 8 — Real-time engine
 - Block-based cpal audio graph shared by playback and offline render, live meters, PDC
 ## Sprint 9 — Plugins
