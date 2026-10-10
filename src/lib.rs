@@ -14,6 +14,7 @@ pub mod analysis;
 pub mod audio_edit;
 pub mod automation;
 pub mod blind_ab;
+pub mod carve;
 pub mod console_law;
 pub mod creative;
 pub mod diff;

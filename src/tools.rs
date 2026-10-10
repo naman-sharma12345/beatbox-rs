@@ -523,6 +523,17 @@ pub(crate) fn profile(style: &str) -> Profile {
             0.3,
             false,
         ),
+        "desi_hiphop" => p(
+            "i VII i VI",
+            "808_grit",
+            "808",
+            1,
+            "harmonium",
+            "block",
+            "sitar",
+            0.45,
+            false,
+        ),
         "garage" => p(
             "i7 VI7 iv7 v7",
             "reese_bass",
@@ -546,6 +557,81 @@ pub(crate) fn profile(style: &str) -> Profile {
             false,
         ),
     }
+}
+
+/// Desi character for generate_beat: tabla and dholak tuned to the key,
+/// a tanpura drone (root + fifth, above the bass register), meend glides on
+/// a bansuri lead and the Indian percussion sat back in the mix.
+fn desi_touches(e: &mut Engine, seed: u64, meend: bool) -> Result<()> {
+    let kp = key_pc(&e.project) as i32;
+    let tabla_pitch = (60 + kp - if kp > 6 { 12 } else { 0 }) as u8;
+    let dholak_pitch = (tabla_pitch as i32 - 5).clamp(40, 80) as u8;
+    let bass_pitch = (55 + kp - if kp > 8 { 12 } else { 0 }).clamp(40, 80) as u8;
+    let mut rng = Rng::new(seed ^ 0xD401);
+    let iv = theory::scale_intervals(&e.project.scale)?.to_vec();
+    let drone_track = ensure_track(&mut e.project, "tanpura", "tanpura", None)?;
+    for pat in e.project.patterns.iter_mut() {
+        let steps = pat.steps() as f32;
+        for (t, p) in [
+            ("tabla", tabla_pitch),
+            ("dholak", dholak_pitch),
+            ("dholak_bass", bass_pitch),
+        ] {
+            for n in pat.notes_mut(t).iter_mut() {
+                n.pitch = p;
+                // open bols on the beat, muted ones between
+                if (n.start as u32) % 2 == 1 {
+                    n.vel = n.vel.min(0.45);
+                }
+            }
+        }
+        // tanpura: Sa + Pa (+ upper Sa), re-struck every 2 bars, kept above ~250 Hz
+        let base = 60 + kp - if kp > 4 { 12 } else { 0 };
+        let mut d = Vec::new();
+        let mut t = 0.0;
+        while t < steps {
+            for (k, iv) in [0, 7, 12].iter().enumerate() {
+                d.push(Note {
+                    start: t + k as f32 * 0.5,
+                    len: (32.0f32).min(steps - t) - k as f32 * 0.5,
+                    pitch: (base + iv) as u8,
+                    vel: 0.5,
+                    ..Default::default()
+                });
+            }
+            t += 32.0;
+        }
+        *pat.notes_mut(&drone_track) = d;
+        if meend {
+            // meend: glide into the next scale note on some held notes
+            let lead = pat.notes_mut("lead");
+            lead.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+            for i in 0..lead.len().saturating_sub(1) {
+                let (a, b) = (lead[i].clone(), lead[i + 1].clone());
+                let step = (b.pitch as i32 - a.pitch as i32).abs();
+                let pc = ((b.pitch as i32 - kp).rem_euclid(12)) as u8;
+                if a.len >= 1.5 && (1..=4).contains(&step) && iv.contains(&pc) && rng.chance(0.45) {
+                    lead[i].slide_to = Some(b.pitch);
+                }
+            }
+        }
+    }
+    for t in e.project.tracks.iter_mut() {
+        match t.name.as_str() {
+            "tabla" => {
+                t.volume_db = -5.0;
+                t.pan = -0.2;
+            }
+            "dholak" => {
+                t.volume_db = -7.0;
+                t.pan = 0.25;
+            }
+            "dholak_bass" => t.volume_db = -6.0,
+            "tanpura" => t.volume_db = -14.0,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 // ---------- the registry ----------
@@ -1261,18 +1347,31 @@ fn core_tools() -> Vec<Tool> {
                 "style": {"type": "string"},
                 "octave": {"type": "integer", "description": "default 4"},
                 "bars_per_chord": {"type": "number", "description": "default 1"},
-                "velocity": {"type": "number"}
+                "velocity": {"type": "number"},
+                "voicing": {"type": "string", "enum": ["auto", "open", "close"], "description": "auto (default): open voicings above ~247 Hz with no low thirds and rootless 7ths when a bass/808 track plays in the pattern (keeps 200-500 Hz clear), close otherwise"}
             }), &["progression"]),
             run: |e, a| {
                 let chords = theory::parse_progression(&s_req(a, "progression")?, key_pc(&e.project), &e.project.scale)?;
                 let track = ensure_track(&mut e.project, &s_opt(a, "track").unwrap_or_else(|| "chords".into()), "warm_pad", instrument_from(a)?)?;
-                let voiced = theory::voice_chords(&chords, u_or(a, "octave", 4) as i32, true);
+                let octave = u_or(a, "octave", 4) as i32;
+                let open = match s_opt(a, "voicing").as_deref().unwrap_or("auto") {
+                    "open" => true,
+                    "close" => false,
+                    "auto" => {
+                        let pi = pattern_idx(&e.project, a)?;
+                        let pat = &e.project.patterns[pi];
+                        e.project.tracks.iter().any(|t| t.name != track && crate::tools_mix::role_of(&t.name, &t.instrument) == "bass" && !pat.notes(&t.name).is_empty())
+                    }
+                    other => bail!("voicing '{other}': use auto, open or close"),
+                };
+                let voiced = if open { theory::voice_chords_open(&chords, octave, 59) } else { theory::voice_chords(&chords, octave, true) };
                 let pi = pattern_idx(&e.project, a)?;
                 let pat = &mut e.project.patterns[pi];
                 let notes = theory::chord_notes(&voiced, f_or(a, "bars_per_chord", 1.0), pat.steps(), &s_opt(a, "style").unwrap_or_else(|| "block".into()), f_or(a, "velocity", 0.75))?;
                 *pat.notes_mut(&track) = notes;
                 Ok(json!({
                     "track": track,
+                    "voicing": if open { "open" } else { "close" },
                     "chords": chords.iter().zip(voiced.iter()).map(|(c, v)| json!({"chord": c.label, "notes": v.iter().map(|p| theory::note_name(*p)).collect::<Vec<_>>()})).collect::<Vec<_>>()
                 }))
             },
@@ -1373,11 +1472,34 @@ fn core_tools() -> Vec<Tool> {
                 let mut p = Project::new(&s_opt(a, "name").unwrap_or_else(|| format!("{} beat", g.name)), g.bpm);
                 p.key_root = s_opt(a, "key").unwrap_or_else(|| ["A", "C", "F", "D", "G", "E"][(seed % 6) as usize].into());
                 theory::pitch_class(&p.key_root)?;
-                p.scale = s_opt(a, "scale").unwrap_or_else(|| if g.name == "afrobeats" || g.name == "lofi" { "major".into() } else { "minor".into() });
+                let desi = g.name == "desi_hiphop";
+                p.scale = s_opt(a, "scale").unwrap_or_else(|| {
+                    if desi {
+                        // raag-flavoured thaats: Kafi (dorian colour), Asavari, Bhairav
+                        ["kafi", "asavari", "bhairav"][((seed >> 3) % 3) as usize].into()
+                    } else if g.name == "afrobeats" || g.name == "lofi" {
+                        "major".into()
+                    } else {
+                        "minor".into()
+                    }
+                });
                 theory::scale_intervals(&p.scale)?;
                 p.patterns = vec![Pattern::new("main", bars)];
                 e.project = p;
-                let prog = s_opt(a, "progression").unwrap_or_else(|| prof.progression.to_string());
+                let prog = s_opt(a, "progression").unwrap_or_else(|| {
+                    if desi {
+                        match e.project.scale.as_str() {
+                            "kafi" => "i IV i VII",
+                            "bhairav" => "I II iv I",
+                            "bhairavi" => "i II i VII",
+                            _ => "i VI VII i",
+                        }
+                        .to_string()
+                    } else {
+                        prof.progression.to_string()
+                    }
+                });
+                let lead_preset = if desi { ["sitar", "bansuri"][((seed >> 5) % 2) as usize] } else { prof.lead_preset };
                 let main = json!({"pattern": "main", "seed": seed});
                 let with = |extra: Value| {
                     let mut m = main.clone();
@@ -1388,7 +1510,10 @@ fn core_tools() -> Vec<Tool> {
                 call(e, "generate_drums", with(json!({"style": g.name})))?;
                 call(e, "generate_bassline", with(json!({"progression": prog, "preset": prof.bass_preset, "style": prof.bass_style, "octave": prof.bass_octave})))?;
                 call(e, "generate_chords", with(json!({"progression": prog, "preset": prof.chord_preset, "style": prof.chord_style, "octave": 4})))?;
-                call(e, "generate_melody", with(json!({"progression": prog, "preset": prof.lead_preset, "density": prof.lead_density, "octave": 5})))?;
+                call(e, "generate_melody", with(json!({"progression": prog, "preset": lead_preset, "density": prof.lead_density, "octave": 5})))?;
+                if desi {
+                    desi_touches(e, seed, lead_preset == "bansuri")?;
+                }
                 // mix
                 call(e, "set_mixer", json!({"track": "chords", "volume_db": -6.0}))?;
                 call(e, "set_mixer", json!({"track": "lead", "volume_db": -5.0, "pan": 0.1}))?;
@@ -1406,6 +1531,7 @@ fn core_tools() -> Vec<Tool> {
                 if prof.sidechain {
                     call(e, "add_effect", json!({"track": "chords", "type": "sidechain", "params": {"source": "kick", "amount": 0.6}}))?;
                 }
+                crate::carve::carve(e, &[]);
                 if g.name == "lofi" || g.name == "boom_bap" {
                     call(e, "add_effect", json!({"track": "master", "type": "bitcrush", "params": {"bits": 12.0, "downsample": 2, "mix": 0.35}}))?;
                     e.project.master_effects.rotate_right(1);

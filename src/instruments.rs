@@ -732,6 +732,20 @@ pub const PRESETS: &[(&str, &str)] = &[
     ("snare_soft", "Soft, round, clean snare (melodic)"),
     ("clap_wide", "Wide layered clap with a room tail"),
     ("hat_crisp", "Crisp tight closed hat, made for rolls"),
+    ("hat_drill", "Bright, short, high-tuned closed hat (drill)"),
+    ("snare_drill", "Bright, high, cracking short snare (drill)"),
+    (
+        "dholak",
+        "Dholak treble head: tighter, lower and drier than the tabla dayan (ta / na slaps)",
+    ),
+    (
+        "dholak_bass",
+        "Dholak bass head: a short 'ge' boom with a palm pitch rise",
+    ),
+    (
+        "harmonium",
+        "Harmonium (peti): two beating reed banks an octave apart, bellows attack",
+    ),
     ("hat_dusty", "Dark, soft, slightly driven closed hat"),
     ("open_hat_airy", "Airy open hat (choked by the closed hats)"),
     ("open_hat_dusty", "Dark short open hat (boom bap)"),
@@ -1176,6 +1190,29 @@ pub fn preset(name: &str) -> Option<Instrument> {
         "snare_soft" => drum_x(DrumKind::Snare, 0.0, 1.15, 0.0, -0.3),
         "clap_wide" => drum_x(DrumKind::Clap, 0.0, 1.2, 0.0, 0.2),
         "hat_crisp" => drum_x(DrumKind::ClosedHat, 0.0, 0.8, 0.0, 0.4),
+        "hat_drill" => drum_x(DrumKind::ClosedHat, 2.0, 0.6, 0.0, 0.9),
+        "snare_drill" => drum_x(DrumKind::Snare, 4.0, 0.6, 0.1, 0.85),
+        "dholak" => drum_x(DrumKind::Tabla, -5.0, 0.45, 0.15, 0.5),
+        "dholak_bass" | "dholak_dagga" => drum_x(DrumKind::Bayan, 2.0, 0.6, 0.2, 0.2),
+        "harmonium" | "peti" => synth(|p| {
+            // two reed banks an octave apart beating against each other,
+            // bellows attack, a reedy band-limited pulse
+            p.osc1 = Wave::Square;
+            p.osc2 = Wave::Saw;
+            p.osc2_semitones = 12.0;
+            p.osc2_cents = 5.0;
+            p.osc_mix = 0.35;
+            p.unison = 2;
+            p.unison_spread_cents = 4.0;
+            p.cutoff = 2600.0;
+            p.resonance = 0.15;
+            p.amp_env = Adsr::new(0.07, 0.3, 0.9, 0.15);
+            p.lfo_rate = 4.5;
+            p.lfo_to_cutoff = 0.08;
+            p.drift_cents = 2.0;
+            p.stereo_spread = 0.3;
+            p.gain = 0.32;
+        }),
         "hat_dusty" => drum_x(DrumKind::ClosedHat, -2.0, 1.1, 0.2, -0.6),
         "open_hat_airy" => drum_x(DrumKind::OpenHat, 0.0, 0.8, 0.0, 0.3),
         "open_hat_dusty" => drum_x(DrumKind::OpenHat, -2.0, 0.55, 0.15, -0.6),

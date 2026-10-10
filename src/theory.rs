@@ -25,6 +25,11 @@ pub const SCALES: &[(&str, &[u8])] = &[
     ("blues", &[0, 3, 5, 6, 7, 10]),
     ("hirajoshi", &[0, 2, 3, 7, 8]),
     ("bhairav", &[0, 1, 4, 5, 7, 8, 11]),
+    // raag-flavoured thaats (the parent scales of the raags)
+    ("kafi", &[0, 2, 3, 5, 7, 9, 10]),
+    ("asavari", &[0, 2, 3, 5, 7, 8, 10]),
+    ("bhairavi", &[0, 1, 3, 5, 7, 8, 10]),
+    ("todi", &[0, 1, 3, 6, 7, 8, 11]),
 ];
 
 pub const CHORD_QUALITIES: &[(&str, &[u8])] = &[
@@ -302,6 +307,78 @@ pub fn voice_chords(chords: &[Chord], octave: i32, smooth: bool) -> Vec<Vec<u8>>
     out
 }
 
+/// Open voicings for a mix with a bass part: the bass owns the root and the
+/// low end, so the chord sits above `floor` (MIDI; 59 = B3, ~247 Hz), never
+/// stacks a third (or second) at its bottom below G4, spreads close triads
+/// (drop-2 style) and leaves the root out of four-note chords. Voice leading
+/// stays smooth: each chord takes the candidate whose centre is closest to the
+/// previous one. Falls back to the close voicing lifted above `floor`.
+pub fn voice_chords_open(chords: &[Chord], octave: i32, floor: i32) -> Vec<Vec<u8>> {
+    let ceil = floor + 26;
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut prev_center: Option<f32> = None;
+    for c in chords {
+        let base = (octave + 1) * 12 + c.root_pc as i32;
+        let all: Vec<i32> = c.intervals.iter().map(|&i| base + i as i32).collect();
+        // rootless when there are enough other tones (the bass plays the root)
+        let tones: Vec<i32> = if all.len() >= 4 {
+            all.iter()
+                .copied()
+                .filter(|t| (t - base) % 12 != 0)
+                .collect()
+        } else {
+            all.clone()
+        };
+        let mut cands: Vec<Vec<i32>> = Vec::new();
+        for inv in 0..tones.len() {
+            let mut v: Vec<i32> = tones.clone();
+            for x in v.iter_mut().take(inv) {
+                *x += 12;
+            }
+            v.sort();
+            let mut spread = v.clone();
+            if spread.len() >= 3 {
+                // drop-2 style spread: the second voice from the bottom up an octave
+                spread[1] += 12;
+                spread.sort();
+            }
+            for shift in [-24, -12, 0, 12, 24] {
+                cands.push(v.iter().map(|x| x + shift).collect());
+                cands.push(spread.iter().map(|x| x + shift).collect());
+            }
+        }
+        let ok = |v: &Vec<i32>| {
+            let lo = v[0];
+            let hi = *v.last().unwrap();
+            lo >= floor && hi <= ceil && (v.len() < 2 || lo >= 67 || v[1] - lo >= 5)
+        };
+        let target = prev_center.unwrap_or((floor + 8) as f32);
+        let center = |v: &Vec<i32>| v.iter().sum::<i32>() as f32 / v.len() as f32;
+        let best = cands
+            .iter()
+            .filter(|v| ok(v))
+            .min_by(|a, b| {
+                let da = (center(a) - target).abs() + 0.15 * (a.last().unwrap() - a[0]) as f32;
+                let db = (center(b) - target).abs() + 0.15 * (b.last().unwrap() - b[0]) as f32;
+                da.partial_cmp(&db).unwrap()
+            })
+            .cloned()
+            .unwrap_or_else(|| {
+                let mut v = all.clone();
+                v.sort();
+                while v[0] < floor {
+                    for x in v.iter_mut() {
+                        *x += 12;
+                    }
+                }
+                v
+            });
+        prev_center = Some(center(&best));
+        out.push(best.into_iter().map(|x| x.clamp(0, 127) as u8).collect());
+    }
+    out
+}
+
 /// Parse a step string: X accent, x hit, o ghost, '.' or '-' rest. Spaces and | ignored.
 pub fn parse_steps(s: &str) -> Vec<Option<f32>> {
     s.chars()
@@ -466,6 +543,25 @@ pub const GROOVES: &[Groove] = &[
         ],
     },
     Groove {
+        // desi hip-hop: a boom-bap pocket under a keherwa-style tabla and a
+        // dholak (treble slaps + bass-head booms)
+        name: "desi_hiphop",
+        bpm: 92.0,
+        swing: 0.12,
+        parts: &[
+            ("kick", "kick", "X.....x...x.....X.....x.x......."),
+            ("snare", "snare", "....X.......X.......X.......X..o"),
+            ("hat", "hat", "x.x.x.x.x.x.x.x."),
+            ("tabla", "tabla", "X.xoX.x.X.xox.x.X.xoX.x.Xoxox.xo"),
+            ("dholak", "dholak", "..x..x.x..x..xx...x..x.x..x..x.x"),
+            (
+                "dholak_bass",
+                "dholak_bass",
+                "X......xX.....x.X......xX..x....",
+            ),
+        ],
+    },
+    Groove {
         name: "garage",
         bpm: 132.0,
         swing: 0.4,
@@ -486,6 +582,7 @@ pub fn groove(name: &str) -> Result<&'static Groove> {
         "drum_and_bass" | "jungle" => "dnb",
         "uk_garage" | "2step" => "garage",
         "afro" | "amapiano" => "afrobeats",
+        "desi" | "dhh" | "desi_hip_hop" | "gully" | "indian" => "desi_hiphop",
         other => other,
     };
     GROOVES.iter().find(|g| g.name == n).ok_or_else(|| {
@@ -912,5 +1009,29 @@ mod tests {
             assert!(scale.contains(&(((n.pitch as i32 - 9).rem_euclid(12)) as u8)));
             assert!(n.start < 64.0);
         }
+    }
+    #[test]
+    fn open_voicings_stay_above_the_bass_without_low_thirds() {
+        for prog in [
+            "i7 iv7 VII7 IIImaj7",
+            "i VI III VII",
+            "ii7 V7 Imaj7 vi7",
+            "I bII iv I",
+        ] {
+            for key in 0..12u8 {
+                let ch = parse_progression(prog, key, "minor").unwrap();
+                for v in voice_chords_open(&ch, 3, 59) {
+                    assert!(v[0] >= 59, "{prog} {key}: {v:?}");
+                    assert!(
+                        v.len() < 2 || v[0] >= 67 || v[1] - v[0] >= 5,
+                        "{prog} {key}: {v:?}"
+                    );
+                }
+            }
+        }
+        // a seventh chord drops its root (the bass has it)
+        let ch = parse_progression("i7", 0, "minor").unwrap();
+        let v = voice_chords_open(&ch, 4, 59);
+        assert!(v[0].iter().all(|p| p % 12 != 0), "{:?}", v[0]);
     }
 }

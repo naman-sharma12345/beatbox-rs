@@ -78,7 +78,8 @@ pub fn tools() -> Vec<Tool> {
                 "use_samples": {"type": "boolean"},
                 "roles": {"type": "array", "items": {"type": "string"}},
                 "force": {"type": "boolean"},
-                "level_match": {"type": "boolean", "description": "default true"}
+                "level_match": {"type": "boolean", "description": "default true"},
+                "mix": {"type": "boolean", "description": "also apply the palette's mix moves: EQ carve (low cuts, 300 Hz dip on beds when a bass plays) and per-palette moves (drill: shorter 808 holds, kick ducking, brighter hats/snare). Default true"}
             }), &["palette"]),
             run: |e, a| {
                 let name = s_req(a, "palette")?;
@@ -87,6 +88,7 @@ pub fn tools() -> Vec<Tool> {
                     roles: strings(a, "roles"),
                     force: b_or(a, "force", false),
                     level_match: b_or(a, "level_match", true),
+                    mix: b_or(a, "mix", true),
                 })
             },
         },

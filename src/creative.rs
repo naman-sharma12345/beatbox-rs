@@ -159,6 +159,10 @@ pub struct GenSpec {
     pub drum_sounds: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub forms: BTreeMap<String, f32>,
+    /// Per-genre multipliers on the random wildcard draw (0 = never drawn at
+    /// random; a structured-intent contrast can still force it).
+    #[serde(default)]
+    pub wildcard_weights: BTreeMap<String, f32>,
 }
 
 pub fn wmap_pub(m: &BTreeMap<String, f32>, rng: &mut Rng) -> Option<String> {
@@ -2005,6 +2009,7 @@ pub struct WildTargets<'a> {
     pub transpose: &'a mut BTreeMap<String, i32>,
     pub switch_groove: &'a mut bool,
     pub genre_presets: Vec<String>,
+    pub weights: BTreeMap<String, f32>,
 }
 
 /// Pick 1-3 wildcards (weighted toward roles that serve the direction),
@@ -2049,6 +2054,9 @@ pub fn apply_wildcards(
             }
             if *role == "groove" && dir.hero == "bass" {
                 x *= 1.6;
+            }
+            if let Some(m) = t.weights.get(*name) {
+                x *= m.max(0.0);
             }
             x
         })

@@ -74,7 +74,7 @@ pub const PALETTES: &[Palette] = &[
     },
     Palette {
         name: "dhh_grit",
-        description: "Desi hip-hop grit: driven punchy kick, tight SP-style snare, crisp hats, gritty 808, with sitar, bansuri, santoor and tanpura for the melodic roles",
+        description: "Desi hip-hop grit: driven punchy kick, tight SP-style snare, crisp hats, gritty 808, with harmonium keys, sitar, bansuri, santoor and tanpura for the melodic roles (pairs with the desi_hiphop generator: tabla + dholak in Kafi / Asavari / Bhairav)",
         genres: &["desi_hiphop", "dhh", "gully"],
         character: &["gritty", "raw", "desi", "punchy"],
         voices: &[
@@ -85,7 +85,7 @@ pub const PALETTES: &[Palette] = &[
             ("open_hat", "open_hat_airy"),
             ("perc", "tabla"),
             ("bass", "808_grit"),
-            ("keys", "dark_keys"),
+            ("keys", "harmonium"),
             ("pad", "tanpura"),
             ("lead", "bansuri"),
             ("bell", "santoor"),
@@ -136,9 +136,9 @@ pub const PALETTES: &[Palette] = &[
         character: &["dark", "sliding", "tight", "cold"],
         voices: &[
             ("kick", "kick_tight"),
-            ("snare", "snare_tight"),
+            ("snare", "snare_drill"),
             ("clap", "clap_wide"),
-            ("hat", "hat_crisp"),
+            ("hat", "hat_drill"),
             ("open_hat", "open_hat_airy"),
             ("perc", "rim"),
             ("bass", "808_slide"),
@@ -233,8 +233,25 @@ pub fn track_role(name: &str, inst: &Instrument) -> Option<&'static str> {
     let n = name.to_lowercase();
     let has = |ws: &[&str]| ws.iter().any(|w| n.contains(w));
     if has(&[
-        "tabla", "bayan", "sitar", "santoor", "bansuri", "tanpura", "flute", "vocal", "vox",
-        "chop", "fx", "riser", "impact", "sweep", "crash", "drone",
+        "tabla",
+        "bayan",
+        "sitar",
+        "santoor",
+        "bansuri",
+        "tanpura",
+        "flute",
+        "vocal",
+        "vox",
+        "dholak",
+        "harmonium",
+        "shehnai",
+        "chop",
+        "fx",
+        "riser",
+        "impact",
+        "sweep",
+        "crash",
+        "drone",
     ]) {
         return None;
     }
@@ -455,6 +472,9 @@ pub struct ApplyOpts {
     pub force: bool,
     /// Keep each track's loudness (fader compensation); default true.
     pub level_match: bool,
+    /// Also apply the palette's mix moves (EQ carving, kick/808 separation,
+    /// brightness); default true.
+    pub mix: bool,
 }
 
 impl Default for ApplyOpts {
@@ -464,6 +484,7 @@ impl Default for ApplyOpts {
             roles: Vec::new(),
             force: false,
             level_match: true,
+            mix: true,
         }
     }
 }
@@ -543,14 +564,163 @@ pub fn apply(e: &mut Engine, name: &str, o: &ApplyOpts) -> Result<Value> {
         t.volume_db += gain_change;
         changed.push(json!({"track": tname, "role": role, "voice": voice_name, "fader_change_db": gain_change}));
     }
+    let mix = if o.mix {
+        mix_moves(e, pal.name)
+    } else {
+        Value::Null
+    };
     Ok(json!({
         "palette": pal.name,
         "changed": changed,
+        "mix_moves": mix,
         "kept": kept,
         "sample_errors": sample_errors,
         "mix_hint": pal.mix_hint,
         "next": "render or ears_report to hear it; ab_compare against the previous snapshot",
     }))
+}
+
+fn effect(v: Value) -> Option<crate::fx::Effect> {
+    serde_json::from_value(v).ok()
+}
+
+/// Put `fx` on a track's chain under a fixed id (replacing an earlier one with
+/// that id, so re-applying a palette never stacks).
+fn put_fx(t: &mut crate::project::Track, id: &str, fx: Option<crate::fx::Effect>, front: bool) {
+    let Some(mut fx) = fx else { return };
+    fx.set_id(id);
+    if let Some(i) = t.effects.iter().position(|x| x.id() == id) {
+        t.effects[i] = fx;
+    } else if front {
+        t.effects.insert(0, fx);
+    } else {
+        t.effects.push(fx);
+    }
+}
+
+/// Shorten held bass/808 notes that do not slide or connect: each one stops
+/// half a step before the next kick and lasts at most `max_steps`, so the
+/// kick and the 808 alternate instead of the 808 filling every gap.
+pub fn shorten_bass_holds(e: &mut Engine, max_steps: f32) -> usize {
+    let bass: Vec<String> = e
+        .project
+        .tracks
+        .iter()
+        .filter(|t| crate::tools_mix::role_of(&t.name, &t.instrument) == "bass")
+        .map(|t| t.name.to_lowercase())
+        .collect();
+    let kicks: Vec<String> = e
+        .project
+        .tracks
+        .iter()
+        .filter(|t| crate::tools_mix::role_of(&t.name, &t.instrument) == "kick")
+        .map(|t| t.name.to_lowercase())
+        .collect();
+    let mut n = 0;
+    for p in e.project.patterns.iter_mut() {
+        let total = p.steps() as f32;
+        let mut ks: Vec<f32> = kicks
+            .iter()
+            .flat_map(|k| p.notes(k).iter().map(|x| x.start).collect::<Vec<_>>())
+            .collect();
+        ks.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for b in &bass {
+            let Some(v) = p.clips.get_mut(b) else {
+                continue;
+            };
+            v.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+            let starts: Vec<f32> = v.iter().map(|x| x.start).collect();
+            for (i, note) in v.iter_mut().enumerate() {
+                let next = starts.get(i + 1).copied().unwrap_or(total);
+                if note.slide_to.is_some() || note.start + note.len > next + 0.01 {
+                    continue; // a glide or a legato hand-off: leave it
+                }
+                let next_kick = ks
+                    .iter()
+                    .copied()
+                    .find(|k| *k > note.start + 0.75)
+                    .unwrap_or(f32::MAX);
+                let cap = max_steps.min(next_kick - note.start - 0.5).max(1.5);
+                if note.len > cap + 0.01 {
+                    note.len = cap;
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}
+
+/// The palette's mix moves: the arrangement-level EQ carve for every
+/// palette, plus what the palette's character needs (drill: shorter 808
+/// holds, kick/808 ducking, a brighter top end and sharper hits).
+pub fn mix_moves(e: &mut Engine, name: &str) -> Value {
+    let carve = crate::carve::carve(e, &[]);
+    let mut moves: Vec<String> = vec!["eq carve (see carve)".into()];
+    if name == "drill_slide" {
+        let n = shorten_bass_holds(e, 6.0);
+        moves.push(format!(
+            "808 holds shortened on {n} notes (max 6 steps, off before the next kick)"
+        ));
+        let has_kick = e
+            .project
+            .tracks
+            .iter()
+            .any(|t| crate::tools_mix::role_of(&t.name, &t.instrument) == "kick");
+        for t in e.project.tracks.iter_mut() {
+            let role = crate::tools_mix::role_of(&t.name, &t.instrument);
+            match role {
+                "bass" if has_kick && !t.effects.iter().any(|x| x.type_name() == "sidechain") => {
+                    put_fx(
+                        t,
+                        "pal_duck",
+                        effect(
+                            json!({"type": "sidechain", "source": "kick", "amount": 0.65, "release_ms": 110.0}),
+                        ),
+                        false,
+                    );
+                    moves.push(format!("{}: ducked under the kick (0.65, 110 ms)", t.name));
+                }
+                "kick" => {
+                    put_fx(
+                        t,
+                        "pal_punch",
+                        effect(json!({"type": "transient", "attack": 0.5, "sustain": -0.2})),
+                        false,
+                    );
+                    moves.push(format!("{}: transient attack +0.5", t.name));
+                }
+                "snare" | "hats" | "cymbal" | "perc" => {
+                    let (f, g) = if role == "snare" {
+                        (4500.0, 3.5)
+                    } else {
+                        (7000.0, 4.0)
+                    };
+                    put_fx(
+                        t,
+                        "pal_air",
+                        effect(
+                            json!({"type": "parametric_eq", "bands": [{"kind": "high_shelf", "freq": f, "gain_db": g, "q": 0.7}]}),
+                        ),
+                        false,
+                    );
+                    if role == "snare" {
+                        put_fx(
+                            t,
+                            "pal_snap",
+                            effect(json!({"type": "transient", "attack": 0.4, "sustain": 0.0})),
+                            false,
+                        );
+                    }
+                    t.volume_db += if role == "snare" { 1.0 } else { 1.5 };
+                    moves.push(format!("{}: high shelf +{g} dB at {f} Hz", t.name));
+                }
+                _ => {}
+            }
+        }
+        e.project.ensure_fx_ids();
+    }
+    json!({"moves": moves, "carve": carve})
 }
 
 /// Palette summary for list_palettes.

@@ -180,6 +180,16 @@ fn level_rows(p: &Project, bank: &SampleBank) -> Vec<Value> {
 pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
+            name: "carve_mix",
+            description: "Arrangement-level EQ carving so the low end belongs to the kick and the bass/808: a role-sized low cut on every other track (snare ~110 Hz, hats ~320, percs ~160, keys/pads/leads 170-220 when a bass plays) and, when a bass or 808 plays, a -2.5..-4.5 dB dip at ~320 Hz on keys, pads and leads where chord voicings and bass harmonics build mud. One parametric EQ with id 'carve' appended to each chain; re-running replaces it. tracks: only these (default all).",
+            mutates: true,
+            schema: || obj(json!({"tracks": {"type": "array", "items": {"type": "string"}}}), &[]),
+            run: |e, a| {
+                let only: Vec<String> = a.get("tracks").and_then(|v| v.as_array()).map(|v| v.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+                Ok(crate::carve::carve(e, &only))
+            },
+        },
+        Tool {
             name: "level_hints",
             description: "Fast level check WITHOUT rendering the song: renders one representative note per track's instrument, measures its loudest 50 ms at the current fader and compares it with a role target (kick, bass, snare, hats, perc, lead, keys, pad, fx). Flags a kick 15 dB over the hats before you write a single bar. apply:true sets every track's volume_db to its role target (calibration).",
             mutates: true,

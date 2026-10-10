@@ -249,6 +249,9 @@ pub struct Plan {
     pub motif: Vec<MotifNote>,
     /// role -> preset
     pub palette: BTreeMap<String, String>,
+    /// The sound palette (palette.rs) picked for the genre, if any.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sound_palette: String,
     /// drum part -> [verse pattern, hook pattern]
     pub drum_patterns: BTreeMap<String, [String; 2]>,
     pub sections: Vec<PlanSection>,
@@ -548,6 +551,58 @@ fn layer_part_presets(pb: &Playbook, rng: &mut Rng, brief: &str) -> BTreeMap<Str
         }
     }
     pal
+}
+
+/// Map a sound palette onto the plan's role -> preset table. Drum roles,
+/// the bass and a keys/pad harmony take the palette's voice; roles that the
+/// variation step already changed from the playbook stock keep their swap,
+/// and featured voices (choir, strings, tanpura, Indian leads) stay.
+pub fn apply_sound_palette(
+    palette: &mut BTreeMap<String, String>,
+    stock: &BTreeMap<String, String>,
+    sp: &crate::palette::Palette,
+) -> Vec<String> {
+    let voice = |r: &str| {
+        sp.voices
+            .iter()
+            .find(|(x, _)| *x == r)
+            .map(|(_, v)| v.to_string())
+    };
+    let mut out = Vec::new();
+    let roles: Vec<String> = palette.keys().cloned().collect();
+    for role in roles {
+        let cur = palette[&role].clone();
+        if stock.get(&role) != Some(&cur) {
+            continue; // a deliberate swap (kit-sound variation)
+        }
+        let pal_role = match role.as_str() {
+            "kick" | "hat" | "open_hat" | "bass" => Some(role.clone()),
+            "snare" if cur.contains("clap") => Some("clap".to_string()),
+            "snare" => Some("snare".to_string()),
+            "perc" if matches!(cur.as_str(), "rim" | "rimshot" | "cowbell" | "perc") => {
+                Some("perc".to_string())
+            }
+            "harmony" | "counter" | "texture" => match cur.as_str() {
+                "epiano" | "dark_keys" | "upright_keys" | "layered_keys" => {
+                    Some("keys".to_string())
+                }
+                "dark_pad" | "warm_pad" | "wt_pad" | "pad" => Some("pad".to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(pr) = pal_role else { continue };
+        let Some(v) = voice(&pr) else { continue };
+        // never put an Indian drum or drone on a kit role
+        if matches!(v.as_str(), "tabla" | "bayan" | "tanpura") && role != "harmony" {
+            continue;
+        }
+        if v != cur && crate::instruments::preset(&v).is_some() {
+            out.push(format!("{role}={v}"));
+            palette.insert(role, v);
+        }
+    }
+    out
 }
 
 /// The hierarchical planner: direction first, then core material chosen by
@@ -958,6 +1013,7 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         motif.iter().map(|m| m.deg).collect::<Vec<_>>()
     ));
     let mut palette = layer_part_presets(pb, &mut rng, &a.brief);
+    let stock = palette.clone();
     if !template {
         for (voice, alts) in &sp.drum_sounds {
             if !alts.is_empty() && palette.contains_key(voice) && rng.chance(0.4) {
@@ -975,6 +1031,30 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
             }
         }
     }
+    // the genre's sound palette (palette.rs) supplies the drum, bass and
+    // keys/pad voices; a kit sound the variation step already swapped stays
+    let sound_palette = crate::palette::for_genre(&pb.name)
+        .map(|sp| {
+            let swapped = apply_sound_palette(&mut palette, &stock, sp);
+            cr::decide(
+                &mut dec,
+                "core",
+                "sound palette",
+                sp.name,
+                format!(
+                    "the default palette for {}: {} ({})",
+                    pb.name,
+                    if swapped.is_empty() {
+                        "no role swapped".to_string()
+                    } else {
+                        swapped.join(", ")
+                    },
+                    sp.character.join(", ")
+                ),
+            );
+            sp.name.to_string()
+        })
+        .unwrap_or_default();
     for (r, p) in &intent.palette {
         cr::decide(
             &mut dec,
@@ -1220,6 +1300,7 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
             transpose: &mut section_transpose,
             switch_groove: &mut switch,
             genre_presets,
+            weights: sp.wildcard_weights.clone(),
         },
         &dir,
         &intent.contrasts,
@@ -1364,7 +1445,7 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
             "duration_s": a.duration_s, "use_samples": a.use_samples, "method": a.method, "reference": a.reference,
             "authored_parts": a.authored.iter().map(|(k, v)| format!("{k}:{}", v.keys().cloned().collect::<Vec<_>>().join("+"))).collect::<Vec<_>>(),
         },
-        "assets": {"presets": palette, "sample_kit": sample_kit},
+        "assets": {"presets": palette, "sample_kit": sample_kit, "sound_palette": sound_palette},
         "reproduce": format!("produce_track with the same config and seed {} (generator {})", a.seed, cr::GENERATOR_VERSION),
     });
     Ok(Plan {
@@ -1381,6 +1462,7 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         bars_per_chord: hc.bars_per_chord,
         motif,
         palette,
+        sound_palette,
         drum_patterns,
         sections,
         knobs,
@@ -2176,7 +2258,12 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                 }
                 v
             } else {
-                let voiced = theory::voice_chords(chords, pb.harmony.octave, true);
+                // with a bass/808 in the beat the chords voice open, above ~247 Hz
+                let voiced = if roles.iter().any(|r| r == "bass") {
+                    theory::voice_chords_open(chords, pb.harmony.octave, 59)
+                } else {
+                    theory::voice_chords(chords, pb.harmony.octave, true)
+                };
                 let style = if matches!(
                     sec.kind.as_str(),
                     "intro" | "outro" | "bridge" | "breakdown"
@@ -2469,7 +2556,15 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     if pb.mix.crush {
         e.call_from("add_effect", &json!({"track": "master", "type": "bitcrush", "params": {"bits": 12.0, "downsample": 2, "mix": 0.25}}), "producer")?;
     }
+    // arrangement-level EQ carve + the sound palette's own mix moves
+    let mix_moves = if plan.sound_palette.is_empty() {
+        crate::carve::carve(e, &[])
+    } else {
+        crate::palette::mix_moves(e, &plan.sound_palette)
+    };
     Ok(json!({
+        "sound_palette": plan.sound_palette,
+        "mix_moves": mix_moves,
         "tracks": e.project.tracks.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
         "sections": plan.sections.iter().map(|s| format!("{} ({} bars)", s.name, s.bars)).collect::<Vec<_>>(),
         "samples_used": used_samples,
@@ -3598,6 +3693,50 @@ mod tests {
         let avg =
             |v: &[Note]| v.iter().map(|n| n.pitch as f32).sum::<f32>() / v.len().max(1) as f32;
         assert!(avg(&last) > avg(&first) + 6.0);
+    }
+
+    #[test]
+    fn producer_picks_the_genre_sound_palette_and_records_it() {
+        for (genre, pal) in [
+            ("trap", "dark_trap"),
+            ("drill", "drill_slide"),
+            ("desi_hiphop", "dhh_grit"),
+            ("boom_bap", "boom_bap_dusty"),
+        ] {
+            let plan = plan_track(&args("a beat", Some(genre), 5)).unwrap();
+            assert_eq!(plan.sound_palette, pal, "{genre}");
+            assert_eq!(
+                plan.provenance["assets"]["sound_palette"].as_str(),
+                Some(pal),
+                "{genre}: the manifest names the palette"
+            );
+            assert!(
+                plan.decisions.iter().any(|d| d.what == "sound palette"),
+                "{genre}: the choice is a recorded decision"
+            );
+            // the bass always takes the palette voice (the variation step never swaps it)
+            let p = crate::palette::get(pal).unwrap();
+            let bass = p.voices.iter().find(|(r, _)| *r == "bass").unwrap().1;
+            assert_eq!(
+                plan.palette.get("bass").map(String::as_str),
+                Some(bass),
+                "{genre}"
+            );
+            // the plan round-trips with the palette name
+            let v = serde_json::to_value(&plan).unwrap();
+            assert_eq!(v["sound_palette"], pal);
+            assert_eq!(plan_from_value(&v).unwrap().sound_palette, pal);
+        }
+        // compose applies it: the palette's mix moves run (EQ carve on the beds)
+        let mut e = engine();
+        let plan = plan_track(&args("dark drill", Some("drill"), 9)).unwrap();
+        let out = compose(&mut e, &plan).unwrap();
+        assert_eq!(out["sound_palette"], "drill_slide");
+        let i = e.project.track_index("hat").unwrap();
+        assert!(e.project.tracks[i]
+            .effects
+            .iter()
+            .any(|x| x.id() == crate::carve::CARVE_ID));
     }
 
     #[test]

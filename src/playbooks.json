@@ -13,8 +13,7 @@
   ],
   "swing": 0.0,
   "scales": [
-   "minor",
-   "harmonic_minor"
+   "minor"
   ],
   "progressions": {
    "dark": [
@@ -216,7 +215,7 @@
   },
   "generative": {
    "kick_per_bar": [
-    2.0,
+    3.0,
     4.5
    ],
    "snare_modes": {
@@ -230,10 +229,9 @@
     "double": 0.5
    },
    "hat_rates": {
-    "8": 1.0,
-    "16": 1.6,
-    "16_gallop": 0.8,
-    "8t": 0.7
+    "8": 0.6,
+    "16": 1.8,
+    "16_gallop": 0.7
    },
    "hat_rolls": [
     0.35,
@@ -298,6 +296,11 @@
     "with_bridge": 0.8,
     "build": 0.6,
     "short": 0.5
+   },
+   "wildcard_weights": {
+    "key_change": 0.0,
+    "drum_dropout": 0.5,
+    "sparse_to_dense": 0.5
    }
   }
  },
