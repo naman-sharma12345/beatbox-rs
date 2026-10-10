@@ -693,4 +693,31 @@ mod tests {
         assert_eq!(e.project, before);
         assert_eq!(e.undo_depth().0, undo0);
     }
+
+    #[test]
+    fn batch_seeds_follow_the_standalone_rule() {
+        let mut e = tempo_eng();
+        // omitted seed: fresh and returned, exactly as a standalone call
+        let solo = e.call("generate_drums", &json!({"style": "trap"})).unwrap();
+        assert_eq!(solo["seed_source"], "fresh", "{solo}");
+        let r = e
+            .call(
+                "batch",
+                &json!({"calls": [{"tool": "generate_drums", "args": {"style": "trap"}}]}),
+            )
+            .unwrap();
+        let inner = &r["results"][0]["result"];
+        assert_eq!(inner["seed_source"], "fresh", "{r}");
+        assert!(inner["seed"].is_u64(), "{r}");
+        // explicit seed: deterministic in and out of a batch
+        e.call("generate_drums", &json!({"style": "trap", "seed": 4}))
+            .unwrap();
+        let a = e.project.clone();
+        e.call(
+            "batch",
+            &json!({"calls": [{"tool": "generate_drums", "args": {"style": "trap", "seed": 4}}]}),
+        )
+        .unwrap();
+        assert_eq!(e.project.patterns, a.patterns);
+    }
 }
