@@ -41,6 +41,7 @@ pub mod server;
 pub mod smf;
 pub mod synth_extra;
 pub mod theory;
+pub mod timebase;
 pub mod tools;
 pub mod tools_compose;
 pub mod tools_delivery;
