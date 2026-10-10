@@ -4,9 +4,9 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 63 have, 13 partial, 15 missing of 91** (parity 63/91; counting partial as half: 69.5/91).
+**Score: 67 have, 11 partial, 13 missing of 91** (parity 67/91; counting partial as half: 72.5/91).
 
-Build order for the gaps, by musical impact: flam/flip/chop note tools, frequency shifter and
+Build order for the gaps, by musical impact: frequency shifter and
 ring mod, stereo shaper, noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
 hosting.
@@ -27,13 +27,13 @@ hosting.
 | Piano roll tools | Randomize / humanize | have | humanize, generate_variation |
 | Piano roll tools | Arpeggiate | have | arpeggiate |
 | Piano roll tools | Strum | have | strum |
-| Piano roll tools | Chop | partial | split_notes (no pattern-based chop) |
-| Piano roll tools | Flam | missing |  |
+| Piano roll tools | Chop | have | chop_notes (pattern x/X/-/. on the grid), split_notes |
+| Piano roll tools | Flam | have | roll_notes mode flam (grace hit before), also roll / ratchet |
 | Piano roll tools | Legato | have | legato |
 | Piano roll tools | Articulate (note length) | partial | edit_notes length |
 | Piano roll tools | Glue | have | merge_notes |
-| Piano roll tools | Limit (clamp to range / scale) | partial | scale_snap (scale yes, range clamp no) |
-| Piano roll tools | Flip (invert / reverse notes) | missing |  |
+| Piano roll tools | Limit (clamp to range / scale) | have | limit_notes (octave-fold into lo..hi), scale_snap |
+| Piano roll tools | Flip (invert / reverse notes) | have | flip_notes mode pitch (mirror) / time (reverse) |
 | Piano roll tools | Chord stamps | have | chord_voicing, generate_chords, theory_chords |
 | Piano roll tools | Scale highlighting / snap | have | scale_snap, theory_scale |
 | Piano roll tools | Riff machine | have | write_riff, generate_melody, counter_melody |

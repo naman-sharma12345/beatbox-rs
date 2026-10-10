@@ -1259,6 +1259,51 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "flip_notes",
+            description: "Flip selected notes (FL piano roll Flip). mode pitch: mirror pitches around axis (MIDI, default the middle of the selection) so a rising line falls; mode time: play the selected phrase backwards inside the span it occupies (lengths kept).",
+            mutates: true,
+            schema: || obj(props(props(target_props(), selection_props()), json!({
+                "mode": {"type": "string", "enum": ["pitch", "time"], "default": "pitch"},
+                "axis": {"type": "number", "minimum": 0, "maximum": 127, "description": "pitch mode: MIDI note to mirror around"}
+            })), &["track"]),
+            run: |e, a| {
+                let sel = selection_of(a)?;
+                let mode = s_opt(a, "mode").unwrap_or_else(|| "pitch".into());
+                let axis = f_opt(a, "axis");
+                with_notes(e, a, |n, _, _| mo::flip(n, &sel, &mode, axis))
+            },
+        },
+        Tool {
+            name: "chop_notes",
+            description: "Chop selected notes with a rhythm (FL's pattern Chop): pattern is one character per `step` ('1/16' default) on the song grid, repeating: x = hit, X = accented hit, - = keep holding, . = rest. A held chord or 808 becomes that rhythm, e.g. 'x.x-x..x' for a stab pattern, 'x--x--x-' for a tresillo 808.",
+            mutates: true,
+            schema: || obj(props(props(target_props(), selection_props()), json!({
+                "pattern": {"type": "string", "description": "x hit, X accent, - hold, . rest; e.g. 'x.x-x..x'"},
+                "step": {"type": "string", "description": "length of one character: '1/16' (default), '1/8', '1/8t', or steps as a number"}
+            })), &["track", "pattern"]),
+            run: |e, a| {
+                let sel = selection_of(a)?;
+                let pat = s_req(a, "pattern")?;
+                let step = steps_of(a.get("step"), 1.0)?;
+                with_notes(e, a, |n, _, _| mo::chop(n, &sel, &pat, step))
+            },
+        },
+        Tool {
+            name: "limit_notes",
+            description: "Keep selected notes inside a pitch range by moving them whole octaves (FL's Limit): lo and hi are MIDI notes at least an octave apart, e.g. a bass between 36 and 55.",
+            mutates: true,
+            schema: || obj(props(props(target_props(), selection_props()), json!({
+                "lo": {"type": "integer", "minimum": 0, "maximum": 127},
+                "hi": {"type": "integer", "minimum": 0, "maximum": 127}
+            })), &["track", "lo", "hi"]),
+            run: |e, a| {
+                let sel = selection_of(a)?;
+                let lo = u_or(a, "lo", 36).min(127) as u8;
+                let hi = u_or(a, "hi", 72).min(127) as u8;
+                with_notes(e, a, |n, _, _| mo::limit_range(n, &sel, lo, hi))
+            },
+        },
+        Tool {
             name: "roll_notes",
             description: "Drum performance edits on selected notes: roll (replace each note with `count` evenly spaced hits filling its length, velocity ramping from vel_start: trap hi-hat rolls, snare build-ups), ratchet (fast repeats keeping the accent), flam (quiet grace note just before). pitch_step moves each repeat (pitched 808/hat rolls). Tip: select the last beat with from/to, set_len it to 4 steps, then roll count 6 for a triplet roll.",
             mutates: true,

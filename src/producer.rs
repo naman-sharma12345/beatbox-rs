@@ -2697,7 +2697,19 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                 e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "high_shelf", "freq": 2500.0, "gain_db": -4.0, "q": 0.7}]}}), "producer")?;
             }
         }
-        for (t, hz) in [("perc", 10000.0), ("texture", 10000.0), ("lead", 8000.0)] {
+        // a glassy FM bell (ratio 3.5, index 4: inharmonic partials up to the
+        // top) becomes a softer tine (harmonic 2:1, low index), Rhodes-like
+        for t in ["lead", "counter"] {
+            if let Ok(i) = e.project.track_index(t) {
+                let mut v = serde_json::to_value(&e.project.tracks[i].instrument)?;
+                if v["type"] == "fm" && v["index"].as_f64().unwrap_or(0.0) > 2.0 {
+                    v["index"] = json!(1.6);
+                    v["ratio"] = json!(2.0);
+                    e.project.tracks[i].instrument = serde_json::from_value(v)?;
+                }
+            }
+        }
+        for (t, hz) in [("perc", 10000.0), ("texture", 9000.0), ("lead", 8000.0), ("hat", 8000.0), ("open_hat", 8000.0)] {
             if have(e, t) {
                 e.call_from("add_effect", &json!({"track": t, "type": "filter", "params": {"mode": "lowpass", "cutoff": hz, "resonance": 0.1}}), "producer")?;
             }

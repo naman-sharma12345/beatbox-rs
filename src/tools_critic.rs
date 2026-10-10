@@ -157,7 +157,7 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
             let d = shares[k] - rf[k];
             bands.insert(name.to_string(), json!({"share_db": r1(shares[k]), "vs_ref_db": r1(d)}));
             if d.abs() > 4.0 {
-                off += 0.5;
+                off += 0.5 + 0.12 * (d.abs() - 4.0);
                 let fc = (a0 * b0).sqrt();
                 let hot = d > 0.0;
                 problems.push(format!("{name} ({a0:.0}-{b0:.0} Hz) {}{:.1} dB vs a {genre} reference", if hot { "+" } else { "" }, d));
@@ -166,7 +166,7 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
                     "args": {"track": track, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": fc.round(), "gain_db": r1(gain), "q": 0.8}]}}}));
             }
         }
-        score -= off.min(2.5);
+        score -= off.min(3.5);
     } else {
         for (k, (name, _, _)) in BANDS.iter().enumerate() {
             bands.insert(name.to_string(), json!({"share_db": r1(shares[k])}));
