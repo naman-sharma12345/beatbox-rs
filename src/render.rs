@@ -587,6 +587,36 @@ impl TrackCache {
     }
 }
 
+/// Onsets in a mono take (sample positions): 10 ms frames whose level jumps
+/// 6 dB over the quietest of the previous 60 ms, above -45 dBFS, at most one
+/// every 90 ms; a held sound re-triggers every 120 ms so a ducker stays down.
+pub fn audio_onsets(x: &[f32]) -> Vec<usize> {
+    let hop = (0.01 * SR) as usize;
+    let n = x.len() / hop.max(1);
+    let db: Vec<f32> = (0..n)
+        .map(|i| {
+            let s = &x[i * hop..(i + 1) * hop];
+            let ms = s.iter().map(|v| v * v).sum::<f32>() / hop as f32;
+            10.0 * ms.max(1e-12).log10()
+        })
+        .collect();
+    let mut out = Vec::new();
+    let mut last: i64 = -100;
+    for i in 0..n {
+        if db[i] < -45.0 {
+            continue;
+        }
+        let lo = db[i.saturating_sub(6)..i].iter().copied().fold(f32::INFINITY, f32::min);
+        let jump = i == 0 || db[i] - lo > 6.0;
+        let gap = i as i64 - last;
+        if (jump && gap >= 9) || gap >= 12 {
+            out.push(i * hop);
+            last = i as i64;
+        }
+    }
+    out
+}
+
 pub fn render(p: &Project, bank: &SampleBank, opts: &RenderOptions) -> Result<Mix> {
     render_cached(p, bank, opts, None)
 }
@@ -613,12 +643,36 @@ pub fn render_cached(
     let any_solo = p.tracks.iter().any(|t| t.solo);
     let tl = Timeline::new(p, opts);
 
-    let triggers: HashMap<String, Vec<usize>> = p
+    let mut triggers: HashMap<String, Vec<usize>> = p
         .tracks
         .iter()
         .zip(events.iter())
         .map(|(t, ev)| (t.name.to_lowercase(), ev.iter().map(|e| e.start).collect()))
         .collect();
+    // an audio clip (a vocal take) triggers a sidechain at every onset in it,
+    // so "duck the pads under the vocal" follows the words, not just the
+    // clip's first sample
+    for c in &p.audio_clips {
+        let Some(data) = bank.get(&c.sample) else { continue };
+        let r0 = opts.step_range.map(|r| r.0).unwrap_or(0) as f32;
+        let off = ((c.offset_s.max(0.0) * SR) as usize).min(data.len());
+        let avail = data.len() - off;
+        let len = c.length_s.map(|l| ((l.max(0.0) * SR) as usize).min(avail)).unwrap_or(avail);
+        let song_steps = p.song_steps() as f32;
+        let ons = audio_onsets(&data[off..off + len]);
+        let tr = triggers.entry(c.track.to_lowercase()).or_default();
+        for lp in 0..opts.loops.max(1) {
+            let start = ((c.start_beat * 4.0 + lp as f32 * song_steps - r0) * p.step_secs() * SR).round() as i64;
+            for &o in &ons {
+                let at = start + o as i64;
+                if at >= 0 && (at as usize) < total {
+                    tr.push(at as usize);
+                }
+            }
+        }
+        tr.sort_unstable();
+        tr.dedup();
+    }
     let ctx = FxContext {
         step_secs: p.step_secs(),
         triggers: &triggers,

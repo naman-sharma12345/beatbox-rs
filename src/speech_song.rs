@@ -198,7 +198,11 @@ pub fn plan(lines: &[Line], sec_start_bar: &[u32], sec_bars: &[u32], bpm: f32, m
                 }
                 let beats = units / 4.0;
                 let src = c.audio.len() as f32 / SR;
-                let stretch = (beats * beat_s / src.max(0.05)).clamp(0.6, if sing { 2.6 } else { 1.35 });
+                // a held vowel stops growing at about 0.6 s over the spoken word
+                // (critic: long stretched vowels blurred the words); the rest of
+                // the slot is a breath
+                let max_sing = ((src + 0.6) / src.max(0.05)).min(2.6);
+                let stretch = (beats * beat_s / src.max(0.05)).clamp(0.6, if sing { max_sing.max(1.0) } else { 1.35 });
                 perf.stretch_range.0 = perf.stretch_range.0.min(stretch);
                 perf.stretch_range.1 = perf.stretch_range.1.max(stretch);
                 let mut notes = Vec::new();
@@ -309,14 +313,20 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
     let mut out = vec![0.0f32; ((end_beat * beat_s + 1.0) * SR) as usize];
     for (w, c) in perf.words.iter().zip(clips.iter()) {
         let mut y = stretch_nucleus(&c.audio, w.stretch);
-        let fi = (0.005 * SR) as usize;
-        let fo = ((0.02 * SR) as usize).min(y.len() / 2);
+        // start on a zero crossing (within 3 ms), then equal-power fades:
+        // 8 ms in, 25 ms out (critic: splice clicks at every word edge)
+        let zc = (1..((0.003 * SR) as usize).min(y.len())).find(|&i| (y[i - 1] <= 0.0) != (y[i] <= 0.0)).unwrap_or(0);
+        if zc > 0 {
+            y.drain(..zc);
+        }
+        let fi = ((0.008 * SR) as usize).min(y.len() / 2);
+        let fo = ((0.025 * SR) as usize).min(y.len() / 2);
         let n = y.len();
-        for i in 0..fi.min(n) {
-            y[i] *= i as f32 / fi as f32;
+        for i in 0..fi {
+            y[i] *= (std::f32::consts::FRAC_PI_2 * i as f32 / fi as f32).sin();
         }
         for i in 0..fo {
-            y[n - 1 - i] *= i as f32 / fo as f32;
+            y[n - 1 - i] *= (std::f32::consts::FRAC_PI_2 * i as f32 / fo as f32).sin();
         }
         let at = (w.beat * beat_s * SR) as usize;
         for (i, v) in y.iter().enumerate() {
@@ -326,6 +336,7 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
         }
     }
     if perf.mode != "sing" {
+        declick(&mut out);
         level(&mut out);
         return out;
     }
@@ -360,8 +371,53 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
         corr[i] = a * corr[i - 1] + (1.0 - a) * corr[i];
     }
     let mut y = vocal::psola(&out, SR, &frames, &corr, 0.55, 1.75);
+    declick(&mut y);
     level(&mut y);
     y
+}
+
+/// Repair clicks: a 1 ms window whose energy above 6 kHz jumps 18 dB over
+/// its neighbourhood and dies within a few ms is a splice or grain edge, not
+/// a consonant; its high band is faded out over ~3 ms (the same measure the
+/// critic counts clicks with). Returns how many were repaired.
+pub fn declick(y: &mut [f32]) -> usize {
+    let w = (0.001 * SR) as usize;
+    let n = y.len() / w.max(1);
+    if n < 100 {
+        return 0;
+    }
+    let mut hp = crate::dsp::Biquad::new(crate::dsp::BiquadKind::LowCut, 6000.0, 0.7, 0.0);
+    let mut hp2 = crate::dsp::Biquad::new(crate::dsp::BiquadKind::LowCut, 6000.0, 0.7, 0.0);
+    let h: Vec<f32> = y.iter().map(|&v| hp2.process(hp.process(v))).collect();
+    let e: Vec<f32> = (0..n).map(|i| h[i * w..(i + 1) * w].iter().map(|v| v * v).sum::<f32>() / w as f32 + 1e-12).collect();
+    let mut sorted = e.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let floor = sorted[n / 2];
+    let mut fixed = 0;
+    let mut i = 0;
+    while i < n {
+        let lo = i.saturating_sub(25);
+        let hi = (i + 26).min(n);
+        let mut nb: Vec<f32> = e[lo..hi].to_vec();
+        nb.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let med = nb[nb.len() / 2];
+        let after = if i + 8 < n { e[i + 3..i + 8].iter().copied().fold(0.0, f32::max) } else { e[i] };
+        if e[i] > 30.0 * med && e[i] > 4.0 * floor && after < 0.3 * e[i] {
+            // fade the high band out across the click (raised-cosine, 4 ms)
+            let s0 = (i * w).saturating_sub(w);
+            let s1 = ((i + 3) * w).min(y.len());
+            let len = (s1 - s0).max(1) as f32;
+            for k in s0..s1 {
+                let g = 0.5 - 0.5 * (std::f32::consts::TAU * (k - s0) as f32 / len).cos();
+                y[k] -= h[k] * g;
+            }
+            fixed += 1;
+            i += 4;
+            continue;
+        }
+        i += 1;
+    }
+    fixed
 }
 
 /// A singer's pitch life on top of a written note (semitones), `t` seconds

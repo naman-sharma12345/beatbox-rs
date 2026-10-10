@@ -21,8 +21,19 @@ pub fn make_beat_with(e: &mut Engine, a: &Value, clips: Option<Vec<Vec<crate::sp
         bail!("say what you want: prompt (e.g. 'Bohemia type beat with a beat switch') and/or lyrics");
     }
     let p = parse_prompt(&prompt);
-    let lr = (!lyrics.trim().is_empty()).then(|| analyze_lyrics(&lyrics));
+    let mut lr = (!lyrics.trim().is_empty()).then(|| analyze_lyrics(&lyrics));
     let mut reasons = p.reasons.clone();
+    // song form (critic, beat 8: "the only hook is at 0:11"): a song whose
+    // words end on a verse comes back to the hook once more at the end
+    if let Some(l) = lr.as_mut() {
+        let hooks: Vec<usize> = (0..l.sections.len()).filter(|&i| l.sections[i].kind == "hook").collect();
+        if clips.is_none() && hooks.len() == 1 && l.sections.len() >= 2 && l.sections.last().map(|s| s.kind != "hook").unwrap_or(false) {
+            let h = l.sections[hooks[0]].clone();
+            l.total_bars += h.bars;
+            l.sections.push(h);
+            reasons.push("song form: the hook comes back after the last verse".into());
+        }
+    }
     let mut args = Map::new();
     let brief = if prompt.is_empty() { format!("a beat for these {} lyrics", lr.as_ref().map(|l| l.delivery.as_str()).unwrap_or("")) } else { prompt.clone() };
     args.insert("brief".into(), json!(brief));
@@ -72,9 +83,11 @@ pub fn make_beat_with(e: &mut Engine, a: &Value, clips: Option<Vec<Vec<crate::sp
             for s in &l.sections {
                 form.push(json!({"kind": s.kind, "bars": s.bars}));
             }
-            form.push(json!({"kind": "outro", "bars": 4}));
+            // a slow song's outro is ~6 s, not 11 (2 bars under 100 BPM)
+            let outro_bars = if bpm.unwrap_or(l.bpm) < 100.0 { 2 } else { 4 };
+            form.push(json!({"kind": "outro", "bars": outro_bars}));
             reasons.push(format!(
-                "arrangement from the lyrics: intro 4 > {} > outro 4",
+                "arrangement from the lyrics: intro 4 > {} > outro {outro_bars}",
                 l.sections.iter().map(|s| format!("{} {}", s.kind, s.bars)).collect::<Vec<_>>().join(" > ")
             ));
             intent.insert("form".into(), json!(form));
@@ -291,6 +304,15 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
             }
         }
     }
+    // gain staging (critic round 2: the stem clipped at +0.1 dBTP because the
+    // hooks were lifted after levelling): repair splice clicks, then peak the
+    // stem at -6 dBFS in float and give the level back on the fader
+    let clicks_fixed = ss::declick(&mut y);
+    let peak = y.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
+    let stem_gain_db = 20.0 * (0.5 / peak).log10();
+    for v in y.iter_mut() {
+        *v *= 0.5 / peak;
+    }
     let t_render = t0.elapsed().as_secs_f32() - t_tts;
     std::fs::create_dir_all(e.samples_dir())?;
     let p = e.samples_dir().join(format!("vocal_{mode}_{seed}.wav"));
@@ -315,7 +337,9 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
     if let Ok(i) = e.project.track_index("vocal") {
         // critic (JFK rap/sing, beat 8 sung): at +5 dB the vocal still sat up to
         // 3 dB under the beat; vocal-first means ~3 dB over it
-        e.project.tracks[i].volume_db = 10.0;
+        // (sing measured +5.6 dB over the beat in round 2, rap +3.1: aim ~+3)
+        let base = if mode == "sing" { 7.5 } else { 10.0 };
+        e.project.tracks[i].volume_db = base - stem_gain_db;
     }
     for (t, db) in [("lead", -6.0), ("counter", -4.0), ("texture", -3.0), ("perc", -4.0), ("hat", -2.0), ("open_hat", -2.0)] {
         if let Ok(i) = e.project.track_index(t) {
@@ -327,12 +351,22 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
     let crate_call = |e: &mut Engine, name: &str, args: Value| (find(name).expect("tool").run)(e, &args);
     for t in ["chords", "lead", "counter", "texture"] {
         if e.project.track_index(t).is_ok() {
-            let _ = crate_call(e, "add_effect", json!({"track": t, "type": "sidechain", "params": {"source": "vocal", "amount": 0.5}}));
-            // the voice's body (250-800 Hz) and its consonants (1-4 kHz) belong to the voice
+            let _ = crate_call(e, "add_effect", json!({"track": t, "type": "sidechain", "params": {"source": "vocal", "amount": 0.5, "attack_ms": 10.0, "release_ms": 450.0}}));
+            // the voice's body (250-800 Hz) and its consonants (1-4 kHz) belong to the voice;
+            // the static ~300 Hz pad line sat right on it (critic: low-mid +7.5 dB)
             let _ = crate_call(e, "add_effect", json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                {"kind": "bell", "freq": 300.0, "gain_db": -4.0, "q": 1.2},
                 {"kind": "bell", "freq": 450.0, "gain_db": -3.0, "q": 0.8},
                 {"kind": "bell", "freq": 2500.0, "gain_db": -4.0, "q": 0.6}
             ]}}));
+        }
+    }
+    // the consonant band (2-8 kHz) belongs to the words: hats and perc duck
+    // about 6 dB under every vocal onset and lose their top above 9 kHz
+    for t in ["hat", "open_hat", "perc", "shaker"] {
+        if e.project.track_index(t).is_ok() {
+            let _ = crate_call(e, "add_effect", json!({"track": t, "type": "sidechain", "params": {"source": "vocal", "amount": 0.5, "attack_ms": 5.0, "release_ms": 300.0}}));
+            let _ = crate_call(e, "add_effect", json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "high_cut", "freq": 9000.0, "gain_db": 0.0, "q": 0.7}]}}));
         }
     }
     // the voice itself: presence 2.5 kHz, harmonics restored on a band-limited
@@ -341,9 +375,10 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
     let air = air_ratio_db(&y);
     if e.project.track_index("vocal").is_ok() {
         if air < -40.0 {
-            let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "saturator", "params": {"mode": "exciter", "drive_db": 9.0, "tone_hz": 4000.0, "mix": 0.35}}));
+            // gentle (critic round 2: drive 9 dB turned 2-5 kHz into fuzz)
+            let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "saturator", "params": {"mode": "exciter", "drive_db": 4.5, "tone_hz": 5000.0, "mix": 0.18}}));
         }
-        let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 2500.0, "gain_db": 4.0, "q": 0.8}]}}));
+        let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 2500.0, "gain_db": 3.0, "q": 0.8}]}}));
         let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "limiter", "params": {"ceiling_db": -1.5}}));
     }
     // the project changed outside the tool layer: drop cached renders
@@ -356,6 +391,8 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
         "sung_notes": notes,
         "source_air_db": (air * 10.0).round() / 10.0,
         "vocal_stem": p.to_string_lossy(),
+        "clicks_repaired": clicks_fixed,
+        "stem_peak_dbfs": -6.0,
         "voice_center_midi": (center * 10.0).round() / 10.0,
         "stretch_range": [(perf.stretch_range.0 * 100.0).round() / 100.0, (perf.stretch_range.1 * 100.0).round() / 100.0],
         "seconds": {"tts": (t_tts * 10.0).round() / 10.0, "perform": (t_render * 10.0).round() / 10.0},

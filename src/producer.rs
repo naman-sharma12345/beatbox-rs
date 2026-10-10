@@ -2685,7 +2685,27 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             }
         }
     }
-    // R&B: the sustained bed builds a 300 Hz band under the vocal range
+    // R&B (critic, beat 8 round 2: 2-5 kHz +8.9 dB over a reference and tonal,
+    // 60-250 Hz 7.9 dB under): the tonal lead/counter lose 4 dB above 2.5 kHz,
+    // perc and texture lose their fizz above 10 kHz, and the 808/kick get body
+    if rnb {
+        for t in ["lead", "counter"] {
+            if have(e, t) {
+                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "high_shelf", "freq": 2500.0, "gain_db": -4.0, "q": 0.7}]}}), "producer")?;
+            }
+        }
+        for t in ["perc", "texture"] {
+            if have(e, t) {
+                e.call_from("add_effect", &json!({"track": t, "type": "filter", "params": {"mode": "lowpass", "cutoff": 10000.0, "resonance": 0.1}}), "producer")?;
+            }
+        }
+        if have(e, "bass") {
+            e.call_from("add_effect", &json!({"track": "bass", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 110.0, "gain_db": 4.0, "q": 0.9}]}}), "producer")?;
+        }
+        if have(e, "kick") {
+            e.call_from("add_effect", &json!({"track": "kick", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 75.0, "gain_db": 3.0, "q": 1.0}]}}), "producer")?;
+        }
+    }
     // a pocket for the voice: the melodic beds step back 3 dB around 1-2 kHz
     // (critic, 6b round 2: 800-2k ran ~8 dB over a hip-hop reference)
     for t in ["chords", "counter", "texture"] {
