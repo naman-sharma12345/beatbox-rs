@@ -676,6 +676,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_fl::tools());
     v.extend(crate::tools_fx2::tools());
     v.extend(crate::tools_palette::tools());
+    v.extend(crate::tools_vocal::tools());
     v
 }
 

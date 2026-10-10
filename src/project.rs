@@ -264,6 +264,29 @@ pub struct Project {
     /// Reusable automation clips (compiled into automation lanes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub automation_clips: Vec<AutomationClip>,
+    /// Audio clips on the song timeline (a recorded vocal, a long sample),
+    /// each played on a track's channel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_clips: Vec<AudioClip>,
+}
+
+/// A sample placed on the song timeline at a beat, played through a track's
+/// channel (its FX, fader, sends and routing), independent of patterns.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AudioClip {
+    pub track: String,
+    pub sample: String,
+    /// Song beat where the clip's audio (after `offset_s`) starts; may be
+    /// negative to start a take mid-way.
+    pub start_beat: f32,
+    /// Seconds skipped at the start of the sample.
+    #[serde(default)]
+    pub offset_s: f32,
+    /// Seconds played (None = to the end of the sample).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_s: Option<f32>,
+    #[serde(default)]
+    pub gain_db: f32,
 }
 
 /// One parameter a macro drives, mapped from the macro's 0..1 value.
@@ -327,6 +350,7 @@ impl Project {
             macros: Vec::new(),
             playlist: Vec::new(),
             automation_clips: Vec::new(),
+            audio_clips: Vec::new(),
         }
     }
 

@@ -65,7 +65,9 @@ pub mod tools_parity;
 pub mod tools_producer;
 pub mod tools_sound;
 pub mod tools_studio;
+pub mod tools_vocal;
 pub mod validate;
+pub mod vocal;
 pub mod voice_pro;
 
 pub use engine::Engine;

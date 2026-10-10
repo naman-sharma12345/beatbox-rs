@@ -825,6 +825,49 @@ pub fn render_cached(
                         add_voice(&mut mono2, e.start, buf2, choke_at, legato.is_some());
                     }
                 }
+                // audio clips on this track's channel (a vocal take, a long sample)
+                for c in p
+                    .audio_clips
+                    .iter()
+                    .filter(|c| c.track.eq_ignore_ascii_case(&track.name))
+                {
+                    let Some(data) = bank.get(&c.sample) else {
+                        continue;
+                    };
+                    let step = p.step_secs();
+                    let r0 = opts.step_range.map(|r| r.0).unwrap_or(0) as f32;
+                    let song_steps = p.song_steps() as f32;
+                    let off = ((c.offset_s.max(0.0) * SR) as usize).min(data.len());
+                    let avail = data.len() - off;
+                    let len = c
+                        .length_s
+                        .map(|l| ((l.max(0.0) * SR) as usize).min(avail))
+                        .unwrap_or(avail);
+                    let g = crate::dsp::db_to_gain(c.gain_db);
+                    let fade = (0.004 * SR) as usize;
+                    for lp in 0..opts.loops.max(1) {
+                        let start_step = c.start_beat * 4.0 + lp as f32 * song_steps - r0;
+                        let start = (start_step * step * SR).round() as i64;
+                        for i in 0..len {
+                            let o = start + i as i64;
+                            if o < 0 {
+                                continue;
+                            }
+                            let o = o as usize;
+                            if o >= total {
+                                break;
+                            }
+                            let env = (i as f32 / fade as f32)
+                                .min((len - i) as f32 / fade as f32)
+                                .min(1.0);
+                            let v = data[off + i] * g * env;
+                            mono[o] += v;
+                            if spread > 0.0 {
+                                mono2[o] += v;
+                            }
+                        }
+                    }
+                }
                 // pan (equal power), optionally automated
                 let pan_lane = lanes
                     .iter()
