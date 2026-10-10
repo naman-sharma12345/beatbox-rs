@@ -92,14 +92,14 @@ impl OnePole {
 }
 
 /// Very gentle DC blocker (~3.5 Hz) that leaves a 30 Hz sub untouched.
-#[derive(Clone, Copy, Default)]
-struct SubDc {
+#[derive(Clone, Copy, Default, Debug)]
+pub struct SubDc {
     x1: f32,
     y1: f32,
 }
 
 impl SubDc {
-    fn process(&mut self, x: f32) -> f32 {
+    pub fn process(&mut self, x: f32) -> f32 {
         let y = x - self.x1 + 0.9995 * self.y1;
         self.x1 = x;
         self.y1 = y;
@@ -111,22 +111,22 @@ impl SubDc {
 /// multiplier, `tone` -1 (soft, round) .. 1 (hard, clicky).
 pub fn kick(tune: f32, d: f32, vel: f32, tone: f32, v: Variation, rng: &mut Rng) -> Vec<f32> {
     let dd = d * v.decay;
-    let len = 0.55 * dd + 0.05;
+    let len = 0.7 * dd + 0.05;
     let mut out = vec![0.0f32; (len * SR) as usize];
     let f_end = 47.0 * tune * st(v.tune);
     let mut ph = 0.0f32;
     let mut bp = Svf::default();
     let mut lp = OnePole::default();
     let bright = 2f32.powf(tone * 0.8 + v.tone);
-    let click_amt = (0.22 + 0.25 * tone.max(-0.8)) * (0.35 + 0.65 * vel * vel);
-    let knock = 1.25 + 0.6 * vel + 0.4 * tone.max(0.0);
+    let click_amt = (0.35 + 0.3 * tone.max(-0.8)) * (0.35 + 0.65 * vel * vel);
+    let knock = 0.8 + 0.3 * vel + 0.2 * tone.max(0.0);
     for (i, s) in out.iter_mut().enumerate() {
         let t = i as f32 / SR;
         // two-stage sweep: a fast drop (the "tick" of pitch) and a slower
         // settle (the "boom"), landing on the tuned fundamental
         let f = f_end * (1.0 + 3.4 * (-t / 0.011).exp() + 0.55 * (-t / 0.055).exp());
         ph = (ph + f / SR) % 1.0;
-        let amp = 0.72 * (-t * 3.3 / dd).exp() + 0.28 * (-t * 22.0).exp();
+        let amp = 0.72 * (-t * 6.0 / dd).exp() + 0.28 * (-t * 25.0).exp();
         let body = (2.0 * PI * ph).sin() * amp;
         // beater: band-passed noise burst + a 3 ms high blip
         let n = bp.process(rng.bipolar(), 3800.0 * bright, 0.25, FilterMode::Bandpass);
@@ -135,7 +135,7 @@ pub fn kick(tune: f32, d: f32, vel: f32, tone: f32, v: Variation, rng: &mut Rng)
         let x = body + click * click_amt;
         *s = (knock * x).tanh() / knock.tanh();
     }
-    fade_edges(&mut out, 8, (0.006 * SR) as usize);
+    fade_edges(&mut out, 8, (0.04 * SR) as usize);
     out
 }
 
@@ -191,7 +191,7 @@ pub fn clap(tune: f32, d: f32, vel: f32, tone: f32, v: Variation, rng: &mut Rng)
         let t = i as f32 / SR;
         let noise = rng.bipolar();
         let n = bp.process(noise, 1250.0 * tune * bright, 0.3, FilterMode::Bandpass)
-            + 0.5 * bp2.process(noise, 2600.0 * tune * bright, 0.2, FilterMode::Bandpass);
+            + 0.35 * bp2.process(noise, 2000.0 * tune * bright, 0.2, FilterMode::Bandpass);
         let n = lp.lp(n, 9000.0 * bright);
         let mut env = 0.0f32;
         for (k, o) in offs.iter().enumerate() {
@@ -309,10 +309,10 @@ pub fn bass808(
     .min(8.0);
     let n = (total * SR) as usize;
     let mut out = vec![0.0f32; n];
-    let drive = 1.0 + p.drive.clamp(0.0, 1.0) * 6.0;
-    let bias = 0.18 * p.drive.clamp(0.0, 1.0);
+    let drive = 1.0 + p.drive.clamp(0.0, 1.0) * 14.0;
+    let bias = 0.32 * p.drive.clamp(0.0, 1.0);
     let sub = p.sub.clamp(0.0, 1.0);
-    let tone_hz = 1100.0 * 2f32.powf(p.tone.clamp(-2.0, 2.0)) * (0.6 + 0.4 * vel);
+    let tone_hz = 1500.0 * 2f32.powf(p.tone.clamp(-2.0, 2.0)) * (0.6 + 0.4 * vel);
     let click = p.click.clamp(0.0, 1.0) * (0.4 + 0.6 * vel);
     let mut ph = 0.0f32;
     let mut lp = OnePole::default();
@@ -411,7 +411,8 @@ mod tests {
                 assert!(x.iter().all(|v| v.is_finite()), "{name}");
                 let pk = peak(&x);
                 assert!(pk > 0.05, "{name} silent {pk}");
-                assert!(pk <= 1.0, "{name} clips {pk}");
+                // raw layers; the instrument wrapper normalises drums
+                assert!(pk < 2.5, "{name} runaway level {pk}");
                 assert!(mean(&x).abs() < 0.01, "{name} DC {}", mean(&x));
                 assert!(x[0].abs() < 1e-3, "{name} starts at {}", x[0]);
                 assert!(
@@ -427,6 +428,24 @@ mod tests {
                     .filter(|(i, _)| *i > (0.015 * SR) as usize)
                     .collect();
                 assert!(late.is_empty(), "{name} clicks at {late:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rendered_presets_have_headroom_and_clean_edges() {
+        let bank = crate::samples::SampleBank::default();
+        for name in [
+            "kick", "snare", "clap", "hat", "open_hat", "crash", "kick_punchy", "kick_grit",
+            "snare_dusty", "hat_crisp", "808", "808_grit", "808_slide", "808_clean",
+        ] {
+            let inst = crate::instruments::preset(name).unwrap();
+            for seed in 0..4u64 {
+                let x = crate::instruments::render_note(&inst, 60.0 - 24.0 * (name.starts_with("808") as u8 as f32), 1.0, 0.4, &bank, seed);
+                let pk = peak(&x);
+                assert!(pk <= 0.95, "{name} peak {pk}");
+                assert!(x[0].abs() < 1e-3 && x[x.len() - 1].abs() < 1e-3, "{name} edges");
+                assert!(mean(&x).abs() < 0.01, "{name} DC");
             }
         }
     }

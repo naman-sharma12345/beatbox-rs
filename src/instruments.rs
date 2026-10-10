@@ -249,12 +249,12 @@ impl Default for Bass808Params {
         Bass808Params {
             decay: 1.2,
             punch: 12.0,
-            drive: 0.35,
+            drive: 0.45,
             sustain: false,
             gain: 0.85,
             glide_ms: 0.0,
             click: 0.3,
-            sub: 0.55,
+            sub: 0.4,
             tone: 0.0,
         }
     }
@@ -1135,7 +1135,7 @@ pub fn preset(name: &str) -> Option<Instrument> {
             layers: vec![
                 Layer::of(drum(DrumKind::Kick)),
                 Layer {
-                    gain_db: -7.0,
+                    gain_db: -10.0,
                     transpose: -24.0,
                     ..Layer::of(Instrument::Bass808(Bass808Params {
                         decay: 0.5,
@@ -1150,7 +1150,7 @@ pub fn preset(name: &str) -> Option<Instrument> {
             layers: vec![
                 Layer::of(drum(DrumKind::Snare)),
                 Layer {
-                    gain_db: -4.0,
+                    gain_db: -6.0,
                     delay_ms: 8.0,
                     ..Layer::of(drum(DrumKind::Clap))
                 },
@@ -1165,8 +1165,8 @@ pub fn preset(name: &str) -> Option<Instrument> {
                 },
             ],
         }),
-        "kick_punchy" => drum_x(DrumKind::Kick, 0.0, 0.85, 0.15, 0.6),
-        "kick_tight" => drum_x(DrumKind::Kick, 2.0, 0.6, 0.2, 0.5),
+        "kick_punchy" => drum_x(DrumKind::Kick, 0.0, 0.85, 0.0, 0.7),
+        "kick_tight" => drum_x(DrumKind::Kick, 2.0, 0.6, 0.1, 0.6),
         "kick_deep" => drum_x(DrumKind::Kick, -2.0, 1.4, 0.0, -0.4),
         "kick_dusty" => drum_x(DrumKind::Kick, -1.0, 0.8, 0.35, -0.7),
         "kick_grit" => drum_x(DrumKind::Kick, 0.0, 0.9, 0.6, 0.3),
@@ -1182,10 +1182,10 @@ pub fn preset(name: &str) -> Option<Instrument> {
         "808_dark" => Instrument::Bass808(Bass808Params {
             decay: 1.6,
             punch: 10.0,
-            drive: 0.3,
+            drive: 0.45,
             click: 0.15,
-            sub: 0.7,
-            tone: -1.0,
+            sub: 0.5,
+            tone: -0.6,
             ..Default::default()
         }),
         "808_grit" => Instrument::Bass808(Bass808Params {
@@ -1193,7 +1193,7 @@ pub fn preset(name: &str) -> Option<Instrument> {
             punch: 12.0,
             drive: 0.85,
             click: 0.45,
-            sub: 0.45,
+            sub: 0.35,
             tone: 0.5,
             gain: 0.8,
             ..Default::default()
@@ -1201,19 +1201,19 @@ pub fn preset(name: &str) -> Option<Instrument> {
         "808_slide" => Instrument::Bass808(Bass808Params {
             decay: 1.6,
             punch: 9.0,
-            drive: 0.5,
+            drive: 0.55,
             sustain: true,
             glide_ms: 120.0,
             click: 0.35,
-            sub: 0.55,
+            sub: 0.45,
             ..Default::default()
         }),
         "808_clean" => Instrument::Bass808(Bass808Params {
             decay: 0.9,
             punch: 8.0,
-            drive: 0.15,
+            drive: 0.2,
             click: 0.2,
-            sub: 0.8,
+            sub: 0.65,
             tone: -0.5,
             ..Default::default()
         }),
@@ -1335,7 +1335,7 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.lfo_rate = 5.0;
             p.lfo_to_pitch = 0.05;
             p.vel_to_cutoff = 1.0;
-            p.gain = 0.4;
+            p.gain = 0.26;
         }),
         _ => return None,
     })
@@ -1543,15 +1543,33 @@ fn render_drum(p: &DrumParams, pitch: f32, vel: f32, rng: &mut Rng) -> Vec<f32> 
         }
     }
     let drive = 1.0 + p.drive.clamp(0.0, 1.0) * 6.0;
-    let g = vel * var.level.min(1.0);
-    for s in out.iter_mut() {
-        *s = if drive > 1.01 {
-            (*s * drive).tanh() / drive.tanh()
-        } else {
-            *s
-        } * g;
+    if drive > 1.01 {
+        for s in out.iter_mut() {
+            *s = (*s * drive).tanh() / drive.tanh();
+        }
     }
-    vp::fade_edges(&mut out, 4, 64);
+    // headroom: the layered voices are normalised to -1 dBFS before
+    // velocity, the older ones only capped there
+    let layered = matches!(
+        p.kind,
+        DrumKind::Kick
+            | DrumKind::Snare
+            | DrumKind::Clap
+            | DrumKind::ClosedHat
+            | DrumKind::OpenHat
+            | DrumKind::Crash
+    );
+    let pk = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let norm = if pk > 1e-6 && (layered || pk > 0.89) {
+        0.89 / pk
+    } else {
+        1.0
+    };
+    let g = norm * vel * var.level.min(1.0);
+    for s in out.iter_mut() {
+        *s *= g;
+    }
+    vp::fade_edges(&mut out, 16, 256);
     out
 }
 
@@ -1590,6 +1608,7 @@ fn render_synth_slide(
     let mut filt2 = Svf::default();
     let lfo_ph0 = rng.f32();
     let drive = 1.0 + p.drive.max(0.0) * 8.0;
+    let mut dcb = crate::voice_pro::SubDc::default();
     // analog drift: each voice wanders on its own smoothed random walk
     let drift = p.drift_cents.max(0.0);
     let mut drift_now: Vec<f32> = (0..voices).map(|_| rng.bipolar() * drift).collect();
@@ -1646,6 +1665,7 @@ fn render_synth_slide(
         if drive > 1.01 {
             y = (y * drive).tanh() / drive.tanh().max(0.5);
         }
+        let y = dcb.process(y);
         *s = y * p.amp_env.level(t, gate) * vel * p.gain;
     }
     out
@@ -1671,6 +1691,7 @@ fn render_fm(p: &FmParams, pitch: f32, vel: f32, gate: f32) -> Vec<f32> {
     };
     let f2 = f * 2f32.powf(p.detune_cents / 1200.0);
     let two = p.detune_cents != 0.0;
+    let mut dcb = crate::voice_pro::SubDc::default();
     for (i, s) in out.iter_mut().enumerate() {
         let t = i as f32 / SR;
         let menv = p.mod_env.level(t, gate);
@@ -1688,7 +1709,7 @@ fn render_fm(p: &FmParams, pitch: f32, vel: f32, gate: f32) -> Vec<f32> {
             y = 0.5 * (y + (2.0 * PI * pc2 + m).sin());
         }
         last = y;
-        *s = y * p.amp_env.level(t, gate) * vel * p.gain;
+        *s = dcb.process(y * p.amp_env.level(t, gate)) * vel * p.gain;
     }
     out
 }
@@ -1736,7 +1757,7 @@ fn render_pluck(p: &PluckParams, pitch: f32, vel: f32, gate: f32, rng: &mut Rng)
         };
         *s = dc.process(cur) * rel * vel * p.gain;
     }
-    crate::voice_pro::fade_edges(&mut out, 0, (0.01 * SR) as usize);
+    crate::voice_pro::fade_edges(&mut out, 32, (0.01 * SR) as usize);
     out
 }
 

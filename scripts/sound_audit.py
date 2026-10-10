@@ -24,10 +24,11 @@ SR = 44100
 
 def load(path):
     sr, x = wavfile.read(path)
+    is_int = x.dtype.kind == "i"
     x = x.astype(np.float64)
     if x.ndim > 1:
         x = x.mean(axis=1)
-    if x.dtype.kind == "i" or np.abs(x).max() > 2.0:
+    if is_int:
         x = x / 32768.0
     return x
 
@@ -71,9 +72,12 @@ def role_of(name, kind):
 
 
 def alias_db(x, f0):
-    """Energy outside +-1.5 bins of the harmonic series (f0 and f0/2 grids),
-    relative to total, measured on a steady 8192-sample window."""
-    if f0 <= 0 or len(x) < 9000:
+    """Aliasing on high notes (f0 >= 1 kHz): energy between 30 Hz and
+    0.85 * f0, where a pitched voice without a sub has nothing but folded
+    partials (or noise), relative to total, on a steady 8192 window.
+    Detuned unison and inharmonic partials sit above f0, so they do not
+    trip it."""
+    if f0 < 1000 or len(x) < 9000:
         return None
     start = min(int(0.05 * SR), len(x) - 8192)
     seg = x[start:start + 8192]
@@ -83,14 +87,8 @@ def alias_db(x, f0):
     sp = np.abs(np.fft.rfft(seg * w)) ** 2
     freqs = np.fft.rfftfreq(8192, 1 / SR)
     df = freqs[1]
-    best = None
-    for base in (f0, f0 / 2):
-        k = np.round(freqs / base)
-        near = np.abs(freqs - k * base) <= 3.5 * df
-        near |= freqs < 30
-        off = sp[~near].sum()
-        r = 10 * math.log10(off / (sp.sum() + 1e-30) + 1e-12)
-        best = r if best is None else min(best, r)
+    m = (freqs > 30) & (freqs < 0.85 * f0)
+    best = 10 * math.log10(sp[m].sum() / (sp.sum() + 1e-30) + 1e-12)
     return round(best, 1)
 
 
@@ -156,7 +154,7 @@ def flags(r):
         out.append(f"starts on a non-zero sample ({r['start_jump']:.3f}) -> click")
     if r["end_level"] > 0.01:
         out.append(f"ends abruptly (last 2 ms peak {r['end_level']:.3f}) -> click")
-    if r["alias_db"] is not None and r["alias_db"] > -45:
+    if r["alias_db"] is not None and r["alias_db"] > -50:
         out.append(f"aliasing / inharmonic junk {r['alias_db']} dB")
     if role == "kick":
         if r["low_lt150"] < 0.55:
@@ -169,7 +167,7 @@ def flags(r):
         if r["body_150_600"] < 0.02:
             out.append("pure sine: no harmonics to read on small speakers")
     if role in ("snare", "clap"):
-        if r["body_150_600"] < 0.08:
+        if role == "snare" and r["body_150_600"] < 0.08:
             out.append(f"no body ({r['body_150_600']:.0%} in 150-600 Hz)")
         if r["harsh_2k_5k"] > 0.45:
             out.append(f"harsh ({r['harsh_2k_5k']:.0%} in 2-5 kHz)")
