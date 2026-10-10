@@ -41,7 +41,36 @@ pick the better version (restore_snapshot to go back). Finish with validate_proj
 (true peak <= -1 dBTP, about -14 LUFS for streaming). undo/redo are always available, so experiment freely.";
 
 pub(crate) fn obj(props: Value, required: &[&str]) -> Value {
-    json!({ "type": "object", "properties": props, "required": required, "additionalProperties": false })
+    json!({ "type": "object", "properties": type_untyped(props), "required": required, "additionalProperties": false })
+}
+
+/// Arguments that accept more than one JSON type (a pitch as 60 or "C4", a
+/// rate as 4 or "1/16", one track name or a list) get their union type
+/// spelled out, so every argument a model sees carries a type.
+fn type_untyped(mut props: Value) -> Value {
+    if let Value::Object(m) = &mut props {
+        for (k, p) in m.iter_mut() {
+            let Value::Object(o) = p else { continue };
+            if ["type", "enum", "oneOf", "anyOf", "$ref", "const"].iter().any(|f| o.contains_key(*f)) {
+                continue;
+            }
+            let (ty, desc): (Value, &str) = match k.as_str() {
+                "pitch" | "pitch_min" | "pitch_max" | "pitch_from" | "pitch_to" | "key_min" | "key_max" | "root" | "register" => {
+                    (json!(["integer", "string"]), "MIDI number or note name (C4 = 60)")
+                }
+                "rate" | "grid" | "every" => (json!(["number", "string"]), "16th steps, or a note value like '1/16', '1/8t', '1/4'"),
+                "patterns" | "to_patterns" | "track" => (json!(["string", "array"]), "a name, 'a,b', or a list of names"),
+                "sections" => (json!(["array", "string"]), "list of sections"),
+                _ => continue,
+            };
+            o.insert("type".into(), ty);
+            if k == "patterns" || k == "to_patterns" || k == "track" || k == "sections" {
+                o.entry("items").or_insert(json!({"type": ["string", "object"]}));
+            }
+            o.entry("description").or_insert(Value::String(desc.into()));
+        }
+    }
+    props
 }
 
 // ---------- argument helpers ----------
@@ -679,10 +708,11 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_vocal::tools());
     v.extend(crate::tools_groove::tools());
     v.extend(crate::tools_prompt::tools());
+    v.extend(crate::tools_meta::tools());
     v
 }
 
-fn core_tools() -> Vec<Tool> {
+pub(crate) fn core_tools() -> Vec<Tool> {
     vec![
         // ----- discovery -----
         Tool {
@@ -701,10 +731,13 @@ fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "list_tools",
-            description: "List every tool name with its one-line description.",
+            description: "Every tool, grouped by category (start, discover, project, notes, sound, compose, listen, mix, fx, playlist, produce, vocal, export...), one line each. Filter with category or search. Then describe_tool {name} for arguments and an example.",
             mutates: false,
-            schema: || obj(json!({}), &[]),
-            run: |_, _| Ok(Value::Array(registry().iter().map(|t| json!({"name": t.name, "description": t.description})).collect())),
+            schema: || obj(json!({
+                "category": {"type": "string", "description": "Only this category, e.g. vocal, fx, mix, notes"},
+                "search": {"type": "string", "description": "Only tools whose name or description contains this word"}
+            }), &[]),
+            run: |_, a| crate::tools_meta::list(a),
         },
         // ----- project -----
         Tool {

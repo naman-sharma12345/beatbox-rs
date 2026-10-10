@@ -170,6 +170,13 @@ impl Engine {
                         m.insert("revision".into(), Value::from(self.revision));
                     }
                 }
+                // a hint of what to call next (small models follow these)
+                if let Value::Object(m) = v {
+                    let hint = crate::tools_meta::next_steps(name);
+                    if !hint.is_empty() && !m.contains_key("next") {
+                        m.insert("next".into(), serde_json::json!(hint));
+                    }
+                }
             }
             Err(_) => {
                 if let Some(s) = snapshot {
@@ -450,7 +457,10 @@ impl Engine {
 }
 
 fn unknown_tool(name: &str) -> anyhow::Error {
-    anyhow!("unknown tool '{name}'. Call list_tools or get_guide to see what's available.")
+    anyhow!(
+        "unknown tool '{name}'. Did you mean: {}? (list_tools shows every tool by category; suggest_tools {{goal}} finds one from plain words)",
+        crate::tools_meta::suggest(name, 3).join(", ")
+    )
 }
 
 /// Unknown top-level arguments are an error, never silently ignored.

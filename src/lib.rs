@@ -68,6 +68,7 @@ pub mod tools_palette;
 pub mod tools_parity;
 pub mod tools_producer;
 pub mod tools_prompt;
+pub mod tools_meta;
 pub mod tools_sound;
 pub mod tools_studio;
 pub mod tools_vocal;
