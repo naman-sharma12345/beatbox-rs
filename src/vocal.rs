@@ -768,45 +768,10 @@ fn off_key_cents(notes: &[VNote], key_pc: u8, scale: &[u8]) -> f32 {
 /// `hard` (0..1) also flattens the note's own wobble/vibrato toward the
 /// target (1 = the hard, robotic effect), `speed_ms` smooths how fast the
 /// correction follows (glides between notes stay natural).
-pub fn autotune(x: &[f32], sr: f32, key_pc: u8, scale: &[u8], amount: f32, hard: f32, speed_ms: f32) -> (Vec<f32>, TuneStats) {
-    let frames = pitch_track(x, sr);
-    // absolute pitch (A440): the beat is in concert tuning even if the singer is not
-    let mut notes = segment_notes(&frames, 0.0);
-    retune_and_merge(&mut notes);
-    let before = off_key_cents(&notes, key_pc, scale);
-    // per-frame correction in semitones
-    let mut corr = vec![0.0f32; frames.len()];
-    let mut moved = 0usize;
-    for n in &notes {
-        let target = snap_to_scale(n.midi, key_pc, scale);
-        if (target - n.midi).abs() > 0.03 {
-            moved += 1;
-        }
-        let i0 = ((n.start - 0.02) / HOP_S).max(0.0) as usize;
-        let i1 = (((n.end - 0.02) / HOP_S) as usize).min(frames.len());
-        for i in i0..i1 {
-            let m = frames[i].midi;
-            if m <= 0.0 {
-                continue;
-            }
-            // the frame's own octave (the median was folded)
-            let mut fm = m;
-            while fm - n.midi > 6.0 { fm -= 12.0; }
-            while n.midi - fm > 6.0 { fm += 12.0; }
-            let soft = target - n.midi;
-            let firm = (target - fm).clamp(-1.0, 1.0);
-            corr[i] = amount.clamp(0.0, 1.0) * ((1.0 - hard) * soft + hard * firm);
-        }
-    }
-    // smooth the correction (one-pole both ways, so it does not lag)
-    let a = (-HOP_S / (speed_ms.max(1.0) / 1000.0)).exp();
-    let mut f = corr.clone();
-    for i in 1..f.len() {
-        f[i] = a * f[i - 1] + (1.0 - a) * f[i];
-    }
-    for i in (0..f.len().saturating_sub(1)).rev() {
-        f[i] = a * f[i + 1] + (1.0 - a) * f[i];
-    }
+/// TD-PSOLA pitch shift: `corr` is the shift in semitones per pitch frame
+/// (HOP_S apart, aligned with `frames`); unvoiced parts pass through. The
+/// ratio is clamped to [lo, hi] (formants are kept, so +-7 semitones is fine).
+pub fn psola(x: &[f32], sr: f32, frames: &[PitchFrame], f: &[f32], lo: f32, hi: f32) -> Vec<f32> {
     let frame_at = |s: usize| -> usize { ((s as f32 / sr - 0.02) / HOP_S).max(0.0) as usize };
     let f0_at = |s: usize| -> f32 { frames.get(frame_at(s)).map(|fr| fr.hz).unwrap_or(0.0) };
     let ratio_at = |s: usize| -> f32 { 2f32.powf(f.get(frame_at(s)).copied().unwrap_or(0.0) / 12.0) };
@@ -849,7 +814,7 @@ pub fn autotune(x: &[f32], sr: f32, key_pc: u8, scale: &[u8], amount: f32, hard:
     let mut out = vec![0.0f32; x.len()];
     let mut wsum = vec![0.0f32; x.len()];
     if epochs.is_empty() {
-        return (x.to_vec(), TuneStats { notes: notes.len(), ..Default::default() });
+        return x.to_vec();
     }
     // synthesis: output epochs at the corrected period, each takes the grain
     // of the nearest analysis epoch
@@ -862,7 +827,7 @@ pub fn autotune(x: &[f32], sr: f32, key_pc: u8, scale: &[u8], amount: f32, hard:
         }
         let (ae, t) = epochs[ai];
         let voiced = f0_at(ae) > 0.0;
-        let r = if voiced { ratio_at(ae).clamp(0.7, 1.45) } else { 1.0 };
+        let r = if voiced { ratio_at(ae).clamp(lo, hi) } else { 1.0 };
         let half = t;
         for k in 0..(2 * half) {
             let src = ae as i64 - half as i64 + k as i64;
@@ -881,6 +846,49 @@ pub fn autotune(x: &[f32], sr: f32, key_pc: u8, scale: &[u8], amount: f32, hard:
             *v /= *s;
         }
     }
+    out
+}
+
+pub fn autotune(x: &[f32], sr: f32, key_pc: u8, scale: &[u8], amount: f32, hard: f32, speed_ms: f32) -> (Vec<f32>, TuneStats) {
+    let frames = pitch_track(x, sr);
+    // absolute pitch (A440): the beat is in concert tuning even if the singer is not
+    let mut notes = segment_notes(&frames, 0.0);
+    retune_and_merge(&mut notes);
+    let before = off_key_cents(&notes, key_pc, scale);
+    // per-frame correction in semitones
+    let mut corr = vec![0.0f32; frames.len()];
+    let mut moved = 0usize;
+    for n in &notes {
+        let target = snap_to_scale(n.midi, key_pc, scale);
+        if (target - n.midi).abs() > 0.03 {
+            moved += 1;
+        }
+        let i0 = ((n.start - 0.02) / HOP_S).max(0.0) as usize;
+        let i1 = (((n.end - 0.02) / HOP_S) as usize).min(frames.len());
+        for i in i0..i1 {
+            let m = frames[i].midi;
+            if m <= 0.0 {
+                continue;
+            }
+            // the frame's own octave (the median was folded)
+            let mut fm = m;
+            while fm - n.midi > 6.0 { fm -= 12.0; }
+            while n.midi - fm > 6.0 { fm += 12.0; }
+            let soft = target - n.midi;
+            let firm = (target - fm).clamp(-1.0, 1.0);
+            corr[i] = amount.clamp(0.0, 1.0) * ((1.0 - hard) * soft + hard * firm);
+        }
+    }
+    // smooth the correction (one-pole both ways, so it does not lag)
+    let a = (-HOP_S / (speed_ms.max(1.0) / 1000.0)).exp();
+    let mut f = corr.clone();
+    for i in 1..f.len() {
+        f[i] = a * f[i - 1] + (1.0 - a) * f[i];
+    }
+    for i in (0..f.len().saturating_sub(1)).rev() {
+        f[i] = a * f[i + 1] + (1.0 - a) * f[i];
+    }
+    let out = psola(x, sr, &frames, &f, 0.7, 1.45);
     // measure what the listener gets
     let fr2 = pitch_track(&out, sr);
     let mut n2 = segment_notes(&fr2, 0.0);

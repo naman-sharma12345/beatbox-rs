@@ -41,6 +41,7 @@ pub mod palette;
 pub mod producer;
 pub mod project;
 pub mod prompt_beat;
+pub mod speech_song;
 pub mod render;
 pub mod resample;
 pub mod sample_lib;

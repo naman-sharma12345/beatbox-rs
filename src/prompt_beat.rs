@@ -215,6 +215,9 @@ pub struct LyricSection {
     pub lines: usize,
     pub bars: u32,
     pub first_line: String,
+    /// The section's lines, verbatim (used to sing them).
+    #[serde(skip)]
+    pub text: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Default)]
@@ -395,7 +398,7 @@ pub fn analyze_lyrics(text: &str) -> LyricsReport {
             // a hook needs room to land (and usually goes round twice)
             bars = bars.max(8);
         }
-        r.sections.push(LyricSection { kind: kind.into(), lines: s.len(), bars, first_line: s[0].to_string() });
+        r.sections.push(LyricSection { kind: kind.into(), lines: s.len(), bars, first_line: s[0].to_string(), text: s.iter().map(|l| l.to_string()).collect() });
     }
     if !r.sections.iter().any(|s| s.kind == "hook") && r.sections.len() > 1 {
         // no repeat: the shortest stanza reads as the hook

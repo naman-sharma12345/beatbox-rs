@@ -204,6 +204,9 @@ pub struct PluckParams {
     /// nonlinearity that keeps re-exciting the upper partials.
     #[serde(default, skip_serializing_if = "is_zero_f")]
     pub buzz: f32,
+    /// String model: guitar, sitar or santoor ("" = inferred from the other knobs).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
 }
 
 fn is_zero_f(x: &f32) -> bool {
@@ -217,6 +220,7 @@ impl Default for PluckParams {
             brightness: 0.7,
             gain: 0.7,
             buzz: 0.0,
+            kind: String::new(),
         }
     }
 }
@@ -799,15 +803,17 @@ pub fn preset(name: &str) -> Option<Instrument> {
         "bayan" | "tabla_bayan" | "dagga" => drum(DrumKind::Bayan),
         "sitar" => Instrument::Pluck(PluckParams {
             damping: 0.25,
-            brightness: 0.95,
+            brightness: 0.6,
             gain: 0.6,
-            buzz: 0.7,
+            buzz: 0.4,
+            kind: "sitar".into(),
         }),
         "santoor" => Instrument::Pluck(PluckParams {
             damping: 0.45,
-            brightness: 1.0,
+            brightness: 0.95,
             gain: 0.55,
-            buzz: 0.15,
+            buzz: 0.0,
+            kind: "santoor".into(),
         }),
         "bansuri" | "flute" | "indian_flute" => synth(|p| {
             p.osc1 = Wave::Sine;
@@ -1011,10 +1017,11 @@ pub fn preset(name: &str) -> Option<Instrument> {
         }),
         "guitar_pluck" | "pluck" | "guitar" => Instrument::Pluck(PluckParams::default()),
         "koto" => Instrument::Pluck(PluckParams {
-            damping: 0.7,
-            brightness: 0.95,
+            damping: 0.6,
+            brightness: 0.8,
             gain: 0.7,
             buzz: 0.0,
+            kind: "guitar".into(),
         }),
         "grand_piano" | "piano" | "acoustic_piano" => Instrument::Piano(PianoParams::default()),
         "felt_piano" => Instrument::Piano(PianoParams {
@@ -1811,53 +1818,206 @@ fn render_fm(p: &FmParams, pitch: f32, vel: f32, gate: f32) -> Vec<f32> {
     out
 }
 
-fn render_pluck(p: &PluckParams, pitch: f32, vel: f32, gate: f32, rng: &mut Rng) -> Vec<f32> {
-    let f = midi_to_hz(pitch).max(20.0);
-    let period = (SR / f).max(2.0);
-    let len = period as usize;
-    let total = (gate + 1.5 * (1.0 - p.damping) + 0.2).clamp(0.2, 6.0);
-    let mut out = vec![0.0f32; secs(total)];
-    let mut buf: Vec<f32> = (0..len).map(|_| rng.bipolar()).collect();
-    // brightness: pre-filter the excitation
-    let smooth = 1.0 - p.brightness.clamp(0.0, 1.0);
-    for _ in 0..(smooth * 4.0) as usize {
-        let first = buf[0];
-        for i in 0..len {
-            let next = if i + 1 < len { buf[i + 1] } else { first };
-            buf[i] = 0.5 * (buf[i] + next);
+fn pluck_kind(p: &PluckParams) -> &str {
+    if !p.kind.is_empty() {
+        p.kind.as_str()
+    } else if p.buzz >= 0.5 {
+        "sitar"
+    } else if p.brightness >= 0.99 {
+        "santoor"
+    } else {
+        "guitar"
+    }
+}
+
+/// One Karplus-Strong string, tuned exactly (two-tap loss filter + allpass
+/// fractional delay), excited by a shaped pick/hammer burst. Returns the
+/// string's output (the loop signal).
+fn ks_string(fs: f32, vel: f32, kind: &str, p: &PluckParams, n: usize, t60: f32, rng: &mut Rng) -> Vec<f32> {
+    let period = (SR / fs).max(4.0);
+    // loss filter H = (1-s) + s z^-1: darker = larger s (its delay is ~s samples)
+    let bright = p.brightness.clamp(0.0, 1.0);
+    let s = (0.45 - 0.42 * bright * (0.7 + 0.3 * vel)).clamp(0.04, 0.5);
+    let nd = ((period - s - 0.15).floor() as usize).max(2);
+    let d = (period - nd as f32 - s).clamp(0.05, 1.2);
+    let c = (1.0 - d) / (1.0 + d);
+    // per-pass gain from the wanted T60
+    let g = 10f32.powf(-3.0 / (t60.max(0.05) * fs));
+    // excitation
+    let mut ex = vec![0.0f32; nd];
+    if kind == "santoor" {
+        // a felt-less hammer: a short raised-cosine pulse plus a little noise
+        let w = ((SR * 0.0007 * (1.6 - vel)) as usize).clamp(2, nd.max(3) - 1);
+        let at = (nd as f32 * 0.12) as usize;
+        for k in 0..w {
+            let i = (at + k) % nd;
+            ex[i] += 0.5 - 0.5 * (std::f32::consts::TAU * k as f32 / w as f32).cos();
+        }
+        for v in ex.iter_mut() {
+            *v += 0.18 * rng.bipolar();
+        }
+    } else {
+        for v in ex.iter_mut() {
+            *v = rng.bipolar();
         }
     }
-    let decay = 0.999 - p.damping.clamp(0.0, 1.0) * 0.02;
-    let mut idx = 0usize;
-    let mut dc = DcBlock::default();
-    for (i, s) in out.iter_mut().enumerate() {
-        let t = i as f32 / SR;
-        let cur = buf[idx];
-        let nxt = buf[(idx + 1) % len];
-        let mut y = decay * 0.5 * (cur + nxt);
-        if p.buzz > 0.0 {
-            // jawari: the string wraps onto a curved bridge, folding energy
-            // upward; the folded part is mixed back into the loop
-            let b = p.buzz.clamp(0.0, 1.0);
-            let th = 0.25 * (1.0 - 0.8 * b);
-            if y.abs() > th {
-                let over = y.abs() - th;
-                y = y.signum() * (th + over * (1.0 - 0.6 * b)) - y.signum() * over * over * b * 0.8;
-            }
+    // soften the burst: harder playing = brighter
+    let fc = if kind == "santoor" { 3000.0 + 9000.0 * bright * (0.4 + 0.6 * vel) } else { 900.0 + 7000.0 * bright * (0.35 + 0.65 * vel) };
+    let a = (-2.0 * std::f32::consts::PI * fc / SR).exp();
+    let mut z = 0.0;
+    for _ in 0..(if kind == "santoor" { 1 } else { 2 }) {
+        for v in ex.iter_mut() {
+            z = (1.0 - a) * *v + a * z;
+            *v = z;
         }
-        buf[idx] = y;
-        idx = (idx + 1) % len;
-        let rel = if t > gate + 0.05 {
-            (-(t - gate - 0.05) * 6.0).exp()
-        } else {
-            1.0
-        };
-        *s = dc.process(cur) * rel * vel * p.gain;
     }
-    crate::voice_pro::fade_edges(&mut out, 32, (0.01 * SR) as usize);
+    // pick position comb: plucking near the bridge thins the low partials
+    let beta = match kind {
+        "sitar" => 0.09,
+        "santoor" => 0.13,
+        _ => 0.18,
+    };
+    let lag = ((beta * nd as f32) as usize).max(1);
+    let orig = ex.clone();
+    for i in 0..nd {
+        ex[i] = orig[i] - orig[(i + nd - lag) % nd];
+    }
+    // no thump: high-pass the burst (~120 Hz one-pole)
+    let hp_a = (-2.0 * std::f32::consts::PI * 120.0 / SR).exp();
+    let (mut px, mut py) = (0.0f32, 0.0f32);
+    for v in ex.iter_mut() {
+        let y = hp_a * (py + *v - px);
+        px = *v;
+        py = y;
+        *v = y;
+    }
+    let mean = ex.iter().sum::<f32>() / nd as f32;
+    let pk = ex.iter().fold(0.0f32, |m, v| m.max((v - mean).abs())).max(1e-6);
+    let mut buf: Vec<f32> = ex.iter().map(|v| (v - mean) / pk).collect();
+    let mut out = vec![0.0f32; n];
+    let (mut idx, mut prev, mut ax1, mut ay1) = (0usize, 0.0f32, 0.0f32, 0.0f32);
+    for o in out.iter_mut() {
+        let x = buf[idx];
+        *o = x;
+        let lp = (1.0 - s) * x + s * prev;
+        prev = x;
+        let ap = c * lp + ax1 - c * ay1;
+        ax1 = lp;
+        ay1 = ap;
+        buf[idx] = g * ap;
+        idx += 1;
+        if idx == nd {
+            idx = 0;
+        }
+    }
     out
 }
 
+fn render_pluck(p: &PluckParams, pitch: f32, vel: f32, gate: f32, rng: &mut Rng) -> Vec<f32> {
+    use crate::dsp::{Biquad, BiquadKind};
+    let kind = pluck_kind(p).to_string();
+    let kind = kind.as_str();
+    let f = midi_to_hz(pitch).clamp(20.0, 4000.0);
+    let damp = p.damping.clamp(0.0, 1.0);
+    let base_ring = match kind {
+        "sitar" => 4.0,
+        "santoor" => 2.6,
+        _ => 1.8,
+    } * (1.0 - 0.75 * damp);
+    // higher notes die sooner, as on a real string
+    let t60 = (base_ring * (220.0 / f).powf(0.35)).clamp(0.25, 8.0);
+    let total = (gate + 0.35 * t60 + 0.15).clamp(0.25, 6.0);
+    let n = secs(total);
+    // courses: santoor strings come in detuned pairs, a guitar string beats a little
+    let detunes: &[f32] = match kind {
+        "santoor" => &[-3.5, 3.0],
+        "guitar" => &[0.0, 1.2],
+        _ => &[0.0],
+    };
+    let mut y = vec![0.0f32; n];
+    for &cents in detunes {
+        let s = ks_string(f * 2f32.powf(cents / 1200.0), vel, kind, p, n, t60, rng);
+        let k = 1.0 / detunes.len() as f32;
+        for (a, b) in y.iter_mut().zip(s.iter()) {
+            *a += b * k;
+        }
+    }
+    // jawari (sitar): the curved bridge adds a buzzing upper band that lives on
+    // the string's envelope; generated outside the loop so it never runs away
+    if p.buzz > 0.0 {
+        let b = p.buzz.clamp(0.0, 1.0);
+        let mut hp = Biquad::new(BiquadKind::LowCut, (f * 2.5).min(3000.0), 0.7, 0.0);
+        let mut lp = Biquad::new(BiquadKind::HighCut, 6500.0, 0.6, 0.0);
+        for v in y.iter_mut() {
+            let r = v.abs();
+            let bz = lp.process(hp.process(r * r.sqrt()));
+            *v += b * 0.55 * bz;
+        }
+    }
+    // sympathetic strings (sitar): the octave and fifth ring along, quietly
+    if kind == "sitar" {
+        for (ratio, amt) in [(2.0f32, 0.05f32), (1.5, 0.035)] {
+            let fs = f * ratio;
+            let nd = ((SR / fs) as usize).max(2);
+            let g = 10f32.powf(-3.0 / (6.0 * fs));
+            let mut buf = vec![0.0f32; nd];
+            let mut idx = 0;
+            let mut prev = 0.0;
+            for v in y.iter_mut() {
+                let x = buf[idx];
+                let lp = 0.5 * (x + prev);
+                prev = x;
+                buf[idx] = g * lp + 0.004 * *v;
+                idx = (idx + 1) % nd;
+                *v += amt * x;
+            }
+        }
+    }
+    // the body: a few broad resonances under the string
+    let body: &[(f32, f32, f32)] = match kind {
+        "sitar" => &[(170.0, 3.0, 0.45), (410.0, 4.0, 0.35), (1050.0, 5.0, 0.18)],
+        "santoor" => &[(260.0, 4.0, 0.35), (640.0, 5.0, 0.3), (1700.0, 6.0, 0.15)],
+        _ => &[(105.0, 3.0, 0.5), (210.0, 4.0, 0.4), (470.0, 5.0, 0.2)],
+    };
+    let mut bands: Vec<(Biquad, f32)> = body.iter().map(|&(fr, q, g)| (Biquad::new(BiquadKind::Bandpass, fr, q, 0.0), g)).collect();
+    // tone: tame the 2-5 kHz edge and the fizz above
+    let (hc, edge) = match kind {
+        "santoor" => (14000.0, -1.5),
+        "sitar" => (8000.0, -5.0),
+        _ => (7000.0, -3.5),
+    };
+    let mut cut = Biquad::new(BiquadKind::HighCut, hc, 0.7, 0.0);
+    // de-honk: the 800 Hz-1.5 kHz pile-up the critic measured
+    let mut honk = Biquad::new(BiquadKind::Bell, 1100.0, 0.8, -2.5);
+    let mut air = Biquad::new(BiquadKind::HighShelf, 7000.0, 0.7, if kind == "santoor" { 4.0 } else { 2.0 });
+    let mut bell = Biquad::new(BiquadKind::Bell, 3300.0, 0.9, edge);
+    let mut shelf = Biquad::new(BiquadKind::HighShelf, 6000.0, 0.7, if kind == "santoor" { 0.0 } else { -2.5 });
+    let mut dc = DcBlock::default();
+    let rel_rate = match kind {
+        "santoor" => 2.5,
+        "sitar" => 3.5,
+        _ => 6.0,
+    };
+    let mut peak = 0.0f32;
+    for (i, v) in y.iter_mut().enumerate() {
+        let t = i as f32 / SR;
+        let mut b = 0.0;
+        for (bq, g) in bands.iter_mut() {
+            b += bq.process(*v) * *g;
+        }
+        let mut s = 0.8 * *v + b;
+        s = air.process(honk.process(shelf.process(bell.process(cut.process(s)))));
+        let rel = if t > gate + 0.05 { (-(t - gate - 0.05) * rel_rate).exp() } else { 1.0 };
+        *v = dc.process(s) * rel;
+        peak = peak.max(v.abs());
+    }
+    let norm = if peak > 1e-6 { 0.9 / peak } else { 0.0 };
+    for v in y.iter_mut() {
+        *v *= norm * vel * p.gain;
+    }
+    crate::voice_pro::fade_edges(&mut y, 32, (0.01 * SR) as usize);
+    y
+}
 fn render_808(p: &Bass808Params, pitch: f32, vel: f32, gate: f32, rng: &mut Rng) -> Vec<f32> {
     render_808_slide(p, pitch, vel, gate, None, rng)
 }

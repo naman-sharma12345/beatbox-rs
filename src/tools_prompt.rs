@@ -9,6 +9,12 @@ use anyhow::{bail, Result};
 use serde_json::{json, Map, Value};
 
 fn make_beat(e: &mut Engine, a: &Value) -> Result<Value> {
+    make_beat_with(e, a, None)
+}
+
+/// make_beat with the performance's word clips supplied (produce_song: words
+/// cut from a recording) instead of a TTS guide voice.
+pub fn make_beat_with(e: &mut Engine, a: &Value, clips: Option<Vec<Vec<crate::speech_song::Clip>>>) -> Result<Value> {
     let prompt = s_opt(a, "prompt").unwrap_or_default();
     let lyrics = s_opt(a, "lyrics").unwrap_or_default();
     if prompt.trim().is_empty() && lyrics.trim().is_empty() {
@@ -113,6 +119,35 @@ fn make_beat(e: &mut Engine, a: &Value) -> Result<Value> {
     }
     let run = find("produce_track").expect("produce_track").run;
     let res = run(e, &Value::Object(args.clone()))?;
+    // lyrics get performed: sung (melodic) or rapped (rap) by a guide voice
+    let mut vocal = Value::Null;
+    let vmode = s_opt(a, "vocal").unwrap_or_else(|| "auto".into());
+    if let Some(l) = &lr {
+        if vmode != "none" && !l.sections.is_empty() {
+            let mode = match vmode.as_str() {
+                "rap" | "sing" => vmode.clone(),
+                _ => if l.delivery == "rap" { "rap".to_string() } else { "sing".to_string() },
+            };
+            let plan = crate::producer::plan_from_value(&res["plan"])?;
+            let t = std::time::Instant::now();
+            match sing_over_plan(e, &plan, &l.sections, &mode, plan.seed, clips.clone()) {
+                Ok(mut v) => {
+                    // re-export the full song with the vocal in it
+                    if let Some(audio) = res["files"]["audio"].as_str() {
+                        let p = std::path::Path::new(audio);
+                        let out = p.with_file_name(format!("{}_vocal.mp3", p.file_stem().and_then(|x| x.to_str()).unwrap_or("song")));
+                        let lufs = a["target_lufs"].as_f64().unwrap_or(-14.0);
+                        let ex = (find("export_audio").expect("export").run)(e, &json!({"path": out.to_string_lossy(), "format": "mp3", "target_lufs": lufs, "true_peak_ceiling": -1.2}))?;
+                        v["file"] = json!(out.to_string_lossy());
+                        v["export"] = ex.get("after").cloned().unwrap_or(Value::Null);
+                    }
+                    v["total_seconds"] = json!((t.elapsed().as_secs_f32() * 10.0).round() / 10.0);
+                    vocal = v;
+                }
+                Err(err) => vocal = json!({"skipped": format!("{err:#}")}),
+            }
+        }
+    }
     // compact answer for small models; the full producer result rides under "details"
     let summary = json!({
         "genre": genre.clone().unwrap_or_else(|| e.project.name.clone()),
@@ -125,11 +160,295 @@ fn make_beat(e: &mut Engine, a: &Value) -> Result<Value> {
         "summary": summary,
         "how_i_read_it": reasons,
         "lyrics": lr,
+        "vocal": vocal,
         "plan_args": args,
         "files": res.get("files").cloned().unwrap_or(Value::Null),
         "score": res.get("score").cloned().or_else(|| res.get("best").cloned()).unwrap_or(Value::Null),
         "next": ["export_audio {path:'song.mp3'} to save it", "make_beat again with a different seed for another take", "set_mixer / generate_drums {pattern} to change a part"],
         "details": res,
+    }))
+}
+
+
+/// Sing (or rap) the lyrics over the beat the producer just built: a local TTS
+/// guide voice speaks each word, the words are placed on the grid section by
+/// section, and in sing mode every syllable is tuned onto a melody written
+/// over the plan's chords. The vocal lands on a "vocal" track with a chain.
+pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[crate::prompt_beat::LyricSection], mode: &str, seed: u64, given: Option<Vec<Vec<crate::speech_song::Clip>>>) -> Result<Value> {
+    use crate::speech_song as ss;
+    use crate::theory;
+    let t0 = std::time::Instant::now();
+    let bpm = plan.bpm;
+    // lyric sections -> plan sections (the form was intro + stanzas + outro;
+    // otherwise match verse/hook kinds in order)
+    let mut map: Vec<usize> = Vec::new();
+    let body: Vec<usize> = (0..plan.sections.len()).filter(|&i| !matches!(plan.sections[i].kind.as_str(), "intro" | "outro")).collect();
+    if body.len() >= sections.len() {
+        let mut used = vec![false; plan.sections.len()];
+        for ls in sections {
+            let pick = body.iter().copied().find(|&i| !used[i] && plan.sections[i].kind == ls.kind).or_else(|| body.iter().copied().find(|&i| !used[i]));
+            if let Some(i) = pick {
+                used[i] = true;
+                map.push(i);
+            }
+        }
+    }
+    if map.len() < sections.len() {
+        bail!("the beat has fewer sections ({}) than the lyrics ({})", body.len(), sections.len());
+    }
+    let mut starts = Vec::new();
+    let mut bars_v = Vec::new();
+    let mut b = 0u32;
+    for s in &plan.sections {
+        starts.push(b);
+        bars_v.push(s.bars);
+        b += s.bars;
+    }
+    let lines_text: Vec<Vec<String>> = sections
+        .iter()
+        .flat_map(|s| s.text.iter())
+        .map(|l| l.split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'').to_string()).filter(|w| !w.is_empty()).collect())
+        .collect();
+    let from_tts = given.is_none();
+    let clips = match given {
+        Some(c) => c,
+        None => ss::tts_words(&e.workdir, &lines_text, &format!("{seed}"))?,
+    };
+    let t_tts = t0.elapsed().as_secs_f32();
+    let mut lines = Vec::new();
+    let mut li = 0;
+    for (si, s) in sections.iter().enumerate() {
+        for _ in &s.text {
+            if let Some(c) = clips.get(li) {
+                if !c.is_empty() {
+                    lines.push(ss::Line { clips: c.clone(), section: map[si] });
+                }
+            }
+            li += 1;
+        }
+    }
+    let mut perf = ss::plan(&lines, &starts, &bars_v, bpm, mode);
+    let key_pc = theory::pitch_class(&plan.key)?;
+    let href = crate::producer::harmony_ref(&plan.scale);
+    let iv: Vec<u8> = theory::scale_intervals(&plan.scale)?.to_vec();
+    let prog_for = |s: &crate::producer::PlanSection| -> String {
+        let sw = s.tags.iter().any(|t| t == "switch") && !plan.progression_switch.is_empty() && matches!(s.kind.as_str(), "verse" | "hook");
+        if sw {
+            plan.progression_switch.clone()
+        } else if s.kind == "hook" {
+            plan.progression_hook.clone()
+        } else if matches!(s.kind.as_str(), "bridge" | "breakdown") && !plan.progression_bridge.is_empty() {
+            plan.progression_bridge.clone()
+        } else {
+            plan.progression_verse.clone()
+        }
+    };
+    let mut sec_chords: Vec<Vec<theory::Chord>> = Vec::new();
+    for s in &plan.sections {
+        sec_chords.push(theory::parse_progression(&prog_for(s), key_pc, href).unwrap_or_default());
+    }
+    let bpc = plan.bars_per_chord.max(0.25);
+    let chord_at = |beat: f32| -> Option<theory::Chord> {
+        let bar = beat / 4.0;
+        let si = (0..starts.len()).rev().find(|&i| starts[i] as f32 <= bar + 1e-3)?;
+        let ch = &sec_chords[si];
+        if ch.is_empty() {
+            return None;
+        }
+        let k = ((bar - starts[si] as f32) / bpc).floor() as usize % ch.len();
+        Some(ch[k].clone())
+    };
+    let all: Vec<f32> = lines.iter().flat_map(|l| l.clips.iter()).flat_map(|c| c.audio.iter().copied()).collect();
+    let center = ss::median_pitch(&all);
+    let hook_beats: Vec<(f32, f32)> = plan.sections.iter().enumerate().filter(|(_, s)| s.kind == "hook").map(|(i, s)| (starts[i] as f32 * 4.0, s.bars as f32 * 4.0)).collect();
+    if mode == "sing" {
+        ss::write_melody(&mut perf, &chord_at, key_pc, &iv, center, &hook_beats);
+    }
+    let refs: Vec<&ss::Clip> = lines.iter().flat_map(|l| l.clips.iter()).collect();
+    let y = ss::render(&perf, &refs, bpm, 0.95);
+    let t_render = t0.elapsed().as_secs_f32() - t_tts;
+    std::fs::create_dir_all(e.samples_dir())?;
+    let p = e.samples_dir().join(format!("vocal_{mode}_{seed}.wav"));
+    crate::render::write_wav(&p, &y, &y)?;
+    let info = crate::samples::SampleInfo {
+        name: crate::samples::sample_name(&format!("vocal_{mode}_{seed}")),
+        path: p.to_string_lossy().into(),
+        source: format!("guide vocal: local TTS voice, {mode} performance by beatbox"),
+        license: "generated".into(),
+        author: String::new(),
+        duration: 0.0,
+    };
+    let reg = crate::tools::register_sample(e, info)?;
+    let sample = reg["sample"].as_str().unwrap_or("vocal").to_string();
+    let inst = crate::instruments::Instrument::Sampler(crate::instruments::SamplerParams { sample: sample.clone(), one_shot: true, ..Default::default() });
+    crate::tools::ensure_track(&mut e.project, "vocal", "pad", Some(inst))?;
+    e.project.audio_clips.retain(|c| c.track != "vocal");
+    e.project.audio_clips.push(crate::project::AudioClip { track: "vocal".into(), sample, start_beat: 0.0, offset_s: 0.0, length_s: None, gain_db: 0.0 });
+    crate::tools_vocal::vocal_chain(e)?;
+    // the voice sits on top (measured: at 0 dB the words were masked; +5 dB
+    // made them intelligible to a speech recogniser), the melodic parts step back
+    if let Ok(i) = e.project.track_index("vocal") {
+        e.project.tracks[i].volume_db = 5.0;
+    }
+    for (t, db) in [("lead", -6.0), ("counter", -4.0), ("texture", -3.0), ("perc", -4.0), ("hat", -2.0), ("open_hat", -2.0)] {
+        if let Ok(i) = e.project.track_index(t) {
+            e.project.tracks[i].volume_db += db;
+        }
+    }
+    // the melodic bed ducks under the words (keyed from the vocal) and leaves
+    // the consonant range (2-4 kHz) to the voice
+    let crate_call = |e: &mut Engine, name: &str, args: Value| (find(name).expect("tool").run)(e, &args);
+    for t in ["chords", "lead", "counter", "texture"] {
+        if e.project.track_index(t).is_ok() {
+            let _ = crate_call(e, "add_effect", json!({"track": t, "type": "sidechain", "params": {"source": "vocal", "amount": 0.35}}));
+            let _ = crate_call(e, "add_effect", json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 3200.0, "gain_db": -3.0, "q": 0.7}]}}));
+        }
+    }
+    // the project changed outside the tool layer: drop cached renders
+    e.revision += 1;
+    let notes: usize = perf.words.iter().map(|w| w.notes.len()).sum();
+    Ok(json!({
+        "mode": mode,
+        "words": perf.words.len(),
+        "lines": perf.lines,
+        "sung_notes": notes,
+        "voice_center_midi": (center * 10.0).round() / 10.0,
+        "stretch_range": [(perf.stretch_range.0 * 100.0).round() / 100.0, (perf.stretch_range.1 * 100.0).round() / 100.0],
+        "seconds": {"tts": (t_tts * 10.0).round() / 10.0, "perform": (t_render * 10.0).round() / 10.0},
+        "voice": if from_tts { "local TTS guide voice (piper en_US-lessac-medium); English voice, so Punjabi words are anglicised" } else { "the recording's own voice" },
+        "first_words": perf.words.iter().take(6).map(|w| json!({"word": w.text, "beat": w.beat, "notes": w.notes})).collect::<Vec<_>>(),
+    }))
+}
+
+
+/// produce_song: a recording (spoken or rapped words, phone-quality is fine)
+/// becomes a finished song: denoise, transcribe, cut fillers/repeats/false
+/// starts, lay the words on a beat as a rap flow or a sung melody, mix, master.
+fn produce_song(e: &mut Engine, a: &Value) -> Result<Value> {
+    use crate::speech_song as ss;
+    let t0 = std::time::Instant::now();
+    let path = e.resolve(&crate::tools::s_req(a, "path")?);
+    if !path.exists() {
+        bail!("no file at {} (give the recording's path)", path.display());
+    }
+    let raw = crate::samples::decode_file(&path)?;
+    if raw.len() < (crate::dsp::SR * 1.5) as usize {
+        bail!("the recording is shorter than 1.5 seconds");
+    }
+    // 1. clean
+    let (clean, red_db) = if crate::tools::b_or(a, "denoise", true) { ss::denoise(&raw, -18.0, 1.6) } else { (raw.clone(), 0.0) };
+    std::fs::create_dir_all(e.samples_dir())?;
+    let stem = crate::samples::sample_name(path.file_stem().and_then(|s| s.to_str()).unwrap_or("take"));
+    let clean_path = e.samples_dir().join(format!("{stem}_clean.wav"));
+    crate::render::write_wav(&clean_path, &clean, &clean)?;
+    let t_clean = t0.elapsed().as_secs_f32();
+    // 2. words
+    let lyr = crate::vocal::transcribe(&clean_path, &e.workdir, &s_opt(a, "model").unwrap_or_else(|| "base".into()), s_opt(a, "language").as_deref(), None)?;
+    let t_words = t0.elapsed().as_secs_f32() - t_clean;
+    let words = lyr.words();
+    // 3. edit: fillers, stutters/false starts, low-confidence blips
+    let norm = |w: &str| w.to_lowercase().chars().filter(|c| c.is_alphanumeric() || *c == '\'').collect::<String>();
+    let mut kept: Vec<crate::vocal::Word> = Vec::new();
+    let mut removed: Vec<Value> = Vec::new();
+    for w in words.iter() {
+        let n = norm(&w.word);
+        if n.is_empty() {
+            continue;
+        }
+        if ss::FILLERS.contains(&n.as_str()) {
+            removed.push(json!({"word": w.word, "at_s": w.start, "why": "filler"}));
+            continue;
+        }
+        if w.prob > 0.0 && w.prob < 0.2 && w.end - w.start < 0.15 {
+            removed.push(json!({"word": w.word, "at_s": w.start, "why": "unclear blip"}));
+            continue;
+        }
+        if let Some(prev) = kept.last() {
+            let pn = norm(&prev.word);
+            // "the the", "we- we choose": keep the second (the real take)
+            if (pn == n || (n.starts_with(&pn) && pn.len() >= 1 && pn.len() < n.len() && prev.end - prev.start < 0.25)) && w.start - prev.end < 0.8 {
+                removed.push(json!({"word": prev.word, "at_s": prev.start, "why": if pn == n { "repeated word" } else { "false start" }}));
+                kept.pop();
+            }
+        }
+        kept.push(w.clone());
+    }
+    if kept.len() < 3 {
+        bail!("heard only {} usable words in the recording", kept.len());
+    }
+    // 4. lines: phrase breaks at pauses and punctuation, at most 9 words
+    let mut lines: Vec<Vec<crate::vocal::Word>> = vec![Vec::new()];
+    for (i, w) in kept.iter().enumerate() {
+        let cur = lines.last_mut().unwrap();
+        cur.push(w.clone());
+        let punct = w.word.trim_end().ends_with(['.', ',', '?', '!', ';']);
+        let gap = kept.get(i + 1).map(|n| n.start - w.end).unwrap_or(0.0);
+        if (punct || gap > 0.35 || cur.len() >= 9) && i + 1 < kept.len() {
+            lines.push(Vec::new());
+        }
+    }
+    lines.retain(|l| !l.is_empty());
+    // a one- or two-word fragment rides with the line before it (a bar per
+    // fragment makes the flow stall)
+    let mut merged: Vec<Vec<crate::vocal::Word>> = Vec::new();
+    for l in lines {
+        match merged.last_mut() {
+            Some(prev) if l.len() <= 2 && prev.len() + l.len() <= 10 => prev.extend(l),
+            _ => merged.push(l),
+        }
+    }
+    let lines = merged;
+    let sr = crate::dsp::SR;
+    let clips: Vec<Vec<ss::Clip>> = lines
+        .iter()
+        .map(|l| {
+            l.iter()
+                .filter_map(|w| {
+                    let a0 = ((w.start - 0.02).max(0.0) * sr) as usize;
+                    let a1 = (((w.end + 0.04) * sr) as usize).min(clean.len());
+                    if a1 <= a0 + (0.05 * sr) as usize {
+                        return None;
+                    }
+                    let audio = ss::tighten(&clean[a0..a1], -35.0);
+                    let text = norm(&w.word);
+                    (!audio.is_empty()).then(|| ss::Clip { syl: ss::syllables(&text), text, audio })
+                })
+                .collect()
+        })
+        .collect();
+    let text: Vec<String> = clips.iter().map(|l| l.iter().map(|c| c.text.clone()).collect::<Vec<_>>().join(" ")).collect();
+    let lyrics_text = text.join("\n");
+    // 5. the song
+    let mode = match s_opt(a, "mode").as_deref() {
+        Some("sing") => "sing",
+        _ => "rap",
+    };
+    let prompt = s_opt(a, "prompt").unwrap_or_else(|| {
+        if mode == "rap" { "hard dark boom bap beat, 90 bpm, punchy drums, heavy 808".into() } else { "smooth emotional rnb beat, 84 bpm, warm keys and pads".into() }
+    });
+    let mut args = json!({"prompt": prompt, "lyrics": lyrics_text, "vocal": mode, "quality": crate::tools::u_or(a, "quality", 1)});
+    for k in ["seed", "out_dir", "target_lufs"] {
+        if let Some(v) = a.get(k) {
+            args[k] = v.clone();
+        }
+    }
+    let res = make_beat_with(e, &args, Some(clips))?;
+    let total = t0.elapsed().as_secs_f32();
+    Ok(json!({
+        "summary": format!("{} song from {} words ({} cut), {} s", mode, kept.len(), removed.len(), e.project.song_seconds().round()),
+        "file": res["vocal"]["file"].clone(),
+        "beat_only": res["files"]["audio"].clone(),
+        "report": {
+            "denoise_db": (red_db * 10.0).round() / 10.0,
+            "clean_take": clean_path.to_string_lossy(),
+            "heard": lyr.text,
+            "kept_lines": text,
+            "removed": removed,
+            "beat": res["summary"].clone(),
+            "vocal": res["vocal"].clone(),
+            "seconds": {"clean": (t_clean * 10.0).round() / 10.0, "transcribe": (t_words * 10.0).round() / 10.0, "total": (total * 10.0).round() / 10.0},
+        },
+        "next": ["produce_song again with mode:'sing' (or 'rap') for the other version", "revise the beat: make_beat with a different prompt/seed", "set_mixer {track:'vocal'} to balance the voice"],
     }))
 }
 
@@ -139,8 +458,15 @@ pub fn tools() -> Vec<Tool> {
             name: "make_beat",
             description: "One call, finished beat. prompt: what you want in plain words ('Bohemia type beat with a beat switch and a quiet section', 'dark UK drill 144 bpm with piano'). lyrics: optional text; rap vs sung, mood and hooks shape the beat. Artist references, beat switches, quiet parts, drops, half-time, key changes, instruments, BPM, key and length are understood. Built, mixed, mastered and checked by the producer.",
             mutates: true,
-            schema: || obj(json!({"prompt": {"type": "string"}, "lyrics": {"type": "string"}, "seed": {"type": "integer"}, "out_dir": {"type": "string"}, "quality": {"type": "integer", "description": "1-6 listen/revise rounds (default 2)"}, "target_lufs": {"type": "number", "description": "delivery loudness (default -14, streaming)"}}), &[]),
+            schema: || obj(json!({"prompt": {"type": "string"}, "lyrics": {"type": "string"}, "seed": {"type": "integer"}, "out_dir": {"type": "string"}, "quality": {"type": "integer", "description": "1-6 listen/revise rounds (default 2)"}, "target_lufs": {"type": "number", "description": "delivery loudness (default -14, streaming)"}, "vocal": {"type": "string", "enum": ["auto", "sing", "rap", "none"], "description": "with lyrics: perform them with a guide voice (auto = sung for melodic lyrics, rapped for rap)"}}), &[]),
             run: make_beat,
+        },
+        Tool {
+            name: "produce_song",
+            description: "One call, finished song from a recording of someone talking or rapping (path to wav/mp3/ogg). Cleans noise, transcribes, cuts fillers/repeated words/false starts, then performs the words on a new beat: mode 'rap' locks every word to a 16th-note flow, mode 'sing' writes a melody and tunes the voice onto it. Mixed and mastered (-14 LUFS). Returns the song file and a production report.",
+            mutates: true,
+            schema: || obj(json!({"path": {"type": "string"}, "mode": {"type": "string", "enum": ["rap", "sing"], "description": "default rap"}, "prompt": {"type": "string", "description": "the beat you want (default by mode)"}, "seed": {"type": "integer"}, "out_dir": {"type": "string"}, "target_lufs": {"type": "number"}, "denoise": {"type": "boolean"}, "quality": {"type": "integer"}}), &["path"]),
+            run: produce_song,
         },
         Tool {
             name: "analyze_lyrics",

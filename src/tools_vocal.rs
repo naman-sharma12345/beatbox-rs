@@ -79,6 +79,32 @@ fn quantize_notes(notes: &[(f32, f32, u8)], bar0: u32, bars: u32) -> Vec<Note> {
     out
 }
 
+/// The lead-vocal chain: HPF, EQ (less boxiness, more presence and air),
+/// compression, de-essing, reverb and delay sends, and the vocal's presence
+/// range carved out of the chords and lead so the words cut through.
+pub fn vocal_chain(e: &mut Engine) -> Result<()> {
+    call(e, "add_effect", json!({"track": "vocal", "type": "filter", "params": {"mode": "highpass", "cutoff": 95.0}}))?;
+    call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [
+        {"kind": "bell", "freq": 300.0, "gain_db": -2.5, "q": 1.0},
+        {"kind": "bell", "freq": 3200.0, "gain_db": 2.0, "q": 0.9},
+        {"kind": "high_shelf", "freq": 10000.0, "gain_db": 2.5, "q": 0.7}]}}))?;
+    call(e, "add_effect", json!({"track": "vocal", "type": "compressor", "params": {"threshold_db": -20.0, "ratio": 3.5, "attack_ms": 6.0, "release_ms": 90.0, "makeup_db": 4.0}}))?;
+    call(e, "add_effect", json!({"track": "vocal", "type": "deesser", "params": {"freq": 6500.0, "threshold_db": -26.0}}))?;
+    call(e, "add_bus", json!({"name": "vox_verb"}))?;
+    call(e, "add_effect", json!({"track": "vox_verb", "type": "reverb", "params": {"size": 0.75, "mix": 1.0, "predelay_ms": 40.0, "low_cut_hz": 250.0}}))?;
+    call(e, "add_bus", json!({"name": "vox_delay"}))?;
+    call(e, "add_effect", json!({"track": "vox_delay", "type": "delay", "params": {"steps": 3.0, "feedback": 0.3, "mix": 1.0, "ping_pong": true}}))?;
+    call(e, "set_send", json!({"track": "vocal", "bus": "vox_verb", "db": -11.0}))?;
+    call(e, "set_send", json!({"track": "vocal", "bus": "vox_delay", "db": -17.0}))?;
+    // carve the vocal's presence range out of the chords/lead
+    for t in ["chords", "lead"] {
+        if e.project.track_index(t).is_ok() {
+            call(e, "add_effect", json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 2800.0, "gain_db": -3.0, "q": 0.8}]}}))?;
+        }
+    }
+    Ok(())
+}
+
 fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let path = e.resolve(&s_req(a, "path")?);
     if !path.exists() {
@@ -383,25 +409,7 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     }
 
     // mix: a vocal chain, returns, and a beat that leaves the vocal room
-    call(e, "add_effect", json!({"track": "vocal", "type": "filter", "params": {"mode": "highpass", "cutoff": 95.0}}))?;
-    call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [
-        {"kind": "bell", "freq": 300.0, "gain_db": -2.5, "q": 1.0},
-        {"kind": "bell", "freq": 3200.0, "gain_db": 2.0, "q": 0.9},
-        {"kind": "high_shelf", "freq": 10000.0, "gain_db": 2.5, "q": 0.7}]}}))?;
-    call(e, "add_effect", json!({"track": "vocal", "type": "compressor", "params": {"threshold_db": -20.0, "ratio": 3.5, "attack_ms": 6.0, "release_ms": 90.0, "makeup_db": 4.0}}))?;
-    call(e, "add_effect", json!({"track": "vocal", "type": "deesser", "params": {"freq": 6500.0, "threshold_db": -26.0}}))?;
-    call(e, "add_bus", json!({"name": "vox_verb"}))?;
-    call(e, "add_effect", json!({"track": "vox_verb", "type": "reverb", "params": {"size": 0.75, "mix": 1.0, "predelay_ms": 40.0, "low_cut_hz": 250.0}}))?;
-    call(e, "add_bus", json!({"name": "vox_delay"}))?;
-    call(e, "add_effect", json!({"track": "vox_delay", "type": "delay", "params": {"steps": 3.0, "feedback": 0.3, "mix": 1.0, "ping_pong": true}}))?;
-    call(e, "set_send", json!({"track": "vocal", "bus": "vox_verb", "db": -11.0}))?;
-    call(e, "set_send", json!({"track": "vocal", "bus": "vox_delay", "db": -17.0}))?;
-    // carve the vocal's presence range out of the chords/lead
-    for t in ["chords", "lead"] {
-        if e.project.track_index(t).is_ok() {
-            call(e, "add_effect", json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 2800.0, "gain_db": -3.0, "q": 0.8}]}}))?;
-        }
-    }
+    vocal_chain(e)?;
     call(e, "add_effect", json!({"track": "chords", "type": "reverb", "params": {"size": 0.7, "mix": 0.25}}))?;
     if e.project.track_index("lead").is_ok() {
         call(e, "add_effect", json!({"track": "lead", "type": "delay", "params": {"steps": 3.0, "mix": 0.2, "feedback": 0.3}}))?;
