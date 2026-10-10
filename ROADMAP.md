@@ -44,7 +44,16 @@ Numbering note: this slot was planned as "real-time engine"; what actually shipp
   - delivery QC decodes the written file at its own sample rate (48 kHz WAV/MP3 loudness, true peak and duration come from the output, not the pre-encode buffer)
   - artifact sources fixed at the synth/render level, with a dense 144 BPM trap regression render
   - pinned toolchain (`rust-toolchain.toml`) and reproducible build instructions (`--locked`, LTO fallback)
-## Sprint 10 — Real-time engine (planned)
+## Sprint 10 — Vocal to song (tab/frontier, in progress)
+- DONE: `analyze_vocal` (YIN pitch track, note segmentation with local re-tuning, key from the sung melody, tempo/phase/downbeat from note + word onsets, timing spread, range, phrases)
+- DONE: `transcribe_lyrics` (local Whisper via faster-whisper, word timestamps, cached; the helper ships inside the binary)
+- DONE: `vocal_to_song`: hook found from repeated lyrics, sections, Viterbi harmonizer over the key's chords (half-bar harmonic rhythm), drums/bass/chords per section, hook melody answered on a lead in instrumental parts, vocal chain (HPF, EQ, comp, de-esser, reverb + delay returns) and presence carved out of the beat
+- DONE: auto-warp: phrase starts pinned to bar lines (tempo fitted to whole-bar phrase gaps), variable-rate WSOLA, so a free-time singer locks to the grid
+- DONE: timeline audio clips (`add_audio_clip` / `list_audio_clips` / `remove_audio_clip`), `get_vocal_map`, studio VOCAL view (sections, chords, lyrics, melody, waveform)
+- DONE: `tune_vocal` auto-tune (TD-PSOLA, formants kept; amount / hard / speed)
+- DONE: `extract_groove` / `steal_groove`: the feel of a loop, a reference or the singer as a 16-slot template laid onto the drums
+- NEXT: finer pitch correction (per-frame targets inside scoops), vocal doubles/harmonies from the sung melody, genre-aware drum kits tuned to the key, stem export of the vocal song, reference-track match loop
+## Sprint 11 — Real-time engine (planned)
 - Block-based cpal audio graph shared by playback and offline render, live meters, PDC
-## Sprint 11 — Plugins (planned)
+## Sprint 12 — Plugins (planned)
 - CLAP/VST3 hosting with crash isolation and parameter discovery as MCP tools
