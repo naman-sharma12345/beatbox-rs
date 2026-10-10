@@ -12,6 +12,7 @@ mod shortcuts;
 mod theme;
 mod views;
 mod vocal_view;
+mod create_view;
 mod widgets;
 
 use crate::analysis::{self, Report};
@@ -71,9 +72,11 @@ pub struct Studio {
     piano: piano::PianoState,
     /// vocal view: (sample, waveform peaks, seconds)
     vocal_wave: Option<(String, Vec<(f32, f32)>, f32)>,
+    /// create view: prompt / lyrics / recording -> make_beat, produce_song
+    create: create_view::CreateState,
 }
 
-const VIEWS: [&str; 5] = ["SEQUENCER", "MIXER", "AUTOMATION", "PLAYLIST", "VOCAL"];
+const VIEWS: [&str; 6] = ["SEQUENCER", "MIXER", "AUTOMATION", "PLAYLIST", "VOCAL", "CREATE"];
 
 pub fn run(
     engine: Engine,
@@ -123,6 +126,7 @@ pub fn run(
                     ..Default::default()
                 },
                 vocal_wave: None,
+                create: Default::default(),
             }))
         }),
     )
@@ -1272,6 +1276,7 @@ impl eframe::App for Studio {
                             Some(m) => format!("{} words · {} sung notes · {} chords", m.words.len(), m.notes.len(), m.chords.len()),
                             None => "vocal_to_song builds a song around a sung take".to_string(),
                         },
+                        5 => "make_beat \u{00B7} produce_song \u{00B7} the prompt and lyrics are read live".to_string(),
                         2 => format!(
                             "{} lanes · {:.0} beats · {:.0} BPM",
                             p.automation.len(),
@@ -1297,6 +1302,7 @@ impl eframe::App for Studio {
                     3 => self.playlist_view(ui, &p),
                     2 => self.automation_view(ui, &p),
                     4 => self.vocal_view(ui, &p),
+                    5 => self.create_view(ui, &p),
                     _ => self.sequencer(ui, &p),
                 }
             });
