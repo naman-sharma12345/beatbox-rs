@@ -160,6 +160,23 @@ pub fn is_function_word(w: &str) -> bool {
     matches!(w.as_str(), "a" | "an" | "the" | "to" | "of" | "and" | "or" | "but" | "in" | "on" | "at" | "for" | "is" | "it" | "i" | "my" | "me" | "we" | "you" | "your" | "be" | "as" | "so" | "that" | "this" | "with" | "from" | "by" | "do" | "if" | "are" | "was" | "not" | "i'm" | "don't" | "da" | "di" | "de" | "nu" | "ke" | "ki" | "ka" | "te" | "ve")
 }
 
+/// Words a singer keeps at spoken rhythm: numbers ("thirty-five", "1962")
+/// and names ("Rice", "Texas", "Atlantic": capitalised past the line's first
+/// word). Critic, JFK round 3: stretched onto melody notes they stopped
+/// being words.
+pub fn is_spoken_word(w: &str, first_in_line: bool) -> bool {
+    let t = w.trim_matches(|c: char| !c.is_alphanumeric());
+    if t.chars().any(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    let l = t.to_lowercase();
+    let num = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred", "thousand", "million"];
+    if l.split('-').all(|p| num.contains(&p) || p.ends_with("teen") && p.len() > 4) {
+        return true;
+    }
+    !first_in_line && t.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) && l != "i" && !l.starts_with("i'")
+}
+
 pub fn plan(lines: &[Line], sec_start_bar: &[u32], sec_bars: &[u32], bpm: f32, mode: &str) -> Performance {
     let beat_s = 60.0 / bpm;
     let sing = mode == "sing";
@@ -177,7 +194,7 @@ pub fn plan(lines: &[Line], sec_start_bar: &[u32], sec_bars: &[u32], bpm: f32, m
             // sung function words ("to", "the", "and") keep their spoken length;
             // the melody's long notes go on the content words (critic: "to go to"
             // blurred when every word was stretched)
-            let func: Vec<bool> = l.clips.iter().map(|c| sing && is_function_word(&c.text)).collect();
+            let func: Vec<bool> = l.clips.iter().enumerate().map(|(i, c)| sing && (is_function_word(&c.text) || is_spoken_word(&c.text, i == 0))).collect();
             let nat: Vec<f32> = l.clips.iter().zip(&func).map(|(c, f)| {
                 let d = c.audio.len() as f32 / SR / (beat_s / 4.0);
                 if *f { ((d / 2.0).ceil() * 2.0).max(2.0) } else if sing { (d.round()).max(2.0 * c.syl as f32) } else { (d.round()).max(c.syl as f32) }
@@ -305,7 +322,7 @@ pub fn write_melody(perf: &mut Performance, chord_at: &dyn Fn(f32) -> Option<Cho
 }
 
 /// Render the performance: every word stretched to its slot and laid at its
-/// grid position (5 ms fade in, 20 ms out); in sing mode every syllable is
+/// grid position (15 ms equal-power fade in, 25 ms out); in sing mode every syllable is
 /// then tuned onto its note. Returns mono audio starting at beat 0.
 pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> Vec<f32> {
     let beat_s = 60.0 / bpm;
@@ -314,12 +331,12 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
     for (w, c) in perf.words.iter().zip(clips.iter()) {
         let mut y = stretch_nucleus(&c.audio, w.stretch);
         // start on a zero crossing (within 3 ms), then equal-power fades:
-        // 8 ms in, 25 ms out (critic: splice clicks at every word edge)
+        // 15 ms in, 25 ms out (critic: splice clicks at every word edge)
         let zc = (1..((0.003 * SR) as usize).min(y.len())).find(|&i| (y[i - 1] <= 0.0) != (y[i] <= 0.0)).unwrap_or(0);
         if zc > 0 {
             y.drain(..zc);
         }
-        let fi = ((0.008 * SR) as usize).min(y.len() / 2);
+        let fi = ((0.015 * SR) as usize).min(y.len() / 2);
         let fo = ((0.025 * SR) as usize).min(y.len() / 2);
         let n = y.len();
         for i in 0..fi {
@@ -377,9 +394,11 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
 }
 
 /// Repair clicks: a 1 ms window whose energy above 6 kHz jumps 18 dB over
-/// its neighbourhood and dies within a few ms is a splice or grain edge, not
-/// a consonant; its high band is faded out over ~3 ms (the same measure the
-/// critic counts clicks with). Returns how many were repaired.
+/// its neighbourhood and dies within a few ms is a splice, grain edge or a
+/// burst out of digital silence, not a sung consonant; the ~9 ms around it is
+/// crossfaded (raised cosine) into a zero-phase 4 kHz low-passed copy of
+/// itself (the same rule the critic counts clicks with). Returns how many
+/// were repaired.
 pub fn declick(y: &mut [f32]) -> usize {
     let w = (0.001 * SR) as usize;
     let n = y.len() / w.max(1);
@@ -393,7 +412,7 @@ pub fn declick(y: &mut [f32]) -> usize {
     let mut sorted = e.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let floor = sorted[n / 2];
-    let mut fixed = 0;
+    let mut hits = Vec::new();
     let mut i = 0;
     while i < n {
         let lo = i.saturating_sub(25);
@@ -403,21 +422,36 @@ pub fn declick(y: &mut [f32]) -> usize {
         let med = nb[nb.len() / 2];
         let after = if i + 8 < n { e[i + 3..i + 8].iter().copied().fold(0.0, f32::max) } else { e[i] };
         if e[i] > 30.0 * med && e[i] > 4.0 * floor && after < 0.3 * e[i] {
-            // fade the high band out across the click (raised-cosine, 4 ms)
-            let s0 = (i * w).saturating_sub(w);
-            let s1 = ((i + 3) * w).min(y.len());
-            let len = (s1 - s0).max(1) as f32;
-            for k in s0..s1 {
-                let g = 0.5 - 0.5 * (std::f32::consts::TAU * (k - s0) as f32 / len).cos();
-                y[k] -= h[k] * g;
-            }
-            fixed += 1;
+            hits.push(i * w);
             i += 4;
             continue;
         }
         i += 1;
     }
-    fixed
+    for &s in &hits {
+        let a0 = s.saturating_sub(3 * w);
+        let a1 = (s + 6 * w).min(y.len());
+        let p0 = a0.saturating_sub(200);
+        let p1 = (a1 + 200).min(y.len());
+        // zero-phase low-pass: two biquad passes forward, two backward
+        let mut seg: Vec<f32> = y[p0..p1].to_vec();
+        for _ in 0..2 {
+            let mut f1 = crate::dsp::Biquad::new(crate::dsp::BiquadKind::HighCut, 4000.0, 0.7, 0.0);
+            for v in seg.iter_mut() {
+                *v = f1.process(*v);
+            }
+            let mut f2 = crate::dsp::Biquad::new(crate::dsp::BiquadKind::HighCut, 4000.0, 0.7, 0.0);
+            for v in seg.iter_mut().rev() {
+                *v = f2.process(*v);
+            }
+        }
+        let len = (a1 - a0).max(1) as f32;
+        for k in a0..a1 {
+            let g = 0.5 - 0.5 * (std::f32::consts::TAU * (k - a0) as f32 / len).cos();
+            y[k] = y[k] * (1.0 - g) + seg[k - p0] * g;
+        }
+    }
+    hits.len()
 }
 
 /// A singer's pitch life on top of a written note (semitones), `t` seconds
@@ -569,6 +603,16 @@ pub fn tts_words(workdir: &std::path::Path, lines: &[Vec<String>], tag: &str) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn numbers_and_names_keep_spoken_rhythm() {
+        assert!(is_spoken_word("Texas", false));
+        assert!(is_spoken_word("thirty-five", false));
+        assert!(is_spoken_word("35", true));
+        assert!(!is_spoken_word("Why", true));
+        assert!(!is_spoken_word("moon", false));
+        assert!(!is_spoken_word("I'm", false));
+    }
+
     use super::*;
 
     fn tone(hz: f32, secs: f32) -> Vec<f32> {

@@ -2115,7 +2115,10 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
 
     // patterns per section
     let mut rng = Rng::new(plan.seed ^ 0x5EC7 ^ plan.knobs.variation_seed.wrapping_mul(0x9E37));
-    let lead_oct = pb.lead.octave;
+    // R&B with a bright bell/pluck lead: an octave down (critic, beat 8 round 2:
+    // the fm_bell lead was over half of all the 2-16 kHz energy in the mix)
+    let bright_lead = plan.palette.get("lead").map(|s| ["bell", "pluck", "glock", "celesta", "music_box"].iter().any(|k| s.contains(k))).unwrap_or(false);
+    let lead_oct = if pb.mix.balance_genre == "rnb" && bright_lead { pb.lead.octave - 1 } else { pb.lead.octave };
     let ornament = pb.lead.ornament.clone().unwrap_or_default();
     let harmony_style = if plan.harmony_style.is_empty() {
         pb.harmony.style.clone().unwrap_or_else(|| "block".into())
@@ -2694,12 +2697,15 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                 e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "high_shelf", "freq": 2500.0, "gain_db": -4.0, "q": 0.7}]}}), "producer")?;
             }
         }
-        for t in ["perc", "texture"] {
+        for (t, hz) in [("perc", 10000.0), ("texture", 10000.0), ("lead", 8000.0)] {
             if have(e, t) {
-                e.call_from("add_effect", &json!({"track": t, "type": "filter", "params": {"mode": "lowpass", "cutoff": 10000.0, "resonance": 0.1}}), "producer")?;
+                e.call_from("add_effect", &json!({"track": t, "type": "filter", "params": {"mode": "lowpass", "cutoff": hz, "resonance": 0.1}}), "producer")?;
             }
         }
         if have(e, "bass") {
+            // the 808 was almost all sub (58% under 60 Hz): tape harmonics put it
+            // into the 100-250 Hz range small speakers play
+            e.call_from("add_effect", &json!({"track": "bass", "type": "saturator", "params": {"mode": "tape", "drive_db": 8.0, "mix": 0.4}}), "producer")?;
             e.call_from("add_effect", &json!({"track": "bass", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 110.0, "gain_db": 4.0, "q": 0.9}]}}), "producer")?;
         }
         if have(e, "kick") {

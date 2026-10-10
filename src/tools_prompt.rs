@@ -375,8 +375,19 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
     let air = air_ratio_db(&y);
     if e.project.track_index("vocal").is_ok() {
         if air < -40.0 {
-            // gentle (critic round 2: drive 9 dB turned 2-5 kHz into fuzz)
-            let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "saturator", "params": {"mode": "exciter", "drive_db": 4.5, "tone_hz": 5000.0, "mix": 0.18}}));
+            // no exciter (critic round 3: the vocal chain cost ~18 points of
+            // word recognition, the exciter suspected first): a +3 dB shelf
+            let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [{"kind": "high_shelf", "freq": 3000.0, "gain_db": 3.0, "q": 0.7}]}}));
+            // the beat steps out of the band this voice lives in (250-1150 Hz
+            // on the 1962 tape): the beds' static chord partials covered it
+            for t in ["chords", "counter", "texture", "lead"] {
+                if e.project.track_index(t).is_ok() {
+                    let _ = crate_call(e, "add_effect", json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 600.0, "gain_db": -6.0, "q": 0.6}]}}));
+                }
+            }
+            // an old tape's voice is all body (rolloff ~1.2 kHz): thin the
+            // 350 Hz boxiness so it stops filling the beat's low-mids
+            let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 350.0, "gain_db": -3.0, "q": 0.9}]}}));
         }
         let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 2500.0, "gain_db": 3.0, "q": 0.8}]}}));
         let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "limiter", "params": {"ceiling_db": -1.5}}));
