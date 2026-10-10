@@ -40,7 +40,7 @@ def main():
             p = os.path.join(a.out, f"w_{li:03d}_{wi:03d}.wav")
             with wave.open(p, "wb") as w:
                 v.synthesize_wav(word, w, syn_config=cfg)
-            out.append({"line": li, "word": word, "path": p})
+            out.append({"line": li, "index": wi, "word": word, "path": p})
     print(json.dumps({"words": out, "voice": a.voice, "sample_rate": v.config.sample_rate}))
 
 if __name__ == "__main__":

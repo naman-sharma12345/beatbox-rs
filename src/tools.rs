@@ -709,6 +709,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_groove::tools());
     v.extend(crate::tools_prompt::tools());
     v.extend(crate::tools_meta::tools());
+    v.extend(crate::tools_drone::tools());
     v
 }
 

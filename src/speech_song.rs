@@ -154,6 +154,12 @@ pub const FILLERS: &[&str] = &["um", "uh", "uhm", "umm", "uhh", "er", "erm", "ah
 /// Plan where every word sits: lines start on bar lines inside their section,
 /// words take whole grid units (16ths for rap, 8ths per syllable for singing),
 /// and a line slows down to fill its share of the section when there is room.
+/// Short words a singer passes through rather than holds.
+pub fn is_function_word(w: &str) -> bool {
+    let w: String = w.chars().filter(|c| c.is_alphabetic() || *c == '\'').collect::<String>().to_lowercase();
+    matches!(w.as_str(), "a" | "an" | "the" | "to" | "of" | "and" | "or" | "but" | "in" | "on" | "at" | "for" | "is" | "it" | "i" | "my" | "me" | "we" | "you" | "your" | "be" | "as" | "so" | "that" | "this" | "with" | "from" | "by" | "do" | "if" | "are" | "was" | "not" | "i'm" | "don't" | "da" | "di" | "de" | "nu" | "ke" | "ki" | "ka" | "te" | "ve")
+}
+
 pub fn plan(lines: &[Line], sec_start_bar: &[u32], sec_bars: &[u32], bpm: f32, mode: &str) -> Performance {
     let beat_s = 60.0 / bpm;
     let sing = mode == "sing";
@@ -168,9 +174,13 @@ pub fn plan(lines: &[Line], sec_start_bar: &[u32], sec_bars: &[u32], bpm: f32, m
         let mut bar = sec_start_bar[s] as f32;
         for l in ls {
             // natural length of each word in 16ths
-            let nat: Vec<f32> = l.clips.iter().map(|c| {
+            // sung function words ("to", "the", "and") keep their spoken length;
+            // the melody's long notes go on the content words (critic: "to go to"
+            // blurred when every word was stretched)
+            let func: Vec<bool> = l.clips.iter().map(|c| sing && is_function_word(&c.text)).collect();
+            let nat: Vec<f32> = l.clips.iter().zip(&func).map(|(c, f)| {
                 let d = c.audio.len() as f32 / SR / (beat_s / 4.0);
-                if sing { (d.round()).max(2.0 * c.syl as f32) } else { (d.round()).max(c.syl as f32) }
+                if *f { ((d / 2.0).ceil() * 2.0).max(2.0) } else if sing { (d.round()).max(2.0 * c.syl as f32) } else { (d.round()).max(c.syl as f32) }
             }).collect();
             let need: f32 = nat.iter().sum::<f32>() + if sing { 4.0 } else { 0.0 };
             let line_bars = (need / 16.0).ceil().max(share.floor()).max(1.0);
@@ -179,8 +189,8 @@ pub fn plan(lines: &[Line], sec_start_bar: &[u32], sec_bars: &[u32], bpm: f32, m
             let mut pos = bar * 4.0;
             let nwords = l.clips.len();
             for (wi, c) in l.clips.iter().enumerate() {
-                let mut units = nat[wi] * k;
                 let last = wi + 1 == nwords;
+                let mut units = if func[wi] && !last { nat[wi] } else { nat[wi] * k };
                 if sing && last {
                     // the line's last syllable is held to the end of its room
                     let room = (bar + line_bars) * 16.0 - pos * 4.0;
@@ -298,7 +308,7 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
     let end_beat = perf.words.iter().map(|w| w.beat + w.beats).fold(0.0f32, f32::max);
     let mut out = vec![0.0f32; ((end_beat * beat_s + 1.0) * SR) as usize];
     for (w, c) in perf.words.iter().zip(clips.iter()) {
-        let mut y = crate::audio_edit::time_stretch(&c.audio, w.stretch);
+        let mut y = stretch_nucleus(&c.audio, w.stretch);
         let fi = (0.005 * SR) as usize;
         let fo = ((0.02 * SR) as usize).min(y.len() / 2);
         let n = y.len();
@@ -341,6 +351,7 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
         if t < a - 0.05 || t > b + 0.05 {
             continue;
         }
+        let m = m + expression(t - a, b - a, ti == 0 || targets[ti - 1].1 < a - 0.02);
         corr[i] = (tune_hard * (m - fr.midi)).clamp(-9.0, 9.0);
     }
     // smooth (30 ms) so note changes glide a little, like a singer
@@ -350,6 +361,53 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
     }
     let mut y = vocal::psola(&out, SR, &frames, &corr, 0.55, 1.75);
     level(&mut y);
+    y
+}
+
+/// A singer's pitch life on top of a written note (semitones), `t` seconds
+/// into a note `len` long: a scoop up into a note that starts a phrase, and
+/// on notes over 0.4 s a 5.2 Hz vibrato of about +-25 cents that fades in
+/// after 150 ms. (Critic: pitch moved 0.09 st frame to frame; a voice moves
+/// 0.2-0.3 plus vibrato.)
+pub fn expression(t: f32, len: f32, phrase_start: bool) -> f32 {
+    let mut d = 0.0;
+    if phrase_start && t < 0.09 {
+        d -= 0.9 * (1.0 - (t / 0.09).max(0.0));
+    }
+    if len > 0.4 && t > 0.15 {
+        let fade = ((t - 0.15) / 0.2).min(1.0);
+        d += 0.25 * fade * (std::f32::consts::TAU * 5.2 * (t - 0.15)).sin();
+    }
+    d
+}
+
+/// Stretch a sung word without smearing its consonants: the first 60 ms
+/// (the onset: "st" in "stay") and the last 40 ms stay at 1x and only the
+/// vowel nucleus between them takes the stretch. Short words stretch whole.
+pub fn stretch_nucleus(x: &[f32], factor: f32) -> Vec<f32> {
+    let (on, off) = ((0.06 * SR) as usize, (0.04 * SR) as usize);
+    if factor <= 1.05 || x.len() < on + off + (0.05 * SR) as usize {
+        return crate::audio_edit::time_stretch(x, factor);
+    }
+    let target = (x.len() as f32 * factor) as usize;
+    let mid = &x[on..x.len() - off];
+    let mid_factor = (target - on - off) as f32 / mid.len() as f32;
+    let m = crate::audio_edit::time_stretch(mid, mid_factor);
+    // short crossfades at the joins
+    let xf = (0.004 * SR) as usize;
+    let mut y: Vec<f32> = x[..on].to_vec();
+    for (i, v) in m.iter().enumerate() {
+        if i < xf && !y.is_empty() {
+            let k = y.len() - xf + i;
+            if k < y.len() {
+                let g = i as f32 / xf as f32;
+                y[k] = y[k] * (1.0 - g) + v * g;
+                continue;
+            }
+        }
+        y.push(*v);
+    }
+    y.extend_from_slice(&x[x.len() - off..]);
     y
 }
 
@@ -382,6 +440,27 @@ pub fn median_pitch(x: &[f32]) -> f32 {
 }
 
 
+/// How a Hindi / Punjabi word should be spelled for an English TTS voice to
+/// say it right ("tere" -> "theh-reh", not "tear"; critic heard "Tere bina"
+/// as "Dear Venus"). Unknown words pass through unchanged.
+pub fn respell(word: &str) -> String {
+    let w: String = word.chars().filter(|c| c.is_alphanumeric() || *c == '\'').collect::<String>().to_lowercase();
+    let r = match w.as_str() {
+        "tere" => "theh-reh", "teri" => "theh-ree", "tera" => "theh-raa", "tu" => "thoo", "tainu" => "thai-noo",
+        "mere" => "meh-reh", "meri" => "meh-ree", "mera" => "meh-raa", "main" => "mainh", "mainu" => "mai-noo",
+        "bina" => "bee-naa", "dil" => "dhill", "nahi" => "nuh-hee", "nahin" => "nuh-heen", "lagda" => "lug-dhaa",
+        "lagdi" => "lug-dhee", "kuch" => "kooch", "chalda" => "chull-dhaa", "hai" => "hay", "hain" => "hain",
+        "pyaar" => "pyaar", "pyar" => "pyaar", "yaad" => "yaadh", "yaar" => "yaar", "raat" => "raath", "raatan" => "raa-thaan",
+        "jaan" => "jaan", "rab" => "rubb", "sajna" => "suj-naa", "sohneya" => "sohh-neh-yaa", "ve" => "vey",
+        "kyun" => "kyoon", "kya" => "kyaa", "aaja" => "aa-jaa", "menu" => "mai-noo", "vich" => "vitch",
+        "naal" => "naal", "ki" => "kee", "ke" => "keh", "da" => "dhaa", "di" => "dhee", "de" => "dheh", "nu" => "noo",
+        "dard" => "dhurd", "ishq" => "ishk", "mohabbat" => "mo-hub-buth", "zindagi" => "zin-dhuh-gee", "dooriyan" => "dhoo-ree-yaan",
+        "sapna" => "sup-naa", "sapne" => "sup-neh", "ankhiyan" => "ankh-ee-yaan", "akhiyan" => "akh-ee-yaan", "oh" => "oh",
+        _ => return word.to_string(),
+    };
+    r.to_string()
+}
+
 /// The guide-voice helper, shipped inside the binary.
 pub const TTS_PY: &str = include_str!("../scripts/tts_words.py");
 
@@ -405,7 +484,9 @@ pub fn tts_words(workdir: &std::path::Path, lines: &[Vec<String>], tag: &str) ->
         .stderr(std::process::Stdio::piped())
         .spawn()
         .with_context(|| format!("running {py} (set BEATBOX_PYTHON to a Python with piper-tts)"))?;
-    child.stdin.take().unwrap().write_all(serde_json::json!({"lines": lines}).to_string().as_bytes())?;
+    // Hindi / Punjabi words go to the English voice respelled the way they sound
+    let spoken: Vec<Vec<String>> = lines.iter().map(|l| l.iter().map(|w| respell(w)).collect()).collect();
+    child.stdin.take().unwrap().write_all(serde_json::json!({"lines": spoken}).to_string().as_bytes())?;
     let out = child.wait_with_output()?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| {
         anyhow!("TTS helper failed: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("no output"))
@@ -416,7 +497,9 @@ pub fn tts_words(workdir: &std::path::Path, lines: &[Vec<String>], tag: &str) ->
     let mut res: Vec<Vec<Clip>> = vec![Vec::new(); lines.len()];
     for w in v["words"].as_array().cloned().unwrap_or_default() {
         let li = w["line"].as_u64().unwrap_or(0) as usize;
-        let text = w["word"].as_str().unwrap_or("").to_string();
+        let wi = w["index"].as_u64().map(|x| x as usize);
+        // the written word, not its respelling, names the clip
+        let text = wi.and_then(|i| lines.get(li).and_then(|l| l.get(i))).cloned().unwrap_or_else(|| w["word"].as_str().unwrap_or("").to_string());
         let path = std::path::PathBuf::from(w["path"].as_str().unwrap_or(""));
         let audio = tighten(&crate::samples::decode_file(&path)?, -38.0);
         if audio.len() < (SR * 0.04) as usize || li >= res.len() {
@@ -459,6 +542,23 @@ mod tests {
         let s1 = rms(&y[SR as usize + 1000..2 * SR as usize - 1000]);
         assert!(s1 > s0 * 0.8, "tone kept {s0} -> {s1}");
         assert!(red < 0.0);
+    }
+
+    #[test]
+    fn nucleus_stretch_keeps_the_onset_and_expression_moves() {
+        let x = tone(220.0, 0.4);
+        let y = stretch_nucleus(&x, 2.0);
+        assert!((y.len() as f32 / x.len() as f32 - 2.0).abs() < 0.1, "{} vs {}", y.len(), x.len());
+        // the first 50 ms are untouched
+        let k = (0.05 * SR) as usize;
+        assert!(x[..k].iter().zip(&y[..k]).all(|(a, b)| (a - b).abs() < 1e-6));
+        assert!(expression(0.0, 1.0, true) < -0.5);
+        let vib: Vec<f32> = (0..100).map(|i| expression(0.4 + i as f32 * 0.01, 1.5, false)).collect();
+        let span = vib.iter().cloned().fold(f32::MIN, f32::max) - vib.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(span > 0.4 && span < 0.6, "vibrato span {span}");
+        assert_eq!(expression(0.2, 0.3, false), 0.0);
+        assert_eq!(respell("Tere"), "theh-reh");
+        assert_eq!(respell("tonight"), "tonight");
     }
 
     #[test]

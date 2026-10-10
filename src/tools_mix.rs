@@ -135,9 +135,15 @@ pub fn calibrated_volume(
 fn genre_targets(genre: &str) -> Result<Vec<(&'static str, f32)>> {
     Ok(match genre {
         "trap" | "drill" => vec![("bass", 0.0), ("snare", -2.0), ("hats", -11.0), ("perc", -10.0), ("cymbal", -12.0), ("lead", -6.0), ("keys", -8.0), ("pad", -12.0), ("fx", -15.0)],
-        "boom_bap" | "hiphop" | "hip_hop" | "lofi" => vec![("bass", -2.0), ("snare", -1.0), ("hats", -9.0), ("perc", -9.0), ("cymbal", -12.0), ("lead", -5.0), ("keys", -5.0), ("pad", -10.0), ("fx", -14.0)],
+        // boom bap / desi hip-hop: the low end carries it (critic, Oct 2026: only
+        // ~30% of power under 250 Hz with mids and air heavy; hip-hop sits at
+        // 60-70%), so the 808 sits level with the kick and the top is quieter
+        "boom_bap" | "hiphop" | "hip_hop" => vec![("bass", 0.0), ("snare", -1.5), ("hats", -12.0), ("perc", -11.0), ("cymbal", -14.0), ("lead", -7.0), ("keys", -7.0), ("pad", -12.0), ("fx", -17.0)],
+        "lofi" => vec![("bass", -2.0), ("snare", -1.0), ("hats", -9.0), ("perc", -9.0), ("cymbal", -12.0), ("lead", -5.0), ("keys", -5.0), ("pad", -10.0), ("fx", -14.0)],
         "house" | "techno" | "edm" => vec![("bass", -2.0), ("snare", -4.0), ("hats", -8.0), ("perc", -9.0), ("cymbal", -10.0), ("lead", -5.0), ("keys", -7.0), ("pad", -10.0), ("fx", -13.0)],
-        "pop" | "rnb" | "afrobeats" => vec![("bass", -2.0), ("snare", -2.0), ("hats", -9.0), ("perc", -8.0), ("cymbal", -11.0), ("lead", -3.0), ("keys", -5.0), ("pad", -9.0), ("fx", -14.0)],
+        "pop" | "afrobeats" => vec![("bass", -2.0), ("snare", -2.0), ("hats", -9.0), ("perc", -8.0), ("cymbal", -11.0), ("lead", -3.0), ("keys", -5.0), ("pad", -9.0), ("fx", -14.0)],
+        // R&B: soft, dark top (critic: air 14 dB over a reference, hissy hats)
+        "rnb" => vec![("bass", 0.0), ("snare", -2.0), ("hats", -13.0), ("perc", -11.0), ("cymbal", -14.0), ("lead", -4.0), ("keys", -8.0), ("pad", -12.0), ("fx", -16.0)],
         "cinematic" | "ambient" => vec![("bass", -3.0), ("snare", -3.0), ("hats", -10.0), ("perc", -6.0), ("cymbal", -8.0), ("lead", -1.0), ("keys", -2.0), ("pad", -2.0), ("fx", -8.0)],
         g => bail!("unknown genre '{g}' (trap, drill, boom_bap, lofi, house, techno, edm, pop, rnb, afrobeats, cinematic, ambient)"),
     })

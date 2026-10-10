@@ -2638,7 +2638,9 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             let idx = r["index"].as_u64().unwrap_or(0);
             let mut pts: Vec<Value> = Vec::new();
             for (k, (b0, b1, s)) in spans.iter().enumerate() {
-                let closed = 1400.0 + 4200.0 * s.energy.clamp(0.0, 1.0);
+                // a quiet section closes right down (~1 kHz): it has to read as quiet
+                let quiet = s.tags.iter().any(|t| t == "quiet");
+                let closed = if quiet { 1000.0 } else { 1400.0 + 4200.0 * s.energy.clamp(0.0, 1.0) };
                 let v = if s.kind == "hook" { 18000.0 } else { closed };
                 pts.push(json!({"beat": b0, "value": v, "curve": "step"}));
                 let next_hook = spans
@@ -2666,9 +2668,74 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     {
         e.call_from(
             "add_effect",
-            &json!({"track": "chords", "type": "width", "params": {"amount": 1.3}}),
+            &json!({"track": "chords", "type": "width", "params": {"amount": 1.3, "low_mono_hz": 150.0}}),
             "producer",
         )?;
+    }
+    let hiphop = matches!(pb.mix.balance_genre.as_str(), "boom_bap" | "hiphop" | "hip_hop");
+    // hip-hop: hats and noise sit narrow (wide hiss reads as cheap), and the
+    // low end of anything stereo stays mono
+    let rnb = matches!(pb.mix.balance_genre.as_str(), "rnb");
+    if hiphop || rnb {
+        for t in ["hat", "open_hat"] {
+            if have(e, t) {
+                e.call_from("add_effect", &json!({"track": t, "type": "width", "params": {"amount": 0.55}}), "producer")?;
+                // dark top: the hats' fizz above 10 kHz read as hiss (critic, beats 6b and 8)
+                e.call_from("add_effect", &json!({"track": t, "type": "filter", "params": {"mode": "lowpass", "cutoff": 10000.0, "resonance": 0.1}}), "producer")?;
+            }
+        }
+    }
+    // R&B: the sustained bed builds a 300 Hz band under the vocal range
+    // a pocket for the voice: the melodic beds step back 3 dB around 1-2 kHz
+    // (critic, 6b round 2: 800-2k ran ~8 dB over a hip-hop reference)
+    for t in ["chords", "counter", "texture"] {
+        if have(e, t) {
+            e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 1400.0, "gain_db": -3.0, "q": 0.9}]}}), "producer")?;
+        }
+    }
+    // R&B and sad/melodic beds: the sustained harmony builds a 300 Hz band
+    // under the vocal range (critic, beat 8)
+    let soft = rnb || ["sad", "melancholic", "heartbreak", "romantic", "dreamy"].iter().any(|m| plan.mood.contains(m));
+    if soft && have(e, "chords") {
+        e.call_from("add_effect", &json!({"track": "chords", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 320.0, "gain_db": -5.0, "q": 1.0}]}}), "producer")?;
+    }
+    // ...and a held pad partial can ring through the whole song: find and notch it
+    {
+        let beds: Vec<&str> = ["chords", "texture"].into_iter().filter(|t| have(e, t)).collect();
+        if !beds.is_empty() {
+            let _ = e.call_from("notch_drones", &json!({"tracks": beds}), "producer");
+        }
+    }
+    for t in ["texture", "counter"] {
+        if have(e, t) {
+            e.call_from("add_effect", &json!({"track": t, "type": "width", "params": {"amount": 1.0, "low_mono_hz": 150.0}}), "producer")?;
+        }
+    }
+    // transition noise (risers, downlifters, reverse cymbals) above 8 kHz is hiss
+    for t in ["downlifter", "cymbal_rev", "riser", "uplifter"] {
+        if have(e, t) {
+            e.call_from("add_effect", &json!({"track": t, "type": "filter", "params": {"mode": "lowpass", "cutoff": 8000.0, "resonance": 0.1}}), "producer")?;
+        }
+    }
+    // section energy at the master: hooks are the loudest thing in the song.
+    // Measured on our own renders: thinner parts alone left hooks only ~1 dB
+    // over verses and a quiet section ~2 dB under; the targets are hooks
+    // +3 dB over verses, intro/outro ~5 dB and quiet sections ~7 dB under.
+    for s in &plan.sections {
+        let quiet = s.tags.iter().any(|t| t == "quiet");
+        // the beat switch is an event: it comes back at full level
+        let switch = s.tags.iter().any(|t| t == "switch");
+        let db = match s.kind.as_str() {
+            _ if quiet => -7.0,
+            _ if switch => 0.0,
+            "intro" | "outro" => -5.0,
+            "verse" | "bridge" | "pre" | "prechorus" => -3.0,
+            "breakdown" => -5.0,
+            _ => 0.0,
+        };
+        if db != 0.0 {
+            let _ = e.call_from("set_section_mix", &json!({"section": s.name, "track": "master", "volume_db": db, "all_occurrences": true}), "producer");
+        }
     }
     if pb.mix.crush {
         e.call_from("add_effect", &json!({"track": "master", "type": "bitcrush", "params": {"bits": 12.0, "downsample": 2, "mix": 0.25}}), "producer")?;

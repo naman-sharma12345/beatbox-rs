@@ -113,7 +113,7 @@ fx_struct!(SidechainFx {
     release_ms: f32 = 180.0,
     attack_ms: f32 = 3.0
 });
-fx_struct!(WidthFx { amount: f32 = 1.4 });
+fx_struct!(WidthFx { amount: f32 = 1.4, low_mono_hz: f32 = 0.0 });
 fx_struct!(GainFx { db: f32 = 0.0 });
 fx_struct!(LimiterFx {
     ceiling_db: f32 = -1.0,
@@ -399,7 +399,7 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("chorus", "Stereo chorus. rate_hz, depth_ms, mix"),
     ("compressor", "Feed-forward compressor. threshold_db, ratio, attack_ms, release_ms, makeup_db; soft-knee lookahead mode when any of knee_db (e.g. 6), lookahead_ms (0-10), sc_hpf_hz (sidechain high-pass, e.g. 120 so the kick does not pump), mix (<1 = parallel) is set"),
     ("sidechain", "Duck this track whenever `source` track hits (EDM pumping). source, amount 0..1, release_ms"),
-    ("width", "Mid/side stereo width. amount 0 = mono, 1 = unchanged, 2 = extra wide"),
+    ("width", "Mid/side stereo width. amount 0 = mono, 1 = unchanged, 2 = extra wide; low_mono_hz (e.g. 150) keeps everything below it mono"),
     ("gain", "Simple gain. db"),
     ("limiter", "Lookahead brickwall limiter. ceiling_db, release_ms, true_peak (default true: detects inter-sample peaks so the ceiling holds in dBTP)"),
     ("transient", "Transient shaper. attack -1..1 (punch), sustain -1..1 (tail)"),
@@ -656,9 +656,17 @@ impl Effect {
                 }
             }
             Effect::Width(p) => {
+                // low_mono_hz > 0: the side signal is high-passed there, so the
+                // low end stays mono (bass translates on phones and clubs)
+                let mut hp = Svf::default();
+                let mono_lo = p.low_mono_hz.clamp(0.0, 500.0);
                 for i in 0..l.len() {
                     let m = 0.5 * (l[i] + r[i]);
-                    let s = 0.5 * (l[i] - r[i]) * p.amount.clamp(0.0, 3.0);
+                    let mut s = 0.5 * (l[i] - r[i]);
+                    if mono_lo > 0.0 {
+                        s = hp.process(s, mono_lo, 0.0, FilterMode::Highpass);
+                    }
+                    let s = s * p.amount.clamp(0.0, 3.0);
                     l[i] = m + s;
                     r[i] = m - s;
                 }

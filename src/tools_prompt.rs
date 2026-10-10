@@ -174,6 +174,16 @@ pub fn make_beat_with(e: &mut Engine, a: &Value, clips: Option<Vec<Vec<crate::sp
 /// guide voice speaks each word, the words are placed on the grid section by
 /// section, and in sing mode every syllable is tuned onto a melody written
 /// over the plan's chords. The vocal lands on a "vocal" track with a chain.
+/// Energy above 5 kHz relative to the whole voice (dB): below about -40 the
+/// source is band-limited (an old or phone recording).
+fn air_ratio_db(y: &[f32]) -> f32 {
+    let ps = crate::analysis::power_spectrum(y);
+    let hz = crate::dsp::SR / (2.0 * ps.len() as f32);
+    let tot: f32 = ps.iter().skip((80.0 / hz) as usize).sum();
+    let air: f32 = ps.iter().skip((5000.0 / hz) as usize).take(((11000.0) / hz) as usize).sum();
+    10.0 * (air.max(1e-12) / tot.max(1e-12)).log10()
+}
+
 pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[crate::prompt_beat::LyricSection], mode: &str, seed: u64, given: Option<Vec<Vec<crate::speech_song::Clip>>>) -> Result<Value> {
     use crate::speech_song as ss;
     use crate::theory;
@@ -265,7 +275,22 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
         ss::write_melody(&mut perf, &chord_at, key_pc, &iv, center, &hook_beats);
     }
     let refs: Vec<&ss::Clip> = lines.iter().flat_map(|l| l.clips.iter()).collect();
-    let y = ss::render(&perf, &refs, bpm, 0.95);
+    let mut y = ss::render(&perf, &refs, bpm, 0.95);
+    // hooks are sung out: +3 dB over the verses (40 ms ramps)
+    {
+        let beat_s = 60.0 / bpm;
+        let ramp = 0.04 * crate::dsp::SR;
+        let g = 10f32.powf(3.0 / 20.0) - 1.0;
+        for &(b0, len) in &hook_beats {
+            let (s0, s1) = (b0 * beat_s * crate::dsp::SR, (b0 + len) * beat_s * crate::dsp::SR);
+            let (i0, i1) = ((s0 as usize).min(y.len()), (s1 as usize).min(y.len()));
+            for i in i0..i1 {
+                let x = i as f32;
+                let w = ((x - s0) / ramp).min((s1 - x) / ramp).clamp(0.0, 1.0);
+                y[i] *= 1.0 + g * w;
+            }
+        }
+    }
     let t_render = t0.elapsed().as_secs_f32() - t_tts;
     std::fs::create_dir_all(e.samples_dir())?;
     let p = e.samples_dir().join(format!("vocal_{mode}_{seed}.wav"));
@@ -288,7 +313,9 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
     // the voice sits on top (measured: at 0 dB the words were masked; +5 dB
     // made them intelligible to a speech recogniser), the melodic parts step back
     if let Ok(i) = e.project.track_index("vocal") {
-        e.project.tracks[i].volume_db = 5.0;
+        // critic (JFK rap/sing, beat 8 sung): at +5 dB the vocal still sat up to
+        // 3 dB under the beat; vocal-first means ~3 dB over it
+        e.project.tracks[i].volume_db = 10.0;
     }
     for (t, db) in [("lead", -6.0), ("counter", -4.0), ("texture", -3.0), ("perc", -4.0), ("hat", -2.0), ("open_hat", -2.0)] {
         if let Ok(i) = e.project.track_index(t) {
@@ -300,9 +327,24 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
     let crate_call = |e: &mut Engine, name: &str, args: Value| (find(name).expect("tool").run)(e, &args);
     for t in ["chords", "lead", "counter", "texture"] {
         if e.project.track_index(t).is_ok() {
-            let _ = crate_call(e, "add_effect", json!({"track": t, "type": "sidechain", "params": {"source": "vocal", "amount": 0.35}}));
-            let _ = crate_call(e, "add_effect", json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 3200.0, "gain_db": -3.0, "q": 0.7}]}}));
+            let _ = crate_call(e, "add_effect", json!({"track": t, "type": "sidechain", "params": {"source": "vocal", "amount": 0.5}}));
+            // the voice's body (250-800 Hz) and its consonants (1-4 kHz) belong to the voice
+            let _ = crate_call(e, "add_effect", json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                {"kind": "bell", "freq": 450.0, "gain_db": -3.0, "q": 0.8},
+                {"kind": "bell", "freq": 2500.0, "gain_db": -4.0, "q": 0.6}
+            ]}}));
         }
+    }
+    // the voice itself: presence 2.5 kHz, harmonics restored on a band-limited
+    // source (an old or phone recording with nothing above ~4 kHz), and a
+    // limiter so the stem never goes past -1 dBTP
+    let air = air_ratio_db(&y);
+    if e.project.track_index("vocal").is_ok() {
+        if air < -40.0 {
+            let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "saturator", "params": {"mode": "exciter", "drive_db": 9.0, "tone_hz": 4000.0, "mix": 0.35}}));
+        }
+        let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 2500.0, "gain_db": 4.0, "q": 0.8}]}}));
+        let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "limiter", "params": {"ceiling_db": -1.5}}));
     }
     // the project changed outside the tool layer: drop cached renders
     e.revision += 1;
@@ -312,6 +354,8 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
         "words": perf.words.len(),
         "lines": perf.lines,
         "sung_notes": notes,
+        "source_air_db": (air * 10.0).round() / 10.0,
+        "vocal_stem": p.to_string_lossy(),
         "voice_center_midi": (center * 10.0).round() / 10.0,
         "stretch_range": [(perf.stretch_range.0 * 100.0).round() / 100.0, (perf.stretch_range.1 * 100.0).round() / 100.0],
         "seconds": {"tts": (t_tts * 10.0).round() / 10.0, "perform": (t_render * 10.0).round() / 10.0},
