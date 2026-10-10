@@ -198,6 +198,9 @@ pub struct IndexEntry {
     pub rms_db: f32,
     #[serde(default)]
     pub license: String,
+    /// Genre / role / character tags (curated palette samples carry these).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 pub fn index_path(e: &Engine) -> PathBuf {
@@ -349,6 +352,7 @@ pub fn analyze_file(path: &Path) -> Result<IndexEntry> {
         centroid_hz: c.round(),
         rms_db: (20.0 * rms.max(1e-9).log10() * 10.0).round() / 10.0,
         license: String::new(),
+        tags: Vec::new(),
     })
 }
 
@@ -442,7 +446,7 @@ pub fn find(e: &Engine, q: &Query) -> Vec<(f32, IndexEntry)> {
         .map(|x| {
             let mut s = 1.0f32;
             if let Some(t) = &q.text {
-                let hay = format!("{} {}", x.name, x.path).to_lowercase();
+                let hay = format!("{} {} {}", x.name, x.path, x.tags.join(" ")).to_lowercase();
                 let words: Vec<String> = t
                     .to_lowercase()
                     .split_whitespace()

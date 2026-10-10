@@ -168,16 +168,81 @@ fn poly_blep(t: f32, dt: f32) -> f32 {
     }
 }
 
+/// Two-sample PolyBLEP saw (the pre-mipmap oscillator), kept for reference
+/// and for the alias test that proves the mipmapped tables beat it.
+pub fn saw_polyblep(phase: f32, dt: f32) -> f32 {
+    2.0 * phase - 1.0 - poly_blep(phase, dt)
+}
+
+const MIP_SIZE: usize = 2048;
+/// Bands per octave of the mipmapped oscillator tables (from 20 Hz).
+const MIP_PER_OCT: f32 = 3.0;
+const MIP_BANDS: usize = 32;
+/// Highest partial a table may hold: inaudible above this, and it keeps a
+/// margin under Nyquist for the top note of every band.
+const MIP_TOP_HZ: f32 = 19_000.0;
+
+/// Band-limited single-cycle tables for saw, square and triangle, one per
+/// third of an octave: each holds only the harmonics that stay below
+/// `MIP_TOP_HZ` for the highest pitch of its band, so nothing folds back.
+fn mip_tables() -> &'static [Vec<f32>; 3] {
+    static T: std::sync::OnceLock<[Vec<f32>; 3]> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let mut out: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let stride = MIP_SIZE + 1; // +1 guard sample for interpolation
+        for t in out.iter_mut() {
+            *t = vec![0.0; stride * MIP_BANDS];
+        }
+        for b in 0..MIP_BANDS {
+            let f_hi = 20.0 * 2f32.powf((b as f32 + 1.0) / MIP_PER_OCT);
+            let nh = ((MIP_TOP_HZ / f_hi) as usize).clamp(1, MIP_SIZE / 2 - 1);
+            for i in 0..=MIP_SIZE {
+                let x = i as f64 / MIP_SIZE as f64;
+                let (mut saw, mut sq, mut tri) = (0.0f64, 0.0f64, 0.0f64);
+                for h in 1..=nh {
+                    let hf = h as f64;
+                    let w = 2.0 * std::f64::consts::PI * hf * x;
+                    saw -= w.sin() / hf;
+                    if h % 2 == 1 {
+                        sq += w.sin() / hf;
+                        tri += w.cos() / (hf * hf);
+                    }
+                }
+                let at = b * stride + i;
+                out[0][at] = (saw * 2.0 / std::f64::consts::PI) as f32;
+                out[1][at] = (sq * 4.0 / std::f64::consts::PI) as f32;
+                out[2][at] = (tri * 8.0 / (std::f64::consts::PI * std::f64::consts::PI)) as f32;
+            }
+        }
+        out
+    })
+}
+
+fn mip_read(which: usize, phase: f32, dt: f32) -> f32 {
+    let f = dt.abs() * SR;
+    let b = if f <= 20.0 {
+        0
+    } else {
+        ((MIP_PER_OCT * (f / 20.0).log2()) as usize).min(MIP_BANDS - 1)
+    };
+    let t = &mip_tables()[which];
+    let p = phase.rem_euclid(1.0) * MIP_SIZE as f32;
+    let i = (p as usize).min(MIP_SIZE - 1);
+    let fr = p - i as f32;
+    let base = b * (MIP_SIZE + 1) + i;
+    t[base] + (t[base + 1] - t[base]) * fr
+}
+
 /// Band-limited oscillator sample. `phase` in [0,1), `dt` = freq / SR.
+/// Saw, square and triangle read mipmapped band-limited tables (alias
+/// energy around -60 dB even at the top of the keyboard, where the old
+/// two-sample PolyBLEP sat near -27 dB).
 pub fn osc(wave: Wave, phase: f32, dt: f32, rng: &mut Rng) -> f32 {
     match wave {
         Wave::Sine => (2.0 * PI * phase).sin(),
-        Wave::Saw => 2.0 * phase - 1.0 - poly_blep(phase, dt),
-        Wave::Square => {
-            let v = if phase < 0.5 { 1.0 } else { -1.0 };
-            v + poly_blep(phase, dt) - poly_blep((phase + 0.5) % 1.0, dt)
-        }
-        Wave::Triangle => 4.0 * (phase - 0.5).abs() - 1.0,
+        Wave::Saw => mip_read(0, phase, dt),
+        Wave::Square => mip_read(1, phase, dt),
+        Wave::Triangle => mip_read(2, phase, dt),
         Wave::Noise => rng.bipolar(),
     }
 }

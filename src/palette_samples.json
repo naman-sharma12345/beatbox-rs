@@ -1,0 +1,890 @@
+[
+ {
+  "id": "sp_bd_808",
+  "role": "kick",
+  "tags": [
+   "trap",
+   "drill",
+   "808",
+   "deep",
+   "dark",
+   "sub"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/bd_808.flac",
+  "sha256": "f8cae3f73c93622a2ebc37fd66752ad69fcad5cdf61d82fa46ef38c104476ca8",
+  "bytes": 19122,
+  "license": "CC0-1.0",
+  "author": "EKVelika",
+  "source": "https://freesound.org/people/EKVelika/sounds/208447/",
+  "note": "'808 Deep kick by EKVelika', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_bd_boom",
+  "role": "kick",
+  "tags": [
+   "trap",
+   "boom",
+   "long",
+   "dark",
+   "sub"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/bd_boom.flac",
+  "sha256": "1ece3f3fc0c5d7d2f154e1850077c5f57fa577c4aea1902e6d2a04cb51ce43ff",
+  "bytes": 45634,
+  "license": "CC0-1.0",
+  "author": "Snapper4298",
+  "source": "https://freesound.org/people/Snapper4298/sounds/157245/",
+  "note": "'boom.wav by Snapper4298', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_bd_fat",
+  "role": "kick",
+  "tags": [
+   "boom_bap",
+   "lofi",
+   "fat",
+   "short",
+   "warm"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/bd_fat.flac",
+  "sha256": "3c53f83cd05d8bf3f58542f1a510c31e755097cd0d727902f6199e725b42120c",
+  "bytes": 4945,
+  "license": "CC0-1.0",
+  "author": "cubix",
+  "source": "https://freesound.org/people/cubix/sounds/124386/",
+  "note": "'fat kick.wav by cubix', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_bd_haus",
+  "role": "kick",
+  "tags": [
+   "house",
+   "punchy",
+   "clicky",
+   "bright"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/bd_haus.flac",
+  "sha256": "b9aa2aa81a8ccabc1a93763e689587447860497a661ed03ba3f9bd6c06e99346",
+  "bytes": 19237,
+  "license": "CC0-1.0",
+  "author": "Rodrigo The Mad",
+  "source": "https://freesound.org/people/Rodrigo%20The%20Mad/sounds/137722/",
+  "note": "'House/trance kick by Rodrigo The Mad', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_bd_jazz",
+  "role": "kick",
+  "tags": [
+   "boom_bap",
+   "jazz",
+   "acoustic",
+   "dusty",
+   "warm"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/bd_jazz.flac",
+  "sha256": "9847388d0ddedb1f05a62bb230268778d292246f15db5b0f5183d5884c3e2809",
+  "bytes": 46517,
+  "license": "CC0-1.0",
+  "author": "tripjazz",
+  "source": "https://freesound.org/people/tripjazz/sounds/511139/",
+  "note": "'GB\u2019s Jazz Kick 1 by tripjazz', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_bd_klub",
+  "role": "kick",
+  "tags": [
+   "drill",
+   "club",
+   "punchy",
+   "tight"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/bd_klub.flac",
+  "sha256": "40beea807c90d0c31bc1f6e9a12fdb70f729912f6f0a3ddda0b2d29a1526fca3",
+  "bytes": 21246,
+  "license": "CC0-1.0",
+  "author": "zgump",
+  "source": "https://freesound.org/people/zgump/sounds/83262/",
+  "note": "'CLUB KICK 0309.wav by zgump', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_bd_tek",
+  "role": "kick",
+  "tags": [
+   "techno",
+   "hard",
+   "punchy"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/bd_tek.flac",
+  "sha256": "031cd7d4b3b8ccd94fb3cb5b19eaaaa3ca285f46972b6ff24bdc1dea982ef035",
+  "bytes": 21858,
+  "license": "CC0-1.0",
+  "author": "DWSD",
+  "source": "https://freesound.org/people/DWSD/sounds/171104/",
+  "note": "'kick_gettinglaid.wav by DWSD', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_bd_zum",
+  "role": "kick",
+  "tags": [
+   "dnb",
+   "tight",
+   "clicky",
+   "bright"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/bd_zum.flac",
+  "sha256": "1a364730e092da95a4723ed4567cfc33e1cefb3d7c0350ce87f0a08fe324442d",
+  "bytes": 14354,
+  "license": "CC0-1.0",
+  "author": "n1ghthawk",
+  "source": "https://freesound.org/people/n1ghthawk/sounds/172124/",
+  "note": "'Pendulum__KICK.wav by n1ghthawk', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_bd_gas",
+  "role": "kick",
+  "tags": [
+   "hiphop",
+   "round",
+   "warm"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/bd_gas.flac",
+  "sha256": "ac568aa6b75d973f663e69a05386a55b83600404e8be55eba65e162bf87f525d",
+  "bytes": 18455,
+  "license": "CC0-1.0",
+  "author": "menegass",
+  "source": "https://freesound.org/people/menegass/sounds/89460/",
+  "note": "'BD05.wav by menegass', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_bd_pure",
+  "role": "808",
+  "tags": [
+   "808",
+   "sub",
+   "clean",
+   "pure"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/bd_pure.flac",
+  "sha256": "cd70fc3260302262f65c8f66f012faf7531853598a6d2a01a8af73bd3816c6b3",
+  "bytes": 18056,
+  "license": "CC0-1.0",
+  "author": "EKVelika",
+  "source": "https://freesound.org/people/EKVelika/sounds/209571/",
+  "note": "'Pure Tone Bass by EKVelika', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_drum_heavy_kick",
+  "role": "kick",
+  "tags": [
+   "acoustic",
+   "rock",
+   "heavy",
+   "punchy"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/drum_heavy_kick.flac",
+  "sha256": "9c141c8de85e695baf6d490c9904b057d97c2c49fa3985f0396fea320ce35a57",
+  "bytes": 19715,
+  "license": "CC0-1.0",
+  "author": "Zajo",
+  "source": "https://freesound.org/people/Zajo/sounds/4832/",
+  "note": "'drum07.wav by Zajo', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_drum_bass_hard",
+  "role": "kick",
+  "tags": [
+   "acoustic",
+   "boom_bap",
+   "desi_hiphop",
+   "dusty",
+   "punchy",
+   "gritty"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/drum_bass_hard.flac",
+  "sha256": "ed3ac2187d679ca1c3fec533ea1c3576c840c81ba98b8d967eb12a8f27471bc1",
+  "bytes": 33950,
+  "license": "CC0-1.0",
+  "author": "menegass",
+  "source": "https://freesound.org/people/menegass/sounds/100051/",
+  "note": "'Gui_DRUM_BD_hard.wav by menegass', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_drum_bass_soft",
+  "role": "kick",
+  "tags": [
+   "acoustic",
+   "soft",
+   "warm"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/drum_bass_soft.flac",
+  "sha256": "87bfb846ea7adf747515b1c59602555c2dde5da40ba4cb5a19244df06385ff23",
+  "bytes": 25370,
+  "license": "CC0-1.0",
+  "author": "menegass",
+  "source": "https://freesound.org/people/menegass/sounds/100052/",
+  "note": "'Gui_DRUM_BD_soft.wav by menegass', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_sn_dub",
+  "role": "snare",
+  "tags": [
+   "trap",
+   "dubstep",
+   "crack",
+   "bright"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/sn_dub.flac",
+  "sha256": "165ddba961a14430ae6bbc0fad465d975c9b0b28a454c89076ab4d21b0f4613b",
+  "bytes": 43927,
+  "license": "CC0-1.0",
+  "author": "Adriak909",
+  "source": "https://freesound.org/people/Adriak909/sounds/173142/",
+  "note": "'Dubstep Snare 1.wav by Adriak909', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_sn_dolf",
+  "role": "snare",
+  "tags": [
+   "boom_bap",
+   "jazz",
+   "dusty",
+   "warm"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/sn_dolf.flac",
+  "sha256": "88d04c0cf427f1af163479edb9d6477b95d0db0a790633cb87bbd3f3430207c7",
+  "bytes": 50242,
+  "license": "CC0-1.0",
+  "author": "Dolfeus",
+  "source": "https://freesound.org/people/Dolfeus/sounds/57534/",
+  "note": "'FutureJazzStep_Snare.wav by Dolfeus', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_sn_generic",
+  "role": "snare",
+  "tags": [
+   "hiphop",
+   "melodic",
+   "clean"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/sn_generic.flac",
+  "sha256": "c7682e3916a5eee1cdafac18d2a4a9e03e96f6ed5ccabed4a4ff4816c103860f",
+  "bytes": 53335,
+  "license": "CC0-1.0",
+  "author": "hullum",
+  "source": "https://freesound.org/people/hullum/sounds/415582/",
+  "note": "'sn_generic.flac by hullum', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_sn_zome",
+  "role": "snare",
+  "tags": [
+   "boom_bap",
+   "lofi",
+   "fat",
+   "dark"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/sn_zome.flac",
+  "sha256": "9621c28afb20fd135656ed02038df0704d0ad7b8d2d51835adbfebfd560bc7e9",
+  "bytes": 56666,
+  "license": "CC0-1.0",
+  "author": "Dolfeus",
+  "source": "https://freesound.org/people/Dolfeus/sounds/55232/",
+  "note": "'Zome_7Snare.wav by Dolfeus', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_drum_snare_hard",
+  "role": "snare",
+  "tags": [
+   "acoustic",
+   "boom_bap",
+   "crack",
+   "live"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/drum_snare_hard.flac",
+  "sha256": "1b2325523ed2a93da49df338ef861b4c35bfcbdc2e5e726ce1e873201883ffe4",
+  "bytes": 29657,
+  "license": "CC0-1.0",
+  "author": "menegass",
+  "source": "https://freesound.org/people/menegass/sounds/100058/",
+  "note": "'Gui_DRUM_SNARE_hard.wav by menegass', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_drum_snare_soft",
+  "role": "snare",
+  "tags": [
+   "acoustic",
+   "soft",
+   "ghost"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/drum_snare_soft.flac",
+  "sha256": "3da004f932da94c4a4ccf1066f973c08ebe314875304333c1b257dbd6725ad9e",
+  "bytes": 23031,
+  "license": "CC0-1.0",
+  "author": "menegass",
+  "source": "https://freesound.org/people/menegass/sounds/100059/",
+  "note": "'Gui_DRUM_SNARE_soft.wav by menegass', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_elec_snare",
+  "role": "snare",
+  "tags": [
+   "boom_bap",
+   "desi_hiphop",
+   "sp1200",
+   "dusty",
+   "gritty"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/elec_snare.flac",
+  "sha256": "a5548c4e418864f985b7efc92776ffa5d81a5273c26360f28c1ea4f12c2a9865",
+  "bytes": 17894,
+  "license": "CC0-1.0",
+  "author": "looppool",
+  "source": "https://freesound.org/people/looppool/sounds/13146/",
+  "note": "'sp12 - 29.wav by looppool', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_elec_hi_snare",
+  "role": "snare",
+  "tags": [
+   "drill",
+   "tight",
+   "bright",
+   "metallic"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/elec_hi_snare.flac",
+  "sha256": "73dca64f3c994ebde945572933f73d431f2813bacec8267065c76f176d5656e3",
+  "bytes": 20908,
+  "license": "CC0-1.0",
+  "author": "looppool",
+  "source": "https://freesound.org/people/looppool/sounds/13125/",
+  "note": "'Metal-sn.wav by looppool', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_elec_lo_snare",
+  "role": "snare",
+  "tags": [
+   "boom_bap",
+   "sp1200",
+   "low",
+   "dusty"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/elec_lo_snare.flac",
+  "sha256": "720dc00b02969e5951417ae3e20096d594d1b23aff6758bff61c57ddfcba1acd",
+  "bytes": 26946,
+  "license": "CC0-1.0",
+  "author": "looppool",
+  "source": "https://freesound.org/people/looppool/sounds/13145/",
+  "note": "'sp12 - 28.wav by looppool', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_hat_cab",
+  "role": "hat",
+  "tags": [
+   "trap",
+   "desi_hiphop",
+   "modular",
+   "crisp"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/hat_cab.flac",
+  "sha256": "049d90dfaddb945911cf49418bbd001fdfd07d5d43f9db469e39841728737a05",
+  "bytes": 10294,
+  "license": "CC0-1.0",
+  "author": "cabled_mess",
+  "source": "https://freesound.org/people/cabled_mess/sounds/363203/",
+  "note": "'HiHat_Modular by cabled_mess', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_hat_tap",
+  "role": "hat",
+  "tags": [
+   "clean",
+   "soft",
+   "tight"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/hat_tap.flac",
+  "sha256": "7007e5b02d8f86e161c78e7e72c96af99a9c6a5d99c1cf35703d419e6f867d8c",
+  "bytes": 10047,
+  "license": "CC0-1.0",
+  "author": "TheEndOfACycle",
+  "source": "https://freesound.org/people/TheEndOfACycle/sounds/674296/",
+  "note": "'Hi-Hat Closed Hit - Clean by TheEndOfACycle', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_hat_star",
+  "role": "hat",
+  "tags": [
+   "electronic",
+   "tight",
+   "crisp"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/hat_star.flac",
+  "sha256": "e02b72878188621b8181772be7195078c32ee416ed3e0bbbd91cc744dd3ed10a",
+  "bytes": 7314,
+  "license": "CC0-1.0",
+  "author": "IanStarGem",
+  "source": "https://freesound.org/people/IanStarGem/sounds/269720/",
+  "note": "'Electronic Closed High Hat #1 by IanStarGem', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_hat_raw",
+  "role": "hat",
+  "tags": [
+   "trap",
+   "drill",
+   "crisp",
+   "raw"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/hat_raw.flac",
+  "sha256": "e92e7722dfd750630d0b92ceea70cbd9137be16c7d3c71cdcb0ff7e504524b94",
+  "bytes": 20044,
+  "license": "CC0-1.0",
+  "author": "cabled_mess",
+  "source": "https://freesound.org/people/cabled_mess/sounds/339278/",
+  "note": "'HiHat Closed RAW-03 Gate EQ.wav by cabled_mess', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_hat_psych",
+  "role": "hat",
+  "tags": [
+   "lofi",
+   "soft",
+   "dark"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/hat_psych.flac",
+  "sha256": "ee3269e2c134b29c76737c08bf729e2e7dc17d6a14d13c6a0e114fcd5b5fc626",
+  "bytes": 14779,
+  "license": "CC0-1.0",
+  "author": "PSYCHO BOOMER",
+  "source": "https://freesound.org/people/PSYCHO%20BOOMER/sounds/42548/",
+  "note": "'5.wav by PSYCHO BOOMER', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_hat_bdu",
+  "role": "hat",
+  "tags": [
+   "acoustic",
+   "dusty",
+   "dark"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/hat_bdu.flac",
+  "sha256": "b6335e7f423c222310cdabccc0ff25f8c7d29744688ad7cac6e37b3f2abbd64f",
+  "bytes": 6271,
+  "license": "CC0-1.0",
+  "author": "bdu",
+  "source": "https://freesound.org/people/bdu/sounds/802/",
+  "note": "'CloseHatAC.aif by bdu', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_hat_snap",
+  "role": "hat",
+  "tags": [
+   "melodic",
+   "bright",
+   "airy",
+   "tight"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/hat_snap.flac",
+  "sha256": "f2c1aa0febba2b8c9a5788d6913609c7314ebb4e33926fb039b6f580ed3df19c",
+  "bytes": 24493,
+  "license": "CC0-1.0",
+  "author": "TheEndOfACycle",
+  "source": "https://freesound.org/people/TheEndOfACycle/sounds/674294/",
+  "note": "'Hi-Hat Closed Hit 01 by TheEndOfACycle', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_hat_gem",
+  "role": "hat",
+  "tags": [
+   "electronic",
+   "bright",
+   "airy"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/hat_gem.flac",
+  "sha256": "5ebd6917141788333711253448f5d7f58eba50058eb70bab3d51cf00d4f390d7",
+  "bytes": 18884,
+  "license": "CC0-1.0",
+  "author": "IanStarGem",
+  "source": "https://freesound.org/people/IanStarGem/sounds/273186/",
+  "note": "'Electronic Closed High Hat #2 by IanStarGem', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_drum_cymbal_closed",
+  "role": "hat",
+  "tags": [
+   "acoustic",
+   "boom_bap",
+   "live"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/drum_cymbal_closed.flac",
+  "sha256": "f3b9d6bb14f75ba06ef633baf58b1f75f0e2ea5e07edd491f0a22aedb2480d62",
+  "bytes": 20943,
+  "license": "CC0-1.0",
+  "author": "menegass",
+  "source": "https://freesound.org/people/menegass/sounds/100053/",
+  "note": "'Gui_DRUM_CC.wav by menegass', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_drum_cymbal_pedal",
+  "role": "hat",
+  "tags": [
+   "acoustic",
+   "pedal",
+   "dusty"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/drum_cymbal_pedal.flac",
+  "sha256": "af2cf5e259f3671d9b363418b9d222b742cf6e41dd3e6871b23f2b4ce8b36635",
+  "bytes": 22633,
+  "license": "CC0-1.0",
+  "author": "menegass",
+  "source": "https://freesound.org/people/menegass/sounds/100054/",
+  "note": "'Gui_DRUM_CH.wav by menegass', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_drum_cymbal_open",
+  "role": "open_hat",
+  "tags": [
+   "acoustic",
+   "boom_bap",
+   "live",
+   "long"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/drum_cymbal_open.flac",
+  "sha256": "3a9cf6aacab05003fe3edaa9a9150841e080ecd3b7e6383571bc3570c23c7118",
+  "bytes": 119223,
+  "license": "CC0-1.0",
+  "author": "menegass",
+  "source": "https://freesound.org/people/menegass/sounds/100055/",
+  "note": "'Gui_DRUM_CO.wav by menegass', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_perc_snap",
+  "role": "clap",
+  "tags": [
+   "snap",
+   "rnb",
+   "melodic",
+   "airy"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/perc_snap.flac",
+  "sha256": "09d5cc75cd9ef183e9464801c7e7b2e441ca8e12f99b2610cbc2d5168297a19d",
+  "bytes": 22089,
+  "license": "CC0-1.0",
+  "author": "SoundCollectah",
+  "source": "https://freesound.org/people/SoundCollectah/sounds/109400/",
+  "note": "'finger snap 02.aiff by SoundCollectah', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_elec_wood",
+  "role": "perc",
+  "tags": [
+   "wood",
+   "block",
+   "lofi",
+   "desi_hiphop"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/elec_wood.flac",
+  "sha256": "f046ea904a91f742d3436250a2bdf2d1c21ff91a227606ddbadc4d4bee1e69fa",
+  "bytes": 24617,
+  "license": "CC0-1.0",
+  "author": "looppool",
+  "source": "https://freesound.org/people/looppool/sounds/13135/",
+  "note": "'WOODHEAD #1.wav by looppool', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_drum_cowbell",
+  "role": "perc",
+  "tags": [
+   "cowbell",
+   "phonk"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/drum_cowbell.flac",
+  "sha256": "e2ee5f732b675858491e95a06ea419b98af512ebdc154afb2c27066303f0dd7f",
+  "bytes": 18281,
+  "license": "CC0-1.0",
+  "author": "Neotone",
+  "source": "https://freesound.org/people/Neotone/sounds/75338/",
+  "note": "'Cowbell.wav by Neotone', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_ride_tri",
+  "role": "perc",
+  "tags": [
+   "ride",
+   "cymbal",
+   "jazz",
+   "airy",
+   "melodic"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/ride_tri.flac",
+  "sha256": "acff7b0ddb105eccc979bcab27aaaa3ec65254c2f211ae7ebcf49e5048e50c21",
+  "bytes": 138176,
+  "license": "CC0-1.0",
+  "author": "trivialAccapella",
+  "source": "https://freesound.org/people/trivialAccapella/sounds/425449/",
+  "note": "'22&#x27;&#x27; ride hit.aif by trivialAccapella', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_vinyl_hiss",
+  "role": "fx",
+  "tags": [
+   "lofi",
+   "dusty",
+   "vinyl",
+   "texture",
+   "boom_bap"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/vinyl_hiss.flac",
+  "sha256": "4e3fdaaff3399328e5a4ffc7e32292fba6ccbd3ba5353e0c8060b0ef1dc908f7",
+  "bytes": 670171,
+  "license": "CC0-1.0",
+  "author": "veezay",
+  "source": "https://freesound.org/people/veezay/sounds/130393/",
+  "note": "'unpressed_vinyl.wav by veezay', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "sp_vinyl_scratch",
+  "role": "fx",
+  "tags": [
+   "boom_bap",
+   "desi_hiphop",
+   "scratch"
+  ],
+  "url": "https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/cf21987233e415ed365c50e7c038b8383c0cd4d7/etc/samples/vinyl_scratch.flac",
+  "sha256": "2dc0fedcfeaa308889d065f6911da95f42cc24f0806ff823cd006a045dbe490b",
+  "bytes": 15944,
+  "license": "CC0-1.0",
+  "author": "hello_flowers",
+  "source": "https://freesound.org/people/hello_flowers/sounds/28681/",
+  "note": "'57932_Indu-Scratch.wav by hello_flowers', trimmed for Sonic Pi (etc/samples, CC0 per Sonic Pi LICENSE.md)"
+ },
+ {
+  "id": "tr808_bd5010",
+  "role": "808",
+  "tags": [
+   "808",
+   "trap",
+   "drill",
+   "long",
+   "sub",
+   "boom"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/bd8/BD5010.WAV",
+  "sha256": "42c7c5eebf440437479c9b351b9749b8cbcd08f3fb43b338c61cd28437b43a8d",
+  "bytes": 264646,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_bd0050",
+  "role": "kick",
+  "tags": [
+   "808",
+   "deep",
+   "long",
+   "dark"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/bd8/BD0050.WAV",
+  "sha256": "7f25e10c782f4a99c57ca346743a912e9104a414a3a22d06595329b3370d4362",
+  "bytes": 132346,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_bd1025",
+  "role": "kick",
+  "tags": [
+   "808",
+   "trap",
+   "short",
+   "punchy"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/bd8/BD1025.WAV",
+  "sha256": "7d8f85101121d895b28f734ff9e7f3da70f11eff33f306dc8fba61f934f43f20",
+  "bytes": 44146,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_sd5050",
+  "role": "snare",
+  "tags": [
+   "808",
+   "trap",
+   "classic"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/sd8/SD5050.WAV",
+  "sha256": "6dcbf8acd5cee6d6b7955d26c6b57d8ca413f1ae1c7caafaaec780d83f08d712",
+  "bytes": 44146,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_sd2575",
+  "role": "snare",
+  "tags": [
+   "808",
+   "bright",
+   "snappy",
+   "drill"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/sd8/SD2575.WAV",
+  "sha256": "7f591eaeffa2e65e01b5e22240323e8cfcce3bce3c82ac83d0b655c4b6dbe976",
+  "bytes": 44146,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_sd0050",
+  "role": "snare",
+  "tags": [
+   "808",
+   "dark",
+   "low"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/sd8/SD0050.WAV",
+  "sha256": "667eca1430ac5f692544613ad72bfc82e9f4ba3be461d96c16cc437156d0943e",
+  "bytes": 44146,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_cp",
+  "role": "clap",
+  "tags": [
+   "808",
+   "trap",
+   "drill",
+   "classic"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/cp8/CP.WAV",
+  "sha256": "376429bb81cb48d1f392a11cd066c32ffb7883d445b2488704ea52e46bb08286",
+  "bytes": 176446,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_ch",
+  "role": "hat",
+  "tags": [
+   "808",
+   "trap",
+   "drill",
+   "classic",
+   "crisp"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/ch8/CH.WAV",
+  "sha256": "c9f30ff2b4d73b03f41960e504e03c54e9a59697af666fe4d155bab9cd1ccae6",
+  "bytes": 22094,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_oh25",
+  "role": "open_hat",
+  "tags": [
+   "808",
+   "short",
+   "drill"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/oh8/OH25.WAV",
+  "sha256": "2674962ca376c0d08ce802423eb696be86b516450fe23707ac69f3878b35f12b",
+  "bytes": 22096,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_oh50",
+  "role": "open_hat",
+  "tags": [
+   "808",
+   "trap"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/oh8/OH50.WAV",
+  "sha256": "84ae3220fab2396380fb6ba6032bcec7c55a6d3f621d30a13c11fdeaa099aff7",
+  "bytes": 44146,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_rs",
+  "role": "perc",
+  "tags": [
+   "808",
+   "rim"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/rs8/RS.WAV",
+  "sha256": "20d5cd385c0f8c3a24bbfe78c2e2747776841ede6185bc0fe93f97f0b455b89c",
+  "bytes": 22096,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_cb",
+  "role": "perc",
+  "tags": [
+   "808",
+   "cowbell",
+   "phonk"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/cb8/CB.WAV",
+  "sha256": "1468cbd6c75a1f23b50a15968796c256c74893a35aa3824c6663db82c271f28d",
+  "bytes": 132346,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_ma",
+  "role": "hat",
+  "tags": [
+   "808",
+   "maraca",
+   "shaker"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/ma8/MA.WAV",
+  "sha256": "7b17cc2973fe55233c6ece7b341adb4d04a44b12527582102591c8981a586451",
+  "bytes": 22094,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ },
+ {
+  "id": "tr808_cl",
+  "role": "perc",
+  "tags": [
+   "808",
+   "clave"
+  ],
+  "url": "https://raw.githubusercontent.com/tidalcycles/sounds-tr808-fischer/85fbecf1bec32553395625ea659e2a56dfd7c0e1/cl8/CL.WAV",
+  "sha256": "4f5b72674791ce133a2ad3bd40c9a0e628bad9062eb8f04de27f59dcc8ce5d46",
+  "bytes": 22094,
+  "license": "CC0-1.0",
+  "author": "Michael Fischer (1994 TR-808 sample set)",
+  "source": "https://github.com/tidalcycles/sounds-tr808-fischer",
+  "note": "Real Roland TR-808 (serial 103852) through its individual outputs; repo licensed CC0 1.0"
+ }
+]

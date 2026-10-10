@@ -61,6 +61,21 @@ pub struct DrumParams {
     /// Saturation amount 0..1.
     #[serde(default)]
     pub drive: f32,
+    /// Tone -1 (soft, dark, round) .. 1 (hard, bright, clicky).
+    #[serde(default, skip_serializing_if = "is_zero_f")]
+    pub tone: f32,
+}
+
+impl Default for DrumParams {
+    fn default() -> Self {
+        DrumParams {
+            kind: DrumKind::Kick,
+            tune: 0.0,
+            decay: 1.0,
+            drive: 0.0,
+            tone: 0.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -101,6 +116,12 @@ pub struct SynthParams {
     pub glide_ms: f32,
     /// Stereo spread of the unison voices 0..1 (0 = mono).
     pub stereo_spread: f32,
+    /// Analog drift: slow random pitch wander per voice, in cents.
+    #[serde(skip_serializing_if = "is_zero_f")]
+    pub drift_cents: f32,
+    /// Velocity to filter cutoff, octaves at full velocity swing.
+    #[serde(skip_serializing_if = "is_zero_f")]
+    pub vel_to_cutoff: f32,
 }
 
 impl Default for SynthParams {
@@ -130,6 +151,8 @@ impl Default for SynthParams {
             gain: 0.6,
             glide_ms: 0.0,
             stereo_spread: 0.0,
+            drift_cents: 0.0,
+            vel_to_cutoff: 0.0,
         }
     }
 }
@@ -148,6 +171,9 @@ pub struct FmParams {
     pub index2: f32,
     pub feedback: f32,
     pub gain: f32,
+    /// Second carrier detuned by this many cents (chorus / tine beating).
+    #[serde(skip_serializing_if = "is_zero_f")]
+    pub detune_cents: f32,
 }
 
 impl Default for FmParams {
@@ -161,6 +187,7 @@ impl Default for FmParams {
             index2: 0.0,
             feedback: 0.0,
             gain: 0.6,
+            detune_cents: 0.0,
         }
     }
 }
@@ -208,6 +235,13 @@ pub struct Bass808Params {
     pub gain: f32,
     /// Glide time for slides (notes with slide_to), ms (0 = 90 ms).
     pub glide_ms: f32,
+    /// Attack click layer 0..1 (helps the 808 cut through on small speakers).
+    pub click: f32,
+    /// Clean sine sub under the driven layer 0..1 (keeps the low end solid
+    /// however hard it is driven).
+    pub sub: f32,
+    /// Tone of the driven layer in octaves (-2 dark .. +2 bright).
+    pub tone: f32,
 }
 
 impl Default for Bass808Params {
@@ -219,6 +253,9 @@ impl Default for Bass808Params {
             sustain: false,
             gain: 0.85,
             glide_ms: 0.0,
+            click: 0.3,
+            sub: 0.55,
+            tone: 0.0,
         }
     }
 }
@@ -556,9 +593,18 @@ impl Instrument {
 fn drum(kind: DrumKind) -> Instrument {
     Instrument::Drum(DrumParams {
         kind,
-        tune: 0.0,
-        decay: 1.0,
-        drive: 0.0,
+        ..Default::default()
+    })
+}
+
+/// A drum preset with tune (semitones), decay multiplier, drive and tone.
+fn drum_x(kind: DrumKind, tune: f32, decay: f32, drive: f32, tone: f32) -> Instrument {
+    Instrument::Drum(DrumParams {
+        kind,
+        tune,
+        decay,
+        drive,
+        tone,
     })
 }
 
@@ -671,6 +717,55 @@ pub const PRESETS: &[(&str, &str)] = &[
     ("choir", "Modelled 'ooh' choir pad"),
     ("choir_aah", "Open 'aah' choir"),
     ("brass_section", "Modelled brass section swell"),
+    // ---- sound palette voices (sprint 9) ----
+    (
+        "kick_punchy",
+        "Tight punchy kick with a hard beater click (trap)",
+    ),
+    ("kick_tight", "Short, tight, high-tuned kick (drill)"),
+    ("kick_deep", "Deep, long, soft-clicked kick (melodic / R&B)"),
+    ("kick_dusty", "Round, dark, saturated boom-bap kick"),
+    ("kick_grit", "Driven gritty kick (desi hip-hop)"),
+    ("snare_crack", "Bright cracking snare (trap)"),
+    ("snare_tight", "High, tight, short snare (drill / dhh)"),
+    ("snare_dusty", "Fat, dark, saturated boom-bap snare"),
+    ("snare_soft", "Soft, round, clean snare (melodic)"),
+    ("clap_wide", "Wide layered clap with a room tail"),
+    ("hat_crisp", "Crisp tight closed hat, made for rolls"),
+    ("hat_dusty", "Dark, soft, slightly driven closed hat"),
+    ("open_hat_airy", "Airy open hat (choked by the closed hats)"),
+    ("open_hat_dusty", "Dark short open hat (boom bap)"),
+    ("808_dark", "Dark round 808: big clean sub, little click"),
+    (
+        "808_grit",
+        "Distorted gritty 808 that reads on phone speakers",
+    ),
+    (
+        "808_slide",
+        "Drill 808: long, held, tuned glides (use slide_to)",
+    ),
+    ("808_clean", "Clean short 808 for melodic rap / R&B"),
+    (
+        "bass_round",
+        "Warm round finger-bass-like synth bass (boom bap)",
+    ),
+    (
+        "keys_airy",
+        "Soft airy chorused e-piano, velocity-sensitive",
+    ),
+    ("keys_dusty", "Warm dusty e-piano with tape-like drift"),
+    (
+        "pad_airy",
+        "Wide airy pad: drifting voices, slow filter bloom",
+    ),
+    ("pad_dusty", "Dark lo-fi pad with tape-like wow"),
+    ("bell_glass", "Glassy detuned FM bell (melodic trap)"),
+    ("bell_dark", "Soft dark music-box bell (drill)"),
+    ("pluck_soft", "Soft velocity-sensitive synth pluck"),
+    (
+        "lead_dark",
+        "Dark detuned lead with gentle vibrato (drill / trap)",
+    ),
 ];
 
 pub fn preset(name: &str) -> Option<Instrument> {
@@ -714,6 +809,7 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.gain = 0.55;
         }),
         "tanpura" | "drone" => synth(|p| {
+            p.drift_cents = 3.0;
             p.osc1 = Wave::Saw;
             p.osc2 = Wave::Saw;
             p.osc2_semitones = 7.0;
@@ -748,6 +844,7 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.gain = 0.5;
         }),
         "reese_bass" | "reese" => synth(|p| {
+            p.drift_cents = 4.0;
             p.osc1 = Wave::Saw;
             p.osc2 = Wave::Saw;
             p.osc2_cents = 22.0;
@@ -774,6 +871,8 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.gain = 0.55;
         }),
         "supersaw" => synth(|p| {
+            p.drift_cents = 3.0;
+            p.vel_to_cutoff = 0.8;
             p.unison = 7;
             p.stereo_spread = 0.7;
             p.unison_spread_cents = 28.0;
@@ -784,6 +883,8 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.gain = 0.35;
         }),
         "pluck_lead" | "pluck_synth" => synth(|p| {
+            p.drift_cents = 2.0;
+            p.vel_to_cutoff = 1.2;
             p.unison = 3;
             p.stereo_spread = 0.4;
             p.unison_spread_cents = 12.0;
@@ -802,6 +903,10 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.gain = 0.35;
         }),
         "warm_pad" | "pad" => synth(|p| {
+            p.drift_cents = 4.0;
+            p.vel_to_cutoff = 0.8;
+            p.filter_env_amount = 0.6;
+            p.filter_env = Adsr::new(0.8, 1.5, 0.4, 1.0);
             p.osc2 = Wave::Triangle;
             p.unison = 5;
             p.stereo_spread = 0.6;
@@ -813,6 +918,8 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.gain = 0.35;
         }),
         "dark_pad" => synth(|p| {
+            p.drift_cents = 5.0;
+            p.vel_to_cutoff = 0.6;
             p.osc1 = Wave::Saw;
             p.osc2 = Wave::Square;
             p.osc2_semitones = -12.0;
@@ -827,6 +934,8 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.gain = 0.35;
         }),
         "strings" => synth(|p| {
+            p.drift_cents = 3.0;
+            p.vel_to_cutoff = 1.0;
             p.unison = 5;
             p.stereo_spread = 0.6;
             p.unison_spread_cents = 10.0;
@@ -837,6 +946,8 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.gain = 0.35;
         }),
         "brass_stab" | "brass" => synth(|p| {
+            p.drift_cents = 3.0;
+            p.vel_to_cutoff = 1.2;
             p.unison = 3;
             p.stereo_spread = 0.4;
             p.unison_spread_cents = 8.0;
@@ -847,6 +958,10 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.gain = 0.45;
         }),
         "dark_keys" | "keys" => synth(|p| {
+            p.drift_cents = 2.0;
+            p.vel_to_cutoff = 1.0;
+            p.filter_env_amount = 1.0;
+            p.filter_env = Adsr::new(0.002, 0.4, 0.2, 0.3);
             p.osc1 = Wave::Triangle;
             p.osc2 = Wave::Square;
             p.osc2_semitones = 12.0;
@@ -856,6 +971,7 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.gain = 0.5;
         }),
         "epiano" | "rhodes" => fm(|p| {
+            p.detune_cents = 4.0;
             p.ratio = 1.0;
             p.index = 1.6;
             p.mod_env = Adsr::new(0.001, 0.9, 0.15, 0.4);
@@ -865,6 +981,7 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.gain = 0.5;
         }),
         "fm_bell" | "bell" => fm(|p| {
+            p.detune_cents = 3.0;
             p.ratio = 3.5;
             p.index = 4.0;
             p.mod_env = Adsr::new(0.001, 1.4, 0.0, 1.0);
@@ -1048,6 +1165,178 @@ pub fn preset(name: &str) -> Option<Instrument> {
                 },
             ],
         }),
+        "kick_punchy" => drum_x(DrumKind::Kick, 0.0, 0.85, 0.15, 0.6),
+        "kick_tight" => drum_x(DrumKind::Kick, 2.0, 0.6, 0.2, 0.5),
+        "kick_deep" => drum_x(DrumKind::Kick, -2.0, 1.4, 0.0, -0.4),
+        "kick_dusty" => drum_x(DrumKind::Kick, -1.0, 0.8, 0.35, -0.7),
+        "kick_grit" => drum_x(DrumKind::Kick, 0.0, 0.9, 0.6, 0.3),
+        "snare_crack" => drum_x(DrumKind::Snare, 1.0, 0.9, 0.1, 0.6),
+        "snare_tight" => drum_x(DrumKind::Snare, 3.0, 0.65, 0.15, 0.4),
+        "snare_dusty" => drum_x(DrumKind::Snare, -1.0, 1.1, 0.35, -0.6),
+        "snare_soft" => drum_x(DrumKind::Snare, 0.0, 1.15, 0.0, -0.3),
+        "clap_wide" => drum_x(DrumKind::Clap, 0.0, 1.2, 0.0, 0.2),
+        "hat_crisp" => drum_x(DrumKind::ClosedHat, 0.0, 0.8, 0.0, 0.4),
+        "hat_dusty" => drum_x(DrumKind::ClosedHat, -2.0, 1.1, 0.2, -0.6),
+        "open_hat_airy" => drum_x(DrumKind::OpenHat, 0.0, 0.8, 0.0, 0.3),
+        "open_hat_dusty" => drum_x(DrumKind::OpenHat, -2.0, 0.55, 0.15, -0.6),
+        "808_dark" => Instrument::Bass808(Bass808Params {
+            decay: 1.6,
+            punch: 10.0,
+            drive: 0.3,
+            click: 0.15,
+            sub: 0.7,
+            tone: -1.0,
+            ..Default::default()
+        }),
+        "808_grit" => Instrument::Bass808(Bass808Params {
+            decay: 1.3,
+            punch: 12.0,
+            drive: 0.85,
+            click: 0.45,
+            sub: 0.45,
+            tone: 0.5,
+            gain: 0.8,
+            ..Default::default()
+        }),
+        "808_slide" => Instrument::Bass808(Bass808Params {
+            decay: 1.6,
+            punch: 9.0,
+            drive: 0.5,
+            sustain: true,
+            glide_ms: 120.0,
+            click: 0.35,
+            sub: 0.55,
+            ..Default::default()
+        }),
+        "808_clean" => Instrument::Bass808(Bass808Params {
+            decay: 0.9,
+            punch: 8.0,
+            drive: 0.15,
+            click: 0.2,
+            sub: 0.8,
+            tone: -0.5,
+            ..Default::default()
+        }),
+        "bass_round" => synth(|p| {
+            p.osc1 = Wave::Triangle;
+            p.osc2 = Wave::Saw;
+            p.osc_mix = 0.2;
+            p.sub_level = 0.5;
+            p.cutoff = 500.0;
+            p.filter_env_amount = 1.5;
+            p.filter_env = Adsr::new(0.002, 0.15, 0.2, 0.1);
+            p.amp_env = Adsr::new(0.004, 0.4, 0.6, 0.08);
+            p.vel_to_cutoff = 1.0;
+            p.drift_cents = 2.0;
+            p.drive = 0.2;
+            p.gain = 0.6;
+        }),
+        "keys_airy" => fm(|p| {
+            p.ratio = 1.0;
+            p.index = 1.1;
+            p.mod_env = Adsr::new(0.001, 1.2, 0.2, 0.6);
+            p.amp_env = Adsr::new(0.003, 2.2, 0.4, 0.9);
+            p.ratio2 = 14.0;
+            p.index2 = 0.2;
+            p.detune_cents = 6.0;
+            p.gain = 0.45;
+        }),
+        "keys_dusty" => fm(|p| {
+            p.ratio = 1.0;
+            p.index = 1.4;
+            p.mod_env = Adsr::new(0.001, 0.7, 0.1, 0.4);
+            p.amp_env = Adsr::new(0.003, 1.4, 0.3, 0.5);
+            p.ratio2 = 7.0;
+            p.index2 = 0.25;
+            p.detune_cents = 9.0;
+            p.gain = 0.5;
+        }),
+        "pad_airy" => synth(|p| {
+            p.osc1 = Wave::Saw;
+            p.osc2 = Wave::Triangle;
+            p.osc2_semitones = 12.0;
+            p.osc_mix = 0.35;
+            p.unison = 5;
+            p.unison_spread_cents = 14.0;
+            p.stereo_spread = 0.8;
+            p.drift_cents = 6.0;
+            p.cutoff = 1400.0;
+            p.filter_env_amount = 1.2;
+            p.filter_env = Adsr::new(0.9, 1.6, 0.5, 1.5);
+            p.amp_env = Adsr::new(0.8, 1.0, 0.85, 2.0);
+            p.lfo_rate = 0.18;
+            p.lfo_to_cutoff = 0.35;
+            p.vel_to_cutoff = 0.8;
+            p.gain = 0.3;
+        }),
+        "pad_dusty" => synth(|p| {
+            p.osc1 = Wave::Triangle;
+            p.osc2 = Wave::Square;
+            p.osc_mix = 0.25;
+            p.unison = 3;
+            p.unison_spread_cents = 8.0;
+            p.stereo_spread = 0.5;
+            p.drift_cents = 9.0;
+            p.noise_level = 0.015;
+            p.cutoff = 900.0;
+            p.filter_env_amount = 0.6;
+            p.filter_env = Adsr::new(0.6, 1.2, 0.4, 1.0);
+            p.amp_env = Adsr::new(0.5, 0.8, 0.8, 1.4);
+            p.lfo_rate = 0.4;
+            p.lfo_to_pitch = 0.04;
+            p.gain = 0.35;
+        }),
+        "bell_glass" => fm(|p| {
+            p.ratio = 3.5;
+            p.index = 2.6;
+            p.mod_env = Adsr::new(0.001, 1.6, 0.05, 1.2);
+            p.amp_env = Adsr::new(0.001, 2.6, 0.0, 1.8);
+            p.detune_cents = 4.0;
+            p.gain = 0.35;
+        }),
+        "bell_dark" => fm(|p| {
+            p.ratio = 4.0;
+            p.index = 1.2;
+            p.mod_env = Adsr::new(0.001, 0.25, 0.0, 0.3);
+            p.amp_env = Adsr::new(0.001, 1.8, 0.0, 1.2);
+            p.detune_cents = 3.0;
+            p.gain = 0.45;
+        }),
+        "pluck_soft" => synth(|p| {
+            p.osc1 = Wave::Square;
+            p.osc2 = Wave::Saw;
+            p.osc_mix = 0.4;
+            p.unison = 2;
+            p.unison_spread_cents = 8.0;
+            p.stereo_spread = 0.3;
+            p.drift_cents = 2.0;
+            p.cutoff = 550.0;
+            p.resonance = 0.2;
+            p.filter_env_amount = 3.2;
+            p.filter_env = Adsr::new(0.001, 0.25, 0.0, 0.2);
+            p.amp_env = Adsr::new(0.002, 0.45, 0.0, 0.3);
+            p.vel_to_cutoff = 1.5;
+            p.gain = 0.5;
+        }),
+        "lead_dark" => synth(|p| {
+            p.osc1 = Wave::Saw;
+            p.osc2 = Wave::Square;
+            p.osc2_cents = 9.0;
+            p.osc_mix = 0.4;
+            p.unison = 3;
+            p.unison_spread_cents = 10.0;
+            p.stereo_spread = 0.4;
+            p.drift_cents = 4.0;
+            p.cutoff = 1500.0;
+            p.resonance = 0.3;
+            p.filter_env_amount = 1.0;
+            p.filter_env = Adsr::new(0.01, 0.4, 0.3, 0.3);
+            p.amp_env = Adsr::new(0.01, 0.3, 0.8, 0.3);
+            p.lfo_rate = 5.0;
+            p.lfo_to_pitch = 0.05;
+            p.vel_to_cutoff = 1.0;
+            p.gain = 0.4;
+        }),
         _ => return None,
     })
 }
@@ -1101,7 +1390,9 @@ pub fn render_note_slide(
 ) -> Vec<f32> {
     if slide_to.is_some() {
         match inst {
-            Instrument::Bass808(p) => return render_808_slide(p, pitch, vel, gate, slide_to),
+            Instrument::Bass808(p) => {
+                return render_808_slide(p, pitch, vel, gate, slide_to, &mut Rng::new(seed))
+            }
             Instrument::Synth(p) => {
                 return render_synth_slide(p, pitch, vel, gate, &mut Rng::new(seed), slide_to)
             }
@@ -1115,7 +1406,7 @@ pub fn render_note_slide(
         Instrument::Synth(p) => render_synth(p, pitch, vel, gate, &mut rng),
         Instrument::Fm(p) => render_fm(p, pitch, vel, gate),
         Instrument::Pluck(p) => render_pluck(p, pitch, vel, gate, &mut rng),
-        Instrument::Bass808(p) => render_808(p, pitch, vel, gate),
+        Instrument::Bass808(p) => render_808(p, pitch, vel, gate, &mut rng),
         Instrument::Sampler(p) => render_sampler(p, pitch, vel, gate, bank),
         Instrument::Wavetable(p) => {
             crate::synth_extra::render_wavetable(p, pitch, vel, gate, &mut rng)
@@ -1139,81 +1430,20 @@ fn secs(n: f32) -> usize {
 }
 
 fn render_drum(p: &DrumParams, pitch: f32, vel: f32, rng: &mut Rng) -> Vec<f32> {
+    use crate::voice_pro as vp;
+    // round-robin: every hit draws a small deterministic variation
+    let var = vp::Variation::draw(rng, 1.0);
     let tune = 2f32.powf((p.tune + (pitch - 60.0)) / 12.0);
     let d = p.decay.clamp(0.05, 8.0);
+    let tone = p.tone.clamp(-1.0, 1.0);
     let mut out;
     match p.kind {
-        DrumKind::Kick => {
-            let len = 0.7 * d;
-            out = vec![0.0; secs(len)];
-            let mut ph = 0.0f32;
-            for (i, s) in out.iter_mut().enumerate() {
-                let t = i as f32 / SR;
-                let f = 48.0 * tune * (1.0 + 2.6 * (-t * 32.0).exp());
-                ph = (ph + f / SR) % 1.0;
-                let body = (2.0 * PI * ph).sin() * (-t * 5.5 / d).exp();
-                let click = rng.bipolar() * (-t * 350.0).exp() * 0.25;
-                *s = (1.6 * (body + click)).tanh();
-            }
-        }
-        DrumKind::Snare => {
-            out = vec![0.0; secs(0.38 * d)];
-            let mut hp = Svf::default();
-            let mut ph = 0.0f32;
-            for (i, s) in out.iter_mut().enumerate() {
-                let t = i as f32 / SR;
-                let f = 190.0 * tune * (1.0 + 0.4 * (-t * 60.0).exp());
-                ph = (ph + f / SR) % 1.0;
-                let tone = (2.0 * PI * ph).sin() * (-t * 28.0).exp() * 0.55;
-                let n = hp.process(rng.bipolar(), 1800.0 * tune, 0.1, FilterMode::Highpass);
-                *s = tone + n * (-t * 15.0 / d).exp() * 0.8;
-            }
-        }
-        DrumKind::Clap => {
-            out = vec![0.0; secs(0.45 * d)];
-            let mut bp = Svf::default();
-            for (i, s) in out.iter_mut().enumerate() {
-                let t = i as f32 / SR;
-                let n = bp.process(rng.bipolar(), 1150.0 * tune, 0.35, FilterMode::Bandpass);
-                let mut env = 0.0f32;
-                for k in 0..3 {
-                    let dt = t - k as f32 * 0.011;
-                    if dt >= 0.0 {
-                        env = env.max((-dt * 190.0).exp());
-                    }
-                }
-                let dt = t - 0.033;
-                if dt >= 0.0 {
-                    env = env.max((-dt * 13.0 / d).exp() * 0.75);
-                }
-                *s = n * env * 2.2;
-            }
-        }
-        DrumKind::ClosedHat | DrumKind::OpenHat => {
-            let open = p.kind == DrumKind::OpenHat;
-            let len = if open { 0.65 * d } else { 0.09 * d + 0.03 };
-            out = vec![0.0; secs(len)];
-            let mut hp = Svf::default();
-            // metallic: sum of detuned squares + noise, like the 808
-            let ratios = [2.0, 3.0, 4.16, 5.43, 6.79, 8.21];
-            let mut phases = [0.0f32; 6];
-            for (i, s) in out.iter_mut().enumerate() {
-                let t = i as f32 / SR;
-                let mut metal = 0.0;
-                for (k, r) in ratios.iter().enumerate() {
-                    phases[k] = (phases[k] + 205.0 * r * tune / SR) % 1.0;
-                    metal += if phases[k] < 0.5 { 1.0 } else { -1.0 };
-                }
-                let x = metal / 6.0 * 0.6 + rng.bipolar() * 0.5;
-                let y = hp.process(x, 7500.0 * tune.sqrt(), 0.2, FilterMode::Highpass);
-                let env = if open {
-                    (-t * 6.5 / d).exp()
-                } else {
-                    (-t * 60.0 / d).exp()
-                };
-                *s = y * env * 1.1;
-            }
-        }
+        DrumKind::Kick => out = vp::kick(tune, d, vel, tone, var, rng),
+        DrumKind::Snare => out = vp::snare(tune, d, vel, tone, var, rng),
+        DrumKind::Clap => out = vp::clap(tune, d, vel, tone, var, rng),
+        DrumKind::ClosedHat => out = vp::metal(0, tune, d, vel, tone, var, rng),
+        DrumKind::OpenHat => out = vp::metal(1, tune, d, vel, tone, var, rng),
+        DrumKind::Crash => out = vp::metal(2, tune, d, vel, tone, var, rng),
         DrumKind::Rim => {
             out = vec![0.0; secs(0.07 * d + 0.02)];
             let mut bp = Svf::default();
@@ -1243,7 +1473,9 @@ fn render_drum(p: &DrumParams, pitch: f32, vel: f32, rng: &mut Rng) -> Vec<f32> 
                 let t = i as f32 / SR;
                 p1 = (p1 + 540.0 * tune / SR) % 1.0;
                 p2 = (p2 + 800.0 * tune / SR) % 1.0;
-                let x = (if p1 < 0.5 { 1.0 } else { -1.0 }) + (if p2 < 0.5 { 1.0 } else { -1.0 });
+                // band-limited squares (the naive ones aliased audibly)
+                let x = osc(Wave::Square, p1, 540.0 * tune / SR, rng)
+                    + osc(Wave::Square, p2, 800.0 * tune / SR, rng);
                 let y = bp.process(x * 0.5, 800.0 * tune, 0.45, FilterMode::Bandpass);
                 let env = 0.6 * (-t * 60.0).exp() + 0.4 * (-t * 9.0 / d).exp();
                 *s = y * env * 1.6;
@@ -1259,27 +1491,13 @@ fn render_drum(p: &DrumParams, pitch: f32, vel: f32, rng: &mut Rng) -> Vec<f32> 
                 *s = n * env * 1.3;
             }
         }
-        DrumKind::Crash => {
-            out = vec![0.0; secs(2.2 * d)];
-            let mut hp = Svf::default();
-            for (i, s) in out.iter_mut().enumerate() {
-                let t = i as f32 / SR;
-                let n = hp.process(
-                    rng.bipolar(),
-                    4500.0 * tune.sqrt(),
-                    0.1,
-                    FilterMode::Highpass,
-                );
-                *s = n * (-t * 2.0 / d).exp() * 0.7;
-            }
-        }
         DrumKind::Tabla => {
             // dayan: near-harmonic modes (Raman), the fundamental rings,
             // a bright finger slap on top; soft hits are damped (te/ti)
             let open = vel >= 0.5;
             let len = if open { 1.1 * d } else { 0.14 * d };
             out = vec![0.0; secs(len)];
-            let f0 = 261.63 * tune;
+            let f0 = 261.63 * tune * 2f32.powf(var.tune / 12.0);
             let modes: [(f32, f32, f32); 5] = [
                 (1.0, 1.0, 3.2),
                 (2.0, 0.55, 5.0),
@@ -1312,7 +1530,10 @@ fn render_drum(p: &DrumParams, pitch: f32, vel: f32, rng: &mut Rng) -> Vec<f32> 
             for (i, s) in out.iter_mut().enumerate() {
                 let t = i as f32 / SR;
                 // ge: starts low and the palm pushes the pitch up (gamak)
-                let f = 82.0 * tune * (1.0 + 0.35 * (1.0 - (-t * 7.0).exp()));
+                let f = 82.0
+                    * tune
+                    * 2f32.powf(var.tune / 12.0)
+                    * (1.0 + 0.35 * (1.0 - (-t * 7.0).exp()));
                 ph = (ph + f / SR) % 1.0;
                 let body = (2.0 * PI * ph).sin() + 0.25 * (4.0 * PI * ph).sin();
                 let thump =
@@ -1322,13 +1543,15 @@ fn render_drum(p: &DrumParams, pitch: f32, vel: f32, rng: &mut Rng) -> Vec<f32> 
         }
     }
     let drive = 1.0 + p.drive.clamp(0.0, 1.0) * 6.0;
+    let g = vel * var.level.min(1.0);
     for s in out.iter_mut() {
         *s = if drive > 1.01 {
             (*s * drive).tanh() / drive.tanh()
         } else {
             *s
-        } * vel;
+        } * g;
     }
+    vp::fade_edges(&mut out, 4, 64);
     out
 }
 
@@ -1367,8 +1590,25 @@ fn render_synth_slide(
     let mut filt2 = Svf::default();
     let lfo_ph0 = rng.f32();
     let drive = 1.0 + p.drive.max(0.0) * 8.0;
+    // analog drift: each voice wanders on its own smoothed random walk
+    let drift = p.drift_cents.max(0.0);
+    let mut drift_now: Vec<f32> = (0..voices).map(|_| rng.bipolar() * drift).collect();
+    let mut drift_to: Vec<f32> = (0..voices).map(|_| rng.bipolar() * drift).collect();
+    let drift_step = (0.35 * SR) as usize;
+    // velocity to brightness (0.8 is neutral)
+    let vel_oct = p.vel_to_cutoff * (vel - 0.8);
     for (i, s) in out.iter_mut().enumerate() {
         let t = i as f32 / SR;
+        if drift > 0.0 {
+            if i % drift_step == 0 && i > 0 {
+                for d in drift_to.iter_mut() {
+                    *d = rng.bipolar() * drift;
+                }
+            }
+            for (now, to) in drift_now.iter_mut().zip(drift_to.iter()) {
+                *now += (to - *now) * (3.0 / SR);
+            }
+        }
         let lfo = (2.0 * PI * (p.lfo_rate * t + lfo_ph0)).sin();
         let mut semis = lfo * p.lfo_to_pitch + glide_semis(t, pitch, slide_to, glide, gate);
         if p.pitch_env_semitones != 0.0 {
@@ -1377,7 +1617,7 @@ fn render_synth_slide(
         let f = base * 2f32.powf(semis / 12.0);
         let mut x = 0.0;
         for v in 0..voices {
-            let f1 = f * 2f32.powf(detunes[v] / 1200.0);
+            let f1 = f * 2f32.powf((detunes[v] + drift_now[v]) / 1200.0);
             let f2 = f1 * 2f32.powf((p.osc2_semitones * 100.0 + p.osc2_cents) / 1200.0);
             let dt1 = (f1 / SR).min(0.49);
             let dt2 = (f2 / SR).min(0.49);
@@ -1396,7 +1636,8 @@ fn render_synth_slide(
             x += rng.bipolar() * p.noise_level;
         }
         let fenv = p.filter_env.level(t, gate);
-        let cutoff = p.cutoff * 2f32.powf(p.filter_env_amount * fenv + lfo * p.lfo_to_cutoff);
+        let cutoff =
+            p.cutoff * 2f32.powf(p.filter_env_amount * fenv + lfo * p.lfo_to_cutoff + vel_oct);
         let mut y = filt.process(x, cutoff, p.resonance, p.filter_mode);
         if p.resonance > 0.6 && p.filter_mode == FilterMode::Lowpass {
             // 4-pole-ish for acid squelch
@@ -1414,21 +1655,38 @@ fn render_fm(p: &FmParams, pitch: f32, vel: f32, gate: f32) -> Vec<f32> {
     let total = p.amp_env.total(gate).min(12.0);
     let mut out = vec![0.0f32; secs(total)];
     let f = midi_to_hz(pitch);
-    let (mut pc, mut pm, mut pm2) = (0.0f32, 0.0f32, 0.0f32);
+    let (mut pc, mut pc2, mut pm, mut pm2) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
     let mut last = 0.0f32;
     // velocity also brightens FM
     let vel_index = 0.5 + vel * 0.7;
+    // keyscaling: high notes get a smaller index (real tines/bars do, and
+    // it keeps the sidebands under Nyquist)
+    let keyscale = if f > 523.0 { (523.0 / f).sqrt() } else { 1.0 };
+    // the tine modulator fades out before its sidebands would alias
+    let tine_hz = f * p.ratio2;
+    let tine_gain = if p.ratio2 > 0.0 {
+        ((16_000.0 - tine_hz) / 6_000.0).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let f2 = f * 2f32.powf(p.detune_cents / 1200.0);
+    let two = p.detune_cents != 0.0;
     for (i, s) in out.iter_mut().enumerate() {
         let t = i as f32 / SR;
         let menv = p.mod_env.level(t, gate);
         pm = (pm + f * p.ratio / SR) % 1.0;
-        let mut m = (2.0 * PI * pm + last * p.feedback).sin() * p.index * menv * vel_index;
-        if p.ratio2 > 0.0 {
-            pm2 = (pm2 + f * p.ratio2 / SR) % 1.0;
-            m += (2.0 * PI * pm2).sin() * p.index2 * (-t * 12.0).exp();
+        let mut m =
+            (2.0 * PI * pm + last * p.feedback).sin() * p.index * menv * vel_index * keyscale;
+        if tine_gain > 0.0 {
+            pm2 = (pm2 + tine_hz / SR) % 1.0;
+            m += (2.0 * PI * pm2).sin() * p.index2 * (-t * 12.0).exp() * tine_gain;
         }
         pc = (pc + f / SR) % 1.0;
-        let y = (2.0 * PI * pc + m).sin();
+        let mut y = (2.0 * PI * pc + m).sin();
+        if two {
+            pc2 = (pc2 + f2 / SR) % 1.0;
+            y = 0.5 * (y + (2.0 * PI * pc2 + m).sin());
+        }
         last = y;
         *s = y * p.amp_env.level(t, gate) * vel * p.gain;
     }
@@ -1478,11 +1736,12 @@ fn render_pluck(p: &PluckParams, pitch: f32, vel: f32, gate: f32, rng: &mut Rng)
         };
         *s = dc.process(cur) * rel * vel * p.gain;
     }
+    crate::voice_pro::fade_edges(&mut out, 0, (0.01 * SR) as usize);
     out
 }
 
-fn render_808(p: &Bass808Params, pitch: f32, vel: f32, gate: f32) -> Vec<f32> {
-    render_808_slide(p, pitch, vel, gate, None)
+fn render_808(p: &Bass808Params, pitch: f32, vel: f32, gate: f32, rng: &mut Rng) -> Vec<f32> {
+    render_808_slide(p, pitch, vel, gate, None, rng)
 }
 
 fn render_808_slide(
@@ -1491,41 +1750,27 @@ fn render_808_slide(
     vel: f32,
     gate: f32,
     slide_to: Option<f32>,
+    rng: &mut Rng,
 ) -> Vec<f32> {
-    let f = midi_to_hz(pitch);
     let glide = if p.glide_ms > 0.0 { p.glide_ms } else { 90.0 } * 0.001;
-    // a sliding 808 is held through the slide
-    let sustain = p.sustain || slide_to.is_some();
-    let total = if sustain {
-        gate + 0.15
-    } else {
-        p.decay.max(0.1) + 0.1
-    }
-    .min(8.0);
-    let mut out = vec![0.0f32; secs(total)];
-    let drive = 1.0 + p.drive.clamp(0.0, 1.0) * 5.0;
-    let mut ph = 0.0f32;
-    for (i, s) in out.iter_mut().enumerate() {
-        let t = i as f32 / SR;
-        let fr = f * 2f32.powf(
-            (p.punch * (-t * 40.0).exp() + glide_semis(t, pitch, slide_to, glide, gate)) / 12.0,
-        );
-        ph = (ph + fr / SR) % 1.0;
-        let env = if sustain {
-            let r = if t > gate {
-                (-(t - gate) * 30.0).exp()
-            } else {
-                1.0
-            };
-            (0.75 + 0.25 * (-t * 8.0).exp()) * r
-        } else {
-            (-t * 4.5 / p.decay.max(0.1)).exp()
-        };
-        let attack = (t / 0.002).min(1.0);
-        let y = (2.0 * PI * ph).sin();
-        *s = (y * drive).tanh() / drive.tanh() * env * attack * vel * p.gain;
-    }
-    out
+    crate::voice_pro::bass808(
+        &crate::voice_pro::Bass808 {
+            decay: p.decay,
+            punch: p.punch,
+            drive: p.drive,
+            sustain: p.sustain,
+            gain: p.gain,
+            glide_s: glide,
+            click: p.click,
+            sub: p.sub,
+            tone: p.tone,
+        },
+        pitch,
+        vel,
+        gate,
+        slide_to,
+        rng,
+    )
 }
 
 fn render_sampler(

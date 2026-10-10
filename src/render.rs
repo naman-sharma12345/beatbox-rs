@@ -657,8 +657,32 @@ pub fn render_cached(
                 } else {
                     Vec::new()
                 };
-                let mono_voice = matches!(track.instrument, Instrument::Bass808(_));
-                let mut cache: HashMap<(i32, u8, u32, Vec<i64>, i32), (Vec<f32>, Vec<f32>)> =
+                let open_hat = matches!(&track.instrument,
+                    Instrument::Drum(d) if d.kind == crate::instruments::DrumKind::OpenHat);
+                // mono voices choke themselves: 808s, and open hats (which
+                // the closed hats of any other track also choke)
+                let mono_voice = matches!(track.instrument, Instrument::Bass808(_)) || open_hat;
+                let hat_chokers: Vec<usize> = if open_hat {
+                    let mut v: Vec<usize> = p
+                        .tracks
+                        .iter()
+                        .zip(events.iter())
+                        .filter(|(t, _)| {
+                            !t.mute
+                                && matches!(&t.instrument, Instrument::Drum(d)
+                                    if d.kind == crate::instruments::DrumKind::ClosedHat)
+                        })
+                        .flat_map(|(_, ev)| ev.iter().map(|x| x.start))
+                        .collect();
+                    v.sort_unstable();
+                    v
+                } else {
+                    Vec::new()
+                };
+                // round-robin: drum hits cycle through 4 renders (each with
+                // its own micro-variation) instead of one cached buffer
+                let round_robin = track.instrument.is_drum();
+                let mut cache: HashMap<(i32, u8, u32, Vec<i64>, i32, u8), (Vec<f32>, Vec<f32>)> =
                     HashMap::new();
                 for (k, e) in events[ti].iter().enumerate() {
                     if e.start >= total {
@@ -676,8 +700,13 @@ pub fn render_cached(
                         (e.gate * 1000.0) as u32,
                         vals.iter().map(|v| (v * 1000.0).round() as i64).collect(),
                         e.slide_to.map(|x| (x * 10.0) as i32).unwrap_or(-1),
+                        if round_robin { (k % 4) as u8 } else { 0 },
                     );
-                    let seed = (ti as u64) << 32 | (k as u64 % 7);
+                    let seed = if round_robin {
+                        (ti as u64) << 32 | (k as u64 % 4)
+                    } else {
+                        (ti as u64) << 32 | (k as u64 % 7)
+                    };
                     let (buf, buf2) = cache.entry(key).or_insert_with(|| {
                         let inst: Instrument = if inst_lanes.is_empty() {
                             track.instrument.clone()
@@ -708,11 +737,18 @@ pub fn render_cached(
                     });
                     // mono voices (808s) choke the previous note at the next onset
                     let choke_at = if mono_voice {
-                        events[ti][k + 1..]
+                        let own = events[ti][k + 1..]
                             .iter()
                             .map(|x| x.start)
-                            .find(|&s| s > e.start)
-                            .map(|s| s - e.start)
+                            .find(|&s| s > e.start);
+                        let hat = hat_chokers
+                            .get(hat_chokers.partition_point(|&s| s <= e.start))
+                            .copied();
+                        match (own, hat) {
+                            (Some(a), Some(b)) => Some(a.min(b)),
+                            (a, b) => a.or(b),
+                        }
+                        .map(|s| s - e.start)
                     } else {
                         None
                     };
