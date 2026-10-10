@@ -213,6 +213,92 @@
    "sidechain_bass": 0.35,
    "master_style": "punchy",
    "crush": false
+  },
+  "generative": {
+   "kick_per_bar": [
+    2.0,
+    4.5
+   ],
+   "snare_modes": {
+    "anchor": 1.0,
+    "half_time": 2.0
+   },
+   "snare_variations": {
+    "none": 1.0,
+    "displaced": 0.6,
+    "pickup": 1.0,
+    "double": 0.5
+   },
+   "hat_rates": {
+    "8": 1.0,
+    "16": 1.6,
+    "16_gallop": 0.8,
+    "8t": 0.7
+   },
+   "hat_rolls": [
+    0.35,
+    0.8
+   ],
+   "ghost": [
+    0.05,
+    0.3
+   ],
+   "modes": [
+    "phrygian",
+    "dorian"
+   ],
+   "progressions": [
+    "i bII VI V",
+    "i VI iv V7",
+    "i i iv bII"
+   ],
+   "bars_per_chord": [
+    1,
+    2
+   ],
+   "bass_modes": {
+    "lock": 1.0,
+    "independent": 1.2,
+    "sustain": 0.4
+   },
+   "glide": [
+    0.3,
+    0.65
+   ],
+   "harmony_styles": {
+    "block": 2.0,
+    "pulse": 0.6,
+    "arp_up": 0.5,
+    "stabs": 0.4
+   },
+   "kits": {
+    "tr808": 0.8,
+    "lm2": 0.2
+   },
+   "drum_sounds": {
+    "snare": [
+     "clap",
+     "layered_snare",
+     "snare"
+    ],
+    "kick": [
+     "kick",
+     "layered_kick"
+    ],
+    "perc": [
+     "rim",
+     "cowbell",
+     "shaker"
+    ]
+   },
+   "forms": {
+    "template": 0.6,
+    "standard": 1.0,
+    "hook_first": 1.2,
+    "with_bridge": 0.8,
+    "build": 0.6,
+    "short": 0.5
+   }
   }
  },
  {
@@ -425,6 +511,55 @@
    "sidechain_bass": 0.3,
    "master_style": "punchy",
    "crush": false
+  },
+  "generative": {
+   "hat_rates": {
+    "8": 1.2,
+    "16": 1.2,
+    "8t": 0.8,
+    "4": 0.4
+   },
+   "hat_rolls": [
+    0.2,
+    0.6
+   ],
+   "modes": [
+    "dorian",
+    "harmonic_minor"
+   ],
+   "bars_per_chord": [
+    1,
+    2
+   ],
+   "bass_modes": {
+    "lock": 1.0,
+    "independent": 0.8,
+    "sustain": 0.8
+   },
+   "glide": [
+    0.3,
+    0.6
+   ],
+   "harmony_styles": {
+    "arp_updown": 1.5,
+    "block": 1.0,
+    "arp_up": 0.6,
+    "pulse": 0.4
+   },
+   "drum_sounds": {
+    "snare": [
+     "layered_snare",
+     "clap",
+     "snare"
+    ]
+   },
+   "forms": {
+    "template": 0.6,
+    "standard": 1.0,
+    "hook_first": 1.0,
+    "with_bridge": 0.8,
+    "build": 1.0
+   }
   }
  },
  {
@@ -597,6 +732,75 @@
    "sidechain_bass": 0.3,
    "master_style": "punchy",
    "crush": false
+  },
+  "generative": {
+   "kick_per_bar": [
+    1.5,
+    3.5
+   ],
+   "snare_modes": {
+    "anchor": 3.0,
+    "half_time": 0.6
+   },
+   "snare_variations": {
+    "none": 0.8,
+    "displaced": 1.2,
+    "pickup": 0.8,
+    "double": 0.6
+   },
+   "hat_rates": {
+    "8t": 1.6,
+    "16_gallop": 1.0,
+    "8": 0.6,
+    "16": 0.6
+   },
+   "hat_rolls": [
+    0.25,
+    0.6
+   ],
+   "ghost": [
+    0.1,
+    0.35
+   ],
+   "modes": [
+    "phrygian"
+   ],
+   "progressions": [
+    "i bII i V",
+    "i VI bII V"
+   ],
+   "bars_per_chord": [
+    1,
+    2
+   ],
+   "bass_modes": {
+    "lock": 0.8,
+    "independent": 1.5,
+    "sustain": 0.3
+   },
+   "glide": [
+    0.45,
+    0.8
+   ],
+   "harmony_styles": {
+    "block": 1.5,
+    "stabs": 0.8,
+    "pulse": 0.5
+   },
+   "drum_sounds": {
+    "perc": [
+     "rim",
+     "shaker",
+     "cowbell"
+    ]
+   },
+   "forms": {
+    "template": 0.6,
+    "standard": 1.0,
+    "hook_first": 1.2,
+    "build": 0.6,
+    "short": 0.6
+   }
   }
  },
  {
@@ -799,6 +1003,82 @@
    "sidechain_bass": 0.0,
    "master_style": "punchy",
    "crush": true
+  },
+  "generative": {
+   "swing": [
+    0.18,
+    0.38
+   ],
+   "kick_per_bar": [
+    2.5,
+    4.5
+   ],
+   "snare_modes": {
+    "anchor": 2.0,
+    "backbeat": 1.0
+   },
+   "snare_variations": {
+    "none": 1.5,
+    "pickup": 0.8,
+    "displaced": 0.3
+   },
+   "hat_rates": {
+    "8": 2.0,
+    "16": 0.6,
+    "16_gallop": 0.6
+   },
+   "hat_rolls": [
+    0.0,
+    0.12
+   ],
+   "ghost": [
+    0.25,
+    0.5
+   ],
+   "modes": [
+    "dorian"
+   ],
+   "progressions": [
+    "i7 iv7 bVII7 bIIImaj7",
+    "ii7 V7 i7 i7"
+   ],
+   "bars_per_chord": [
+    1,
+    2
+   ],
+   "harmony_styles": {
+    "stabs": 1.5,
+    "block": 1.0,
+    "offbeat": 0.5
+   },
+   "kits": {
+    "lm2": 0.75,
+    "rz1": 0.25
+   },
+   "drum_sounds": {
+    "snare": [
+     "snare",
+     "layered_snare",
+     "clap"
+    ],
+    "perc": [
+     "shaker",
+     "rim",
+     "tom"
+    ]
+   },
+   "perc_modes": {
+    "sparse": 1.0,
+    "euclid": 0.6,
+    "template": 0.8,
+    "poly": 0.3
+   },
+   "forms": {
+    "template": 0.8,
+    "standard": 1.0,
+    "with_bridge": 0.7,
+    "build": 0.4
+   }
   }
  },
  {
@@ -1020,6 +1300,61 @@
    "sidechain_bass": 0.3,
    "master_style": "punchy",
    "crush": false
+  },
+  "generative": {
+   "swing": [
+    0.06,
+    0.2
+   ],
+   "kick_per_bar": [
+    2.0,
+    4.0
+   ],
+   "snare_modes": {
+    "anchor": 2.0,
+    "backbeat": 1.0,
+    "half_time": 0.4
+   },
+   "hat_rates": {
+    "8": 1.5,
+    "16": 0.8,
+    "16_gallop": 0.6,
+    "8t": 0.4
+   },
+   "hat_rolls": [
+    0.05,
+    0.35
+   ],
+   "modes": [
+    "phrygian_dominant",
+    "bhairav",
+    "harmonic_minor"
+   ],
+   "bars_per_chord": [
+    2,
+    1
+   ],
+   "bass_modes": {
+    "lock": 1.0,
+    "independent": 0.8,
+    "sustain": 0.6
+   },
+   "glide": [
+    0.25,
+    0.6
+   ],
+   "perc_modes": {
+    "euclid": 1.0,
+    "poly": 0.8,
+    "template": 0.6,
+    "sparse": 0.4
+   },
+   "forms": {
+    "template": 0.8,
+    "standard": 1.0,
+    "hook_first": 0.6,
+    "build": 0.8
+   }
   }
  },
  {
@@ -1197,6 +1532,42 @@
    "sidechain_bass": 0.0,
    "master_style": "clean",
    "crush": true
+  },
+  "generative": {
+   "swing": [
+    0.25,
+    0.45
+   ],
+   "hat_rates": {
+    "8": 1.5,
+    "16_gallop": 0.6,
+    "4": 0.4
+   },
+   "hat_rolls": [
+    0.0,
+    0.1
+   ],
+   "ghost": [
+    0.15,
+    0.4
+   ],
+   "modes": [
+    "dorian",
+    "lydian"
+   ],
+   "bars_per_chord": [
+    1,
+    2
+   ],
+   "harmony_styles": {
+    "block": 1.5,
+    "arp_up": 0.5,
+    "offbeat": 0.4
+   },
+   "kits": {
+    "rz1": 0.6,
+    "lm2": 0.4
+   }
   }
  },
  {
@@ -1391,6 +1762,25 @@
    "sidechain_bass": 0.2,
    "master_style": "clean",
    "crush": false
+  },
+  "generative": {
+   "swing": [
+    0.1,
+    0.28
+   ],
+   "modes": [
+    "dorian",
+    "mixolydian"
+   ],
+   "bars_per_chord": [
+    1,
+    2
+   ],
+   "harmony_styles": {
+    "block": 1.5,
+    "arp_up": 0.5,
+    "pulse": 0.4
+   }
   }
  },
  {
@@ -1543,6 +1933,20 @@
    "sidechain_bass": 0.3,
    "master_style": "loud",
    "crush": false
+  },
+  "generative": {
+   "hat_rates": {
+    "16": 1.5,
+    "8": 0.8,
+    "16_gallop": 0.6
+   },
+   "hat_rolls": [
+    0.2,
+    0.5
+   ],
+   "modes": [
+    "minor"
+   ]
   }
  },
  {
@@ -1719,6 +2123,35 @@
    "sidechain_bass": 0.0,
    "master_style": "punchy",
    "crush": false
+  },
+  "generative": {
+   "swing": [
+    0.08,
+    0.22
+   ],
+   "hat_rates": {
+    "16_gallop": 1.5,
+    "16": 1.0,
+    "8": 0.6
+   },
+   "hat_rolls": [
+    0.0,
+    0.1
+   ],
+   "modes": [
+    "mixolydian",
+    "dorian"
+   ],
+   "perc_modes": {
+    "euclid": 1.5,
+    "poly": 1.0,
+    "template": 0.6
+   },
+   "harmony_styles": {
+    "offbeat": 1.5,
+    "stabs": 0.8,
+    "block": 0.5
+   }
   }
  }
 ]

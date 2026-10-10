@@ -18,7 +18,9 @@ fn plan_props() -> Value {
         "scale": {"type": "string", "description": "e.g. minor, harmonic_minor, bhairav, phrygian_dominant"},
         "mood": {"type": "string", "description": "dark, sad, hype, chill, jazzy, hopeful, devotional, smooth (default: read from the brief)"},
         "duration_s": {"type": "number", "description": "Approximate song length; sections are dropped/added to fit"},
-        "seed": {"type": "integer", "description": "Same seed + brief = same song; change it for a new idea"},
+        "seed": {"type": "integer", "description": "Omit for a fresh random seed (OS entropy + time, recorded in the plan). Give one to reproduce a beat exactly (same seed + args + generator version = same song)"},
+        "method": {"type": "string", "description": "Force a generation method: template (the genre's patterns, varied), procedural (generated from the genre's distributions), reference_guided (needs reference_path). Default: drawn per beat"},
+        "authored": {"type": "object", "description": "AI-authored MIDI: {section name|kind|'*': {role: [{start, len, pitch, vel}]}} played verbatim (see author_midi)"},
         "use_samples": {"type": "boolean", "description": "Use the genre's real public-domain drum kit (downloaded once, cached). Default true; falls back to synth drums offline"},
     })
 }
@@ -32,10 +34,29 @@ fn plan_args(a: &Value) -> PlanArgs {
         scale: s_opt(a, "scale"),
         mood: s_opt(a, "mood"),
         duration_s: f_opt(a, "duration_s"),
-        seed: seed_of(a),
+        seed: if a.get("seed").map(|v| !v.is_null()).unwrap_or(false) {
+            seed_of(a)
+        } else {
+            crate::creative::fresh_seed()
+        },
+        seed_source: if a.get("seed").map(|v| !v.is_null()).unwrap_or(false) {
+            "explicit".into()
+        } else {
+            "entropy".into()
+        },
         use_samples: b_or(a, "use_samples", true),
         flip_sample: None,
+        method: s_opt(a, "method"),
+        reference: None,
+        authored: parse_authored(&a["authored"]),
     }
+}
+
+fn parse_authored(
+    v: &Value,
+) -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<crate::project::Note>>>
+{
+    serde_json::from_value(v.clone()).unwrap_or_default()
 }
 
 fn merge(mut a: Value, b: Value) -> Value {
@@ -49,16 +70,20 @@ pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "produce_track",
-            description: "THE PRODUCER. One call from a brief to a finished, mixed, mastered beat: plans (genre playbook, mood, key/scale, progressions, a motif developed across sections, energy curve, transitions), composes (drum grammar with hat rolls / ghost notes / 808 glides / tabla tihais, bass locked to the kick, voiced chords, lead from the motif with call & response and meend/glide ornaments, counter-melody in hooks), picks sounds (real PD/CC0 kit + presets), builds buses/sends/sidechain, balances to genre targets, masters, then LISTENS (check_master, detect_artifacts, analyze_mix, analyze_sections, detect_key, compare_to_reference) and revises plan + mix until the score plateaus. Keeps the best iteration in the project. out_dir writes <genre>_<seed>.mp3/.json/.plan.json. Returns per-iteration scores, the critic's findings, the producer's reasoning and the plan.",
+            description: "THE PRODUCER. One call from a brief to a finished, mixed, mastered beat. Decisions are hierarchical: a creative direction (mood, energy, intent, hero element) chooses complementary core material (method: template/procedural/reference-guided/AI-authored; tempo, mode, key, progressions with modal/borrowed colour, a shaped motif, a generated drum groove, 808 behaviour, palette, arrangement form), then controlled variation (per-section groove variation and fills, motif development, counter lines, 1-3 purposeful wildcards). Fresh seed per call unless one is given; every decision and its reason is in the plan, with provenance. Near-repeats of recent beats are regenerated (novelty check). The critic is a technical guardrail only. Plans, composes (drum grammar with hat rolls / ghost notes / 808 glides / tabla tihais, bass locked to the kick, voiced chords, lead from the motif with call & response and meend/glide ornaments, counter-melody in hooks), picks sounds (real PD/CC0 kit + presets), builds buses/sends/sidechain, balances to genre targets, masters, then LISTENS (check_master, detect_artifacts, analyze_mix, analyze_sections, detect_key, compare_to_reference) and fixes technical failures only (loudness, peaks, clicks, masking/mud, a dead hook) - never the musical content. Keeps the best iteration in the project. out_dir writes <genre>_<seed>.mp3/.json/.plan.json. Returns per-iteration scores, the critic's findings, the producer's reasoning and the plan.",
             mutates: true,
             schema: || obj(merge(plan_props(), json!({
                 "reference_path": {"type": "string", "description": "Reference track: its tonal balance/dynamics join the score and the critic"},
                 "max_iterations": {"type": "integer", "description": "Critique/revise rounds (default 4)"},
                 "out_dir": {"type": "string", "description": "Write the master (mp3 when ffmpeg exists, else wav), project and plan here"},
                 "mp3": {"type": "boolean", "description": "default true"},
+                "novelty": {"type": "boolean", "description": "Check the beat against recent outputs and regenerate near-repeats (default true; with an explicit seed it only reports)"},
+                "novelty_threshold": {"type": "number", "description": "Minimum distance to recent beats (default 0.25)"},
+                "history_path": {"type": "string", "description": "Novelty history file (default beatbox_history/fingerprints.jsonl)"},
             })), &[]),
             run: |e, a| {
-                let args = plan_args(a);
+                let mut args = plan_args(a);
+                args.reference = s_opt(a, "reference_path").map(|p| e.resolve(&p).to_string_lossy().to_string());
                 if args.brief.is_empty() && args.genre.is_none() {
                     return Err(anyhow!("give a brief or a genre (list_genres)"));
                 }
@@ -67,6 +92,15 @@ pub fn tools() -> Vec<Tool> {
                     reference: s_opt(a, "reference_path").map(|p| e.resolve(&p).to_string_lossy().to_string()),
                     out_dir: s_opt(a, "out_dir").map(|p| e.resolve(&p)),
                     mp3: b_or(a, "mp3", true),
+                    novelty: {
+                        let d = crate::novelty::NoveltyOpts::default();
+                        Some(crate::novelty::NoveltyOpts {
+                            enabled: b_or(a, "novelty", true),
+                            threshold: a["novelty_threshold"].as_f64().map(|t| t as f32).unwrap_or(d.threshold),
+                            history: s_opt(a, "history_path").map(|p| e.resolve(&p)).or(d.history.clone()),
+                            ..d
+                        })
+                    },
                 };
                 producer::produce(e, &args, &o)
             },
