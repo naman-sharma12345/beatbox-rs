@@ -4,10 +4,9 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 61 have, 14 partial, 16 missing of 91** (parity 61/91; counting partial as half: 68.0/91).
+**Score: 62 have, 13 partial, 16 missing of 91** (parity 62/91; counting partial as half: 68.5/91).
 
-Build order for the gaps, by musical impact: Gross Beat-style drawn
-time/volume gating, vocoder, flam/flip/chop note tools, frequency shifter and
+Build order for the gaps, by musical impact: vocoder, flam/flip/chop note tools, frequency shifter and
 ring mod, stereo shaper, noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
 hosting.
@@ -64,7 +63,7 @@ hosting.
 | Effects | Convolver | have | convolution |
 | Effects | Delay 3 | have | delay |
 | Effects | Chorus / Flanger / Phaser | have | chorus, flanger, phaser |
-| Effects | Gross Beat (time + volume gating) | partial | stutter (gate, stutter, half_time, reverse, tape_stop modes); no drawn time/volume envelopes |
+| Effects | Gross Beat (time + volume gating) | have | gross_beat effect: 13 time presets (half speed, repeats, reverse, tape stop, scratch, freeze) + 11 volume presets (trance gate, pump, tresillo) or drawn time_points / volume_points |
 | Effects | Blood Overdrive / Fast Dist / Distructor | have | distortion, saturator, soft_clipper |
 | Effects | Bitcrush / Squeeze | have | bitcrush |
 | Effects | Stereo Enhancer | have | width, haas |
@@ -83,7 +82,7 @@ hosting.
 | Effects | Waveshaper | partial | saturator, soft_clipper (no drawn curve) |
 | Effects | Wave Candy / Spectroman | have | spectrum, render_spectrogram, waveform_peaks, loudness_report |
 | Effects | Panning / Balance | have | set_mixer pan, autopan |
-| Effects | Tape stop / vinyl | partial | stutter tape_stop mode (no vinyl noise/wow) |
+| Effects | Tape stop / vinyl | partial | stutter tape_stop, gross_beat tape_stop / tape_stop_end (no vinyl noise/wow) |
 | Audio | Time stretching | have | stretch_sample |
 | Audio | Audio recording | missing | (produce_song takes a recorded file) |
 | Audio | Noise reduction | partial | inside produce_song (spectral gate); not its own tool yet |

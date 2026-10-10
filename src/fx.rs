@@ -249,6 +249,15 @@ fx_struct!(StutterFx {
     smooth_ms: f32 = 3.0,
     mix: f32 = 1.0
 });
+fx_struct!(GrossBeatFx {
+    time: String = "none".to_string(),
+    volume: String = "none".to_string(),
+    time_points: String = String::new(),
+    volume_points: String = String::new(),
+    cycle_steps: f32 = 16.0,
+    smooth_ms: f32 = 4.0,
+    mix: f32 = 1.0
+});
 fx_struct!(PitchShiftFx {
     semitones: f32 = 12.0,
     cents: f32 = 0.0,
@@ -341,6 +350,7 @@ pub enum Effect {
     Autopan(AutopanFx),
     Saturator(SaturatorFx),
     Haas(HaasFx),
+    GrossBeat(GrossBeatFx),
 }
 
 macro_rules! each_fx {
@@ -373,6 +383,7 @@ macro_rules! each_fx {
             Effect::Autopan($p) => $body,
             Effect::Saturator($p) => $body,
             Effect::Haas($p) => $body,
+            Effect::GrossBeat($p) => $body,
         }
     };
 }
@@ -405,6 +416,7 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("convolution", "Convolution reverb with synthesized impulse responses. space room|hall|plate|chamber|spring|cathedral, decay_s, predelay_ms, damping, early (reflections), width, mix"),
     ("autopan", "Tempo-synced auto-pan or tremolo. steps (16ths per cycle), depth 0..1, tremolo (true = volume instead of pan)"),
     ("saturator", "Character saturator. mode tape (soft, even+odd warmth, high-end roll-off) | tube (asymmetric, even harmonics) | transistor (hard odd-harmonic edge) | diode (clipped, gritty) | fold (wavefolder, metallic) | exciter (adds only new harmonics above a corner of tone_hz, capped 1.5-8 kHz). drive_db 0..36, tone_hz (post low-pass), bias -0.5..0.5 (asymmetry), mix, output_db, oversample (2x, less aliasing)"),
+    ("gross_beat", "Gross Beat-style time + volume FX looping every cycle_steps 16ths (16 = 1 bar). time preset none|half_speed|half_speed_end|repeat_beat|repeat_end_8th|repeat_end_16th|reverse_end|reverse|tape_stop|tape_stop_end|scratch_end|freeze_end|double_speed; volume preset none|trance_gate|trance_gate_8th|pump|pump_hard|tresillo|offbeat|fade_in|fade_out|stop_end|swell; or draw them: time_points / volume_points 'u:v, u:v' (u = 0..1 through the cycle; time v = source position 0..1, volume v = gain). smooth_ms, mix (automate mix to apply it only on a transition)"),
     ("haas", "Haas widener: delays one side by delay_ms (1..40) for width without comb filtering the mix. side 1 = delay right, -1 = delay left, low_cut_hz keeps bass centred (only highs are widened), level_db trims the delayed side, mix"),
 ];
 
@@ -427,6 +439,14 @@ impl Effect {
 
     pub fn set_id(&mut self, id: &str) {
         each_fx!(self, p => p.id = id.to_string())
+    }
+
+    /// Parameter checks serde cannot express (preset names, drawn points).
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Effect::GrossBeat(p) => crate::fx_time::check(p),
+            _ => Ok(()),
+        }
     }
 
     pub fn bypassed(&self) -> bool {
@@ -457,6 +477,7 @@ impl Effect {
             Effect::Autopan(p) => x::autopan(p, l, r, ctx.step_secs),
             Effect::Saturator(p) => crate::fx_sat::saturator(p, l, r),
             Effect::Haas(p) => crate::fx_sat::haas(p, l, r),
+            Effect::GrossBeat(p) => crate::fx_time::gross_beat(p, l, r, ctx.step_secs),
             Effect::Filter(p) => {
                 let (mut fl, mut fr) = (Svf::default(), Svf::default());
                 for i in 0..l.len() {

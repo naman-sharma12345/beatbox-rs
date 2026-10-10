@@ -1037,6 +1037,7 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 if let Some(p) = a.get("params") {
                     reject_unknown(p, &effective, &format!("add_effect {t}"))?;
                 }
+                fx.validate().map_err(|m| anyhow!("add_effect {t}: {m}. Nothing was changed."))?;
                 let track = s_req(a, "track")?;
                 if let Effect::Sidechain(sc) = &fx {
                     e.project.track_index(&sc.source).context("sidechain source track")?;
@@ -1062,6 +1063,7 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 *fx = serde_json::from_value(v)?;
                 let eff = serde_json::to_value(&*fx)?;
                 reject_unknown(patch, &eff, "tweak_effect")?;
+                fx.validate().map_err(|m| anyhow!("tweak_effect: {m}. Nothing was changed."))?;
                 Ok(eff)
             },
         },
