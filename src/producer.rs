@@ -290,6 +290,10 @@ pub struct Plan {
     pub wildcards: Vec<crate::creative::Wildcard>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub progression_bridge: String,
+    /// Chords for sections tagged `switch` (the beat switch is a real flip:
+    /// new groove, new harmonic motion).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub progression_switch: String,
     /// as_written, sevenths, add9, sus, power.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub harmony_color: String,
@@ -1341,6 +1345,36 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
     } else {
         None
     };
+    // a real flip: the switched half also moves to new harmonic motion (the hook's
+    // chords rotated to start elsewhere, so the colour stays and the motion changes)
+    let progression_switch = if switch {
+        let toks: Vec<&str> = ph.split_whitespace().collect();
+        let mut best = String::new();
+        for r in [2usize, 1, 3] {
+            if toks.len() < 2 {
+                break;
+            }
+            let rot: Vec<&str> = toks.iter().cycle().skip(r % toks.len()).take(toks.len()).copied().collect();
+            let s = rot.join(" ");
+            if s != ph && s != pv {
+                best = s;
+                break;
+            }
+        }
+        if !best.is_empty() {
+            cr::decide(
+                &mut dec,
+                "wildcard",
+                "beat switch harmony",
+                &best,
+                "the switched half gets its own chord motion, so it is a new chapter, not only new drums",
+            );
+            thinking.push(format!("Beat switch: drums flip to a second groove, chords move to {best}."));
+        }
+        best
+    } else {
+        String::new()
+    };
     for w in &wildcards {
         thinking.push(format!(
             "Wildcard [{}] {} on {}: {}",
@@ -1397,7 +1431,13 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         sidechain: pb.mix.sidechain_bass,
         variation_seed: 0,
         offsets,
-        target_lufs: pb.mix.target_lufs,
+        // a delivery loudness asked for in the intent (make_beat: -14 for streaming)
+        target_lufs: a
+            .intent
+            .get("target_lufs")
+            .and_then(|v| v.as_f64())
+            .map(|v| (v as f32).clamp(-24.0, -6.0))
+            .unwrap_or(pb.mix.target_lufs),
         tonic_anchor: false,
         humanize: 0.04,
         space_db,
@@ -1479,6 +1519,7 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         groove_b,
         wildcards,
         progression_bridge: hc.bridge,
+        progression_switch,
         harmony_color: hc.color,
         harmony_style,
         bass_mode,
@@ -1580,9 +1621,19 @@ struct Ctx<'a> {
     verse_chords: Vec<theory::Chord>,
     hook_chords: Vec<theory::Chord>,
     bridge_chords: Vec<theory::Chord>,
+    switch_chords: Vec<theory::Chord>,
 }
 
 impl Ctx<'_> {
+    fn chords_for(&self, sec: &PlanSection) -> &[theory::Chord] {
+        if !self.switch_chords.is_empty()
+            && matches!(sec.kind.as_str(), "verse" | "hook")
+            && sec.tags.iter().any(|t| t == "switch")
+        {
+            return &self.switch_chords;
+        }
+        self.chords(&sec.kind)
+    }
     fn chords(&self, kind: &str) -> &[theory::Chord] {
         match kind {
             "hook" => &self.hook_chords,
@@ -1600,7 +1651,7 @@ fn lead_notes(
     ornament: &str,
     rng: &mut Rng,
 ) -> Vec<Note> {
-    let chords = cx.chords(&sec.kind);
+    let chords = cx.chords_for(sec);
     let bpc = cx.plan.bars_per_chord;
     let mut out = Vec::new();
     let n = cx.iv.len() as i32;
@@ -1738,7 +1789,7 @@ fn notes_first(m: &[MotifNote]) -> i32 {
 
 /// Counter-melody: long chord tones moving by step where the lead rests.
 fn counter_notes(cx: &Ctx, sec: &PlanSection, octave: i32, lead: &[Note]) -> Vec<Note> {
-    let chords = cx.chords(&sec.kind);
+    let chords = cx.chords_for(sec);
     let bpc = cx.plan.bars_per_chord;
     let mut out = Vec::new();
     let mut prev: Option<u8> = None;
@@ -1784,7 +1835,7 @@ fn bass_notes(
     glide: f32,
     rng: &mut Rng,
 ) -> Vec<Note> {
-    let chords = cx.chords(&sec.kind);
+    let chords = cx.chords_for(sec);
     let bpc = cx.plan.bars_per_chord;
     let end = (sec.bars * STEPS_PER_BAR) as f32;
     let root_of = |t: f32| -> u8 {
@@ -1947,6 +1998,11 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     let iv: Vec<u8> = theory::scale_intervals(&plan.scale)?.to_vec();
     let href = harmony_ref(&plan.scale);
     let mut chord_sets = [
+        if plan.progression_switch.is_empty() {
+            Vec::new()
+        } else {
+            theory::parse_progression(&plan.progression_switch, key_pc, href)?
+        },
         theory::parse_progression(&plan.progression_verse, key_pc, href)?,
         theory::parse_progression(&plan.progression_hook, key_pc, href)?,
         if plan.progression_bridge.is_empty() {
@@ -1960,7 +2016,7 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             crate::creative::color_chords(c, &plan.harmony_color, key_pc);
         }
     }
-    let [verse_chords, hook_chords, bridge_chords] = chord_sets;
+    let [switch_chords, verse_chords, hook_chords, bridge_chords] = chord_sets;
     let cx = Ctx {
         plan,
         root_pc: key_pc,
@@ -1968,6 +2024,7 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         verse_chords,
         hook_chords,
         bridge_chords,
+        switch_chords,
     };
     let pb = playbook(&plan.genre)?;
     let mut p = Project::new(&plan.title, plan.bpm);
@@ -2238,7 +2295,7 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             );
             pat.clips.insert(track_name("bass"), bass);
         }
-        let chords = cx.chords(&sec.kind);
+        let chords = cx.chords_for(sec);
         if has("harmony") {
             let notes = if harmony_style == "drone" {
                 // tanpura: root + fifth (+ upper root), re-struck every 2 bars;
@@ -2372,6 +2429,14 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                 }
             }
         }
+        // a quiet section is played softer, not only thinner
+        if sec.tags.iter().any(|t| t == "quiet") {
+            for v in pat.clips.values_mut() {
+                for n in v.iter_mut() {
+                    n.vel *= 0.6;
+                }
+            }
+        }
         // a beat of silence before the drop: everything stops
         if sec.transition == "silence" {
             for v in pat.clips.values_mut() {
@@ -2429,6 +2494,20 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         .map(|t| t.name.clone())
         .collect();
     e.project.tracks.retain(|t| !silent.contains(&t.name));
+    // ---- transition FX that mark the big moments: a downlifter into a quiet
+    // section, a reverse cymbal swelling into the beat switch and an impact on its one
+    if let Some(q) = plan.sections.iter().position(|s| s.tags.iter().any(|t| t == "quiet")) {
+        if q >= 1 {
+            let _ = e.call_from("add_transition", &json!({"into": plan.sections[q].name, "type": "downlifter"}), "producer");
+        }
+    }
+    if let Some(w) = plan.sections.iter().position(|s| s.tags.iter().any(|t| t == "switch")) {
+        if w >= 1 {
+            let name = plan.sections[w].name.clone();
+            let _ = e.call_from("add_transition", &json!({"into": name, "type": "reverse_cymbal", "bars": 1}), "producer");
+            let _ = e.call_from("add_transition", &json!({"into": name, "type": "impact"}), "producer");
+        }
+    }
     // ---- mix bus architecture
     let have = |e: &Engine, t: &str| e.project.track_index(t).is_ok();
     e.call_from(
@@ -4172,4 +4251,27 @@ mod tests {
             .iter()
             .any(|c| c.field == "intent.rhythmic_feel" && c.status == "applied"));
     }
+    #[test]
+    fn quiet_section_then_a_real_beat_switch() {
+        let a = PlanArgs {
+            brief: "bohemia type beat".into(),
+            genre: Some("desi_hiphop".into()),
+            seed: 7,
+            duration_s: Some(90.0),
+            intent: json!({"contrasts": ["quiet_section", "beat_switch"], "target_lufs": -14.0}),
+            ..Default::default()
+        };
+        let p = plan_track(&a).unwrap();
+        let q = p.sections.iter().position(|s| s.tags.iter().any(|t| t == "quiet")).expect("quiet section");
+        let quiet = &p.sections[q];
+        assert!(quiet.layers.iter().all(|l| !matches!(l.as_str(), "kick" | "snare" | "hat" | "bass")));
+        assert_eq!(quiet.transition, "silence");
+        // the switch comes straight out of the quiet section, with its own chords
+        assert!(p.sections[q + 1].tags.iter().any(|t| t == "switch"));
+        assert!(!p.progression_switch.is_empty() && p.progression_switch != p.progression_hook);
+        assert!(p.groove_b.is_some());
+        assert_eq!(p.knobs.target_lufs, -14.0);
+        assert!(p.sections[0].bars >= 4);
+    }
+
 }

@@ -1982,6 +1982,7 @@ pub const WILDCARDS: &[(&str, &str)] = &[
     ("key_change", "emotion"),
     ("bass_kick_call_response", "groove"),
     ("sparse_to_dense", "tension"),
+    ("quiet_section", "release"),
 ];
 
 pub const UNUSUAL: &[&str] = &[
@@ -2039,6 +2040,7 @@ pub fn apply_wildcards(
             let mut x = match *name {
                 "sparse_to_dense" => 0.45,
                 "drum_dropout" => 0.6,
+                "quiet_section" => 0.5,
                 "silence_before_drop" => 0.7,
                 "odd_phrase" => 0.8,
                 _ => 1.0f32,
@@ -2111,10 +2113,19 @@ pub fn apply_wildcards(
             }
             "beat_switch" if t.sections.len() >= 5 => {
                 *t.switch_groove = true;
-                let from = t.sections.len() / 2;
+                // after a quiet section if there is one (the switch slams in out of the calm)
+                let from = t
+                    .sections
+                    .iter()
+                    .position(|s| s.tags.iter().any(|x| x == "quiet"))
+                    .map(|q| q + 1)
+                    .unwrap_or(t.sections.len() / 2);
+                if from > 0 && from < t.sections.len() && t.sections[from - 1].transition != "silence" {
+                    t.sections[from - 1].transition = "silence".into();
+                }
                 let mut names = Vec::new();
                 for s in t.sections.iter_mut().skip(from) {
-                    if s.kind != "outro" {
+                    if s.kind != "outro" && !s.tags.iter().any(|x| x == "quiet") {
                         s.tags.push("switch".into());
                         names.push(s.name.clone());
                     }
@@ -2156,6 +2167,52 @@ pub fn apply_wildcards(
                     t.sections[j].tags.push("dropout".into());
                     Some((t.sections[j].name.clone(), "drums drop out for two bars mid-verse: space for the vocal, then relief when they return".into()))
                 }
+            }
+            "quiet_section" if t.sections.len() >= 3 => {
+                // a real quiet section: its own 4 bars, drums and 808 out, the
+                // harmony and a sparse lead under a filter; then everything returns
+                let at = t
+                    .sections
+                    .iter()
+                    .position(|s| s.tags.iter().any(|x| x == "switch"))
+                    .unwrap_or(t.sections.len() / 2)
+                    .max(1)
+                    .min(t.sections.len() - 1);
+                let mut layers: Vec<String> = ["harmony", "lead", "texture"]
+                    .iter()
+                    .filter(|r| t.palette.contains_key(**r))
+                    .map(|r| r.to_string())
+                    .collect();
+                if layers.is_empty() {
+                    layers.push("harmony".into());
+                }
+                // room to breathe at the start too: a 4-bar intro, a shorter outro
+                if t.sections[0].kind == "intro" && t.sections[0].bars < 4 {
+                    t.sections[0].bars = 4;
+                    if let Some(o) = t.sections.iter_mut().rev().find(|s| s.kind == "outro") {
+                        if o.bars >= 4 {
+                            o.bars -= 2;
+                        }
+                    }
+                }
+                t.sections.insert(
+                    at,
+                    crate::producer::PlanSection {
+                        name: "quiet1".into(),
+                        kind: "breakdown".into(),
+                        bars: 4,
+                        energy: 0.22,
+                        layers,
+                        lead: "sparse".into(),
+                        transition: "silence".into(),
+                        development: vec!["fragment".into()],
+                        tags: vec!["quiet".into()],
+                    },
+                );
+                Some((
+                    "quiet1".into(),
+                    "a 4-bar quiet section: drums and 808 out, only the chords and a sparse lead; a beat of silence, then the beat comes back".into(),
+                ))
             }
             "unusual_instrument" => {
                 let pool: Vec<&str> = UNUSUAL
@@ -2311,7 +2368,10 @@ pub fn contrast_alias(s: &str) -> Option<&'static str> {
         }
         "beat_switch" | "switch" | "groove_switch" => "beat_switch",
         "odd_phrase" | "odd_length" | "odd_bars" => "odd_phrase",
-        "drum_dropout" | "dropout" | "drop_out" | "breakdown" => "drum_dropout",
+        "drum_dropout" | "dropout" | "drop_out" => "drum_dropout",
+        "quiet_section" | "quiet" | "quiet_part" | "breakdown" | "calm_section" | "stripped_section" => {
+            "quiet_section"
+        }
         "unusual_instrument" | "unexpected_instrument" => "unusual_instrument",
         "key_change" | "modulation" | "key_lift" => "key_change",
         "bass_kick_call_response"
@@ -2457,6 +2517,10 @@ pub fn parse_intent(v: &serde_json::Value, cons: &mut Vec<Constraint>) -> Intent
                     }
                 }
             }
+            "target_lufs" => match x.as_f64() {
+                Some(v) => constraint(cons, "intent.target_lufs", x.clone(), "applied", format!("master to {v:.1} LUFS")),
+                None => constraint(cons, "intent.target_lufs", x.clone(), "ignored", "target_lufs is a number like -14"),
+            },
             other => constraint(cons, &format!("intent.{other}"), x.clone(), "ignored", "unknown intent field (mood, energy, emotion, hero, density, rhythmic_feel, motif, palette, contrasts)"),
         }
     }

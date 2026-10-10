@@ -415,6 +415,8 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     if e.project.track_index("lead").is_ok() {
         call(e, "set_mixer", json!({"track": "lead", "volume_db": -9.0, "pan": 0.15}))?;
     }
+    // drums in the song's key (kick on the root or fifth)
+    let drum_tuning = call(e, "tune_drums_to_key", json!({})).ok().map(|v| v["tuned"].clone());
     let vox_db = f_opt(a, "vocal_db").unwrap_or(0.0);
     call(e, "set_mixer", json!({"track": "vocal", "volume_db": vox_db}))?;
 
@@ -460,6 +462,7 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
         "vocal": analysis_json(&an, 0),
         "vocal_clip": {"track": "vocal", "sample": sample, "start_beat": (clip_start_beat * 1000.0).round() / 1000.0},
         "tune": tune_stats,
+        "drums_tuned": drum_tuning,
         "warp": warp.as_ref().map(|w| json!({"phrases_pinned": w.anchors.len(), "bpm": w.bpm, "stretch_range": [(w.min_stretch * 1000.0).round() / 1000.0, (w.max_stretch * 1000.0).round() / 1000.0]})),
         "harmonic_rhythm_beats": slot_beats,
         "sections": sec_json,
