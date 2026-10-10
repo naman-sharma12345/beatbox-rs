@@ -268,6 +268,35 @@ pub struct Project {
     /// each played on a track's channel.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audio_clips: Vec<AudioClip>,
+    /// What vocal_to_song heard, on the song grid (lyrics, melody, chords,
+    /// sections) for the studio's vocal view and for AIs editing around it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vocal_map: Option<VocalMap>,
+}
+
+/// A sung vocal mapped onto the song: every time is in song beats.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct VocalMap {
+    pub track: String,
+    pub sample: String,
+    /// (start beat, end beat, word)
+    #[serde(default)]
+    pub words: Vec<(f32, f32, String)>,
+    /// (start beat, length in beats, MIDI pitch)
+    #[serde(default)]
+    pub notes: Vec<(f32, f32, u8)>,
+    /// (start beat, length in beats, roman numeral)
+    #[serde(default)]
+    pub chords: Vec<(f32, f32, String)>,
+    /// (section name, kind, first bar (0-based), bars)
+    #[serde(default)]
+    pub sections: Vec<(String, String, u32, u32)>,
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub warped: bool,
+    #[serde(default)]
+    pub phrases_pinned: usize,
 }
 
 /// A sample placed on the song timeline at a beat, played through a track's
@@ -351,6 +380,7 @@ impl Project {
             playlist: Vec::new(),
             automation_clips: Vec::new(),
             audio_clips: Vec::new(),
+            vocal_map: None,
         }
     }
 

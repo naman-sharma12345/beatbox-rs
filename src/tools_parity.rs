@@ -122,10 +122,10 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "screenshot",
-            description: "Take a screenshot of Beatbox Studio showing the current project in a view (sequencer, mixer, automation, playlist): saves a PNG and returns it as an MCP image. Runs the studio offscreen (xvfb-run when headless); needs a build with the GUI feature.",
+            description: "Take a screenshot of Beatbox Studio showing the current project in a view (sequencer, mixer, automation, playlist, vocal): saves a PNG and returns it as an MCP image. Runs the studio offscreen (xvfb-run when headless); needs a build with the GUI feature.",
             mutates: false,
             schema: || obj(json!({
-                "view": {"type": "string", "enum": ["sequencer", "mixer", "automation", "playlist"], "description": "default sequencer"},
+                "view": {"type": "string", "enum": ["sequencer", "mixer", "automation", "playlist", "vocal"], "description": "default sequencer"},
                 "out": {"type": "string", "description": "PNG path (default renders/screenshot_<view>.png)"},
                 "inline": {"type": "boolean", "description": "Return the image block (default true)"},
             }), &[]),

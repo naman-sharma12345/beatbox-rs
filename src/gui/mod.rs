@@ -11,6 +11,7 @@ mod playlist;
 mod shortcuts;
 mod theme;
 mod views;
+mod vocal_view;
 mod widgets;
 
 use crate::analysis::{self, Report};
@@ -68,9 +69,11 @@ pub struct Studio {
     view: usize,
     auto_sel: Option<(String, String)>,
     piano: piano::PianoState,
+    /// vocal view: (sample, waveform peaks, seconds)
+    vocal_wave: Option<(String, Vec<(f32, f32)>, f32)>,
 }
 
-const VIEWS: [&str; 4] = ["SEQUENCER", "MIXER", "AUTOMATION", "PLAYLIST"];
+const VIEWS: [&str; 5] = ["SEQUENCER", "MIXER", "AUTOMATION", "PLAYLIST", "VOCAL"];
 
 pub fn run(
     engine: Engine,
@@ -119,6 +122,7 @@ pub fn run(
                     snap: 2,
                     ..Default::default()
                 },
+                vocal_wave: None,
             }))
         }),
     )
@@ -1264,6 +1268,10 @@ impl eframe::App for Studio {
                             crate::timebase::TICKS_PER_QUARTER,
                             p.bpm
                         ),
+                        4 => match &p.vocal_map {
+                            Some(m) => format!("{} words · {} sung notes · {} chords", m.words.len(), m.notes.len(), m.chords.len()),
+                            None => "vocal_to_song builds a song around a sung take".to_string(),
+                        },
                         2 => format!(
                             "{} lanes · {:.0} beats · {:.0} BPM",
                             p.automation.len(),
@@ -1288,6 +1296,7 @@ impl eframe::App for Studio {
                     1 => self.mixer(ui, &p),
                     3 => self.playlist_view(ui, &p),
                     2 => self.automation_view(ui, &p),
+                    4 => self.vocal_view(ui, &p),
                     _ => self.sequencer(ui, &p),
                 }
             });

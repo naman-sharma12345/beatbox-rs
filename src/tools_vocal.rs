@@ -4,7 +4,7 @@
 
 use crate::dsp::{Rng, SR};
 use crate::engine::Engine;
-use crate::project::{AudioClip, Note, Pattern, Section, STEPS_PER_BAR};
+use crate::project::{AudioClip, Note, Pattern, Section, VocalMap, STEPS_PER_BAR};
 use crate::samples::{self, SampleInfo};
 use crate::theory::{self, Chord};
 use crate::tools::{b_or, ensure_track, f_opt, find, obj, profile, register_sample, s_opt, s_req, seed_of, u_or, Tool};
@@ -401,6 +401,29 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let vox_db = f_opt(a, "vocal_db").unwrap_or(0.0);
     call(e, "set_mixer", json!({"track": "vocal", "volume_db": vox_db}))?;
 
+    // the vocal map: what was heard, on the song grid
+    let mut vmap = VocalMap {
+        track: "vocal".into(),
+        sample: sample.clone(),
+        key: format!("{} {}", e.project.key_root, e.project.scale),
+        warped: warp.is_some(),
+        phrases_pinned: warp.as_ref().map(|w| w.anchors.len()).unwrap_or(0),
+        ..Default::default()
+    };
+    vmap.words = words.iter().map(|w| (song_beat(w.start), song_beat(w.end), w.word.clone())).collect();
+    vmap.notes = mel.clone();
+    for s in &secs {
+        vmap.sections.push((s.name.clone(), s.kind.to_string(), s.bar0, s.bars));
+        for (i, c) in chords_at(s.bar0, s.bars, s.kind).iter().enumerate() {
+            let b = s.bar0 as f32 * 4.0 + i as f32 * slot_beats;
+            match vmap.chords.last_mut() {
+                Some(last) if last.2 == c.label && (last.0 + last.1 - b).abs() < 1e-3 => last.1 += slot_beats,
+                _ => vmap.chords.push((b, slot_beats, c.label.clone())),
+            }
+        }
+    }
+    e.project.vocal_map = Some(vmap);
+
     let sec_json: Vec<Value> = secs
         .iter()
         .map(|s| {
@@ -495,6 +518,34 @@ pub fn tools() -> Vec<Tool> {
                 "seed": {"type": "integer"}
             }), &["path"]),
             run: vocal_to_song,
+        },
+        Tool {
+            name: "get_vocal_map",
+            description: "What vocal_to_song heard, on the song grid: sections with their lyrics and chords by bar, so you can edit around the singer (e.g. drop the drums under a line, add a riser before the hook). bars=[from,to] narrows it (1-based).",
+            mutates: false,
+            schema: || obj(json!({"bars": {"type": "array", "items": {"type": "integer"}}}), &[]),
+            run: |e, a| {
+                let Some(m) = &e.project.vocal_map else {
+                    bail!("no vocal map: run vocal_to_song first");
+                };
+                let (b0, b1) = match a.get("bars").and_then(|v| v.as_array()) {
+                    Some(v) if v.len() == 2 => (v[0].as_u64().unwrap_or(1).max(1) as u32 - 1, v[1].as_u64().unwrap_or(9999) as u32),
+                    _ => (0, u32::MAX),
+                };
+                let mut bars = Vec::new();
+                for (name, kind, s0, n) in &m.sections {
+                    for b in *s0..s0 + n {
+                        if b < b0 || b >= b1 {
+                            continue;
+                        }
+                        let (lo, hi) = (b as f32 * 4.0, (b + 1) as f32 * 4.0);
+                        let words: Vec<&str> = m.words.iter().filter(|w| w.0 >= lo && w.0 < hi).map(|w| w.2.as_str()).collect();
+                        let chords: Vec<&str> = m.chords.iter().filter(|c| c.0 < hi && c.0 + c.1 > lo).map(|c| c.2.as_str()).collect();
+                        bars.push(json!({"bar": b + 1, "section": name, "kind": kind, "chords": chords.join(" "), "lyrics": words.join(" ")}));
+                    }
+                }
+                Ok(json!({"key": m.key, "warped": m.warped, "phrases_pinned": m.phrases_pinned, "sample": m.sample, "track": m.track, "bars": bars}))
+            },
         },
         Tool {
             name: "add_audio_clip",
