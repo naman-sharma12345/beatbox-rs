@@ -143,7 +143,7 @@ fn genre_targets(genre: &str) -> Result<Vec<(&'static str, f32)>> {
         "house" | "techno" | "edm" => vec![("bass", -2.0), ("snare", -4.0), ("hats", -8.0), ("perc", -9.0), ("cymbal", -10.0), ("lead", -5.0), ("keys", -7.0), ("pad", -10.0), ("fx", -13.0)],
         "pop" | "afrobeats" => vec![("bass", -2.0), ("snare", -2.0), ("hats", -9.0), ("perc", -8.0), ("cymbal", -11.0), ("lead", -3.0), ("keys", -5.0), ("pad", -9.0), ("fx", -14.0)],
         // R&B: soft, dark top (critic: air 14 dB over a reference, hissy hats)
-        "rnb" => vec![("bass", 0.0), ("snare", -3.0), ("hats", -19.0), ("perc", -16.0), ("cymbal", -18.0), ("lead", -8.0), ("keys", -8.0), ("pad", -12.0), ("fx", -16.0)],
+        "rnb" => vec![("bass", 0.0), ("snare", -3.0), ("hats", -21.0), ("perc", -16.0), ("cymbal", -18.0), ("lead", -8.0), ("keys", -8.0), ("pad", -12.0), ("fx", -16.0)],
         "cinematic" | "ambient" => vec![("bass", -3.0), ("snare", -3.0), ("hats", -10.0), ("perc", -6.0), ("cymbal", -8.0), ("lead", -1.0), ("keys", -2.0), ("pad", -2.0), ("fx", -8.0)],
         g => bail!("unknown genre '{g}' (trap, drill, boom_bap, lofi, house, techno, edm, pop, rnb, afrobeats, cinematic, ambient)"),
     })

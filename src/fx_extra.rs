@@ -195,6 +195,38 @@ pub fn dynamic_eq(p: &DynamicEqFx, l: &mut [f32], r: &mut [f32]) {
     }
 }
 
+/// Keyed dynamic EQ: the band dips by `range_db` (cut) or lifts (boost)
+/// while the `source` track is playing. Each trigger (a note start or a
+/// word onset in an audio clip) holds the dip for `release_ms` after it,
+/// with an `attack_ms` ramp in and a smooth recovery, so a pad steps out
+/// of the voice's band under the words and comes back between lines.
+pub fn keyed_dynamic_eq(p: &DynamicEqFx, trig: &[usize], l: &mut [f32], r: &mut [f32]) {
+    let n = l.len();
+    let mut bp = [
+        Biquad::new(BiquadKind::Bandpass, p.freq, p.q, 0.0),
+        Biquad::new(BiquadKind::Bandpass, p.freq, p.q, 0.0),
+    ];
+    let range = p.range_db.clamp(-24.0, 12.0);
+    let hold = (p.release_ms.max(5.0) * 0.001 * SR) as usize;
+    let (att, rel) = (coef(p.attack_ms.max(1.0)), coef(p.release_ms.max(5.0) * 0.5));
+    let mut ti = 0usize;
+    let mut until = 0usize;
+    let mut env = 0.0f32;
+    for i in 0..n {
+        while ti < trig.len() && trig[ti] <= i {
+            until = until.max(trig[ti] + hold);
+            ti += 1;
+        }
+        let target = if i < until && ti > 0 { 1.0 } else { 0.0 };
+        let c = if target > env { att } else { rel };
+        env = c * env + (1.0 - c) * target;
+        let g = db_to_gain(range * env) - 1.0;
+        let (bl, br) = (bp[0].process(l[i]), bp[1].process(r[i]));
+        l[i] += bl * g;
+        r[i] += br * g;
+    }
+}
+
 pub fn deesser(p: &DeesserFx, l: &mut [f32], r: &mut [f32]) {
     let n = l.len();
     let q = std::f32::consts::FRAC_1_SQRT_2;

@@ -354,9 +354,12 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
             let _ = crate_call(e, "add_effect", json!({"track": t, "type": "sidechain", "params": {"source": "vocal", "amount": 0.5, "attack_ms": 10.0, "release_ms": 450.0}}));
             // the voice's body (250-800 Hz) and its consonants (1-4 kHz) belong to the voice;
             // the static ~300 Hz pad line sat right on it (critic: low-mid +7.5 dB)
+            // keyed, not static (critic, JFK r3 and beat 8 r3): the bed keeps its
+            // body between lines and steps out of 300-900 Hz (-6 dB) under the words
+            let _ = crate_call(e, "add_effect", json!({"track": t, "type": "dynamic_eq", "params": {
+                "source": "vocal", "freq": 520.0, "q": 0.85, "range_db": -6.0, "attack_ms": 15.0, "release_ms": 400.0}}));
             let _ = crate_call(e, "add_effect", json!({"track": t, "type": "parametric_eq", "params": {"bands": [
-                {"kind": "bell", "freq": 300.0, "gain_db": -4.0, "q": 1.2},
-                {"kind": "bell", "freq": 450.0, "gain_db": -3.0, "q": 0.8},
+                {"kind": "bell", "freq": 300.0, "gain_db": -2.0, "q": 1.2},
                 {"kind": "bell", "freq": 2500.0, "gain_db": -4.0, "q": 0.6}
             ]}}));
         }

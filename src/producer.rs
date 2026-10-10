@@ -2683,8 +2683,10 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         for t in ["hat", "open_hat"] {
             if have(e, t) {
                 e.call_from("add_effect", &json!({"track": t, "type": "width", "params": {"amount": 0.55}}), "producer")?;
-                // dark top: the hats' fizz above 10 kHz read as hiss (critic, beats 6b and 8)
-                e.call_from("add_effect", &json!({"track": t, "type": "filter", "params": {"mode": "lowpass", "cutoff": 10000.0, "resonance": 0.1}}), "producer")?;
+                // dark top: the hats' fizz above 10 kHz read as hiss (critic, beats 6b and 8);
+                // a flat Butterworth cut, not a resonant filter (critic, beat 8 r3:
+                // the resonant low-pass rang at 8.3 kHz on every hat, 29 glassy ticks)
+                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "high_cut", "freq": 10000.0, "gain_db": 0.0, "q": 0.707}]}}), "producer")?;
             }
         }
     }
@@ -2709,16 +2711,34 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                 }
             }
         }
-        for (t, hz) in [("perc", 10000.0), ("texture", 9000.0), ("lead", 8000.0), ("hat", 8000.0), ("open_hat", 8000.0)] {
+        for (t, hz) in [("perc", 10000.0), ("texture", 9000.0), ("lead", 8000.0)] {
             if have(e, t) {
-                e.call_from("add_effect", &json!({"track": t, "type": "filter", "params": {"mode": "lowpass", "cutoff": hz, "resonance": 0.1}}), "producer")?;
+                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "high_cut", "freq": hz, "gain_db": 0.0, "q": 0.707}]}}), "producer")?;
+            }
+        }
+        // hats: a gentle -6 dB shelf from 7 kHz instead of another cut
+        for t in ["hat", "open_hat"] {
+            if have(e, t) {
+                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "high_shelf", "freq": 7000.0, "gain_db": -6.0, "q": 0.7}]}}), "producer")?;
+            }
+        }
+        // the clap filled 800 Hz-2 kHz (+6.4 dB over the reference)
+        if have(e, "perc") {
+            e.call_from("add_effect", &json!({"track": "perc", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 1200.0, "gain_db": -3.0, "q": 1.0}]}}), "producer")?;
+        }
+        // the harmony bed was a dense stack at 300-800 Hz (low-mid +4.8 dB, the
+        // band a voice lives in): a gentle static dip here, and produce_song
+        // adds the vocal-keyed 300-900 Hz dip once there is a voice
+        for t in ["chords", "texture"] {
+            if have(e, t) {
+                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 520.0, "gain_db": -2.5, "q": 0.8}, {"kind": "low_shelf", "freq": 150.0, "gain_db": 2.0, "q": 0.7}]}}), "producer")?;
             }
         }
         if have(e, "bass") {
             // the 808 was almost all sub (58% under 60 Hz): tape harmonics put it
             // into the 100-250 Hz range small speakers play
             e.call_from("add_effect", &json!({"track": "bass", "type": "saturator", "params": {"mode": "tape", "drive_db": 8.0, "mix": 0.4}}), "producer")?;
-            e.call_from("add_effect", &json!({"track": "bass", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 110.0, "gain_db": 4.0, "q": 0.9}]}}), "producer")?;
+            e.call_from("add_effect", &json!({"track": "bass", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 110.0, "gain_db": 6.0, "q": 0.9}]}}), "producer")?;
         }
         if have(e, "kick") {
             e.call_from("add_effect", &json!({"track": "kick", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 75.0, "gain_db": 3.0, "q": 1.0}]}}), "producer")?;

@@ -190,7 +190,8 @@ fx_struct!(DynamicEqFx {
     ratio: f32 = 3.0,
     range_db: f32 = -8.0,
     attack_ms: f32 = 3.0,
-    release_ms: f32 = 90.0
+    release_ms: f32 = 90.0,
+    source: String = String::new()
 });
 fx_struct!(DeesserFx {
     freq: f32 = 6000.0,
@@ -419,7 +420,7 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("transient", "Transient shaper. attack -1..1 (punch), sustain -1..1 (tail)"),
     ("parametric_eq", "Up to 8-band parametric EQ. bands=[{kind bell|low_shelf|high_shelf|low_cut|high_cut|notch, freq Hz, gain_db, q, stages (cuts: 1=12 dB/oct, 2=24, 4=48), enabled}], output_db"),
     ("multiband", "3-band compressor (Maximus-style). low_freq/high_freq crossovers, {low,mid,high}_threshold_db, _ratio, _gain_db, attack_ms, release_ms, mix"),
-    ("dynamic_eq", "Dynamic bell: cuts (range_db<0) or boosts (range_db>0) a band only when it exceeds threshold_db. freq, q, threshold_db, ratio, range_db, attack_ms, release_ms. Tames harsh resonances, boomy notes"),
+    ("dynamic_eq", "Dynamic bell: cuts (range_db<0) or boosts (range_db>0) a band only when it exceeds threshold_db. freq, q, threshold_db, ratio, range_db, attack_ms, release_ms. Tames harsh resonances, boomy notes. With source (a track name, e.g. vocal) it is KEYED: the band dips by range_db while that track plays (notes or audio-clip word onsets), so a pad gives the voice its 300-900 Hz body only when the voice is there"),
     ("deesser", "De-esser: dynamically ducks highs above freq when they spike. freq Hz, threshold_db, range_db (max cut), release_ms"),
     ("soft_clipper", "Smooth soft clipper for loud drums/masters. threshold_db (knee start), ceiling_db, drive_db, mix, oversample"),
     ("gate", "Noise gate / expander. threshold_db, range_db (closed attenuation), attack_ms, hold_ms, release_ms"),
@@ -481,7 +482,13 @@ impl Effect {
         match self {
             Effect::ParametricEq(p) => x::parametric_eq(p, l, r),
             Effect::Multiband(p) => x::multiband(p, l, r),
-            Effect::DynamicEq(p) => x::dynamic_eq(p, l, r),
+            Effect::DynamicEq(p) => {
+                if p.source.is_empty() {
+                    x::dynamic_eq(p, l, r)
+                } else if let Some(trig) = ctx.triggers.get(&p.source.to_lowercase()) {
+                    x::keyed_dynamic_eq(p, trig, l, r)
+                }
+            }
             Effect::Deesser(p) => x::deesser(p, l, r),
             Effect::SoftClipper(p) => x::soft_clipper(p, l, r),
             Effect::Gate(p) => x::gate(p, l, r),
@@ -1108,5 +1115,28 @@ mod tests {
         assert_eq!(l[500], 1.0);
         assert!(l[1300] < 0.5);
         assert!(l[19000] > 0.99);
+    }
+
+    #[test]
+    fn keyed_dynamic_eq_dips_only_while_the_key_plays() {
+        // a 500 Hz tone; the vocal key plays from sample 20000
+        let t = HashMap::from([("vocal".to_string(), vec![20000usize, 24000])]);
+        let n = 60000;
+        let mut l: Vec<f32> = (0..n).map(|i| (2.0 * std::f32::consts::PI * 500.0 * i as f32 / SR).sin() * 0.5).collect();
+        let mut r = l.clone();
+        let fx = Effect::DynamicEq(DynamicEqFx { freq: 520.0, q: 0.85, range_db: -6.0, source: "vocal".into(), release_ms: 300.0, attack_ms: 10.0, ..Default::default() });
+        fx.process(&mut l, &mut r, &ctx(&t));
+        let rms = |a: &[f32]| (a.iter().map(|x| x * x).sum::<f32>() / a.len() as f32).sqrt();
+        let before = rms(&l[10000..19000]);
+        let during = rms(&l[26000..34000]);
+        let after = rms(&l[54000..60000]);
+        assert!((before - 0.3535).abs() < 0.02, "untouched before the key: {before}");
+        assert!(during < before * 0.65, "dips under the key: {during} vs {before}");
+        assert!(after > before * 0.95, "recovers after: {after}");
+        // no key track: untouched
+        let mut l2 = vec![0.3f32; 1000];
+        let mut r2 = l2.clone();
+        Effect::DynamicEq(DynamicEqFx { source: "nobody".into(), ..Default::default() }).process(&mut l2, &mut r2, &ctx(&t));
+        assert_eq!(l2[999], 0.3);
     }
 }
