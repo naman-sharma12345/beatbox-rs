@@ -389,32 +389,36 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "batch",
-            description: "Run many tool calls in one round trip and ONE undo step: calls=[{tool, args}]. atomic=true (default): if any call fails, everything is rolled back and the error says which. atomic=false runs the rest and reports per-call errors. Use for a full drum pattern, a mix pass or an arrangement edit.",
+            description: "Run many tool calls in one round trip and ONE undo step: calls=[{tool, args}]. Every call goes through the same validation as a standalone call (unknown arguments are rejected, stable effect ids like 'fx.<id>.<param>' resolve against the project as it is after the earlier calls). atomic=true (default): the first failing call rolls back the whole batch and the error names it. atomic=false (partial success): each failing call is rolled back on its own, the others are kept, and results list ok/error per call; the kept calls are still one undo step. batch/undo/redo/load_project/new_project/produce_track can't be nested.",
             mutates: true,
             schema: || obj(json!({"calls": {"type": "array", "items": {"type": "object", "properties": {"tool": {"type": "string"}, "args": {"type": "object"}}, "required": ["tool"]}}, "atomic": {"type": "boolean"}}), &["calls"]),
             run: |e, a| {
                 let calls = a.get("calls").and_then(|v| v.as_array()).ok_or_else(|| anyhow!("calls must be an array"))?;
                 if calls.len() > 500 { bail!("max 500 calls per batch"); }
                 let atomic = b_or(a, "atomic", true);
-                let mut results = Vec::new();
-                let mut errors = 0;
+                // structural problems are checked before anything runs
+                let mut plan = Vec::with_capacity(calls.len());
                 for (i, c) in calls.iter().enumerate() {
                     let name = c.get("tool").or_else(|| c.get("name")).and_then(|v| v.as_str()).ok_or_else(|| anyhow!("call {i} has no tool"))?;
                     if matches!(name, "batch" | "undo" | "redo" | "load_project" | "new_project" | "produce_track") { bail!("call {i}: '{name}' can't run inside a batch"); }
-                    let t = tools::find(name).ok_or_else(|| anyhow!("call {i}: unknown tool '{name}'"))?;
                     let args = c.get("args").or_else(|| c.get("arguments")).cloned().unwrap_or(json!({}));
-                    let before = if !atomic && t.mutates { Some(e.project.clone()) } else { None };
-                    match (t.run)(e, &args) {
-                        Ok(v) => results.push(json!({"tool": name, "ok": true, "result": crate::engine::clean_floats(v)})),
+                    plan.push((name, args));
+                }
+                let mut results = Vec::new();
+                let mut errors = 0;
+                for (i, (name, args)) in plan.into_iter().enumerate() {
+                    // the same validated path as a standalone call; it rolls back
+                    // its own failure, the outer call owns undo and revision
+                    match e.call_nested(name, &args, "batch") {
+                        Ok(v) => results.push(json!({"index": i, "tool": name, "ok": true, "result": v})),
                         Err(err) => {
                             if atomic { bail!("batch call {i} ({name}) failed, nothing applied: {err:#}"); }
-                            if let Some(p) = before { e.project = p; }
                             errors += 1;
-                            results.push(json!({"tool": name, "ok": false, "error": format!("{err:#}")}));
+                            results.push(json!({"index": i, "tool": name, "ok": false, "error": format!("{err:#}")}));
                         }
                     }
                 }
-                Ok(json!({"calls": results.len(), "errors": errors, "results": results}))
+                Ok(json!({"calls": results.len(), "applied": results.len() - errors, "errors": errors, "atomic": atomic, "results": results}))
             },
         },
     ]
@@ -511,5 +515,182 @@ mod tests {
             .volume_db;
         assert_eq!(lane.value_at(8.0), Some(base));
         assert_eq!(lane.value_at(24.0), Some(3.0));
+    }
+
+    // --- batch / standalone parity (external review, finding 1) ---
+
+    fn tempo_eng() -> Engine {
+        let mut e = eng();
+        e.call(
+            "new_project",
+            &json!({"bpm": 120, "patterns": [{"name": "a", "bars": 1}]}),
+        )
+        .unwrap();
+        e.call("add_track", &json!({"name": "pad", "preset": "warm_pad"}))
+            .unwrap();
+        e
+    }
+
+    #[test]
+    fn batch_rejects_unknown_args_like_a_standalone_call() {
+        let mut e = tempo_eng();
+        let bad = json!({"bpm": 144, "typo": 1});
+        let solo = e.call("set_tempo", &bad).unwrap_err().to_string();
+        assert!(solo.contains("typo"), "{solo}");
+        let before = e.project.clone();
+        let (undo0, _) = e.undo_depth();
+        let rev0 = e.revision;
+        // atomic: the whole batch fails and nothing is applied
+        let err = e
+            .call("batch", &json!({"calls": [{"tool": "set_mixer", "args": {"track": "pad", "volume_db": -3}}, {"tool": "set_tempo", "args": bad}]}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("typo") && err.contains("call 1"), "{err}");
+        assert_eq!(e.project, before);
+        assert_eq!(e.project.bpm, 120.0);
+        assert_eq!(e.undo_depth().0, undo0);
+        assert_eq!(e.revision, rev0);
+        // non-atomic: the typo call fails on its own, with the same message
+        let r = e
+            .call(
+                "batch",
+                &json!({"atomic": false, "calls": [{"tool": "set_tempo", "args": bad}]}),
+            )
+            .unwrap();
+        assert_eq!(r["errors"], 1, "{r}");
+        assert_eq!(r["results"][0]["error"].as_str().unwrap(), solo);
+        assert_eq!(e.project.bpm, 120.0);
+    }
+
+    #[test]
+    fn batch_resolves_stable_effect_ids() {
+        let mut e = tempo_eng();
+        // ids assigned by an earlier call in the same batch resolve for later ones
+        e.call("batch", &json!({"calls": [
+            {"tool": "add_effect", "args": {"track": "pad", "type": "filter"}},
+            {"tool": "add_effect", "args": {"track": "pad", "type": "reverb"}},
+            {"tool": "tweak_effect", "args": {"track": "pad", "index": "reverb1", "params": {"mix": 0.5}}},
+            {"tool": "add_automation", "args": {"track": "pad", "param": "fx.filter1.cutoff", "points": [[0, 200], [4, 4000]]}}
+        ]}))
+        .unwrap();
+        let fx = &e
+            .project
+            .tracks
+            .iter()
+            .find(|t| t.name == "pad")
+            .unwrap()
+            .effects;
+        let ids: Vec<&str> = fx.iter().map(|f| f.id()).collect();
+        assert_eq!(ids, vec!["filter1", "reverb1"]);
+        let rev = serde_json::to_value(&fx[1]).unwrap();
+        assert_eq!(rev["mix"].as_f64().unwrap(), 0.5, "{rev}");
+        // the filter (position 0) was not tweaked by a mis-resolved index
+        assert!(serde_json::to_value(&fx[0])
+            .unwrap()
+            .get("mix")
+            .map(|m| m.as_f64() != Some(0.5))
+            .unwrap_or(true));
+        assert!(
+            e.project
+                .automation
+                .iter()
+                .any(|l| l.target == "pad" && l.param.starts_with("fx.0.")),
+            "fx.filter1 -> fx.0"
+        );
+        // an unknown id fails in a batch exactly as standalone
+        let solo = e
+            .call(
+                "tweak_effect",
+                &json!({"track": "pad", "index": "chorus9", "params": {"mix": 0.1}}),
+            )
+            .unwrap_err()
+            .to_string();
+        let r = e
+            .call("batch", &json!({"atomic": false, "calls": [{"tool": "tweak_effect", "args": {"track": "pad", "index": "chorus9", "params": {"mix": 0.1}}}]}))
+            .unwrap();
+        assert_eq!(r["results"][0]["error"].as_str().unwrap(), solo);
+    }
+
+    #[test]
+    fn batch_failure_rolls_back_and_is_one_undo_step() {
+        let mut e = tempo_eng();
+        let before = e.project.clone();
+        let (undo0, _) = e.undo_depth();
+        // atomic: a late failure undoes the earlier successful calls
+        assert!(e
+            .call(
+                "batch",
+                &json!({"calls": [
+                    {"tool": "set_tempo", "args": {"bpm": 150}},
+                    {"tool": "add_effect", "args": {"track": "pad", "type": "reverb"}},
+                    {"tool": "set_mixer", "args": {"track": "no_such_track", "volume_db": -6}}
+                ]})
+            )
+            .is_err());
+        assert_eq!(e.project, before);
+        assert_eq!(e.undo_depth().0, undo0);
+        // success: many calls, one undo step
+        e.call(
+            "batch",
+            &json!({"calls": [
+                {"tool": "set_tempo", "args": {"bpm": 150}},
+                {"tool": "add_effect", "args": {"track": "pad", "type": "reverb"}}
+            ]}),
+        )
+        .unwrap();
+        assert_eq!(e.undo_depth().0, undo0 + 1);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(e.project, before);
+        // nested meta tools are refused before anything runs
+        assert!(e
+            .call(
+                "batch",
+                &json!({"calls": [{"tool": "set_tempo", "args": {"bpm": 99}}, {"tool": "undo"}]})
+            )
+            .is_err());
+        assert_eq!(e.project, before);
+    }
+
+    #[test]
+    fn batch_partial_success_semantics() {
+        let mut e = tempo_eng();
+        let before = e.project.clone();
+        let (undo0, _) = e.undo_depth();
+        let r = e
+            .call(
+                "batch",
+                &json!({"atomic": false, "calls": [
+                    {"tool": "set_tempo", "args": {"bpm": 140}},
+                    {"tool": "set_tempo", "args": {"bpm": 144, "typo": 1}},
+                    {"tool": "nope"},
+                    {"tool": "set_mixer", "args": {"track": "pad", "volume_db": -4}}
+                ]}),
+            )
+            .unwrap();
+        // documented: failing calls are skipped and rolled back individually,
+        // the rest are kept, per-call status is reported, one undo step total
+        assert_eq!(r["calls"], 4, "{r}");
+        assert_eq!(r["applied"], 2, "{r}");
+        assert_eq!(r["errors"], 2, "{r}");
+        let ok: Vec<bool> = r["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["ok"].as_bool().unwrap())
+            .collect();
+        assert_eq!(ok, vec![true, false, false, true]);
+        assert_eq!(e.project.bpm, 140.0);
+        let pad = e.project.tracks.iter().find(|t| t.name == "pad").unwrap();
+        assert_eq!(pad.volume_db, -4.0);
+        assert_eq!(e.undo_depth().0, undo0 + 1);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(e.project, before);
+        // a non-atomic batch where every call fails changes nothing and adds no undo step
+        let r = e
+            .call("batch", &json!({"atomic": false, "calls": [{"tool": "set_tempo", "args": {"bpm": 1, "typo": 2}}]}))
+            .unwrap();
+        assert_eq!(r["applied"], 0);
+        assert_eq!(e.project, before);
+        assert_eq!(e.undo_depth().0, undo0);
     }
 }

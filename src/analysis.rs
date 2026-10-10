@@ -318,6 +318,13 @@ pub fn true_peak(x: &[f32]) -> f32 {
 }
 
 pub fn loudness(l: &[f32], r: &[f32]) -> Loudness {
+    loudness_at(l, r, SR)
+}
+
+/// BS.1770 loudness of audio at sample rate `sr` (K-weighting, 100 ms hops
+/// and 400 ms blocks are all derived from `sr`, so a 48 kHz file is
+/// measured at its own rate rather than as if it were 44.1 kHz).
+pub fn loudness_at(l: &[f32], r: &[f32], sr: f32) -> Loudness {
     let n = l.len().min(r.len());
     if n == 0 {
         return Loudness {
@@ -328,8 +335,8 @@ pub fn loudness(l: &[f32], r: &[f32]) -> Loudness {
         };
     }
     // K-weighted squares, accumulated per 100 ms
-    let hop = (SR * 0.1) as usize;
-    let mut kw = [k_weighting(SR as f64), k_weighting(SR as f64)];
+    let hop = (sr * 0.1) as usize;
+    let mut kw = [k_weighting(sr as f64), k_weighting(sr as f64)];
     let mut hops: Vec<f64> = Vec::new();
     let mut acc = 0.0f64;
     for i in 0..n {
@@ -383,7 +390,7 @@ pub fn loudness(l: &[f32], r: &[f32]) -> Loudness {
         0.0
     };
     // silence (plain dBFS, unweighted) on 400 ms blocks
-    let blk = (SR * 0.4) as usize;
+    let blk = (sr * 0.4) as usize;
     let mut silent = 0usize;
     let mut nblk = 0usize;
     let mut lead = None;
@@ -403,9 +410,9 @@ pub fn loudness(l: &[f32], r: &[f32]) -> Loudness {
             let first = (s0..n)
                 .find(|&i| l[i].abs().max(r[i].abs()) >= 0.001)
                 .unwrap_or(s0);
-            first as f32 / SR
+            first as f32 / sr
         }
-        None => n as f32 / SR,
+        None => n as f32 / sr,
     };
     let (mut sl, mut sr_, mut sm, mut el, mut er) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
     for i in 0..n {

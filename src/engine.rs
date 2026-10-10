@@ -120,98 +120,21 @@ impl Engine {
     }
 
     pub fn call_from(&mut self, name: &str, args: &Value, source: &str) -> Result<Value> {
-        let tool = tools::find(name).ok_or_else(|| {
-            anyhow!("unknown tool '{name}'. Call list_tools or get_guide to see what's available.")
-        })?;
-        let empty = Value::Object(Default::default());
-        let args = if args.is_null() { &empty } else { args };
-        // unknown top-level arguments are an error, never silently ignored
-        let schema = (tool.schema)();
-        if schema["additionalProperties"] == Value::Bool(false) {
-            if let (Some(props), Some(given)) = (schema["properties"].as_object(), args.as_object())
-            {
-                let bad: Vec<&String> = given.keys().filter(|k| !props.contains_key(*k)).collect();
-                if !bad.is_empty() {
-                    let mut valid: Vec<&String> = props.keys().collect();
-                    valid.sort();
-                    let err = anyhow!(
-                        "unknown argument(s) {} for '{name}'. Valid: {}",
-                        bad.iter()
-                            .map(|k| format!("'{k}'"))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        valid
-                            .iter()
-                            .map(|s| s.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                    self.log.push(LogEntry {
-                        tool: name.to_string(),
-                        summary: summarize_args(args),
-                        ok: false,
-                        source: source.to_string(),
-                    });
-                    return Err(err);
-                }
-            }
-        }
-        // stable effect ids: rewrite id references to positions for the tools
-        let resolved = resolve_effect_refs(&self.project, args)?;
-        // an omitted seed is fresh (OS entropy + time) on every top-level call
-        // of a seeded tool, and the chosen seed is returned; explicit seeds
-        // (and seeds a tool passes to the tools it calls) stay deterministic
-        let depth = tools::CallDepth::enter();
-        let mut fresh_seed = None;
-        let seeded;
-        let args = if depth.top()
-            && schema["properties"].get("seed").is_some()
-            && args.get("seed").is_none_or(|v| v.is_null())
-        {
-            let s = crate::creative::fresh_seed();
-            let mut a = resolved.clone();
-            if let Value::Object(m) = &mut a {
-                m.insert("seed".into(), Value::from(s));
-            }
-            fresh_seed = Some(s);
-            seeded = a;
-            &seeded
-        } else {
-            &resolved
+        let tool = match tools::find(name) {
+            Some(t) => t,
+            None => return Err(unknown_tool(name)),
         };
-        if depth.top() {
-            tools::set_seed_fresh(fresh_seed.is_some());
-        }
         let snapshot = if tool.mutates {
             Some(self.project.clone())
         } else {
             None
         };
-        // a panicking tool must never take the MCP server down with it
-        let run = tool.run;
-        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(self, args)
-        })) {
-            Ok(r) => r.map(clean_floats),
-            Err(p) => {
-                let msg = p
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "unknown panic".into());
-                Err(anyhow!("internal error in '{name}': {msg}. The project was rolled back; please report this."))
-            }
-        };
-        if result.is_ok() && tool.mutates {
-            self.project.ensure_fx_ids();
-        }
-        let summary = summarize_args(args);
-        let mut result = result;
-        if let (Some(s), Ok(Value::Object(m))) = (fresh_seed, &mut result) {
-            m.entry("seed").or_insert(Value::from(s));
-            m.insert("seed_source".into(), Value::from("fresh"));
-        }
+        // an omitted seed is fresh only on a top-level call (see dispatch_validated)
+        let depth = tools::CallDepth::enter();
+        let (result, args) = self.dispatch_validated(tool, name, args, depth.top());
         drop(depth);
+        let args = &args;
+        let mut result = result;
         match &mut result {
             Ok(v) => {
                 if let Some(s) = snapshot {
@@ -254,16 +177,110 @@ impl Engine {
                 }
             }
         }
+        self.push_log(name, args, result.is_ok(), source);
+        result
+    }
+
+    /// The one validated way into a tool, shared by top-level calls and by
+    /// `batch`: unknown-argument rejection, stable effect-id resolution
+    /// (against the project as it is *now*, so a batch can refer to an
+    /// effect an earlier call added), panic containment, effect-id upkeep
+    /// and float cleaning; on a `top` call (a user's call, or a call inside a
+    /// user's batch) an omitted seed is fresh (OS entropy + time) and the
+    /// chosen seed is returned, while explicit seeds and seeds a tool passes
+    /// to the tools it calls stay deterministic. It does NOT snapshot, roll
+    /// back, touch undo/redo, the revision or the log: the caller owns the
+    /// transaction. Returns the result and the arguments as the tool saw
+    /// them (ids resolved, seed filled in).
+    pub(crate) fn dispatch_validated(
+        &mut self,
+        tool: &tools::Tool,
+        name: &str,
+        args: &Value,
+        top: bool,
+    ) -> (Result<Value>, Value) {
+        let empty = Value::Object(Default::default());
+        let args = if args.is_null() { &empty } else { args };
+        if let Err(e) = check_unknown_args(tool, name, args) {
+            return (Err(e), args.clone());
+        }
+        let mut resolved = match resolve_effect_refs(&self.project, args) {
+            Ok(a) => a,
+            Err(e) => return (Err(e), args.clone()),
+        };
+        let mut fresh_seed = None;
+        if top
+            && (tool.schema)()["properties"].get("seed").is_some()
+            && args.get("seed").is_none_or(|v| v.is_null())
+        {
+            let s = crate::creative::fresh_seed();
+            if let Value::Object(m) = &mut resolved {
+                m.insert("seed".into(), Value::from(s));
+            }
+            fresh_seed = Some(s);
+        }
+        if top {
+            tools::set_seed_fresh(fresh_seed.is_some());
+        }
+        // a panicking tool must never take the MCP server down with it
+        let run = tool.run;
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(self, &resolved)
+        })) {
+            Ok(r) => r.map(clean_floats),
+            Err(p) => {
+                let msg = p
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "unknown panic".into());
+                Err(anyhow!("internal error in '{name}': {msg}. The project was rolled back; please report this."))
+            }
+        };
+        if result.is_ok() && tool.mutates {
+            self.project.ensure_fx_ids();
+        }
+        let mut result = result;
+        if let (Some(s), Ok(Value::Object(m))) = (fresh_seed, &mut result) {
+            m.entry("seed").or_insert(Value::from(s));
+            m.insert("seed_source".into(), Value::from("fresh"));
+        }
+        (result, resolved)
+    }
+
+    /// A tool call nested inside another tool (`batch`): the same validation
+    /// and safeguards as `call_from`, logged with the outer source, and
+    /// rolled back on its own failure; the outer call keeps the single undo
+    /// step and the revision bump.
+    pub(crate) fn call_nested(&mut self, name: &str, args: &Value, source: &str) -> Result<Value> {
+        let tool = tools::find(name).ok_or_else(|| unknown_tool(name))?;
+        let snapshot = if tool.mutates {
+            Some(self.project.clone())
+        } else {
+            None
+        };
+        // a call in a user's batch is a user's call: same fresh-seed rule
+        let top = tools::CallDepth::current() <= 1;
+        let (result, args) = self.dispatch_validated(tool, name, args, top);
+        if result.is_err() {
+            if let Some(s) = snapshot {
+                self.project = s;
+            }
+        }
+        self.push_log(name, &args, result.is_ok(), source);
+        result
+    }
+
+    fn push_log(&mut self, name: &str, args: &Value, ok: bool, source: &str) {
         self.log.push(LogEntry {
             tool: name.to_string(),
-            summary,
-            ok: result.is_ok(),
+            summary: summarize_args(args),
+            ok,
             source: source.to_string(),
         });
         if self.log.len() > 500 {
             self.log.remove(0);
         }
-        result
     }
 
     pub fn undo(&mut self) -> bool {
@@ -430,6 +447,38 @@ impl Engine {
         }
         Ok(rep)
     }
+}
+
+fn unknown_tool(name: &str) -> anyhow::Error {
+    anyhow!("unknown tool '{name}'. Call list_tools or get_guide to see what's available.")
+}
+
+/// Unknown top-level arguments are an error, never silently ignored.
+fn check_unknown_args(tool: &tools::Tool, name: &str, args: &Value) -> Result<()> {
+    let schema = (tool.schema)();
+    if schema["additionalProperties"] != Value::Bool(false) {
+        return Ok(());
+    }
+    if let (Some(props), Some(given)) = (schema["properties"].as_object(), args.as_object()) {
+        let bad: Vec<&String> = given.keys().filter(|k| !props.contains_key(*k)).collect();
+        if !bad.is_empty() {
+            let mut valid: Vec<&String> = props.keys().collect();
+            valid.sort();
+            return Err(anyhow!(
+                "unknown argument(s) {} for '{name}'. Valid: {}",
+                bad.iter()
+                    .map(|k| format!("'{k}'"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                valid
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Rewrite stable effect ids in tool arguments to chain positions:

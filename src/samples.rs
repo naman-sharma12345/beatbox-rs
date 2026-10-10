@@ -65,6 +65,14 @@ pub fn decode_file(path: &Path) -> Result<Vec<f32>> {
 
 /// Decode to stereo (mono files are duplicated) at the engine sample rate.
 pub fn decode_stereo(path: &Path) -> Result<(Vec<f32>, Vec<f32>)> {
+    let (l, r, rate) = decode_stereo_native(path)?;
+    let src_rate = rate as f32;
+    Ok((resample(&l, src_rate, SR), resample(&r, src_rate, SR)))
+}
+
+/// Decode to stereo at the file's own sample rate (no conversion), returning
+/// `(left, right, sample_rate)`. Delivery QC measures exactly these frames.
+pub fn decode_stereo_native(path: &Path) -> Result<(Vec<f32>, Vec<f32>, u32)> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::DecoderOptions;
     use symphonia::core::errors::Error as SErr;
@@ -92,7 +100,7 @@ pub fn decode_stereo(path: &Path) -> Result<(Vec<f32>, Vec<f32>)> {
         .default_track()
         .ok_or_else(|| anyhow!("no audio track"))?;
     let track_id = track.id;
-    let src_rate = track.codec_params.sample_rate.unwrap_or(44_100) as f32;
+    let src_rate = track.codec_params.sample_rate.unwrap_or(44_100);
     let mut decoder =
         symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())?;
     let mut left = Vec::new();
@@ -129,10 +137,7 @@ pub fn decode_stereo(path: &Path) -> Result<(Vec<f32>, Vec<f32>)> {
     if left.is_empty() {
         bail!("file decoded to zero samples");
     }
-    Ok((
-        resample(&left, src_rate, SR),
-        resample(&right, src_rate, SR),
-    ))
+    Ok((left, right, src_rate))
 }
 
 /// Sample-rate conversion (Kaiser windowed sinc, see `resample.rs`).

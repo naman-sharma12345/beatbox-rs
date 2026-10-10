@@ -65,8 +65,40 @@ fn tp_db(l: &[f32], r: &[f32]) -> f32 {
     crate::dsp::gain_to_db(analysis::true_peak(l).max(analysis::true_peak(r)))
 }
 
-/// Encode once to `path` and return the decoded audio (what a listener gets).
-fn encode_to(path: &Path, l: &[f32], r: &[f32], o: &DeliverOpts) -> Result<(Vec<f32>, Vec<f32>)> {
+/// The delivered file decoded back at its own sample rate: exactly the
+/// frames a listener gets, at the rate the file declares.
+pub struct DecodedOutput {
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+    pub sample_rate: u32,
+}
+
+impl DecodedOutput {
+    pub fn read(path: &Path) -> Result<Self> {
+        let (left, right, sample_rate) = samples::decode_stereo_native(path)?;
+        Ok(DecodedOutput {
+            left,
+            right,
+            sample_rate,
+        })
+    }
+    /// Duration from the decoded frame count and the decoded rate.
+    pub fn seconds(&self) -> f32 {
+        self.left.len().min(self.right.len()) as f32 / self.sample_rate.max(1) as f32
+    }
+    /// True peak of the decoded file, measured at its own rate (the 4x
+    /// oversampling is relative to the file's rate).
+    pub fn true_peak_db(&self) -> f32 {
+        tp_db(&self.left, &self.right)
+    }
+    /// BS.1770 loudness with K-weighting and gating windows for the file's rate.
+    pub fn loudness(&self) -> analysis::Loudness {
+        analysis::loudness_at(&self.left, &self.right, self.sample_rate as f32)
+    }
+}
+
+/// Encode once to `path` and return the decoded file (what a listener gets).
+fn encode_to(path: &Path, l: &[f32], r: &[f32], o: &DeliverOpts) -> Result<DecodedOutput> {
     if let Some(d) = path.parent() {
         if !d.as_os_str().is_empty() {
             std::fs::create_dir_all(d)?;
@@ -107,11 +139,9 @@ fn encode_to(path: &Path, l: &[f32], r: &[f32], o: &DeliverOpts) -> Result<(Vec<
         }
         f => bail!("unknown format '{f}' (wav, flac, mp3)"),
     }
-    if o.sample_rate != SR as u32 {
-        // the decoder resamples to the engine rate; measure the in-memory audio instead
-        return Ok((l.to_vec(), r.to_vec()));
-    }
-    samples::decode_stereo(path)
+    // always decode the real file, whatever its rate: codec overshoot (MP3)
+    // and any rate the encoder chose are what QC has to see
+    DecodedOutput::read(path)
 }
 
 /// Codec-aware delivery: loudness-normalise to a target, true-peak limit,
@@ -160,11 +190,14 @@ pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Val
         steps.push(json!({"step": "resample", "to_hz": o.sample_rate}));
     }
     let mut trim_total = 0.0f32;
-    let mut decoded_tp = 0.0;
-    for pass in 0..4 {
-        let (dl, dr) = encode_to(path, &l, &r, o)?;
-        decoded_tp = tp_db(&dl, &dr);
-        if decoded_tp <= o.ceiling_dbtp || o.format == "wav" && o.bits == 32 && pass > 0 {
+    // the file on disk is always the last encode: never trim without
+    // re-encoding (the final pass only measures)
+    for pass in 0..5 {
+        let decoded_tp = encode_to(path, &l, &r, o)?.true_peak_db();
+        if decoded_tp <= o.ceiling_dbtp
+            || o.format == "wav" && o.bits == 32 && pass > 0
+            || pass == 4
+        {
             break;
         }
         let trim = -(decoded_tp - o.ceiling_dbtp + 0.1);
@@ -172,12 +205,11 @@ pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Val
         trim_total += trim;
         steps.push(json!({"step": "codec_trim", "pass": pass + 1, "decoded_true_peak": decoded_tp, "trim_db": (trim * 100.0).round() / 100.0}));
     }
-    let (dl, dr) = if o.sample_rate == SR as u32 {
-        samples::decode_stereo(path)?
-    } else {
-        (l.clone(), r.clone())
-    };
-    let after = analysis::loudness(&dl, &dr);
+    // final QC on the file as written: decoded at its own rate, never the
+    // pre-encode buffer and never assuming the engine rate
+    let dec = DecodedOutput::read(path)?;
+    let decoded_tp = dec.true_peak_db();
+    let after = dec.loudness();
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let lufs_ok = o
         .target_lufs
@@ -187,7 +219,8 @@ pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Val
         "path": path, "format": o.format, "bits": if o.format == "mp3" { Value::Null } else { json!(o.bits) },
         "bitrate_kbps": if o.format == "mp3" { json!(o.bitrate_kbps) } else { Value::Null },
         "sample_rate": o.sample_rate, "dither": o.dither && o.bits < 32 && o.format != "mp3",
-        "bytes": bytes, "seconds": (dl.len() as f32 / SR * 100.0).round() / 100.0,
+        "bytes": bytes, "seconds": (dec.seconds() * 100.0).round() / 100.0,
+        "decoded": {"sample_rate": dec.sample_rate, "frames": dec.left.len().min(dec.right.len())},
         "before": {"integrated_lufs": before.integrated_lufs, "true_peak_dbtp": before.true_peak_dbtp},
         "after": {"integrated_lufs": after.integrated_lufs, "true_peak_dbtp": (decoded_tp * 100.0).round() / 100.0, "short_term_max_lufs": after.short_term_max_lufs, "loudness_range_lu": after.loudness_range_lu},
         "codec_trim_db": (trim_total * 100.0).round() / 100.0,
@@ -573,6 +606,94 @@ mod tests {
             )
             .unwrap();
         assert!(s["count"].as_u64().unwrap() >= 3, "{s}");
+    }
+
+    /// Independent check of a delivered file: decode at its own rate.
+    fn file_stats(path: &std::path::Path) -> (u32, f64, f64, f64) {
+        let d = super::DecodedOutput::read(path).unwrap();
+        // cross-check the native-rate loudness against an explicit
+        // conversion to the engine rate and the 44.1 kHz meter
+        let l44 = crate::resample::resample(&d.left, d.sample_rate, 44_100);
+        let r44 = crate::resample::resample(&d.right, d.sample_rate, 44_100);
+        let via44 = crate::analysis::loudness(&l44, &r44).integrated_lufs as f64;
+        let native = d.loudness().integrated_lufs as f64;
+        assert!(
+            (via44 - native).abs() < 0.3,
+            "native {native} vs resampled {via44}"
+        );
+        (
+            d.sample_rate,
+            d.seconds() as f64,
+            d.true_peak_db() as f64,
+            native,
+        )
+    }
+
+    #[test]
+    fn export_48k_wav_is_measured_from_the_file() {
+        let mut e = eng("beatbox_delivery_48k_wav");
+        let base = e.call("export_audio", &json!({"format": "wav", "bits": 24, "target_lufs": -10, "path": "out/b44.wav", "section": 0})).unwrap();
+        let w = e.call("export_audio", &json!({"format": "wav", "bits": 24, "sample_rate": 48000, "target_lufs": -10, "path": "out/b48.wav", "section": 0})).unwrap();
+        assert_eq!(w["passed"], true, "{w}");
+        assert_eq!(w["decoded"]["sample_rate"], 48000, "{w}");
+        // duration comes from the output frames at the output rate: the same
+        // window must last the same time at 44.1 and 48 kHz
+        let (s44, s48) = (
+            base["seconds"].as_f64().unwrap(),
+            w["seconds"].as_f64().unwrap(),
+        );
+        assert!((s44 - s48).abs() <= 0.011, "44.1k {s44}s vs 48k {s48}s");
+        let path = e.resolve("out/b48.wav");
+        let (rate, secs, tp, lufs) = file_stats(&path);
+        assert_eq!(rate, 48000);
+        assert!((secs - s48).abs() <= 0.01, "{secs} vs reported {s48}");
+        assert!(tp <= -0.95, "decoded 48k true peak {tp}");
+        assert!(
+            (w["after"]["true_peak_dbtp"].as_f64().unwrap() - tp).abs() < 0.02,
+            "{w}"
+        );
+        assert!(
+            (w["after"]["integrated_lufs"].as_f64().unwrap() - lufs).abs() < 0.05,
+            "{w}"
+        );
+        assert!((lufs + 10.0).abs() < 1.0, "{lufs}");
+    }
+
+    #[test]
+    fn export_48k_mp3_catches_codec_overshoot() {
+        if !super::ffmpeg_available() {
+            eprintln!("ffmpeg not on PATH: skipping 48 kHz mp3 delivery test");
+            return;
+        }
+        let mut e = eng("beatbox_delivery_48k_mp3");
+        // a hot master: the limiter sits at -1.5 dBTP and LAME overshoots it
+        let m = e.call("export_audio", &json!({"format": "mp3", "sample_rate": 48000, "target_lufs": -8, "true_peak_ceiling": -1, "path": "out/c48.mp3", "section": 0})).unwrap();
+        assert_eq!(m["decoded"]["sample_rate"], 48000, "{m}");
+        let path = e.resolve("out/c48.mp3");
+        let (rate, secs, tp, lufs) = file_stats(&path);
+        assert_eq!(rate, 48000);
+        // the independently decoded MP3 meets the ceiling and matches the report
+        assert!(tp <= -0.95, "decoded 48k mp3 true peak {tp}: {m}");
+        assert!(
+            (m["after"]["true_peak_dbtp"].as_f64().unwrap() - tp).abs() < 0.02,
+            "{m}"
+        );
+        assert!(
+            (m["after"]["integrated_lufs"].as_f64().unwrap() - lufs).abs() < 0.05,
+            "{m}"
+        );
+        assert_eq!(m["passed"], true, "{m}");
+        // duration from the decoded frames at 48 kHz (MP3 adds encoder
+        // delay/padding, a few tens of ms)
+        let w = e
+            .call(
+                "export_audio",
+                &json!({"format": "wav", "path": "out/c44.wav", "section": 0}),
+            )
+            .unwrap();
+        let s44 = w["seconds"].as_f64().unwrap();
+        assert!((secs - m["seconds"].as_f64().unwrap()).abs() <= 0.01, "{m}");
+        assert!((secs - s44).abs() < 0.1, "mp3 {secs}s vs wav {s44}s");
     }
 
     #[test]

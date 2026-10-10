@@ -113,6 +113,10 @@ impl CallDepth {
         });
         CallDepth(d)
     }
+    /// Current nesting depth on this thread (0 outside any tool call).
+    pub fn current() -> u32 {
+        CALL_DEPTH.with(|c| c.get())
+    }
     pub fn top(&self) -> bool {
         self.0 == 1
     }
