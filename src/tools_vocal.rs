@@ -103,12 +103,9 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let mut rng = Rng::new(seed);
     // grid tempo: the singer's tempo (double-time when very slow)
     let mut bpm = an.tempo.bpm;
-    let mut beat_mult = 1.0;
-    if bpm < 72.0 && f_opt(a, "bpm").is_none() {
+        if bpm < 72.0 && f_opt(a, "bpm").is_none() {
         bpm *= 2.0;
-        beat_mult = 2.0;
     }
-    let beat_s = 60.0 / bpm;
     let key_root = s_opt(a, "key").unwrap_or_else(|| an.key_root.clone());
     let scale = s_opt(a, "scale").unwrap_or_else(|| an.scale.clone());
     let key_pc = theory::pitch_class(&key_root)?;
@@ -116,18 +113,38 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let outro_bars = (u_or(a, "outro_bars", 4) as u32).clamp(0, 16);
     let section_bars = (u_or(a, "section_bars", 8) as u32).clamp(2, 16);
 
-    // place the vocal: its first bar line (at or before the first note) lands on bar `intro_bars`
+    // place the vocal. With warp (default) every sung phrase start is pinned to
+    // a bar line and the take is time-stretched between them (pitch kept), so a
+    // free-time singer locks to the grid; without it the take keeps its own
+    // timing and its first bar line lands on bar `intro_bars`.
+    let anchors = vocal::phrase_anchors(&an.notes, 0.28, 1.4);
+    let warp = if b_or(a, "warp", true) && anchors.len() >= 3 {
+        let w = vocal::fit_warp(&anchors, bpm);
+        bpm = w.bpm;
+        Some(w)
+    } else {
+        None
+    };
+    let beat_s = 60.0 / bpm;
     let bar_s = 4.0 * beat_s;
-    let db = an.tempo.downbeat;
-    let first = an.notes[0].start;
-    let k = ((first - db) / bar_s).floor();
-    let first_bar_t = db + k * bar_s;
-    let clip_start_beat = intro_bars as f32 * 4.0 - first_bar_t / beat_s;
-    let song_beat = |t: f32| clip_start_beat + t / beat_s;
+    let (clip_start_beat, song_beat): (f32, Box<dyn Fn(f32) -> f32>) = match &warp {
+        Some(w) => {
+            let w2 = w.clone();
+            let base = intro_bars as f32 * 4.0;
+            (base + w.beat_at(0.0), Box::new(move |t: f32| base + w2.beat_at(t)))
+        }
+        None => {
+            let db = an.tempo.downbeat;
+            let first = an.notes[0].start;
+            let k = ((first - db) / bar_s).floor();
+            let first_bar_t = db + k * bar_s;
+            let c = intro_bars as f32 * 4.0 - first_bar_t / beat_s;
+            (c, Box::new(move |t: f32| c + t / beat_s))
+        }
+    };
     let last_end = an.notes.last().map(|n| n.end).unwrap_or(an.duration);
     let vocal_end_bar = (song_beat(last_end) / 4.0).ceil() as u32;
     let vocal_bars = vocal_end_bar.saturating_sub(intro_bars).max(1);
-    let _ = beat_mult;
 
     // melody on the song grid
     let mel: Vec<(f32, f32, u8)> = an.notes.iter().map(|n| (song_beat(n.start), n.dur() / beat_s, n.pitch)).collect();
@@ -250,10 +267,23 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     e.project = p;
 
     // vocal sample + track + clip
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("take").to_string();
+    let (sample_path, sample_name) = match &warp {
+        Some(w) => {
+            let b0 = w.beat_at(0.0);
+            let out_len = (w.beat_at(an.duration) - b0) * beat_s;
+            let y = vocal::warp_audio(&x, SR, out_len, |o| w.time_at_beat(b0 + o / beat_s));
+            std::fs::create_dir_all(e.samples_dir())?;
+            let p = e.samples_dir().join(format!("{}_warped.wav", samples::sample_name(&stem)));
+            crate::render::write_wav(&p, &y, &y)?;
+            (p, format!("vocal_{stem}_warped"))
+        }
+        None => (path.clone(), format!("vocal_{stem}")),
+    };
     let info = SampleInfo {
-        name: samples::sample_name(&format!("vocal_{}", path.file_stem().and_then(|s| s.to_str()).unwrap_or("take"))),
-        path: path.to_string_lossy().into(),
-        source: "vocal take".into(),
+        name: samples::sample_name(&sample_name),
+        path: sample_path.to_string_lossy().into(),
+        source: if warp.is_some() { "vocal take (auto-warped to the grid)".into() } else { "vocal take".into() },
         license: s_opt(a, "license").unwrap_or_default(),
         author: String::new(),
         duration: 0.0,
@@ -389,6 +419,7 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
         "key": format!("{} {}", e.project.key_root, e.project.scale),
         "vocal": analysis_json(&an, 0),
         "vocal_clip": {"track": "vocal", "sample": sample, "start_beat": (clip_start_beat * 1000.0).round() / 1000.0},
+        "warp": warp.as_ref().map(|w| json!({"phrases_pinned": w.anchors.len(), "bpm": w.bpm, "stretch_range": [(w.min_stretch * 1000.0).round() / 1000.0, (w.max_stretch * 1000.0).round() / 1000.0]})),
         "harmonic_rhythm_beats": slot_beats,
         "sections": sec_json,
         "song_seconds": e.project.song_seconds(),
@@ -453,6 +484,7 @@ pub fn tools() -> Vec<Tool> {
                 "outro_bars": {"type": "integer"},
                 "section_bars": {"type": "integer"},
                 "lyrics": {"type": "boolean", "description": "transcribe lyrics to find the hook (default true)"},
+                "warp": {"type": "boolean", "description": "pin each sung phrase to a bar line and time-stretch between them (default true; false keeps the singer's own timing)"},
                 "known_lyrics": {"type": "string"},
                 "model": {"type": "string"},
                 "language": {"type": "string"},
