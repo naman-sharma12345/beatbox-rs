@@ -150,9 +150,9 @@ pub const PALETTES: &[Palette] = &[
         ],
         samples: &[
             ("kick", "sp_bd_klub"),
-            ("snare", "tr808_sd2575"),
+            ("snare", "sp_elec_hi_snare"),
             ("clap", "tr808_cp"),
-            ("hat", "tr808_ch"),
+            ("hat", "sp_hat_raw"),
             ("open_hat", "tr808_oh25"),
             ("perc", "tr808_rs"),
         ],
@@ -670,16 +670,31 @@ pub fn mix_moves(e: &mut Engine, name: &str) -> Value {
         for t in e.project.tracks.iter_mut() {
             let role = crate::tools_mix::role_of(&t.name, &t.instrument);
             match role {
-                "bass" if has_kick && !t.effects.iter().any(|x| x.type_name() == "sidechain") => {
-                    put_fx(
-                        t,
-                        "pal_duck",
-                        effect(
-                            json!({"type": "sidechain", "source": "kick", "amount": 0.65, "release_ms": 110.0}),
-                        ),
-                        false,
-                    );
-                    moves.push(format!("{}: ducked under the kick (0.65, 110 ms)", t.name));
+                "bass" => {
+                    // the 808 was ~80 % of the energy: pull it back and duck it
+                    t.volume_db -= 2.0;
+                    let mut deepened = false;
+                    for fx in t.effects.iter_mut() {
+                        if let crate::fx::Effect::Sidechain(sc) = fx {
+                            sc.amount = sc.amount.max(0.65);
+                            sc.release_ms = sc.release_ms.min(120.0);
+                            deepened = true;
+                        }
+                    }
+                    if !deepened && has_kick {
+                        put_fx(
+                            t,
+                            "pal_duck",
+                            effect(
+                                json!({"type": "sidechain", "source": "kick", "amount": 0.65, "release_ms": 110.0}),
+                            ),
+                            false,
+                        );
+                    }
+                    moves.push(format!(
+                        "{}: -2 dB, ducked under the kick (>= 0.65, <= 120 ms)",
+                        t.name
+                    ));
                 }
                 "kick" => {
                     put_fx(
@@ -712,7 +727,7 @@ pub fn mix_moves(e: &mut Engine, name: &str) -> Value {
                             false,
                         );
                     }
-                    t.volume_db += if role == "snare" { 1.0 } else { 1.5 };
+                    t.volume_db += if role == "snare" { 1.5 } else { 3.0 };
                     moves.push(format!("{}: high shelf +{g} dB at {f} Hz", t.name));
                 }
                 _ => {}

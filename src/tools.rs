@@ -618,15 +618,16 @@ fn desi_touches(e: &mut Engine, seed: u64, meend: bool) -> Result<()> {
     }
     for t in e.project.tracks.iter_mut() {
         match t.name.as_str() {
+            // the dayan rings at Sa (~280-350 Hz): keep it under the kit
             "tabla" => {
-                t.volume_db = -5.0;
+                t.volume_db = -9.0;
                 t.pan = -0.2;
             }
             "dholak" => {
-                t.volume_db = -7.0;
+                t.volume_db = -10.0;
                 t.pan = 0.25;
             }
-            "dholak_bass" => t.volume_db = -6.0,
+            "dholak_bass" => t.volume_db = -8.0,
             "tanpura" => t.volume_db = -14.0,
             _ => {}
         }
@@ -1398,7 +1399,16 @@ fn core_tools() -> Vec<Tool> {
                 let pi = pattern_idx(&e.project, a)?;
                 let pat = &mut e.project.patterns[pi];
                 let oct = a.get("octave").and_then(|v| v.as_i64()).map(|v| v as i32).unwrap_or(if style == "808" { 1 } else { 2 });
-                let notes = theory::bass_notes(&chords, f_or(a, "bars_per_chord", 1.0), pat.steps(), oct, &style, &mut Rng::new(seed_of(a)))?;
+                let mut notes = theory::bass_notes(&chords, f_or(a, "bars_per_chord", 1.0), pat.steps(), oct, &style, &mut Rng::new(seed_of(a)))?;
+                // keep the bass in its own register: octave jumps above E3 (~165 Hz)
+                // fold down, so the 200-500 Hz band stays for the chords and snare
+                if oct <= 2 {
+                    for n in notes.iter_mut() {
+                        while n.pitch > 52 {
+                            n.pitch -= 12;
+                        }
+                    }
+                }
                 let n = notes.len();
                 *pat.notes_mut(&track) = notes;
                 Ok(json!({"track": track, "style": style, "notes": n}))

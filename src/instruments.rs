@@ -1259,7 +1259,7 @@ pub fn preset(name: &str) -> Option<Instrument> {
             p.osc2 = Wave::Saw;
             p.osc_mix = 0.2;
             p.sub_level = 0.5;
-            p.cutoff = 500.0;
+            p.cutoff = 380.0;
             p.filter_env_amount = 1.5;
             p.filter_env = Adsr::new(0.002, 0.15, 0.2, 0.1);
             p.amp_env = Adsr::new(0.004, 0.4, 0.6, 0.08);
