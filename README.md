@@ -12,7 +12,7 @@
 
 | | Typical DAW | Beatbox |
 |---|---|---|
-| AI control | none / plugins | 163 MCP tools, every feature; `batch` makes 50 edits one atomic undo step |
+| AI control | none / plugins | 175 MCP tools, every feature; `batch` makes 50 edits one atomic undo step |
 | Feedback loop | your ears | `analyze_mix`: LUFS, true peak, spectrum balance, stereo, masking, 0-100 score + fixes |
 | Trying ideas | save-as copies | `snapshot` A/B variants, `diff_project` structured diffs, `compare_variants` renders and scores each |
 | Delivery | trust the meters | `validate_project` / `check_master`: overs, true peak, LUFS target, DC, mono, missing samples, broken routing |
@@ -20,6 +20,19 @@
 | Theory | piano roll | roman-numeral progressions, voice leading, scale-locked melodies |
 | Mistakes | Ctrl+Z if you're lucky | every tool call is undoable, failed calls roll back |
 | Format | binary project | one readable JSON file |
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Step sequencer](docs/screenshots/sequencer.png) | ![Mixer](docs/screenshots/mixer.png) |
+| **Step sequencer** — channel rack with per-step velocity | **Mixer** — console strips with live meters, sends, bus and master LUFS / true peak |
+| ![Playlist and tempo map](docs/screenshots/playlist_tempo_map.png) | ![Automation](docs/screenshots/automation.png) |
+| **Playlist** — clips over the song with the tick tempo map | **Automation editor** — lanes and curves over the sections |
+| ![Piano roll](docs/screenshots/piano_roll.png) | ![Tempo map ruler](docs/screenshots/tempo_map_ruler.png) |
+| **Piano roll** — snap, quantize, velocity tools and the velocity lane | **Tempo ruler** — bar:beat:tick timebase |
+
+Screenshots are produced headlessly by the `screenshots` GitHub Actions workflow.
 
 ## Features
 
@@ -90,7 +103,7 @@ Set `FREESOUND_API_KEY` (free at freesound.org/apiv2/apply) to let the AI pull r
 
 ## Why Beatbox beats FL Studio for AI
 
-- **Every action is a typed MCP tool.** 163 tools with JSON schemas cover the whole DAW, so a model drives it directly instead of clicking pixels or scripting around a GUI.
+- **Every action is a typed MCP tool.** 175 tools with JSON schemas cover the whole DAW, so a model drives it directly instead of clicking pixels or scripting around a GUI.
 - **AI ears with ranked verdicts and fix calls.** `ears_report`, `diff_renders`, `masking_matrix`, `loudness_report`, `groove_analysis` / `hook_analysis` / `structure`, `stereo_image`, `punch`, `vocal_pocket` and `reference_match` return ranked problems, each with the exact tool call that fixes it.
 - **Diff-verified revisions.** `produce_track` runs render → critique → `diff_renders` against the best render so far, and keeps a revision only when the ears agree it is better.
 - **Nine genre playbooks.** trap, melodic_rap, drill, boom_bap, desi_hiphop (sitar, tabla, tanpura drone), lofi, rnb, phonk and afrobeats, readable with `describe_genre`.
@@ -98,7 +111,7 @@ Set `FREESOUND_API_KEY` (free at freesound.org/apiv2/apply) to let the AI pull r
 - **FL-style workflow, as tools.** Playlist pattern clips, automation clips and mixer bus routing (`place_pattern`, `create_automation_clip`, `route_bus`) with cycle checks.
 - **Deterministic project JSON.** The whole song is one readable, stable JSON file, so every change can be diffed, reviewed and undone.
 
-## Tool surface (163 tools)
+## Tool surface (175 tools)
 
 Discovery `get_guide` `list_presets` `list_tools` · Project `new_project` `get_project` `save_project` `load_project` `set_tempo` `set_key` `undo` `redo` `batch` · Tracks `add_track` `remove_track` `set_instrument` `tweak_instrument` `set_mixer` · Sound design `design_sound` `layer_instrument` `create_macro` `set_macro` `describe_instrument` `set_parameters` · Multisample `add_multisample_track` `install_instrument_pack` · FX `add_effect` `tweak_effect` `remove_effect` `get_effects` `describe_effect` `bypass_effect` `reorder_effects` · Patterns `add_pattern` `remove_pattern` `set_pattern_length` `set_steps` `toggle_step` `add_notes` `clear` `get_pattern` `transpose` `humanize` · Piano roll `edit_notes` `delete_notes` `quantize` `split_notes` `merge_notes` `legato` `arpeggiate` `strum` `roll_notes` `chord_voicing` `harmonize` `detect_key` `velocity_curve` `apply_groove` · Writing `write_riff` `add_roll` `write_phrase` `copy_notes` `add_slides` · Generators `generate_drums` `generate_bassline` `generate_chords` `generate_melody` `generate_beat` `generate_variation` `generate_fill` `counter_melody` · Theory `theory_scale` `theory_chords` · Song `set_arrangement` `build_structure` `vary_section` `add_transition` `set_section_mix` · MIDI `import_midi` `export_midi` · Samples `search_samples` `download_sample` `import_sample` `list_samples` `add_sample_track` `slice_sample` `stretch_sample` `edit_sample` `analyze_audio` · Output `render` `analyze_mix` · Automation `add_automation` `set_automation_points` `clear_automation` `list_automation` `generate_automation` · Routing `add_bus` `remove_bus` `set_send` `route_track` `list_routing` · Variants `snapshot` `list_snapshots` `restore_snapshot` `diff_project` `compare_variants` · QC `validate_project` `check_master` · Ears `analyze_sections` `detect_artifacts` `render_spectrogram` `render_preview` `waveform_peaks` `spectrum` `eq_curve` `analyze_track` `detect_transients` `strip_silence` · Mix `level_hints` `balance_mix` · Delivery `export_audio` `export_stems` `master_assistant` `analyze_reference` `compare_to_reference` · Studio `transport` `get_history` `screenshot` · Producer `produce_track` `plan_track` `apply_plan` `critique_track` `revise_track` `list_genres` `describe_genre` `install_kit` `index_samples` `find_samples` `flip_sample` `vocal_chop` · Listen `ears_report` `diff_renders` `loudness_report` `masking_matrix` `groove_analysis` `hook_analysis` `structure` · Ears pro `stereo_image` `punch` `vocal_pocket` `reference_match` · Playlist & FL parity `place_pattern` `arrangement_to_playlist` `list_playlist` `remove_clip` `clear_playlist` `create_automation_clip` `place_automation_clip` `list_automation_clips` `route_bus` `scale_snap` `generate_ghost_notes` · FX placement `place_fx` `move_effect` `ab_compare`
 
@@ -132,5 +145,9 @@ MIT © Naman Sharma
 
 ## Sound palettes
 
-`list_palettes` / `apply_palette` swap a project's voices by role to a curated palette: **dark_trap**, **dhh_grit**, **boom_bap_dusty**, **drill_slide**, **melodic_airy** (level-matched, Indian instruments and featured modelled instruments kept). `use_samples:true` uses each palette's CC0 one-shot kit (fetched once, SHA-256 checked; see SAMPLES_LICENSES.md). `audition_palette` renders a palette's voices; `install_palette_samples` indexes the 53 curated CC0 one-shots with role/genre/character tags for `find_samples`. The voices themselves: mipmapped band-limited oscillators, layered kicks/snares/claps/hats with round-robin variation and velocity tone, an 808 with sub + driven body + click and legato glides.
+`list_palettes` / `apply_palette` swap a project's voices by role to a curated palette: **dark_trap**, **dhh_grit**, **boom_bap_dusty**, **drill_slide**, **melodic_airy** (level-matched, Indian instruments and featured modelled instruments kept). `use_samples:true` uses each palette's CC0 one-shot kit (fetched once, SHA-256 checked; see SAMPLES_LICENSES.md). `audition_palette` renders a palette's voices; `install_palette_samples` indexes the 53 curated CC0 one-shots with role/genre/character tags for `find_samples`. `produce_track` picks the palette for the genre automatically (`palette::for_genre`) and records it in the plan and manifest.
+
+**Mud control (sprint 9b).** Chords played over a bass use open voicings (lowest note B3 or higher, no low thirds, rootless 7ths), and `carve_mix` adds role-sized low cuts and a 320 Hz dip on keys/pads/leads when a bass plays. It runs inside `generate_beat`, `apply_palette` and the producer and never stacks.
+
+**Desi hip-hop (sprint 9b).** `generate_beat {style: "desi_hiphop"}` writes tabla and dholak tuned to the key, Kafi / Asavari / Bhairav scales, a sitar or bansuri lead with meend glides, harmonium and a tanpura drone (synthesized presets `harmonium`, `dholak`, `dholak_bass`; raag scales kafi, asavari, bhairavi, todi). The voices themselves: mipmapped band-limited oscillators, layered kicks/snares/claps/hats with round-robin variation and velocity tone, an 808 with sub + driven body + click and legato glides.
 
