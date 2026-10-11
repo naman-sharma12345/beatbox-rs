@@ -1850,8 +1850,12 @@ fn ks_string(fs: f32, vel: f32, kind: &str, p: &PluckParams, n: usize, t60: f32,
     // excitation
     let mut ex = vec![0.0f32; nd];
     if kind == "santoor" {
-        // a felt-less hammer: a short raised-cosine pulse plus a little noise
-        let w = ((SR * 0.0007 * (1.6 - vel)) as usize).clamp(2, nd.max(3) - 1);
+        // a felt-less hammer: a short raised-cosine pulse plus a little noise.
+        // The pulse width sets the brightness: a raised cosine T long has its
+        // spectrum's main lobe out to 2/T, so the old ~0.56 ms pulse left
+        // almost nothing above ~3.6 kHz to ring (santoor A/B, c29b6dd: longer
+        // decay but no brighter onset). ~0.22 ms reaches ~9 kHz.
+        let w = ((SR * 0.00028 * (1.6 - vel)) as usize).clamp(2, nd.max(3) - 1);
         let at = (nd as f32 * 0.12) as usize;
         for k in 0..w {
             let i = (at + k) % nd;
@@ -1988,7 +1992,8 @@ fn render_pluck(p: &PluckParams, pitch: f32, vel: f32, gate: f32, rng: &mut Rng)
     let mut bands: Vec<(Biquad, f32)> = body.iter().map(|&(fr, q, g)| (Biquad::new(BiquadKind::Bandpass, fr, q, 0.0), g)).collect();
     // tone: tame the 2-5 kHz edge and the fizz above
     let (hc, edge) = match kind {
-        "santoor" => (14000.0, -1.5),
+        // santoor: the steel-string edge is the instrument (was -1.5 dB)
+        "santoor" => (14000.0, 1.5),
         "sitar" => (8000.0, -5.0),
         _ => (7000.0, -3.5),
     };
