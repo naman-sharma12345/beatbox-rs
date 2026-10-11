@@ -720,6 +720,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::resynth::tools());
     v.extend(crate::vocal_flex::tools());
     v.extend(crate::vocal_repair::tools());
+    v.extend(crate::vocal_clarity::tools());
     v
 }
 
