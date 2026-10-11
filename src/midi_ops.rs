@@ -20,6 +20,8 @@ pub struct Selection {
     pub pitches: Vec<u8>,
     pub vel_min: f32,
     pub vel_max: f32,
+    /// Only notes with these stable ids (empty = no id filter).
+    pub ids: Vec<String>,
 }
 
 impl Default for Selection {
@@ -32,6 +34,7 @@ impl Default for Selection {
             pitches: Vec::new(),
             vel_min: 0.0,
             vel_max: 1.0,
+            ids: Vec::new(),
         }
     }
 }
@@ -45,6 +48,7 @@ impl Selection {
             && (self.pitches.is_empty() || self.pitches.contains(&n.pitch))
             && n.vel >= self.vel_min - 1e-4
             && n.vel <= self.vel_max + 1e-4
+            && (self.ids.is_empty() || self.ids.iter().any(|i| *i == n.id))
     }
 }
 

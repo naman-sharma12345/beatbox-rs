@@ -101,7 +101,7 @@ fn playlist_json(p: &Project) -> Value {
         .max()
         .unwrap_or(0);
     json!({
-        "clips": p.playlist.iter().enumerate().map(|(i, c)| json!({"id": i, "pattern": c.pattern, "start_bar": c.start_bar, "bars": c.bars, "end_bar": c.start_bar + c.bars, "lane": c.lane, "tracks": c.tracks})).collect::<Vec<_>>(),
+        "clips": p.playlist.iter().enumerate().map(|(i, c)| json!({"id": c.id, "index": i, "pattern": c.pattern, "start_bar": c.start_bar, "bars": c.bars, "end_bar": c.start_bar + c.bars, "lane": c.lane, "tracks": c.tracks})).collect::<Vec<_>>(),
         "song_bars": end,
         "compiled_sections": p.arrangement.iter().map(|s| s.pattern.clone()).collect::<Vec<_>>(),
     })
@@ -249,7 +249,7 @@ pub fn tools() -> Vec<Tool> {
                     bail!("the song uses the section arrangement; call arrangement_to_playlist first (or clear_playlist to stay with sections)");
                 }
                 for k in 0..u_or(a, "repeat", 1).clamp(1, 64) as u32 {
-                    e.project.playlist.push(PlaylistClip { pattern: pname.clone(), start_bar: start + k * bars, bars, tracks: tracks.clone(), lane: u_or(a, "lane", 0) as u32 });
+                    e.project.playlist.push(PlaylistClip { pattern: pname.clone(), start_bar: start + k * bars, bars, tracks: tracks.clone(), lane: u_or(a, "lane", 0) as u32, id: String::new() });
                 }
                 compile_playlist(&mut e.project)?;
                 Ok(playlist_json(&e.project))
@@ -269,7 +269,7 @@ pub fn tools() -> Vec<Tool> {
                         continue;
                     }
                     let bars = p.patterns[p.pattern_index(&s.pattern)?].bars * s.repeats.max(1);
-                    p.playlist.push(PlaylistClip { pattern: s.pattern.clone(), start_bar: bar, bars, tracks: Vec::new(), lane: 0 });
+                    p.playlist.push(PlaylistClip { pattern: s.pattern.clone(), start_bar: bar, bars, tracks: Vec::new(), lane: 0, id: String::new() });
                     bar += bars;
                 }
                 compile_playlist(p)?;
@@ -285,12 +285,19 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "remove_clip",
-            description: "Remove playlist clips by id (see list_playlist), or every clip of a pattern / every clip starting at a bar.",
+            description: "Remove playlist clips by stable id (\"pl4\", see list_playlist) or position index, or every clip of a pattern / every clip starting at a bar.",
             mutates: true,
-            schema: || obj(json!({"id": {"type": "integer"}, "pattern": {"type": "string"}, "start_bar": {"type": "integer"}}), &[]),
+            schema: || obj(json!({"id": {"type": ["string", "integer"], "description": "stable clip id (\"pl4\") or its position in list_playlist"}, "pattern": {"type": "string"}, "start_bar": {"type": "integer"}}), &[]),
             run: |e, a| {
                 let before = e.project.playlist.len();
-                if let Some(id) = a.get("id").and_then(|v| v.as_u64()) {
+                let by_id = a.get("id").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| s.parse::<usize>().is_err());
+                let by_index = a.get("id").and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())));
+                if let Some(id) = by_id {
+                    let Some(i) = e.project.playlist.iter().position(|c| c.id == id) else {
+                        bail!("no playlist clip '{id}' (see list_playlist)");
+                    };
+                    e.project.playlist.remove(i);
+                } else if let Some(id) = by_index {
                     if (id as usize) >= before {
                         bail!("no clip {id} ({before} clips)");
                     }
@@ -344,7 +351,7 @@ pub fn tools() -> Vec<Tool> {
                 let param = s_req(a, "param")?;
                 let old = e.project.automation_clips.iter().position(|c| c.name == name);
                 let placements = old.map(|i| e.project.automation_clips[i].placements.clone()).unwrap_or_default();
-                let clip = AutomationClip { name: name.clone(), target, param, length_beats: len, points, placements: placements.clone() };
+                let clip = AutomationClip { name: name.clone(), target, param, length_beats: len, points, placements: placements.clone(), id: String::new() };
                 for at in &placements {
                     stamp(&mut e.project, &clip, *at);
                 }

@@ -57,3 +57,5 @@ Numbering note: this slot was planned as "real-time engine"; what actually shipp
 - Block-based cpal audio graph shared by playback and offline render, live meters, PDC
 ## Sprint 12 — Plugins (planned)
 - CLAP/VST3 hosting with crash isolation and parameter discovery as MCP tools
+## Sprint 13 — Core engine (tab/frontier, in progress; answers the external review)
+- DONE: stable object identity. Tracks, sends, buses, patterns, notes, playlist clips, audio clips, automation lanes and automation clips carry persistent ids (`trk3`, `n41`, `clip7`), unique project-wide, never reused, kept through undo/redo and save/load; inserts keep their effect ids. Every tool that takes a track/bus/pattern name also takes its id; note tools select by `ids`; audio and playlist clips are removed by id. Project files carry `schema_version` 2; older files migrate on load. Tools: `lookup_id`, `list_ids`. Honest limit: notes are still stored per pattern under the track's name (ids sit on top of that layout rather than replacing it).

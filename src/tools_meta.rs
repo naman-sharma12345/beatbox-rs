@@ -16,7 +16,7 @@ fn modules() -> Vec<(&'static str, &'static str, Vec<Tool>)> {
     vec![
         ("start", "one call does it all: make_beat from a prompt or lyrics, produce_song from a recording", crate::tools_prompt::tools()),
         ("discover", "learn the engine: guide, catalog, describe a tool", { let mut v: Vec<Tool> = tools::core_tools().into_iter().filter(|t| DISCOVERY.contains(&t.name)).collect(); v.extend(tools()); v }),
-        ("project", "new/load/save, tempo, key, tracks, notes, effects, undo/redo, snapshots", tools::core_tools().into_iter().filter(|t| !DISCOVERY.contains(&t.name)).collect()),
+        ("project", "new/load/save, tempo, key, tracks, notes, effects, undo/redo, snapshots, stable object ids", { let mut v: Vec<Tool> = tools::core_tools().into_iter().filter(|t| !DISCOVERY.contains(&t.name)).collect(); v.extend(crate::tools_ids::tools()); v }),
         ("studio", "transport, history, screenshot, live studio, metronome click", { let mut v = crate::tools_studio::tools(); v.extend(crate::tools_click::tools()); v }),
         ("notes", "piano roll and MIDI: write, edit, quantize, arpeggiate, strum", crate::tools_midi::tools()),
         ("sound", "instruments and sound design, additive synthesis and resynthesis, real recorded instruments (SoundFont library: fetch, list, load, preview), web import (any URL, page links, Freesound, credits)", { let mut v = crate::tools_sound::tools(); v.extend(crate::resynth::tools()); v.extend(crate::tools_library::tools()); v.extend(crate::sound_catalog::tools()); v.extend(crate::web_import::tools()); v }),

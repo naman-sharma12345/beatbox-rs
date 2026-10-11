@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 pub const STEPS_PER_BAR: u32 = 16;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Note {
     /// Start position in 16th-note steps from the pattern start (fractional allowed).
     pub start: f32,
@@ -32,6 +32,24 @@ pub struct Note {
     /// Glide into this pitch by the end of the note (808 / synth slides).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slide_to: Option<u8>,
+    /// Stable id ("n12"), unique in the project and kept across edits,
+    /// undo and save/load. Empty on a fresh note until the engine assigns one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+}
+
+/// Notes compare by their musical content; the id is identity, not content
+/// (a pasted copy equals its source).
+impl PartialEq for Note {
+    fn eq(&self, o: &Self) -> bool {
+        self.start == o.start
+            && self.len == o.len
+            && self.pitch == o.pitch
+            && self.vel == o.vel
+            && self.prob == o.prob
+            && self.offset == o.offset
+            && self.slide_to == o.slide_to
+    }
 }
 
 impl Default for Note {
@@ -44,6 +62,7 @@ impl Default for Note {
             prob: 1.0,
             offset: 0.0,
             slide_to: None,
+            id: String::new(),
         }
     }
 }
@@ -79,6 +98,11 @@ fn zero() -> f32 {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Track {
+    /// Stable id, unique in the project, kept across renames, undo and
+    /// save/load (assigned by the engine; tools accept it wherever they take
+    /// a name or index).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub name: String,
     pub instrument: Instrument,
     #[serde(default = "zero")]
@@ -112,6 +136,7 @@ impl Track {
             effects: Vec::new(),
             output: None,
             sends: Vec::new(),
+            id: String::new(),
         }
     }
 }
@@ -119,6 +144,11 @@ impl Track {
 /// An aux send from a track to a bus.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Send {
+    /// Stable id, unique in the project, kept across renames, undo and
+    /// save/load (assigned by the engine; tools accept it wherever they take
+    /// a name or index).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub bus: String,
     /// Send level in dB (0 = unity).
     pub db: f32,
@@ -131,6 +161,11 @@ pub struct Send {
 /// master after their own effect chain, fader and pan.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Bus {
+    /// Stable id, unique in the project, kept across renames, undo and
+    /// save/load (assigned by the engine; tools accept it wherever they take
+    /// a name or index).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub name: String,
     #[serde(default)]
     pub effects: Vec<Effect>,
@@ -155,6 +190,7 @@ impl Bus {
             pan: 0.0,
             mute: false,
             output: None,
+            id: String::new(),
         }
     }
 }
@@ -164,6 +200,11 @@ impl Bus {
 /// clip is longer), optionally only some of its tracks.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PlaylistClip {
+    /// Stable id, unique in the project, kept across renames, undo and
+    /// save/load (assigned by the engine; tools accept it wherever they take
+    /// a name or index).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub pattern: String,
     pub start_bar: u32,
     pub bars: u32,
@@ -178,6 +219,11 @@ pub struct PlaylistClip {
 /// the clip start, that can be placed anywhere in the song.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AutomationClip {
+    /// Stable id, unique in the project, kept across renames, undo and
+    /// save/load (assigned by the engine; tools accept it wherever they take
+    /// a name or index).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub name: String,
     pub target: String,
     pub param: String,
@@ -190,6 +236,11 @@ pub struct AutomationClip {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Pattern {
+    /// Stable id, unique in the project, kept across renames, undo and
+    /// save/load (assigned by the engine; tools accept it wherever they take
+    /// a name or index).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub name: String,
     pub bars: u32,
     /// Notes per track, keyed by lowercase track name.
@@ -234,6 +285,7 @@ impl Pattern {
             bars: bars.clamp(1, 64),
             clips: BTreeMap::new(),
             meter: None,
+            id: String::new(),
         }
     }
     /// Steps in one bar of this pattern (16 in 4/4).
@@ -322,6 +374,13 @@ pub struct Project {
     /// `bpm` above is the tempo at beat 0. add_tempo_point / tempo_ramp.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tempo_points: Vec<TempoPoint>,
+    /// Project file schema. 0/absent = written before stable ids; the engine
+    /// migrates on load (every object gets an id) and writes the current one.
+    #[serde(default)]
+    pub schema_version: u32,
+    /// Next stable-id number (ids are never reused, even after a delete).
+    #[serde(default)]
+    pub id_seq: u64,
 }
 
 /// One tempo change: from `beat` on the song plays at `bpm`. With `ramp`
@@ -375,6 +434,11 @@ pub struct VocalMap {
 /// channel (its FX, fader, sends and routing), independent of patterns.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AudioClip {
+    /// Stable id, unique in the project, kept across renames, undo and
+    /// save/load (assigned by the engine; tools accept it wherever they take
+    /// a name or index).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub track: String,
     pub sample: String,
     /// Song beat where the clip's audio (after `offset_s`) starts; may be
@@ -461,6 +525,8 @@ impl Project {
             fx_chains: Default::default(),
             markers: Vec::new(),
             tempo_points: Vec::new(),
+            schema_version: crate::ids::SCHEMA_VERSION,
+            id_seq: 0,
         }
     }
 
@@ -472,6 +538,9 @@ impl Project {
     pub fn track_index(&self, key: &str) -> Result<usize> {
         let k = key.trim().to_lowercase();
         if let Some(i) = self.tracks.iter().position(|t| t.name.to_lowercase() == k) {
+            return Ok(i);
+        }
+        if let Some(i) = self.tracks.iter().position(|t| !t.id.is_empty() && t.id == key.trim()) {
             return Ok(i);
         }
         if let Ok(i) = k.parse::<usize>() {
@@ -494,7 +563,7 @@ impl Project {
         if let Some(i) = self
             .patterns
             .iter()
-            .position(|p| p.name.to_lowercase() == k)
+            .position(|p| p.name.to_lowercase() == k || (!p.id.is_empty() && p.id == key.trim()))
         {
             return Ok(i);
         }
@@ -581,7 +650,7 @@ impl Project {
         let k = key.trim().to_lowercase();
         self.buses
             .iter()
-            .position(|b| b.name.to_lowercase() == k)
+            .position(|b| b.name.to_lowercase() == k || (!b.id.is_empty() && b.id == key.trim()))
             .ok_or_else(|| {
                 anyhow!(
                     "no bus '{key}'. Buses: [{}]",
@@ -628,7 +697,20 @@ impl Project {
         for b in self.buses.iter_mut() {
             ch |= crate::fx::ensure_ids(&mut b.effects);
         }
-        ch
+        ch | crate::ids::ensure_ids(self, None)
+    }
+
+    /// `ensure_fx_ids` after an edit, telling copies from originals by
+    /// where each id lived before the edit (`ids::owner_keys`).
+    pub fn ensure_ids_after(&mut self, before: &crate::ids::OwnerKeys) -> bool {
+        let mut ch = crate::fx::ensure_ids(&mut self.master_effects);
+        for t in self.tracks.iter_mut() {
+            ch |= crate::fx::ensure_ids(&mut t.effects);
+        }
+        for b in self.buses.iter_mut() {
+            ch |= crate::fx::ensure_ids(&mut b.effects);
+        }
+        ch | crate::ids::ensure_ids(self, Some(before))
     }
 
     /// The effect chain of a track, bus or "master".
@@ -646,5 +728,31 @@ impl Project {
 
     pub fn song_seconds(&self) -> f32 {
         self.song_steps() as f32 * self.step_secs()
+    }
+}
+
+/// The audio clip a tool's arguments point at: `id` ("clip3", or a legacy
+/// numeric position) or `index`.
+pub fn audio_clip_index(p: &Project, a: &serde_json::Value) -> Result<usize> {
+    let n = p.audio_clips.len();
+    let pick = |i: usize| if i < n { Ok(i) } else { Err(anyhow!("no audio clip {i}; there are {n} (list_audio_clips)")) };
+    if let Some(v) = a.get("id").or_else(|| a.get("clip")) {
+        if let Some(s) = v.as_str() {
+            let s = s.trim();
+            if let Some(i) = p.audio_clips.iter().position(|c| c.id == s) {
+                return Ok(i);
+            }
+            if let Ok(i) = s.parse::<usize>() {
+                return pick(i);
+            }
+            return Err(anyhow!("no audio clip '{s}' (list_audio_clips shows ids)"));
+        }
+        if let Some(i) = v.as_u64() {
+            return pick(i as usize);
+        }
+    }
+    match a.get("index").and_then(|v| v.as_u64()) {
+        Some(i) => pick(i as usize),
+        None => Err(anyhow!("give the clip's id (\"clip3\") or index (list_audio_clips)")),
     }
 }

@@ -330,7 +330,7 @@ pub(crate) fn notes_json(notes: &[Note]) -> Value {
     Value::Array(
         notes
             .iter()
-            .map(|n| json!({"start": n.start, "len": n.len, "pitch": n.pitch, "note": theory::note_name(n.pitch), "vel": (n.vel * 100.0).round() / 100.0}))
+            .map(|n| json!({"id": n.id, "start": n.start, "len": n.len, "pitch": n.pitch, "note": theory::note_name(n.pitch), "vel": (n.vel * 100.0).round() / 100.0}))
             .collect(),
     )
 }
@@ -712,6 +712,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_drone::tools());
     v.extend(crate::tools_critic::tools());
     v.extend(crate::tools_chain::tools());
+    v.extend(crate::tools_ids::tools());
     v.extend(crate::tools_bounce::tools());
     v.extend(crate::tools_click::tools());
     v.extend(crate::tools_markers::tools());
@@ -1260,6 +1261,7 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                         prob: f_or(n, "prob", 1.0).clamp(0.0, 1.0),
                         offset: f_or(n, "offset", 0.0).clamp(-0.5, 0.5),
                         slide_to: n.get("slide_to").map(pitch_of).transpose()?,
+                        id: String::new(),
                     });
                 }
                 let pat = &mut e.project.patterns[pi];

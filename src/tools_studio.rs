@@ -727,7 +727,7 @@ pub fn tools() -> Vec<Tool> {
                     }
                     t.sends.retain(|s| !s.bus.eq_ignore_ascii_case(&bus));
                     if !b_or(a, "remove", false) {
-                        t.sends.push(Send { bus: bus.clone(), db, pre_fader: b_or(a, "pre_fader", false) });
+                        t.sends.push(Send { bus: bus.clone(), db, pre_fader: b_or(a, "pre_fader", false), id: String::new() });
                     }
                     out.push(json!({"track": t.name, "sends": t.sends.iter().map(|s| format!("{} {:+.1} dB{}", s.bus, s.db, if s.pre_fader { " pre" } else { "" })).collect::<Vec<_>>()}));
                 }

@@ -110,6 +110,11 @@ pub fn selection_of(a: &Value) -> Result<Selection> {
     if let Some(v) = f_opt(a, "vel_max") {
         s.vel_max = v;
     }
+    match a.get("ids") {
+        Some(Value::Array(v)) => s.ids = v.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).collect(),
+        Some(Value::String(v)) => s.ids = v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
+        _ => {}
+    }
     Ok(s)
 }
 
@@ -121,7 +126,8 @@ pub fn selection_props() -> Value {
         "pitch": {"description": "Only this pitch (MIDI or 'C4')"},
         "pitches": {"type": "array", "items": {}},
         "pitch_min": {}, "pitch_max": {},
-        "vel_min": {"type": "number"}, "vel_max": {"type": "number"}
+        "vel_min": {"type": "number"}, "vel_max": {"type": "number"},
+        "ids": {"type": ["array", "string"], "items": {"type": "string"}, "description": "Only the notes with these stable ids (from get_pattern / lookup_id)"}
     })
 }
 

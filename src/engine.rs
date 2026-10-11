@@ -211,10 +211,12 @@ impl Engine {
         if let Err(e) = check_unknown_args(tool, name, args) {
             return (Err(e), args.clone());
         }
-        let mut resolved = match resolve_effect_refs(&self.project, args) {
+        let with_names = crate::ids::resolve_id_refs(&self.project, args);
+        let mut resolved = match resolve_effect_refs(&self.project, &with_names) {
             Ok(a) => a,
             Err(e) => return (Err(e), args.clone()),
         };
+        let owners = if tool.mutates { Some(crate::ids::owner_keys(&self.project)) } else { None };
         let mut fresh_seed = None;
         if top
             && (tool.schema)()["properties"].get("seed").is_some()
@@ -245,7 +247,10 @@ impl Engine {
             }
         };
         if result.is_ok() && tool.mutates {
-            self.project.ensure_fx_ids();
+            match &owners {
+                Some(o) => self.project.ensure_ids_after(o),
+                None => self.project.ensure_fx_ids(),
+            };
         }
         let mut result = result;
         if let (Some(s), Ok(Value::Object(m))) = (fresh_seed, &mut result) {

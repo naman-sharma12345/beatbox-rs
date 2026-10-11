@@ -31,6 +31,7 @@ pub mod fx_sat;
 pub mod fx_time;
 pub mod fx_vocoder;
 pub mod groove_extract;
+pub mod ids;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod instruments;
@@ -84,6 +85,7 @@ pub mod tools_prompt;
 pub mod tools_meta;
 pub mod tools_bounce;
 pub mod tools_chain;
+pub mod tools_ids;
 pub mod tools_click;
 pub mod tools_markers;
 pub mod tools_tempo;

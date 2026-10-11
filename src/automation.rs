@@ -49,6 +49,11 @@ pub struct AutoPoint {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AutomationLane {
+    /// Stable id, unique in the project, kept across renames, undo and
+    /// save/load (assigned by the engine; tools accept it wherever they take
+    /// a name or index).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     /// Track name, bus name or "master".
     pub target: String,
     /// `volume`, `pan`, `instrument.<path>` or `fx.<index>.<param>`.
@@ -70,6 +75,7 @@ impl AutomationLane {
             param: param.to_string(),
             points: Vec::new(),
             enabled: true,
+            id: String::new(),
         }
     }
 

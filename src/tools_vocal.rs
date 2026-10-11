@@ -345,7 +345,7 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let sample = reg["sample"].as_str().unwrap_or("vocal").to_string();
     let inst = crate::instruments::Instrument::Sampler(crate::instruments::SamplerParams { sample: sample.clone(), one_shot: true, ..Default::default() });
     ensure_track(&mut e.project, "vocal", "pad", Some(inst))?;
-    e.project.audio_clips.push(AudioClip { track: "vocal".into(), sample: sample.clone(), start_beat: clip_start_beat, offset_s: 0.0, length_s: None, gain_db: 0.0, fade_in_ms: None, fade_out_ms: None });
+    e.project.audio_clips.push(AudioClip { track: "vocal".into(), sample: sample.clone(), start_beat: clip_start_beat, offset_s: 0.0, length_s: None, gain_db: 0.0, fade_in_ms: None, fade_out_ms: None, id: String::new() });
 
     // per-section parts
     let drums: Vec<&str> = g.parts.iter().map(|p| p.0).collect();
@@ -686,8 +686,11 @@ pub fn tools() -> Vec<Tool> {
                     gain_db: f_opt(a, "gain_db").unwrap_or(0.0),
                     fade_in_ms: f_opt(a, "fade_in_ms").map(|v| v.clamp(0.5, 200.0)),
                     fade_out_ms: f_opt(a, "fade_out_ms").map(|v| v.clamp(0.5, 200.0)),
+                    id: String::new(),
                 });
-                Ok(json!({"index": e.project.audio_clips.len() - 1, "track": track, "clips": e.project.audio_clips.len()}))
+                let id = crate::ids::next_id(&mut e.project, "clip");
+                e.project.audio_clips.last_mut().unwrap().id = id.clone();
+                Ok(json!({"id": id, "index": e.project.audio_clips.len() - 1, "track": track, "clips": e.project.audio_clips.len()}))
             },
         },
         Tool {
@@ -695,18 +698,15 @@ pub fn tools() -> Vec<Tool> {
             description: "List the audio clips on the timeline (track, sample, start beat, trims, gain).",
             mutates: false,
             schema: || obj(json!({}), &[]),
-            run: |e, _| Ok(json!({"clips": e.project.audio_clips})),
+            run: |e, _| Ok(json!({"clips": e.project.audio_clips.iter().enumerate().map(|(i, c)| { let mut v = serde_json::to_value(c).unwrap_or_default(); v["index"] = json!(i); v }).collect::<Vec<_>>()})),
         },
         Tool {
             name: "remove_audio_clip",
-            description: "Remove an audio clip by index (see list_audio_clips).",
+            description: "Remove an audio clip by stable id (\"clip3\") or index (see list_audio_clips).",
             mutates: true,
-            schema: || obj(json!({"index": {"type": "integer"}}), &["index"]),
+            schema: || obj(json!({"id": {"type": "string", "description": "stable clip id"}, "index": {"type": "integer"}}), &[]),
             run: |e, a| {
-                let i = u_or(a, "index", 0) as usize;
-                if i >= e.project.audio_clips.len() {
-                    bail!("no clip {i}; there are {}", e.project.audio_clips.len());
-                }
+                let i = crate::project::audio_clip_index(&e.project, a)?;
                 let c = e.project.audio_clips.remove(i);
                 Ok(json!({"removed": c, "clips": e.project.audio_clips.len()}))
             },
@@ -748,7 +748,7 @@ mod tests {
         let mix = e.mix().unwrap();
         assert!(mix.left[(1.3 * SR) as usize].abs().max(mix.left[(1.3 * SR) as usize + 30].abs()) > 0.05, "case-insensitive sample lookup");
         // a clip pointing at a sample that does not exist fails the render and names it
-        e.project.audio_clips.push(AudioClip { track: "vox".into(), sample: "ghost_take".into(), start_beat: 0.0, offset_s: 0.0, length_s: None, gain_db: 0.0, fade_in_ms: None, fade_out_ms: None });
+        e.project.audio_clips.push(AudioClip { track: "vox".into(), sample: "ghost_take".into(), start_beat: 0.0, offset_s: 0.0, length_s: None, gain_db: 0.0, fade_in_ms: None, fade_out_ms: None, id: String::new() });
         e.revision += 1;
         let out = dir.join("missing.wav");
         let err = e.call("render", &json!({"path": out.to_string_lossy()})).unwrap_err().to_string();
