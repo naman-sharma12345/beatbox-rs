@@ -148,6 +148,10 @@ pub struct RenderOptions {
     pub track_stats: bool,
     /// Render only this section range of the song (in steps), if set.
     pub step_range: Option<(u32, u32)>,
+    /// Render even when audio clips point at samples that are not loaded
+    /// (they stay silent). Off by default: such a render fails and names
+    /// every missing clip, so a vocal can never vanish without an error.
+    pub allow_missing_clips: bool,
 }
 
 impl Default for RenderOptions {
@@ -158,8 +162,31 @@ impl Default for RenderOptions {
             keep_stems: false,
             track_stats: false,
             step_range: None,
+            allow_missing_clips: false,
         }
     }
+}
+
+/// Audio clips whose sample is not loaded in `bank` (case-insensitive), as
+/// "'name' on track (clip i, beat b)" lines. Clips on tracks that do not
+/// exist are not counted (they never render).
+pub fn missing_clip_samples(p: &Project, bank: &SampleBank) -> Vec<String> {
+    p.audio_clips
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| p.tracks.iter().any(|t| t.name.eq_ignore_ascii_case(&c.track)))
+        .filter(|(_, c)| bank.get(&c.sample).is_none())
+        .map(|(i, c)| {
+            let known = p.samples.iter().any(|s| s.name.eq_ignore_ascii_case(&c.sample));
+            format!(
+                "'{}' on track '{}' (clip {i}, beat {}){}",
+                c.sample,
+                c.track,
+                (c.start_beat * 100.0).round() / 100.0,
+                if known { ": registered but its file could not be read" } else { ": no such sample" }
+            )
+        })
+        .collect()
 }
 
 /// Deterministic per-pass dice roll for a note with probability `p`
@@ -688,6 +715,16 @@ pub fn render_cached(
     opts: &RenderOptions,
     mut cache: Option<&mut TrackCache>,
 ) -> Result<Mix> {
+    if !opts.allow_missing_clips {
+        let missing = missing_clip_samples(p, bank);
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "{} audio clip(s) point at samples that are not loaded, so they would render silent: {}. Fix the clip's sample name (list_samples / list_audio_clips) or import the sample; allow_missing_clips renders anyway.",
+                missing.len(),
+                missing.iter().take(8).cloned().collect::<Vec<_>>().join("; ")
+            );
+        }
+    }
     if let Some(c) = cache.as_deref_mut() {
         let k = TrackCache::key_of(p, opts);
         if c.key != k {

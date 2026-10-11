@@ -33,14 +33,16 @@ pub struct SampleBank {
 }
 
 impl SampleBank {
+    /// Sample names are case-insensitive ("Vox_A" and "vox_a" are one
+    /// sample), matching edit_sample's lowercased names.
     pub fn get(&self, name: &str) -> Option<&[f32]> {
-        self.data.get(name).map(|v| v.as_slice())
+        self.data.get(&name.to_lowercase()).map(|v| v.as_slice())
     }
     pub fn insert(&mut self, name: &str, data: Vec<f32>) {
-        self.data.insert(name.to_string(), Arc::new(data));
+        self.data.insert(name.to_lowercase(), Arc::new(data));
     }
     pub fn contains(&self, name: &str) -> bool {
-        self.data.contains_key(name)
+        self.data.contains_key(&name.to_lowercase())
     }
     /// Make sure every sample in `infos` is decoded.
     pub fn sync(&mut self, infos: &[SampleInfo]) -> Vec<String> {

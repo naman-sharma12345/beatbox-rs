@@ -430,6 +430,33 @@ fn band_rms_db(x: &[f32], lo: f32, hi: f32) -> f32 {
     (10.0 * e.max(1e-12).log10()) as f32
 }
 
+/// The track's audio clips summed dry (gain only, no FX) on the song
+/// timeline, `n` samples long; None with no clips or a tempo curve.
+fn dry_clips(e: &mut Engine, track: &str, n: usize) -> Option<Vec<f32>> {
+    if !e.project.tempo_points.is_empty() {
+        return None;
+    }
+    e.bank.sync(&e.project.samples);
+    let bs = 60.0 / e.project.bpm;
+    let mut out = vec![0.0f32; n];
+    let mut any = false;
+    for c in e.project.audio_clips.iter().filter(|c| c.track.eq_ignore_ascii_case(track)) {
+        let Some(d) = e.bank.get(&c.sample) else { continue };
+        let off = ((c.offset_s.max(0.0) * SR) as usize).min(d.len());
+        let len = c.length_s.map(|l| ((l.max(0.0) * SR) as usize).min(d.len() - off)).unwrap_or(d.len() - off);
+        let at = (c.start_beat * bs * SR).round() as i64;
+        let g = crate::dsp::db_to_gain(c.gain_db);
+        for i in 0..len {
+            let k = at + i as i64;
+            if k >= 0 && (k as usize) < n {
+                out[k as usize] += d[off + i] * g;
+                any = true;
+            }
+        }
+    }
+    any.then_some(out)
+}
+
 fn measure_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     let tname = s_opt(a, "track").unwrap_or_else(|| "vocal".into());
     let vi = e.project.track_index(&tname)?;
@@ -473,12 +500,27 @@ fn measure_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     if vm.len() < (SR * 0.3) as usize {
         bail!("the '{tname}' track is silent in this window");
     }
+    // no beat under the vocal (an a cappella window): there is nothing to be over
+    let no_beat = band_rms_db(&bm, 40.0, 16000.0) < -90.0;
     let full_db = band_rms_db(&vm, 40.0, 16000.0) - band_rms_db(&bm, 40.0, 16000.0);
     let pres_db = band_rms_db(&vm, 1000.0, 4000.0) - band_rms_db(&bm, 1000.0, 4000.0);
     let body_db = band_rms_db(&vm, 200.0, 800.0) - band_rms_db(&bm, 200.0, 800.0);
     let gb = grid_of(a, "1/16")?;
     let on: Vec<f32> = syllable_onsets(&v, 0.5, 0.09);
     let start_beat = s0 as f32 / SR / bs;
+    // the same timing measured on the dry clips (what align_vocal_to_grid and
+    // detect_vocal_onsets see): no inserts, no reverb/delay returns, no
+    // doubles. When the two disagree, the track's FX are adding onsets.
+    let dry = dry_clips(e, &tname, n);
+    let dry_timing = dry.as_ref().map(|d| {
+        let seg = &d[s0..s1.min(d.len())];
+        let on_d = syllable_onsets(seg, 0.5, 0.09);
+        let tol_d = (gb * bs * 0.25).min(0.03);
+        let (g, m) = grid_stats(&on_d, bpm, start_beat, gb, tol_d);
+        let mut sg: Vec<f32> = on_d.iter().map(|&t| -nearest_grid(t, bpm, start_beat, gb).0 * 1000.0).collect();
+        sg.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        json!({"syllables": on_d.len(), "on_grid_pct": g, "mean_offset_ms": m, "median_signed_ms": (sg.get(sg.len() / 2).copied().unwrap_or(0.0) * 10.0).round() / 10.0})
+    });
     let tol = (gb * bs * 0.25).min(0.03);
     let (on_grid, mean_ms) = grid_stats(&on, bpm, start_beat, gb, tol);
     // signed offsets: early (-) or late (+) against the nearest grid line
@@ -486,10 +528,12 @@ fn measure_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     signed.sort_by(|x, y| x.partial_cmp(y).unwrap());
     let median = signed.get(signed.len() / 2).copied().unwrap_or(0.0);
     let mut verdict = Vec::new();
-    if pres_db < 3.0 {
+    if no_beat {
+        verdict.push("no beat plays under the vocal in this window, so its level over the beat is not measured".to_string());
+    } else if pres_db < 3.0 {
         verdict.push(format!("the vocal is only {pres_db:+.1} dB over the beat at 1-4 kHz: words will be hard to hear (aim for +6 or more)"));
     }
-    if full_db < -2.0 {
+    if full_db < -2.0 && !no_beat {
         verdict.push(format!("the vocal is {full_db:+.1} dB under the beat overall"));
     }
     if on_grid < 50.0 {
@@ -498,14 +542,21 @@ fn measure_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     if median.abs() > 15.0 {
         verdict.push(format!("the vocal sits {} by about {:.0} ms (median)", if median > 0.0 { "late" } else { "early" }, median.abs()));
     }
+    if let Some(d) = &dry_timing {
+        let g = d["on_grid_pct"].as_f64().unwrap_or(0.0) as f32;
+        if g - on_grid > 15.0 {
+            verdict.push(format!("the dry clips are {g}% on the grid but the rendered track only {on_grid}%: its effects (delay/reverb returns, doubles, saturation) add onsets that land off the grid; the timing itself is fine"));
+        }
+    }
     if verdict.is_empty() {
         verdict.push("the vocal sits over the beat and on the grid".into());
     }
     Ok(json!({
         "track": tname,
         "window_s": [r3(s0 as f32 / SR), r3(s1 as f32 / SR)],
-        "vocal_over_beat_db": {"full_band": (full_db * 10.0).round() / 10.0, "presence_1_4k": (pres_db * 10.0).round() / 10.0, "body_200_800": (body_db * 10.0).round() / 10.0},
-        "timing": {"grid_beats": gb, "syllables": on.len(), "on_grid_pct": on_grid, "mean_offset_ms": mean_ms, "median_signed_ms": (median * 10.0).round() / 10.0, "tolerance_ms": r3(tol * 1000.0)},
+        "vocal_over_beat_db": if no_beat { Value::Null } else { json!({"full_band": (full_db * 10.0).round() / 10.0, "presence_1_4k": (pres_db * 10.0).round() / 10.0, "body_200_800": (body_db * 10.0).round() / 10.0}) },
+        "timing": {"grid_beats": gb, "syllables": on.len(), "on_grid_pct": on_grid, "mean_offset_ms": mean_ms, "median_signed_ms": (median * 10.0).round() / 10.0, "tolerance_ms": r3(tol * 1000.0), "measured_on": "the rendered track (its inserts, sends' returns and every clip on it)"},
+        "timing_dry_clips": dry_timing,
         "verdict": verdict,
         "note": "levels are measured only where the vocal sounds; the beat is the mix minus the vocal, so sidechain ducking counts",
     }))
@@ -636,5 +687,16 @@ mod tests {
         assert!(a["mean_offset_ms"]["after"].as_f64().unwrap() <= a["mean_offset_ms"]["before"].as_f64().unwrap(), "{a}");
         let m = e.call("measure_vocal_vs_beat", &json!({"track": "vocal"})).unwrap();
         assert!(m["timing"]["syllables"].as_u64().unwrap() >= 3, "{m}");
+        // no beat in this project: the level over the beat is not invented
+        assert!(m["vocal_over_beat_db"].is_null(), "{m}");
+        // dry clips and the rendered track agree when the track has no FX
+        let d = &m["timing_dry_clips"];
+        assert!(d.is_object(), "{m}");
+        let (g_dry, g_wet) = (d["on_grid_pct"].as_f64().unwrap(), m["timing"]["on_grid_pct"].as_f64().unwrap());
+        assert!((g_dry - g_wet).abs() <= 20.0, "{m}");
+        // a 3-step echo on the track adds onsets to the render only
+        e.call("add_effect", &json!({"track": "vocal", "type": "delay", "params": {"steps": 1.3, "mix": 0.9, "feedback": 0.6}})).unwrap();
+        let m2 = e.call("measure_vocal_vs_beat", &json!({"track": "vocal"})).unwrap();
+        assert_eq!(m2["timing_dry_clips"]["on_grid_pct"], m["timing_dry_clips"]["on_grid_pct"], "dry timing ignores FX: {m2}");
     }
 }

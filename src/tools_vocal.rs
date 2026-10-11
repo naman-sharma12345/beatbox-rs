@@ -664,9 +664,16 @@ pub fn tools() -> Vec<Tool> {
             mutates: true,
             schema: || obj(json!({"track": {"type": "string"}, "sample": {"type": "string"}, "start_beat": {"type": "number"}, "offset_s": {"type": "number"}, "length_s": {"type": "number"}, "gain_db": {"type": "number"}, "fade_in_ms": {"type": "number", "description": "equal-power fade at the clip start (default a 4 ms ramp)"}, "fade_out_ms": {"type": "number"}}), &["track", "sample", "start_beat"]),
             run: |e, a| {
-                let sample = s_req(a, "sample")?;
-                if !e.project.samples.iter().any(|s| s.name == sample) {
-                    bail!("no sample '{sample}' (import_sample first; list_samples shows them)");
+                let asked = s_req(a, "sample")?;
+                // case-insensitive (edit_sample lowercases names); the clip
+                // stores the sample's own spelling
+                let Some(sample) = e.project.samples.iter().find(|s| s.name.eq_ignore_ascii_case(&asked)).map(|s| s.name.clone()) else {
+                    let names: Vec<&str> = e.project.samples.iter().map(|s| s.name.as_str()).take(20).collect();
+                    bail!("no sample '{asked}' (import_sample first). Samples: [{}]", names.join(", "));
+                };
+                e.bank.sync(&e.project.samples);
+                if e.bank.get(&sample).is_none() {
+                    bail!("sample '{sample}' is registered but its file could not be read, so the clip would be silent");
                 }
                 let ti = e.project.track_index(&s_req(a, "track")?)?;
                 let track = e.project.tracks[ti].name.clone();
@@ -724,11 +731,29 @@ mod tests {
         e.call("import_sample", &json!({"path": wav.to_string_lossy(), "name": "tone"})).unwrap();
         e.call("add_track", &json!({"name": "vox", "preset": "pad"})).unwrap();
         e.call("add_audio_clip", &json!({"track": "vox", "sample": "tone", "start_beat": 2.0})).unwrap();
+        // a clip spelled in another case still finds its sample
+        e.call("add_audio_clip", &json!({"track": "vox", "sample": "TONE", "start_beat": 6.0})).unwrap();
+        assert_eq!(e.project.audio_clips.last().unwrap().sample, "tone");
+        assert!(e.call("add_audio_clip", &json!({"track": "vox", "sample": "nope", "start_beat": 0.0})).is_err());
+        e.project.audio_clips.pop();
         let mix = e.mix().unwrap();
         let at = |s: f32| mix.left[(s * SR) as usize].abs().max(mix.left[(s * SR) as usize + 30].abs());
         // beat 2 at 120 BPM = 1.0 s
         assert!(at(0.5) < 1e-4, "silent before the clip");
         assert!(at(1.3) > 0.05, "clip sounds at 1.3 s");
         assert!(at(2.3) < 1e-3, "and ends after a second");
+        // a clip whose sample name differs only in case still renders
+        e.project.audio_clips[0].sample = "TONE".into();
+        e.revision += 1;
+        let mix = e.mix().unwrap();
+        assert!(mix.left[(1.3 * SR) as usize].abs().max(mix.left[(1.3 * SR) as usize + 30].abs()) > 0.05, "case-insensitive sample lookup");
+        // a clip pointing at a sample that does not exist fails the render and names it
+        e.project.audio_clips.push(AudioClip { track: "vox".into(), sample: "ghost_take".into(), start_beat: 0.0, offset_s: 0.0, length_s: None, gain_db: 0.0, fade_in_ms: None, fade_out_ms: None });
+        e.revision += 1;
+        let out = dir.join("missing.wav");
+        let err = e.call("render", &json!({"path": out.to_string_lossy()})).unwrap_err().to_string();
+        assert!(err.contains("ghost_take") && err.contains("vox"), "{err}");
+        assert!(e.mix().is_err());
+        assert!(e.call("render", &json!({"path": out.to_string_lossy(), "allow_missing_clips": true})).is_ok());
     }
 }

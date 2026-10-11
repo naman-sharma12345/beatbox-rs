@@ -51,6 +51,7 @@ pub mod resample;
 pub mod sample_lib;
 pub mod samples;
 pub mod sc_dsp;
+pub mod sc_strip;
 pub mod server;
 pub mod smf;
 pub mod synth_extra;

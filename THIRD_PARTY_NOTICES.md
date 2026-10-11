@@ -28,6 +28,7 @@ Beatbox is MIT licensed. It includes code adapted from the projects below.
 | `src/gui/views.rs` (mixer strips, master strip) | `crates/ui-egui/src/mix_window.rs` (`strip`, `insert_slot`, `section_label`) | Console strip layout: INSERTS / SENDS / OUTPUT sections, pan over counter, S/M, fader + stereo meters, dB counter, name plate |
 | `src/gui/piano.rs` | `crates/ui-egui/src/midi_editor.rs` | Piano roll: keyboard, grid, velocity-shaded notes, drag move/resize with snap, rubber-band + shift selection, arrows/Delete, toolbar ops, velocity lane |
 | `src/note_edit.rs` | `crates/ui-egui/src/midi_editor.rs` (drag math) | Snap and move/resize of a note selection, written back through `add_notes` |
+| `src/sc_strip.rs` | `crates/dsp/src/biquad.rs` (`Coeffs::design`, `Biquad::process_sample`, `butterworth_qs`), `crates/dsp/src/plugins/eq.rs` (`pass_filter`, `design_eq7`, `design_eq1`), `crates/dsp/src/plugins/dynamics.rs` (`ExpanderGate`, `DeEsser`), `crates/dsp/src/plugins/strip.rs` (`ChannelStrip`) | EQ 7-Band, EQ 1-Band, expander/gate with hold, dynamic-EQ de-esser, channel strip (trim, gate, comp, EQ); offline whole-buffer versions with automatic thresholds |
 
 ```
 MIT License

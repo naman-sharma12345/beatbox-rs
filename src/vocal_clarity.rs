@@ -84,10 +84,29 @@ pub fn extend_bandwidth(x: &[f32], cutoff_hz: f32, amount: f32) -> Vec<f32> {
     let mut tilt = Biquad::new(BiquadKind::HighShelf, fc * 2.0, 0.707, -6.0);
     let mut top = Biquad::new(BiquadKind::HighCut, 17000.0, 0.707, 0.0);
     let hi: Vec<f32> = gen.iter().map(|v| top.process(tilt.process(hp3.process(hp2.process(*v))))).collect();
+    // only where the voice is: the generator is faded out where the source
+    // band sits near its own noise floor, so hiss between words is not
+    // turned into fizz (that fizz is what made a dark take sound phasey)
+    let att = (-1.0 / (0.005 * SR)).exp();
+    let rel = (-1.0 / (0.08 * SR)).exp();
+    let mut e = 0.0f32;
+    let env: Vec<f32> = src.iter().map(|v| {
+        let a = v.abs();
+        e = if a > e { a + (e - a) * att } else { a + (e - a) * rel };
+        20.0 * e.max(1e-7).log10()
+    }).collect();
+    let mut sorted: Vec<f32> = env.iter().step_by(64).copied().collect();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p10 = sorted.get(sorted.len() / 10).copied().unwrap_or(-140.0);
+    let p90 = sorted.get(sorted.len() * 9 / 10).copied().unwrap_or(-140.0);
+    // a take with no gaps (or a steady test tone) has p10 ~ p90: then the
+    // floor is taken 20 dB under the voice so nothing is gated out
+    let floor = p10.min(p90 - 20.0);
+    let gate: Vec<f32> = env.iter().map(|d| ((d - floor - 8.0) / 10.0).clamp(0.0, 1.0)).collect();
     // level: the new band starts ~6 dB under the octave it continues
     let rms = |v: &[f32]| (v.iter().map(|s| s * s).sum::<f32>() / v.len().max(1) as f32).sqrt();
-    let k = rms(&src) / rms(&hi).max(1e-9) * 0.5 * amount.clamp(0.0, 1.5);
-    x.iter().zip(hi.iter()).map(|(a, b)| a + k * b).collect()
+    let k = rms(&src) / rms(&hi).max(1e-9) * 0.5 * amount.clamp(0.0, 1.0);
+    x.iter().zip(hi.iter()).zip(gate.iter()).map(|((a, b), g)| a + k * g * b).collect()
 }
 
 /// Harmonic exciter: the band over `freq` is saturated and blended back.
@@ -195,7 +214,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "extend_bandwidth",
-            description: "De-muffle a band-limited vocal (phone mic, voice note, old codec): rebuilds the missing top band from harmonics of the octave below the cutoff (spectral bandwidth extension). cutoff_hz default = detected top_hz; amount 0..1.5 (default 0.8). Writes <sample>_bright and reports tone before/after.",
+            description: "De-muffle a band-limited vocal (phone mic, voice note, old codec): rebuilds the missing top band from harmonics of the octave below the cutoff (spectral bandwidth extension). cutoff_hz default = detected top_hz; amount 0..1 (default 0.35, gentle; it only adds where the voice is, never over the hiss between words). For a plain clean-up without any synthesis use vocal_clean_chain. Writes <sample>_bright and reports tone before/after.",
             mutates: true,
             schema: || obj(json!({"sample": {"type": "string"}, "cutoff_hz": {"type": "number"}, "amount": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
             run: |e, a| {
@@ -205,7 +224,7 @@ pub fn tools() -> Vec<Tool> {
                 if fc >= 12000.0 && f_opt(a, "cutoff_hz").is_none() {
                     bail!("the take already reaches {fc} Hz: nothing to extend (try clarity_eq or exciter)");
                 }
-                let y = extend_bandwidth(&x, fc, f_or(a, "amount", 0.8));
+                let y = extend_bandwidth(&x, fc, f_or(a, "amount", 0.35));
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_bright", info.name));
                 let s = save(e, &info, &nn, &y, &format!("bandwidth extension from {fc:.0} Hz"))?;
                 Ok(json!({"sample": s, "cutoff_hz": fc, "tone_db": {"before": before, "after": tone(&y)}}))
@@ -304,5 +323,27 @@ mod tests {
         let c = match_curve(&x, &bright, 1.0, 12.0);
         let hz = SR / N as f32;
         assert!(c[(10000.0 / hz) as usize] > 1.5, "boost at 10k: {}", c[(10000.0 / hz) as usize]);
+    }
+    #[test]
+    fn bandwidth_extension_leaves_the_hiss_between_words_alone() {
+        let mut x = phone_voice();
+        let n = x.len();
+        let mut rng = crate::dsp::Rng::new(3);
+        // the second half is only phone hiss (band-limited noise)
+        let mut lp = Biquad::new(BiquadKind::HighCut, 3500.0, 0.707, 0.0);
+        for v in x[n / 2..].iter_mut() {
+            *v = lp.process(0.002 * rng.bipolar());
+        }
+        let y = extend_bandwidth(&x, 3500.0, 1.0);
+        let hp = |v: &[f32]| {
+            let mut f = Biquad::new(BiquadKind::LowCut, 6000.0, 0.707, 0.0);
+            let o: Vec<f32> = v.iter().map(|s| f.process(*s)).collect();
+            (o.iter().map(|s| s * s).sum::<f32>() / o.len() as f32).sqrt()
+        };
+        let gap_x = hp(&x[n / 2 + 4800..]);
+        let gap_y = hp(&y[n / 2 + 4800..]);
+        let voice_add = hp(&y[4800..n / 2 - 4800]) / hp(&x[4800..n / 2 - 4800]).max(1e-9);
+        assert!(voice_add > 1.4, "the voice gains air: {voice_add}");
+        assert!(gap_y < gap_x * 2.0 + 1e-5, "hiss not excited: {gap_x} -> {gap_y}");
     }
 }

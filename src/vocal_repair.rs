@@ -120,16 +120,39 @@ pub fn learn_profile(x: &[f32], region: Option<(f32, f32)>) -> Vec<f32> {
 /// Spectral noise reduction (Wiener-style with over-subtraction, gains
 /// smoothed over time and frequency so it does not warble).
 pub fn reduce_noise(x: &[f32], profile: &[f32], reduction_db: f32, sensitivity: f32) -> Vec<f32> {
+    reduce_noise_ex(x, profile, reduction_db, sensitivity, None)
+}
+
+/// The noise reducer behind `reduce_noise`. The clean-speech estimate is
+/// decision-directed (Ephraim-Malah style: 96 % from the previous frame's
+/// cleaned power, 4 % from this frame's excess), so a noise bin that pokes
+/// over the print for one frame no longer opens on its own: that one-frame
+/// flicker is the "musical noise" / warble of plain spectral subtraction.
+/// Gains are Wiener (xi / (1 + xi)), then smoothed over frequency and time.
+/// `keep_air_hz`: above it the deepest cut is halved (in dB), so weak
+/// consonants and air are not stripped from a dark take.
+pub fn reduce_noise_ex(x: &[f32], profile: &[f32], reduction_db: f32, sensitivity: f32, keep_air_hz: Option<f32>) -> Vec<f32> {
     let floor = 10f32.powf(-reduction_db.abs() / 20.0);
     let alpha = sensitivity.clamp(0.5, 4.0);
+    let hz = SR / N as f32;
+    let floors: Vec<f32> = (0..=N / 2)
+        .map(|k| match keep_air_hz {
+            Some(f) if k as f32 * hz >= f => floor.sqrt(),
+            _ => floor,
+        })
+        .collect();
     let mut prev = vec![1.0f32; N / 2 + 1];
     let mut raw = vec![1.0f32; N / 2 + 1];
+    let mut clean_prev = vec![0.0f32; N / 2 + 1];
     spectral(x, |_, m, g| {
         for k in 0..=N / 2 {
             // mean magnitude -> noise power (Rayleigh: E|N|^2 = 4/pi (E|N|)^2)
-            let n2 = 1.27 * (alpha * profile[k]).powi(2);
-            let s2 = (m[k] * m[k] - n2).max(0.0);
-            raw[k] = (s2 / (s2 + n2).max(1e-12)).sqrt().max(floor);
+            let n2 = (1.27 * (alpha * profile[k]).powi(2)).max(1e-14);
+            let gamma = m[k] * m[k] / n2;
+            let xi = 0.96 * clean_prev[k] / n2 + 0.04 * (gamma - 1.0).max(0.0);
+            let w = (xi / (1.0 + xi)).max(floors[k]);
+            raw[k] = w;
+            clean_prev[k] = (w * m[k]).powi(2);
         }
         for k in 0..=N / 2 {
             let a = raw[k.saturating_sub(2)];
@@ -140,7 +163,7 @@ pub fn reduce_noise(x: &[f32], profile: &[f32], reduction_db: f32, sensitivity: 
             // fast open, slower close
             let v = if s > prev[k] { 0.3 * prev[k] + 0.7 * s } else { 0.7 * prev[k] + 0.3 * s };
             prev[k] = v;
-            g[k] = v.max(floor);
+            g[k] = v.max(floors[k]);
         }
     })
 }
@@ -383,9 +406,9 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "reduce_noise",
-            description: "Spectral noise reduction (RX-style): subtracts a learned noise print per frequency with smoothed gains (no warbling). profile = a learn_noise_profile name (default: learned from the take's quietest parts now). reduction_db = deepest cut (default 18; 10 gentle, 30 strong), sensitivity 0.5-4 (default 1.5; higher removes more, risks the voice). Writes <sample>_nr and reports noise floor and SNR before/after.",
+            description: "Spectral noise reduction (RX-style): subtracts a learned noise print per frequency with smoothed gains (no warbling). profile = a learn_noise_profile name (default: learned from the take's quietest parts now). reduction_db = deepest cut (default 12 = gentle; 18 medium, 30 strong), sensitivity 0.5-4 (default 1.0; higher removes more, risks the voice), keep_air (default true: above 4 kHz the cut is halved so consonants and air stay). Decision-directed gains, so the leftover noise stays smooth instead of warbling. Writes <sample>_nr and reports noise floor and SNR before/after.",
             mutates: true,
-            schema: || obj(json!({"sample": {"type": "string"}, "profile": {"type": "string"}, "reduction_db": {"type": "number"}, "sensitivity": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
+            schema: || obj(json!({"sample": {"type": "string"}, "profile": {"type": "string"}, "reduction_db": {"type": "number"}, "sensitivity": {"type": "number"}, "keep_air": {"type": "boolean"}, "new_name": {"type": "string"}}), &["sample"]),
             run: |e, a| {
                 let (info, x) = crate::tools_sound::sample_data(e, &s_req(a, "sample")?)?;
                 if x.len() < N * 2 {
@@ -399,9 +422,10 @@ pub fn tools() -> Vec<Tool> {
                     }
                     None => learn_profile(&x, None),
                 };
-                let rd = f_or(a, "reduction_db", 18.0).clamp(3.0, 40.0);
-                let sens = f_or(a, "sensitivity", 1.5);
-                let y = reduce_noise(&x, &p, rd, sens);
+                let rd = f_or(a, "reduction_db", 12.0).clamp(3.0, 40.0);
+                let sens = f_or(a, "sensitivity", 1.0);
+                let keep_air = a.get("keep_air").and_then(|v| v.as_bool()).unwrap_or(true);
+                let y = reduce_noise_ex(&x, &p, rd, sens, if keep_air { Some(4000.0) } else { None });
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_nr", info.name));
                 let s = save(e, &info, &nn, &y, &format!("noise reduction {rd} dB, sensitivity {sens}"))?;
                 Ok(json!({"sample": s, "measured": report(&x, &y)}))
@@ -498,6 +522,35 @@ mod tests {
         let b = (1.2 * SR) as usize;
         let ratio = rms(&y[a..b]) / rms(&clean[a..b]);
         assert!(ratio > 0.85 && ratio < 1.15, "voice kept: {ratio}");
+    }
+
+    #[test]
+    fn leftover_noise_does_not_flicker() {
+        // plain spectral subtraction leaves isolated one-frame tones in noise
+        // gaps ("musical noise"); the decision-directed gains must not
+        let (_, noisy) = voice_with_noise(11);
+        let p = learn_profile(&noisy, Some((0.0, 0.5)));
+        let y = reduce_noise(&noisy, &p, 18.0, 1.0);
+        let gap = &y[(1.6 * SR) as usize..(1.95 * SR) as usize];
+        let ms = mags(gap);
+        // per-bin frame-to-frame jumps over 12 dB, as a share of all bins
+        let mut jumps = 0usize;
+        let mut total = 0usize;
+        for w in ms.windows(2) {
+            for k in 20..N / 2 {
+                let (a, b) = (w[0][k].max(1e-9), w[1][k].max(1e-9));
+                if (20.0 * (b / a).log10()).abs() > 12.0 {
+                    jumps += 1;
+                }
+                total += 1;
+            }
+        }
+        let share = jumps as f32 / total.max(1) as f32;
+        assert!(share < 0.2, "flicker share {share}");
+        let y2 = reduce_noise_ex(&noisy, &p, 18.0, 1.0, Some(4000.0));
+        let (f_full, _) = floor_and_peak_db(&y);
+        let (f_air, _) = floor_and_peak_db(&y2);
+        assert!(f_air >= f_full - 0.5, "keep_air never cuts more: {f_full} vs {f_air}");
     }
 
     #[test]

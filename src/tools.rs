@@ -723,6 +723,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::vocal_clarity::tools());
     v.extend(crate::vocal_edits::tools());
     v.extend(crate::vocal_sections::tools());
+    v.extend(crate::sc_strip::tools());
     v
 }
 
@@ -846,6 +847,10 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 }
                 let mut out = summary(&e.project);
                 out["snapshots_loaded"] = json!(loaded);
+                let missing = render::missing_clip_samples(&e.project, &e.bank);
+                if !missing.is_empty() {
+                    out["warnings"] = json!(missing.iter().map(|m| format!("audio clip {m}; renders fail until it is fixed")).collect::<Vec<_>>());
+                }
                 Ok(out)
             },
         },
@@ -1746,7 +1751,8 @@ pub(crate) fn core_tools() -> Vec<Tool> {
             schema: || obj(json!({"path": {"type": "string", "description": "default renders/<project>.wav"}, "loops": {"type": "integer"}, "stems_dir": {"type": "string"},
                 "section": {"description": "Render only this arrangement section (index or pattern name)", "type": ["string", "integer"]},
                 "start_beat": {"type": "number", "description": "Region start in song beats"}, "end_beat": {"type": "number"},
-                "tail": {"type": "number", "description": "Seconds of ring-out after the last bar (default 1.5, max 30)"}}), &[]),
+                "tail": {"type": "number", "description": "Seconds of ring-out after the last bar (default 1.5, max 30)"},
+                "allow_missing_clips": {"type": "boolean", "description": "render even if audio clips point at missing samples (they stay silent; default false = fail and name them)"}}), &[]),
             run: |e, a| {
                 let path = match s_opt(a, "path") {
                     Some(p) => e.resolve(&p),
@@ -1767,7 +1773,7 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 } else { None };
                 let tail = f_opt(a, "tail").unwrap_or(1.5).clamp(0.0, 30.0);
                 e.bank.sync(&e.project.samples);
-                let mix = render::render(&e.project, &e.bank, &RenderOptions { loops, keep_stems: stems_dir.is_some(), step_range: range, tail, ..Default::default() })?;
+                let mix = render::render(&e.project, &e.bank, &RenderOptions { loops, keep_stems: stems_dir.is_some(), step_range: range, tail, allow_missing_clips: b_or(a, "allow_missing_clips", false), ..Default::default() })?;
                 render::write_wav(&path, &mix.left, &mix.right)?;
                 let mut stems = Vec::new();
                 if let Some(d) = stems_dir {
