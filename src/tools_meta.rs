@@ -19,7 +19,7 @@ fn modules() -> Vec<(&'static str, &'static str, Vec<Tool>)> {
         ("project", "new/load/save, tempo, key, tracks, notes, effects, undo/redo, snapshots", tools::core_tools().into_iter().filter(|t| !DISCOVERY.contains(&t.name)).collect()),
         ("studio", "transport, history, screenshot, live studio, metronome click", { let mut v = crate::tools_studio::tools(); v.extend(crate::tools_click::tools()); v }),
         ("notes", "piano roll and MIDI: write, edit, quantize, arpeggiate, strum", crate::tools_midi::tools()),
-        ("sound", "instruments and sound design, additive synthesis and resynthesis", { let mut v = crate::tools_sound::tools(); v.extend(crate::resynth::tools()); v }),
+        ("sound", "instruments and sound design, additive synthesis and resynthesis, real recorded instruments (SoundFont library: fetch, list, load, preview)", { let mut v = crate::tools_sound::tools(); v.extend(crate::resynth::tools()); v.extend(crate::tools_library::tools()); v.extend(crate::sound_catalog::tools()); v }),
         ("compose", "generators and song structure", crate::tools_compose::tools()),
         ("listen", "ears: analysis, loudness, masking, spectrogram", { let mut v = crate::tools_ears::tools(); v.extend(crate::tools_listen::tools()); v.extend(crate::tools_ears_pro::tools()); v }),
         ("mix", "levels, balance, routing, buses, drone notches", { let mut v = crate::tools_mix::tools(); v.extend(crate::tools_drone::tools()); v.extend(crate::tools_critic::tools()); v }),
@@ -28,7 +28,7 @@ fn modules() -> Vec<(&'static str, &'static str, Vec<Tool>)> {
         ("produce", "the producer loop: plan, critique, revise", crate::tools_producer::tools()),
         ("creative", "variations, wildcards, contrast", crate::tools_creative::tools()),
         ("samples", "palettes, kits, sample search and flips, stem separation", { let mut v = crate::tools_palette::tools(); v.extend(crate::stems::tools()); v }),
-        ("vocal", "vocals: transcribe, tune, vocal_to_song, audio clips, flex-time alignment, phrase placement, repair (denoise, de-hum, de-click, gate, de-reverb), de-muffle, seamless edits, channel tools (EQ 7-band/1-band, expander/gate, de-esser, channel strip, vocal_clean_chain)", { let mut v = crate::tools_vocal::tools(); v.extend(crate::vocal_flex::tools()); v.extend(crate::vocal_repair::tools()); v.extend(crate::vocal_clarity::tools()); v.extend(crate::vocal_edits::tools()); v.extend(crate::vocal_sections::tools()); v.extend(crate::sc_strip::tools()); v }),
+        ("vocal", "vocals: transcribe, tune, vocal_to_song, audio clips, flex-time alignment, phrase placement, repair (denoise, de-hum, de-click, gate, de-reverb), de-muffle, seamless edits, channel tools (EQ 7-band/1-band, expander/gate, de-esser, channel strip, vocal_clean_chain), neural denoise (denoise_voice), tone matching (match_vocal_tone), DNSMOS scoring (score_voice_quality)", { let mut v = crate::tools_vocal::tools(); v.extend(crate::vocal_flex::tools()); v.extend(crate::vocal_repair::tools()); v.extend(crate::vocal_clarity::tools()); v.extend(crate::vocal_edits::tools()); v.extend(crate::vocal_sections::tools()); v.extend(crate::sc_strip::tools()); v.extend(crate::voice_ai::tools()); v }),
         ("groove", "groove extraction and drum tuning", crate::tools_groove::tools()),
         ("export", "render to wav/flac/mp3, stems, mastering, bounce a track to audio", { let mut v = crate::tools_delivery::tools(); v.extend(crate::tools_bounce::tools()); v }),
     ]

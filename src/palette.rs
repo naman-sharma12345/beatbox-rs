@@ -276,6 +276,7 @@ pub fn track_role(name: &str, inst: &Instrument) -> Option<&'static str> {
             | Instrument::Ensemble(_)
             | Instrument::Multisample(_)
             | Instrument::Granular(_)
+            | Instrument::SoundFont(_)
     ) {
         return None;
     }

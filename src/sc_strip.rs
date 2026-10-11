@@ -472,7 +472,7 @@ pub fn channel_strip(x: &mut [f32], s: &Strip) -> (f32, f32) {
 
 // ------------------------------------------------------------------ tools
 
-fn r1(x: f32) -> f32 {
+pub(crate) fn r1(x: f32) -> f32 {
     (x * 10.0).round() / 10.0
 }
 
@@ -505,7 +505,7 @@ fn retarget(e: &mut Engine, old: &str, new: &str, track: Option<&str>) -> usize 
     n
 }
 
-fn finish(e: &mut Engine, a: &Value, info: &crate::samples::SampleInfo, x: &[f32], y: &[f32], suffix: &str, what: &str, mut extra: Value) -> Result<Value> {
+pub(crate) fn finish(e: &mut Engine, a: &Value, info: &crate::samples::SampleInfo, x: &[f32], y: &[f32], suffix: &str, what: &str, mut extra: Value) -> Result<Value> {
     let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_{suffix}", info.name));
     let s = save(e, info, &nn, y, what)?;
     let mut moved = 0;
@@ -587,7 +587,7 @@ fn eq7_schema() -> Value {
     obj(Value::Object(m), &["sample"])
 }
 
-fn common(extra: Value) -> Value {
+pub(crate) fn common(extra: Value) -> Value {
     let mut m = match extra {
         Value::Object(m) => m,
         _ => serde_json::Map::new(),

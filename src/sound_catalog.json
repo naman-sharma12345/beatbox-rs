@@ -1,0 +1,35 @@
+{
+ "version": 1,
+ "note": "Metadata only. Audio is fetched on demand into ~/.beatbox/library and never committed. status 'pinned' = URL + sha256 verified and fetchable; 'listed' = licence checked, download not yet pinned (fetch refuses until a sha256 is recorded).",
+ "entries": [
+  {
+   "id": "generaluser_gs",
+   "name": "GeneralUser GS 2.0.3 (GM SoundFont, ~260 instruments)",
+   "family": "gm",
+   "tags": [
+    "piano",
+    "electric guitar",
+    "clean guitar",
+    "acoustic guitar",
+    "bass",
+    "drums",
+    "strings",
+    "brass",
+    "winds",
+    "choir",
+    "organ",
+    "synth",
+    "general midi"
+   ],
+   "format": "sf2",
+   "license": "GeneralUser GS License v2.0 (free use, commercial included, may be used in software)",
+   "license_url": "https://github.com/mrbumpy409/GeneralUser-GS/blob/main/documentation/LICENSE.txt",
+   "source": "https://github.com/mrbumpy409/GeneralUser-GS",
+   "url": "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/684543d5e5efaef08d02be50dcda8d552478fa60/GeneralUser-GS.sf2",
+   "sha256": "9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe",
+   "bytes": 32319396,
+   "file": "GeneralUser-GS.sf2",
+   "status": "pinned"
+  }
+ ]
+}

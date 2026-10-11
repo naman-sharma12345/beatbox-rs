@@ -57,3 +57,12 @@ SOFTWARE.
 ## Sound palette samples (downloaded on first use, not bundled)
 
 53 CC0 1.0 one-shots from Sonic Pi's bundled freesound CC0 set and Michael Fischer's 1994 TR-808 set (tidalcycles/sounds-tr808-fischer, CC0). Per-file author, source page, pinned URL and SHA-256: [SAMPLES_LICENSES.md](SAMPLES_LICENSES.md).
+
+## Recorded instruments, neural voice tools (fetched on first use, not bundled)
+
+- **rustysynth** (Rust crate, MIT, Nobuaki Tanaka): SoundFont (SF2) synthesis for `soundfont` tracks.
+- **GeneralUser GS 2.0.3** (S. Christian Collins), fetched by `fetch_instrument` from the author's GitHub repo at a pinned commit, sha256-checked, into `~/.beatbox/library`. GeneralUser GS License v2.0: "You may use GeneralUser GS without restriction for your own music creation, private or commercial ... Please feel free to use it in your software projects, and to modify the SoundFont bank or its packaging." https://github.com/mrbumpy409/GeneralUser-GS
+- **nnnoiseless** (Rust crate, BSD-3-Clause; a port of Xiph's RNNoise, BSD-3-Clause): fallback backend of `denoise_voice`.
+- **DeepFilterNet 3** (`deep-filter` v0.5.6 release binary, MIT OR Apache-2.0, Hendrik Schröter), fetched once by `denoise_voice` and sha256-checked; it is run as a separate program and not redistributed here. https://github.com/Rikorose/DeepFilterNet
+- **DNSMOS P.835** (`sig_bak_ovr.onnx`, MIT, Microsoft DNS Challenge), fetched once by `scripts/dnsmos.py` (embedded in the binary) and sha256-checked, for `score_voice_quality`. https://github.com/microsoft/DNS-Challenge
+- The sound catalog (`src/sound_catalog.json`) is metadata only; each entry carries its own licence and source, and only CC0 / CC BY / MIT-style items are listed.

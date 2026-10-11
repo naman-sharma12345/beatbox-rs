@@ -677,7 +677,11 @@ pub fn convolve(x: &[f32], ir: &[f32]) -> Vec<f32> {
 }
 
 pub fn convolution(p: &ConvolutionFx, l: &mut [f32], r: &mut [f32]) {
-    let (irl, irr) = synth_ir(p);
+    let file = if p.ir_path.is_empty() { None } else { crate::fx_amp::load_ir(&p.ir_path, 10.0) };
+    let (irl, irr) = match &file {
+        Some(a) => (a.0.clone(), if a.1.is_empty() { a.0.clone() } else { a.1.clone() }),
+        None => synth_ir(p),
+    };
     let mono: Vec<f32> = l.iter().zip(r.iter()).map(|(a, b)| 0.5 * (a + b)).collect();
     let wl = convolve(&mono, &irl);
     let wr = convolve(&mono, &irr);

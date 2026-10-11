@@ -344,7 +344,26 @@ fx_struct!(ConvolutionFx {
     damping: f32 = 0.4,
     early: f32 = 0.5,
     width: f32 = 1.0,
-    mix: f32 = 0.25
+    mix: f32 = 0.25,
+    ir_path: String = String::new()
+});
+fx_struct!(AmpSimFx {
+    model: String = "clean".to_string(),
+    gain_db: f32 = 6.0,
+    bass: f32 = 0.5,
+    mid: f32 = 0.5,
+    treble: f32 = 0.55,
+    presence: f32 = 0.5,
+    master_db: f32 = 0.0,
+    cab: String = "2x12".to_string(),
+    mic: String = "close".to_string(),
+    mix: f32 = 1.0
+});
+fx_struct!(CabIrFx {
+    path: String = String::new(),
+    mix: f32 = 1.0,
+    gain_db: f32 = 0.0,
+    max_ms: f32 = 500.0
 });
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -417,6 +436,8 @@ pub enum Effect {
     StereoShaper(StereoShaperFx),
     Vinyl(VinylFx),
     Waveshaper(WaveshaperFx),
+    AmpSim(AmpSimFx),
+    CabIr(CabIrFx),
 }
 
 macro_rules! each_fx {
@@ -456,6 +477,8 @@ macro_rules! each_fx {
             Effect::StereoShaper($p) => $body,
             Effect::Vinyl($p) => $body,
             Effect::Waveshaper($p) => $body,
+            Effect::AmpSim($p) => $body,
+            Effect::CabIr($p) => $body,
         }
     };
 }
@@ -485,7 +508,9 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("flanger", "Through-zero-style flanger. rate_hz or sync_steps, delay_ms, depth_ms, feedback -0.95..0.95, mix"),
     ("stutter", "Tempo-synced gross-beat style FX. mode gate|stutter|half_time|reverse|tape_stop, pattern (gate: 'x.x.xx..' one char per 16th), slice_steps (stutter repeat length), cycle_steps, smooth_ms, mix (automate fx.<i>.mix 0->1 to apply only at a transition)"),
     ("pitch_shift", "Granular pitch shifter. semitones -24..24, cents, window_ms, mix (octave-up doubles, chipmunk/dark vocal FX)"),
-    ("convolution", "Convolution reverb with synthesized impulse responses. space room|hall|plate|chamber|spring|cathedral, decay_s, predelay_ms, damping, early (reflections), width, mix"),
+    ("amp_sim", "Guitar/bass amp: model clean|crunch|lead|bass (preamp waveshaper, 2x oversampled), gain_db, tone stack bass/mid/treble/presence 0..1, cab 1x12|2x12|4x12|bass_4x10|none (modelled speaker cabinet), mic close|room, master_db, mix. Output is level-matched to the input."),
+    ("cab_ir", "Cabinet impulse response insert: path = an IR audio file or a catalog id (search_instruments family:ir), mix, gain_db, max_ms"),
+    ("convolution", "Convolution reverb with synthesized impulse responses, or a real recorded space with ir_path (an IR file or catalog id). space room|hall|plate|chamber|spring|cathedral, decay_s, predelay_ms, damping, early (reflections), width, mix"),
     ("autopan", "Tempo-synced auto-pan or tremolo. steps (16ths per cycle), depth 0..1, tremolo (true = volume instead of pan)"),
     ("saturator", "Character saturator. mode tape (soft, even+odd warmth, high-end roll-off) | tube (asymmetric, even harmonics) | transistor (hard odd-harmonic edge) | diode (clipped, gritty) | fold (wavefolder, metallic) | exciter (adds only new harmonics above a corner of tone_hz, capped 1.5-8 kHz). drive_db 0..36, tone_hz (post low-pass), bias -0.5..0.5 (asymmetry), mix, output_db, oversample (2x, less aliasing)"),
     ("gross_beat", "Gross Beat-style time + volume FX looping every cycle_steps 16ths (16 = 1 bar). time preset none|half_speed|half_speed_end|repeat_beat|repeat_end_8th|repeat_end_16th|reverse_end|reverse|tape_stop|tape_stop_end|scratch_end|freeze_end|double_speed; volume preset none|trance_gate|trance_gate_8th|pump|pump_hard|tresillo|offbeat|fade_in|fade_out|stop_end|swell; or draw them: time_points / volume_points 'u:v, u:v' (u = 0..1 through the cycle; time v = source position 0..1, volume v = gain). smooth_ms, mix (automate mix to apply it only on a transition)"),
@@ -574,6 +599,8 @@ impl Effect {
             Effect::StereoShaper(p) => crate::fx_mod::stereo_shaper(p, l, r),
             Effect::Vinyl(p) => crate::fx_char::vinyl(p, l, r),
             Effect::Waveshaper(p) => crate::fx_char::waveshaper(p, l, r),
+            Effect::AmpSim(p) => crate::fx_amp::amp_sim(p, l, r),
+            Effect::CabIr(p) => crate::fx_amp::cab_ir(p, l, r),
             Effect::Filter(p) => {
                 let (mut fl, mut fr) = (Svf::default(), Svf::default());
                 for i in 0..l.len() {

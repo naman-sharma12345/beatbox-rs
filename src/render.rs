@@ -968,6 +968,10 @@ pub fn render_cached(
                                     serde_json::from_value(v)
                                         .unwrap_or_else(|_| track.instrument.clone())
                                 };
+                                if let Instrument::SoundFont(sp) = &inst {
+                                    // recorded instruments render in stereo
+                                    return crate::soundfont::render_note_stereo(sp, e.pitch, e.vel, e.gate);
+                                }
                                 let a = render_note_slide(
                                     &inst, e.pitch, e.vel, e.gate, bank, seed, e.slide_to,
                                 );

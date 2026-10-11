@@ -548,6 +548,8 @@ pub enum Instrument {
     Multisample(crate::multisample::MultisampleParams),
     Piano(PianoParams),
     Ensemble(EnsembleParams),
+    /// Real recorded instrument from a SoundFont (SF2) library.
+    SoundFont(crate::soundfont::SoundFontParams),
 }
 
 impl Instrument {
@@ -565,6 +567,7 @@ impl Instrument {
             Instrument::Multisample(_) => "multisample",
             Instrument::Piano(_) => "piano",
             Instrument::Ensemble(_) => "ensemble",
+            Instrument::SoundFont(_) => "soundfont",
         }
     }
     /// Stereo unison spread 0..1 (decorrelated left/right voices).
@@ -576,6 +579,8 @@ impl Instrument {
             Instrument::Ensemble(p) => p.stereo_spread,
             Instrument::Piano(_) => 0.35,
             Instrument::Multisample(_) => 0.0,
+            // the font's own stereo: left = set A, right = set B (see render)
+            Instrument::SoundFont(_) => 1.0,
             Instrument::Layer(l) => l
                 .layers
                 .iter()
@@ -588,6 +593,7 @@ impl Instrument {
     pub fn is_drum(&self) -> bool {
         match self {
             Instrument::Drum(_) => true,
+            Instrument::SoundFont(p) => p.drums,
             Instrument::Layer(l) => l.layers.first().is_some_and(|x| x.instrument.is_drum()),
             _ => false,
         }
@@ -1466,6 +1472,7 @@ pub fn render_note_slide(
         Instrument::Ensemble(p) => {
             crate::synth_extra::render_ensemble(p, pitch, vel, gate, &mut rng)
         }
+        Instrument::SoundFont(p) => crate::soundfont::render_note(p, pitch, vel, gate),
     }
 }
 
