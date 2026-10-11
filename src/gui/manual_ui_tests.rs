@@ -66,7 +66,7 @@ fn is_ident(s: &str) -> bool {
 
 #[test]
 fn gui_text_has_no_ai_wording() {
-    let banned = ["ai", "assistant", "generate", "generated", "generates", "generating", "generator", "smart", "prompt", "critique", "lyrics", "magic", "copilot", "llm", "gpt"];
+    let banned = ["ai", "assistant", "generate", "generated", "generates", "generating", "generator", "smart", "prompt", "critique", "lyrics", "magic", "copilot", "llm", "gpt", "mcp"];
     let mut bad = Vec::new();
     for (file, src) in SOURCES {
         for (line, lit) in literals(src) {
@@ -76,7 +76,7 @@ fn gui_text_has_no_ai_wording() {
             }
             let low = lit.to_lowercase();
             let words: Vec<&str> = low.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect();
-            if words.iter().any(|w| banned.contains(w)) || low.contains("make with") || low.contains("auto-produce") || low.contains("auto produce") {
+            if words.iter().any(|w| banned.contains(w)) || low.contains("make with") || low.contains("tool call") || low.contains("auto-produce") || low.contains("auto produce") {
                 bad.push(format!("{file}:{line}: \"{lit}\""));
             }
         }

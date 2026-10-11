@@ -598,9 +598,9 @@ impl Studio {
                     Pos2::new(r.left() + 26.0, r.center().y),
                     Align2::LEFT_CENTER,
                     if self.server_ok {
-                        format!("MCP {}", self.listen.rsplit(':').next().unwrap_or(""))
+                        format!("PORT {}", self.listen.rsplit(':').next().unwrap_or(""))
                     } else {
-                        "MCP OFF".into()
+                        "OFFLINE".into()
                     },
                     FontId::proportional(11.5),
                     col,
@@ -1105,12 +1105,11 @@ impl Studio {
             card().show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("ACTIVITY").size(10.5).color(DIM).strong());
-                    ui.label(RichText::new("every action is a tool call").size(10.0).color(DIM));
                 });
                 for e in log.iter().take(9) {
                     ui.horizontal(|ui| {
                         let (col, tag) = match e.source.as_str() {
-                            "ai" | "mcp" => (ACCENT, "MCP"),
+                            "ai" | "mcp" => (ACCENT, "EXT"),
                             "you" => (ACCENT2, "YOU"),
                             _ => (DIM, "SYS"),
                         };

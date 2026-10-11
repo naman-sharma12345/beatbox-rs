@@ -54,6 +54,7 @@ pub mod samples;
 pub mod sc_dsp;
 pub mod sc_strip;
 pub mod vocal_style;
+pub mod drill_engine;
 pub mod voice_ai;
 pub mod soundfont;
 pub mod fx_amp;

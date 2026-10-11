@@ -20,7 +20,7 @@ fn modules() -> Vec<(&'static str, &'static str, Vec<Tool>)> {
         ("studio", "transport, history, screenshot, live studio, metronome click", { let mut v = crate::tools_studio::tools(); v.extend(crate::tools_click::tools()); v }),
         ("notes", "piano roll and MIDI: write, edit, quantize, arpeggiate, strum", crate::tools_midi::tools()),
         ("sound", "instruments and sound design, additive synthesis and resynthesis, real recorded instruments (SoundFont library: fetch, list, load, preview), web import (any URL, page links, Freesound, credits)", { let mut v = crate::tools_sound::tools(); v.extend(crate::resynth::tools()); v.extend(crate::tools_library::tools()); v.extend(crate::sound_catalog::tools()); v.extend(crate::web_import::tools()); v }),
-        ("compose", "generators and song structure", crate::tools_compose::tools()),
+        ("compose", "generators and song structure (incl. make_drill_beat)", { let mut v = crate::tools_compose::tools(); v.extend(crate::drill_engine::tools()); v }),
         ("listen", "ears: analysis, loudness, masking, spectrogram, A/B clips for a listener (ab_listen: the listener judges, not the metrics)", { let mut v = crate::tools_ears::tools(); v.extend(crate::tools_listen::tools()); v.extend(crate::tools_ears_pro::tools()); v.extend(crate::tools_ab_listen::tools()); v }),
         ("mix", "levels, balance, routing, buses, drone notches", { let mut v = crate::tools_mix::tools(); v.extend(crate::tools_drone::tools()); v.extend(crate::tools_critic::tools()); v }),
         ("fx", "effects: add, tweak, place, compare, whole FX chains", { let mut v = crate::tools_fx2::tools(); v.extend(crate::tools_chain::tools()); v }),

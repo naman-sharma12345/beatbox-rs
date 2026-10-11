@@ -729,6 +729,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::vocal_sections::tools());
     v.extend(crate::sc_strip::tools());
     v.extend(crate::vocal_style::tools());
+    v.extend(crate::drill_engine::tools());
     v.extend(crate::voice_ai::tools());
     v.extend(crate::tools_library::tools());
     v.extend(crate::sound_catalog::tools());

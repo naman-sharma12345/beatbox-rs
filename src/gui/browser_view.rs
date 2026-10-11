@@ -67,7 +67,6 @@ impl Studio {
                     ui.selectable_value(&mut self.browser.track, t.name.clone(), &t.name);
                 }
             });
-            ui.label(RichText::new("every button is an MCP tool call").size(11.0).color(tk.text_dim));
         });
         ui.add_space(6.0);
         let q = self.browser.search.clone();
