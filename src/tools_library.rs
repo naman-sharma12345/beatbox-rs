@@ -259,7 +259,28 @@ pub fn tools() -> Vec<Tool> {
                 let mut notes = Vec::new();
                 if perc {
                     // a two-bar groove over up to four mapped hits
-                    let keys: Vec<u8> = if roots.is_empty() { vec![36, 38, 42, 46] } else { roots.iter().copied().take(4).collect() };
+                    // General MIDI drum keys when the kit maps them (kick, snare, closed hat, open hat)
+                    let keys: Vec<u8> = if roots.is_empty() {
+                        vec![36, 38, 42, 46]
+                    } else if roots.contains(&36) && (roots.contains(&38) || roots.contains(&40)) {
+                        let mut k = vec![36u8, if roots.contains(&38) { 38 } else { 40 }];
+                        for h in [42u8, 44, 46] {
+                            if roots.contains(&h) && k.len() < 4 {
+                                k.push(h);
+                            }
+                        }
+                        for r in roots.iter().copied() {
+                            if k.len() >= 3 {
+                                break;
+                            }
+                            if !k.contains(&r) {
+                                k.push(r);
+                            }
+                        }
+                        k
+                    } else {
+                        roots.iter().copied().take(4).collect()
+                    };
                     let k = |i: usize| keys[i.min(keys.len() - 1)];
                     for bar in 0..2u32 {
                         let o = (bar * 16) as f32;

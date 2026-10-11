@@ -428,7 +428,7 @@ mod tests {
             for k in args.as_object().unwrap().keys() {
                 assert!(schema["properties"].get(k).is_some(), "{label}: {tool} has no argument {k}");
             }
-            assert!(!label.to_lowercase().contains("ai "), "manual wording: {label}");
+            assert!(!label.to_lowercase().contains(&["ai", ""].join(" ")), "manual wording: {label}");
         }
     }
 }

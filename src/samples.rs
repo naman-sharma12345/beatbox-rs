@@ -59,6 +59,39 @@ impl SampleBank {
     }
 }
 
+/// A copy of a RIFF/WAVE file whose PCM / float `fmt ` chunk is longer than
+/// the 16 bytes those formats need, with that chunk cut to 16 bytes (the
+/// extra bytes carry nothing for PCM). None when there is nothing to fix.
+pub fn wav_fmt_fixed(b: &[u8]) -> Option<Vec<u8>> {
+    if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut i = 12usize;
+    while i + 8 <= b.len() {
+        let size = u32::from_le_bytes([b[i + 4], b[i + 5], b[i + 6], b[i + 7]]) as usize;
+        if &b[i..i + 4] == b"fmt " {
+            if i + 8 + 16 > b.len() {
+                return None;
+            }
+            let tag = u16::from_le_bytes([b[i + 8], b[i + 9]]);
+            if !(tag == 1 || tag == 3) || size <= 16 {
+                return None;
+            }
+            let end = (i + 8 + size + (size & 1)).min(b.len());
+            let mut out = Vec::with_capacity(b.len());
+            out.extend_from_slice(&b[..i + 4]);
+            out.extend_from_slice(&16u32.to_le_bytes());
+            out.extend_from_slice(&b[i + 8..i + 24]);
+            out.extend_from_slice(&b[end..]);
+            let riff = (out.len() - 8) as u32;
+            out[4..8].copy_from_slice(&riff.to_le_bytes());
+            return Some(out);
+        }
+        i += 8 + size + (size & 1);
+    }
+    None
+}
+
 /// Decode any supported audio file to mono f32 at the engine sample rate.
 pub fn decode_file(path: &Path) -> Result<Vec<f32>> {
     let (l, r) = decode_stereo(path)?;
@@ -84,19 +117,27 @@ pub fn decode_stereo_native(path: &Path) -> Result<(Vec<f32>, Vec<f32>, u32)> {
     use symphonia::core::probe::Hint;
 
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         hint.with_extension(ext);
     }
-    let probed = symphonia::default::get_probe()
-        .format(
+    let probe = |src: Box<dyn symphonia::core::io::MediaSource>| {
+        symphonia::default::get_probe().format(
             &hint,
-            mss,
+            MediaSourceStream::new(src, Default::default()),
             &FormatOptions::default(),
             &MetadataOptions::default(),
         )
-        .context("unsupported or corrupt audio file")?;
+    };
+    let probed = match probe(Box::new(file)) {
+        Ok(p) => p,
+        // some sample libraries (e.g. VCSL) write PCM WAVs whose fmt chunk
+        // carries extra bytes; the decoder only takes 16 or 18
+        Err(e) => match std::fs::read(path).ok().and_then(|b| wav_fmt_fixed(&b)) {
+            Some(fixed) => probe(Box::new(std::io::Cursor::new(fixed))).context("unsupported or corrupt audio file")?,
+            None => return Err(anyhow::Error::new(e).context("unsupported or corrupt audio file")),
+        },
+    };
     let mut format = probed.format;
     let track = format
         .default_track()
@@ -306,6 +347,36 @@ mod tests {
     fn sanitize_names() {
         assert_eq!(sanitize("Big Vinyl Crackle!.wav"), "big_vinyl_crackle__wav");
         assert_eq!(sanitize("***"), "sample");
+    }
+
+    #[test]
+    fn decodes_pcm_wav_with_a_long_fmt_chunk() {
+        // a VCSL-style header: PCM fmt chunk of 20 bytes (cbSize + 2 padding bytes)
+        let dir = std::env::temp_dir().join("beatbox_test_decode_fmt20");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("t.wav");
+        let l: Vec<f32> = (0..4410).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+        crate::render::write_wav(&p, &l, &l).unwrap();
+        let b = std::fs::read(&p).unwrap();
+        let i = b.windows(4).position(|w| w == b"fmt ").unwrap();
+        let size = u32::from_le_bytes([b[i + 4], b[i + 5], b[i + 6], b[i + 7]]) as usize;
+        assert_eq!(size, 16);
+        let fmt_tag = u16::from_le_bytes([b[i + 8], b[i + 9]]);
+        if fmt_tag != 1 {
+            return; // writer uses another format; nothing to emulate
+        }
+        let mut v = b[..i + 4].to_vec();
+        v.extend_from_slice(&20u32.to_le_bytes());
+        v.extend_from_slice(&b[i + 8..i + 24]);
+        v.extend_from_slice(&[0, 0, 0, 0]);
+        v.extend_from_slice(&b[i + 24..]);
+        let riff = (v.len() - 8) as u32;
+        v[4..8].copy_from_slice(&riff.to_le_bytes());
+        let q = dir.join("fmt20.wav");
+        std::fs::write(&q, &v).unwrap();
+        let d = decode_file(&q).unwrap();
+        assert!((d.len() as i64 - 4410).abs() < 10, "{}", d.len());
+        assert!(wav_fmt_fixed(&b).is_none());
     }
 
     #[test]

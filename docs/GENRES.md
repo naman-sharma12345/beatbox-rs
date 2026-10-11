@@ -7,7 +7,7 @@ What the catalog (`search_instruments`) covers for each style today, and what is
 | Style | Covered by recorded instruments | Gaps |
 |---|---|---|
 | Hip-hop / rap / trap / drill | acoustic kits (Big Rusty, Unruly and other sfzinstruments kits, VCSL kit), electric and upright basses, pianos, Rhodes-like FM keys, sax | 808s and trap kits are synthesized or from the CC0 one-shot palettes, not multisampled; no recorded hand claps beyond body percussion |
-| Lo-fi | upright and grand pianos, FM keys, nylon/electric guitars, kalimba, mallets, tabla, harmonium | a real tape-worn Rhodes / Wurlitzer |
+| Lo-fi | upright and grand pianos, Wurlitzer EP200, Pianet T, FM keys, nylon/electric guitars, kalimba, mallets, tabla, harmonium | a real Rhodes (the free jRhodes set is non-commercial, so it is not listed) |
 | Pop / indie / rock | electric guitars (Black and Green), basses (Black and Blue and others), acoustic kits, grand and upright pianos, organs | 12-string acoustic, mandolin, ukulele |
 | Jazz / soul / funk / R&B | upright bass (arco and pizz), saxes (21 programs), pianos, organs, vibraphone, brush snares (Frankensnare) | trumpet and trombone exist only as sustained orchestral notes (VSCO): no jazz stabs, falls or mutes |
 | Orchestral / cinematic | VSCO 2 CE strings (sustain, spiccato, pizzicato, tremolo), woodwinds, horn, trumpet, trombone, tuba, harp; VCSL concert harp; cello programs | a recorded choir, timpani, solo violin with legato |
