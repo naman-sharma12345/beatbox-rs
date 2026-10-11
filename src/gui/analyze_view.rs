@@ -7,7 +7,12 @@
 //! arrangement_map, score_sections);
 //! the work runs off the UI thread on its own engine over the same folder, so
 //! the studio stays responsive, and "add to project" then runs import_midi on
-//! the studio's engine.
+//! the studio's engine. BUILD A SONG FROM PARTS lays the written-down parts
+//! out as tracks and sections (arrange_transcription), every option of that
+//! tool on its own control: instrument, level, pan, how a chord part is
+//! played (as written, broken up, the rhythm of another part, or the rhythm
+//! heard in a recording), strum, fx chain, extra effects, tidy repeats, and
+//! the vocal take with its placement.
 
 use super::theme::Tokens;
 use super::Studio;
@@ -25,6 +30,169 @@ pub struct AnalyzeState {
     pub compare_stems: String,
     pub job: Option<(String, std::sync::mpsc::Receiver<Result<Value, String>>)>,
     pub result: String,
+    pub build: BuildState,
+}
+
+/// How a part's notes are played on its track.
+pub const PLAY_MODES: [&str; 4] = ["as written", "broken chords", "rhythm of a part", "rhythm of a recording"];
+
+/// One row of BUILD A SONG FROM PARTS: one part (arrange_transcription parts[i]).
+#[derive(Clone)]
+pub struct PartRow {
+    pub name: String,
+    pub file: String,
+    pub instrument: String,
+    pub volume_db: String,
+    pub pan: String,
+    /// index into PLAY_MODES
+    pub play: usize,
+    pub style: String,
+    pub rate: String,
+    pub octaves: String,
+    pub rhythm_part: String,
+    pub rhythm_audio: String,
+    pub min_share: f32,
+    pub center: u8,
+    pub gate: f32,
+    pub octave: i32,
+    pub strum: String,
+    pub strum_dir: usize,
+    pub fx_chain: String,
+    pub effects: String,
+    pub source_only: bool,
+    pub tidy: bool,
+}
+
+impl Default for PartRow {
+    fn default() -> Self {
+        PartRow {
+            name: String::new(),
+            file: String::new(),
+            instrument: String::new(),
+            volume_db: String::new(),
+            pan: String::new(),
+            play: 0,
+            style: "updown".into(),
+            rate: String::new(),
+            octaves: String::new(),
+            rhythm_part: String::new(),
+            rhythm_audio: String::new(),
+            min_share: 0.4,
+            center: 60,
+            gate: 1.0,
+            octave: 0,
+            strum: String::new(),
+            strum_dir: 0,
+            fx_chain: String::new(),
+            effects: String::new(),
+            source_only: false,
+            tidy: false,
+        }
+    }
+}
+
+pub const STRUM_DIRS: [&str; 3] = ["down", "up", "alternate"];
+
+#[derive(Default)]
+pub struct BuildState {
+    pub parts: Vec<PartRow>,
+    pub sections_file: String,
+    pub bars_per_pattern: String,
+    pub name: String,
+    pub key: String,
+    pub vocal: String,
+    pub vocal_start_s: String,
+    pub vocal_db: String,
+    pub vocal_phrases: String,
+    pub tidy: bool,
+}
+
+fn num(s: &str) -> Option<f64> {
+    s.trim().parse::<f64>().ok()
+}
+
+impl PartRow {
+    /// The part as arrange_transcription takes it.
+    pub fn to_json(&self) -> Value {
+        let mut p = json!({"name": self.name.trim(), "file": self.file.trim()});
+        if !self.instrument.trim().is_empty() {
+            p["instrument"] = json!(self.instrument.trim());
+        }
+        if let Some(v) = num(&self.volume_db) {
+            p["volume_db"] = json!(v);
+        }
+        if let Some(v) = num(&self.pan) {
+            p["pan"] = json!(v);
+        }
+        match self.play {
+            1 => {
+                let mut a = json!({"style": if self.style.trim().is_empty() { "updown" } else { self.style.trim() }, "gate": self.gate});
+                if let Some(r) = num(&self.rate) {
+                    a["rate"] = json!(r);
+                }
+                if let Some(o) = num(&self.octaves) {
+                    a["octaves"] = json!(o as i64);
+                }
+                p["arpeggiate"] = a;
+            }
+            2 if !self.rhythm_part.trim().is_empty() => {
+                p["arpeggiate"] = json!({"rhythm_from": self.rhythm_part.trim(), "gate": self.gate, "octave": self.octave});
+            }
+            3 if !self.rhythm_audio.trim().is_empty() => {
+                p["arpeggiate"] = json!({"rhythm_from_audio": self.rhythm_audio.trim(), "min_share": self.min_share, "center": self.center, "gate": self.gate, "octave": self.octave});
+            }
+            _ => {}
+        }
+        if let Some(sp) = num(&self.strum) {
+            p["strum"] = json!({"spread": sp, "direction": STRUM_DIRS[self.strum_dir.min(2)]});
+        }
+        if !self.fx_chain.trim().is_empty() {
+            p["fx_chain"] = json!(self.fx_chain.trim());
+        }
+        let fx: Vec<Value> = self.effects.split(',').map(str::trim).filter(|t| !t.is_empty()).map(|t| json!({"type": t})).collect();
+        if !fx.is_empty() {
+            p["effects"] = json!(fx);
+        }
+        if self.source_only {
+            p["source_only"] = json!(true);
+        }
+        if self.tidy {
+            p["consolidate"] = json!(true);
+        }
+        p
+    }
+}
+
+impl BuildState {
+    /// The whole build as arrange_transcription takes it.
+    pub fn to_json(&self, bpm: Option<f64>) -> Value {
+        let parts: Vec<Value> = self.parts.iter().filter(|r| !r.name.trim().is_empty() && !r.file.trim().is_empty()).map(PartRow::to_json).collect();
+        let mut a = json!({"parts": parts});
+        for (k, v) in [("sections_file", &self.sections_file), ("name", &self.name), ("key", &self.key), ("vocal", &self.vocal)] {
+            if !v.trim().is_empty() {
+                a[k] = json!(v.trim());
+            }
+        }
+        if let Some(b) = num(&self.bars_per_pattern) {
+            a["bars_per_pattern"] = json!(b as i64);
+        }
+        if let Some(b) = bpm {
+            a["bpm"] = json!(b);
+        }
+        if let Some(v) = num(&self.vocal_start_s) {
+            a["vocal_start_s"] = json!(v);
+        }
+        if let Some(v) = num(&self.vocal_db) {
+            a["vocal_db"] = json!(v);
+        }
+        if !self.vocal_phrases.trim().is_empty() {
+            a["vocal_phrases"] = json!(self.vocal_phrases.trim());
+        }
+        if self.tidy {
+            a["consolidate"] = json!(true);
+        }
+        a
+    }
 }
 
 /// The result as short readable lines (no paths' folders, no hints list).
@@ -73,6 +241,139 @@ impl Studio {
         self.analyze.result.clear();
     }
 
+    fn build_rows(&mut self, ui: &mut egui::Ui, ready: bool) -> Option<Value> {
+        let tk = Tokens::DARK;
+        let mut out = None;
+        let b = &mut self.analyze.build;
+        let lab = |ui: &mut egui::Ui, t: &str| {
+            ui.label(RichText::new(t).size(11.0).color(tk.text_dim));
+        };
+        ui.horizontal_wrapped(|ui| {
+            lab(ui, "SECTIONS FILE");
+            ui.add(egui::TextEdit::singleline(&mut b.sections_file).desired_width(180.0).hint_text("from SECTIONS + PARTS (optional)"));
+            lab(ui, "BARS PER PATTERN");
+            ui.add(egui::TextEdit::singleline(&mut b.bars_per_pattern).desired_width(36.0).hint_text("8"));
+            lab(ui, "SONG NAME");
+            ui.add(egui::TextEdit::singleline(&mut b.name).desired_width(110.0));
+            lab(ui, "KEY");
+            ui.add(egui::TextEdit::singleline(&mut b.key).desired_width(70.0).hint_text("D minor"));
+            ui.checkbox(&mut b.tidy, "tidy repeats").on_hover_text("each section's bars voted into its repeating 1, 2 or 4 bar figure");
+        });
+        ui.horizontal_wrapped(|ui| {
+            lab(ui, "VOCAL TAKE");
+            ui.add(egui::TextEdit::singleline(&mut b.vocal).desired_width(180.0).hint_text("take.wav (optional)"));
+            lab(ui, "STARTS AT (s)");
+            ui.add(egui::TextEdit::singleline(&mut b.vocal_start_s).desired_width(50.0));
+            lab(ui, "LEVEL dB");
+            ui.add(egui::TextEdit::singleline(&mut b.vocal_db).desired_width(40.0));
+            lab(ui, "LINE PLACEMENT");
+            ui.add(egui::TextEdit::singleline(&mut b.vocal_phrases).desired_width(160.0).hint_text("phrase times file (optional)"));
+        });
+        let mut remove = None;
+        for (i, r) in b.parts.iter_mut().enumerate() {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    lab(ui, "PART");
+                    ui.add(egui::TextEdit::singleline(&mut r.name).desired_width(70.0).hint_text("guitar"));
+                    lab(ui, "NOTES FILE");
+                    ui.add(egui::TextEdit::singleline(&mut r.file).desired_width(170.0).hint_text("from a TO MIDI button"));
+                    lab(ui, "INSTRUMENT");
+                    ui.add(egui::TextEdit::singleline(&mut r.instrument).desired_width(120.0).hint_text("preset:keys"));
+                    lab(ui, "dB");
+                    ui.add(egui::TextEdit::singleline(&mut r.volume_db).desired_width(36.0));
+                    lab(ui, "PAN");
+                    ui.add(egui::TextEdit::singleline(&mut r.pan).desired_width(36.0));
+                    ui.checkbox(&mut r.tidy, "tidy repeats");
+                    ui.checkbox(&mut r.source_only, "rhythm source only").on_hover_text("load this part only to lend its rhythm to another part; it gets no track");
+                    if ui.small_button("REMOVE").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    lab(ui, "PLAY");
+                    egui::ComboBox::from_id_salt(("br_play", i)).selected_text(PLAY_MODES[r.play.min(3)]).show_ui(ui, |ui| {
+                        for (k, m) in PLAY_MODES.iter().enumerate() {
+                            ui.selectable_value(&mut r.play, k, *m);
+                        }
+                    });
+                    match r.play {
+                        1 => {
+                            lab(ui, "STYLE");
+                            ui.add(egui::TextEdit::singleline(&mut r.style).desired_width(70.0).hint_text("updown"));
+                            lab(ui, "RATE (steps)");
+                            ui.add(egui::TextEdit::singleline(&mut r.rate).desired_width(36.0).hint_text("2"));
+                            lab(ui, "OCTAVES");
+                            ui.add(egui::TextEdit::singleline(&mut r.octaves).desired_width(30.0).hint_text("1"));
+                        }
+                        2 => {
+                            lab(ui, "FROM PART");
+                            ui.add(egui::TextEdit::singleline(&mut r.rhythm_part).desired_width(90.0).hint_text("riff"));
+                        }
+                        3 => {
+                            lab(ui, "RECORDING");
+                            ui.add(egui::TextEdit::singleline(&mut r.rhythm_audio).desired_width(170.0).hint_text("the part's stem, e.g. other.wav"));
+                            ui.add(egui::Slider::new(&mut r.min_share, 0.1..=1.0).text("in share of bars"))
+                                .on_hover_text("a 16th step is played when it is struck in at least this share of the section's bars");
+                            ui.add(egui::Slider::new(&mut r.center, 36..=96).text("around note"));
+                        }
+                        _ => {}
+                    }
+                    if r.play > 0 {
+                        ui.add(egui::Slider::new(&mut r.gate, 0.1..=1.0).text("note length"));
+                    }
+                    if r.play >= 2 {
+                        ui.add(egui::Slider::new(&mut r.octave, -2..=2).text("octave"));
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    lab(ui, "STRUM (steps)");
+                    ui.add(egui::TextEdit::singleline(&mut r.strum).desired_width(36.0).hint_text("off"));
+                    egui::ComboBox::from_id_salt(("br_strum", i)).selected_text(STRUM_DIRS[r.strum_dir.min(2)]).show_ui(ui, |ui| {
+                        for (k, d) in STRUM_DIRS.iter().enumerate() {
+                            ui.selectable_value(&mut r.strum_dir, k, *d);
+                        }
+                    });
+                    lab(ui, "FX CHAIN");
+                    ui.add(egui::TextEdit::singleline(&mut r.fx_chain).desired_width(140.0).hint_text("clean_chorus_guitar"));
+                    lab(ui, "EXTRA EFFECTS");
+                    ui.add(egui::TextEdit::singleline(&mut r.effects).desired_width(160.0).hint_text("reverb, delay"));
+                });
+            });
+        }
+        if let Some(i) = remove {
+            b.parts.remove(i);
+        }
+        let bpm = self.analyze.bpm.trim().parse::<f64>().ok();
+        let b = &mut self.analyze.build;
+        ui.horizontal(|ui| {
+            if ui.small_button("ADD PART").clicked() {
+                b.parts.push(PartRow::default());
+            }
+            let args = b.to_json(bpm);
+            let has = args["parts"].as_array().is_some_and(|p| !p.is_empty());
+            if ui.add_enabled(ready && has, egui::Button::new("BUILD SONG").small()).on_hover_text(format!("arrange_transcription {args}")).clicked() {
+                out = Some(args);
+            }
+        });
+        out
+    }
+
+    /// arrange_transcription on the studio's own engine (it builds the open project).
+    fn build_job(&mut self, ctx: egui::Context, args: Value) {
+        if self.analyze.job.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let eng = self.engine.clone();
+        std::thread::spawn(move || {
+            let r = eng.lock().unwrap().call_from("arrange_transcription", &args, "you").map_err(|e| format!("{e:#}"));
+            let _ = tx.send(r);
+            ctx.request_repaint();
+        });
+        self.analyze.job = Some(("build song".into(), rx));
+        self.analyze.result.clear();
+    }
+
     pub(super) fn analyze_panel(&mut self, ui: &mut egui::Ui) {
         let tk = Tokens::DARK;
         if let Some((label, rx)) = &self.analyze.job {
@@ -86,6 +387,7 @@ impl Studio {
         }
         let busy = self.analyze.job.as_ref().map(|j| j.0.clone());
         let mut job: Option<(&'static str, Value)> = None;
+        let mut build: Option<Value> = None;
         egui::CollapsingHeader::new(RichText::new("ANALYZE A RECORDING").size(11.0).strong().color(tk.header_text))
             .id_salt("br_analyze")
             .default_open(false)
@@ -159,6 +461,14 @@ impl Studio {
                         job = Some(("score_sections", ca));
                     }
                 });
+                egui::CollapsingHeader::new(RichText::new("BUILD A SONG FROM PARTS").size(11.0).strong().color(tk.header_text))
+                    .id_salt("br_build")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        if let Some(a) = self.build_rows(ui, busy.is_none()) {
+                            build = Some(a);
+                        }
+                    });
                 if let Some(b) = &busy {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -173,6 +483,47 @@ impl Studio {
         if let Some((tool, args)) = job {
             let label = tool.replace('_', " ");
             self.analyze_job(label, ui.ctx().clone(), tool, args);
+        }
+        if let Some(args) = build {
+            self.build_job(ui.ctx().clone(), args);
+        }
+    }
+}
+
+#[cfg(test)]
+mod build_form_tests {
+    use super::*;
+
+    #[test]
+    fn build_form_sends_only_options_the_tool_takes() {
+        let mut b = BuildState { bars_per_pattern: "8".into(), vocal: "take.wav".into(), vocal_db: "-2".into(), tidy: true, ..Default::default() };
+        b.parts.push(PartRow { name: "gtr".into(), file: "chords.json".into(), instrument: "preset:keys".into(), play: 3, rhythm_audio: "other.wav".into(), min_share: 0.5, center: 64, strum: "0.5".into(), strum_dir: 2, fx_chain: "clean_chorus_guitar".into(), effects: "reverb, delay".into(), ..Default::default() });
+        b.parts.push(PartRow { name: "riff".into(), file: "riff.json".into(), source_only: true, ..Default::default() });
+        b.parts.push(PartRow { name: "keys".into(), file: "chords.json".into(), play: 1, rate: "2".into(), ..Default::default() });
+        b.parts.push(PartRow { name: "lead".into(), file: "chords.json".into(), play: 2, rhythm_part: "riff".into(), octave: 1, ..Default::default() });
+        b.parts.push(PartRow::default()); // an empty row is skipped
+        let a = b.to_json(Some(96.0));
+        let parts = a["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 4, "{a}");
+        assert_eq!(parts[0]["arpeggiate"]["rhythm_from_audio"], "other.wav");
+        assert_eq!(parts[0]["arpeggiate"]["center"], 64);
+        assert_eq!(parts[0]["strum"]["direction"], "alternate");
+        assert_eq!(parts[0]["effects"][1]["type"], "delay");
+        assert_eq!(parts[1]["source_only"], true);
+        assert_eq!(parts[2]["arpeggiate"]["style"], "updown");
+        assert_eq!(parts[3]["arpeggiate"]["rhythm_from"], "riff");
+        assert_eq!(a["bars_per_pattern"], 8);
+        let t = crate::tools::find("arrange_transcription").expect("tool");
+        let schema = (t.schema)();
+        let props = &schema["properties"];
+        for k in a.as_object().unwrap().keys() {
+            assert!(props.get(k).is_some(), "song option {k} not in the tool");
+        }
+        let pp = &props["parts"]["items"]["properties"];
+        for p in parts {
+            for k in p.as_object().unwrap().keys() {
+                assert!(pp.get(k).is_some(), "part option {k} not in the tool");
+            }
         }
     }
 }
