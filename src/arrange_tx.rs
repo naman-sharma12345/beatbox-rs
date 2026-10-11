@@ -294,7 +294,8 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
     for (pname, spec, _, _) in &loaded {
         if let Some(p) = spec["arpeggiate"].get("rhythm_from_audio").and_then(|x| x.as_str()) {
             let x = crate::samples::decode_file(&e.resolve(p)).map_err(|err| anyhow!("{pname}: arpeggiate.rhythm_from_audio {p}: {err}"))?;
-            audio_onsets.push((pname.clone(), crate::record_map::onsets_of(&x)));
+            // level-independent attacks: a quiet section's picking counts as much as a loud one's
+            audio_onsets.push((pname.clone(), tr::log_flux_onsets(&x, 0.07)));
         }
     }
     let mut tracks = Vec::new();
