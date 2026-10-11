@@ -110,6 +110,41 @@ fn snap_to_chords(chords: &[Nt], rhythm: &[Nt], gate: f32) -> Vec<Nt> {
     out
 }
 
+/// A section's picking rhythm read from a recording of the part (a stem):
+/// the 16th steps struck in at least `min_share` of the section's bars. Each
+/// step becomes one note per bar ringing to the next step, its pitch walking
+/// up and down around `center` so snap_to_chords turns it into chord tones.
+fn audio_rhythm(onsets: &[f32], bpm: f32, downbeat: f32, b0: usize, nb: usize, min_share: f32, center: u8) -> Vec<Nt> {
+    let step_s = 60.0 / bpm / 4.0;
+    let mut hist = [0usize; 16];
+    for t in onsets {
+        let s = ((t - downbeat) / step_s).round();
+        if s < 0.0 {
+            continue;
+        }
+        let s = s as usize;
+        if s / 16 >= b0 && s / 16 < b0 + nb {
+            hist[s % 16] += 1;
+        }
+    }
+    let steps: Vec<usize> = (0..16).filter(|s| hist[*s] as f32 >= min_share * nb as f32).collect();
+    if steps.is_empty() {
+        return Vec::new();
+    }
+    let walk = [0i32, 4, 7, 12, 7, 4];
+    let mut out = Vec::new();
+    let mut k = 0usize;
+    for bar in 0..nb {
+        for (i, s) in steps.iter().enumerate() {
+            let next = if i + 1 < steps.len() { steps[i + 1] } else { steps[0] + 16 };
+            let p = (center as i32 + walk[k % walk.len()]).clamp(0, 127) as u8;
+            k += 1;
+            out.push((bar, *s as f32, (next - s) as f32, p, 0.8));
+        }
+    }
+    out
+}
+
 /// Majority-vote a section's bars into a repeating 1-, 2- or 4-bar part:
 /// a note survives when it sits on the same step and pitch in at least half
 /// the repeats, so a transcriber's stray hits and drop-outs vanish while the
@@ -254,6 +289,14 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
     }
     call(e, "new_project", np)?;
     call(e, "set_arrangement", json!({"sections": secs.iter().map(|s| json!({"pattern": s.0, "repeats": 1})).collect::<Vec<_>>()}))?;
+    // parts whose arpeggiate.rhythm_from_audio names a recording of the part: its onsets, read once
+    let mut audio_onsets: Vec<(String, Vec<f32>)> = Vec::new();
+    for (pname, spec, _, _) in &loaded {
+        if let Some(p) = spec["arpeggiate"].get("rhythm_from_audio").and_then(|x| x.as_str()) {
+            let x = crate::samples::decode_file(&e.resolve(p)).map_err(|err| anyhow!("{pname}: arpeggiate.rhythm_from_audio {p}: {err}"))?;
+            audio_onsets.push((pname.clone(), crate::record_map::onsets_of(&x)));
+        }
+    }
     let mut tracks = Vec::new();
     let mut periods: Vec<Value> = Vec::new();
     for (pname, spec, ns, is_drums) in &loaded {
@@ -276,7 +319,18 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
             let sec = if cons { let (c, per) = consolidate(&sec, *nb); periods.push(json!({"track": pname, "pattern": sname, "period_bars": per})); c } else { sec };
             // a chord part played as a picked line: another part's rhythm and contour snapped to these chords
             let arp = &spec["arpeggiate"];
-            let sec = match arp.get("rhythm_from").and_then(|x| x.as_str()) {
+            let audio_on = audio_onsets.iter().find(|(n, _)| n == pname).map(|(_, o)| o);
+            let sec = if let Some(on) = audio_on {
+                let rsec = audio_rhythm(on, bpm, downbeat, *b0, *nb, arp["min_share"].as_f64().unwrap_or(0.4) as f32, arp["center"].as_u64().unwrap_or(60).min(120) as u8);
+                if rsec.is_empty() { sec } else {
+                    let mut out = snap_to_chords(&sec, &rsec, arp["gate"].as_f64().unwrap_or(1.0) as f32);
+                    let shift = arp["octave"].as_i64().unwrap_or(0) as i32 * 12;
+                    for n in out.iter_mut() {
+                        n.3 = (n.3 as i32 + shift).clamp(0, 127) as u8;
+                    }
+                    out
+                }
+            } else { match arp.get("rhythm_from").and_then(|x| x.as_str()) {
                 Some(src) => {
                     let (_, _, rns, _) = loaded.iter().find(|l| l.0 == src).ok_or_else(|| anyhow!("{pname}: arpeggiate.rhythm_from '{src}' is not a part"))?;
                     let rsec: Vec<Nt> = rns.iter().filter(|n| n.0 >= *b0 && n.0 < b0 + nb).map(|n| (n.0 - b0, n.1, n.2, n.3, n.4)).collect();
@@ -289,7 +343,7 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
                     out
                 }
                 None => sec,
-            };
+            } };
             let notes: Vec<Value> = sec
                 .iter()
                 .map(|n| json!({"start": n.0 as f32 * 16.0 + n.1, "len": n.2, "pitch": n.3, "vel": (n.4 * 100.0).round() / 100.0}))
@@ -298,7 +352,7 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
                 count += notes.len();
                 call(e, "add_notes", json!({"pattern": sname, "track": pname, "notes": notes}))?;
                 // block chords -> arpeggio (style) or strum, with the notes tools a person uses on a piano roll
-                if (arp.is_object() && arp.get("rhythm_from").is_none()) || arp.is_string() {
+                if (arp.is_object() && arp.get("rhythm_from").is_none() && arp.get("rhythm_from_audio").is_none()) || arp.is_string() {
                     let mut aa = if arp.is_string() { json!({"style": arp}) } else { arp.clone() };
                     aa["pattern"] = json!(sname);
                     aa["track"] = json!(pname);
@@ -397,7 +451,7 @@ pub fn tools() -> Vec<Tool> {
             "parts": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "file": {"type": "string"}, "instrument": {"type": "string"}, "volume_db": {"type": "number"}, "pan": {"type": "number"},
                 "consolidate": {"type": "boolean"},
                 "source_only": {"type": "boolean", "description": "load this part only as another part's arpeggiate.rhythm_from; no track"},
-                "arpeggiate": {"anyOf": [{"type": "string"}, {"type": "object"}], "description": "play this chord part broken up: a style (up, down, updown, ...) or {style, rate, octaves, gate}; or {rhythm_from: <another part, e.g. the riff>, gate, octave} to keep that part's picking rhythm and contour with every note snapped to these chords (a picked/arpeggiated guitar from a single-line riff transcription)"},
+                "arpeggiate": {"anyOf": [{"type": "string"}, {"type": "object"}], "description": "play this chord part broken up: a style (up, down, updown, ...) or {style, rate, octaves, gate}; or {rhythm_from: <another part, e.g. the riff>, gate, octave} to keep that part's picking rhythm and contour with every note snapped to these chords (a picked/arpeggiated guitar from a single-line riff transcription); or {rhythm_from_audio: <a recording of the part, e.g. its stem>, min_share (0.4), center (60), gate, octave}: each section plays the 16th steps struck in at least min_share of its bars, as chord tones walking around center"},
                 "strum": {"anyOf": [{"type": "number"}, {"type": "object"}], "description": "strum the chords: spread in steps, or {spread, direction up|down|alternate, vel_taper}"},
                 "fx_chain": {"type": "string", "description": "a saved or built-in fx chain for this track (list_fx_chains), e.g. clean_chorus_guitar"},
                 "effects": {"type": "array", "items": {"type": "object"}, "description": "extra effects after the chain: [{type, ...params}] as add_effect takes them"}}, "required": ["name", "file"]}},
@@ -464,6 +518,24 @@ mod consolidate_tests {
 #[cfg(test)]
 mod arpeggio_tests {
     use super::*;
+    #[test]
+    fn audio_rhythm_keeps_steps_struck_in_most_bars() {
+        let (bpm, d0) = (120.0f32, 0.1f32);
+        let step = 0.125f32;
+        let mut on = Vec::new();
+        for bar in 2..6 {
+            on.push(d0 + (bar * 16) as f32 * step);
+            on.push(d0 + (bar * 16 + 12) as f32 * step + 0.02);
+        }
+        on.push(d0 + (3 * 16 + 5) as f32 * step); // a stray in one bar only
+        let r = audio_rhythm(&on, bpm, d0, 2, 4, 0.4, 60);
+        let steps: Vec<f32> = r.iter().filter(|n| n.0 == 0).map(|n| n.1).collect();
+        assert_eq!(steps, vec![0.0, 12.0]);
+        assert_eq!(r.len(), 8);
+        assert_eq!((r[0].2, r[1].2), (12.0, 4.0));
+        assert!(audio_rhythm(&on, bpm, d0, 20, 4, 0.4, 60).is_empty());
+    }
+
     #[test]
     fn riff_rhythm_snaps_to_chords_and_options_apply() {
         // Gm chord held 1 bar; a riff with 8th notes, one off-chord (A4 = 69) -> nearest chord tone

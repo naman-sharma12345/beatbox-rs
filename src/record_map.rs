@@ -491,6 +491,11 @@ pub struct Score {
     pub bands_db: [f32; 9],
 }
 
+/// Onset times (s) of a mono signal, the same detector score_sections uses for groove.
+pub fn onsets_of(x: &[f32]) -> Vec<f32> {
+    onset_times(&frames(x))
+}
+
 fn onset_times(f: &Frames) -> Vec<f32> {
     let fr = SR / HOP as f32;
     tr::pick_peaks(&f.flux, 0.6, 3).into_iter().filter(|p| p.1 > 0.2).map(|p| p.0 as f32 / fr).collect()
