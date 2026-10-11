@@ -139,8 +139,10 @@ fn genre_targets(genre: &str) -> Result<Vec<(&'static str, f32)>> {
         // ~30% of power under 250 Hz with mids and air heavy; hip-hop sits at
         // 60-70%), so the 808 sits level with the kick and the top is quieter
         "boom_bap" | "hiphop" | "hip_hop" => vec![("bass", 0.0), ("snare", -1.5), ("hats", -12.0), ("perc", -11.0), ("cymbal", -14.0), ("lead", -7.0), ("keys", -7.0), ("pad", -12.0), ("fx", -17.0)],
-        // lo-fi: dusty, the top stays soft (critic, beat 9: air +11 dB, all hats)
-        "lofi" => vec![("bass", -2.0), ("snare", -1.0), ("hats", -16.0), ("perc", -12.0), ("cymbal", -17.0), ("lead", -5.0), ("keys", -5.0), ("pad", -10.0), ("fx", -14.0)],
+        // lo-fi: dusty, the top stays soft (critic, beat 9: air +11 dB, all hats;
+        // r4 against the lofi profile: harsh +8 = snare 48% + lead 36%, air +11 =
+        // hats 54% + perc 23%, so those sit 2.5-4 dB lower than first set)
+        "lofi" => vec![("bass", -2.0), ("snare", -3.5), ("hats", -19.0), ("perc", -16.0), ("cymbal", -19.0), ("lead", -7.0), ("keys", -5.0), ("pad", -10.0), ("fx", -14.0)],
         "house" | "techno" | "edm" => vec![("bass", -2.0), ("snare", -4.0), ("hats", -8.0), ("perc", -9.0), ("cymbal", -10.0), ("lead", -5.0), ("keys", -7.0), ("pad", -10.0), ("fx", -13.0)],
         "pop" | "afrobeats" => vec![("bass", -2.0), ("snare", -2.0), ("hats", -9.0), ("perc", -8.0), ("cymbal", -11.0), ("lead", -3.0), ("keys", -5.0), ("pad", -9.0), ("fx", -14.0)],
         // R&B: soft, dark top (critic: air 14 dB over a reference, hissy hats)
