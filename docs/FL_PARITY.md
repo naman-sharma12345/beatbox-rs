@@ -7,7 +7,7 @@ anything listed as **have**.
 The studio GUI is fully manual (a hand-operated DAW). The one-call production
 helpers (make_beat, produce_song, critique_mix, ...) are MCP tools only.
 
-**Score: 82 have, 5 partial, 4 missing of 91** (parity 82/91; counting partial as half: 84.5/91).
+**Score: 83 have, 4 partial, 4 missing of 91** (parity 83/91; counting partial as half: 85/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -75,7 +75,7 @@ hosting.
 | Effects | Love Philter / Fruity Filter | have | filter + automation |
 | Effects | Vocoder / Vocodex | have | add_effect type vocoder: the track's own vocal modulates a built-in saw chord (notes), 4-40 bands, carrier noise + sibilance pass-through |
 | Effects | Pitcher / NewTone (pitch correction) | have | tune_vocal (PSOLA autotune), pitch_shift |
-| Effects | Newtime (time warping) | partial | stretch_sample, vocal warp in vocal_to_song |
+| Effects | Newtime (time warping) | have | align_vocal_to_grid (flex time: syllable or phrase onsets pulled to the grid with a strength knob, pitch kept), place_vocal_phrases, detect_vocal_onsets, stretch_sample, vocal warp in vocal_to_song |
 | Effects | Gate | have | gate |
 | Effects | De-esser | have | deesser |
 | Effects | Peak controller / sidechain | have | sidechain, carve_mix |

@@ -109,6 +109,66 @@ fn number_before(text: &str, unit: &str) -> Option<f32> {
     digits.parse().ok()
 }
 
+/// Song length from a brief: "2 minutes 50 seconds", "2 min and 50 sec",
+/// "2:50 long", "170 seconds", "3 minutes", "1.5 min" (song worker: "2
+/// minutes 50 seconds" was read as 50 s).
+pub fn parse_duration(t: &str) -> Option<f32> {
+    let toks: Vec<&str> = t.split_whitespace().collect();
+    let unit = |s: &str| -> Option<f32> {
+        match s.trim_end_matches(['.', ';']) {
+            "seconds" | "second" | "sec" | "secs" => Some(1.0),
+            "minutes" | "minute" | "min" | "mins" | "m" => Some(60.0),
+            _ => None,
+        }
+    };
+    // a number glued to its unit: "2min", "50s", "3m"
+    let split = |s: &str| -> Option<(f32, f32)> {
+        let d: String = s.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        if d.is_empty() || d.len() == s.len() {
+            return None;
+        }
+        Some((d.parse().ok()?, unit(&s[d.len()..])?))
+    };
+    for (i, tok) in toks.iter().enumerate() {
+        // m:ss
+        if let Some((m, s)) = tok.split_once(':') {
+            if let (Ok(m), Ok(s)) = (m.parse::<f32>(), s.parse::<f32>()) {
+                if m < 10.0 && s < 60.0 && tok.len() <= 5 {
+                    return Some((m * 60.0 + s).clamp(20.0, 420.0));
+                }
+            }
+        }
+        let (n, mult, mut j) = if let Ok(n) = tok.parse::<f32>() {
+            match toks.get(i + 1).and_then(|u| unit(u)) {
+                Some(m) => (n, m, i + 2),
+                None => continue,
+            }
+        } else if let Some((n, m)) = split(tok) {
+            (n, m, i + 1)
+        } else {
+            continue;
+        };
+        let mut total = n * mult;
+        // "... and 50 seconds"
+        if mult == 60.0 {
+            if toks.get(j) == Some(&"and") {
+                j += 1;
+            }
+            if let Some(t2) = toks.get(j) {
+                if let Ok(s) = t2.parse::<f32>() {
+                    if toks.get(j + 1).and_then(|u| unit(u)) == Some(1.0) {
+                        total += s;
+                    }
+                } else if let Some((s, 1.0)) = split(t2) {
+                    total += s;
+                }
+            }
+        }
+        return Some(total.clamp(20.0, 420.0));
+    }
+    None
+}
+
 /// Read a free-text brief.
 pub fn parse_prompt(prompt: &str) -> PromptPlan {
     let t = format!(" {} ", prompt.to_lowercase().replace(['\n', ','], " "));
@@ -184,12 +244,31 @@ pub fn parse_prompt(prompt: &str) -> PromptPlan {
             }
         }
     }
-    for (unit, mult) in [("seconds", 1.0), ("sec", 1.0), ("minutes", 60.0), ("minute", 60.0), ("min", 60.0)] {
-        if let Some(n) = number_before(&t, unit) {
-            p.duration_s = Some((n * mult).clamp(20.0, 420.0));
-            break;
+    // "C minor", "F# min", "Cm", "Bbm" without "in"/"key" (song worker: "142 bpm, C minor" was missed)
+    if p.key.is_none() {
+        let toks: Vec<&str> = t.split_whitespace().collect();
+        for (i, tok) in toks.iter().enumerate() {
+            let next = toks.get(i + 1).copied().unwrap_or("");
+            let (root, scale) = if ["minor", "min", "major", "maj", "dorian", "phrygian"].contains(&next) {
+                (*tok, Some(match next { "min" => "minor", "maj" => "major", s => s }))
+            } else if tok.len() >= 2 && tok.len() <= 3 && tok.ends_with('m') && *tok != "am" {
+                (&tok[..tok.len() - 1], Some("minor"))
+            } else {
+                continue;
+            };
+            let ok = root.len() <= 2 && root.chars().next().is_some_and(|c| ('a'..='g').contains(&c)) && (root.len() == 1 || matches!(&root[1..], "#" | "b")) && crate::theory::pitch_class(root).is_ok();
+            if ok {
+                let kk = format!("{}{}", root[..1].to_uppercase(), &root[1..]);
+                p.key = Some(kk.clone());
+                if let Some(s) = scale {
+                    p.scale = Some(s.to_string());
+                }
+                p.reasons.push(format!("key {kk} {} as asked", scale.unwrap_or("")));
+                break;
+            }
         }
     }
+    p.duration_s = parse_duration(&t);
     // a switch and a quiet part need room to be heard
     if p.duration_s.is_none() && !p.contrasts.is_empty() {
         p.duration_s = Some(if p.contrasts.len() >= 2 { 90.0 } else { 75.0 });
@@ -467,6 +546,18 @@ mod tests {
         assert_eq!(q.key.as_deref(), Some("F#"));
         assert_eq!(q.scale.as_deref(), Some("minor"));
         assert_eq!(q.duration_s, Some(60.0));
+        // song worker 03:38Z: key without "in", compound durations
+        let w = parse_prompt("dark hindi drill trap beat, 142 bpm, C minor, sliding 808s, 8 bar intro, 2 minutes 50 seconds");
+        assert_eq!(w.key.as_deref(), Some("C"));
+        assert_eq!(w.scale.as_deref(), Some("minor"));
+        assert_eq!(w.duration_s, Some(170.0));
+        assert_eq!(parse_duration(" 2 min and 50 sec "), Some(170.0));
+        assert_eq!(parse_duration(" 2:50 long "), Some(170.0));
+        assert_eq!(parse_duration(" 3min "), Some(180.0));
+        assert_eq!(parse_duration(" 170 seconds long "), Some(170.0));
+        assert_eq!(parse_prompt("trap in F#m, 90 seconds").key.as_deref(), Some("F#"));
+        assert!(parse_prompt("i am a rapper, 140 bpm").key.is_none());
+        assert_eq!(parse_duration(" sliding 808s and 90s soul "), None);
         assert_eq!(q.palette.get("harmony").and_then(|v| v.as_str()), Some("felt_piano"));
     }
 

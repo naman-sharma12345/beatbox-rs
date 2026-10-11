@@ -382,6 +382,10 @@ pub fn fricative_recipe(word: &str) -> Option<(f32, f32, f32, f32)> {
 /// of an "st" cluster. Whatever weak hiss the take had is cut off the body.
 /// Returns (hiss, gap in samples before the body, body).
 pub fn split_fricative(text: &str, x: &[f32]) -> (Option<Vec<f32>>, usize, Vec<f32>) {
+    // "~" marks a whole phrase kept as recorded (produce_song keep_flow)
+    if text.starts_with('~') {
+        return (None, 0, x.to_vec());
+    }
     let Some((lo, hi, db, closure_ms)) = fricative_recipe(text) else {
         return (None, 0, x.to_vec());
     };

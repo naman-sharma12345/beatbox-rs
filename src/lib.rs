@@ -88,6 +88,7 @@ pub mod tools_studio;
 pub mod tools_vocal;
 pub mod validate;
 pub mod vocal;
+pub mod vocal_flex;
 pub mod voice_pro;
 
 pub use engine::Engine;

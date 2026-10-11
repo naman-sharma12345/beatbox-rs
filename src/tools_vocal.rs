@@ -498,13 +498,35 @@ pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "transcribe_lyrics",
-            description: "Transcribe the lyrics of a sung vocal with word timestamps (local Whisper via faster-whisper; model tiny|base|small, default base). known_lyrics primes the recognizer. Cached next to the file.",
+            description: "Transcribe the lyrics of a vocal (sung or rapped) with word timestamps (local Whisper via faster-whisper; model tiny|base|small, default base; set language for non-English). Returns lines, every word with start/end (word_times), and find:'phrase' locates a hook. known_lyrics primes the recognizer but can make it skip stretches of a long spoken take; leave it out there. Cached next to the file.",
             mutates: false,
-            schema: || obj(json!({"path": {"type": "string"}, "model": {"type": "string"}, "language": {"type": "string"}, "known_lyrics": {"type": "string"}}), &["path"]),
+            schema: || obj(json!({"path": {"type": "string"}, "model": {"type": "string"}, "language": {"type": "string"}, "known_lyrics": {"type": "string"}, "word_times": {"type": "boolean", "description": "list every word with start/end seconds (default true)"}, "max_words": {"type": "integer"}, "find": {"type": "string", "description": "a phrase to locate: returns each place it is heard (start_s/end_s), for chopping a hook"}}), &["path"]),
             run: |e, a| {
                 let path = e.resolve(&s_req(a, "path")?);
                 let l = vocal::transcribe(&path, &e.workdir, &s_opt(a, "model").unwrap_or_else(|| "base".into()), s_opt(a, "language").as_deref(), s_opt(a, "known_lyrics").as_deref())?;
-                Ok(json!({"language": l.language, "text": l.text, "lines": l.segments.iter().map(|s| json!({"start": s.start, "end": s.end, "text": s.text})).collect::<Vec<_>>(), "words": l.words().len()}))
+                let words = l.words();
+                let r2 = |x: f32| (x * 100.0).round() / 100.0;
+                let mut v = json!({"language": l.language, "text": l.text, "lines": l.segments.iter().map(|s| json!({"start": s.start, "end": s.end, "text": s.text})).collect::<Vec<_>>(), "words": words.len()});
+                if crate::tools::b_or(a, "word_times", true) {
+                    v["word_times"] = json!(words.iter().take(u_or(a, "max_words", 3000) as usize).map(|w| json!({"w": w.word.trim(), "s": r2(w.start), "e": r2(w.end)})).collect::<Vec<_>>());
+                }
+                // find a phrase: every place its words occur in order (loose match)
+                if let Some(f) = s_opt(a, "find") {
+                    let norm = |s: &str| s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+                    let want: Vec<String> = f.split_whitespace().map(norm).filter(|s| !s.is_empty()).collect();
+                    let got: Vec<String> = words.iter().map(|w| norm(&w.word)).collect();
+                    let mut hits = Vec::new();
+                    if !want.is_empty() && got.len() >= want.len() {
+                        for i in 0..=got.len() - want.len() {
+                            let ok = want.iter().enumerate().filter(|(k, w)| crate::vocal::lyric_similarity(w, &got[i + k]) >= 0.6 || **w == got[i + k]).count();
+                            if ok as f32 >= (want.len() as f32 * 0.75).ceil() {
+                                hits.push(json!({"start_s": r2(words[i].start), "end_s": r2(words[i + want.len() - 1].end), "heard": words[i..i + want.len()].iter().map(|w| w.word.trim()).collect::<Vec<_>>().join(" ")}));
+                            }
+                        }
+                    }
+                    v["found"] = json!(hits);
+                }
+                Ok(v)
             },
         },
         Tool {

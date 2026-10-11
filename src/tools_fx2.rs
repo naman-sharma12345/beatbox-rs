@@ -22,7 +22,12 @@ fn resolve_pos(chain: &[Effect], v: &Value, what: &str) -> Result<usize> {
     let key = v
         .as_str()
         .ok_or_else(|| anyhow!("{what}: give an index or an effect id"))?;
-    fx::find(chain, key).ok_or_else(|| {
+    // the effect's type works too ('saturator'): the first one of that type
+    let by_type = || {
+        let k = key.to_lowercase();
+        chain.iter().position(|x| x.type_name() == k)
+    };
+    fx::find(chain, key).or_else(by_type).ok_or_else(|| {
         anyhow!(
             "{what}: no effect '{key}'. Chain: [{}]",
             chain
@@ -114,7 +119,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "move_effect",
-            description: "Reorder a track's (or 'master') effect chain: move the effect `effect` (index or stable id) to `position` ('first' | 'last' | an index) or before / after another effect. Order matters: saturate before compressing, EQ before reverb, limiter last.",
+            description: "Reorder a track's (or 'master') effect chain: move the effect `effect` (index, stable id like 'saturator1', or its type like 'saturator' for the first of that type) to `position` ('first' | 'last' | an index) or before / after another effect. Order matters: saturate before compressing, EQ before reverb, limiter last.",
             mutates: true,
             schema: || obj(json!({
                 "track": {"type": "string"},

@@ -718,6 +718,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_tempo::tools());
     v.extend(crate::stems::tools());
     v.extend(crate::resynth::tools());
+    v.extend(crate::vocal_flex::tools());
     v
 }
 
@@ -1028,7 +1029,7 @@ pub(crate) fn core_tools() -> Vec<Tool> {
         // ----- effects -----
         Tool {
             name: "add_effect",
-            description: "Append an effect to a track's chain (or 'master'). Give `type` plus any params, e.g. {track:'pad', type:'reverb', params:{size:0.85, mix:0.35}} or {track:'bass', type:'sidechain', params:{source:'kick', amount:0.8}}.",
+            description: "Append an effect to a track's chain (or 'master'). Give `type` plus any params, e.g. {track:'pad', type:'reverb', params:{size:0.85, mix:0.35}} or {track:'bass', type:'sidechain', params:{source:'kick', amount:0.8}}. parametric_eq bands: {kind, freq, gain_db, q, stages} with kind bell | low_shelf | high_shelf | low_cut (= high-pass) | high_cut (= low-pass) | notch, e.g. {type:'parametric_eq', params:{bands:[{kind:'low_cut', freq:100}, {kind:'bell', freq:3200, gain_db:3}]}}. describe_effect lists every type's params.",
             mutates: true,
             schema: || obj(json!({
                 "track": {"type": "string", "description": "Track name or 'master'"},

@@ -1078,7 +1078,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "analyze_audio",
-            description: "Listen to any audio: a registered sample (sample), a file (path: wav/mp3/flac/ogg) or the current mix (neither). Returns tempo (BPM + confidence), key candidates, onset count/times, LUFS, true peak, loudness range, crest, spectral balance, stereo width. Use it to check a downloaded loop's tempo/key before stretch_sample, or to inspect a bounce.",
+            description: "Listen to any audio: a registered sample (sample), a file (path: wav/mp3/flac/ogg) or the current mix (neither). Returns tempo (BPM + confidence; bpm_reliable false under 0.35 means it is a guess), key candidates, onset count/times, LUFS, true peak, loudness range, crest, spectral balance, stereo width. Use it to check a downloaded loop's tempo/key before stretch_sample, or to inspect a bounce.",
             mutates: false,
             schema: || obj(json!({"sample": {"type": "string"}, "path": {"type": "string"}, "max_onsets": {"type": "integer"}}), &[]),
             run: |e, a| {
@@ -1090,6 +1090,12 @@ pub fn tools() -> Vec<Tool> {
                 let mut v = serde_json::to_value(&prof)?;
                 v["key_candidates"] = json!(keys.iter().map(|(k, c)| json!({"key": k, "score": c})).collect::<Vec<_>>());
                 v["key_detail"] = audio_edit::key_report(&mono);
+                // a tempo read at low confidence is a guess (speech, rubato, a pad): say so
+                let conf = v["bpm_confidence"].as_f64().unwrap_or(0.0);
+                v["bpm_reliable"] = json!(conf >= 0.35);
+                if conf < 0.35 {
+                    v["bpm_note"] = json!(format!("low confidence ({conf:.2}): no steady pulse found (speech, free rhythm or a sustained sound); do not build on this tempo; pick the beat's tempo yourself or use detect_vocal_onsets"));
+                }
                 v["onsets"] = json!(on.len());
                 v["onset_times_s"] = json!(on.iter().take(u_or(a, "max_onsets", 32) as usize).map(|s| (*s as f32 / SR * 1000.0).round() / 1000.0).collect::<Vec<_>>());
                 Ok(v)

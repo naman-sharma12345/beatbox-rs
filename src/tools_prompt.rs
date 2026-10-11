@@ -170,8 +170,26 @@ pub fn make_beat_with(e: &mut Engine, a: &Value, clips: Option<Vec<Vec<crate::sp
             }
         }
     }
+    // what was asked but not delivered is said, not hidden (song worker: C minor became E)
+    let mut not_honoured: Vec<String> = Vec::new();
+    if let Some(k) = &p.key {
+        let same = match (crate::theory::pitch_class(k), crate::theory::pitch_class(&e.project.key_root)) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => true,
+        };
+        if !same {
+            not_honoured.push(format!("key {k} was asked; the beat is in {} {}", e.project.key_root, e.project.scale));
+        }
+    }
+    if let Some(d) = duration {
+        let got = e.project.song_seconds();
+        if (got - d).abs() > d * 0.15 + 8.0 {
+            not_honoured.push(format!("length {d:.0} s was asked; the song is {got:.0} s"));
+        }
+    }
     // compact answer for small models; the full producer result rides under "details"
     let summary = json!({
+        "not_honoured": not_honoured,
         "genre": genre.clone().unwrap_or_else(|| e.project.name.clone()),
         "bpm": e.project.bpm,
         "key": format!("{} {}", e.project.key_root, e.project.scale),
@@ -611,6 +629,33 @@ fn produce_song(e: &mut Engine, a: &Value) -> Result<Value> {
     }
     let lines = merged;
     let sr = crate::dsp::SR;
+    // keep_flow: whole phrases (split at the take's own pauses) ride as one
+    // clip each, so every phrase lands on its bar with the flow inside it
+    // untouched (no per-word relock, nothing cut)
+    let keep_flow = crate::tools::b_or(a, "keep_flow", false);
+    let flow_clips: Option<(Vec<Vec<ss::Clip>>, Vec<String>)> = if keep_flow {
+        let ph = crate::vocal_flex::phrases(&clean, crate::tools::f_or(a, "min_pause_s", 0.3).clamp(0.1, 2.0), None);
+        let mut cl = Vec::new();
+        let mut tx = Vec::new();
+        for p in &ph {
+            let (s0, s1) = ((p.start_s * sr) as usize, ((p.end_s * sr) as usize).min(clean.len()));
+            if s1 <= s0 + (0.1 * sr) as usize {
+                continue;
+            }
+            let mut audio = clean[s0..s1].to_vec();
+            crate::audio_edit::fade(&mut audio, 4.0, 15.0);
+            let ws: Vec<String> = words.iter().filter(|w| { let m = 0.5 * (w.start + w.end); m >= p.start_s && m < p.end_s }).map(|w| w.word.trim().to_string()).filter(|w| !w.is_empty()).collect();
+            let text = if ws.is_empty() { "yeah".to_string() } else { ws.join(" ") };
+            cl.push(vec![ss::Clip { syl: ws.len().max(1), text: format!("~{text}"), audio }]);
+            tx.push(text);
+        }
+        if cl.len() < 2 {
+            bail!("keep_flow found only {} phrase(s) in the take (try min_pause_s 0.2)", cl.len());
+        }
+        Some((cl, tx))
+    } else {
+        None
+    };
     let clips: Vec<Vec<ss::Clip>> = lines
         .iter()
         .map(|l| {
@@ -628,7 +673,13 @@ fn produce_song(e: &mut Engine, a: &Value) -> Result<Value> {
                 .collect()
         })
         .collect();
-    let text: Vec<String> = clips.iter().map(|l| l.iter().map(|c| c.text.clone()).collect::<Vec<_>>().join(" ")).collect();
+    let (clips, text): (Vec<Vec<ss::Clip>>, Vec<String>) = match flow_clips {
+        Some((c, t)) => (c, t),
+        None => {
+            let t = clips.iter().map(|l| l.iter().map(|c| c.text.clone()).collect::<Vec<_>>().join(" ")).collect();
+            (clips, t)
+        }
+    };
     let lyrics_text = text.join("\n");
     // 5. the song
     let mode = match s_opt(a, "mode").as_deref() {
@@ -647,8 +698,11 @@ fn produce_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let res = make_beat_with(e, &args, Some(clips))?;
     let total = t0.elapsed().as_secs_f32();
     Ok(json!({
-        "summary": format!("{} song from {} words ({} cut), {} s", mode, kept.len(), removed.len(), e.project.song_seconds().round()),
+        "summary": if keep_flow { format!("{} song from {} phrases (flow kept), {} s", mode, text.len(), e.project.song_seconds().round()) } else { format!("{} song from {} words ({} cut), {} s", mode, kept.len(), removed.len(), e.project.song_seconds().round()) },
         "file": res["vocal"]["file"].clone(),
+        "files": {"song_with_vocal": res["vocal"]["file"].clone(), "instrumental": res["files"].get("instrumental").cloned().unwrap_or(Value::Null)},
+        "language": lyr.language.clone(),
+        "keep_flow": keep_flow,
         "beat_only": res["files"].get("instrumental").cloned().unwrap_or_else(|| res["files"]["audio"].clone()),
         "report": {
             "denoise_db": (red_db * 10.0).round() / 10.0,
@@ -675,9 +729,9 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "produce_song",
-            description: "One call, finished song from a recording of someone talking or rapping (path to wav/mp3/ogg). Cleans noise, transcribes, cuts fillers/repeated words/false starts, then performs the words on a new beat: mode 'rap' locks every word to a 16th-note flow, mode 'sing' writes a melody and tunes the voice onto it. Mixed and mastered (-14 LUFS). Returns the song file and a production report.",
+            description: "One call, finished song from a recording of someone talking or rapping (path to wav/mp3/ogg). Cleans noise, transcribes, cuts fillers/repeated words/false starts, then performs the words on a new beat: mode 'rap' locks every word to a 16th-note flow, mode 'sing' writes a melody and tunes the voice onto it; keep_flow:true instead places the take's own phrases on bar lines and keeps the flow inside them. Set language for non-English takes. Mixed and mastered (-14 LUFS). Returns the song file and a production report.",
             mutates: true,
-            schema: || obj(json!({"path": {"type": "string"}, "mode": {"type": "string", "enum": ["rap", "sing"], "description": "default rap"}, "prompt": {"type": "string", "description": "the beat you want (default by mode)"}, "seed": {"type": "integer"}, "out_dir": {"type": "string"}, "target_lufs": {"type": "number"}, "denoise": {"type": "boolean"}, "quality": {"type": "integer"}}), &["path"]),
+            schema: || obj(json!({"path": {"type": "string"}, "mode": {"type": "string", "enum": ["rap", "sing"], "description": "default rap"}, "prompt": {"type": "string", "description": "the beat you want (default by mode)"}, "seed": {"type": "integer"}, "out_dir": {"type": "string"}, "target_lufs": {"type": "number"}, "denoise": {"type": "boolean"}, "quality": {"type": "integer"}, "language": {"type": "string", "description": "the take's language code, e.g. 'hi' (Hindi), 'pa', 'en' (default: detected; set it for anything but English)"}, "model": {"type": "string", "enum": ["tiny", "base", "small", "medium"], "description": "speech recogniser size (default base; small is better for Hindi/Punjabi)"}, "keep_flow": {"type": "boolean", "description": "true: place the take's own phrases (split at its pauses) on bar lines with the flow inside each phrase untouched and no words cut; false (default): relock every word"}, "min_pause_s": {"type": "number", "description": "keep_flow: the pause that splits phrases (default 0.3)"}}), &["path"]),
             run: produce_song,
         },
         Tool {
