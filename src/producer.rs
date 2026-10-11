@@ -2685,6 +2685,14 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             "producer",
         )?;
     }
+    // plucked strings (sitar, santoor, guitar, koto) render mono; the critic
+    // heard them as a narrow point in the middle (pluck A/B, beats 6b, 8).
+    // A pseudo-stereo shaper widens them above 250 Hz-ish while the mid stays
+    // put, so they sit beside the vocal instead of on top of it.
+    let plucks: Vec<String> = e.project.tracks.iter().filter(|t| matches!(t.instrument, crate::instruments::Instrument::Pluck(_))).map(|t| t.name.clone()).collect();
+    for t in plucks {
+        e.call_from("add_effect", &json!({"track": t, "type": "stereo_shaper", "params": {"preset": "pseudo_stereo", "delay_ms": 9.0, "mix": 0.8}}), "producer")?;
+    }
     let hiphop = matches!(pb.mix.balance_genre.as_str(), "boom_bap" | "hiphop" | "hip_hop");
     // hip-hop: hats and noise sit narrow (wide hiss reads as cheap), and the
     // low end of anything stereo stays mono
@@ -2699,11 +2707,12 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                 // the resonant low-pass rang at 8.3 kHz on every hat, 29 glassy ticks)
                 e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "high_cut", "freq": 10000.0, "gain_db": 0.0, "q": 0.707}]}}), "producer")?;
                 if lofi {
-                    // lo-fi hats are dusty, not crisp: closed above ~7 kHz
-                    // (critic, beat 9: 5-16 kHz was all hat streaks)
+                    // lo-fi hats are dusty, not crisp: closed above ~5 kHz
+                    // (critic, beat 9: 5-16 kHz was all hat streaks; v16: the
+                    // 7 kHz cut still left 5-7 kHz, so a 12 dB/oct cut at 5k)
                     e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
-                        {"kind": "high_cut", "freq": 7000.0, "gain_db": 0.0, "q": 0.707},
-                        {"kind": "high_shelf", "freq": 5000.0, "gain_db": -3.0, "q": 0.7}]}}), "producer")?;
+                        {"kind": "high_cut", "freq": 5000.0, "gain_db": 0.0, "q": 0.707},
+                        {"kind": "high_shelf", "freq": 3500.0, "gain_db": -2.0, "q": 0.7}]}}), "producer")?;
                 }
             }
         }
@@ -2713,14 +2722,33 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     if lofi {
         for t in ["perc", "cymbal", "crash", "shaker"] {
             if have(e, t) {
-                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "high_cut", "freq": 7000.0, "gain_db": 0.0, "q": 0.707}]}}), "producer")?;
+                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "high_cut", "freq": 6000.0, "gain_db": 0.0, "q": 0.707}]}}), "producer")?;
             }
         }
-        for t in ["chords", "keys", "pad", "texture"] {
+        // a dusty snare (critique_mix owners, beat 9 r2: once the hats were
+        // dark the snare made 60% of 2-5 kHz and 42% of the air)
+        for t in ["snare", "clap", "rim"] {
             if have(e, t) {
                 e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
-                    {"kind": "bell", "freq": 350.0, "gain_db": -3.0, "q": 1.0},
-                    {"kind": "bell", "freq": 600.0, "gain_db": -2.0, "q": 0.9}]}}), "producer")?;
+                    {"kind": "high_cut", "freq": 4500.0, "gain_db": 0.0, "q": 0.707},
+                    {"kind": "bell", "freq": 3200.0, "gain_db": -4.0, "q": 0.9}]}}), "producer")?;
+            }
+        }
+        // the lead made 38% of 2-5 kHz and climbed in hook 2 (critic v16):
+        // a lo-fi lead is a muffled keys line, closed above 3.5 kHz
+        for t in ["lead", "counter"] {
+            if have(e, t) {
+                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                    {"kind": "high_cut", "freq": 3500.0, "gain_db": 0.0, "q": 0.707}]}}), "producer")?;
+            }
+        }
+        // the chords made 53% of 250-800 Hz: rootless up top, no mud under
+        for t in ["chords", "keys", "pad", "texture", "counter"] {
+            if have(e, t) {
+                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                    {"kind": "low_cut", "freq": 180.0, "gain_db": 0.0, "q": 0.707},
+                    {"kind": "bell", "freq": 350.0, "gain_db": -4.5, "q": 1.0},
+                    {"kind": "bell", "freq": 600.0, "gain_db": -2.5, "q": 0.9}]}}), "producer")?;
             }
         }
     }
@@ -2834,7 +2862,7 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         // the crusher's sample-and-hold folds hash into 11-22 kHz; a dusty
         // record has no top there anyway (beat 9: air +11.6 dB over the reference)
         e.call_from("add_effect", &json!({"track": "master", "type": "parametric_eq", "params": {"bands": [
-            {"kind": "high_cut", "freq": 10000.0, "gain_db": 0.0, "q": 0.707},
+            {"kind": "high_cut", "freq": if lofi { 8000.0 } else { 10000.0 }, "gain_db": 0.0, "q": 0.707},
             {"kind": "high_shelf", "freq": 7000.0, "gain_db": -3.0, "q": 0.7}
         ]}}), "producer")?;
     }

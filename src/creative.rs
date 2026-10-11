@@ -2133,12 +2133,18 @@ pub fn apply_wildcards(
                 Some((names.join(","), "the drums switch to a second groove halfway: the back half feels like a new chapter".into()))
             }
             "odd_phrase" => {
+                // never the first verse unless asked: the listener has not
+                // settled into the 8-bar phrase yet, so a 7-bar verse 1 reads
+                // as a mistake, not a surprise (critic v15, beat 9)
+                let first_verse = t.sections.iter().position(|s| s.kind == "verse");
+                let asked = forced.iter().any(|f| f == "odd_phrase");
                 let cands: Vec<usize> = (0..t.sections.len())
                     .filter(|j| {
                         matches!(
                             t.sections[*j].kind.as_str(),
                             "verse" | "bridge" | "breakdown"
                         ) && t.sections[*j].bars >= 4
+                            && (asked || Some(*j) != first_verse)
                     })
                     .collect();
                 if cands.is_empty() {

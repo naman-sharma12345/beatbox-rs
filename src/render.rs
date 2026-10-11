@@ -511,6 +511,22 @@ pub fn add_voice(
     choke_after: Option<usize>,
     xfade_in: bool,
 ) {
+    add_voice_faded(out, at, buf, choke_after, xfade_in, START_FADE)
+}
+
+/// Fade-in for sample-based voices (2 ms): a sample cut out of a longer
+/// recording starts mid-waveform, and 0.5 ms still ticks (critic v15).
+pub const SAMPLE_START_FADE: usize = 96;
+
+/// `add_voice` with an explicit linear fade-in length (samples).
+pub fn add_voice_faded(
+    out: &mut [f32],
+    at: usize,
+    buf: &[f32],
+    choke_after: Option<usize>,
+    xfade_in: bool,
+    start_fade_len: usize,
+) {
     if at >= out.len() || buf.is_empty() {
         return;
     }
@@ -524,7 +540,7 @@ pub fn add_voice(
         }
     }
     let end_fade = END_FADE.min(n / 8).max(1);
-    let start_fade = START_FADE.min(n / 8);
+    let start_fade = start_fade_len.min(n / 8);
     for (j, (o, s)) in out[at..at + n].iter_mut().zip(buf.iter()).enumerate() {
         let mut g = 1.0f32;
         if xfade_in {
@@ -785,6 +801,28 @@ pub fn render_cached(
                 let round_robin = track.instrument.is_drum();
                 let mut cache: HashMap<(i32, u8, u32, Vec<i64>, i32, u8), (Vec<f32>, Vec<f32>)> =
                     HashMap::new();
+                // sample-cut voices get a longer fade-in than synthesized ones
+                let start_fade = if matches!(
+                    track.instrument,
+                    Instrument::Sampler(_) | Instrument::Multisample(_) | Instrument::Granular(_)
+                ) || matches!(&track.instrument, Instrument::Drum(d) if matches!(d.kind,
+                    crate::instruments::DrumKind::Crash
+                        | crate::instruments::DrumKind::Shaker
+                        | crate::instruments::DrumKind::Cowbell
+                        | crate::instruments::DrumKind::Tom
+                        | crate::instruments::DrumKind::Kick))
+                {
+                    // noise cymbals/perc and the kick's attack start at full
+                    // scale: 6-7 kHz / 1 kHz edges on the downbeats (critic v16)
+                    SAMPLE_START_FADE
+                } else {
+                    START_FADE
+                };
+                // where the previous mono voice (808) would still be ringing:
+                // a retrigger over a ringing 808 crossfades in with the exact
+                // complement of the choke instead of stepping in at phase 0
+                // (critic v15: a low kink at every 808 retrigger)
+                let mut prev_voice_end = 0usize;
                 for (k, e) in events[ti].iter().enumerate() {
                     if e.start >= total {
                         continue;
@@ -874,10 +912,16 @@ pub fn render_cached(
                     } else {
                         None
                     };
-                    add_voice(&mut mono, e.start, buf, choke_at, legato.is_some());
+                    let retrig = matches!(track.instrument, Instrument::Bass808(_))
+                        && k > 0
+                        && prev_voice_end > e.start;
+                    let xf = legato.is_some() || retrig;
+                    add_voice_faded(&mut mono, e.start, buf, choke_at, xf, start_fade);
                     if spread > 0.0 && !buf2.is_empty() {
-                        add_voice(&mut mono2, e.start, buf2, choke_at, legato.is_some());
+                        add_voice_faded(&mut mono2, e.start, buf2, choke_at, xf, start_fade);
                     }
+                    // the unchoked length: was it still ringing when the next onset choked it?
+                    prev_voice_end = e.start + buf.len();
                 }
                 // audio clips on this track's channel (a vocal take, a long sample)
                 for c in p
@@ -1214,6 +1258,27 @@ mod tests {
         }
         let n = render_cached(&c, &e.bank, &o, Some(&mut cache)).unwrap();
         assert_eq!(n.left, render(&c, &e.bank, &o).unwrap().left);
+    }
+
+    #[test]
+    fn retriggered_808_crossfades_without_kink() {
+        // critic v15: a same-pitch 808 retrigger over a ringing note stepped
+        // in at phase 0 (a low kink); it now crossfades in under the choke
+        let mut p = Project::new("c", 120.0);
+        let inst = crate::instruments::preset("808").unwrap();
+        p.tracks.push(Track::new("bass", inst));
+        p.patterns[0].clips.insert("bass".into(), vec![Note::new(0.0, 16.0, 36, 1.0), Note::new(8.0, 8.0, 36, 1.0)]);
+        p.master_effects.clear();
+        let bank = SampleBank::default();
+        let m = render(&p, &bank, &RenderOptions::default()).unwrap();
+        let d2 = |a: usize, b: usize| -> f32 {
+            m.left[a..b].windows(3).map(|w| (w[2] - 2.0 * w[1] + w[0]).abs()).fold(0.0, f32::max)
+        };
+        let at = (8.0 * p.step_secs() * SR) as usize;
+        let w = (0.01 * SR) as usize;
+        let first = d2(0, w);
+        let retrig = d2(at - w, at + w);
+        assert!(retrig < first, "retrigger kink {retrig} vs first onset {first}");
     }
 
     #[test]

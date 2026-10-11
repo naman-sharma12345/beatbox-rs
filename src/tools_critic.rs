@@ -19,6 +19,9 @@ const BANDS: [(&str, f32, f32); 6] = [("sub", 20.0, 60.0), ("low", 60.0, 250.0),
 fn reference(genre: &str) -> Option<[f32; 6]> {
     match genre {
         "rnb" | "soul" | "pop" => Some([-6.0, -3.5, -10.0, -14.0, -18.0, -22.0]),
+        // lo-fi (critic v16, from the beat 9 rounds; a rough profile): a dusty
+        // top (air ~5 dB, 2-5 kHz ~2.5 dB under R&B) and a warmer low-mid
+        "lofi" => Some([-6.0, -3.5, -8.5, -14.0, -20.5, -27.0]),
         "none" | "solo" => None,
         _ => Some([-4.5, -3.5, -11.0, -15.0, -19.0, -23.0]),
     }
@@ -128,7 +131,7 @@ pub fn tools() -> Vec<Tool> {
         description: "Ask an AI listener's measurements whether the song sounds fine: loudness (LUFS, true peak, range), band balance vs a genre reference (sub/low/lowmid/mid/harsh/air), splice clicks, held drones, hook-vs-verse contrast per section, and the vocal's level over the beat (when there is a vocal track). Returns a 1-10 score, PASS (>= 7) or FAIL, the problems in plain words, and each fix as a ready-to-send tool call. A band that is off is fixed on the track that makes it (numbers.bands.<band>.owners lists the top 3 tracks by share), not on the master. path: judge an audio file instead of the project. Measurements, not ears.",
         mutates: false,
         schema: || obj(json!({
-            "genre": {"type": "string", "description": "Reference balance: hiphop (default; trap, drill, boom_bap too), rnb (soul, pop), none (skip the band check)"},
+            "genre": {"type": "string", "description": "Reference balance: hiphop (default; trap, drill, boom_bap too), rnb (soul, pop), lofi (lo-fi, chill, jazz_rap: darker top, warmer low-mid), none (skip the band check)"},
             "vocal_track": {"type": "string", "description": "Track holding the vocal (default 'vocal' when it exists)"},
             "path": {"type": "string", "description": "Judge this audio file instead of the project mix"},
             "per_track": {"type": "boolean", "description": "Find which track owns an off band and aim the fix at it (default true; one extra render with stems; project mix only)"}
@@ -141,6 +144,7 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
     let genre_in = a.get("genre").and_then(|v| v.as_str()).unwrap_or("hiphop").to_lowercase();
     let genre = match genre_in.as_str() {
         "rnb" | "r&b" | "soul" | "pop" => "rnb",
+        "lofi" | "lo-fi" | "lo_fi" | "chill" | "jazz_rap" | "study" => "lofi",
         "none" | "solo" => "none",
         _ => "hiphop",
     };
