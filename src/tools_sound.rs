@@ -1082,6 +1082,49 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "spectral_edit_sample",
+            description: "Spectral edit (FL Edison) into a new sample: pick a time span (start_s..end_s, default the whole clip) and a band (low_hz..high_hz) and change only that part of the spectrum. gain_db -60 (default) removes it (a squeak, a cough, a hum, a cymbal wash), a positive gain lifts it. mode \"band\" (default) changes the band inside the span; \"outside\" keeps only the band there. soft_ms / soft_octaves round the region's edges (default 10 ms, 0.1 oct). Returns the new sample and changed_db (energy change of the clip).",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "start_s": {"type": "number"}, "end_s": {"type": "number"}, "low_hz": {"type": "number"}, "high_hz": {"type": "number"}, "gain_db": {"type": "number"}, "mode": {"type": "string", "enum": ["band", "outside"]}, "soft_ms": {"type": "number"}, "soft_octaves": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
+            run: |e, a| {
+                let (info, d) = sample_data(e, &s_req(a, "sample")?)?;
+                let dur = d.len() as f32 / SR;
+                let t0 = f_or(a, "start_s", 0.0).max(0.0);
+                let t1 = f_opt(a, "end_s").unwrap_or(dur).min(dur);
+                if t1 <= t0 {
+                    bail!("end_s must be after start_s (clip is {dur:.2} s)");
+                }
+                let lo = f_or(a, "low_hz", 20.0).max(1.0);
+                let hi = f_or(a, "high_hz", SR / 2.0).min(SR / 2.0);
+                if hi <= lo {
+                    bail!("high_hz must be above low_hz");
+                }
+                let mode = s_opt(a, "mode").unwrap_or_else(|| "band".into());
+                let outside = match mode.as_str() {
+                    "band" => false,
+                    "outside" => true,
+                    m => bail!("mode '{m}': use band or outside"),
+                };
+                let reg = audio_edit::SpectralRegion {
+                    t0,
+                    t1,
+                    lo_hz: lo,
+                    hi_hz: hi,
+                    gain_db: f_or(a, "gain_db", -60.0),
+                    outside,
+                    soft_ms: f_or(a, "soft_ms", 10.0),
+                    soft_oct: f_or(a, "soft_octaves", 0.1),
+                };
+                let (y, ch) = audio_edit::spectral_edit(&d, SR, &reg);
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_spectral", info.name));
+                let what = format!("spectral {mode} {lo:.0}-{hi:.0} Hz {t0:.2}-{t1:.2} s {:+} dB", reg.gain_db);
+                let mut r = save_new_sample(e, &info, &nn, &y, &what)?;
+                r["changed_db"] = json!((ch * 10.0).round() / 10.0);
+                r["region"] = json!({"start_s": t0, "end_s": t1, "low_hz": lo, "high_hz": hi, "mode": mode});
+                Ok(r)
+            },
+        },
+        Tool {
             name: "analyze_audio",
             description: "Listen to any audio: a registered sample (sample), a file (path: wav/mp3/flac/ogg) or the current mix (neither). Returns tempo (BPM + confidence; bpm_reliable false under 0.35 means it is a guess), key candidates, onset count/times, LUFS, true peak, loudness range, crest, spectral balance, stereo width. Use it to check a downloaded loop's tempo/key before stretch_sample, or to inspect a bounce.",
             mutates: false,
@@ -1322,5 +1365,44 @@ mod tests {
             .call("add_multisample_track", &json!({"name": "sfz", "sfz": sfz}))
             .unwrap();
         assert_eq!(r["zones"], 1);
+    }
+
+    #[test]
+    fn spectral_edit_removes_a_band_in_a_span() {
+        let mut e = eng();
+        let n = (1.0 * SR) as usize;
+        let x: Vec<f32> = (0..n).map(|i| {
+            let t = i as f32 / SR;
+            0.4 * (std::f32::consts::TAU * 440.0 * t).sin() + 0.3 * (std::f32::consts::TAU * 5000.0 * t).sin()
+        }).collect();
+        let path = std::env::temp_dir().join("beatbox_sound_tests/two_tones.wav");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        crate::render::write_wav(&path, &x, &x).unwrap();
+        e.call("import_sample", &json!({"path": path, "name": "tones"})).unwrap();
+        let r = e.call("spectral_edit_sample", &json!({"sample": "tones", "start_s": 0.25, "end_s": 0.75, "low_hz": 3000, "high_hz": 8000})).unwrap();
+        assert!(r["changed_db"].as_f64().unwrap() < -0.5, "{r}");
+        let (_, y) = sample_data(&mut e, "tones_spectral").unwrap();
+        // energy of each tone in a 0.1 s window: inside the span the 5 kHz tone is gone, 440 stays
+        let band = |d: &[f32], a: f32, f: f32| -> f32 {
+            let (s0, s1) = ((a * SR) as usize, ((a + 0.1) * SR) as usize);
+            let (mut c, mut s) = (0.0f32, 0.0f32);
+            for i in s0..s1 {
+                let ph = std::f32::consts::TAU * f * i as f32 / SR;
+                c += d[i] * ph.cos();
+                s += d[i] * ph.sin();
+            }
+            (c * c + s * s).sqrt() / (s1 - s0) as f32
+        };
+        let db = |a: f32, b: f32| 20.0 * (a.max(1e-9) / b.max(1e-9)).log10();
+        assert!(db(band(&y, 0.45, 5000.0), band(&x, 0.45, 5000.0)) < -40.0);
+        assert!(db(band(&y, 0.45, 440.0), band(&x, 0.45, 440.0)).abs() < 0.5);
+        // outside the span nothing changes
+        assert!(db(band(&y, 0.05, 5000.0), band(&x, 0.05, 5000.0)).abs() < 0.5);
+        // keep only the band: the 440 tone goes, 5 kHz stays
+        e.call("spectral_edit_sample", &json!({"sample": "tones", "low_hz": 3000, "high_hz": 8000, "mode": "outside", "new_name": "hi_only"})).unwrap();
+        let (_, z) = sample_data(&mut e, "hi_only").unwrap();
+        assert!(db(band(&z, 0.45, 440.0), band(&x, 0.45, 440.0)) < -40.0);
+        assert!(db(band(&z, 0.45, 5000.0), band(&x, 0.45, 5000.0)).abs() < 0.5);
+        assert!(e.call("spectral_edit_sample", &json!({"sample": "tones", "low_hz": 900, "high_hz": 100})).is_err());
     }
 }

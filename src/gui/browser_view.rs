@@ -30,7 +30,23 @@ pub struct BrowserState {
     pub credits: String,
     pub job: Option<(String, std::sync::mpsc::Receiver<Result<Value, String>>)>,
     pub job_result: String,
+    /// the audio editor's sample, region and band
+    pub edit: SampleEdit,
 }
+
+/// Audio editor (Edison) form: the chosen sample, a time region and a band.
+#[derive(Default)]
+pub struct SampleEdit {
+    pub sample: String,
+    pub start: f32,
+    pub end: f32,
+    pub lo: f32,
+    pub hi: f32,
+    pub gain: f32,
+    pub outside: bool,
+    pub fade_ms: f32,
+}
+
 
 fn matches(q: &str, a: &str, b: &str) -> bool {
     let q = q.trim().to_lowercase();
@@ -167,9 +183,18 @@ impl Studio {
                     if ui.small_button("+TRACK").on_hover_text(format!("add_sample_track {{name: {0}, sample: {0}}}", s.name)).clicked() {
                         call = Some(("add_sample_track".into(), json!({"name": format!("{}_s", s.name), "sample": s.name})));
                     }
+                    if ui.small_button("EDIT").on_hover_text("open in the audio editor").clicked() {
+                        let ed = &mut self.browser.edit;
+                        *ed = SampleEdit { sample: s.name.clone(), start: 0.0, end: s.duration, lo: 2000.0, hi: 8000.0, gain: -60.0, outside: false, fade_ms: 10.0 };
+                    }
                     ui.label(RichText::new(&s.name).size(12.0).color(tk.text));
                     ui.label(RichText::new(format!("{:.1} s \u{00B7} {}", s.duration, s.license)).size(10.0).color(tk.text_dim));
                 });
+            }
+            if let Some(si) = p.samples.iter().find(|x| !self.browser.edit.sample.is_empty() && x.name == self.browser.edit.sample) {
+                if let Some(c) = audio_editor(ui, &tk, &mut self.browser.edit, si.duration) {
+                    call = Some(c);
+                }
             }
         });
         if let Some((tool, args)) = call {
@@ -318,4 +343,60 @@ impl Studio {
             self.library_job(label, ui.ctx().clone(), tool, args);
         }
     }
+}
+
+/// The audio editor (FL Edison): region, band and the edits that make a new sample.
+fn audio_editor(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, dur: f32) -> Option<(String, Value)> {
+    let mut call: Option<(String, Value)> = None;
+    let name = ed.sample.clone();
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("AUDIO EDITOR \u{00B7} {name}")).size(11.0).strong().color(tk.header_text));
+        if ui.small_button("CLOSE").clicked() {
+            ed.sample.clear();
+        }
+    });
+    let top = if dur > 0.0 { dur } else { 600.0 };
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("region s").size(10.0).color(tk.text_dim));
+        ui.add(egui::DragValue::new(&mut ed.start).speed(0.01).range(0.0..=top).max_decimals(3));
+        ui.label(RichText::new("to").size(10.0).color(tk.text_dim));
+        ui.add(egui::DragValue::new(&mut ed.end).speed(0.01).range(0.0..=top).max_decimals(3));
+    });
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("band Hz").size(10.0).color(tk.text_dim));
+        ui.add(egui::DragValue::new(&mut ed.lo).speed(10.0).range(1.0..=24000.0));
+        ui.label(RichText::new("to").size(10.0).color(tk.text_dim));
+        ui.add(egui::DragValue::new(&mut ed.hi).speed(10.0).range(1.0..=24000.0));
+        ui.label(RichText::new("gain dB").size(10.0).color(tk.text_dim));
+        ui.add(egui::DragValue::new(&mut ed.gain).speed(0.5).range(-120.0..=24.0));
+        ui.checkbox(&mut ed.outside, "keep only the band");
+    });
+    let end = if ed.end > ed.start { ed.end } else { top };
+    ui.horizontal_wrapped(|ui| {
+        if ui.small_button("CUT BAND").on_hover_text("change only that band inside the region (gain -60 removes it)").clicked() {
+            call = Some(("spectral_edit_sample".into(), json!({"sample": name, "start_s": ed.start, "end_s": end, "low_hz": ed.lo, "high_hz": ed.hi, "gain_db": ed.gain, "mode": if ed.outside { "outside" } else { "band" }})));
+        }
+        if ui.small_button("TRIM TO REGION").clicked() {
+            call = Some(("edit_sample".into(), json!({"sample": name, "start_s": ed.start, "length_s": (end - ed.start).max(0.001)})));
+        }
+        if ui.small_button("REVERSE").clicked() {
+            call = Some(("edit_sample".into(), json!({"sample": name, "reverse": true})));
+        }
+        ui.add(egui::DragValue::new(&mut ed.fade_ms).speed(1.0).range(0.0..=5000.0).suffix(" ms"));
+        if ui.small_button("FADE IN/OUT").clicked() {
+            call = Some(("edit_sample".into(), json!({"sample": name, "fade_in_ms": ed.fade_ms, "fade_out_ms": ed.fade_ms})));
+        }
+        if ui.small_button("NORMALIZE").on_hover_text("peak to -1 dB").clicked() {
+            call = Some(("edit_sample".into(), json!({"sample": name, "normalize_db": -1.0})));
+        }
+        if ui.small_button("DENOISE").clicked() {
+            call = Some(("denoise_sample".into(), json!({"sample": name})));
+        }
+        if ui.small_button("SLICE").on_hover_text("cut at each hit").clicked() {
+            call = Some(("slice_sample".into(), json!({"sample": name})));
+        }
+    });
+    ui.label(RichText::new("each edit keeps the original and adds a new sample").size(10.0).color(tk.text_dim));
+    call
 }

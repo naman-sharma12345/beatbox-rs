@@ -7,7 +7,7 @@ anything listed as **have**.
 The studio GUI is fully manual (a hand-operated DAW). The one-call production
 helpers (make_beat, produce_song, critique_mix, ...) are MCP tools only.
 
-**Score: 85 have, 3 partial, 3 missing of 91** (parity 85/91; counting partial as half: 86.5/91).
+**Score: 86 have, 2 partial, 3 missing of 91** (parity 86/91; counting partial as half: 87/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -24,7 +24,7 @@ hosting.
 | Windows | Mixer (inserts, sends, routing) | have | set_mixer, add_bus, set_send, route_track, route_bus; MIXER view |
 | Windows | Browser | have | search_samples, list_samples, find_samples, list_palettes, list_presets; studio BROWSER view (F8): searchable instruments (LOAD / +TRACK), effects (ADD), palettes (APPLY), project samples (+TRACK), each button the same MCP call |
 | Windows | Undo history | have | undo, redo, get_history (100 steps) |
-| Windows | Edison (audio editor) | partial | edit_sample, strip_silence, slice_sample, analyze_audio (no recording, no spectral edit) |
+| Windows | Edison (audio editor) | have | AUDIO EDITOR panel (EDIT on any project sample): region + band, CUT BAND / keep only the band (spectral_edit_sample: STFT gain mask with soft edges), TRIM TO REGION, REVERSE, FADE, NORMALIZE, DENOISE, SLICE; tools edit_sample, spectral_edit_sample, denoise_sample, strip_silence, slice_sample, analyze_audio; recording via record_audio |
 | Piano roll tools | Quantize | have | quantize |
 | Piano roll tools | Randomize / humanize | have | humanize, generate_variation |
 | Piano roll tools | Arpeggiate | have | arpeggiate |

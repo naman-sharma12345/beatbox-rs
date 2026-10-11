@@ -626,6 +626,103 @@ pub fn compare(mix: &AudioProfile, rf: &AudioProfile) -> (Vec<RefDelta>, u32) {
     (out, score)
 }
 
+
+/// Region of a spectral edit: a time span and a frequency band, with soft
+/// edges so the cut leaves no clicks or ringing walls.
+#[derive(Clone, Copy, Debug)]
+pub struct SpectralRegion {
+    pub t0: f32,
+    pub t1: f32,
+    pub lo_hz: f32,
+    pub hi_hz: f32,
+    /// gain applied (dB): -60 removes, +6 lifts
+    pub gain_db: f32,
+    /// false: the gain hits the band inside the span; true: it hits everything
+    /// in the span except the band (keep only the band)
+    pub outside: bool,
+    pub soft_ms: f32,
+    pub soft_oct: f32,
+}
+
+fn ramp_w(d: f32, soft: f32) -> f32 {
+    // 1 inside (d <= 0), raised-cosine fall over `soft`, 0 beyond
+    if d <= 0.0 {
+        1.0
+    } else if soft <= 0.0 || d >= soft {
+        0.0
+    } else {
+        0.5 + 0.5 * (std::f32::consts::PI * d / soft).cos()
+    }
+}
+
+/// Edison-style spectral edit: STFT (2048/512, Hann), a gain mask over the
+/// region, overlap-add back. Returns the new audio and the energy change of
+/// the whole clip in dB.
+pub fn spectral_edit(x: &[f32], sr: f32, r: &SpectralRegion) -> (Vec<f32>, f32) {
+    const N: usize = 2048;
+    const H: usize = 512;
+    if x.is_empty() {
+        return (Vec::new(), 0.0);
+    }
+    let mut pad = vec![0.0f32; N];
+    pad.extend_from_slice(x);
+    pad.extend(std::iter::repeat(0.0).take(2 * N));
+    let win: Vec<f32> = (0..N).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / N as f32).cos()).collect();
+    let frames = (pad.len() - N) / H + 1;
+    let g = crate::dsp::db_to_gain(r.gain_db.clamp(-120.0, 24.0));
+    let soft_t = r.soft_ms.max(0.0) / 1000.0;
+    let soft_o = r.soft_oct.max(0.0);
+    let (lo, hi) = (r.lo_hz.max(1.0).min(r.hi_hz.max(1.0)), r.hi_hz.max(r.lo_hz).max(1.0));
+    let fw: Vec<f32> = (0..=N / 2)
+        .map(|k| {
+            let f = (k as f32 * sr / N as f32).max(1.0);
+            let d = if f < lo { (lo / f).log2() } else if f > hi { (f / hi).log2() } else { 0.0 };
+            ramp_w(d, soft_o)
+        })
+        .collect();
+    let mut out = vec![0.0f32; pad.len()];
+    let mut wsum = vec![0.0f32; pad.len()];
+    for fr in 0..frames {
+        let c = (fr * H + N / 2) as f32 / sr - N as f32 / sr; // frame centre in the clip's time
+        let dt = if c < r.t0 { r.t0 - c } else if c > r.t1 { c - r.t1 } else { 0.0 };
+        let wt = ramp_w(dt, soft_t);
+        let mut re: Vec<f32> = (0..N).map(|i| pad[fr * H + i] * win[i]).collect();
+        if wt > 0.0 {
+            let mut im = vec![0.0f32; N];
+            crate::analysis::fft(&mut re, &mut im);
+            for k in 0..=N / 2 {
+                let w = if r.outside { wt * (1.0 - fw[k]) } else { wt * fw[k] };
+                let v = 1.0 + w * (g - 1.0);
+                re[k] *= v;
+                im[k] *= v;
+                if k > 0 && k < N / 2 {
+                    re[N - k] *= v;
+                    im[N - k] *= v;
+                }
+            }
+            let mut i2: Vec<f32> = im.iter().map(|v| -v).collect();
+            crate::analysis::fft(&mut re, &mut i2);
+            for v in re.iter_mut() {
+                *v /= N as f32;
+            }
+        }
+        for i in 0..N {
+            out[fr * H + i] += re[i] * win[i];
+            wsum[fr * H + i] += win[i] * win[i];
+        }
+    }
+    for (o, w) in out.iter_mut().zip(wsum.iter()) {
+        if *w > 1e-6 {
+            *o /= *w;
+        }
+    }
+    let y: Vec<f32> = out[N..N + x.len()].to_vec();
+    let e0: f64 = x.iter().map(|v| (*v as f64) * (*v as f64)).sum();
+    let e1: f64 = y.iter().map(|v| (*v as f64) * (*v as f64)).sum();
+    let ch = if e0 > 1e-12 { (10.0 * ((e1 + 1e-12) / e0).log10()) as f32 } else { 0.0 };
+    (y, ch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
