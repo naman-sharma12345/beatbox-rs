@@ -37,6 +37,44 @@ pub fn band_shares(mono: &[f32]) -> [f32; 6] {
     out
 }
 
+/// Absolute band powers (same scale for every signal), for comparing tracks.
+pub fn band_powers(mono: &[f32]) -> [f32; 6] {
+    let ps = crate::analysis::power_spectrum(mono);
+    let hz = SR / (2.0 * ps.len() as f32);
+    let scale = mono.len() as f32;
+    let mut out = [0.0f32; 6];
+    for (i, v) in ps.iter().enumerate() {
+        let f = i as f32 * hz;
+        if let Some(k) = BANDS.iter().position(|(_, a, b)| f >= *a && f < *b) {
+            out[k] += *v * scale;
+        }
+    }
+    out
+}
+
+/// Which tracks own each band: per-track band power as a share (0..1) of
+/// the band's total over all tracks, biggest first. Renders the project
+/// once with stems (a project mix only).
+pub fn band_owners(e: &mut Engine) -> Result<Vec<Vec<(String, f32)>>> {
+    let p = e.project.clone();
+    e.bank.sync(&p.samples);
+    let m = render::render(&p, &e.bank, &RenderOptions { keep_stems: true, ..Default::default() })?;
+    let mut per: Vec<(String, [f32; 6])> = Vec::new();
+    for s in &m.stems {
+        let mono: Vec<f32> = s.left.iter().zip(&s.right).map(|(x, y)| 0.5 * (x + y)).collect();
+        per.push((s.name.clone(), band_powers(&mono)));
+    }
+    let mut out = Vec::new();
+    for k in 0..BANDS.len() {
+        let tot: f32 = per.iter().map(|(_, b)| b[k]).sum::<f32>().max(1e-20);
+        let mut v: Vec<(String, f32)> = per.iter().map(|(n, b)| (n.clone(), b[k] / tot)).collect();
+        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        v.truncate(3);
+        out.push(v);
+    }
+    Ok(out)
+}
+
 /// Click-like transients (seconds): a 1 ms window whose energy above 6 kHz
 /// jumps 18 dB over its neighbourhood median and dies within ~4 ms (a hat
 /// rings longer). The same rule the critic agent counts with.
@@ -87,12 +125,13 @@ fn kind_of(pattern: &str) -> String {
 pub fn tools() -> Vec<Tool> {
     vec![Tool {
         name: "critique_mix",
-        description: "Ask an AI listener's measurements whether the song sounds fine: loudness (LUFS, true peak, range), band balance vs a genre reference (sub/low/lowmid/mid/harsh/air), splice clicks, held drones, hook-vs-verse contrast per section, and the vocal's level over the beat (when there is a vocal track). Returns a 1-10 score, PASS (>= 7) or FAIL, the problems in plain words, and each fix as a ready-to-send tool call. path: judge an audio file instead of the project. Measurements, not ears.",
+        description: "Ask an AI listener's measurements whether the song sounds fine: loudness (LUFS, true peak, range), band balance vs a genre reference (sub/low/lowmid/mid/harsh/air), splice clicks, held drones, hook-vs-verse contrast per section, and the vocal's level over the beat (when there is a vocal track). Returns a 1-10 score, PASS (>= 7) or FAIL, the problems in plain words, and each fix as a ready-to-send tool call. A band that is off is fixed on the track that makes it (numbers.bands.<band>.owners lists the top 3 tracks by share), not on the master. path: judge an audio file instead of the project. Measurements, not ears.",
         mutates: false,
         schema: || obj(json!({
             "genre": {"type": "string", "description": "Reference balance: hiphop (default; trap, drill, boom_bap too), rnb (soul, pop), none (skip the band check)"},
             "vocal_track": {"type": "string", "description": "Track holding the vocal (default 'vocal' when it exists)"},
-            "path": {"type": "string", "description": "Judge this audio file instead of the project mix"}
+            "path": {"type": "string", "description": "Judge this audio file instead of the project mix"},
+            "per_track": {"type": "boolean", "description": "Find which track owns an off band and aim the fix at it (default true; one extra render with stems; project mix only)"}
         }), &[]),
         run: |e, a| critique(e, a),
     }]
@@ -151,18 +190,38 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
     // 2. band balance
     let shares = band_shares(&mono);
     let mut bands = serde_json::Map::new();
+    // a band that is off is fixed on the track that makes it (critic, beat 8:
+    // the bell lead owned 53% of 2-5 kHz, the clap 53% of 800 Hz-2 kHz), not
+    // with a master EQ that dulls everything else in the band too
+    let per_track = a.get("per_track").and_then(|v| v.as_bool()).unwrap_or(true);
+    let any_off = reference(genre).map(|rf| (0..6).any(|k| (shares[k] - rf[k]).abs() > 4.0)).unwrap_or(false);
+    let owners = if from_file.is_none() && per_track && any_off { band_owners(e).ok() } else { None };
     if let Some(rf) = reference(genre) {
         let mut off = 0.0f32;
         for (k, (name, a0, b0)) in BANDS.iter().enumerate() {
             let d = shares[k] - rf[k];
-            bands.insert(name.to_string(), json!({"share_db": r1(shares[k]), "vs_ref_db": r1(d)}));
+            let own: Vec<Value> = owners.as_ref().map(|o| o[k].iter().map(|(t, s)| json!({"track": t, "share_pct": (s * 100.0).round()})).collect()).unwrap_or_default();
+            if own.is_empty() {
+                bands.insert(name.to_string(), json!({"share_db": r1(shares[k]), "vs_ref_db": r1(d)}));
+            } else {
+                bands.insert(name.to_string(), json!({"share_db": r1(shares[k]), "vs_ref_db": r1(d), "owners": own}));
+            }
             if d.abs() > 4.0 {
                 off += 0.5 + 0.12 * (d.abs() - 4.0);
                 let fc = (a0 * b0).sqrt();
                 let hot = d > 0.0;
                 problems.push(format!("{name} ({a0:.0}-{b0:.0} Hz) {}{:.1} dB vs a {genre} reference", if hot { "+" } else { "" }, d));
-                let (track, gain) = if hot { ("master", -(d - 2.0).min(6.0)) } else if *a0 < 250.0 { ("bass", (-d - 2.0).min(5.0)) } else { ("master", (-d - 2.0).min(4.0)) };
-                fixes.push(json!({"why": format!("{name} {}", if hot { "too hot" } else { "too weak" }), "tool": "add_effect",
+                let (fallback, gain) = if hot { ("master", -(d - 2.0).min(6.0)) } else if *a0 < 250.0 { ("bass", (-d - 2.0).min(5.0)) } else { ("master", (-d - 2.0).min(4.0)) };
+                // the owner: the track with the biggest share of the band
+                // (hot: cut it there; weak: lift the one already playing in it)
+                let owner = owners.as_ref().and_then(|o| o[k].first().filter(|(_, s)| *s >= 0.25).map(|(t, s)| (t.clone(), *s)));
+                let (track, why) = match &owner {
+                    Some((t, s)) => (t.clone(), format!("{name} {}: {t} makes {:.0}% of it", if hot { "too hot" } else { "too weak" }, s * 100.0)),
+                    None => (fallback.to_string(), format!("{name} {}", if hot { "too hot" } else { "too weak" })),
+                };
+                // a single owner takes the whole correction; a shared band is cut a bit less
+                let gain = match &owner { Some((_, s)) if *s < 0.5 => gain * 0.75, _ => gain };
+                fixes.push(json!({"why": why, "tool": "add_effect",
                     "args": {"track": track, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": fc.round(), "gain_db": r1(gain), "q": 0.8}]}}}));
             }
         }
@@ -289,6 +348,18 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn band_powers_put_a_tone_in_its_band() {
+        let n = (SR * 1.0) as usize;
+        let hi: Vec<f32> = (0..n).map(|i| 0.3 * (i as f32 * 3000.0 * std::f32::consts::TAU / SR).sin()).collect();
+        let lo: Vec<f32> = (0..n).map(|i| 0.3 * (i as f32 * 100.0 * std::f32::consts::TAU / SR).sin()).collect();
+        let (h, l) = (band_powers(&hi), band_powers(&lo));
+        assert!(h[4] > 100.0 * h[1], "3 kHz lands in harsh: {h:?}");
+        assert!(l[1] > 100.0 * l[4], "100 Hz lands in low: {l:?}");
+        // same scale for both: equal-level tones carry equal power
+        assert!((h[4] / l[1] - 1.0).abs() < 0.2, "{} vs {}", h[4], l[1]);
+    }
 
     #[test]
     fn clicks_are_found_and_hats_are_not() {

@@ -1219,6 +1219,16 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
             }
         }
     }
+    // one hook reads as a sketch, not a song (critique_mix and the critic,
+    // beat 9): when a verse follows the only hook, the hook comes back after it
+    if a.duration_s.is_none() && tmpl.iter().filter(|s| s.kind == "hook").count() == 1 {
+        let h = tmpl.iter().position(|s| s.kind == "hook").unwrap_or(0);
+        if let Some(lv) = tmpl.iter().rposition(|s| s.kind == "verse").filter(|lv| *lv > h) {
+            let again = tmpl[h].clone();
+            tmpl.insert(lv + 1, again);
+            thinking.push("The hook comes back after the last verse, so it lands twice.".to_string());
+        }
+    }
     // a form the words dictate (make_beat with lyrics: one section per stanza,
     // sized to its lines) replaces the playbook's arrangement
     if let Some(form) = a.intent.get("form").and_then(|v| v.as_array()) {
@@ -2679,7 +2689,8 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     // hip-hop: hats and noise sit narrow (wide hiss reads as cheap), and the
     // low end of anything stereo stays mono
     let rnb = matches!(pb.mix.balance_genre.as_str(), "rnb");
-    if hiphop || rnb {
+    let lofi = matches!(pb.mix.balance_genre.as_str(), "lofi");
+    if hiphop || rnb || lofi {
         for t in ["hat", "open_hat"] {
             if have(e, t) {
                 e.call_from("add_effect", &json!({"track": t, "type": "width", "params": {"amount": 0.55}}), "producer")?;
@@ -2687,6 +2698,29 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                 // a flat Butterworth cut, not a resonant filter (critic, beat 8 r3:
                 // the resonant low-pass rang at 8.3 kHz on every hat, 29 glassy ticks)
                 e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "high_cut", "freq": 10000.0, "gain_db": 0.0, "q": 0.707}]}}), "producer")?;
+                if lofi {
+                    // lo-fi hats are dusty, not crisp: closed above ~7 kHz
+                    // (critic, beat 9: 5-16 kHz was all hat streaks)
+                    e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                        {"kind": "high_cut", "freq": 7000.0, "gain_db": 0.0, "q": 0.707},
+                        {"kind": "high_shelf", "freq": 5000.0, "gain_db": -3.0, "q": 0.7}]}}), "producer")?;
+                }
+            }
+        }
+    }
+    // lo-fi (critic, beat 9): perc and cymbals as dusty as the hats, and the
+    // harmony bed thinned where it stacked (260-800 Hz, low-mid +5.4 dB)
+    if lofi {
+        for t in ["perc", "cymbal", "crash", "shaker"] {
+            if have(e, t) {
+                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "high_cut", "freq": 7000.0, "gain_db": 0.0, "q": 0.707}]}}), "producer")?;
+            }
+        }
+        for t in ["chords", "keys", "pad", "texture"] {
+            if have(e, t) {
+                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                    {"kind": "bell", "freq": 350.0, "gain_db": -3.0, "q": 1.0},
+                    {"kind": "bell", "freq": 600.0, "gain_db": -2.0, "q": 0.9}]}}), "producer")?;
             }
         }
     }
@@ -2797,6 +2831,12 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     }
     if pb.mix.crush {
         e.call_from("add_effect", &json!({"track": "master", "type": "bitcrush", "params": {"bits": 12.0, "downsample": 2, "mix": 0.25}}), "producer")?;
+        // the crusher's sample-and-hold folds hash into 11-22 kHz; a dusty
+        // record has no top there anyway (beat 9: air +11.6 dB over the reference)
+        e.call_from("add_effect", &json!({"track": "master", "type": "parametric_eq", "params": {"bands": [
+            {"kind": "high_cut", "freq": 10000.0, "gain_db": 0.0, "q": 0.707},
+            {"kind": "high_shelf", "freq": 7000.0, "gain_db": -3.0, "q": 0.7}
+        ]}}), "producer")?;
     }
     // arrangement-level EQ carve + the sound palette's own mix moves
     let mix_moves = if plan.sound_palette.is_empty() {
