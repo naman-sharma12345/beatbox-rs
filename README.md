@@ -1,6 +1,6 @@
 # Beatbox 🥁
 
-**An MCP-first music studio written in Rust.** Every feature (recorded and synthesized instruments, drums, samples, effects, vocals, theory, arrangement, mixing, mastering and mix analysis) is a tool a model can call over [MCP](https://modelcontextprotocol.io): **297 tools** today. People get a CLI and a fully manual native desktop studio (egui) on the same engine; every action in the studio is also an MCP tool, so a model and a person work on the same project.
+**An MCP-first music studio written in Rust.** Every feature (recorded and synthesized instruments, drums, samples, effects, vocals, theory, arrangement, mixing, mastering and mix analysis) is a tool a model can call over [MCP](https://modelcontextprotocol.io): **296 tools** today. People get a CLI and a fully manual native desktop studio (egui) on the same engine; every action in the studio is also an MCP tool, so a model and a person work on the same project.
 
 > FL Studio was built for hands on a mouse. Beatbox is built so that every knob is addressable, every action is undoable, and the engine can *listen back* to its own mix and say what to fix. FL Studio feature parity: **85 of 91** ([docs/FL_PARITY.md](docs/FL_PARITY.md)).
 
@@ -10,7 +10,7 @@
 
 | | Typical DAW | Beatbox |
 |---|---|---|
-| Model control | none / plugins | 297 MCP tools, every feature; `batch` makes 50 edits one atomic undo step |
+| Model control | none / plugins | 296 MCP tools, every feature; `batch` makes 50 edits one atomic undo step |
 | Instruments | ship with sample packs | real recorded instruments on demand: a General MIDI SoundFont (GeneralUser GS, ~260 instruments), 277 CC0 / CC BY multisampled instruments (electric guitars, basses, acoustic kits, grand and upright pianos, FM keys, Wurlitzer / Pianet / CP80 electric pianos, organs, sax, harmonica, mallets, harps, world percussion, tabla, harmonium, santoor, dholak, tanpura, bansuri, hand claps, ukulele, solo violin, timpani, hand percussion, orchestral cymbals and gong, cymbal swells and wind-chime glisses for transitions) and VSCO 2 CE orchestral packs, fetched with checksums; plus any sound from the web (`import_from_url`); plus modelled piano/ensembles and synths |
 | Feedback loop | your ears | `analyze_mix`: LUFS, true peak, spectrum balance, stereo, masking, 0-100 score + fixes |
 | Vocals | plugins | channel strip, neural noise removal checked by a speech-quality score, tone matching, flex-time alignment, seamless edits |
@@ -132,7 +132,7 @@ Optional environment: `BEATBOX_FREESOUND_KEY` (or `FREESOUND_API_KEY`; free at f
 - **FL-style workflow, as tools.** Playlist pattern clips, automation clips and mixer bus routing (`place_pattern`, `create_automation_clip`, `route_bus`) with cycle checks.
 - **Deterministic project JSON.** The whole song is one readable, stable JSON file, so every change can be diffed, reviewed and undone.
 
-## Tool surface (297 tools)
+## Tool surface (296 tools)
 
 | Category | Tools | What |
 |---|---|---|
