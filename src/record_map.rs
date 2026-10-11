@@ -487,6 +487,8 @@ pub struct Score {
     pub groove_pct: f32,
     pub harmony_pct: f32,
     pub overall: f32,
+    /// Ours minus reference, per octave (OCT_EDGES), each relative to its own total level.
+    pub bands_db: [f32; 9],
 }
 
 fn onset_times(f: &Frames) -> Vec<f32> {
@@ -576,7 +578,7 @@ pub fn score_span(ours: &(Vec<f32>, Frames, Vec<f32>), refr: &(Vec<f32>, Frames,
     let tone_score = (100.0 - 10.0 * tone).clamp(0.0, 100.0);
     let level_score = (100.0 - 8.0 * (lo - lr).abs()).clamp(0.0, 100.0);
     let overall = 0.3 * tone_score + 0.3 * groove * 100.0 + 0.3 * harmony * 100.0 + 0.1 * level_score;
-    Score { level_db: r1(lo - lr), tone_db: r1(tone), groove_pct: (groove * 100.0).round(), harmony_pct: (harmony * 100.0).round(), overall: overall.round() }
+    Score { level_db: r1(lo - lr), tone_db: r1(tone), groove_pct: (groove * 100.0).round(), harmony_pct: (harmony * 100.0).round(), overall: overall.round(), bands_db: std::array::from_fn(|k| r1((po[k] - pr[k]).clamp(-30.0, 30.0))) }
 }
 
 /// Best offset (s) of refr against ours within +-max_s, from onset-envelope correlation.
@@ -662,6 +664,53 @@ fn read_stems(e: &Engine, dir: &str) -> Result<Vec<(String, Vec<f32>)>> {
         bail!("no drums/bass/vocals/other files in {}", d.display());
     }
     Ok(out)
+}
+
+/// Group a part name into one of the reference stem names (drums, bass, vocals, other).
+pub fn stem_group(name: &str) -> &'static str {
+    let n = name.to_ascii_lowercase();
+    let has = |ws: &[&str]| ws.iter().any(|w| n.contains(w));
+    if has(&["vox", "vocal", "voice", "sing", "adlib", "choir"]) {
+        "vocals"
+    } else if has(&["drum", "kick", "snare", "hat", "perc", "clap", "cymbal", "tom", "ride", "crash", "shaker", "beat"]) {
+        "drums"
+    } else if has(&["bass", "808", "sub"]) {
+        "bass"
+    } else {
+        "other"
+    }
+}
+
+/// Read our own per-track stems (any names) and sum them into reference stem groups.
+/// `map` overrides the automatic grouping for named files ({"gtr":"other","vox":"vocals"}).
+fn read_ours_stems(e: &Engine, dir: &str, map: Option<&serde_json::Map<String, Value>>) -> Result<Vec<(String, Vec<f32>)>> {
+    let d = e.resolve(dir);
+    let mut groups: Vec<(String, Vec<f32>)> = Vec::new();
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&d)?.filter_map(|x| x.ok().map(|x| x.path())).collect();
+    files.sort();
+    for p in files {
+        let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
+        if !["wav", "flac", "mp3"].contains(&ext.as_str()) {
+            continue;
+        }
+        let stem = p.file_stem().and_then(|x| x.to_str()).unwrap_or("").to_string();
+        let g = map.and_then(|m| m.get(&stem)).and_then(|v| v.as_str()).map(|v| v.to_string()).unwrap_or_else(|| stem_group(&stem).to_string());
+        if !STEM_FILES.contains(&g.as_str()) {
+            bail!("stem_map sends '{stem}' to '{g}'; use one of {:?}", STEM_FILES);
+        }
+        let x = crate::samples::decode_file(&p)?;
+        match groups.iter_mut().find(|(k, _)| *k == g) {
+            Some((_, acc)) => {
+                if acc.len() < x.len() { acc.resize(x.len(), 0.0); }
+                for (i, v) in x.iter().enumerate() { acc[i] += v; }
+            }
+            None => groups.push((g, x)),
+        }
+    }
+    if groups.is_empty() {
+        bail!("no audio files in {}", d.display());
+    }
+    Ok(groups)
 }
 
 fn arrangement_tool(e: &mut Engine, a: &Value) -> Result<Value> {
@@ -757,18 +806,38 @@ fn score_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     for (name, t0, t1) in &spans {
         let s = score_span(&ours, &refr, *t0, *t1, offset, &cut(&ch_o_all, *t0, *t1), &cut(&ch_r_all, t0 + offset, t1 + offset));
         tot += s.overall * (t1 - t0);
-        rows.push(json!({"section": name, "t0": r2(*t0), "t1": r2(*t1), "overall": s.overall, "groove_pct": s.groove_pct, "harmony_pct": s.harmony_pct, "tone_diff_db": s.tone_db, "level_diff_db": s.level_db}));
+        rows.push(json!({"section": name, "t0": r2(*t0), "t1": r2(*t1), "overall": s.overall, "groove_pct": s.groove_pct, "harmony_pct": s.harmony_pct, "tone_diff_db": s.tone_db, "tone_bands_db": s.bands_db.to_vec(), "level_diff_db": s.level_db}));
     }
     let total_t: f32 = spans.iter().map(|s| s.2 - s.1).sum();
     // per part: the same scores on matching stems, plus each part's share of the whole
     let mut parts = Vec::new();
     if let (Some(od), Some(rd)) = (s_opt(a, "ours_stems"), s_opt(a, "reference_stems")) {
-        let so = read_stems(e, &od)?;
+        let so = read_ours_stems(e, &od, a.get("stem_map").and_then(|v| v.as_object()))?;
         let sr = read_stems(e, &rd)?;
         let share = |v: &[(String, Vec<f32>)], n: &str| -> f32 {
             let tot: f32 = v.iter().map(|(_, x)| x.iter().map(|s| s * s).sum::<f32>()).sum::<f32>().max(1e-12);
             v.iter().find(|(k, _)| k == n).map(|(_, x)| db(x.iter().map(|s| s * s).sum::<f32>() / tot)).unwrap_or(-120.0)
         };
+        // share of each octave's energy held by each stem (ours vs reference): shows which part owns a band
+        let band_energy = |v: &[(String, Vec<f32>)]| -> Vec<(String, [f32; 9])> {
+            v.iter().map(|(k, x)| {
+                let f = frames(x);
+                let mut e = [0.0f32; 9];
+                for fr in &f.oct { for b in 0..9 { e[b] += 10f32.powf(fr[b] / 10.0); } }
+                (k.clone(), e)
+            }).collect()
+        };
+        let share_pct = |v: &[(String, [f32; 9])], n: &str| -> [f32; 9] {
+            let mut out = [0.0f32; 9];
+            if let Some((_, e)) = v.iter().find(|(k, _)| k == n) {
+                for b in 0..9 {
+                    let t: f32 = v.iter().map(|(_, x)| x[b]).sum::<f32>().max(1e-12);
+                    out[b] = (100.0 * e[b] / t).round();
+                }
+            }
+            out
+        };
+        let (beo, ber) = (band_energy(&so), band_energy(&sr));
         for (n, x) in &so {
             if let Some((_, y)) = sr.iter().find(|(k, _)| k == n) {
                 let fo2 = frames(x);
@@ -781,7 +850,8 @@ fn score_tool(e: &mut Engine, a: &Value) -> Result<Value> {
                 let cr = chroma_windows(y, offset.max(0.0), d + offset.max(0.0));
                 let s = score_span(&o2, &r2_, 0.0, d.max(1.0), offset, &co, &cr);
                 parts.push(json!({"part": n, "overall": s.overall, "groove_pct": s.groove_pct, "harmony_pct": s.harmony_pct, "tone_diff_db": s.tone_db,
-                    "share_diff_db": r1(share(&so, n) - share(&sr, n))}));
+                    "share_diff_db": r1(share(&so, n) - share(&sr, n)), "tone_bands_db": s.bands_db.to_vec(),
+                    "band_share_pct": share_pct(&beo, n).to_vec(), "ref_band_share_pct": share_pct(&ber, n).to_vec()}));
             }
         }
     }
@@ -819,7 +889,7 @@ fn score_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         }
     }
     Ok(json!({"offset_s": r2(offset), "overall": if total_t > 0.0 { (tot / total_t).round() } else { 0.0 }, "sections": rows, "parts": parts, "clips": clips,
-        "legend": "overall 0-100 = 30% tone + 30% groove (onsets within 50 ms) + 30% harmony (chroma) + 10% level; tone_diff_db = RMS difference of the octave balance; level_diff_db and share_diff_db = ours minus reference",
+        "legend": "overall 0-100 = 30% tone + 30% groove (onsets within 50 ms) + 30% harmony (chroma) + 10% level; tone_diff_db = RMS difference of the octave balance; tone_bands_db = that difference per octave (40-80, 80-160, 160-320, 320-640, 640-1250, 1.25-2.5k, 2.5-5k, 5-10k, 10-16k Hz; + = ours louder in that band); band_share_pct / ref_band_share_pct (with ours_stems + reference_stems) = how much of each octave each part holds; level_diff_db and share_diff_db = ours minus reference",
         "next": ["match_eq", "balance_mix", "set_section_mix"]}))
 }
 
@@ -852,7 +922,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "score_sections",
-            description: "Score how close one rendition is to another, section by section and part by part: groove (onsets within 50 ms), harmony (chroma), tonal balance (octave bands) and level, 0-100 each section. Sections come from `sections` [{name,t0,t1}] (ours' times), an arrangement_map file (sections_file) or 8-bar blocks. The reference is aligned automatically (offset_s to force). ours_stems + reference_stems add per-part scores and each part's share of the mix. clips:true writes A/B listening clips (reference, 1 s gap, ours, level-matched).",
+            description: "Score how close one rendition is to another, section by section and part by part: groove (onsets within 50 ms), harmony (chroma), tonal balance (octave bands) and level, 0-100 each section. Sections come from `sections` [{name,t0,t1}] (ours' times), an arrangement_map file (sections_file) or 8-bar blocks. The reference is aligned automatically (offset_s to force). ours_stems + reference_stems add per-part scores, each part's share of the mix and of each octave (ours_stems may hold per-track files such as render's stems_dir; they are summed into drums/bass/vocals/other by name, or by stem_map {track: group}). Each section also reports tone_bands_db, the tonal difference per octave, so you know which band to fix. clips:true writes A/B listening clips (reference, 1 s gap, ours, level-matched).",
             mutates: false,
             schema: || obj(json!({
                 "ours": {"type": "string"}, "reference": {"type": "string"},
@@ -862,6 +932,7 @@ pub fn tools() -> Vec<Tool> {
                 "offset_s": {"type": "number", "description": "reference time minus ours' time"},
                 "max_offset_s": {"type": "number"},
                 "ours_stems": {"type": "string"}, "reference_stems": {"type": "string"},
+                "stem_map": {"type": "object", "description": "ours stem file name -> drums|bass|vocals|other (overrides the automatic grouping)"},
                 "clips": {"type": "boolean"}, "clip_seconds": {"type": "number"}, "out_dir": {"type": "string"}
             }), &["ours", "reference"]),
             run: score_tool,
@@ -958,5 +1029,20 @@ mod tests {
         let s = score_span(&a, &b, 1.0, 10.0, off, &[], &[]);
         assert!(s.groove_pct >= 90.0 && s.tone_db < 1.5, "{s:?}");
         assert!(onset_f(&[1.0, 2.0], &[1.02, 3.0], 0.05) > 0.4);
+    }
+}
+
+#[cfg(test)]
+mod stem_group_tests {
+    use super::stem_group;
+    #[test]
+    fn groups_track_names() {
+        assert_eq!(stem_group("vox"), "vocals");
+        assert_eq!(stem_group("Lead Vocal"), "vocals");
+        assert_eq!(stem_group("drums"), "drums");
+        assert_eq!(stem_group("hats_top"), "drums");
+        assert_eq!(stem_group("808"), "bass");
+        assert_eq!(stem_group("gtr"), "other");
+        assert_eq!(stem_group("chords"), "other");
     }
 }

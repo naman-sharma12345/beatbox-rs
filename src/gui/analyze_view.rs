@@ -22,6 +22,7 @@ pub struct AnalyzeState {
     pub add_to_project: bool,
     pub stems_dir: String,
     pub compare_with: String,
+    pub compare_stems: String,
     pub job: Option<(String, std::sync::mpsc::Receiver<Result<Value, String>>)>,
     pub result: String,
 }
@@ -148,7 +149,12 @@ impl Studio {
                     }
                     ui.label(RichText::new("COMPARE WITH").size(11.0).color(tk.text_dim));
                     ui.add(egui::TextEdit::singleline(&mut self.analyze.compare_with).desired_width(220.0).hint_text("your render.wav"));
-                    let ca = json!({"ours": self.analyze.compare_with.trim(), "reference": path, "clips": true});
+                    ui.add(egui::TextEdit::singleline(&mut self.analyze.compare_stems).desired_width(160.0).hint_text("your stems folder (optional)"));
+                    let mut ca = json!({"ours": self.analyze.compare_with.trim(), "reference": path, "clips": true});
+                    if !self.analyze.compare_stems.trim().is_empty() && !self.analyze.stems_dir.trim().is_empty() {
+                        ca["ours_stems"] = json!(self.analyze.compare_stems.trim());
+                        ca["reference_stems"] = json!(self.analyze.stems_dir.trim());
+                    }
                     if ui.add_enabled(ready && !self.analyze.compare_with.trim().is_empty(), egui::Button::new("COMPARE").small()).on_hover_text(format!("score_sections {ca}")).clicked() {
                         job = Some(("score_sections", ca));
                     }
