@@ -4,10 +4,9 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 67 have, 11 partial, 13 missing of 91** (parity 67/91; counting partial as half: 72.5/91).
+**Score: 70 have, 10 partial, 11 missing of 91** (parity 70/91; counting partial as half: 75/91).
 
-Build order for the gaps, by musical impact: frequency shifter and
-ring mod, stereo shaper, noise reduction as its own tool, bounce to audio,
+Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
 hosting.
 
@@ -67,7 +66,7 @@ hosting.
 | Effects | Blood Overdrive / Fast Dist / Distructor | have | distortion, saturator, soft_clipper |
 | Effects | Bitcrush / Squeeze | have | bitcrush |
 | Effects | Stereo Enhancer | have | width, haas |
-| Effects | Stereo Shaper | partial | width, haas, autopan (no per-channel phase/delay matrix) |
+| Effects | Stereo Shaper | have | add_effect type stereo_shaper: L/R matrix (left_from_left ... right_from_right), delay_ms on one side, phase invert per side, presets mono/swap/wide/narrow/side_only/pseudo_stereo; plus width, haas, autopan |
 | Effects | Transient Processor | have | transient |
 | Effects | Soundgoodizer | partial | master_assistant, multiband |
 | Effects | Love Philter / Fruity Filter | have | filter + automation |
@@ -77,8 +76,8 @@ hosting.
 | Effects | Gate | have | gate |
 | Effects | De-esser | have | deesser |
 | Effects | Peak controller / sidechain | have | sidechain, carve_mix |
-| Effects | Frequency shifter | missing |  |
-| Effects | Ring modulator | missing |  |
+| Effects | Frequency shifter | have | add_effect type freq_shift: shift_hz (every partial by Hz, analytic-signal shifter), stereo_hz drift, feedback, mix |
+| Effects | Ring modulator | have | add_effect type ring_mod: carrier freq_hz, shape sine/triangle/square/saw, stereo_phase, lfo_hz/lfo_depth wobble, mix |
 | Effects | Waveshaper | partial | saturator, soft_clipper (no drawn curve) |
 | Effects | Wave Candy / Spectroman | have | spectrum, render_spectrogram, waveform_peaks, loudness_report |
 | Effects | Panning / Balance | have | set_mixer pan, autopan |

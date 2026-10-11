@@ -271,6 +271,32 @@ fx_struct!(VocoderFx {
     gain: f32 = 1.0,
     mix: f32 = 1.0
 });
+fx_struct!(FreqShiftFx {
+    shift_hz: f32 = 5.0,
+    stereo_hz: f32 = 0.0,
+    feedback: f32 = 0.0,
+    mix: f32 = 1.0
+});
+fx_struct!(RingModFx {
+    freq_hz: f32 = 440.0,
+    shape: String = "sine".to_string(),
+    stereo_phase: f32 = 0.0,
+    lfo_hz: f32 = 0.0,
+    lfo_depth: f32 = 0.0,
+    mix: f32 = 1.0
+});
+fx_struct!(StereoShaperFx {
+    preset: String = "custom".to_string(),
+    left_from_left: f32 = 1.0,
+    left_from_right: f32 = 0.0,
+    right_from_left: f32 = 0.0,
+    right_from_right: f32 = 1.0,
+    delay_ms: f32 = 0.0,
+    delay_side: f32 = 1.0,
+    invert_left: bool = false,
+    invert_right: bool = false,
+    mix: f32 = 1.0
+});
 fx_struct!(PitchShiftFx {
     semitones: f32 = 12.0,
     cents: f32 = 0.0,
@@ -365,6 +391,9 @@ pub enum Effect {
     Haas(HaasFx),
     GrossBeat(GrossBeatFx),
     Vocoder(VocoderFx),
+    FreqShift(FreqShiftFx),
+    RingMod(RingModFx),
+    StereoShaper(StereoShaperFx),
 }
 
 macro_rules! each_fx {
@@ -399,6 +428,9 @@ macro_rules! each_fx {
             Effect::Haas($p) => $body,
             Effect::GrossBeat($p) => $body,
             Effect::Vocoder($p) => $body,
+            Effect::FreqShift($p) => $body,
+            Effect::RingMod($p) => $body,
+            Effect::StereoShaper($p) => $body,
         }
     };
 }
@@ -433,6 +465,9 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("saturator", "Character saturator. mode tape (soft, even+odd warmth, high-end roll-off) | tube (asymmetric, even harmonics) | transistor (hard odd-harmonic edge) | diode (clipped, gritty) | fold (wavefolder, metallic) | exciter (adds only new harmonics above a corner of tone_hz, capped 1.5-8 kHz). drive_db 0..36, tone_hz (post low-pass), bias -0.5..0.5 (asymmetry), mix, output_db, oversample (2x, less aliasing)"),
     ("gross_beat", "Gross Beat-style time + volume FX looping every cycle_steps 16ths (16 = 1 bar). time preset none|half_speed|half_speed_end|repeat_beat|repeat_end_8th|repeat_end_16th|reverse_end|reverse|tape_stop|tape_stop_end|scratch_end|freeze_end|double_speed; volume preset none|trance_gate|trance_gate_8th|pump|pump_hard|tresillo|offbeat|fade_in|fade_out|stop_end|swell; or draw them: time_points / volume_points 'u:v, u:v' (u = 0..1 through the cycle; time v = source position 0..1, volume v = gain). smooth_ms, mix (automate mix to apply it only on a transition)"),
     ("vocoder", "Channel vocoder (Vocodex-style): the track's own audio (a vocal) is the modulator, a built-in detuned saw chord on notes ('C3 Eb3 G3' or MIDI '48,51,55', up to 8) is the carrier, so the chord speaks the words: robot voice, talk-box lead, vocoded hook. bands 4..40 (more = clearer words), low_hz/high_hz band range, attack_ms/release_ms (band envelope), noise 0..1 (carrier noise for consonants), sibilance 0..1 (the voice's own top above 5 kHz passes through), gain, mix"),
+    ("freq_shift", "Frequency shifter (FL Frequency Shifter): moves every partial by shift_hz Hz (-5000..5000), not by a ratio, so harmonics turn inharmonic. 0.5-5 Hz = slow phasing swirl on pads; 50-500 Hz = metallic, robotic, sci-fi; automate shift_hz for risers. stereo_hz adds that much extra shift on the right (wide drifting stereo), feedback 0..0.9 (barber-pole), mix"),
+    ("ring_mod", "Ring modulator: multiplies the track by a carrier at freq_hz (0.1..10000), so each partial f becomes f-c and f+c: bells, robot voice, dirty 808, sci-fi FX. shape sine|triangle|square|saw, stereo_phase 0..1 (right carrier offset), lfo_hz + lfo_depth (semitones) wobble the carrier, mix (0.2-0.4 for subtle grit)"),
+    ("stereo_shaper", "Stereo Shaper (FL): a 2x2 L/R matrix + a delay + a phase flip. preset custom|mono|swap|left_only|right_only|wide|narrow|side_only|pseudo_stereo (mono source -> stereo with a 12 ms delayed side); custom gains left_from_left, left_from_right, right_from_left, right_from_right; delay_ms 0..50 on delay_side (1 right, -1 left); invert_left / invert_right (phase); mix"),
     ("haas", "Haas widener: delays one side by delay_ms (1..40) for width without comb filtering the mix. side 1 = delay right, -1 = delay left, low_cut_hz keeps bass centred (only highs are widened), level_db trims the delayed side, mix"),
 ];
 
@@ -462,6 +497,9 @@ impl Effect {
         match self {
             Effect::GrossBeat(p) => crate::fx_time::check(p),
             Effect::Vocoder(p) => crate::fx_vocoder::check(p),
+            Effect::FreqShift(p) => crate::fx_mod::check_freq_shift(p),
+            Effect::RingMod(p) => crate::fx_mod::check_ring_mod(p),
+            Effect::StereoShaper(p) => crate::fx_mod::check_stereo_shaper(p),
             _ => Ok(()),
         }
     }
@@ -502,6 +540,9 @@ impl Effect {
             Effect::Haas(p) => crate::fx_sat::haas(p, l, r),
             Effect::GrossBeat(p) => crate::fx_time::gross_beat(p, l, r, ctx.step_secs),
             Effect::Vocoder(p) => crate::fx_vocoder::vocoder(p, l, r),
+            Effect::FreqShift(p) => crate::fx_mod::freq_shift(p, l, r),
+            Effect::RingMod(p) => crate::fx_mod::ring_mod(p, l, r),
+            Effect::StereoShaper(p) => crate::fx_mod::stereo_shaper(p, l, r),
             Effect::Filter(p) => {
                 let (mut fl, mut fr) = (Svf::default(), Svf::default());
                 for i in 0..l.len() {
