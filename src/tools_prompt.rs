@@ -134,6 +134,7 @@ pub fn make_beat_with(e: &mut Engine, a: &Value, clips: Option<Vec<Vec<crate::sp
     let res = run(e, &Value::Object(args.clone()))?;
     // lyrics get performed: sung (melodic) or rapped (rap) by a guide voice
     let mut vocal = Value::Null;
+    let mut files = res.get("files").cloned().unwrap_or(Value::Null);
     let vmode = s_opt(a, "vocal").unwrap_or_else(|| "auto".into());
     if let Some(l) = &lr {
         if vmode != "none" && !l.sections.is_empty() {
@@ -146,12 +147,20 @@ pub fn make_beat_with(e: &mut Engine, a: &Value, clips: Option<Vec<Vec<crate::sp
             match sing_over_plan(e, &plan, &l.sections, &mode, plan.seed, clips.clone()) {
                 Ok(mut v) => {
                     // re-export the full song with the vocal in it
-                    if let Some(audio) = res["files"]["audio"].as_str() {
-                        let p = std::path::Path::new(audio);
-                        let out = p.with_file_name(format!("{}_vocal.mp3", p.file_stem().and_then(|x| x.to_str()).unwrap_or("song")));
+                    // the song (with the voice) is the main out file; the
+                    // beat alone moves to <name>_inst.mp3 (critic v18: the
+                    // main file was the instrumental and got sent as the song)
+                    if let Some(audio) = res["files"]["audio"].as_str().map(String::from) {
+                        let p = std::path::Path::new(&audio);
+                        let inst = p.with_file_name(format!("{}_inst.{}", p.file_stem().and_then(|x| x.to_str()).unwrap_or("song"), p.extension().and_then(|x| x.to_str()).unwrap_or("mp3")));
+                        if std::fs::rename(p, &inst).is_ok() {
+                            files["instrumental"] = json!(inst.to_string_lossy());
+                        }
                         let lufs = a["target_lufs"].as_f64().unwrap_or(-14.0);
-                        let ex = (find("export_audio").expect("export").run)(e, &json!({"path": out.to_string_lossy(), "format": "mp3", "target_lufs": lufs, "true_peak_ceiling": -1.2}))?;
-                        v["file"] = json!(out.to_string_lossy());
+                        let ex = (find("export_audio").expect("export").run)(e, &json!({"path": audio, "format": "mp3", "target_lufs": lufs, "true_peak_ceiling": -1.2}))?;
+                        files["audio"] = json!(audio);
+                        files["with_vocal"] = json!(true);
+                        v["file"] = json!(audio);
                         v["export"] = ex.get("after").cloned().unwrap_or(Value::Null);
                     }
                     v["total_seconds"] = json!((t.elapsed().as_secs_f32() * 10.0).round() / 10.0);
@@ -175,7 +184,7 @@ pub fn make_beat_with(e: &mut Engine, a: &Value, clips: Option<Vec<Vec<crate::sp
         "lyrics": lr,
         "vocal": vocal,
         "plan_args": args,
-        "files": res.get("files").cloned().unwrap_or(Value::Null),
+        "files": files,
         "score": res.get("score").cloned().or_else(|| res.get("best").cloned()).unwrap_or(Value::Null),
         "next": ["export_audio {path:'song.mp3'} to save it", "make_beat again with a different seed for another take", "set_mixer / generate_drums {pattern} to change a part"],
         "details": res,
@@ -392,8 +401,23 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
             // 350 Hz boxiness so it stops filling the beat's low-mids
             let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 350.0, "gain_db": -3.0, "q": 0.9}]}}));
         }
-        let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 2500.0, "gain_db": 3.0, "q": 0.8}]}}));
+        // critic v18 (beat 10 r1): the voice's energy sat at 150-250 Hz and
+        // led the beat by only +3.8 dB at 2-5 kHz: 200-300 Hz -3 dB and a
+        // broad +3 dB presence lift over 2.5-4 kHz, on the vocal only
+        let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [
+            {"kind": "bell", "freq": 250.0, "gain_db": -3.0, "q": 1.0},
+            {"kind": "bell", "freq": 3200.0, "gain_db": 3.0, "q": 0.7}]}}));
         let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "limiter", "params": {"ceiling_db": -1.5}}));
+        // the lo-fi tape (crusher + dusty top cut) stays on the beat
+        let _ = keep_vocal_off_tape(e);
+        // with the voice on, the hooks lifted only ~1-1.5 dB: the drums carry
+        // the lift (+1.5 dB in every hook) instead of more top end
+        if let Ok(bi) = e.project.bus_index("drums") {
+            let base = e.project.buses[bi].volume_db;
+            for s in plan.sections.iter().filter(|s| s.kind == "hook") {
+                let _ = crate_call(e, "set_section_mix", json!({"section": s.name, "track": "drums", "volume_db": base + HOOK_DRUM_LIFT_DB, "all_occurrences": true}));
+            }
+        }
     }
     // the project changed outside the tool layer: drop cached renders
     e.revision += 1;
@@ -415,6 +439,53 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
     }))
 }
 
+
+/// How much the drums bus rises in the hooks of a sung song (dB).
+pub const HOOK_DRUM_LIFT_DB: f32 = 1.5;
+
+/// Name of the bus that carries the beat through the lo-fi tape.
+pub const TAPE_BUS: &str = "beat_tape";
+
+/// The lo-fi darkening on the master (the crusher, a dusty top cut at or
+/// under 10 kHz, vinyl) moves onto a bus that carries every part except the
+/// vocal and its returns, so the words keep their consonants (critic v18:
+/// keep lo-fi darkening off the vocal bus). Returns the effects moved.
+pub fn keep_vocal_off_tape(e: &mut Engine) -> Vec<String> {
+    let dark = |x: &crate::fx::Effect| {
+        let n = x.type_name();
+        if matches!(n.as_str(), "bitcrush" | "vinyl") {
+            return true;
+        }
+        if n == "parametric_eq" {
+            let v = serde_json::to_value(x).unwrap_or(Value::Null);
+            return v["bands"].as_array().is_some_and(|b| b.iter().any(|b| b["kind"] == "high_cut" && b["freq"].as_f64().unwrap_or(1e9) <= 10000.0));
+        }
+        false
+    };
+    if e.project.track_index("vocal").is_err() || !e.project.master_effects.iter().any(|x| dark(x)) {
+        return Vec::new();
+    }
+    let (moved, kept): (Vec<_>, Vec<_>) = e.project.master_effects.drain(..).partition(|x| dark(x));
+    e.project.master_effects = kept;
+    let names: Vec<String> = moved.iter().map(|x| x.type_name()).collect();
+    if e.project.bus_index(TAPE_BUS).is_err() {
+        e.project.buses.push(crate::project::Bus::new(TAPE_BUS));
+    }
+    let bi = e.project.bus_index(TAPE_BUS).expect("tape bus");
+    e.project.buses[bi].effects.extend(moved);
+    for t in e.project.tracks.iter_mut() {
+        if t.output.is_none() && t.name != "vocal" {
+            t.output = Some(TAPE_BUS.into());
+        }
+    }
+    for b in e.project.buses.iter_mut() {
+        if b.output.is_none() && !matches!(b.name.as_str(), TAPE_BUS | "vox_verb" | "vox_delay") {
+            b.output = Some(TAPE_BUS.into());
+        }
+    }
+    e.revision += 1;
+    names
+}
 
 /// produce_song: a recording (spoken or rapped words, phone-quality is fine)
 /// becomes a finished song: denoise, transcribe, cut fillers/repeats/false
@@ -532,7 +603,7 @@ fn produce_song(e: &mut Engine, a: &Value) -> Result<Value> {
     Ok(json!({
         "summary": format!("{} song from {} words ({} cut), {} s", mode, kept.len(), removed.len(), e.project.song_seconds().round()),
         "file": res["vocal"]["file"].clone(),
-        "beat_only": res["files"]["audio"].clone(),
+        "beat_only": res["files"].get("instrumental").cloned().unwrap_or_else(|| res["files"]["audio"].clone()),
         "report": {
             "denoise_db": (red_db * 10.0).round() / 10.0,
             "clean_take": clean_path.to_string_lossy(),
@@ -578,4 +649,37 @@ pub fn tools() -> Vec<Tool> {
             run: |_, a| Ok(serde_json::to_value(parse_prompt(&s_opt(a, "prompt").unwrap_or_default()))?),
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lofi_tape_moves_off_the_vocal() {
+        let mut e = Engine::new(std::env::temp_dir().join("beatbox_prompt_tape_tests"));
+        e.call("new_project", &json!({"bpm": 82, "patterns": [{"name": "a", "bars": 1}]})).unwrap();
+        e.call("add_track", &json!({"name": "pad", "preset": "warm_pad"})).unwrap();
+        e.call("add_track", &json!({"name": "vocal", "preset": "warm_pad"})).unwrap();
+        e.call("add_bus", &json!({"name": "verb", "preset": "reverb"})).unwrap();
+        e.call("add_bus", &json!({"name": "vox_verb", "preset": "reverb"})).unwrap();
+        e.call("add_effect", &json!({"track": "master", "type": "bitcrush", "params": {"bits": 12.0, "downsample": 2, "mix": 0.25}})).unwrap();
+        e.call("add_effect", &json!({"track": "master", "type": "parametric_eq", "params": {"bands": [{"kind": "high_cut", "freq": 8000.0, "gain_db": 0.0, "q": 0.707}]}})).unwrap();
+        let n0 = e.project.master_effects.len();
+        let moved = keep_vocal_off_tape(&mut e);
+        assert_eq!(moved, vec!["bitcrush".to_string(), "parametric_eq".to_string()]);
+        assert_eq!(e.project.master_effects.len(), n0 - 2);
+        assert!(e.project.master_effects.iter().all(|x| x.type_name() != "bitcrush"));
+        let tape = &e.project.buses[e.project.bus_index(TAPE_BUS).unwrap()];
+        assert_eq!(tape.effects.len(), 2);
+        let out = |t: &str| e.project.tracks[e.project.track_index(t).unwrap()].output.clone();
+        assert_eq!(out("pad").as_deref(), Some(TAPE_BUS));
+        assert_eq!(out("vocal"), None);
+        let bus_out = |b: &str| e.project.buses[e.project.bus_index(b).unwrap()].output.clone();
+        assert_eq!(bus_out("verb").as_deref(), Some(TAPE_BUS));
+        assert_eq!(bus_out("vox_verb"), None);
+        assert_eq!(bus_out(TAPE_BUS), None);
+        // a second call has nothing left to move
+        assert!(keep_vocal_off_tape(&mut e).is_empty());
+    }
 }

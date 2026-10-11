@@ -82,14 +82,21 @@ fn quantize_notes(notes: &[(f32, f32, u8)], bar0: u32, bars: u32) -> Vec<Note> {
 /// The lead-vocal chain: HPF, EQ (less boxiness, more presence and air),
 /// compression, de-essing, reverb and delay sends, and the vocal's presence
 /// range carved out of the chords and lead so the words cut through.
+/// The vocal chain's high-pass (Hz).
+pub const VOCAL_HPF_HZ: f32 = 120.0;
+
 pub fn vocal_chain(e: &mut Engine) -> Result<()> {
-    call(e, "add_effect", json!({"track": "vocal", "type": "filter", "params": {"mode": "highpass", "cutoff": 95.0}}))?;
+    // critic v18 (beat 10 r1): the voice piled up at 150-250 Hz, +11.6 dB over
+    // the beat there, so the high-pass sits at 120 Hz (was 95)
+    call(e, "add_effect", json!({"track": "vocal", "type": "filter", "params": {"mode": "highpass", "cutoff": VOCAL_HPF_HZ}}))?;
     call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [
         {"kind": "bell", "freq": 300.0, "gain_db": -2.5, "q": 1.0},
         {"kind": "bell", "freq": 3200.0, "gain_db": 2.0, "q": 0.9},
         {"kind": "high_shelf", "freq": 10000.0, "gain_db": 2.5, "q": 0.7}]}}))?;
     call(e, "add_effect", json!({"track": "vocal", "type": "compressor", "params": {"threshold_db": -20.0, "ratio": 3.5, "attack_ms": 6.0, "release_ms": 90.0, "makeup_db": 4.0}}))?;
-    call(e, "add_effect", json!({"track": "vocal", "type": "deesser", "params": {"freq": 6500.0, "threshold_db": -26.0}}))?;
+    // gentler than before (was -26 dB): the leading s/sh/f/th are now held
+    // and lifted on purpose (critic v18), the de-esser only tames the peaks
+    call(e, "add_effect", json!({"track": "vocal", "type": "deesser", "params": {"freq": 6500.0, "threshold_db": -21.0, "range_db": -6.0}}))?;
     call(e, "add_bus", json!({"name": "vox_verb"}))?;
     call(e, "add_effect", json!({"track": "vox_verb", "type": "reverb", "params": {"size": 0.75, "mix": 1.0, "predelay_ms": 40.0, "low_cut_hz": 250.0}}))?;
     call(e, "add_bus", json!({"name": "vox_delay"}))?;

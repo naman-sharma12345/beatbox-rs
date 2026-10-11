@@ -1684,6 +1684,9 @@ impl Ctx<'_> {
     }
 }
 
+/// Lo-fi sub lift on kick/bass/808 below ~70 Hz (critic v18).
+pub const LOFI_SUB_LIFT_DB: f32 = 3.0;
+
 /// Highest MIDI pitch a lo-fi lead/counter may reach (E5, ~660 Hz).
 const LOFI_LEAD_CEILING: u8 = 76;
 
@@ -2783,6 +2786,22 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                     {"kind": "high_cut", "freq": 3500.0, "gain_db": 0.0, "q": 0.707},
                     // critic v17: lead/counter still co-own 2-3 kHz with the snare
                     {"kind": "bell", "freq": 2500.0, "gain_db": -3.0, "q": 1.0}]}}), "producer")?;
+            }
+        }
+        // critic v18 (beat 10 r1): the hook layers (open hat, shaker,
+        // counter, texture) added ~6 dB of 2-3 kHz; they lose 2.5 dB there
+        for t in ["open_hat", "shaker", "counter", "texture"] {
+            if have(e, t) {
+                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                    {"kind": "bell", "freq": 2600.0, "gain_db": -2.5, "q": 0.9}]}}), "producer")?;
+            }
+        }
+        // critic v18: sub -4.7 dB under the reference, so the low end read as
+        // all voice; kick, bass and 808 get +3 dB below ~70 Hz
+        for t in ["kick", "bass", "808", "sub"] {
+            if have(e, t) {
+                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                    {"kind": "low_shelf", "freq": 70.0, "gain_db": LOFI_SUB_LIFT_DB, "q": 0.7}]}}), "producer")?;
             }
         }
         // the chords made 53% of 250-800 Hz: rootless up top, no mud under
