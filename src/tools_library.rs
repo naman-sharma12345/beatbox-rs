@@ -101,11 +101,17 @@ pub fn tools() -> Vec<Tool> {
             name: "fetch_instrument",
             description: "Download a catalog item (search_instruments) into ~/.beatbox/library (once; sha256-checked; never goes into the project or git). Default id generaluser_gs = a General MIDI SoundFont with ~260 recorded instruments: pianos, clean/jazz/overdriven electric guitars, nylon/steel acoustic guitars, finger/pick/fretless basses, acoustic drum kits (standard, room, brush ...), strings, brass, winds, choir. Returns the path, size, licence and whether it was downloaded now.",
             mutates: false,
-            schema: || obj(json!({"id": {"type": "string", "description": "library id (default generaluser_gs)"}}), &[]),
+            schema: || obj(json!({"id": {"type": "string", "description": "catalog id (default generaluser_gs)"}, "max_mb": {"type": "integer", "description": "SFZ programs: refuse when the samples needed exceed this (default 400)"}, "max_rr": {"type": "integer", "description": "SFZ: round robins kept (default 2)"}}), &[]),
             run: |_e, a| {
                 let id = s_opt(a, "id").unwrap_or_else(|| "generaluser_gs".into());
                 if soundfont::font_entry(&id).is_none() {
                     let ent = crate::sound_catalog::entry(&id).ok_or_else(|| anyhow!("unknown id '{id}' (search_instruments lists the catalog)"))?;
+                    if ent.format == "sfz_git" {
+                        let max = a.get("max_mb").and_then(|v| v.as_u64()).unwrap_or(400);
+                        let (path, now) = crate::sound_catalog::fetch_sfz_git(&ent, max, a.get("max_rr").and_then(|v| v.as_u64()).unwrap_or(2) as u8)?;
+                        crate::sound_catalog::evict(&ent.repo);
+                        return Ok(json!({"id": ent.id, "name": ent.name, "sfz": path, "downloaded_mb": (now as f64 / 1e5).round() / 10.0, "license": ent.license, "source": ent.source, "next": format!("load_instrument {{track, catalog_id:'{}'}}", ent.id)}));
+                    }
                     if ent.format == "vsco_pack" {
                         bail!("'{id}' is a VSCO 2 CE multisample pack: use install_instrument_pack {{pack:'{}'}}", id.trim_start_matches("vsco_"));
                     }
@@ -139,11 +145,27 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "load_instrument",
-            description: "Put a real recorded instrument on a track (creates the track when it does not exist): instrument = a curated name (list_instruments), or font + bank + program (GM numbering; drums:true for a kit, program picks the kit). fixed_key makes a one-drum track play that drum for every note (36 kick, 38 snare, 42 closed hat, 46 open hat, 49 crash ...). gain, transpose. The font is fetched on first use.",
+            description: "Put a real recorded instrument on a track (creates the track when it does not exist): catalog_id = any SFZ instrument from search_instruments (e.g. a CC0 electric guitar, bass or drum kit), or instrument = a curated SoundFont name (list_instruments), or font + bank + program (GM numbering; drums:true for a kit, program picks the kit). fixed_key makes a one-drum track play that drum for every note (36 kick, 38 snare, 42 closed hat, 46 open hat, 49 crash ...). gain, transpose. The font is fetched on first use.",
             mutates: true,
-            schema: || obj(json!({"track": {"type": "string"}, "instrument": {"type": "string"}, "font": {"type": "string"}, "bank": {"type": "integer"}, "program": {"type": "integer"}, "drums": {"type": "boolean"}, "fixed_key": {"type": "integer"}, "gain": {"type": "number"}, "transpose": {"type": "integer"}, "volume_db": {"type": "number"}}), &["track"]),
+            schema: || obj(json!({"track": {"type": "string"}, "instrument": {"type": "string"}, "font": {"type": "string"}, "bank": {"type": "integer"}, "program": {"type": "integer"}, "drums": {"type": "boolean"}, "fixed_key": {"type": "integer"}, "gain": {"type": "number"}, "transpose": {"type": "integer"}, "volume_db": {"type": "number"}, "catalog_id": {"type": "string", "description": "an SFZ instrument from search_instruments (fetched on first use)"}, "max_mb": {"type": "integer"}, "max_rr": {"type": "integer", "description": "SFZ: round robins kept (default 2)"}}), &["track"]),
             run: |e, a| {
                 let name = s_req(a, "track")?;
+                if let Some(cid) = s_opt(a, "catalog_id") {
+                    let ent = crate::sound_catalog::entry(&cid).ok_or_else(|| anyhow!("unknown catalog id '{cid}' (search_instruments)"))?;
+                    match ent.format.as_str() {
+                        "sfz_git" => {
+                            let max = a.get("max_mb").and_then(|v| v.as_u64()).unwrap_or(400);
+                            let (path, now) = crate::sound_catalog::fetch_sfz_git(&ent, max, a.get("max_rr").and_then(|v| v.as_u64()).unwrap_or(2) as u8)?;
+                            let mut args = json!({"name": name, "sfz": path.to_string_lossy()});
+                            if let Some(v) = f_opt(a, "volume_db") { args["volume_db"] = json!(v); }
+                            let r = e.call("add_multisample_track", &args)?;
+                            return Ok(json!({"track": name, "catalog_id": ent.id, "name": ent.name, "zones": r["zones"], "downloaded_mb": (now as f64 / 1e5).round() / 10.0, "license": ent.license}));
+                        }
+                        "vsco_pack" => return e.call("install_instrument_pack", &json!({"pack": cid.trim_start_matches("vsco_"), "track": name})),
+                        "sf2" => {}
+                        f => bail!("catalog item '{cid}' ({f}) is not an instrument"),
+                    }
+                }
                 let p = params_from(a)?;
                 soundfont::load_font(&p.font)?;
                 let inst = Instrument::SoundFont(p.clone());

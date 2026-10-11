@@ -896,10 +896,14 @@ pub fn tools() -> Vec<Tool> {
                     let path = e.resolve(&sfz);
                     let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
                     let (regions, rel) = multisample::parse_sfz(&text)?;
+                    let regions = multisample::playable_regions(regions);
                     if let Some(r) = rel { if a.get("release").is_none() { params.release = r; } }
                     let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                    let mut skipped = 0usize;
                     for (k, r) in regions.iter().enumerate() {
                         let sp = dir.join(&r.sample);
+                        // a fetched program keeps only some round robins on disk
+                        if !sp.is_file() { skipped += 1; continue; }
                         let sname = samples::sample_name(&format!("{}_{}", name, sp.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| k.to_string())));
                         if !e.project.samples.iter().any(|s| s.name == sname) {
                             crate::tools::register_sample(e, SampleInfo { name: sname.clone(), path: sp.to_string_lossy().to_string(), source: path.to_string_lossy().to_string(), license: "see sfz".into(), author: String::new(), duration: 0.0 })?;
@@ -907,6 +911,7 @@ pub fn tools() -> Vec<Tool> {
                         params.zones.push(Zone { sample: sname, root: r.root, lo_note: r.lo, hi_note: r.hi, vel_lo: r.vel_lo as f32 / 127.0, vel_hi: (r.vel_hi as f32 + 1.0) / 128.0, tune_cents: r.tune, gain_db: r.volume, rr: r.seq.saturating_sub(1) });
                     }
                     params.source = path.to_string_lossy().to_string();
+                    if params.zones.is_empty() { bail!("none of the SFZ's {} sample files exist next to it", skipped); }
                 } else {
                     let zs = a.get("zones").and_then(|v| v.as_array()).ok_or_else(|| anyhow!("give zones or sfz"))?;
                     for z in zs {

@@ -354,6 +354,35 @@ pub struct SfzRegion {
     pub tune: f32,
     pub volume: f32,
     pub seq: u8,
+    /// trigger opcode (attack, release, first, legato); "" = attack.
+    pub trigger: String,
+    /// Keyswitch this region belongs to (sw_last), if any.
+    pub sw_last: Option<u8>,
+    /// Random round-robin window start (lorand), 0 when unused.
+    pub lorand: f32,
+}
+
+/// Regions that play on a plain note-on: attack triggers only, and when the
+/// instrument uses keyswitches, only the default articulation (sw_default,
+/// else the lowest keyswitch). lorand windows become round-robin slots.
+pub fn playable_regions(regions: Vec<SfzRegion>) -> Vec<SfzRegion> {
+    // `*sine`, `*silence` ... are built-in generators, not files
+    let mut v: Vec<SfzRegion> = regions.into_iter().filter(|r| !r.sample.rsplit('/').next().unwrap_or("").starts_with('*')).filter(|r| r.trigger.is_empty() || r.trigger == "attack" || r.trigger == "first").collect();
+    let sws: Vec<u8> = v.iter().filter_map(|r| r.sw_last).collect();
+    if let Some(&first) = sws.iter().min() {
+        v.retain(|r| r.sw_last.map_or(true, |s| s == first));
+    }
+    let mut rands: Vec<f32> = v.iter().map(|r| r.lorand).filter(|x| *x > 0.0).collect();
+    rands.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    rands.dedup();
+    if !rands.is_empty() {
+        for r in v.iter_mut() {
+            if r.seq <= 1 {
+                r.seq = 1 + rands.iter().position(|x| (*x - r.lorand).abs() < 1e-6).map(|p| p + 1).unwrap_or(0) as u8;
+            }
+        }
+    }
+    v
 }
 
 fn sfz_key(v: &str) -> Option<u8> {
@@ -418,6 +447,9 @@ pub fn parse_sfz(text: &str) -> Result<(Vec<SfzRegion>, Option<f32>)> {
                 seq: get("seq_position")
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(1),
+                trigger: get("trigger").unwrap_or_default().to_lowercase(),
+                sw_last: get("sw_last").and_then(|k| sfz_key(&k)),
+                lorand: get("lorand").and_then(|v| v.parse().ok()).unwrap_or(0.0),
             });
         }
     };

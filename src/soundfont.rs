@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 fn one() -> f32 {
-    1.0
+    2.0
 }
 fn two() -> f32 {
     2.5
@@ -45,7 +45,7 @@ pub struct SoundFontParams {
 
 impl Default for SoundFontParams {
     fn default() -> Self {
-        SoundFontParams { font: "generaluser_gs".into(), bank: 0, program: 0, drums: false, fixed_key: None, gain: 1.0, release_max: 2.5, transpose: 0, preset_name: String::new() }
+        SoundFontParams { font: "generaluser_gs".into(), bank: 0, program: 0, drums: false, fixed_key: None, gain: 2.0, release_max: 2.5, transpose: 0, preset_name: String::new() }
     }
 }
 

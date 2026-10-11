@@ -30,6 +30,4202 @@
    "bytes": 32319396,
    "file": "GeneralUser-GS.sf2",
    "status": "pinned"
+  },
+  {
+   "id": "squidpipes_01_squidpipes",
+   "name": "Squidpipes: 01-squidpipes",
+   "family": "winds",
+   "tags": [
+    "bagpipe",
+    "pipes",
+    "drone"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.squidpipes",
+   "source": "https://github.com/sfzinstruments/karoryfer.squidpipes",
+   "repo": "sfzinstruments/karoryfer.squidpipes",
+   "tree": "b258528c8f49d6389ec2b4ec04a8b10013169dd9",
+   "branch": "master",
+   "sfz": "Programs/01-squidpipes.sfz",
+   "status": "pinned",
+   "repo_bytes": 53854360
+  },
+  {
+   "id": "squidpipes_02_squidotron",
+   "name": "Squidpipes: 02-squidotron",
+   "family": "winds",
+   "tags": [
+    "bagpipe",
+    "pipes",
+    "drone"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.squidpipes",
+   "source": "https://github.com/sfzinstruments/karoryfer.squidpipes",
+   "repo": "sfzinstruments/karoryfer.squidpipes",
+   "tree": "b258528c8f49d6389ec2b4ec04a8b10013169dd9",
+   "branch": "master",
+   "sfz": "Programs/02-squidotron.sfz",
+   "status": "pinned",
+   "repo_bytes": 53854360
+  },
+  {
+   "id": "squidpipes_03_squynth",
+   "name": "Squidpipes: 03-squynth",
+   "family": "winds",
+   "tags": [
+    "bagpipe",
+    "pipes",
+    "drone"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.squidpipes",
+   "source": "https://github.com/sfzinstruments/karoryfer.squidpipes",
+   "repo": "sfzinstruments/karoryfer.squidpipes",
+   "tree": "b258528c8f49d6389ec2b4ec04a8b10013169dd9",
+   "branch": "master",
+   "sfz": "Programs/03-squynth.sfz",
+   "status": "pinned",
+   "repo_bytes": 53854360
+  },
+  {
+   "id": "gogodze_phu_vol_ii_hat",
+   "name": "Gogodze Phu Vol Ii: Hat",
+   "family": "drums",
+   "tags": [
+    "percussion",
+    "georgian",
+    "hand drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "source": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "repo": "sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "tree": "69a0274cdc39c99c3098cde1bc3789690de86d62",
+   "branch": "master",
+   "sfz": "Programs/Hat.sfz",
+   "status": "pinned",
+   "repo_bytes": 493835820
+  },
+  {
+   "id": "gogodze_phu_vol_ii_hat_b",
+   "name": "Gogodze Phu Vol Ii: Hat_b",
+   "family": "drums",
+   "tags": [
+    "percussion",
+    "georgian",
+    "hand drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "source": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "repo": "sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "tree": "69a0274cdc39c99c3098cde1bc3789690de86d62",
+   "branch": "master",
+   "sfz": "Programs/Hat_b.sfz",
+   "status": "pinned",
+   "repo_bytes": 493835820
+  },
+  {
+   "id": "gogodze_phu_vol_ii_kick",
+   "name": "Gogodze Phu Vol Ii: Kick",
+   "family": "drums",
+   "tags": [
+    "percussion",
+    "georgian",
+    "hand drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "source": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "repo": "sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "tree": "69a0274cdc39c99c3098cde1bc3789690de86d62",
+   "branch": "master",
+   "sfz": "Programs/Kick.sfz",
+   "status": "pinned",
+   "repo_bytes": 493835820
+  },
+  {
+   "id": "gogodze_phu_vol_ii_kick_b",
+   "name": "Gogodze Phu Vol Ii: Kick_b",
+   "family": "drums",
+   "tags": [
+    "percussion",
+    "georgian",
+    "hand drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "source": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "repo": "sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "tree": "69a0274cdc39c99c3098cde1bc3789690de86d62",
+   "branch": "master",
+   "sfz": "Programs/Kick_b.sfz",
+   "status": "pinned",
+   "repo_bytes": 493835820
+  },
+  {
+   "id": "gogodze_phu_vol_ii_kit",
+   "name": "Gogodze Phu Vol Ii: Kit",
+   "family": "drums",
+   "tags": [
+    "percussion",
+    "georgian",
+    "hand drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "source": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "repo": "sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "tree": "69a0274cdc39c99c3098cde1bc3789690de86d62",
+   "branch": "master",
+   "sfz": "Programs/Kit.sfz",
+   "status": "pinned",
+   "repo_bytes": 493835820
+  },
+  {
+   "id": "gogodze_phu_vol_ii_kit_b",
+   "name": "Gogodze Phu Vol Ii: Kit_b",
+   "family": "drums",
+   "tags": [
+    "percussion",
+    "georgian",
+    "hand drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "source": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "repo": "sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+   "tree": "69a0274cdc39c99c3098cde1bc3789690de86d62",
+   "branch": "master",
+   "sfz": "Programs/Kit_b.sfz",
+   "status": "pinned",
+   "repo_bytes": 493835820
+  },
+  {
+   "id": "gogodze_phu_vol_i_bobobo",
+   "name": "Gogodze Phu Vol I: Bobobo",
+   "family": "drums",
+   "tags": [
+    "percussion",
+    "cajon",
+    "hand drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-i",
+   "source": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-i",
+   "repo": "sfzinstruments/karoryfer.gogodze-phu-vol-i",
+   "tree": "7452f62060cd3a468c78bc361d96a4dfb30879c9",
+   "branch": "master",
+   "sfz": "Programs/Bobobo.sfz",
+   "status": "pinned",
+   "repo_bytes": 92764063
+  },
+  {
+   "id": "gogodze_phu_vol_i_cajon",
+   "name": "Gogodze Phu Vol I: Cajon",
+   "family": "drums",
+   "tags": [
+    "percussion",
+    "cajon",
+    "hand drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-i",
+   "source": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-i",
+   "repo": "sfzinstruments/karoryfer.gogodze-phu-vol-i",
+   "tree": "7452f62060cd3a468c78bc361d96a4dfb30879c9",
+   "branch": "master",
+   "sfz": "Programs/Cajon.sfz",
+   "status": "pinned",
+   "repo_bytes": 92764063
+  },
+  {
+   "id": "bear_sax_1_solo_mono",
+   "name": "Bear Sax: 1-solo-mono",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "sax"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.bear-sax",
+   "source": "https://github.com/sfzinstruments/karoryfer.bear-sax",
+   "repo": "sfzinstruments/karoryfer.bear-sax",
+   "tree": "7abb3c652525a15dfac80e1b5dfbba9964ee568f",
+   "branch": "master",
+   "sfz": "Programs/1-solo-mono.sfz",
+   "status": "pinned",
+   "repo_bytes": 144985169
+  },
+  {
+   "id": "bear_sax_2_solo_poly",
+   "name": "Bear Sax: 2-solo-poly",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "sax"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.bear-sax",
+   "source": "https://github.com/sfzinstruments/karoryfer.bear-sax",
+   "repo": "sfzinstruments/karoryfer.bear-sax",
+   "tree": "7abb3c652525a15dfac80e1b5dfbba9964ee568f",
+   "branch": "master",
+   "sfz": "Programs/2-solo-poly.sfz",
+   "status": "pinned",
+   "repo_bytes": 144985169
+  },
+  {
+   "id": "bear_sax_3_duo_mono",
+   "name": "Bear Sax: 3-duo-mono",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "sax"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.bear-sax",
+   "source": "https://github.com/sfzinstruments/karoryfer.bear-sax",
+   "repo": "sfzinstruments/karoryfer.bear-sax",
+   "tree": "7abb3c652525a15dfac80e1b5dfbba9964ee568f",
+   "branch": "master",
+   "sfz": "Programs/3-duo-mono.sfz",
+   "status": "pinned",
+   "repo_bytes": 144985169
+  },
+  {
+   "id": "bear_sax_4_duo_poly",
+   "name": "Bear Sax: 4-duo-poly",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "sax"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.bear-sax",
+   "source": "https://github.com/sfzinstruments/karoryfer.bear-sax",
+   "repo": "sfzinstruments/karoryfer.bear-sax",
+   "tree": "7abb3c652525a15dfac80e1b5dfbba9964ee568f",
+   "branch": "master",
+   "sfz": "Programs/4-duo-poly.sfz",
+   "status": "pinned",
+   "repo_bytes": 144985169
+  },
+  {
+   "id": "bear_sax_5_bearcussion",
+   "name": "Bear Sax: 5-bearcussion",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "sax"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.bear-sax",
+   "source": "https://github.com/sfzinstruments/karoryfer.bear-sax",
+   "repo": "sfzinstruments/karoryfer.bear-sax",
+   "tree": "7abb3c652525a15dfac80e1b5dfbba9964ee568f",
+   "branch": "master",
+   "sfz": "Programs/5-bearcussion.sfz",
+   "status": "pinned",
+   "repo_bytes": 144985169
+  },
+  {
+   "id": "bear_sax_6_bearborg",
+   "name": "Bear Sax: 6-bearborg",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "sax"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.bear-sax",
+   "source": "https://github.com/sfzinstruments/karoryfer.bear-sax",
+   "repo": "sfzinstruments/karoryfer.bear-sax",
+   "tree": "7abb3c652525a15dfac80e1b5dfbba9964ee568f",
+   "branch": "master",
+   "sfz": "Programs/6-bearborg.sfz",
+   "status": "pinned",
+   "repo_bytes": 144985169
+  },
+  {
+   "id": "war_tuba_1_solo_legato",
+   "name": "War Tuba: 1-solo-legato",
+   "family": "brass",
+   "tags": [
+    "tuba"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.war-tuba",
+   "source": "https://github.com/sfzinstruments/karoryfer.war-tuba",
+   "repo": "sfzinstruments/karoryfer.war-tuba",
+   "tree": "5b62dd6ef6b00281bb734769e44a63f5e013018a",
+   "branch": "master",
+   "sfz": "Programs/1-solo-legato.sfz",
+   "status": "pinned",
+   "repo_bytes": 139948464
+  },
+  {
+   "id": "war_tuba_2_solo_poly",
+   "name": "War Tuba: 2-solo-poly",
+   "family": "brass",
+   "tags": [
+    "tuba"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.war-tuba",
+   "source": "https://github.com/sfzinstruments/karoryfer.war-tuba",
+   "repo": "sfzinstruments/karoryfer.war-tuba",
+   "tree": "5b62dd6ef6b00281bb734769e44a63f5e013018a",
+   "branch": "master",
+   "sfz": "Programs/2-solo-poly.sfz",
+   "status": "pinned",
+   "repo_bytes": 139948464
+  },
+  {
+   "id": "war_tuba_3_duo_legato",
+   "name": "War Tuba: 3-duo-legato",
+   "family": "brass",
+   "tags": [
+    "tuba"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.war-tuba",
+   "source": "https://github.com/sfzinstruments/karoryfer.war-tuba",
+   "repo": "sfzinstruments/karoryfer.war-tuba",
+   "tree": "5b62dd6ef6b00281bb734769e44a63f5e013018a",
+   "branch": "master",
+   "sfz": "Programs/3-duo-legato.sfz",
+   "status": "pinned",
+   "repo_bytes": 139948464
+  },
+  {
+   "id": "war_tuba_4_duo_poly",
+   "name": "War Tuba: 4-duo-poly",
+   "family": "brass",
+   "tags": [
+    "tuba"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.war-tuba",
+   "source": "https://github.com/sfzinstruments/karoryfer.war-tuba",
+   "repo": "sfzinstruments/karoryfer.war-tuba",
+   "tree": "5b62dd6ef6b00281bb734769e44a63f5e013018a",
+   "branch": "master",
+   "sfz": "Programs/4-duo-poly.sfz",
+   "status": "pinned",
+   "repo_bytes": 139948464
+  },
+  {
+   "id": "war_tuba_5_trio_legato",
+   "name": "War Tuba: 5-trio-legato",
+   "family": "brass",
+   "tags": [
+    "tuba"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.war-tuba",
+   "source": "https://github.com/sfzinstruments/karoryfer.war-tuba",
+   "repo": "sfzinstruments/karoryfer.war-tuba",
+   "tree": "5b62dd6ef6b00281bb734769e44a63f5e013018a",
+   "branch": "master",
+   "sfz": "Programs/5-trio-legato.sfz",
+   "status": "pinned",
+   "repo_bytes": 139948464
+  },
+  {
+   "id": "war_tuba_6_trio_poly",
+   "name": "War Tuba: 6-trio-poly",
+   "family": "brass",
+   "tags": [
+    "tuba"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.war-tuba",
+   "source": "https://github.com/sfzinstruments/karoryfer.war-tuba",
+   "repo": "sfzinstruments/karoryfer.war-tuba",
+   "tree": "5b62dd6ef6b00281bb734769e44a63f5e013018a",
+   "branch": "master",
+   "sfz": "Programs/6-trio-poly.sfz",
+   "status": "pinned",
+   "repo_bytes": 139948464
+  },
+  {
+   "id": "weresax_sax",
+   "name": "Weresax: Sax",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "alto sax"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.weresax",
+   "source": "https://github.com/sfzinstruments/karoryfer.weresax",
+   "repo": "sfzinstruments/karoryfer.weresax",
+   "tree": "a4d756b21d2a573aca0d840cce7e71ba5effd4c6",
+   "branch": "master",
+   "sfz": "Programs/Sax.sfz",
+   "status": "pinned",
+   "repo_bytes": 203659361
+  },
+  {
+   "id": "weresax_sax1",
+   "name": "Weresax: Sax1",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "alto sax"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.weresax",
+   "source": "https://github.com/sfzinstruments/karoryfer.weresax",
+   "repo": "sfzinstruments/karoryfer.weresax",
+   "tree": "a4d756b21d2a573aca0d840cce7e71ba5effd4c6",
+   "branch": "master",
+   "sfz": "Programs/Sax1.sfz",
+   "status": "pinned",
+   "repo_bytes": 203659361
+  },
+  {
+   "id": "weresax_alto_map_forte_condenser",
+   "name": "Weresax: alto_map_forte_condenser",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "alto sax"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.weresax",
+   "source": "https://github.com/sfzinstruments/karoryfer.weresax",
+   "repo": "sfzinstruments/karoryfer.weresax",
+   "tree": "a4d756b21d2a573aca0d840cce7e71ba5effd4c6",
+   "branch": "master",
+   "sfz": "Programs/alto_map_forte_condenser.sfz",
+   "status": "pinned",
+   "repo_bytes": 203659361
+  },
+  {
+   "id": "weresax_alto_map_forte_dynamic",
+   "name": "Weresax: alto_map_forte_dynamic",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "alto sax"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.weresax",
+   "source": "https://github.com/sfzinstruments/karoryfer.weresax",
+   "repo": "sfzinstruments/karoryfer.weresax",
+   "tree": "a4d756b21d2a573aca0d840cce7e71ba5effd4c6",
+   "branch": "master",
+   "sfz": "Programs/alto_map_forte_dynamic.sfz",
+   "status": "pinned",
+   "repo_bytes": 203659361
+  },
+  {
+   "id": "weresax_alto_map_piano_condenser",
+   "name": "Weresax: alto_map_piano_condenser",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "alto sax"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.weresax",
+   "source": "https://github.com/sfzinstruments/karoryfer.weresax",
+   "repo": "sfzinstruments/karoryfer.weresax",
+   "tree": "a4d756b21d2a573aca0d840cce7e71ba5effd4c6",
+   "branch": "master",
+   "sfz": "Programs/alto_map_piano_condenser.sfz",
+   "status": "pinned",
+   "repo_bytes": 203659361
+  },
+  {
+   "id": "weresax_alto_map_piano_dynamic",
+   "name": "Weresax: alto_map_piano_dynamic",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "alto sax"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.weresax",
+   "source": "https://github.com/sfzinstruments/karoryfer.weresax",
+   "repo": "sfzinstruments/karoryfer.weresax",
+   "tree": "a4d756b21d2a573aca0d840cce7e71ba5effd4c6",
+   "branch": "master",
+   "sfz": "Programs/alto_map_piano_dynamic.sfz",
+   "status": "pinned",
+   "repo_bytes": 203659361
+  },
+  {
+   "id": "string_cyborgs_blackheart",
+   "name": "String Cyborgs: Blackheart",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "string",
+    "cyborg",
+    "experimental"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.string-cyborgs",
+   "source": "https://github.com/sfzinstruments/karoryfer.string-cyborgs",
+   "repo": "sfzinstruments/karoryfer.string-cyborgs",
+   "tree": "f2238b3e36ae64c6383356221dc89c9c476c7b11",
+   "branch": "master",
+   "sfz": "Programs/Blackheart.sfz",
+   "status": "pinned",
+   "repo_bytes": 76079816
+  },
+  {
+   "id": "string_cyborgs_ironface",
+   "name": "String Cyborgs: Ironface",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "string",
+    "cyborg",
+    "experimental"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.string-cyborgs",
+   "source": "https://github.com/sfzinstruments/karoryfer.string-cyborgs",
+   "repo": "sfzinstruments/karoryfer.string-cyborgs",
+   "tree": "f2238b3e36ae64c6383356221dc89c9c476c7b11",
+   "branch": "master",
+   "sfz": "Programs/Ironface.sfz",
+   "status": "pinned",
+   "repo_bytes": 76079816
+  },
+  {
+   "id": "string_cyborgs_zinc",
+   "name": "String Cyborgs: Zinc",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "string",
+    "cyborg",
+    "experimental"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.string-cyborgs",
+   "source": "https://github.com/sfzinstruments/karoryfer.string-cyborgs",
+   "repo": "sfzinstruments/karoryfer.string-cyborgs",
+   "tree": "f2238b3e36ae64c6383356221dc89c9c476c7b11",
+   "branch": "master",
+   "sfz": "Programs/Zinc.sfz",
+   "status": "pinned",
+   "repo_bytes": 76079816
+  },
+  {
+   "id": "string_cyborgs_blackheart_master",
+   "name": "String Cyborgs: blackheart_Master",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "string",
+    "cyborg",
+    "experimental"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.string-cyborgs",
+   "source": "https://github.com/sfzinstruments/karoryfer.string-cyborgs",
+   "repo": "sfzinstruments/karoryfer.string-cyborgs",
+   "tree": "f2238b3e36ae64c6383356221dc89c9c476c7b11",
+   "branch": "master",
+   "sfz": "Programs/blackheart_Master.sfz",
+   "status": "pinned",
+   "repo_bytes": 76079816
+  },
+  {
+   "id": "string_cyborgs_blackheart_five",
+   "name": "String Cyborgs: blackheart_five",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "string",
+    "cyborg",
+    "experimental"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.string-cyborgs",
+   "source": "https://github.com/sfzinstruments/karoryfer.string-cyborgs",
+   "repo": "sfzinstruments/karoryfer.string-cyborgs",
+   "tree": "f2238b3e36ae64c6383356221dc89c9c476c7b11",
+   "branch": "master",
+   "sfz": "Programs/blackheart_five.sfz",
+   "status": "pinned",
+   "repo_bytes": 76079816
+  },
+  {
+   "id": "string_cyborgs_blackheart_five_sc",
+   "name": "String Cyborgs: blackheart_five_sc",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "string",
+    "cyborg",
+    "experimental"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.string-cyborgs",
+   "source": "https://github.com/sfzinstruments/karoryfer.string-cyborgs",
+   "repo": "sfzinstruments/karoryfer.string-cyborgs",
+   "tree": "f2238b3e36ae64c6383356221dc89c9c476c7b11",
+   "branch": "master",
+   "sfz": "Programs/blackheart_five_sc.sfz",
+   "status": "pinned",
+   "repo_bytes": 76079816
+  },
+  {
+   "id": "shinyguitar_acoustic",
+   "name": "Shinyguitar: acoustic",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "acoustic guitar",
+    "guitar",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.shinyguitar",
+   "source": "https://github.com/sfzinstruments/karoryfer.shinyguitar",
+   "repo": "sfzinstruments/karoryfer.shinyguitar",
+   "tree": "57243cca85277dbcc120ce17c6178032f93c80f3",
+   "branch": "master",
+   "sfz": "Programs/acoustic.sfz",
+   "status": "pinned",
+   "repo_bytes": 460397364
+  },
+  {
+   "id": "shinyguitar_acoustic_five",
+   "name": "Shinyguitar: acoustic_five",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "acoustic guitar",
+    "guitar",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.shinyguitar",
+   "source": "https://github.com/sfzinstruments/karoryfer.shinyguitar",
+   "repo": "sfzinstruments/karoryfer.shinyguitar",
+   "tree": "57243cca85277dbcc120ce17c6178032f93c80f3",
+   "branch": "master",
+   "sfz": "Programs/acoustic_five.sfz",
+   "status": "pinned",
+   "repo_bytes": 460397364
+  },
+  {
+   "id": "shinyguitar_acoustic_four",
+   "name": "Shinyguitar: acoustic_four",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "acoustic guitar",
+    "guitar",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.shinyguitar",
+   "source": "https://github.com/sfzinstruments/karoryfer.shinyguitar",
+   "repo": "sfzinstruments/karoryfer.shinyguitar",
+   "tree": "57243cca85277dbcc120ce17c6178032f93c80f3",
+   "branch": "master",
+   "sfz": "Programs/acoustic_four.sfz",
+   "status": "pinned",
+   "repo_bytes": 460397364
+  },
+  {
+   "id": "shinyguitar_acoustic_noises",
+   "name": "Shinyguitar: acoustic_noises",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "acoustic guitar",
+    "guitar",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.shinyguitar",
+   "source": "https://github.com/sfzinstruments/karoryfer.shinyguitar",
+   "repo": "sfzinstruments/karoryfer.shinyguitar",
+   "tree": "57243cca85277dbcc120ce17c6178032f93c80f3",
+   "branch": "master",
+   "sfz": "Programs/acoustic_noises.sfz",
+   "status": "pinned",
+   "repo_bytes": 460397364
+  },
+  {
+   "id": "shinyguitar_acoustic_one",
+   "name": "Shinyguitar: acoustic_one",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "acoustic guitar",
+    "guitar",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.shinyguitar",
+   "source": "https://github.com/sfzinstruments/karoryfer.shinyguitar",
+   "repo": "sfzinstruments/karoryfer.shinyguitar",
+   "tree": "57243cca85277dbcc120ce17c6178032f93c80f3",
+   "branch": "master",
+   "sfz": "Programs/acoustic_one.sfz",
+   "status": "pinned",
+   "repo_bytes": 460397364
+  },
+  {
+   "id": "shinyguitar_acoustic_release",
+   "name": "Shinyguitar: acoustic_release",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "acoustic guitar",
+    "guitar",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.shinyguitar",
+   "source": "https://github.com/sfzinstruments/karoryfer.shinyguitar",
+   "repo": "sfzinstruments/karoryfer.shinyguitar",
+   "tree": "57243cca85277dbcc120ce17c6178032f93c80f3",
+   "branch": "master",
+   "sfz": "Programs/acoustic_release.sfz",
+   "status": "pinned",
+   "repo_bytes": 460397364
+  },
+  {
+   "id": "scarypiano_scarypiano",
+   "name": "Scarypiano: Scarypiano",
+   "family": "piano",
+   "tags": [
+    "piano",
+    "upright",
+    "dark"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.scarypiano",
+   "source": "https://github.com/sfzinstruments/karoryfer.scarypiano",
+   "repo": "sfzinstruments/karoryfer.scarypiano",
+   "tree": "46305e8cb71239bfa861fbe8487dd12b8d8de40c",
+   "branch": "master",
+   "sfz": "Programs/Scarypiano.sfz",
+   "status": "pinned",
+   "repo_bytes": 586874734
+  },
+  {
+   "id": "cello_01_bowed_velocity_layer",
+   "name": "Cello: 01- Bowed (velocity layer)",
+   "family": "strings",
+   "tags": [
+    "cello",
+    "bowed",
+    "plucked"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer-bigcat.cello",
+   "source": "https://github.com/sfzinstruments/karoryfer-bigcat.cello",
+   "repo": "sfzinstruments/karoryfer-bigcat.cello",
+   "tree": "6fd75fbfc1dbb3109bf26220ba1adea46188a18b",
+   "branch": "master",
+   "sfz": "Programs/01- Bowed (velocity layer).sfz",
+   "status": "pinned",
+   "repo_bytes": 145398028
+  },
+  {
+   "id": "cello_02_bowed_mod_wheel",
+   "name": "Cello: 02- Bowed (mod wheel)",
+   "family": "strings",
+   "tags": [
+    "cello",
+    "bowed",
+    "plucked"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer-bigcat.cello",
+   "source": "https://github.com/sfzinstruments/karoryfer-bigcat.cello",
+   "repo": "sfzinstruments/karoryfer-bigcat.cello",
+   "tree": "6fd75fbfc1dbb3109bf26220ba1adea46188a18b",
+   "branch": "master",
+   "sfz": "Programs/02- Bowed (mod wheel).sfz",
+   "status": "pinned",
+   "repo_bytes": 145398028
+  },
+  {
+   "id": "cello_03_plucked",
+   "name": "Cello: 03- Plucked",
+   "family": "strings",
+   "tags": [
+    "cello",
+    "bowed",
+    "plucked"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer-bigcat.cello",
+   "source": "https://github.com/sfzinstruments/karoryfer-bigcat.cello",
+   "repo": "sfzinstruments/karoryfer-bigcat.cello",
+   "tree": "6fd75fbfc1dbb3109bf26220ba1adea46188a18b",
+   "branch": "master",
+   "sfz": "Programs/03- Plucked.sfz",
+   "status": "pinned",
+   "repo_bytes": 145398028
+  },
+  {
+   "id": "cello_vc_arco_eight_legato_first_map",
+   "name": "Cello: vc_arco_eight_legato_first_map",
+   "family": "strings",
+   "tags": [
+    "cello",
+    "bowed",
+    "plucked"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer-bigcat.cello",
+   "source": "https://github.com/sfzinstruments/karoryfer-bigcat.cello",
+   "repo": "sfzinstruments/karoryfer-bigcat.cello",
+   "tree": "6fd75fbfc1dbb3109bf26220ba1adea46188a18b",
+   "branch": "master",
+   "sfz": "Programs/vc_arco_eight_legato_first_map.sfz",
+   "status": "pinned",
+   "repo_bytes": 145398028
+  },
+  {
+   "id": "cello_vc_arco_eight_legato_first_map_mw",
+   "name": "Cello: vc_arco_eight_legato_first_map_mw",
+   "family": "strings",
+   "tags": [
+    "cello",
+    "bowed",
+    "plucked"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer-bigcat.cello",
+   "source": "https://github.com/sfzinstruments/karoryfer-bigcat.cello",
+   "repo": "sfzinstruments/karoryfer-bigcat.cello",
+   "tree": "6fd75fbfc1dbb3109bf26220ba1adea46188a18b",
+   "branch": "master",
+   "sfz": "Programs/vc_arco_eight_legato_first_map_mw.sfz",
+   "status": "pinned",
+   "repo_bytes": 145398028
+  },
+  {
+   "id": "cello_vc_arco_eight_legato_map",
+   "name": "Cello: vc_arco_eight_legato_map",
+   "family": "strings",
+   "tags": [
+    "cello",
+    "bowed",
+    "plucked"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer-bigcat.cello",
+   "source": "https://github.com/sfzinstruments/karoryfer-bigcat.cello",
+   "repo": "sfzinstruments/karoryfer-bigcat.cello",
+   "tree": "6fd75fbfc1dbb3109bf26220ba1adea46188a18b",
+   "branch": "master",
+   "sfz": "Programs/vc_arco_eight_legato_map.sfz",
+   "status": "pinned",
+   "repo_bytes": 145398028
+  },
+  {
+   "id": "meatbass_01_arco_modwheel",
+   "name": "Meatbass: 01_arco_modwheel",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "arco",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.meatbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.meatbass",
+   "repo": "sfzinstruments/karoryfer.meatbass",
+   "tree": "ac9e859564bda286ab5ec672d00ff1aa2fef2895",
+   "branch": "master",
+   "sfz": "Programs/01_arco_modwheel.sfz",
+   "status": "pinned",
+   "repo_bytes": 296404944
+  },
+  {
+   "id": "meatbass_02_arco_3vel",
+   "name": "Meatbass: 02_arco_3vel",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "arco",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.meatbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.meatbass",
+   "repo": "sfzinstruments/karoryfer.meatbass",
+   "tree": "ac9e859564bda286ab5ec672d00ff1aa2fef2895",
+   "branch": "master",
+   "sfz": "Programs/02_arco_3vel.sfz",
+   "status": "pinned",
+   "repo_bytes": 296404944
+  },
+  {
+   "id": "meatbass_03_arco_5vel",
+   "name": "Meatbass: 03_arco_5vel",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "arco",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.meatbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.meatbass",
+   "repo": "sfzinstruments/karoryfer.meatbass",
+   "tree": "ac9e859564bda286ab5ec672d00ff1aa2fef2895",
+   "branch": "master",
+   "sfz": "Programs/03_arco_5vel.sfz",
+   "status": "pinned",
+   "repo_bytes": 296404944
+  },
+  {
+   "id": "meatbass_04_pizz",
+   "name": "Meatbass: 04_pizz",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "arco",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.meatbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.meatbass",
+   "repo": "sfzinstruments/karoryfer.meatbass",
+   "tree": "ac9e859564bda286ab5ec672d00ff1aa2fef2895",
+   "branch": "master",
+   "sfz": "Programs/04_pizz.sfz",
+   "status": "pinned",
+   "repo_bytes": 296404944
+  },
+  {
+   "id": "meatbass_arco_basic",
+   "name": "Meatbass: arco_basic",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "arco",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.meatbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.meatbass",
+   "repo": "sfzinstruments/karoryfer.meatbass",
+   "tree": "ac9e859564bda286ab5ec672d00ff1aa2fef2895",
+   "branch": "master",
+   "sfz": "Programs/arco_basic.sfz",
+   "status": "pinned",
+   "repo_bytes": 296404944
+  },
+  {
+   "id": "meatbass_arco_basic_legato_map",
+   "name": "Meatbass: arco_basic_legato_map",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "arco",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.meatbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.meatbass",
+   "repo": "sfzinstruments/karoryfer.meatbass",
+   "tree": "ac9e859564bda286ab5ec672d00ff1aa2fef2895",
+   "branch": "master",
+   "sfz": "Programs/arco_basic_legato_map.sfz",
+   "status": "pinned",
+   "repo_bytes": 296404944
+  },
+  {
+   "id": "pastabass_combo_platter",
+   "name": "Pastabass: combo_platter",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.pastabass",
+   "source": "https://github.com/sfzinstruments/karoryfer.pastabass",
+   "repo": "sfzinstruments/karoryfer.pastabass",
+   "tree": "90135cd026db5d4fa0fe538240b4203f085f5244",
+   "branch": "master",
+   "sfz": "combo_platter.sfz",
+   "status": "pinned",
+   "repo_bytes": 487225136
+  },
+  {
+   "id": "pastabass_combo_platter_controls",
+   "name": "Pastabass: combo_platter_controls",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.pastabass",
+   "source": "https://github.com/sfzinstruments/karoryfer.pastabass",
+   "repo": "sfzinstruments/karoryfer.pastabass",
+   "tree": "90135cd026db5d4fa0fe538240b4203f085f5244",
+   "branch": "master",
+   "sfz": "combo_platter_controls.sfz",
+   "status": "pinned",
+   "repo_bytes": 487225136
+  },
+  {
+   "id": "pastabass_combo_platter_enhanced",
+   "name": "Pastabass: combo_platter_enhanced",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.pastabass",
+   "source": "https://github.com/sfzinstruments/karoryfer.pastabass",
+   "repo": "sfzinstruments/karoryfer.pastabass",
+   "tree": "90135cd026db5d4fa0fe538240b4203f085f5244",
+   "branch": "master",
+   "sfz": "combo_platter_enhanced.sfz",
+   "status": "pinned",
+   "repo_bytes": 487225136
+  },
+  {
+   "id": "pastabass_combo_platter_full",
+   "name": "Pastabass: combo_platter_full",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.pastabass",
+   "source": "https://github.com/sfzinstruments/karoryfer.pastabass",
+   "repo": "sfzinstruments/karoryfer.pastabass",
+   "tree": "90135cd026db5d4fa0fe538240b4203f085f5244",
+   "branch": "master",
+   "sfz": "combo_platter_full.sfz",
+   "status": "pinned",
+   "repo_bytes": 487225136
+  },
+  {
+   "id": "pastabass_fetuccine",
+   "name": "Pastabass: fetuccine",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.pastabass",
+   "source": "https://github.com/sfzinstruments/karoryfer.pastabass",
+   "repo": "sfzinstruments/karoryfer.pastabass",
+   "tree": "90135cd026db5d4fa0fe538240b4203f085f5244",
+   "branch": "master",
+   "sfz": "fetuccine.sfz",
+   "status": "pinned",
+   "repo_bytes": 487225136
+  },
+  {
+   "id": "pastabass_fetuccine_controls",
+   "name": "Pastabass: fetuccine_controls",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.pastabass",
+   "source": "https://github.com/sfzinstruments/karoryfer.pastabass",
+   "repo": "sfzinstruments/karoryfer.pastabass",
+   "tree": "90135cd026db5d4fa0fe538240b4203f085f5244",
+   "branch": "master",
+   "sfz": "fetuccine_controls.sfz",
+   "status": "pinned",
+   "repo_bytes": 487225136
+  },
+  {
+   "id": "272_merry_orks_ork_dialogue",
+   "name": "272 Merry Orks: ork_dialogue",
+   "family": "choir",
+   "tags": [
+    "vocals",
+    "voices",
+    "fx"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.272-merry-orks",
+   "source": "https://github.com/sfzinstruments/karoryfer.272-merry-orks",
+   "repo": "sfzinstruments/karoryfer.272-merry-orks",
+   "tree": "a437e2c02014e02710a104a6692193eab8672d0a",
+   "branch": "master",
+   "sfz": "ork_dialogue.sfz",
+   "status": "pinned",
+   "repo_bytes": 45627769
+  },
+  {
+   "id": "272_merry_orks_ork_predrops",
+   "name": "272 Merry Orks: ork_predrops",
+   "family": "choir",
+   "tags": [
+    "vocals",
+    "voices",
+    "fx"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.272-merry-orks",
+   "source": "https://github.com/sfzinstruments/karoryfer.272-merry-orks",
+   "repo": "sfzinstruments/karoryfer.272-merry-orks",
+   "tree": "a437e2c02014e02710a104a6692193eab8672d0a",
+   "branch": "master",
+   "sfz": "ork_predrops.sfz",
+   "status": "pinned",
+   "repo_bytes": 45627769
+  },
+  {
+   "id": "272_merry_orks_ork_vocals",
+   "name": "272 Merry Orks: ork_vocals",
+   "family": "choir",
+   "tags": [
+    "vocals",
+    "voices",
+    "fx"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.272-merry-orks",
+   "source": "https://github.com/sfzinstruments/karoryfer.272-merry-orks",
+   "repo": "sfzinstruments/karoryfer.272-merry-orks",
+   "tree": "a437e2c02014e02710a104a6692193eab8672d0a",
+   "branch": "master",
+   "sfz": "ork_vocals.sfz",
+   "status": "pinned",
+   "repo_bytes": 45627769
+  },
+  {
+   "id": "cowsynth_cowsynth_asthmatic_organ",
+   "name": "Cowsynth: cowsynth_asthmatic_organ",
+   "family": "synth",
+   "tags": [
+    "synth",
+    "organ",
+    "pad",
+    "pluck"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.cowsynth",
+   "source": "https://github.com/sfzinstruments/karoryfer.cowsynth",
+   "repo": "sfzinstruments/karoryfer.cowsynth",
+   "tree": "5a5b5afc2dabbe54cf9d75ab64711ce01862b42c",
+   "branch": "master",
+   "sfz": "cowsynth_asthmatic_organ.sfz",
+   "status": "pinned",
+   "repo_bytes": 14832493
+  },
+  {
+   "id": "cowsynth_cowsynth_asthmatic_pad",
+   "name": "Cowsynth: cowsynth_asthmatic_pad",
+   "family": "synth",
+   "tags": [
+    "synth",
+    "organ",
+    "pad",
+    "pluck"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.cowsynth",
+   "source": "https://github.com/sfzinstruments/karoryfer.cowsynth",
+   "repo": "sfzinstruments/karoryfer.cowsynth",
+   "tree": "5a5b5afc2dabbe54cf9d75ab64711ce01862b42c",
+   "branch": "master",
+   "sfz": "cowsynth_asthmatic_pad.sfz",
+   "status": "pinned",
+   "repo_bytes": 14832493
+  },
+  {
+   "id": "cowsynth_cowsynth_asthmatic_pluck",
+   "name": "Cowsynth: cowsynth_asthmatic_pluck",
+   "family": "synth",
+   "tags": [
+    "synth",
+    "organ",
+    "pad",
+    "pluck"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.cowsynth",
+   "source": "https://github.com/sfzinstruments/karoryfer.cowsynth",
+   "repo": "sfzinstruments/karoryfer.cowsynth",
+   "tree": "5a5b5afc2dabbe54cf9d75ab64711ce01862b42c",
+   "branch": "master",
+   "sfz": "cowsynth_asthmatic_pluck.sfz",
+   "status": "pinned",
+   "repo_bytes": 14832493
+  },
+  {
+   "id": "cowsynth_cowsynth_baggy",
+   "name": "Cowsynth: cowsynth_baggy",
+   "family": "synth",
+   "tags": [
+    "synth",
+    "organ",
+    "pad",
+    "pluck"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.cowsynth",
+   "source": "https://github.com/sfzinstruments/karoryfer.cowsynth",
+   "repo": "sfzinstruments/karoryfer.cowsynth",
+   "tree": "5a5b5afc2dabbe54cf9d75ab64711ce01862b42c",
+   "branch": "master",
+   "sfz": "cowsynth_baggy.sfz",
+   "status": "pinned",
+   "repo_bytes": 14832493
+  },
+  {
+   "id": "cowsynth_cowsynth_doc",
+   "name": "Cowsynth: cowsynth_doc",
+   "family": "synth",
+   "tags": [
+    "synth",
+    "organ",
+    "pad",
+    "pluck"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.cowsynth",
+   "source": "https://github.com/sfzinstruments/karoryfer.cowsynth",
+   "repo": "sfzinstruments/karoryfer.cowsynth",
+   "tree": "5a5b5afc2dabbe54cf9d75ab64711ce01862b42c",
+   "branch": "master",
+   "sfz": "cowsynth_doc.sfz",
+   "status": "pinned",
+   "repo_bytes": 14832493
+  },
+  {
+   "id": "cowsynth_cowsynth_fancy_organ",
+   "name": "Cowsynth: cowsynth_fancy_organ",
+   "family": "synth",
+   "tags": [
+    "synth",
+    "organ",
+    "pad",
+    "pluck"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.cowsynth",
+   "source": "https://github.com/sfzinstruments/karoryfer.cowsynth",
+   "repo": "sfzinstruments/karoryfer.cowsynth",
+   "tree": "5a5b5afc2dabbe54cf9d75ab64711ce01862b42c",
+   "branch": "master",
+   "sfz": "cowsynth_fancy_organ.sfz",
+   "status": "pinned",
+   "repo_bytes": 14832493
+  },
+  {
+   "id": "emilyguitar_emily_basic",
+   "name": "Emilyguitar: emily_basic",
+   "family": "guitar",
+   "tags": [
+    "acoustic guitar",
+    "guitar",
+    "chords"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.emilyguitar",
+   "source": "https://github.com/sfzinstruments/karoryfer.emilyguitar",
+   "repo": "sfzinstruments/karoryfer.emilyguitar",
+   "tree": "b4920dc662fd9cad6dcaccdeecffdd91c8725d8c",
+   "branch": "master",
+   "sfz": "emily_basic.sfz",
+   "status": "pinned",
+   "repo_bytes": 125538510
+  },
+  {
+   "id": "emilyguitar_emily_chords",
+   "name": "Emilyguitar: emily_chords",
+   "family": "guitar",
+   "tags": [
+    "acoustic guitar",
+    "guitar",
+    "chords"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.emilyguitar",
+   "source": "https://github.com/sfzinstruments/karoryfer.emilyguitar",
+   "repo": "sfzinstruments/karoryfer.emilyguitar",
+   "tree": "b4920dc662fd9cad6dcaccdeecffdd91c8725d8c",
+   "branch": "master",
+   "sfz": "emily_chords.sfz",
+   "status": "pinned",
+   "repo_bytes": 125538510
+  },
+  {
+   "id": "emilyguitar_emily_chords_wide",
+   "name": "Emilyguitar: emily_chords_wide",
+   "family": "guitar",
+   "tags": [
+    "acoustic guitar",
+    "guitar",
+    "chords"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.emilyguitar",
+   "source": "https://github.com/sfzinstruments/karoryfer.emilyguitar",
+   "repo": "sfzinstruments/karoryfer.emilyguitar",
+   "tree": "b4920dc662fd9cad6dcaccdeecffdd91c8725d8c",
+   "branch": "master",
+   "sfz": "emily_chords_wide.sfz",
+   "status": "pinned",
+   "repo_bytes": 125538510
+  },
+  {
+   "id": "emilyguitar_emily_clean",
+   "name": "Emilyguitar: emily_clean",
+   "family": "guitar",
+   "tags": [
+    "acoustic guitar",
+    "guitar",
+    "chords"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.emilyguitar",
+   "source": "https://github.com/sfzinstruments/karoryfer.emilyguitar",
+   "repo": "sfzinstruments/karoryfer.emilyguitar",
+   "tree": "b4920dc662fd9cad6dcaccdeecffdd91c8725d8c",
+   "branch": "master",
+   "sfz": "emily_clean.sfz",
+   "status": "pinned",
+   "repo_bytes": 125538510
+  },
+  {
+   "id": "emilyguitar_emily_five_voice",
+   "name": "Emilyguitar: emily_five_voice",
+   "family": "guitar",
+   "tags": [
+    "acoustic guitar",
+    "guitar",
+    "chords"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.emilyguitar",
+   "source": "https://github.com/sfzinstruments/karoryfer.emilyguitar",
+   "repo": "sfzinstruments/karoryfer.emilyguitar",
+   "tree": "b4920dc662fd9cad6dcaccdeecffdd91c8725d8c",
+   "branch": "master",
+   "sfz": "emily_five_voice.sfz",
+   "status": "pinned",
+   "repo_bytes": 125538510
+  },
+  {
+   "id": "emilyguitar_emily_three_voice",
+   "name": "Emilyguitar: emily_three_voice",
+   "family": "guitar",
+   "tags": [
+    "acoustic guitar",
+    "guitar",
+    "chords"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.emilyguitar",
+   "source": "https://github.com/sfzinstruments/karoryfer.emilyguitar",
+   "repo": "sfzinstruments/karoryfer.emilyguitar",
+   "tree": "b4920dc662fd9cad6dcaccdeecffdd91c8725d8c",
+   "branch": "master",
+   "sfz": "emily_three_voice.sfz",
+   "status": "pinned",
+   "repo_bytes": 125538510
+  },
+  {
+   "id": "ergo_ergo_arco",
+   "name": "Ergo: ergo_arco",
+   "family": "bass",
+   "tags": [
+    "electric upright bass",
+    "bass",
+    "arco",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.ergo",
+   "source": "https://github.com/sfzinstruments/karoryfer.ergo",
+   "repo": "sfzinstruments/karoryfer.ergo",
+   "tree": "c3232f03608e07e4e274c8ad9a1a4c32885f75c4",
+   "branch": "master",
+   "sfz": "ergo_arco.sfz",
+   "status": "pinned",
+   "repo_bytes": 249061978
+  },
+  {
+   "id": "ergo_ergo_pizz",
+   "name": "Ergo: ergo_pizz",
+   "family": "bass",
+   "tags": [
+    "electric upright bass",
+    "bass",
+    "arco",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.ergo",
+   "source": "https://github.com/sfzinstruments/karoryfer.ergo",
+   "repo": "sfzinstruments/karoryfer.ergo",
+   "tree": "c3232f03608e07e4e274c8ad9a1a4c32885f75c4",
+   "branch": "master",
+   "sfz": "ergo_pizz.sfz",
+   "status": "pinned",
+   "repo_bytes": 249061978
+  },
+  {
+   "id": "fashionbass_fashionbass",
+   "name": "Fashionbass: fashionbass",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.fashionbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.fashionbass",
+   "repo": "sfzinstruments/karoryfer.fashionbass",
+   "tree": "0703973b300a6bacb837602be9b588ab64732a72",
+   "branch": "master",
+   "sfz": "fashionbass.sfz",
+   "status": "pinned",
+   "repo_bytes": 345335319
+  },
+  {
+   "id": "fashionbass_fashionbass_clean",
+   "name": "Fashionbass: fashionbass_clean",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.fashionbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.fashionbass",
+   "repo": "sfzinstruments/karoryfer.fashionbass",
+   "tree": "0703973b300a6bacb837602be9b588ab64732a72",
+   "branch": "master",
+   "sfz": "fashionbass_clean.sfz",
+   "status": "pinned",
+   "repo_bytes": 345335319
+  },
+  {
+   "id": "fashionbass_fashionbass_shifty",
+   "name": "Fashionbass: fashionbass_shifty",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.fashionbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.fashionbass",
+   "repo": "sfzinstruments/karoryfer.fashionbass",
+   "tree": "0703973b300a6bacb837602be9b588ab64732a72",
+   "branch": "master",
+   "sfz": "fashionbass_shifty.sfz",
+   "status": "pinned",
+   "repo_bytes": 345335319
+  },
+  {
+   "id": "fashionbass_fashionbass_unison",
+   "name": "Fashionbass: fashionbass_unison",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.fashionbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.fashionbass",
+   "repo": "sfzinstruments/karoryfer.fashionbass",
+   "tree": "0703973b300a6bacb837602be9b588ab64732a72",
+   "branch": "master",
+   "sfz": "fashionbass_unison.sfz",
+   "status": "pinned",
+   "repo_bytes": 345335319
+  },
+  {
+   "id": "growlybass_growlybass_angry",
+   "name": "Growlybass: growlybass_angry",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean",
+    "dirty"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.growlybass",
+   "source": "https://github.com/sfzinstruments/karoryfer.growlybass",
+   "repo": "sfzinstruments/karoryfer.growlybass",
+   "tree": "4f483268fc66b5a6d5781d421c0d11b8d08d3fc6",
+   "branch": "master",
+   "sfz": "growlybass_angry.sfz",
+   "status": "pinned",
+   "repo_bytes": 190765200
+  },
+  {
+   "id": "growlybass_growlybass_clean",
+   "name": "Growlybass: growlybass_clean",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean",
+    "dirty"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.growlybass",
+   "source": "https://github.com/sfzinstruments/karoryfer.growlybass",
+   "repo": "sfzinstruments/karoryfer.growlybass",
+   "tree": "4f483268fc66b5a6d5781d421c0d11b8d08d3fc6",
+   "branch": "master",
+   "sfz": "growlybass_clean.sfz",
+   "status": "pinned",
+   "repo_bytes": 190765200
+  },
+  {
+   "id": "growlybass_growlybass_dirty",
+   "name": "Growlybass: growlybass_dirty",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean",
+    "dirty"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.growlybass",
+   "source": "https://github.com/sfzinstruments/karoryfer.growlybass",
+   "repo": "sfzinstruments/karoryfer.growlybass",
+   "tree": "4f483268fc66b5a6d5781d421c0d11b8d08d3fc6",
+   "branch": "master",
+   "sfz": "growlybass_dirty.sfz",
+   "status": "pinned",
+   "repo_bytes": 190765200
+  },
+  {
+   "id": "growlybass_growlybass_excessive",
+   "name": "Growlybass: growlybass_excessive",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean",
+    "dirty"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.growlybass",
+   "source": "https://github.com/sfzinstruments/karoryfer.growlybass",
+   "repo": "sfzinstruments/karoryfer.growlybass",
+   "tree": "4f483268fc66b5a6d5781d421c0d11b8d08d3fc6",
+   "branch": "master",
+   "sfz": "growlybass_excessive.sfz",
+   "status": "pinned",
+   "repo_bytes": 190765200
+  },
+  {
+   "id": "growlybass_growlybass_shifty",
+   "name": "Growlybass: growlybass_shifty",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean",
+    "dirty"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.growlybass",
+   "source": "https://github.com/sfzinstruments/karoryfer.growlybass",
+   "repo": "sfzinstruments/karoryfer.growlybass",
+   "tree": "4f483268fc66b5a6d5781d421c0d11b8d08d3fc6",
+   "branch": "master",
+   "sfz": "growlybass_shifty.sfz",
+   "status": "pinned",
+   "repo_bytes": 190765200
+  },
+  {
+   "id": "growlybass_growlybass_strange",
+   "name": "Growlybass: growlybass_strange",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean",
+    "dirty"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.growlybass",
+   "source": "https://github.com/sfzinstruments/karoryfer.growlybass",
+   "repo": "sfzinstruments/karoryfer.growlybass",
+   "tree": "4f483268fc66b5a6d5781d421c0d11b8d08d3fc6",
+   "branch": "master",
+   "sfz": "growlybass_strange.sfz",
+   "status": "pinned",
+   "repo_bytes": 190765200
+  },
+  {
+   "id": "swagbass_swagbass",
+   "name": "Swagbass: swagbass",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.swagbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.swagbass",
+   "repo": "sfzinstruments/karoryfer.swagbass",
+   "tree": "9d10fcae71af1975988ddecd5af1c95d372c7355",
+   "branch": "master",
+   "sfz": "swagbass.sfz",
+   "status": "pinned",
+   "repo_bytes": 174246860
+  },
+  {
+   "id": "swagbass_swagbass_clean",
+   "name": "Swagbass: swagbass_clean",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.swagbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.swagbass",
+   "repo": "sfzinstruments/karoryfer.swagbass",
+   "tree": "9d10fcae71af1975988ddecd5af1c95d372c7355",
+   "branch": "master",
+   "sfz": "swagbass_clean.sfz",
+   "status": "pinned",
+   "repo_bytes": 174246860
+  },
+  {
+   "id": "swagbass_swagbass_clean_things",
+   "name": "Swagbass: swagbass_clean_things",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.swagbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.swagbass",
+   "repo": "sfzinstruments/karoryfer.swagbass",
+   "tree": "9d10fcae71af1975988ddecd5af1c95d372c7355",
+   "branch": "master",
+   "sfz": "swagbass_clean_things.sfz",
+   "status": "pinned",
+   "repo_bytes": 174246860
+  },
+  {
+   "id": "swagbass_swagbass_shiny",
+   "name": "Swagbass: swagbass_shiny",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.swagbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.swagbass",
+   "repo": "sfzinstruments/karoryfer.swagbass",
+   "tree": "9d10fcae71af1975988ddecd5af1c95d372c7355",
+   "branch": "master",
+   "sfz": "swagbass_shiny.sfz",
+   "status": "pinned",
+   "repo_bytes": 174246860
+  },
+  {
+   "id": "swagbass_swagbass_shiny_things",
+   "name": "Swagbass: swagbass_shiny_things",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "clean"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.swagbass",
+   "source": "https://github.com/sfzinstruments/karoryfer.swagbass",
+   "repo": "sfzinstruments/karoryfer.swagbass",
+   "tree": "9d10fcae71af1975988ddecd5af1c95d372c7355",
+   "branch": "master",
+   "sfz": "swagbass_shiny_things.sfz",
+   "status": "pinned",
+   "repo_bytes": 174246860
+  },
+  {
+   "id": "double_bass_d_smolken_rubner_bass_arco",
+   "name": "Double Bass: d_smolken_rubner_bass_arco",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "arco",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/dsmolken.double-bass",
+   "source": "https://github.com/sfzinstruments/dsmolken.double-bass",
+   "repo": "sfzinstruments/dsmolken.double-bass",
+   "tree": "c2985eb647109d2a8f30a70071e3e163339d7396",
+   "branch": "master",
+   "sfz": "d_smolken_rubner_bass_arco.sfz",
+   "status": "pinned",
+   "repo_bytes": 288893197
+  },
+  {
+   "id": "double_bass_d_smolken_rubner_bass_pizz",
+   "name": "Double Bass: d_smolken_rubner_bass_pizz",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "arco",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/dsmolken.double-bass",
+   "source": "https://github.com/sfzinstruments/dsmolken.double-bass",
+   "repo": "sfzinstruments/dsmolken.double-bass",
+   "tree": "c2985eb647109d2a8f30a70071e3e163339d7396",
+   "branch": "master",
+   "sfz": "d_smolken_rubner_bass_pizz.sfz",
+   "status": "pinned",
+   "repo_bytes": 288893197
+  },
+  {
+   "id": "double_bass_d_smolken_rubner_bass_switched",
+   "name": "Double Bass: d_smolken_rubner_bass_switched",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "arco",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/dsmolken.double-bass",
+   "source": "https://github.com/sfzinstruments/dsmolken.double-bass",
+   "repo": "sfzinstruments/dsmolken.double-bass",
+   "tree": "c2985eb647109d2a8f30a70071e3e163339d7396",
+   "branch": "master",
+   "sfz": "d_smolken_rubner_bass_switched.sfz",
+   "status": "pinned",
+   "repo_bytes": 288893197
+  },
+  {
+   "id": "caveman_cosmonaut_main",
+   "name": "Caveman Cosmonaut: main",
+   "family": "synth",
+   "tags": [
+    "synth",
+    "analog"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.caveman-cosmonaut",
+   "source": "https://github.com/sfzinstruments/karoryfer.caveman-cosmonaut",
+   "repo": "sfzinstruments/karoryfer.caveman-cosmonaut",
+   "tree": "9de9bcfcbc6d2b20bea5c1116cd07a310febc339",
+   "branch": "master",
+   "sfz": "Programs/main.sfz",
+   "status": "pinned",
+   "repo_bytes": 109193648
+  },
+  {
+   "id": "dim_cabasa_dim_cabasa",
+   "name": "Dim Cabasa: Dim Cabasa",
+   "family": "drums",
+   "tags": [
+    "cabasa",
+    "shaker",
+    "percussion"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/kinwie.dim-cabasa",
+   "source": "https://github.com/sfzinstruments/kinwie.dim-cabasa",
+   "repo": "sfzinstruments/kinwie.dim-cabasa",
+   "tree": "016457e51a3e6558ab49676789260b54ff52ff1b",
+   "branch": "master",
+   "sfz": "Dim Cabasa.sfz",
+   "status": "pinned",
+   "repo_bytes": 11795011
+  },
+  {
+   "id": "drskit_ambience_left",
+   "name": "Drskit: Ambience left",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "rock",
+    "multi-mic"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/DrumGizmo.DRSKit",
+   "source": "https://github.com/sfzinstruments/DrumGizmo.DRSKit",
+   "repo": "sfzinstruments/DrumGizmo.DRSKit",
+   "tree": "b01448990a31f722542f1812e56159a97a6a2a82",
+   "branch": "master",
+   "sfz": "DrumGizmo/DRSKit/Multi-F/Ambience left.sfz",
+   "status": "pinned",
+   "repo_bytes": 754331579
+  },
+  {
+   "id": "drskit_ambience_right",
+   "name": "Drskit: Ambience right",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "rock",
+    "multi-mic"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/DrumGizmo.DRSKit",
+   "source": "https://github.com/sfzinstruments/DrumGizmo.DRSKit",
+   "repo": "sfzinstruments/DrumGizmo.DRSKit",
+   "tree": "b01448990a31f722542f1812e56159a97a6a2a82",
+   "branch": "master",
+   "sfz": "DrumGizmo/DRSKit/Multi-F/Ambience right.sfz",
+   "status": "pinned",
+   "repo_bytes": 754331579
+  },
+  {
+   "id": "drskit_hihat",
+   "name": "Drskit: Hihat",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "rock",
+    "multi-mic"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/DrumGizmo.DRSKit",
+   "source": "https://github.com/sfzinstruments/DrumGizmo.DRSKit",
+   "repo": "sfzinstruments/DrumGizmo.DRSKit",
+   "tree": "b01448990a31f722542f1812e56159a97a6a2a82",
+   "branch": "master",
+   "sfz": "DrumGizmo/DRSKit/Multi-F/Hihat.sfz",
+   "status": "pinned",
+   "repo_bytes": 754331579
+  },
+  {
+   "id": "drskit_kickdrum_back",
+   "name": "Drskit: Kickdrum back",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "rock",
+    "multi-mic"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/DrumGizmo.DRSKit",
+   "source": "https://github.com/sfzinstruments/DrumGizmo.DRSKit",
+   "repo": "sfzinstruments/DrumGizmo.DRSKit",
+   "tree": "b01448990a31f722542f1812e56159a97a6a2a82",
+   "branch": "master",
+   "sfz": "DrumGizmo/DRSKit/Multi-F/Kickdrum back.sfz",
+   "status": "pinned",
+   "repo_bytes": 754331579
+  },
+  {
+   "id": "drskit_kickdrum_front",
+   "name": "Drskit: Kickdrum front",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "rock",
+    "multi-mic"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/DrumGizmo.DRSKit",
+   "source": "https://github.com/sfzinstruments/DrumGizmo.DRSKit",
+   "repo": "sfzinstruments/DrumGizmo.DRSKit",
+   "tree": "b01448990a31f722542f1812e56159a97a6a2a82",
+   "branch": "master",
+   "sfz": "DrumGizmo/DRSKit/Multi-F/Kickdrum front.sfz",
+   "status": "pinned",
+   "repo_bytes": 754331579
+  },
+  {
+   "id": "drskit_overhead_left",
+   "name": "Drskit: Overhead left",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "rock",
+    "multi-mic"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/DrumGizmo.DRSKit",
+   "source": "https://github.com/sfzinstruments/DrumGizmo.DRSKit",
+   "repo": "sfzinstruments/DrumGizmo.DRSKit",
+   "tree": "b01448990a31f722542f1812e56159a97a6a2a82",
+   "branch": "master",
+   "sfz": "DrumGizmo/DRSKit/Multi-F/Overhead left.sfz",
+   "status": "pinned",
+   "repo_bytes": 754331579
+  },
+  {
+   "id": "muldjordkit_ambience_left",
+   "name": "Muldjordkit: Ambience left",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "multi-mic"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit",
+   "source": "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit",
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "tree": "fc165714974aa843125ce88597f341b31376e1d5",
+   "branch": "master",
+   "sfz": "DrumGizmo/MuldjordKit/Multi/Ambience left.sfz",
+   "status": "pinned",
+   "repo_bytes": 347324280
+  },
+  {
+   "id": "muldjordkit_ambience_right",
+   "name": "Muldjordkit: Ambience right",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "multi-mic"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit",
+   "source": "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit",
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "tree": "fc165714974aa843125ce88597f341b31376e1d5",
+   "branch": "master",
+   "sfz": "DrumGizmo/MuldjordKit/Multi/Ambience right.sfz",
+   "status": "pinned",
+   "repo_bytes": 347324280
+  },
+  {
+   "id": "muldjordkit_floor_tom",
+   "name": "Muldjordkit: Floor tom",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "multi-mic"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit",
+   "source": "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit",
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "tree": "fc165714974aa843125ce88597f341b31376e1d5",
+   "branch": "master",
+   "sfz": "DrumGizmo/MuldjordKit/Multi/Floor tom.sfz",
+   "status": "pinned",
+   "repo_bytes": 347324280
+  },
+  {
+   "id": "muldjordkit_hihat",
+   "name": "Muldjordkit: Hihat",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "multi-mic"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit",
+   "source": "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit",
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "tree": "fc165714974aa843125ce88597f341b31376e1d5",
+   "branch": "master",
+   "sfz": "DrumGizmo/MuldjordKit/Multi/Hihat.sfz",
+   "status": "pinned",
+   "repo_bytes": 347324280
+  },
+  {
+   "id": "muldjordkit_kick_drum_trigger",
+   "name": "Muldjordkit: Kick drum trigger",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "multi-mic"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit",
+   "source": "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit",
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "tree": "fc165714974aa843125ce88597f341b31376e1d5",
+   "branch": "master",
+   "sfz": "DrumGizmo/MuldjordKit/Multi/Kick drum trigger.sfz",
+   "status": "pinned",
+   "repo_bytes": 347324280
+  },
+  {
+   "id": "muldjordkit_kickdrum_left",
+   "name": "Muldjordkit: Kickdrum left",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "multi-mic"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit",
+   "source": "https://github.com/sfzinstruments/DrumGizmo.MuldjordKit",
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "tree": "fc165714974aa843125ce88597f341b31376e1d5",
+   "branch": "master",
+   "sfz": "DrumGizmo/MuldjordKit/Multi/Kickdrum left.sfz",
+   "status": "pinned",
+   "repo_bytes": 347324280
+  },
+  {
+   "id": "headroompiano_headroom_piano_nofx",
+   "name": "Headroompiano: Headroom Piano (NoFX)",
+   "family": "piano",
+   "tags": [
+    "grand piano",
+    "piano",
+    "yamaha c3"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/BengtNilsson.HeadroomPiano",
+   "source": "https://github.com/sfzinstruments/BengtNilsson.HeadroomPiano",
+   "repo": "sfzinstruments/BengtNilsson.HeadroomPiano",
+   "tree": "2a7df3f7252227a3484202c1d61bc1bfe352a971",
+   "branch": "master",
+   "sfz": "Headroom Piano (NoFX).sfz",
+   "status": "pinned",
+   "repo_bytes": 156227297
+  },
+  {
+   "id": "headroompiano_headroom_piano",
+   "name": "Headroompiano: Headroom Piano",
+   "family": "piano",
+   "tags": [
+    "grand piano",
+    "piano",
+    "yamaha c3"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/BengtNilsson.HeadroomPiano",
+   "source": "https://github.com/sfzinstruments/BengtNilsson.HeadroomPiano",
+   "repo": "sfzinstruments/BengtNilsson.HeadroomPiano",
+   "tree": "2a7df3f7252227a3484202c1d61bc1bfe352a971",
+   "branch": "master",
+   "sfz": "Headroom Piano.sfz",
+   "status": "pinned",
+   "repo_bytes": 156227297
+  },
+  {
+   "id": "headroompiano_intimate_piano_nofx",
+   "name": "Headroompiano: Intimate Piano (NoFX)",
+   "family": "piano",
+   "tags": [
+    "grand piano",
+    "piano",
+    "yamaha c3"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/BengtNilsson.HeadroomPiano",
+   "source": "https://github.com/sfzinstruments/BengtNilsson.HeadroomPiano",
+   "repo": "sfzinstruments/BengtNilsson.HeadroomPiano",
+   "tree": "2a7df3f7252227a3484202c1d61bc1bfe352a971",
+   "branch": "master",
+   "sfz": "Intimate Piano (NoFX).sfz",
+   "status": "pinned",
+   "repo_bytes": 156227297
+  },
+  {
+   "id": "headroompiano_intimate_piano",
+   "name": "Headroompiano: Intimate Piano",
+   "family": "piano",
+   "tags": [
+    "grand piano",
+    "piano",
+    "yamaha c3"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/BengtNilsson.HeadroomPiano",
+   "source": "https://github.com/sfzinstruments/BengtNilsson.HeadroomPiano",
+   "repo": "sfzinstruments/BengtNilsson.HeadroomPiano",
+   "tree": "2a7df3f7252227a3484202c1d61bc1bfe352a971",
+   "branch": "master",
+   "sfz": "Intimate Piano.sfz",
+   "status": "pinned",
+   "repo_bytes": 156227297
+  },
+  {
+   "id": "nakeddrums_china_wide_oh",
+   "name": "Nakeddrums: China Wide OH",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "multi-mic",
+    "round robin"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/WilkinsonAudio.NakedDrums",
+   "source": "https://github.com/sfzinstruments/WilkinsonAudio.NakedDrums",
+   "repo": "sfzinstruments/WilkinsonAudio.NakedDrums",
+   "tree": "407732a548606ac715ad8f3fbac63d9f4df77c0d",
+   "branch": "master",
+   "sfz": "Wilkinson Audio/Naked Drums/Multi/China Wide OH.sfz",
+   "status": "pinned",
+   "repo_bytes": 1285021024
+  },
+  {
+   "id": "nakeddrums_close_room",
+   "name": "Nakeddrums: Close Room",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "multi-mic",
+    "round robin"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/WilkinsonAudio.NakedDrums",
+   "source": "https://github.com/sfzinstruments/WilkinsonAudio.NakedDrums",
+   "repo": "sfzinstruments/WilkinsonAudio.NakedDrums",
+   "tree": "407732a548606ac715ad8f3fbac63d9f4df77c0d",
+   "branch": "master",
+   "sfz": "Wilkinson Audio/Naked Drums/Multi/Close Room.sfz",
+   "status": "pinned",
+   "repo_bytes": 1285021024
+  },
+  {
+   "id": "nakeddrums_far_rooms",
+   "name": "Nakeddrums: Far Rooms",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "multi-mic",
+    "round robin"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/WilkinsonAudio.NakedDrums",
+   "source": "https://github.com/sfzinstruments/WilkinsonAudio.NakedDrums",
+   "repo": "sfzinstruments/WilkinsonAudio.NakedDrums",
+   "tree": "407732a548606ac715ad8f3fbac63d9f4df77c0d",
+   "branch": "master",
+   "sfz": "Wilkinson Audio/Naked Drums/Multi/Far Rooms.sfz",
+   "status": "pinned",
+   "repo_bytes": 1285021024
+  },
+  {
+   "id": "nakeddrums_hats",
+   "name": "Nakeddrums: Hats",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "multi-mic",
+    "round robin"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/WilkinsonAudio.NakedDrums",
+   "source": "https://github.com/sfzinstruments/WilkinsonAudio.NakedDrums",
+   "repo": "sfzinstruments/WilkinsonAudio.NakedDrums",
+   "tree": "407732a548606ac715ad8f3fbac63d9f4df77c0d",
+   "branch": "master",
+   "sfz": "Wilkinson Audio/Naked Drums/Multi/Hats.sfz",
+   "status": "pinned",
+   "repo_bytes": 1285021024
+  },
+  {
+   "id": "nakeddrums_kick_in",
+   "name": "Nakeddrums: Kick In",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "multi-mic",
+    "round robin"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/WilkinsonAudio.NakedDrums",
+   "source": "https://github.com/sfzinstruments/WilkinsonAudio.NakedDrums",
+   "repo": "sfzinstruments/WilkinsonAudio.NakedDrums",
+   "tree": "407732a548606ac715ad8f3fbac63d9f4df77c0d",
+   "branch": "master",
+   "sfz": "Wilkinson Audio/Naked Drums/Multi/Kick In.sfz",
+   "status": "pinned",
+   "repo_bytes": 1285021024
+  },
+  {
+   "id": "nakeddrums_kick_sub",
+   "name": "Nakeddrums: Kick Sub",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "multi-mic",
+    "round robin"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/WilkinsonAudio.NakedDrums",
+   "source": "https://github.com/sfzinstruments/WilkinsonAudio.NakedDrums",
+   "repo": "sfzinstruments/WilkinsonAudio.NakedDrums",
+   "tree": "407732a548606ac715ad8f3fbac63d9f4df77c0d",
+   "branch": "master",
+   "sfz": "Wilkinson Audio/Naked Drums/Multi/Kick Sub.sfz",
+   "status": "pinned",
+   "repo_bytes": 1285021024
+  },
+  {
+   "id": "flute_ixox_flute",
+   "name": "Flute: Ixox Flute",
+   "family": "winds",
+   "tags": [
+    "flute"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/Ixox.Flute",
+   "source": "https://github.com/sfzinstruments/Ixox.Flute",
+   "repo": "sfzinstruments/Ixox.Flute",
+   "tree": "0cc54468bb0d2d9b32921958585caad65ba8df21",
+   "branch": "master",
+   "sfz": "Ixox Flute.sfz",
+   "status": "pinned",
+   "repo_bytes": 10215373
+  },
+  {
+   "id": "solosax_mtg_alto_sax_nl",
+   "name": "Solosax: MTG Alto Sax (NL)",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "soprano",
+    "alto",
+    "tenor",
+    "baritone"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/MTG.SoloSax",
+   "source": "https://github.com/sfzinstruments/MTG.SoloSax",
+   "repo": "sfzinstruments/MTG.SoloSax",
+   "tree": "b494d256549b3d088fdec176ce82867f8a1f58b2",
+   "branch": "master",
+   "sfz": "MTG Solo Saxophones/MTG Alto Sax (NL).sfz",
+   "status": "pinned",
+   "repo_bytes": 110931965
+  },
+  {
+   "id": "solosax_mtg_alto_sax",
+   "name": "Solosax: MTG Alto Sax",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "soprano",
+    "alto",
+    "tenor",
+    "baritone"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/MTG.SoloSax",
+   "source": "https://github.com/sfzinstruments/MTG.SoloSax",
+   "repo": "sfzinstruments/MTG.SoloSax",
+   "tree": "b494d256549b3d088fdec176ce82867f8a1f58b2",
+   "branch": "master",
+   "sfz": "MTG Solo Saxophones/MTG Alto Sax.sfz",
+   "status": "pinned",
+   "repo_bytes": 110931965
+  },
+  {
+   "id": "solosax_mtg_baritone_sax_nl",
+   "name": "Solosax: MTG Baritone Sax (NL)",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "soprano",
+    "alto",
+    "tenor",
+    "baritone"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/MTG.SoloSax",
+   "source": "https://github.com/sfzinstruments/MTG.SoloSax",
+   "repo": "sfzinstruments/MTG.SoloSax",
+   "tree": "b494d256549b3d088fdec176ce82867f8a1f58b2",
+   "branch": "master",
+   "sfz": "MTG Solo Saxophones/MTG Baritone Sax (NL).sfz",
+   "status": "pinned",
+   "repo_bytes": 110931965
+  },
+  {
+   "id": "solosax_mtg_baritone_sax",
+   "name": "Solosax: MTG Baritone Sax",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "soprano",
+    "alto",
+    "tenor",
+    "baritone"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/MTG.SoloSax",
+   "source": "https://github.com/sfzinstruments/MTG.SoloSax",
+   "repo": "sfzinstruments/MTG.SoloSax",
+   "tree": "b494d256549b3d088fdec176ce82867f8a1f58b2",
+   "branch": "master",
+   "sfz": "MTG Solo Saxophones/MTG Baritone Sax.sfz",
+   "status": "pinned",
+   "repo_bytes": 110931965
+  },
+  {
+   "id": "solosax_mtg_soprano_sax_nl",
+   "name": "Solosax: MTG Soprano Sax (NL)",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "soprano",
+    "alto",
+    "tenor",
+    "baritone"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/MTG.SoloSax",
+   "source": "https://github.com/sfzinstruments/MTG.SoloSax",
+   "repo": "sfzinstruments/MTG.SoloSax",
+   "tree": "b494d256549b3d088fdec176ce82867f8a1f58b2",
+   "branch": "master",
+   "sfz": "MTG Solo Saxophones/MTG Soprano Sax (NL).sfz",
+   "status": "pinned",
+   "repo_bytes": 110931965
+  },
+  {
+   "id": "solosax_mtg_soprano_sax",
+   "name": "Solosax: MTG Soprano Sax",
+   "family": "winds",
+   "tags": [
+    "saxophone",
+    "soprano",
+    "alto",
+    "tenor",
+    "baritone"
+   ],
+   "format": "sfz_git",
+   "license": "CC BY 4.0 (credit the author)",
+   "license_url": "https://github.com/sfzinstruments/MTG.SoloSax",
+   "source": "https://github.com/sfzinstruments/MTG.SoloSax",
+   "repo": "sfzinstruments/MTG.SoloSax",
+   "tree": "b494d256549b3d088fdec176ce82867f8a1f58b2",
+   "branch": "master",
+   "sfz": "MTG Solo Saxophones/MTG Soprano Sax.sfz",
+   "status": "pinned",
+   "repo_bytes": 110931965
+  },
+  {
+   "id": "thehatwiththephat_01_complete",
+   "name": "Thehatwiththephat: 01-complete",
+   "family": "drums",
+   "tags": [
+    "hi-hat",
+    "cymbal"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/Karoryfer.TheHatWithThePhat",
+   "source": "https://github.com/sfzinstruments/Karoryfer.TheHatWithThePhat",
+   "repo": "sfzinstruments/Karoryfer.TheHatWithThePhat",
+   "tree": "afa76f2c9c88e2e27d72a0c2216b1eae3c47b835",
+   "branch": "master",
+   "sfz": "Programs/01-complete.sfz",
+   "status": "pinned",
+   "repo_bytes": 983408096
+  },
+  {
+   "id": "thehatwiththephat_02_basic",
+   "name": "Thehatwiththephat: 02-basic",
+   "family": "drums",
+   "tags": [
+    "hi-hat",
+    "cymbal"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/Karoryfer.TheHatWithThePhat",
+   "source": "https://github.com/sfzinstruments/Karoryfer.TheHatWithThePhat",
+   "repo": "sfzinstruments/Karoryfer.TheHatWithThePhat",
+   "tree": "afa76f2c9c88e2e27d72a0c2216b1eae3c47b835",
+   "branch": "master",
+   "sfz": "Programs/02-basic.sfz",
+   "status": "pinned",
+   "repo_bytes": 983408096
+  },
+  {
+   "id": "zamenhof_stickmusterstuch_error_zamenhof_stickmusterstuch_error_eins",
+   "name": "Zamenhof Stickmusterstuch Error: Zamenhof Stickmusterstuch Error Eins",
+   "family": "drums",
+   "tags": [
+    "percussion",
+    "glitch"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/zamenhof_stickmusterstuch_error",
+   "source": "https://github.com/sfzinstruments/zamenhof_stickmusterstuch_error",
+   "repo": "sfzinstruments/zamenhof_stickmusterstuch_error",
+   "tree": "338133ee7fe6a429576c0dea3edfa1b9270201b6",
+   "branch": "main",
+   "sfz": "Zamenhof Stickmusterstuch Error Eins.sfz",
+   "status": "pinned",
+   "repo_bytes": 122724510
+  },
+  {
+   "id": "zamenhof_stickmusterstuch_error_zamenhof_stickmusterstuch_error_zwei",
+   "name": "Zamenhof Stickmusterstuch Error: Zamenhof Stickmusterstuch Error Zwei",
+   "family": "drums",
+   "tags": [
+    "percussion",
+    "glitch"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/zamenhof_stickmusterstuch_error",
+   "source": "https://github.com/sfzinstruments/zamenhof_stickmusterstuch_error",
+   "repo": "sfzinstruments/zamenhof_stickmusterstuch_error",
+   "tree": "338133ee7fe6a429576c0dea3edfa1b9270201b6",
+   "branch": "main",
+   "sfz": "Zamenhof Stickmusterstuch Error Zwei.sfz",
+   "status": "pinned",
+   "repo_bytes": 122724510
+  },
+  {
+   "id": "virtuosity_drums_01_basic_kit",
+   "name": "Virtuosity Drums: 01-basic-kit",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "jazz",
+    "round robin"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/virtuosity_drums",
+   "source": "https://github.com/sfzinstruments/virtuosity_drums",
+   "repo": "sfzinstruments/virtuosity_drums",
+   "tree": "9f04cf9a734527edfbb0a4eee1f674e45bbf71bc",
+   "branch": "master",
+   "sfz": "Programs/01-basic-kit.sfz",
+   "status": "pinned",
+   "repo_bytes": 1488884901
+  },
+  {
+   "id": "virtuosity_drums_02_full_kit",
+   "name": "Virtuosity Drums: 02-full-kit",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "jazz",
+    "round robin"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/virtuosity_drums",
+   "source": "https://github.com/sfzinstruments/virtuosity_drums",
+   "repo": "sfzinstruments/virtuosity_drums",
+   "tree": "9f04cf9a734527edfbb0a4eee1f674e45bbf71bc",
+   "branch": "master",
+   "sfz": "Programs/02-full-kit.sfz",
+   "status": "pinned",
+   "repo_bytes": 1488884901
+  },
+  {
+   "id": "virtuosity_drums_03_kick_mic",
+   "name": "Virtuosity Drums: 03-kick-mic",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "jazz",
+    "round robin"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/virtuosity_drums",
+   "source": "https://github.com/sfzinstruments/virtuosity_drums",
+   "repo": "sfzinstruments/virtuosity_drums",
+   "tree": "9f04cf9a734527edfbb0a4eee1f674e45bbf71bc",
+   "branch": "master",
+   "sfz": "Programs/03-kick-mic.sfz",
+   "status": "pinned",
+   "repo_bytes": 1488884901
+  },
+  {
+   "id": "virtuosity_drums_04_snare_mic",
+   "name": "Virtuosity Drums: 04-snare-mic",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "jazz",
+    "round robin"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/virtuosity_drums",
+   "source": "https://github.com/sfzinstruments/virtuosity_drums",
+   "repo": "sfzinstruments/virtuosity_drums",
+   "tree": "9f04cf9a734527edfbb0a4eee1f674e45bbf71bc",
+   "branch": "master",
+   "sfz": "Programs/04-snare-mic.sfz",
+   "status": "pinned",
+   "repo_bytes": 1488884901
+  },
+  {
+   "id": "virtuosity_drums_05_oh_mic",
+   "name": "Virtuosity Drums: 05-oh-mic",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "jazz",
+    "round robin"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/virtuosity_drums",
+   "source": "https://github.com/sfzinstruments/virtuosity_drums",
+   "repo": "sfzinstruments/virtuosity_drums",
+   "tree": "9f04cf9a734527edfbb0a4eee1f674e45bbf71bc",
+   "branch": "master",
+   "sfz": "Programs/05-oh-mic.sfz",
+   "status": "pinned",
+   "repo_bytes": 1488884901
+  },
+  {
+   "id": "virtuosity_drums_06_mid_mic",
+   "name": "Virtuosity Drums: 06-mid-mic",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "jazz",
+    "round robin"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/virtuosity_drums",
+   "source": "https://github.com/sfzinstruments/virtuosity_drums",
+   "repo": "sfzinstruments/virtuosity_drums",
+   "tree": "9f04cf9a734527edfbb0a4eee1f674e45bbf71bc",
+   "branch": "master",
+   "sfz": "Programs/06-mid-mic.sfz",
+   "status": "pinned",
+   "repo_bytes": 1488884901
+  },
+  {
+   "id": "body_percussion_body",
+   "name": "Body Percussion: body",
+   "family": "drums",
+   "tags": [
+    "body percussion",
+    "claps",
+    "percussion"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/body_percussion",
+   "source": "https://github.com/sfzinstruments/body_percussion",
+   "repo": "sfzinstruments/body_percussion",
+   "tree": "4ac9d8966679c648b62fa10a188179e186b97f24",
+   "branch": "main",
+   "sfz": "Programs/body.sfz",
+   "status": "pinned",
+   "repo_bytes": 61733852
+  },
+  {
+   "id": "ganjo_ganjo",
+   "name": "Ganjo: ganjo",
+   "family": "guitar",
+   "tags": [
+    "banjo",
+    "guitar banjo"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/ganjo",
+   "source": "https://github.com/sfzinstruments/ganjo",
+   "repo": "sfzinstruments/ganjo",
+   "tree": "ccff5cd5cd3b513873a48994c07724d9d3c39e1c",
+   "branch": "main",
+   "sfz": "ganjo.sfz",
+   "status": "pinned",
+   "repo_bytes": 26113135
+  },
+  {
+   "id": "steeldrum_jsteeldrum_noxfade",
+   "name": "Steeldrum: jSteelDrum-noxfade",
+   "family": "drums",
+   "tags": [
+    "steel drum",
+    "steelpan",
+    "tuned percussion"
+   ],
+   "format": "sfz_git",
+   "license": "The Unlicense (public domain)",
+   "license_url": "https://github.com/sfzinstruments/jlearman.SteelDrum",
+   "source": "https://github.com/sfzinstruments/jlearman.SteelDrum",
+   "repo": "sfzinstruments/jlearman.SteelDrum",
+   "tree": "dc15a36ad69a43b0d240fcbd0cc78fbc61b2b47e",
+   "branch": "main",
+   "sfz": "jSteelDrum-noxfade.sfz",
+   "status": "pinned",
+   "repo_bytes": 43393153
+  },
+  {
+   "id": "steeldrum_jsteeldrum",
+   "name": "Steeldrum: jSteelDrum",
+   "family": "drums",
+   "tags": [
+    "steel drum",
+    "steelpan",
+    "tuned percussion"
+   ],
+   "format": "sfz_git",
+   "license": "The Unlicense (public domain)",
+   "license_url": "https://github.com/sfzinstruments/jlearman.SteelDrum",
+   "source": "https://github.com/sfzinstruments/jlearman.SteelDrum",
+   "repo": "sfzinstruments/jlearman.SteelDrum",
+   "tree": "dc15a36ad69a43b0d240fcbd0cc78fbc61b2b47e",
+   "branch": "main",
+   "sfz": "jSteelDrum.sfz",
+   "status": "pinned",
+   "repo_bytes": 43393153
+  },
+  {
+   "id": "horsepulse_01_keyswitch",
+   "name": "Horsepulse: 01-keyswitch",
+   "family": "strings",
+   "tags": [
+    "tagelharpa",
+    "bowed lyre",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/Karoryfer.HorsePulse",
+   "source": "https://github.com/sfzinstruments/Karoryfer.HorsePulse",
+   "repo": "sfzinstruments/Karoryfer.HorsePulse",
+   "tree": "6f4749d54512d762098ca726a3cbd13444562904",
+   "branch": "main",
+   "sfz": "Programs/01-keyswitch.sfz",
+   "status": "pinned",
+   "repo_bytes": 191421945
+  },
+  {
+   "id": "horsepulse_02_vsop",
+   "name": "Horsepulse: 02-VSOP",
+   "family": "strings",
+   "tags": [
+    "tagelharpa",
+    "bowed lyre",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/Karoryfer.HorsePulse",
+   "source": "https://github.com/sfzinstruments/Karoryfer.HorsePulse",
+   "repo": "sfzinstruments/Karoryfer.HorsePulse",
+   "tree": "6f4749d54512d762098ca726a3cbd13444562904",
+   "branch": "main",
+   "sfz": "Programs/02-VSOP.sfz",
+   "status": "pinned",
+   "repo_bytes": 191421945
+  },
+  {
+   "id": "horsepulse_03_pluck",
+   "name": "Horsepulse: 03-pluck",
+   "family": "strings",
+   "tags": [
+    "tagelharpa",
+    "bowed lyre",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/Karoryfer.HorsePulse",
+   "source": "https://github.com/sfzinstruments/Karoryfer.HorsePulse",
+   "repo": "sfzinstruments/Karoryfer.HorsePulse",
+   "tree": "6f4749d54512d762098ca726a3cbd13444562904",
+   "branch": "main",
+   "sfz": "Programs/03-pluck.sfz",
+   "status": "pinned",
+   "repo_bytes": 191421945
+  },
+  {
+   "id": "horsepulse_04_scrape",
+   "name": "Horsepulse: 04-scrape",
+   "family": "strings",
+   "tags": [
+    "tagelharpa",
+    "bowed lyre",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/Karoryfer.HorsePulse",
+   "source": "https://github.com/sfzinstruments/Karoryfer.HorsePulse",
+   "repo": "sfzinstruments/Karoryfer.HorsePulse",
+   "tree": "6f4749d54512d762098ca726a3cbd13444562904",
+   "branch": "main",
+   "sfz": "Programs/04-scrape.sfz",
+   "status": "pinned",
+   "repo_bytes": 191421945
+  },
+  {
+   "id": "horsepulse_05_soft_scrape",
+   "name": "Horsepulse: 05-soft_scrape",
+   "family": "strings",
+   "tags": [
+    "tagelharpa",
+    "bowed lyre",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/Karoryfer.HorsePulse",
+   "source": "https://github.com/sfzinstruments/Karoryfer.HorsePulse",
+   "repo": "sfzinstruments/Karoryfer.HorsePulse",
+   "tree": "6f4749d54512d762098ca726a3cbd13444562904",
+   "branch": "main",
+   "sfz": "Programs/05-soft_scrape.sfz",
+   "status": "pinned",
+   "repo_bytes": 191421945
+  },
+  {
+   "id": "horsepulse_06_nail",
+   "name": "Horsepulse: 06-nail",
+   "family": "strings",
+   "tags": [
+    "tagelharpa",
+    "bowed lyre",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/Karoryfer.HorsePulse",
+   "source": "https://github.com/sfzinstruments/Karoryfer.HorsePulse",
+   "repo": "sfzinstruments/Karoryfer.HorsePulse",
+   "tree": "6f4749d54512d762098ca726a3cbd13444562904",
+   "branch": "main",
+   "sfz": "Programs/06-nail.sfz",
+   "status": "pinned",
+   "repo_bytes": 191421945
+  },
+  {
+   "id": "black_and_green_guitars_01_green_keyswitch",
+   "name": "Black And Green Guitars: 01-green_keyswitch",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "clean guitar",
+    "guitar",
+    "di"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+   "source": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+   "repo": "sfzinstruments/karoryfer.black-and-green-guitars",
+   "tree": "b3b3249d37dc977a1a297bd2dc053e6d9b6b805c",
+   "branch": "main",
+   "sfz": "Programs/01-green_keyswitch.sfz",
+   "status": "pinned",
+   "repo_bytes": 581416350
+  },
+  {
+   "id": "black_and_green_guitars_02_black_keyswitch",
+   "name": "Black And Green Guitars: 02-black_keyswitch",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "clean guitar",
+    "guitar",
+    "di"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+   "source": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+   "repo": "sfzinstruments/karoryfer.black-and-green-guitars",
+   "tree": "b3b3249d37dc977a1a297bd2dc053e6d9b6b805c",
+   "branch": "main",
+   "sfz": "Programs/02-black_keyswitch.sfz",
+   "status": "pinned",
+   "repo_bytes": 581416350
+  },
+  {
+   "id": "black_and_green_guitars_03_combo_keyswitch",
+   "name": "Black And Green Guitars: 03-combo_keyswitch",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "clean guitar",
+    "guitar",
+    "di"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+   "source": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+   "repo": "sfzinstruments/karoryfer.black-and-green-guitars",
+   "tree": "b3b3249d37dc977a1a297bd2dc053e6d9b6b805c",
+   "branch": "main",
+   "sfz": "Programs/03-combo_keyswitch.sfz",
+   "status": "pinned",
+   "repo_bytes": 581416350
+  },
+  {
+   "id": "black_and_green_guitars_04_green_twang",
+   "name": "Black And Green Guitars: 04-green_twang",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "clean guitar",
+    "guitar",
+    "di"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+   "source": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+   "repo": "sfzinstruments/karoryfer.black-and-green-guitars",
+   "tree": "b3b3249d37dc977a1a297bd2dc053e6d9b6b805c",
+   "branch": "main",
+   "sfz": "Programs/04-green_twang.sfz",
+   "status": "pinned",
+   "repo_bytes": 581416350
+  },
+  {
+   "id": "black_and_green_guitars_05_green_staccato",
+   "name": "Black And Green Guitars: 05-green_staccato",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "clean guitar",
+    "guitar",
+    "di"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+   "source": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+   "repo": "sfzinstruments/karoryfer.black-and-green-guitars",
+   "tree": "b3b3249d37dc977a1a297bd2dc053e6d9b6b805c",
+   "branch": "main",
+   "sfz": "Programs/05-green_staccato.sfz",
+   "status": "pinned",
+   "repo_bytes": 581416350
+  },
+  {
+   "id": "black_and_green_guitars_06_green_hammer_on",
+   "name": "Black And Green Guitars: 06-green_hammer-on",
+   "family": "guitar",
+   "tags": [
+    "electric guitar",
+    "clean guitar",
+    "guitar",
+    "di"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+   "source": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars",
+   "repo": "sfzinstruments/karoryfer.black-and-green-guitars",
+   "tree": "b3b3249d37dc977a1a297bd2dc053e6d9b6b805c",
+   "branch": "main",
+   "sfz": "Programs/06-green_hammer-on.sfz",
+   "status": "pinned",
+   "repo_bytes": 581416350
+  },
+  {
+   "id": "hungarian_zither_hungarian_zither",
+   "name": "Hungarian Zither: hungarian_zither",
+   "family": "strings",
+   "tags": [
+    "zither"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/hungarian_zither",
+   "source": "https://github.com/sfzinstruments/hungarian_zither",
+   "repo": "sfzinstruments/hungarian_zither",
+   "tree": "973d9445ba890661a4f4cd8e417d36134fb5f337",
+   "branch": "main",
+   "sfz": "Programs/hungarian_zither.sfz",
+   "status": "pinned",
+   "repo_bytes": 178322902
+  },
+  {
+   "id": "hungarian_zither_hungarian_zither_mel_strings_poly",
+   "name": "Hungarian Zither: hungarian_zither_mel_strings_poly",
+   "family": "strings",
+   "tags": [
+    "zither"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/hungarian_zither",
+   "source": "https://github.com/sfzinstruments/hungarian_zither",
+   "repo": "sfzinstruments/hungarian_zither",
+   "tree": "973d9445ba890661a4f4cd8e417d36134fb5f337",
+   "branch": "main",
+   "sfz": "Programs/hungarian_zither_mel_strings_poly.sfz",
+   "status": "pinned",
+   "repo_bytes": 178322902
+  },
+  {
+   "id": "sneakybass_01_sneakybass_keyswitch",
+   "name": "Sneakybass: 01-sneakybass_keyswitch",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.sneakybass",
+   "source": "https://github.com/sfzinstruments/karoryfer.sneakybass",
+   "repo": "sfzinstruments/karoryfer.sneakybass",
+   "tree": "cc1a67e5c913678b85eaad1a3b5cb180d3be3e2d",
+   "branch": "main",
+   "sfz": "Programs/01-sneakybass_keyswitch.sfz",
+   "status": "pinned",
+   "repo_bytes": 418713231
+  },
+  {
+   "id": "sneakybass_02_sneakybass_pluck",
+   "name": "Sneakybass: 02-sneakybass_pluck",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.sneakybass",
+   "source": "https://github.com/sfzinstruments/karoryfer.sneakybass",
+   "repo": "sfzinstruments/karoryfer.sneakybass",
+   "tree": "cc1a67e5c913678b85eaad1a3b5cb180d3be3e2d",
+   "branch": "main",
+   "sfz": "Programs/02-sneakybass_pluck.sfz",
+   "status": "pinned",
+   "repo_bytes": 418713231
+  },
+  {
+   "id": "sneakybass_03_sneakybass_ghost",
+   "name": "Sneakybass: 03-sneakybass_ghost",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.sneakybass",
+   "source": "https://github.com/sfzinstruments/karoryfer.sneakybass",
+   "repo": "sfzinstruments/karoryfer.sneakybass",
+   "tree": "cc1a67e5c913678b85eaad1a3b5cb180d3be3e2d",
+   "branch": "main",
+   "sfz": "Programs/03-sneakybass_ghost.sfz",
+   "status": "pinned",
+   "repo_bytes": 418713231
+  },
+  {
+   "id": "sneakybass_04_sneakybass_mute",
+   "name": "Sneakybass: 04-sneakybass_mute",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.sneakybass",
+   "source": "https://github.com/sfzinstruments/karoryfer.sneakybass",
+   "repo": "sfzinstruments/karoryfer.sneakybass",
+   "tree": "cc1a67e5c913678b85eaad1a3b5cb180d3be3e2d",
+   "branch": "main",
+   "sfz": "Programs/04-sneakybass_mute.sfz",
+   "status": "pinned",
+   "repo_bytes": 418713231
+  },
+  {
+   "id": "sneakybass_05_sneakybass_fingering_noise",
+   "name": "Sneakybass: 05-sneakybass_fingering_noise",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.sneakybass",
+   "source": "https://github.com/sfzinstruments/karoryfer.sneakybass",
+   "repo": "sfzinstruments/karoryfer.sneakybass",
+   "tree": "cc1a67e5c913678b85eaad1a3b5cb180d3be3e2d",
+   "branch": "main",
+   "sfz": "Programs/05-sneakybass_fingering_noise.sfz",
+   "status": "pinned",
+   "repo_bytes": 418713231
+  },
+  {
+   "id": "sneakybass_06_sneakybass_release_noise",
+   "name": "Sneakybass: 06-sneakybass_release_noise",
+   "family": "bass",
+   "tags": [
+    "double bass",
+    "upright bass",
+    "pizzicato"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.sneakybass",
+   "source": "https://github.com/sfzinstruments/karoryfer.sneakybass",
+   "repo": "sfzinstruments/karoryfer.sneakybass",
+   "tree": "cc1a67e5c913678b85eaad1a3b5cb180d3be3e2d",
+   "branch": "main",
+   "sfz": "Programs/06-sneakybass_release_noise.sfz",
+   "status": "pinned",
+   "repo_bytes": 418713231
+  },
+  {
+   "id": "frankensnare_01_frankensnare",
+   "name": "Frankensnare: 01-frankensnare",
+   "family": "drums",
+   "tags": [
+    "snare",
+    "snare drum",
+    "brush"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.frankensnare",
+   "source": "https://github.com/sfzinstruments/karoryfer.frankensnare",
+   "repo": "sfzinstruments/karoryfer.frankensnare",
+   "tree": "9151c2d79fcbb73c65d63f78918d4ba7abc91a81",
+   "branch": "main",
+   "sfz": "Programs/01-frankensnare.sfz",
+   "status": "pinned",
+   "repo_bytes": 436226685
+  },
+  {
+   "id": "frankensnare_02_10x6ashbrush",
+   "name": "Frankensnare: 02-10x6ashbrush",
+   "family": "drums",
+   "tags": [
+    "snare",
+    "snare drum",
+    "brush"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.frankensnare",
+   "source": "https://github.com/sfzinstruments/karoryfer.frankensnare",
+   "repo": "sfzinstruments/karoryfer.frankensnare",
+   "tree": "9151c2d79fcbb73c65d63f78918d4ba7abc91a81",
+   "branch": "main",
+   "sfz": "Programs/02-10x6ashbrush.sfz",
+   "status": "pinned",
+   "repo_bytes": 436226685
+  },
+  {
+   "id": "frankensnare_03_10x6ash",
+   "name": "Frankensnare: 03-10x6ash",
+   "family": "drums",
+   "tags": [
+    "snare",
+    "snare drum",
+    "brush"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.frankensnare",
+   "source": "https://github.com/sfzinstruments/karoryfer.frankensnare",
+   "repo": "sfzinstruments/karoryfer.frankensnare",
+   "tree": "9151c2d79fcbb73c65d63f78918d4ba7abc91a81",
+   "branch": "main",
+   "sfz": "Programs/03-10x6ash.sfz",
+   "status": "pinned",
+   "repo_bytes": 436226685
+  },
+  {
+   "id": "frankensnare_04_12x5steel",
+   "name": "Frankensnare: 04-12x5steel",
+   "family": "drums",
+   "tags": [
+    "snare",
+    "snare drum",
+    "brush"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.frankensnare",
+   "source": "https://github.com/sfzinstruments/karoryfer.frankensnare",
+   "repo": "sfzinstruments/karoryfer.frankensnare",
+   "tree": "9151c2d79fcbb73c65d63f78918d4ba7abc91a81",
+   "branch": "main",
+   "sfz": "Programs/04-12x5steel.sfz",
+   "status": "pinned",
+   "repo_bytes": 436226685
+  },
+  {
+   "id": "frankensnare_05_14x5maplebrush",
+   "name": "Frankensnare: 05-14x5maplebrush",
+   "family": "drums",
+   "tags": [
+    "snare",
+    "snare drum",
+    "brush"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.frankensnare",
+   "source": "https://github.com/sfzinstruments/karoryfer.frankensnare",
+   "repo": "sfzinstruments/karoryfer.frankensnare",
+   "tree": "9151c2d79fcbb73c65d63f78918d4ba7abc91a81",
+   "branch": "main",
+   "sfz": "Programs/05-14x5maplebrush.sfz",
+   "status": "pinned",
+   "repo_bytes": 436226685
+  },
+  {
+   "id": "frankensnare_06_14x5maple",
+   "name": "Frankensnare: 06-14x5maple",
+   "family": "drums",
+   "tags": [
+    "snare",
+    "snare drum",
+    "brush"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.frankensnare",
+   "source": "https://github.com/sfzinstruments/karoryfer.frankensnare",
+   "repo": "sfzinstruments/karoryfer.frankensnare",
+   "tree": "9151c2d79fcbb73c65d63f78918d4ba7abc91a81",
+   "branch": "main",
+   "sfz": "Programs/06-14x5maple.sfz",
+   "status": "pinned",
+   "repo_bytes": 436226685
+  },
+  {
+   "id": "unruly_drums_01_kit_sticks",
+   "name": "Unruly Drums: 01-kit-sticks",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "sticks",
+    "brushes"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.unruly-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.unruly-drums",
+   "repo": "sfzinstruments/karoryfer.unruly-drums",
+   "tree": "9bf75c2a1392f190cd1c264645653629f0b3a097",
+   "branch": "main",
+   "sfz": "Programs/01-kit-sticks.sfz",
+   "status": "pinned",
+   "repo_bytes": 815468725
+  },
+  {
+   "id": "unruly_drums_02_kit_brushes",
+   "name": "Unruly Drums: 02-kit-brushes",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "sticks",
+    "brushes"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.unruly-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.unruly-drums",
+   "repo": "sfzinstruments/karoryfer.unruly-drums",
+   "tree": "9bf75c2a1392f190cd1c264645653629f0b3a097",
+   "branch": "main",
+   "sfz": "Programs/02-kit-brushes.sfz",
+   "status": "pinned",
+   "repo_bytes": 815468725
+  },
+  {
+   "id": "unruly_drums_03_kit_complete",
+   "name": "Unruly Drums: 03-kit-complete",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "sticks",
+    "brushes"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.unruly-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.unruly-drums",
+   "repo": "sfzinstruments/karoryfer.unruly-drums",
+   "tree": "9bf75c2a1392f190cd1c264645653629f0b3a097",
+   "branch": "main",
+   "sfz": "Programs/03-kit-complete.sfz",
+   "status": "pinned",
+   "repo_bytes": 815468725
+  },
+  {
+   "id": "unruly_drums_04_kick",
+   "name": "Unruly Drums: 04-kick",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "sticks",
+    "brushes"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.unruly-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.unruly-drums",
+   "repo": "sfzinstruments/karoryfer.unruly-drums",
+   "tree": "9bf75c2a1392f190cd1c264645653629f0b3a097",
+   "branch": "main",
+   "sfz": "Programs/04-kick.sfz",
+   "status": "pinned",
+   "repo_bytes": 815468725
+  },
+  {
+   "id": "unruly_drums_05_s22",
+   "name": "Unruly Drums: 05-s22",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "sticks",
+    "brushes"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.unruly-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.unruly-drums",
+   "repo": "sfzinstruments/karoryfer.unruly-drums",
+   "tree": "9bf75c2a1392f190cd1c264645653629f0b3a097",
+   "branch": "main",
+   "sfz": "Programs/05-s22.sfz",
+   "status": "pinned",
+   "repo_bytes": 815468725
+  },
+  {
+   "id": "unruly_drums_06_s14",
+   "name": "Unruly Drums: 06-s14",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "sticks",
+    "brushes"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.unruly-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.unruly-drums",
+   "repo": "sfzinstruments/karoryfer.unruly-drums",
+   "tree": "9bf75c2a1392f190cd1c264645653629f0b3a097",
+   "branch": "main",
+   "sfz": "Programs/06-s14.sfz",
+   "status": "pinned",
+   "repo_bytes": 815468725
+  },
+  {
+   "id": "big_rusty_drums_01_full",
+   "name": "Big Rusty Drums: 01-full",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "vintage"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.big-rusty-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.big-rusty-drums",
+   "repo": "sfzinstruments/karoryfer.big-rusty-drums",
+   "tree": "f07ce00df34a46b6b08375be56fe116cf15782bc",
+   "branch": "main",
+   "sfz": "Programs/01-full.sfz",
+   "status": "pinned",
+   "repo_bytes": 730881278
+  },
+  {
+   "id": "big_rusty_drums_02_basic",
+   "name": "Big Rusty Drums: 02-basic",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "vintage"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.big-rusty-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.big-rusty-drums",
+   "repo": "sfzinstruments/karoryfer.big-rusty-drums",
+   "tree": "f07ce00df34a46b6b08375be56fe116cf15782bc",
+   "branch": "main",
+   "sfz": "Programs/02-basic.sfz",
+   "status": "pinned",
+   "repo_bytes": 730881278
+  },
+  {
+   "id": "big_rusty_drums_03_kick",
+   "name": "Big Rusty Drums: 03-kick",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "vintage"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.big-rusty-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.big-rusty-drums",
+   "repo": "sfzinstruments/karoryfer.big-rusty-drums",
+   "tree": "f07ce00df34a46b6b08375be56fe116cf15782bc",
+   "branch": "main",
+   "sfz": "Programs/03-kick.sfz",
+   "status": "pinned",
+   "repo_bytes": 730881278
+  },
+  {
+   "id": "big_rusty_drums_04_snare",
+   "name": "Big Rusty Drums: 04-snare",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "vintage"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.big-rusty-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.big-rusty-drums",
+   "repo": "sfzinstruments/karoryfer.big-rusty-drums",
+   "tree": "f07ce00df34a46b6b08375be56fe116cf15782bc",
+   "branch": "main",
+   "sfz": "Programs/04-snare.sfz",
+   "status": "pinned",
+   "repo_bytes": 730881278
+  },
+  {
+   "id": "big_rusty_drums_05_toms",
+   "name": "Big Rusty Drums: 05-toms",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "vintage"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.big-rusty-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.big-rusty-drums",
+   "repo": "sfzinstruments/karoryfer.big-rusty-drums",
+   "tree": "f07ce00df34a46b6b08375be56fe116cf15782bc",
+   "branch": "main",
+   "sfz": "Programs/05-toms.sfz",
+   "status": "pinned",
+   "repo_bytes": 730881278
+  },
+  {
+   "id": "big_rusty_drums_06_hihat",
+   "name": "Big Rusty Drums: 06-hihat",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums",
+    "vintage"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.big-rusty-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.big-rusty-drums",
+   "repo": "sfzinstruments/karoryfer.big-rusty-drums",
+   "tree": "f07ce00df34a46b6b08375be56fe116cf15782bc",
+   "branch": "main",
+   "sfz": "Programs/06-hihat.sfz",
+   "status": "pinned",
+   "repo_bytes": 730881278
+  },
+  {
+   "id": "swirly_drums_basic_kit",
+   "name": "Swirly Drums: Basic_kit",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.swirly-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.swirly-drums",
+   "repo": "sfzinstruments/karoryfer.swirly-drums",
+   "tree": "c40dafe0011cb2e54c0c220ff0fa308a11fc60f5",
+   "branch": "main",
+   "sfz": "Programs/Basic_kit.sfz",
+   "status": "pinned",
+   "repo_bytes": 1826949043
+  },
+  {
+   "id": "swirly_drums_cymbal_bus",
+   "name": "Swirly Drums: Cymbal_bus",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.swirly-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.swirly-drums",
+   "repo": "sfzinstruments/karoryfer.swirly-drums",
+   "tree": "c40dafe0011cb2e54c0c220ff0fa308a11fc60f5",
+   "branch": "main",
+   "sfz": "Programs/Cymbal_bus.sfz",
+   "status": "pinned",
+   "repo_bytes": 1826949043
+  },
+  {
+   "id": "swirly_drums_full_kit",
+   "name": "Swirly Drums: Full_kit",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.swirly-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.swirly-drums",
+   "repo": "sfzinstruments/karoryfer.swirly-drums",
+   "tree": "c40dafe0011cb2e54c0c220ff0fa308a11fc60f5",
+   "branch": "main",
+   "sfz": "Programs/Full_kit.sfz",
+   "status": "pinned",
+   "repo_bytes": 1826949043
+  },
+  {
+   "id": "swirly_drums_hi_hat_bus",
+   "name": "Swirly Drums: Hi_hat_bus",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.swirly-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.swirly-drums",
+   "repo": "sfzinstruments/karoryfer.swirly-drums",
+   "tree": "c40dafe0011cb2e54c0c220ff0fa308a11fc60f5",
+   "branch": "main",
+   "sfz": "Programs/Hi_hat_bus.sfz",
+   "status": "pinned",
+   "repo_bytes": 1826949043
+  },
+  {
+   "id": "swirly_drums_kick_bus",
+   "name": "Swirly Drums: Kick_bus",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.swirly-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.swirly-drums",
+   "repo": "sfzinstruments/karoryfer.swirly-drums",
+   "tree": "c40dafe0011cb2e54c0c220ff0fa308a11fc60f5",
+   "branch": "main",
+   "sfz": "Programs/Kick_bus.sfz",
+   "status": "pinned",
+   "repo_bytes": 1826949043
+  },
+  {
+   "id": "swirly_drums_kick_bus_no_rr",
+   "name": "Swirly Drums: Kick_bus_no_rr",
+   "family": "drums",
+   "tags": [
+    "acoustic drum kit",
+    "drums"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.swirly-drums",
+   "source": "https://github.com/sfzinstruments/karoryfer.swirly-drums",
+   "repo": "sfzinstruments/karoryfer.swirly-drums",
+   "tree": "c40dafe0011cb2e54c0c220ff0fa308a11fc60f5",
+   "branch": "main",
+   "sfz": "Programs/Kick_bus_no_rr.sfz",
+   "status": "pinned",
+   "repo_bytes": 1826949043
+  },
+  {
+   "id": "black_and_blue_basses_01_darkblack_keysw",
+   "name": "Black And Blue Basses: 01-darkblack_keysw",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "warm"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+   "source": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+   "repo": "sfzinstruments/karoryfer.black-and-blue-basses",
+   "tree": "6e7d674cdb41be7a54dbccb15472401ad01099b9",
+   "branch": "main",
+   "sfz": "Programs/01-darkblack_keysw.sfz",
+   "status": "pinned",
+   "repo_bytes": 1134159092
+  },
+  {
+   "id": "black_and_blue_basses_02_darkblack_keysw_warm",
+   "name": "Black And Blue Basses: 02-darkblack_keysw_warm",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "warm"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+   "source": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+   "repo": "sfzinstruments/karoryfer.black-and-blue-basses",
+   "tree": "6e7d674cdb41be7a54dbccb15472401ad01099b9",
+   "branch": "main",
+   "sfz": "Programs/02-darkblack_keysw_warm.sfz",
+   "status": "pinned",
+   "repo_bytes": 1134159092
+  },
+  {
+   "id": "black_and_blue_basses_03_babyblue_all",
+   "name": "Black And Blue Basses: 03-babyblue_all",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "warm"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+   "source": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+   "repo": "sfzinstruments/karoryfer.black-and-blue-basses",
+   "tree": "6e7d674cdb41be7a54dbccb15472401ad01099b9",
+   "branch": "main",
+   "sfz": "Programs/03-babyblue_all.sfz",
+   "status": "pinned",
+   "repo_bytes": 1134159092
+  },
+  {
+   "id": "black_and_blue_basses_04_babyblue_warm",
+   "name": "Black And Blue Basses: 04-babyblue_warm",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "warm"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+   "source": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+   "repo": "sfzinstruments/karoryfer.black-and-blue-basses",
+   "tree": "6e7d674cdb41be7a54dbccb15472401ad01099b9",
+   "branch": "main",
+   "sfz": "Programs/04-babyblue_warm.sfz",
+   "status": "pinned",
+   "repo_bytes": 1134159092
+  },
+  {
+   "id": "black_and_blue_basses_05_darkblack_pluck",
+   "name": "Black And Blue Basses: 05-darkblack_pluck",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "warm"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+   "source": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+   "repo": "sfzinstruments/karoryfer.black-and-blue-basses",
+   "tree": "6e7d674cdb41be7a54dbccb15472401ad01099b9",
+   "branch": "main",
+   "sfz": "Programs/05-darkblack_pluck.sfz",
+   "status": "pinned",
+   "repo_bytes": 1134159092
+  },
+  {
+   "id": "black_and_blue_basses_06_darkblack_pluck_warm",
+   "name": "Black And Blue Basses: 06-darkblack_pluck_warm",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "warm"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+   "source": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses",
+   "repo": "sfzinstruments/karoryfer.black-and-blue-basses",
+   "tree": "6e7d674cdb41be7a54dbccb15472401ad01099b9",
+   "branch": "main",
+   "sfz": "Programs/06-darkblack_pluck_warm.sfz",
+   "status": "pinned",
+   "repo_bytes": 1134159092
+  },
+  {
+   "id": "aliexpress_erhu_01_erhu_keyswitch",
+   "name": "Aliexpress Erhu: 01-erhu_keyswitch",
+   "family": "strings",
+   "tags": [
+    "erhu",
+    "bowed"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/aliexpress-erhu",
+   "source": "https://github.com/sfzinstruments/aliexpress-erhu",
+   "repo": "sfzinstruments/aliexpress-erhu",
+   "tree": "6615047b2fd06126877483e97b8bb4af9d00b080",
+   "branch": "main",
+   "sfz": "Programs/01-erhu_keyswitch.sfz",
+   "status": "pinned",
+   "repo_bytes": 92826095
+  },
+  {
+   "id": "aliexpress_erhu_02_erhu_long",
+   "name": "Aliexpress Erhu: 02-erhu_long",
+   "family": "strings",
+   "tags": [
+    "erhu",
+    "bowed"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/aliexpress-erhu",
+   "source": "https://github.com/sfzinstruments/aliexpress-erhu",
+   "repo": "sfzinstruments/aliexpress-erhu",
+   "tree": "6615047b2fd06126877483e97b8bb4af9d00b080",
+   "branch": "main",
+   "sfz": "Programs/02-erhu_long.sfz",
+   "status": "pinned",
+   "repo_bytes": 92826095
+  },
+  {
+   "id": "aliexpress_erhu_03_erhu_short",
+   "name": "Aliexpress Erhu: 03-erhu_short",
+   "family": "strings",
+   "tags": [
+    "erhu",
+    "bowed"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/aliexpress-erhu",
+   "source": "https://github.com/sfzinstruments/aliexpress-erhu",
+   "repo": "sfzinstruments/aliexpress-erhu",
+   "tree": "6615047b2fd06126877483e97b8bb4af9d00b080",
+   "branch": "main",
+   "sfz": "Programs/03-erhu_short.sfz",
+   "status": "pinned",
+   "repo_bytes": 92826095
+  },
+  {
+   "id": "aliexpress_erhu_04_erhu_marcato",
+   "name": "Aliexpress Erhu: 04-erhu_marcato",
+   "family": "strings",
+   "tags": [
+    "erhu",
+    "bowed"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/aliexpress-erhu",
+   "source": "https://github.com/sfzinstruments/aliexpress-erhu",
+   "repo": "sfzinstruments/aliexpress-erhu",
+   "tree": "6615047b2fd06126877483e97b8bb4af9d00b080",
+   "branch": "main",
+   "sfz": "Programs/04-erhu_marcato.sfz",
+   "status": "pinned",
+   "repo_bytes": 92826095
+  },
+  {
+   "id": "aliexpress_erhu_05_erhu_sul_tasto",
+   "name": "Aliexpress Erhu: 05-erhu_sul_tasto",
+   "family": "strings",
+   "tags": [
+    "erhu",
+    "bowed"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/aliexpress-erhu",
+   "source": "https://github.com/sfzinstruments/aliexpress-erhu",
+   "repo": "sfzinstruments/aliexpress-erhu",
+   "tree": "6615047b2fd06126877483e97b8bb4af9d00b080",
+   "branch": "main",
+   "sfz": "Programs/05-erhu_sul_tasto.sfz",
+   "status": "pinned",
+   "repo_bytes": 92826095
+  },
+  {
+   "id": "cithara_barbarica_01_cithara_barbarica_keyswitch",
+   "name": "Cithara Barbarica: 01-cithara_barbarica_keyswitch",
+   "family": "strings",
+   "tags": [
+    "lyre",
+    "plucked"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/cithara-barbarica",
+   "source": "https://github.com/sfzinstruments/cithara-barbarica",
+   "repo": "sfzinstruments/cithara-barbarica",
+   "tree": "a47c10dc4a26538a8a56d31d3436488138292ca2",
+   "branch": "main",
+   "sfz": "Programs/01-cithara_barbarica_keyswitch.sfz",
+   "status": "pinned",
+   "repo_bytes": 239034153
+  },
+  {
+   "id": "cithara_barbarica_02_cithara_barbarica_finger",
+   "name": "Cithara Barbarica: 02-cithara_barbarica_finger",
+   "family": "strings",
+   "tags": [
+    "lyre",
+    "plucked"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/cithara-barbarica",
+   "source": "https://github.com/sfzinstruments/cithara-barbarica",
+   "repo": "sfzinstruments/cithara-barbarica",
+   "tree": "a47c10dc4a26538a8a56d31d3436488138292ca2",
+   "branch": "main",
+   "sfz": "Programs/02-cithara_barbarica_finger.sfz",
+   "status": "pinned",
+   "repo_bytes": 239034153
+  },
+  {
+   "id": "cithara_barbarica_03_cithara_barbarica_nail",
+   "name": "Cithara Barbarica: 03-cithara_barbarica_nail",
+   "family": "strings",
+   "tags": [
+    "lyre",
+    "plucked"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/cithara-barbarica",
+   "source": "https://github.com/sfzinstruments/cithara-barbarica",
+   "repo": "sfzinstruments/cithara-barbarica",
+   "tree": "a47c10dc4a26538a8a56d31d3436488138292ca2",
+   "branch": "main",
+   "sfz": "Programs/03-cithara_barbarica_nail.sfz",
+   "status": "pinned",
+   "repo_bytes": 239034153
+  },
+  {
+   "id": "cithara_barbarica_04_cithara_barbarica_finger_muted",
+   "name": "Cithara Barbarica: 04-cithara_barbarica_finger_muted",
+   "family": "strings",
+   "tags": [
+    "lyre",
+    "plucked"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/cithara-barbarica",
+   "source": "https://github.com/sfzinstruments/cithara-barbarica",
+   "repo": "sfzinstruments/cithara-barbarica",
+   "tree": "a47c10dc4a26538a8a56d31d3436488138292ca2",
+   "branch": "main",
+   "sfz": "Programs/04-cithara_barbarica_finger_muted.sfz",
+   "status": "pinned",
+   "repo_bytes": 239034153
+  },
+  {
+   "id": "cithara_barbarica_05_cithara_barbarica_nail_muted",
+   "name": "Cithara Barbarica: 05-cithara_barbarica_nail_muted",
+   "family": "strings",
+   "tags": [
+    "lyre",
+    "plucked"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/cithara-barbarica",
+   "source": "https://github.com/sfzinstruments/cithara-barbarica",
+   "repo": "sfzinstruments/cithara-barbarica",
+   "tree": "a47c10dc4a26538a8a56d31d3436488138292ca2",
+   "branch": "main",
+   "sfz": "Programs/05-cithara_barbarica_nail_muted.sfz",
+   "status": "pinned",
+   "repo_bytes": 239034153
+  },
+  {
+   "id": "cithara_barbarica_06_cithara_barbarica_sul_tasto",
+   "name": "Cithara Barbarica: 06-cithara_barbarica_sul_tasto",
+   "family": "strings",
+   "tags": [
+    "lyre",
+    "plucked"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/cithara-barbarica",
+   "source": "https://github.com/sfzinstruments/cithara-barbarica",
+   "repo": "sfzinstruments/cithara-barbarica",
+   "tree": "a47c10dc4a26538a8a56d31d3436488138292ca2",
+   "branch": "main",
+   "sfz": "Programs/06-cithara_barbarica_sul_tasto.sfz",
+   "status": "pinned",
+   "repo_bytes": 239034153
+  },
+  {
+   "id": "big_little_bass_01_big_little_pluck",
+   "name": "Big Little Bass: 01-big_little_pluck",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "pluck"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.big-little-bass",
+   "source": "https://github.com/sfzinstruments/karoryfer.big-little-bass",
+   "repo": "sfzinstruments/karoryfer.big-little-bass",
+   "tree": "4e92bdf54dcd2d6cfad968cc90542d5461c9b9fc",
+   "branch": "main",
+   "sfz": "Programs/01-big_little_pluck.sfz",
+   "status": "pinned",
+   "repo_bytes": 318164146
+  },
+  {
+   "id": "big_little_bass_02_big_little_soft_pluck",
+   "name": "Big Little Bass: 02-big_little_soft_pluck",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "pluck"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.big-little-bass",
+   "source": "https://github.com/sfzinstruments/karoryfer.big-little-bass",
+   "repo": "sfzinstruments/karoryfer.big-little-bass",
+   "tree": "4e92bdf54dcd2d6cfad968cc90542d5461c9b9fc",
+   "branch": "main",
+   "sfz": "Programs/02-big_little_soft_pluck.sfz",
+   "status": "pinned",
+   "repo_bytes": 318164146
+  },
+  {
+   "id": "big_little_bass_f_map",
+   "name": "Big Little Bass: f_map",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "pluck"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.big-little-bass",
+   "source": "https://github.com/sfzinstruments/karoryfer.big-little-bass",
+   "repo": "sfzinstruments/karoryfer.big-little-bass",
+   "tree": "4e92bdf54dcd2d6cfad968cc90542d5461c9b9fc",
+   "branch": "main",
+   "sfz": "Programs/maps/f_map.sfz",
+   "status": "pinned",
+   "repo_bytes": 318164146
+  },
+  {
+   "id": "big_little_bass_p_map",
+   "name": "Big Little Bass: p_map",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "pluck"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.big-little-bass",
+   "source": "https://github.com/sfzinstruments/karoryfer.big-little-bass",
+   "repo": "sfzinstruments/karoryfer.big-little-bass",
+   "tree": "4e92bdf54dcd2d6cfad968cc90542d5461c9b9fc",
+   "branch": "main",
+   "sfz": "Programs/maps/p_map.sfz",
+   "status": "pinned",
+   "repo_bytes": 318164146
+  },
+  {
+   "id": "big_little_bass_p_only_map",
+   "name": "Big Little Bass: p_only_map",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "pluck"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.big-little-bass",
+   "source": "https://github.com/sfzinstruments/karoryfer.big-little-bass",
+   "repo": "sfzinstruments/karoryfer.big-little-bass",
+   "tree": "4e92bdf54dcd2d6cfad968cc90542d5461c9b9fc",
+   "branch": "main",
+   "sfz": "Programs/maps/p_only_map.sfz",
+   "status": "pinned",
+   "repo_bytes": 318164146
+  },
+  {
+   "id": "big_little_bass_f_map_2",
+   "name": "Big Little Bass: f_map",
+   "family": "bass",
+   "tags": [
+    "bass guitar",
+    "electric bass",
+    "pluck"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/karoryfer.big-little-bass",
+   "source": "https://github.com/sfzinstruments/karoryfer.big-little-bass",
+   "repo": "sfzinstruments/karoryfer.big-little-bass",
+   "tree": "4e92bdf54dcd2d6cfad968cc90542d5461c9b9fc",
+   "branch": "main",
+   "sfz": "Programs/maps/t1/f_map.sfz",
+   "status": "pinned",
+   "repo_bytes": 318164146
+  },
+  {
+   "id": "osiris_piano_01_natural",
+   "name": "Osiris Piano: 01-natural",
+   "family": "piano",
+   "tags": [
+    "grand piano",
+    "piano"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/Osiris_Piano",
+   "source": "https://github.com/sfzinstruments/Osiris_Piano",
+   "repo": "sfzinstruments/Osiris_Piano",
+   "tree": "18c6afccb60cff458edbf7c394571783e074e1e9",
+   "branch": "main",
+   "sfz": "Programs/01-natural.sfz",
+   "status": "pinned",
+   "repo_bytes": 489903728
+  },
+  {
+   "id": "osiris_piano_02_warm",
+   "name": "Osiris Piano: 02-warm",
+   "family": "piano",
+   "tags": [
+    "grand piano",
+    "piano"
+   ],
+   "format": "sfz_git",
+   "license": "CC0 1.0 (public domain dedication)",
+   "license_url": "https://github.com/sfzinstruments/Osiris_Piano",
+   "source": "https://github.com/sfzinstruments/Osiris_Piano",
+   "repo": "sfzinstruments/Osiris_Piano",
+   "tree": "18c6afccb60cff458edbf7c394571783e074e1e9",
+   "branch": "main",
+   "sfz": "Programs/02-warm.sfz",
+   "status": "pinned",
+   "repo_bytes": 489903728
   }
  ]
 }
