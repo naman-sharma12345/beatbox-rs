@@ -250,6 +250,30 @@ pub fn legato(notes: &mut [Note], sel: &Selection, overlap: f32, pattern_steps: 
     k
 }
 
+
+/// FL Articulate: each selected note's length becomes `ratio` of the gap to
+/// the next onset (staccato 0.35, portato 0.7, tenuto 0.95, legato 1.0), so
+/// a whole part changes feel in one call; max_len caps it (steps, 0 = none).
+pub const ARTICULATIONS: &[(&str, f32)] = &[("staccatissimo", 0.18), ("staccato", 0.35), ("portato", 0.7), ("tenuto", 0.95), ("legato", 1.0)];
+
+pub fn articulate(notes: &mut [Note], sel: &Selection, ratio: f32, max_len: f32, pattern_steps: f32) -> usize {
+    sort(notes);
+    let mut starts: Vec<f32> = notes.iter().filter(|n| sel.matches(n)).map(|n| n.start).collect();
+    starts.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+    let r = ratio.clamp(0.05, 1.5);
+    let mut k = 0;
+    for n in notes.iter_mut().filter(|n| sel.matches(n)) {
+        let next = starts.iter().find(|s| **s > n.start + 1e-3).copied().unwrap_or(pattern_steps);
+        let mut len = ((next - n.start) * r).max(0.05);
+        if max_len > 0.0 {
+            len = len.min(max_len);
+        }
+        n.len = len;
+        k += 1;
+    }
+    k
+}
+
 // ---------------- chords: grouping, arp, strum, voicing ----------------
 
 /// Groups of notes that start together (within `tol` steps) = chords.
@@ -1042,6 +1066,15 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn articulate_sets_length_from_the_gap() {
+        let mut n = vec![Note::new(0.0, 1.0, 60, 0.8), Note::new(4.0, 1.0, 62, 0.8), Note::new(6.0, 1.0, 64, 0.8)];
+        assert_eq!(articulate(&mut n, &Selection::default(), 0.5, 0.0, 16.0), 3);
+        assert!((n[0].len - 2.0).abs() < 1e-4 && (n[1].len - 1.0).abs() < 1e-4 && (n[2].len - 5.0).abs() < 1e-4);
+        articulate(&mut n, &Selection::default(), 1.0, 3.0, 16.0);
+        assert!((n[2].len - 3.0).abs() < 1e-4);
+    }
 
     const MINOR: [u8; 7] = [0, 2, 3, 5, 7, 8, 10];
     const MAJOR: [u8; 7] = [0, 2, 4, 5, 7, 9, 11];

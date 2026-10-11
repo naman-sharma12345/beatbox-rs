@@ -4,7 +4,7 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 77 have, 6 partial, 8 missing of 91** (parity 77/91; counting partial as half: 80/91).
+**Score: 78 have, 5 partial, 8 missing of 91** (parity 78/91; counting partial as half: 80.5/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -29,7 +29,7 @@ hosting.
 | Piano roll tools | Chop | have | chop_notes (pattern x/X/-/. on the grid), split_notes |
 | Piano roll tools | Flam | have | roll_notes mode flam (grace hit before), also roll / ratchet |
 | Piano roll tools | Legato | have | legato |
-| Piano roll tools | Articulate (note length) | partial | edit_notes length |
+| Piano roll tools | Articulate (note length) | have | articulate: lengths from the gap to the next note (staccatissimo/staccato/portato/tenuto/legato or a ratio, max_len); edit_notes length |
 | Piano roll tools | Glue | have | merge_notes |
 | Piano roll tools | Limit (clamp to range / scale) | have | limit_notes (octave-fold into lo..hi), scale_snap |
 | Piano roll tools | Flip (invert / reverse notes) | have | flip_notes mode pitch (mirror) / time (reverse) |

@@ -1226,6 +1226,26 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "articulate",
+            description: "FL Articulate: set note lengths from the gap to the next note in one call. style staccatissimo (0.18), staccato (0.35), portato (0.7), tenuto (0.95), legato (1.0), or ratio (0.05-1.5) directly; max_len caps lengths in steps. Bouncy plucks = staccato, held pads = legato.",
+            mutates: true,
+            schema: || obj(props(props(target_props(), selection_props()), json!({
+                "style": {"type": "string", "enum": mo::ARTICULATIONS.iter().map(|x| x.0).collect::<Vec<_>>()},
+                "ratio": {"type": "number", "description": "Length as a fraction of the gap to the next note (overrides style)"},
+                "max_len": {"type": "number", "description": "Cap in steps (0 = none)"}
+            })), &["track"]),
+            run: |e, a| {
+                let sel = selection_of(a)?;
+                let ratio = match (f_opt(a, "ratio"), s_opt(a, "style")) {
+                    (Some(r), _) => r,
+                    (None, Some(s)) => mo::ARTICULATIONS.iter().find(|x| x.0 == s).map(|x| x.1).ok_or_else(|| anyhow!("style '{s}' ({})", mo::ARTICULATIONS.iter().map(|x| x.0).collect::<Vec<_>>().join(", ")))?,
+                    (None, None) => 0.35,
+                };
+                let max_len = f_or(a, "max_len", 0.0);
+                with_notes(e, a, |n, steps, _| Ok(mo::articulate(n, &sel, ratio, max_len, steps)))
+            },
+        },
+        Tool {
             name: "arpeggiate",
             description: "Turn selected chords into arpeggios. style: up, down, updown, downup, random, converge, chord (rhythmic chord stabs). rate: steps or '1/16', '1/8', '1/8t'. octaves 1-4 spans extra octaves; gate 0.1-1 = note length vs rate.",
             mutates: true,
