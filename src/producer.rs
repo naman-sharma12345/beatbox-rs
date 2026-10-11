@@ -2789,11 +2789,12 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             }
         }
         // critic v18 (beat 10 r1): the hook layers (open hat, shaker,
-        // counter, texture) added ~6 dB of 2-3 kHz; they lose 2.5 dB there
-        for t in ["open_hat", "shaker", "counter", "texture"] {
+        // counter, texture) added ~6 dB of 2-3 kHz; v19: -2.5 dB at 2.6k did
+        // not register on the hat/shaker, so they take -4 dB (Q 1) at 2.4k
+        for (t, f, g, q) in [("open_hat", 2400.0, -4.0, 1.0), ("shaker", 2400.0, -4.0, 1.0), ("perc", 2400.0, -3.0, 1.0), ("counter", 2600.0, -2.5, 0.9), ("texture", 2600.0, -2.5, 0.9)] {
             if have(e, t) {
                 e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
-                    {"kind": "bell", "freq": 2600.0, "gain_db": -2.5, "q": 0.9}]}}), "producer")?;
+                    {"kind": "bell", "freq": f, "gain_db": g, "q": q}]}}), "producer")?;
             }
         }
         // critic v18: sub -4.7 dB under the reference, so the low end read as

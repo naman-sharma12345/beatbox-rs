@@ -407,15 +407,24 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
         let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [
             {"kind": "bell", "freq": 250.0, "gain_db": -3.0, "q": 1.0},
             {"kind": "bell", "freq": 3200.0, "gain_db": 3.0, "q": 0.7}]}}));
-        let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "limiter", "params": {"ceiling_db": -1.5}}));
+        let _ = crate_call(e, "add_effect", json!({"track": "vocal", "type": "limiter", "params": {"ceiling_db": -1.5, "release_ms": 150.0}}));
         // the lo-fi tape (crusher + dusty top cut) stays on the beat
         let _ = keep_vocal_off_tape(e);
-        // with the voice on, the hooks lifted only ~1-1.5 dB: the drums carry
-        // the lift (+1.5 dB in every hook) instead of more top end
+        // with the voice on, the hooks lifted only ~1.2 LU over the verses
+        // (critic v18/v19, target 2.5-3): the drums (+3 dB) and the voice
+        // (+1.5 dB) rise in every hook, and a quiet double joins the voice there
+        let hooks: Vec<String> = plan.sections.iter().filter(|s| s.kind == "hook").map(|s| s.name.clone()).collect();
         if let Ok(bi) = e.project.bus_index("drums") {
             let base = e.project.buses[bi].volume_db;
-            for s in plan.sections.iter().filter(|s| s.kind == "hook") {
-                let _ = crate_call(e, "set_section_mix", json!({"section": s.name, "track": "drums", "volume_db": base + HOOK_DRUM_LIFT_DB, "all_occurrences": true}));
+            for h in &hooks {
+                let _ = crate_call(e, "set_section_mix", json!({"section": h, "track": "drums", "volume_db": base + HOOK_DRUM_LIFT_DB, "all_occurrences": true}));
+            }
+        }
+        let _ = hook_double(e, &hooks);
+        if let Ok(i) = e.project.track_index("vocal") {
+            let base = e.project.tracks[i].volume_db;
+            for h in &hooks {
+                let _ = crate_call(e, "set_section_mix", json!({"section": h, "track": "vocal", "volume_db": base + HOOK_VOCAL_LIFT_DB, "all_occurrences": true}));
             }
         }
     }
@@ -440,8 +449,45 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
 }
 
 
-/// How much the drums bus rises in the hooks of a sung song (dB).
-pub const HOOK_DRUM_LIFT_DB: f32 = 1.5;
+/// How much the drums bus rises in the hooks of a sung song (dB; critic v19).
+pub const HOOK_DRUM_LIFT_DB: f32 = 3.0;
+/// How much the voice rises in the hooks (dB; critic v19).
+pub const HOOK_VOCAL_LIFT_DB: f32 = 1.5;
+/// The hook double: this many dB under the voice, this late (ms).
+pub const DOUBLE_DB: f32 = -9.0;
+pub const DOUBLE_DELAY_MS: f32 = 22.0;
+
+/// A quiet double of the voice that only plays in the hooks: the vocal track
+/// cloned (same chain and sends) as "vocal_double", its clip 22 ms late,
+/// 9 dB under, a slow chorus so it is a second take rather than a comb, and
+/// silent outside the hooks (fader at -100 dB, section mix opens it).
+pub fn hook_double(e: &mut Engine, hooks: &[String]) -> Result<()> {
+    if hooks.is_empty() {
+        return Ok(());
+    }
+    let vi = e.project.track_index("vocal")?;
+    let Some(clip) = e.project.audio_clips.iter().find(|c| c.track == "vocal").cloned() else {
+        return Ok(());
+    };
+    let mut t = e.project.tracks[vi].clone();
+    let level = t.volume_db + DOUBLE_DB;
+    t.name = "vocal_double".into();
+    t.volume_db = -100.0;
+    t.pan = 0.2;
+    e.project.tracks.retain(|x| x.name != "vocal_double");
+    e.project.audio_clips.retain(|c| c.track != "vocal_double");
+    e.project.automation.retain(|l| l.target != "vocal_double");
+    e.project.tracks.push(t);
+    let mut c = clip;
+    c.track = "vocal_double".into();
+    c.start_beat += DOUBLE_DELAY_MS / 1000.0 * e.project.bpm / 60.0;
+    e.project.audio_clips.push(c);
+    e.call_from("add_effect", &json!({"track": "vocal_double", "type": "chorus", "params": {"rate_hz": 0.4, "depth_ms": 6.0, "mix": 0.6}}), "producer")?;
+    for h in hooks {
+        e.call_from("set_section_mix", &json!({"section": h, "track": "vocal_double", "volume_db": level, "all_occurrences": true}), "producer")?;
+    }
+    Ok(())
+}
 
 /// Name of the bus that carries the beat through the lo-fi tape.
 pub const TAPE_BUS: &str = "beat_tape";

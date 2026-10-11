@@ -321,12 +321,6 @@ pub fn write_melody(perf: &mut Performance, chord_at: &dyn Fn(f32) -> Option<Cho
     }
 }
 
-/// Words a singer starts on a hiss: s, sh, f, th, z, ph and a soft c.
-pub fn spelled_fricative_onset(word: &str) -> bool {
-    let w: String = word.chars().filter(|c| c.is_alphabetic()).collect::<String>().to_lowercase();
-    ["s", "f", "th", "z", "ph", "ce", "ci", "cy"].iter().any(|p| w.starts_with(p))
-}
-
 /// Length in samples of a clip's leading fricative ("s" / "st" in "stay"):
 /// after any near-silence, the run of 5 ms frames that cross zero more than
 /// 3000 times a second (a hiss; a voiced vowel crosses ~1000), capped at
@@ -358,69 +352,87 @@ pub fn fricative_len(x: &[f32]) -> Option<usize> {
     Some(i * w)
 }
 
-/// Split a word into its leading fricative and the rest. The fricative is
-/// held at 80-100 ms whatever the word's stretch and lifted +5 dB (critic,
-/// beat 10 r1: the TTS "s" lasted ~40 ms at 15 dB under the vowel and ~20 ms
-/// after placement, so "stay" was heard as "day" in every hook).
-pub fn split_fricative(text: &str, x: &[f32]) -> (Option<Vec<f32>>, Vec<f32>) {
-    if !spelled_fricative_onset(text) {
-        return (None, x.to_vec());
+/// The procedural hiss a word starts on, by spelling: (low Hz, high Hz,
+/// level under the vowel in dB, closure before the next consonant in ms).
+/// s / soft c: 4.5-8 kHz; sh: 2.5-6.5 kHz; f / th: a softer 1.5-8 kHz.
+/// "st", "sp", "sk", "sc"+consonant get a 25 ms closure before the stop.
+pub fn fricative_recipe(word: &str) -> Option<(f32, f32, f32, f32)> {
+    let w: String = word.chars().filter(|c| c.is_alphabetic()).collect::<String>().to_lowercase();
+    let b = w.as_bytes();
+    if b.len() < 2 {
+        return None;
     }
-    let Some(k) = fricative_len(x) else {
-        return (None, x.to_vec());
+    let stop_after = |i: usize| b.get(i).is_some_and(|c| matches!(*c, b't' | b'p' | b'k' | b'c'));
+    match (b[0], b[1]) {
+        (b's', b'h') => Some((2500.0, 6500.0, -9.0, 0.0)),
+        (b's', _) => Some((4500.0, 8000.0, -8.0, if stop_after(1) { 25.0 } else { 0.0 })),
+        (b'c', b'e' | b'i' | b'y') => Some((4500.0, 8000.0, -8.0, 0.0)),
+        (b'z', _) => Some((4500.0, 8000.0, -11.0, 0.0)),
+        (b'f', _) | (b'p', b'h') => Some((1500.0, 8000.0, -14.0, 0.0)),
+        (b't', b'h') => Some((1500.0, 8000.0, -16.0, 0.0)),
+        _ => None,
+    }
+}
+
+/// Split a word into a leading fricative and the rest. The TTS voice barely
+/// says the "s" of an isolated word (critic v19: "Stay" heard 0/8 times, as
+/// "Take"; "City" as "Today"), so the hiss is made, not kept: band-passed
+/// noise 100 ms long with a 35 ms fade-in (a fast rise reads as t/ch), at a
+/// fixed level under the word's vowel, plus a short closure before the stop
+/// of an "st" cluster. Whatever weak hiss the take had is cut off the body.
+/// Returns (hiss, gap in samples before the body, body).
+pub fn split_fricative(text: &str, x: &[f32]) -> (Option<Vec<f32>>, usize, Vec<f32>) {
+    let Some((lo, hi, db, closure_ms)) = fricative_recipe(text) else {
+        return (None, 0, x.to_vec());
     };
+    let k = fricative_len(x).unwrap_or(0).min((0.12 * SR) as usize);
     if x.len() < k + (0.08 * SR) as usize {
-        return (None, x.to_vec());
+        return (None, 0, x.to_vec());
     }
-    let len = k as f32 / SR;
-    let target = len.clamp(0.08, 0.10);
-    let mut f = if (target / len - 1.0).abs() > 0.03 { regrain(&x[..k], (target * SR) as usize) } else { x[..k].to_vec() };
-    let lift = 10f32.powf(FRICATIVE_LIFT_DB / 20.0);
-    let fi = ((0.005 * SR) as usize).min(f.len() / 2);
-    let n = f.len();
-    for (i, v) in f.iter_mut().enumerate() {
-        let g = if i < fi { (std::f32::consts::FRAC_PI_2 * i as f32 / fi as f32).sin() } else { 1.0 };
-        *v *= lift * g;
+    let body = x[k..].to_vec();
+    // the vowel's level: the loudest 50 ms of the body
+    let w = (0.05 * SR) as usize;
+    let mut vowel = 0.0f32;
+    let mut i = 0;
+    while i + w <= body.len() {
+        let r = (body[i..i + w].iter().map(|v| v * v).sum::<f32>() / w as f32).sqrt();
+        vowel = vowel.max(r);
+        i += w / 2;
     }
-    let _ = n;
-    (Some(f), x[k..].to_vec())
-}
-
-/// Re-length a noise-like segment (a hiss) without moving its spectrum:
-/// 10 ms Hann grains read along the source and overlap-added at 5 ms, with
-/// the overlap normalised. A resampling stretch would pitch an "s" down
-/// toward "sh"; WSOLA needs more than a 40 ms window to work with.
-pub fn regrain(x: &[f32], target: usize) -> Vec<f32> {
-    let g = ((0.010 * SR) as usize).min(x.len()).max(2);
-    let hop = (g / 2).max(1);
-    let mut out = vec![0.0f32; target + g];
-    let mut norm = vec![0.0f32; target + g];
-    let span = x.len().saturating_sub(g);
-    let mut k = 0usize;
-    while k * hop < target {
-        let o = k * hop;
-        // read position follows the output; a small deterministic jitter
-        // keeps repeated grains from combing
-        let base = if target > g { o as f32 / (target - g).max(1) as f32 * span as f32 } else { 0.0 };
-        let jit = (((k as u32).wrapping_mul(2654435761) >> 16) % 64) as f32 / 64.0 - 0.5;
-        let src = (base + jit * hop as f32).clamp(0.0, span as f32) as usize;
-        for j in 0..g {
-            let wv = 0.5 - 0.5 * (std::f32::consts::TAU * j as f32 / g as f32).cos();
-            out[o + j] += x[src + j] * wv;
-            norm[o + j] += wv * wv;
+    if vowel <= 1e-6 {
+        return (None, 0, x.to_vec());
+    }
+    let n = (FRICATIVE_MS / 1000.0 * SR) as usize;
+    let mut seed = text.bytes().fold(2166136261u32, |h, c| (h ^ c as u32).wrapping_mul(16777619));
+    let mut f: Vec<f32> = (0..n + 512)
+        .map(|_| {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+        })
+        .collect();
+    for _ in 0..2 {
+        let mut hp = crate::dsp::Biquad::new(crate::dsp::BiquadKind::LowCut, lo, 0.7, 0.0);
+        let mut lp = crate::dsp::Biquad::new(crate::dsp::BiquadKind::HighCut, hi, 0.7, 0.0);
+        for v in f.iter_mut() {
+            *v = lp.process(hp.process(*v));
         }
-        k += 1;
     }
-    out.truncate(target);
-    // power-normalise (uncorrelated grains add in power)
-    for (v, n) in out.iter_mut().zip(norm.iter()) {
-        *v /= n.sqrt().max(0.3);
+    let mut f = f.split_off(512); // drop the filters' settling
+    let rms = (f.iter().map(|v| v * v).sum::<f32>() / n as f32).sqrt().max(1e-9);
+    let g = vowel * 10f32.powf(db / 20.0) / rms;
+    let fi = (FRICATIVE_FADE_IN_MS / 1000.0 * SR) as usize;
+    let fo = (0.012 * SR) as usize;
+    for (j, v) in f.iter_mut().enumerate() {
+        let a = if j < fi { 0.5 - 0.5 * (std::f32::consts::PI * j as f32 / fi as f32).cos() } else { 1.0 };
+        let b = if j + fo > n { 0.5 - 0.5 * (std::f32::consts::PI * (n - j) as f32 / fo as f32).cos() } else { 1.0 };
+        *v *= g * a * b;
     }
-    out
+    (Some(f), (closure_ms / 1000.0 * SR) as usize, body)
 }
 
-/// How far a leading fricative is lifted over the TTS take.
-pub const FRICATIVE_LIFT_DB: f32 = 5.0;
+/// Length of a made fricative (ms) and its fade-in (ms).
+pub const FRICATIVE_MS: f32 = 100.0;
+pub const FRICATIVE_FADE_IN_MS: f32 = 35.0;
 
 /// Render the performance: every word stretched to its slot and laid at its
 /// grid position (15 ms equal-power fade in, 25 ms out); in sing mode every syllable is
@@ -432,27 +444,26 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
     // leading fricatives ride their own buffer: never pitch-tuned, held at
     // 80-100 ms and placed just before the beat so the vowel lands on it
     let mut hiss = vec![0.0f32; out.len()];
-    let xf = (0.004 * SR) as usize;
+    let xf = (0.005 * SR) as usize;
     for (w, c) in perf.words.iter().zip(clips.iter()) {
-        let (fric, body) = split_fricative(&c.text, &c.audio);
+        let (fric, gap, body) = split_fricative(&c.text, &c.audio);
         let flen = fric.as_ref().map(|f| f.len()).unwrap_or(0);
         let mut y = if flen > 0 {
             // the rest of the word takes what is left of its slot
             let total = c.audio.len() as f32 * w.stretch;
-            let bt = (total - flen as f32).max(body.len() as f32 * 0.6);
+            let bt = (total - (flen + gap) as f32).max(body.len() as f32 * 0.6);
             stretch_nucleus(&body, bt / body.len().max(1) as f32)
         } else {
             stretch_nucleus(&c.audio, w.stretch)
         };
         // start on a zero crossing (within 3 ms), then equal-power fades:
-        // 15 ms in (4 ms after a fricative), 25 ms out (critic: splice clicks at every word edge)
-        if flen == 0 {
-            let zc = (1..((0.003 * SR) as usize).min(y.len())).find(|&i| (y[i - 1] <= 0.0) != (y[i] <= 0.0)).unwrap_or(0);
-            if zc > 0 {
-                y.drain(..zc);
-            }
+        // 10 ms in (8 ms after a fricative), 25 ms out (critic: splice clicks
+        // at every word edge; v19: 5-10 ms on every onset)
+        let zc = (1..((0.003 * SR) as usize).min(y.len())).find(|&i| (y[i - 1] <= 0.0) != (y[i] <= 0.0)).unwrap_or(0);
+        if zc > 0 {
+            y.drain(..zc);
         }
-        let fi = ((if flen > 0 { 0.004 } else { 0.015 } * SR) as usize).min(y.len() / 2);
+        let fi = ((if flen > 0 { 0.008 } else { 0.010 } * SR) as usize).min(y.len() / 2);
         let fo = ((0.025 * SR) as usize).min(y.len() / 2);
         let n = y.len();
         for i in 0..fi {
@@ -467,13 +478,11 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
                 out[at + i] += v;
             }
         }
-        if let Some(mut f) = fric {
-            // the hiss ends 4 ms into the vowel, crossfaded
+        if let Some(f) = fric {
+            // the hiss comes before the beat so the vowel lands on it: it
+            // overlaps the body by 5 ms, or ends a closure before an "st" stop
             let k = f.len();
-            for i in 0..xf.min(k) {
-                f[k - 1 - i] *= (std::f32::consts::FRAC_PI_2 * i as f32 / xf as f32).sin();
-            }
-            let end = at + xf.min(k);
+            let end = if gap > 0 { at.saturating_sub(gap) } else { at + xf.min(k) };
             let skip = k.saturating_sub(end);
             let s0 = end + skip - k;
             for (i, v) in f.iter().enumerate().skip(skip) {
@@ -800,29 +809,35 @@ mod tests {
     }
 
     #[test]
-    fn leading_s_is_held_and_lifted() {
-        // a hiss (white-ish noise, 35 ms) then a vowel (tone, 300 ms): "stay"
+    fn leading_s_is_made_with_a_slow_rise() {
+        // a weak hiss (35 ms) then a vowel (tone, 300 ms): the TTS "stay"
         let mut x: Vec<f32> = Vec::new();
         let mut s = 12345u32;
         for _ in 0..(0.035 * SR) as usize {
             s = s.wrapping_mul(1664525).wrapping_add(1013904223);
-            x.push(((s >> 9) as f32 / (1u32 << 23) as f32 - 0.5) * 0.1);
+            x.push(((s >> 9) as f32 / (1u32 << 23) as f32 - 0.5) * 0.02);
         }
         x.extend(tone(200.0, 0.3));
         let k = fricative_len(&x).expect("hiss found");
         assert!((k as f32 / SR - 0.035).abs() < 0.011, "{}", k as f32 / SR);
-        let (f, body) = split_fricative("stay", &x);
-        let f = f.expect("split");
-        let fl = f.len() as f32 / SR;
-        assert!((0.079..=0.101).contains(&fl), "held {fl}");
-        let rms = |v: &[f32]| (v.iter().map(|a| a * a).sum::<f32>() / v.len() as f32).sqrt();
-        let lift = 20.0 * (rms(&f[(0.01 * SR) as usize..]) / rms(&x[..k])).log10();
-        assert!((3.0..7.0).contains(&lift), "lift {lift}");
+        let (f, gap, body) = split_fricative("Stay", &x);
+        let f = f.expect("made");
+        assert!((f.len() as f32 / SR - 0.1).abs() < 0.002, "{}", f.len());
+        assert!((gap as f32 / SR - 0.025).abs() < 0.002, "st closure {gap}");
         assert_eq!(body.len(), x.len() - k);
-        // the spectrum stays put: the held hiss still crosses zero fast
-        let zc = f.windows(2).filter(|p| (p[0] <= 0.0) != (p[1] <= 0.0)).count() as f32 / fl;
-        assert!(zc > 8000.0, "zcr {zc}");
-        // a voiced start and a non-fricative spelling are left alone
+        let rms = |v: &[f32]| (v.iter().map(|a| a * a).sum::<f32>() / v.len().max(1) as f32).sqrt();
+        // the rise is slow: the first 10 ms are far quieter than the middle
+        let ms = |a: f32, b: f32| rms(&f[(a * SR) as usize..(b * SR) as usize]);
+        assert!(ms(0.0, 0.01) < 0.25 * ms(0.04, 0.08), "rise");
+        // level: ~8 dB under the vowel
+        let lvl = 20.0 * (ms(0.04, 0.08) / rms(&tone(200.0, 0.3))).log10();
+        assert!((-11.0..-5.0).contains(&lvl), "level {lvl}");
+        // the hiss lives in 4.5-8 kHz: it crosses zero fast
+        let zc = f.windows(2).filter(|p| (p[0] <= 0.0) != (p[1] <= 0.0)).count() as f32 / 0.1;
+        assert!(zc > 7000.0, "zcr {zc}");
+        // "City" gets an s without a closure, "sh" a lower band, "day" nothing
+        assert_eq!(split_fricative("City", &x).1, 0);
+        assert!(fricative_recipe("shine").unwrap().0 < 3000.0);
         assert!(split_fricative("day", &x).0.is_none());
         assert!(fricative_len(&tone(200.0, 0.3)).is_none());
     }

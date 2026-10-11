@@ -93,10 +93,13 @@ pub fn vocal_chain(e: &mut Engine) -> Result<()> {
         {"kind": "bell", "freq": 300.0, "gain_db": -2.5, "q": 1.0},
         {"kind": "bell", "freq": 3200.0, "gain_db": 2.0, "q": 0.9},
         {"kind": "high_shelf", "freq": 10000.0, "gain_db": 2.5, "q": 0.7}]}}))?;
-    call(e, "add_effect", json!({"track": "vocal", "type": "compressor", "params": {"threshold_db": -20.0, "ratio": 3.5, "attack_ms": 6.0, "release_ms": 90.0, "makeup_db": 4.0}}))?;
-    // gentler than before (was -26 dB): the leading s/sh/f/th are now held
+    call(e, "add_effect", json!({"track": "vocal", "type": "compressor", "params": {"threshold_db": -20.0, "ratio": 3.5, "attack_ms": 6.0, "release_ms": 160.0, "makeup_db": 4.0}}))?;
+    // the voice's own dynamics release slowly (critic v19: a ~40 ms duck
+    // release made a click at 92.19 s; 120-200 ms): compressor 160 ms (was
+    // 90), de-esser 120 ms (was 60).
+    // De-esser gentler than before (was -26 dB): the leading s/sh/f/th are now held
     // and lifted on purpose (critic v18), the de-esser only tames the peaks
-    call(e, "add_effect", json!({"track": "vocal", "type": "deesser", "params": {"freq": 6500.0, "threshold_db": -21.0, "range_db": -6.0}}))?;
+    call(e, "add_effect", json!({"track": "vocal", "type": "deesser", "params": {"freq": 6500.0, "threshold_db": -21.0, "range_db": -6.0, "release_ms": 120.0}}))?;
     call(e, "add_bus", json!({"name": "vox_verb"}))?;
     call(e, "add_effect", json!({"track": "vox_verb", "type": "reverb", "params": {"size": 0.75, "mix": 1.0, "predelay_ms": 40.0, "low_cut_hz": 250.0}}))?;
     call(e, "add_bus", json!({"name": "vox_delay"}))?;
