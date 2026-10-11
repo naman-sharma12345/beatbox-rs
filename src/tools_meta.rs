@@ -30,7 +30,7 @@ fn modules() -> Vec<(&'static str, &'static str, Vec<Tool>)> {
         ("samples", "palettes, kits, sample search and flips", crate::tools_palette::tools()),
         ("vocal", "vocals: transcribe, tune, vocal_to_song, audio clips", crate::tools_vocal::tools()),
         ("groove", "groove extraction and drum tuning", crate::tools_groove::tools()),
-        ("export", "render to wav/flac/mp3, stems, mastering", crate::tools_delivery::tools()),
+        ("export", "render to wav/flac/mp3, stems, mastering, bounce a track to audio", { let mut v = crate::tools_delivery::tools(); v.extend(crate::tools_bounce::tools()); v }),
     ]
 }
 
