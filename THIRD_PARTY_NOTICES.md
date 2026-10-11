@@ -75,3 +75,14 @@ SOFTWARE.
 - **Greg Sullivan E-Pianos** (Yamaha CP80, Hohner Pianet T, Wurlitzer EP200; SFZ conversion by kinwie), CC BY 3.0, credit Greg Sullivan. Catalog programs `gregsullivan_*` fetch files from github.com/sfzinstruments/GregSullivan.E-Pianos at commit 8c3e581, blob-id checked. https://github.com/sfzinstruments/GregSullivan.E-Pianos
 - **zip** (MIT), **tar** (MIT OR Apache-2.0), **flate2** (MIT OR Apache-2.0) Rust crates: archive unpacking for `import_from_url`.
 - The sound catalog (`src/sound_catalog.json`) is metadata only; each entry carries its own licence and source, and only CC0 / CC BY / MIT-style items are listed.
+
+## HT-Demucs stem separator (fetched on demand, not bundled)
+
+- Model: htdemucs, Hybrid Transformer Demucs (Rouard, Massa, Défossez; Meta AI),
+  https://github.com/facebookresearch/demucs, MIT License, Copyright (c) Meta Platforms, Inc. and affiliates.
+- ONNX export: https://huggingface.co/StemSplitio/htdemucs-onnx (revision `d54ed9e`), MIT License.
+  File `htdemucs_fp16weights.onnx` (166 MB, sha256 `d05c269d…5db70a`) is downloaded only when
+  `separate_stems` is called with `fetch: true`, into `~/.beatbox/models`; it is never committed.
+- `scripts/separate_stems.py` follows the model card's chunked overlap-add reference inference (MIT).
+- Use: analysis of a reference record (transcription, sound matching, A/B scoring). Separated stems
+  of someone else's record are never placed in a song.

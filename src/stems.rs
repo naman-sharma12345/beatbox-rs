@@ -139,6 +139,23 @@ fn separate_stems(e: &mut Engine, a: &Value) -> Result<Value> {
     if !path.exists() {
         bail!("no file at {}", path.display());
     }
+    // method: auto (neural when its model is installed or fetch:true), neural, classic
+    let method = s_opt(a, "method").unwrap_or_else(|| "auto".into());
+    let fetch = a.get("fetch").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mut fell_back: Option<String> = None;
+    if method == "neural" || (method == "auto" && (fetch || model_file().exists())) {
+        let dir = match s_opt(a, "out_dir") {
+            Some(d) => e.resolve(&d),
+            None => e.renders_dir().join(format!("{}_stems", path.file_stem().and_then(|s| s.to_str()).unwrap_or("audio"))),
+        };
+        std::fs::create_dir_all(&dir)?;
+        let threads = a.get("threads").and_then(|v| v.as_u64()).unwrap_or(2);
+        match separate_neural(e, &path, &dir, fetch, threads) {
+            Ok(v) => return Ok(v),
+            Err(err) if method == "neural" => return Err(err),
+            Err(err) => fell_back = Some(err.to_string()),
+        }
+    }
     let (l, r) = crate::samples::decode_stereo(&path)?;
     if l.len() < (SR * 0.5) as usize {
         bail!("less than half a second of audio");
@@ -161,19 +178,62 @@ fn separate_stems(e: &mut Engine, a: &Value) -> Result<Value> {
         let share = (rms(sl) + rms(sr)) / total;
         out.push(json!({"stem": name, "path": p.to_string_lossy(), "level_share_pct": (share * 100.0).round()}));
     }
-    Ok(json!({"stems": out, "seconds": (l.len() as f32 / SR * 100.0).round() / 100.0,
+    Ok(json!({"stems": out, "seconds": (l.len() as f32 / SR * 100.0).round() / 100.0, "neural_unavailable": fell_back,
         "method": "harmonic/percussive median filtering + bass band + centre-panned voice band (no model); the four stems sum back to the input",
         "next": ["import_sample", "add_audio_clip"]}))
+}
+
+/// The neural separator's helper (htdemucs, ONNX, CPU): scripts/separate_stems.py.
+pub const STEMS_PY: &str = include_str!("../scripts/separate_stems.py");
+
+/// Where the separator model lives once fetched (~/.beatbox/models or $BEATBOX_MODELS).
+pub fn model_file() -> std::path::PathBuf {
+    let dir = std::env::var("BEATBOX_MODELS").map(std::path::PathBuf::from).unwrap_or_else(|_| {
+        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".beatbox").join("models")
+    });
+    dir.join("htdemucs_fp16weights.onnx")
+}
+
+/// Neural separation through the helper script; Err carries the helper's words.
+fn separate_neural(e: &Engine, path: &std::path::Path, dir: &std::path::Path, fetch: bool, threads: u64) -> Result<Value> {
+    let script = e.workdir.join(".beatbox_separate_stems.py");
+    std::fs::write(&script, STEMS_PY)?;
+    let py = std::env::var("BEATBOX_PYTHON").unwrap_or_else(|_| "python3".into());
+    let mut cmd = std::process::Command::new(&py);
+    cmd.arg(&script).arg(path).arg(dir).arg("--threads").arg(threads.max(1).to_string());
+    if fetch {
+        cmd.arg("--fetch");
+    }
+    let o = cmd.output().map_err(|err| anyhow::anyhow!("running {py}: {err} (set BEATBOX_PYTHON to a Python with onnxruntime)"))?;
+    let txt = String::from_utf8_lossy(&o.stdout);
+    let v: Value = serde_json::from_str(txt.trim()).map_err(|_| {
+        anyhow::anyhow!("separator failed: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("no output"))
+    })?;
+    if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
+        bail!("{err}");
+    }
+    let mut out = Vec::new();
+    for name in STEM_NAMES.iter() {
+        if let Some(p) = v["stems"].get(*name).and_then(|x| x.as_str()) {
+            out.push(json!({"stem": name, "path": p}));
+        }
+    }
+    Ok(json!({"stems": out, "seconds": v["duration_s"], "took_s": v["seconds"],
+        "method": "htdemucs neural separator (MIT, ONNX on CPU, 7.8 s segments)",
+        "next": ["import_sample", "add_audio_clip", "transcribe"]}))
 }
 
 pub fn tools() -> Vec<Tool> {
     vec![Tool {
         name: "separate_stems",
-        description: "Stem separator (FL): split an audio file (a mix, a loop, a sample) into drums, bass, vocals and other WAVs in out_dir (default renders/<name>_stems). Signal processing, no model: drums = percussive part, bass = harmonic below ~200 Hz, vocals = centre-panned harmonic voice band, other = the rest; the stems sum back to the input. Then import_sample / add_audio_clip a stem to remix it. Dense mixes bleed between stems.",
+        description: "Stem separator (FL): split an audio file (a mix, a loop, a sample) into drums, bass, vocals and other WAVs in out_dir (default renders/<name>_stems). Signal processing, no model: drums = percussive part, bass = harmonic below ~200 Hz, vocals = centre-panned harmonic voice band, other = the rest; the stems sum back to the input. Then import_sample / add_audio_clip a stem to remix it. method: auto (default) uses the htdemucs neural separator when its model is installed (fetch:true downloads it once, 166 MB, MIT; CPU, a few minutes per song) and the signal-processing split otherwise (dense mixes bleed); neural / classic force one.",
         mutates: false,
         schema: || obj(json!({
             "path": {"type": "string", "description": "audio file (wav, mp3, flac, ogg)"},
-            "out_dir": {"type": "string"}
+            "out_dir": {"type": "string"},
+            "method": {"type": "string", "enum": ["auto", "neural", "classic"]},
+            "fetch": {"type": "boolean", "description": "download the neural separator model if missing"},
+            "threads": {"type": "integer"}
         }), &["path"]),
         run: separate_stems,
     }]
