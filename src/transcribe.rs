@@ -592,6 +592,109 @@ pub fn transcribe_bass(x: &[f32], grid: Grid, steps_per_bar: usize) -> Vec<PNote
     notes
 }
 
+/// Attack times (s) from a log-spectral flux: each bin's rise in dB, so a soft
+/// re-pick in a quiet passage counts as much as a loud one in a busy passage
+/// (a linear flux with one global threshold misses the quiet ones). Peaks
+/// must top the mean of the surrounding 0.1 s by `delta` (0..1 of the curve's
+/// range; 0.07 is a good default; lower finds softer attacks).
+pub fn log_flux_onsets(x: &[f32], delta: f32) -> Vec<f32> {
+    let (nfft, hop) = (2048usize, 512usize);
+    if x.len() < nfft {
+        return Vec::new();
+    }
+    let bins = ((8000.0 / SR * nfft as f32) as usize).min(nfft / 2);
+    let n = x.len() / hop + 1;
+    let w = hann(nfft);
+    let fft = Fft::new(nfft);
+    let (mut re, mut im) = (vec![0.0f32; nfft], vec![0.0f32; nfft]);
+    let mut spec = vec![0.0f32; n * bins];
+    let mut pmax = 1e-20f32;
+    for i in 0..n {
+        for k in 0..nfft {
+            let j = (i * hop + k) as isize - (nfft / 2) as isize;
+            re[k] = if j >= 0 && (j as usize) < x.len() { x[j as usize] * w[k] } else { 0.0 };
+            im[k] = 0.0;
+        }
+        fft.forward(&mut re, &mut im);
+        for k in 1..bins {
+            let p = re[k] * re[k] + im[k] * im[k];
+            spec[i * bins + k] = p;
+            pmax = pmax.max(p);
+        }
+    }
+    let floor = pmax * 1e-8;
+    for v in spec.iter_mut() {
+        *v = 10.0 * v.max(floor).log10();
+    }
+    let mut env = vec![0.0f32; n];
+    for i in 1..n {
+        let mut s = 0.0;
+        for k in 1..bins {
+            s += (spec[i * bins + k] - spec[(i - 1) * bins + k]).max(0.0);
+        }
+        env[i] = s / bins as f32;
+    }
+    let (lo, hi) = env.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+    if hi - lo <= 1e-9 {
+        return Vec::new();
+    }
+    for v in env.iter_mut() {
+        *v = (*v - lo) / (hi - lo);
+    }
+    let fr = SR / hop as f32;
+    let (pm, pa) = (((0.03 * fr).round() as usize).max(1), ((0.1 * fr).round() as usize).max(1));
+    let wait = ((0.03 * fr).round() as usize).max(1);
+    let mut out = Vec::new();
+    let mut last: Option<usize> = None;
+    for i in 1..n {
+        let a = i.saturating_sub(pm);
+        if env[a..=i].iter().any(|v| *v > env[i]) || (i + 1 < n && env[i + 1] > env[i]) {
+            continue;
+        }
+        let (a2, z2) = (i.saturating_sub(pa), (i + pa + 1).min(n));
+        let mean = env[a2..z2].iter().sum::<f32>() / (z2 - a2) as f32;
+        if env[i] < mean + delta {
+            continue;
+        }
+        if last.map(|l| i - l <= wait).unwrap_or(false) {
+            continue;
+        }
+        last = Some(i);
+        out.push(i as f32 / fr);
+    }
+    out
+}
+
+/// Split held notes where the part is struck again on the same pitch. A pitch
+/// tracker hears a re-picked note as one long note, and on a low string the
+/// level barely rises, so the re-attack is found from onsets (broadband
+/// attacks, the times in `onsets`, s) that fall inside a note: at least
+/// three quarters of a step after its start and half a step before its end.
+pub fn split_reattacks(onsets: &[f32], notes: &mut Vec<PNote>, grid: Grid, steps_per_bar: usize) -> usize {
+    let step_s = grid.bar_s() / steps_per_bar as f32;
+    let mut out: Vec<PNote> = Vec::with_capacity(notes.len());
+    let mut added = 0;
+    for n in notes.iter() {
+        let end_step = n.step + n.len;
+        let mut cur = n.clone();
+        let lo = onsets.partition_point(|t| *t < n.t0 + step_s * 0.75);
+        for &t in onsets[lo..].iter().take_while(|t| **t < n.t1 - step_s * 0.5) {
+            let s = ((t - grid.downbeat_s) / step_s).round().max(0.0) as usize;
+            if s <= cur.step || s >= end_step {
+                continue;
+            }
+            cur.len = s - cur.step;
+            cur.t1 = t;
+            out.push(cur.clone());
+            cur = PNote { t0: t, t1: n.t1, pitch: n.pitch, vel: n.vel, step: s, len: end_step - s };
+            added += 1;
+        }
+        out.push(cur);
+    }
+    *notes = out;
+    added
+}
+
 /// Move each note's start to the steepest level rise just before it, measured
 /// with a short (23 ms) window. The long pitch window places low notes up to
 /// ~100 ms late, which rounds them onto the next 16th; this pulls them back.
@@ -1300,5 +1403,38 @@ mod tests {
         assert_eq!(g.bar_of(4.31), 2);
         // a short lead-in keeps the first downbeat as bar 1
         assert!((Grid::new(120.0, 0.1, 4).downbeat_s - 0.1).abs() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod reattack_tests {
+    use super::*;
+    #[test]
+    fn a_held_note_struck_again_is_split_on_its_step() {
+        let g = Grid { bpm: 120.0, downbeat_s: 0.0, beats_per_bar: 4 };
+        // one bar = 2 s, a 16th = 0.125 s; a note held the whole bar, re-struck on step 12
+        let mut ns = vec![PNote { t0: 0.0, t1: 2.0, pitch: 33, vel: 90, step: 0, len: 16 }];
+        let added = split_reattacks(&[0.01, 0.06, 1.51, 1.97], &mut ns, g, 16);
+        assert_eq!(added, 1, "{ns:?}");
+        assert_eq!((ns[0].step, ns[0].len), (0, 12));
+        assert_eq!((ns[1].step, ns[1].len, ns[1].pitch), (12, 4, 33));
+    }
+
+    #[test]
+    fn log_flux_finds_a_soft_repick_as_well_as_a_loud_one() {
+        // a decaying 110 Hz pluck at 0.5 s (loud) and again at 2.0 s, 30 dB softer
+        let n = (SR * 3.0) as usize;
+        let mut x = vec![0.0f32; n];
+        for (t0, amp) in [(0.5f32, 0.8f32), (2.0, 0.025)] {
+            let s0 = (t0 * SR) as usize;
+            for i in s0..n {
+                let t = (i - s0) as f32 / SR;
+                x[i] += amp * (-t * 3.0).exp() * ((2.0 * PI * 110.0 * t).sin() + 0.3 * (2.0 * PI * 220.0 * t).sin() + 0.2 * (2.0 * PI * 1760.0 * t).sin() * (-t * 40.0).exp());
+            }
+        }
+        let on = log_flux_onsets(&x, 0.07);
+        for t0 in [0.5f32, 2.0] {
+            assert!(on.iter().any(|t| (t - t0).abs() < 0.04), "{t0} not in {on:?}");
+        }
     }
 }

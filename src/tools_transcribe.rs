@@ -194,7 +194,8 @@ fn transcribe_bass(e: &mut Engine, a: &Value) -> Result<Value> {
     let (path, x) = load(e, a)?;
     let steps = steps_arg(a)?;
     let (grid, src) = grid_for(e, a, &path, &x)?;
-    let notes = tr::transcribe_bass(&x, grid, steps);
+    let mut notes = tr::transcribe_bass(&x, grid, steps);
+    let restruck = if b_or(a, "reattacks", false) { tr::split_reattacks(&tr::log_flux_onsets(&x, f_opt(a, "reattack_delta").unwrap_or(0.07) as f32), &mut notes, grid, steps) } else { 0 };
     let base = out_base(e, a, &path, "bass")?;
     let midi = base.with_extension("mid");
     write_midi(&midi, &tr::notes_midi(&notes, grid, steps, "Bass", Some(33), b_or(a, "keep_timing", false)))?;
@@ -203,6 +204,9 @@ fn transcribe_bass(e: &mut Engine, a: &Value) -> Result<Value> {
     write_notes_detail(&detail, &notes, &grid, &src, steps, dur)?;
     let imported = maybe_import(e, a, &midi, "bass_transcribed");
     let mut v = pitched_summary(&notes, &grid, &src, steps, dur, &midi, &detail, imported);
+    if b_or(a, "reattacks", false) {
+        v["restruck_notes"] = json!(restruck);
+    }
     v["next"] = json!(["import_midi", "transcribe_chords", "match_timbre"]);
     Ok(v)
 }
@@ -354,7 +358,7 @@ pub fn tools() -> Vec<Tool> {
             name: "transcribe_bass",
             description: "Bass line transcription: the notes of a bass part (30-400 Hz, one note at a time) with start, length and velocity snapped to the bar grid. Use the bass stem from separate_stems; pass the full mix as grid_from so bars match the drums. Writes MIDI and a per-bar JSON; import:true adds it to the project.",
             mutates: true,
-            schema: || obj(grid_props(json!({"steps_per_bar": {"type": "integer", "enum": [8, 12, 16, 24, 32]}})), &["path"]),
+            schema: || obj(grid_props(json!({"steps_per_bar": {"type": "integer", "enum": [8, 12, 16, 24, 32]}, "reattacks": {"type": "boolean", "description": "split a held note where the same pitch is struck again (pumping 8ths, a re-picked root on the 'and' of a beat); found from the attacks in the stem. Off by default"}, "reattack_delta": {"type": "number", "description": "with reattacks: how far an attack must stand out (0.02-0.3, default 0.07; lower finds softer re-picks)"}})), &["path"]),
             run: transcribe_bass,
         },
         Tool {

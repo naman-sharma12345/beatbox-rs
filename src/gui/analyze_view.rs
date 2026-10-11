@@ -25,6 +25,8 @@ pub struct AnalyzeState {
     pub grid_from: String,
     pub bpm: String,
     pub add_to_project: bool,
+    pub reattacks: bool,
+    pub reattack_delta: f32,
     pub stems_dir: String,
     pub compare_with: String,
     pub compare_stems: String,
@@ -417,8 +419,20 @@ impl Studio {
                     if ui.add_enabled(ready, egui::Button::new("DRUMS TO MIDI").small()).on_hover_text(format!("transcribe_drums {args}")).clicked() {
                         job = Some(("transcribe_drums", args.clone()));
                     }
-                    if ui.add_enabled(ready, egui::Button::new("BASS TO MIDI").small()).on_hover_text(format!("transcribe_bass {args}")).clicked() {
-                        job = Some(("transcribe_bass", args.clone()));
+                    let mut ba = args.clone();
+                    if self.analyze.reattack_delta <= 0.0 {
+                        self.analyze.reattack_delta = 0.07;
+                    }
+                    if self.analyze.reattacks {
+                        ba["reattacks"] = json!(true);
+                        ba["reattack_delta"] = json!(self.analyze.reattack_delta);
+                    }
+                    if ui.add_enabled(ready, egui::Button::new("BASS TO MIDI").small()).on_hover_text(format!("transcribe_bass {ba}")).clicked() {
+                        job = Some(("transcribe_bass", ba));
+                    }
+                    ui.checkbox(&mut self.analyze.reattacks, "split re-struck notes").on_hover_text("bass: a held note struck again on the same pitch becomes two notes");
+                    if self.analyze.reattacks {
+                        ui.add(egui::Slider::new(&mut self.analyze.reattack_delta, 0.02..=0.3).text("attack threshold")).on_hover_text("lower finds softer re-picks");
                     }
                     if ui.add_enabled(ready, egui::Button::new("CHORDS + KEY").small()).on_hover_text(format!("transcribe_chords {args}")).clicked() {
                         job = Some(("transcribe_chords", args.clone()));
