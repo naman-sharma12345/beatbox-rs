@@ -593,6 +593,22 @@ pub fn transcribe_bass(x: &[f32], grid: Grid, steps_per_bar: usize) -> Vec<PNote
 /// Top line of a (possibly polyphonic) part: the most salient pitch per frame
 /// by harmonic summation over spectral peaks, in lo..hi Hz.
 pub fn transcribe_top_line(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32) -> Vec<PNote> {
+    line_notes(x, grid, steps_per_bar, lo, hi, None)
+}
+
+/// A picked / arpeggiated part (clean guitar arpeggios, harp, plucked keys):
+/// one note per pluck, the pitch whose salience rose most at that onset, so
+/// strings that keep ringing under it do not hide the newly picked one. A
+/// top-line tracker follows the loudest sustained string and misses the
+/// pattern; this follows the picking hand. Each note rings to the next pluck.
+/// `sensitivity` 0..1 (0.5 default): higher finds softer plucks under chorus and reverb.
+pub fn transcribe_picked(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32, sensitivity: f32) -> Vec<PNote> {
+    line_notes(x, grid, steps_per_bar, lo, hi, Some(sensitivity.clamp(0.0, 1.0)))
+}
+
+fn line_notes(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32, picked_sens: Option<f32>) -> Vec<PNote> {
+    let picked = picked_sens.is_some();
+    let sens = picked_sens.unwrap_or(0.5);
     let nfft = 4096usize;
     let bins = nfft / 2 + 1;
     let frames = x.len() / HOP + 1;
@@ -609,6 +625,9 @@ pub fn transcribe_top_line(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32,
     let (mlo_q, mhi_q) = (69.0 + 12.0 * (lo.max(30.0) / 440.0).log2(), 69.0 + 12.0 * (hi.min(4000.0) / 440.0).log2());
     let mut mag = vec![0.0f32; bins];
     let mut sal = vec![0.0f32; nsal];
+    // picked: salience folded to whole semitones (MIDI 24..108) for every frame
+    let nsemi = 85usize;
+    let mut semis: Vec<f32> = if picked { vec![0.0; frames * nsemi] } else { Vec::new() };
     for f in 0..frames {
         for k in 0..nfft {
             let i = (f * HOP + k) as isize - (nfft / 2) as isize;
@@ -663,6 +682,14 @@ pub fn transcribe_top_line(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32,
             best[f] = mlo + bi as f32 / res;
             sal_v[f] = sal[bi];
         }
+        if picked {
+            for (i, v) in sal.iter().enumerate() {
+                let si = (i as f32 / res).round() as usize;
+                if si < nsemi {
+                    semis[f * nsemi + si] += v;
+                }
+            }
+        }
     }
     let sgate = pct(&sal_v, 0.9) * 0.3;
     let lgate = pct(&lvl, 0.95) * 0.06;
@@ -672,9 +699,59 @@ pub fn transcribe_top_line(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32,
         let b = band_analysis(x, 2048, &[(lo.max(30.0), (hi * 4.0).min(12000.0))]);
         b.flux.into_iter().next().unwrap_or_default()
     };
-    let onsets: Vec<usize> = pick_peaks(&fl, 0.8, 3).into_iter().filter(|p| p.1 > 0.25).map(|p| p.0).collect();
+    let onsets: Vec<usize> = pick_peaks(&fl, if picked { 1.2 - 0.8 * sens } else { 0.8 }, 3).into_iter().filter(|p| p.1 > if picked { 0.3 * (1.0 - sens) } else { 0.25 }).map(|p| p.0).collect();
     let min_s = (grid.bar_s() / steps_per_bar as f32 * 0.5).max(0.05);
-    segment_notes(&midi, &lvl, &onsets, fps(), 0.0, min_s, grid, steps_per_bar)
+    if !picked {
+        return segment_notes(&midi, &lvl, &onsets, fps(), 0.0, min_s, grid, steps_per_bar);
+    }
+    let (sa, sb) = ((mlo_q - mlo).round().max(0.0) as usize, ((mhi_q - mlo).round().max(0.0) as usize).min(nsemi));
+    let at = |f: usize, p: usize| semis[f.min(frames - 1) * nsemi + p];
+    let lmax = lvl.iter().cloned().fold(1e-12f32, f32::max);
+    let step_s = grid.bar_s() / steps_per_bar as f32;
+    let fr = fps();
+    let mut out: Vec<PNote> = Vec::new();
+    for (k, &o) in onsets.iter().enumerate() {
+        if lvl[o.min(frames - 1)] < lgate || sb <= sa {
+            continue;
+        }
+        let mut bp = sa;
+        let mut br = f32::MIN;
+        let mut bafter = 0.0;
+        for p in sa..sb {
+            let after = (o..o + 5).map(|f| at(f, p)).fold(0.0f32, f32::max);
+            let before = if o >= 4 { (o - 4..o).map(|f| at(f, p)).sum::<f32>() / 4.0 } else { 0.0 };
+            let rise = after - before;
+            if rise > br {
+                br = rise;
+                bp = p;
+                bafter = after;
+            }
+        }
+        if br <= 0.0 || bafter < sgate * (1.5 - sens) {
+            continue;
+        }
+        let next = onsets.get(k + 1).copied().unwrap_or(frames).min(o + (grid.bar_s() * fr) as usize);
+        let (t0, t1) = (o as f32 / fr, next as f32 / fr);
+        let s0 = ((t0 - grid.downbeat_s) / step_s).round().max(0.0) as usize;
+        let s1 = ((t1 - grid.downbeat_s) / step_s).round().max(0.0) as usize;
+        let vel = (40.0 + 87.0 * (lvl[o.min(frames - 1)] / lmax).sqrt()).clamp(30.0, 127.0) as u8;
+        let nt = PNote { t0, t1, pitch: (mlo as usize + bp).min(127) as u8, vel, step: s0, len: s1.saturating_sub(s0).max(1) };
+        match out.last_mut() {
+            Some(l) if l.step == nt.step => {
+                if nt.vel > l.vel {
+                    *l = nt;
+                }
+            }
+            Some(l) => {
+                if l.step + l.len > nt.step {
+                    l.len = nt.step - l.step;
+                }
+                out.push(nt);
+            }
+            None => out.push(nt),
+        }
+    }
+    out
 }
 
 pub fn notes_midi(notes: &[PNote], grid: Grid, steps_per_bar: usize, name: &str, program: Option<u8>, keep_timing: bool) -> Smf {
@@ -1069,6 +1146,26 @@ mod tests {
             }
         }
         assert!(notes.len() <= 12, "too many notes {got:?}");
+    }
+
+    #[test]
+    fn picked_arpeggio_follows_each_new_string() {
+        // a clean-guitar style arpeggio: G3 Bb3 D4 G4 D4 Bb3 on 8ths, every string left ringing to the bar's end
+        let g = Grid::new(120.0, 0.0, 4);
+        let mut x = vec![0.0f32; (SR * 4.5) as usize];
+        let arp = [55.0f32, 58.0, 62.0, 67.0, 62.0, 58.0, 55.0, 62.0];
+        for bar in 0..2 {
+            for (i, m) in arp.iter().enumerate() {
+                let t0 = bar as f32 * 2.0 + i as f32 * 0.25;
+                tone(&mut x, t0, bar as f32 * 2.0 + 1.99, *m, 0.3, 5);
+            }
+        }
+        let notes = transcribe_picked(&x, g, 16, 120.0, 1500.0, 0.5);
+        let got: Vec<(usize, u8)> = notes.iter().map(|n| (n.step, n.pitch)).collect();
+        let want: Vec<(usize, u8)> = (0..2).flat_map(|b| arp.iter().enumerate().map(move |(i, m)| (b * 16 + i * 2, *m as u8))).collect();
+        let hit = want.iter().filter(|w| got.contains(w)).count();
+        assert!(hit >= 13, "picked {hit}/16: {got:?}");
+        assert!(notes.len() <= 18, "too many {got:?}");
     }
 
     #[test]

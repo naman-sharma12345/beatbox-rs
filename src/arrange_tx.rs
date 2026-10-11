@@ -62,6 +62,54 @@ fn notes_of(v: &Value, kind: &str) -> Result<Vec<(usize, f32, f32, u8, f32)>> {
 
 type Nt = (usize, f32, f32, u8, f32);
 
+/// Play a chord part with another part's rhythm and contour: every note of
+/// `rhythm` (a riff, a picked line) takes the chord tone nearest its own pitch
+/// from the chord sounding at that moment, so a guitar line keeps its picking
+/// pattern and register while every note sits in the transcribed harmony.
+/// Notes are (bar, step, len, pitch, vel), steps in 16ths.
+fn snap_to_chords(chords: &[Nt], rhythm: &[Nt], gate: f32) -> Vec<Nt> {
+    let at = |n: &Nt| n.0 as f32 * 16.0 + n.1;
+    // chord groups: (start, end, pitch classes)
+    let mut groups: Vec<(f32, f32, Vec<u8>)> = Vec::new();
+    let mut cs: Vec<&Nt> = chords.iter().collect();
+    cs.sort_by(|a, b| at(a).partial_cmp(&at(b)).unwrap());
+    for c in cs {
+        let t = at(c);
+        match groups.last_mut() {
+            Some(g) if (g.0 - t).abs() < 0.26 => {
+                g.1 = g.1.max(t + c.2);
+                if !g.2.contains(&(c.3 % 12)) {
+                    g.2.push(c.3 % 12);
+                }
+            }
+            _ => groups.push((t, t + c.2, vec![c.3 % 12])),
+        }
+    }
+    let mut out = Vec::new();
+    for r in rhythm {
+        let t = at(r);
+        // the chord sounding at t, else the last one struck before it
+        let Some(g) = groups.iter().rev().find(|g| g.0 <= t + 0.26) else { continue };
+        let mut best = r.3;
+        let mut bd = i32::MAX;
+        for d in 0..12i32 {
+            for sgn in [1i32, -1] {
+                let p = r.3 as i32 + sgn * d;
+                if (0..128).contains(&p) && g.2.contains(&((p % 12) as u8)) && d < bd {
+                    bd = d;
+                    best = p as u8;
+                }
+            }
+        }
+        let mut len = (r.2 * gate).max(0.25);
+        if g.1 > t {
+            len = len.min((g.1 - t).max(0.25));
+        }
+        out.push((r.0, r.1, len, best, r.4));
+    }
+    out
+}
+
 /// Majority-vote a section's bars into a repeating 1-, 2- or 4-bar part:
 /// a note survives when it sits on the same step and pitch in at least half
 /// the repeats, so a transcriber's stray hits and drop-outs vanish while the
@@ -209,6 +257,10 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
     let mut tracks = Vec::new();
     let mut periods: Vec<Value> = Vec::new();
     for (pname, spec, ns, is_drums) in &loaded {
+        // a part loaded only to lend its rhythm (arpeggiate.rhythm_from) gets no track
+        if spec["source_only"].as_bool().unwrap_or(false) {
+            continue;
+        }
         let inst = spec["instrument"].as_str().map(String::from).unwrap_or_else(|| if *is_drums { "gm:0".into() } else { "preset:keys".into() });
         let used = instrument(e, pname, &inst, *is_drums)?;
         if let Some(v) = spec["volume_db"].as_f64() {
@@ -222,6 +274,22 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
             let sec: Vec<Nt> = ns.iter().filter(|n| n.0 >= *b0 && n.0 < b0 + nb).map(|n| (n.0 - b0, n.1, n.2, n.3, n.4)).collect();
             let cons = spec["consolidate"].as_bool().unwrap_or_else(|| a.get("consolidate").and_then(|v| v.as_bool()).unwrap_or(false));
             let sec = if cons { let (c, per) = consolidate(&sec, *nb); periods.push(json!({"track": pname, "pattern": sname, "period_bars": per})); c } else { sec };
+            // a chord part played as a picked line: another part's rhythm and contour snapped to these chords
+            let arp = &spec["arpeggiate"];
+            let sec = match arp.get("rhythm_from").and_then(|x| x.as_str()) {
+                Some(src) => {
+                    let (_, _, rns, _) = loaded.iter().find(|l| l.0 == src).ok_or_else(|| anyhow!("{pname}: arpeggiate.rhythm_from '{src}' is not a part"))?;
+                    let rsec: Vec<Nt> = rns.iter().filter(|n| n.0 >= *b0 && n.0 < b0 + nb).map(|n| (n.0 - b0, n.1, n.2, n.3, n.4)).collect();
+                    let rsec = if cons { consolidate(&rsec, *nb).0 } else { rsec };
+                    let mut out = snap_to_chords(&sec, &rsec, arp["gate"].as_f64().unwrap_or(1.0) as f32);
+                    let shift = arp["octave"].as_i64().unwrap_or(0) as i32 * 12;
+                    for n in out.iter_mut() {
+                        n.3 = (n.3 as i32 + shift).clamp(0, 127) as u8;
+                    }
+                    out
+                }
+                None => sec,
+            };
             let notes: Vec<Value> = sec
                 .iter()
                 .map(|n| json!({"start": n.0 as f32 * 16.0 + n.1, "len": n.2, "pitch": n.3, "vel": (n.4 * 100.0).round() / 100.0}))
@@ -229,6 +297,33 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
             if !notes.is_empty() {
                 count += notes.len();
                 call(e, "add_notes", json!({"pattern": sname, "track": pname, "notes": notes}))?;
+                // block chords -> arpeggio (style) or strum, with the notes tools a person uses on a piano roll
+                if (arp.is_object() && arp.get("rhythm_from").is_none()) || arp.is_string() {
+                    let mut aa = if arp.is_string() { json!({"style": arp}) } else { arp.clone() };
+                    aa["pattern"] = json!(sname);
+                    aa["track"] = json!(pname);
+                    call(e, "arpeggiate", aa)?;
+                }
+                if let Some(st) = spec.get("strum").filter(|v| !v.is_null()) {
+                    let mut sa = if st.is_object() { st.clone() } else { json!({"spread": st.as_f64().unwrap_or(0.5)}) };
+                    sa["pattern"] = json!(sname);
+                    sa["track"] = json!(pname);
+                    call(e, "strum", sa)?;
+                }
+            }
+        }
+        // a saved or built-in fx chain (e.g. clean_chorus_guitar) and any extra effects, in order
+        if let Some(ch) = spec["fx_chain"].as_str() {
+            call(e, "apply_fx_chain", json!({"track": pname, "chain": ch}))?;
+        }
+        if let Some(fxs) = spec["effects"].as_array() {
+            for fx in fxs {
+                let typ = fx["type"].as_str().ok_or_else(|| anyhow!("{pname}: each effect needs a type"))?;
+                let mut params = fx.clone();
+                if let Some(o) = params.as_object_mut() {
+                    o.remove("type");
+                }
+                call(e, "add_effect", json!({"track": pname, "type": typ, "params": params}))?;
             }
         }
         tracks.push(json!({"track": pname, "instrument": used, "notes": count}));
@@ -296,10 +391,16 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
 pub fn tools() -> Vec<Tool> {
     vec![Tool {
         name: "arrange_transcription",
-        description: "Build a project from transcriptions: parts=[{name, file (a transcribe_drums / transcribe_bass / transcribe_chords / transcribe_melody JSON), instrument (catalog:<id> | font:<name> | gm:<program> | preset:<name>), volume_db, pan}] become tracks, one pattern per section (sections_file = an arrangement_map JSON, else bars_per_pattern blocks), every note on its bar. vocal + vocal_start_s place a take on the timeline with a plain channel chain (high-pass, de-ess, compression, reverb and delay sends). All parts must share one grid (transcribe them with the same grid_from).",
+        description: "Build a project from transcriptions: parts=[{name, file (a transcribe_drums / transcribe_bass / transcribe_chords / transcribe_melody JSON), instrument (catalog:<id> | font:<name> | gm:<program> | preset:<name>), volume_db, pan, arpeggiate, strum, fx_chain, effects}] become tracks, one pattern per section (sections_file = an arrangement_map JSON, else bars_per_pattern blocks), every note on its bar. vocal + vocal_start_s place a take on the timeline with a plain channel chain (high-pass, de-ess, compression, reverb and delay sends). All parts must share one grid (transcribe them with the same grid_from).",
         mutates: true,
         schema: || obj(json!({
-            "parts": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "file": {"type": "string"}, "instrument": {"type": "string"}, "volume_db": {"type": "number"}, "pan": {"type": "number"}}, "required": ["name", "file"]}},
+            "parts": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "file": {"type": "string"}, "instrument": {"type": "string"}, "volume_db": {"type": "number"}, "pan": {"type": "number"},
+                "consolidate": {"type": "boolean"},
+                "source_only": {"type": "boolean", "description": "load this part only as another part's arpeggiate.rhythm_from; no track"},
+                "arpeggiate": {"anyOf": [{"type": "string"}, {"type": "object"}], "description": "play this chord part broken up: a style (up, down, updown, ...) or {style, rate, octaves, gate}; or {rhythm_from: <another part, e.g. the riff>, gate, octave} to keep that part's picking rhythm and contour with every note snapped to these chords (a picked/arpeggiated guitar from a single-line riff transcription)"},
+                "strum": {"anyOf": [{"type": "number"}, {"type": "object"}], "description": "strum the chords: spread in steps, or {spread, direction up|down|alternate, vel_taper}"},
+                "fx_chain": {"type": "string", "description": "a saved or built-in fx chain for this track (list_fx_chains), e.g. clean_chorus_guitar"},
+                "effects": {"type": "array", "items": {"type": "object"}, "description": "extra effects after the chain: [{type, ...params}] as add_effect takes them"}}, "required": ["name", "file"]}},
             "sections_file": {"type": "string"},
             "bars_per_pattern": {"type": "integer"},
             "name": {"type": "string"}, "bpm": {"type": "number"}, "key": {"type": "string", "description": "e.g. \"D minor\""},
@@ -357,5 +458,42 @@ mod consolidate_tests {
         assert!(!out.iter().any(|n| n.3 == 42), "stray hat removed");
         assert!(out.iter().any(|n| n.0 == 2 && n.3 == 36 && (n.1 - 8.0).abs() < 0.1), "dropped kick restored");
         assert!(out.iter().filter(|n| n.0 == 3 && n.3 == 45).count() == 6, "fill kept");
+    }
+}
+
+#[cfg(test)]
+mod arpeggio_tests {
+    use super::*;
+    #[test]
+    fn riff_rhythm_snaps_to_chords_and_options_apply() {
+        // Gm chord held 1 bar; a riff with 8th notes, one off-chord (A4 = 69) -> nearest chord tone
+        let chords: Vec<Nt> = vec![(0, 0.0, 16.0, 55, 0.7), (0, 0.0, 16.0, 58, 0.7), (0, 0.0, 16.0, 62, 0.7)];
+        let riff: Vec<Nt> = vec![(0, 0.0, 2.0, 67, 0.8), (0, 2.0, 2.0, 69, 0.8), (0, 4.0, 2.0, 74, 0.8), (0, 6.0, 30.0, 70, 0.8)];
+        let out = snap_to_chords(&chords, &riff, 1.0);
+        assert_eq!(out.iter().map(|n| n.3).collect::<Vec<_>>(), vec![67, 70, 74, 70]);
+        assert!(out[3].2 <= 10.0 + 1e-3, "clipped at the chord's end");
+        let dir = std::env::temp_dir().join("bb_arrange_arp");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ch = json!({"grid": {"bpm": 120, "downbeat_s": 0.0, "beats_per_bar": 4}, "per_beat": ["Gm", "Gm", "Gm", "Gm", "D#", "D#", "D#", "D#"]});
+        std::fs::write(dir.join("chords.json"), ch.to_string()).unwrap();
+        let rf = json!({"grid": {"bpm": 120, "downbeat_s": 0.0, "beats_per_bar": 4}, "steps_per_bar": 16,
+            "notes": (0..16).map(|i| json!({"bar": 1 + i / 8, "step": (i % 8) * 2, "len": 2, "midi": 62 + (i % 3) * 3, "vel": 90})).collect::<Vec<_>>()});
+        std::fs::write(dir.join("riff.json"), rf.to_string()).unwrap();
+        let mut e = Engine::new(dir.clone());
+        let r = e.call("arrange_transcription", &json!({"parts": [
+            {"name": "riff", "file": "riff.json", "source_only": true},
+            {"name": "gtr", "file": "chords.json", "instrument": "preset:keys", "arpeggiate": {"rhythm_from": "riff"}, "fx_chain": "clean_chorus_guitar", "effects": [{"type": "gain", "db": -1.0}]},
+            {"name": "keys", "file": "chords.json", "instrument": "preset:keys", "arpeggiate": {"style": "up", "rate": "1/8"}},
+            {"name": "pad", "file": "chords.json", "instrument": "preset:keys", "strum": 0.6}], "bars_per_pattern": 2})).unwrap();
+        let p1 = e.project.patterns.iter().find(|p| p.name == "s01").unwrap();
+        let g = p1.notes("gtr");
+        assert_eq!(g.len(), 16, "{r}");
+        // bar 2 is Eb major: every note an Eb/G/Bb
+        assert!(g.iter().filter(|n| n.start >= 16.0).all(|n| [3u8, 7, 10].contains(&(n.pitch % 12))), "{g:?}");
+        assert!(p1.notes("keys").len() > 6, "arpeggiated into 8ths");
+        assert!(e.project.tracks.iter().all(|t| t.name != "riff"), "source_only part has no track");
+        let t = e.project.tracks.iter().find(|t| t.name == "gtr").unwrap();
+        assert!(t.effects.len() >= 7, "chain + extra effect");
     }
 }

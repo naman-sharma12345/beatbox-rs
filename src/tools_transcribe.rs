@@ -217,7 +217,12 @@ fn transcribe_melody(e: &mut Engine, a: &Value) -> Result<Value> {
         bail!("low_hz/high_hz: need 30 <= low < high/1.5 and high <= 4000");
     }
     let name = s_opt(a, "name").unwrap_or_else(|| "melody".into());
-    let notes = tr::transcribe_top_line(&x, grid, steps, lo, hi);
+    let mode = s_opt(a, "mode").unwrap_or_else(|| "line".into());
+    let notes = match mode.as_str() {
+        "line" => tr::transcribe_top_line(&x, grid, steps, lo, hi),
+        "picked" => tr::transcribe_picked(&x, grid, steps, lo, hi, f_opt(a, "sensitivity").unwrap_or(0.5)),
+        m => bail!("mode '{m}': line (one sustained line) or picked (one note per pluck: arpeggios)"),
+    };
     let base = out_base(e, a, &path, &name)?;
     let midi = base.with_extension("mid");
     write_midi(&midi, &tr::notes_midi(&notes, grid, steps, &name, None, b_or(a, "keep_timing", false)))?;
@@ -354,9 +359,9 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "transcribe_melody",
-            description: "Riff / melody transcription: the most prominent line in a part (guitar riff, synth lead, piano top line, a sung melody), one note at a time between low_hz and high_hz (default 150-1500), snapped to the bar grid. Use the 'other' or 'vocals' stem from separate_stems. Writes MIDI and a per-bar JSON; import:true adds it to the project.",
+            description: "Riff / melody transcription: the most prominent line in a part (guitar riff, synth lead, piano top line, a sung melody), one note at a time between low_hz and high_hz (default 150-1500), snapped to the bar grid; mode:'picked' follows the picking hand of an arpeggiated part instead. Use the 'other' or 'vocals' stem from separate_stems. Writes MIDI and a per-bar JSON; import:true adds it to the project.",
             mutates: true,
-            schema: || obj(grid_props(json!({"steps_per_bar": {"type": "integer", "enum": [8, 12, 16, 24, 32]}, "low_hz": {"type": "number"}, "high_hz": {"type": "number"}, "name": {"type": "string", "description": "part name for the files and MIDI track (default melody)"}})), &["path"]),
+            schema: || obj(grid_props(json!({"steps_per_bar": {"type": "integer", "enum": [8, 12, 16, 24, 32]}, "low_hz": {"type": "number"}, "high_hz": {"type": "number"}, "sensitivity": {"type": "number", "description": "picked mode: 0..1 (default 0.5), higher finds softer plucks under chorus/reverb"}, "mode": {"type": "string", "enum": ["line", "picked"], "description": "line (default): the most prominent sustained line; picked: one note per pluck, the newly struck string at each onset (arpeggiated / picked guitar, harp, plucked keys)"}, "name": {"type": "string", "description": "part name for the files and MIDI track (default melody)"}})), &["path"]),
             run: transcribe_melody,
         },
         Tool {

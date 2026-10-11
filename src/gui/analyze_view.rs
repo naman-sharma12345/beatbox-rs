@@ -123,6 +123,12 @@ impl Studio {
                     if ui.add_enabled(ready, egui::Button::new("RIFF / MELODY TO MIDI").small()).on_hover_text(format!("transcribe_melody {args}")).clicked() {
                         job = Some(("transcribe_melody", args.clone()));
                     }
+                    if ui.add_enabled(ready, egui::Button::new("PICKED GUITAR TO MIDI").small()).on_hover_text(format!("transcribe_melody {args} mode:picked (one note per pluck: arpeggios)")).clicked() {
+                        let mut a = args.clone();
+                        a["mode"] = json!("picked");
+                        a["name"] = json!("picked");
+                        job = Some(("transcribe_melody", a));
+                    }
                     if ui.add_enabled(ready, egui::Button::new("EFFECTS").small()).on_hover_text(format!("detect_fx {args}")).clicked() {
                         job = Some(("detect_fx", args.clone()));
                     }

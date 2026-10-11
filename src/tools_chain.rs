@@ -43,6 +43,18 @@ fn builtins() -> Vec<(&'static str, &'static str, Value)> {
             {"type": "width", "amount": 1.4},
             {"type": "reverb", "size": 0.85, "mix": 0.35}
         ])),
+        ("clean_chorus_guitar", "an indie clean electric: bright clean amp, wide lush chorus, a dotted-eighth echo and a short plate (picked arpeggios, jangly riffs)", json!([
+            {"type": "parametric_eq", "bands": [{"kind": "low_cut", "freq": 110.0, "gain_db": 0.0, "q": 0.707}, {"kind": "bell", "freq": 400.0, "gain_db": -2.0, "q": 1.0}, {"kind": "high_shelf", "freq": 3200.0, "gain_db": 4.0, "q": 0.7}]},
+            {"type": "amp_sim", "model": "clean", "gain_db": 3.0, "treble": 0.7, "presence": 0.65, "cab": "2x12", "mix": 0.8},
+            {"type": "chorus", "rate_hz": 0.8, "depth_ms": 4.0, "mix": 0.5},
+            {"type": "width", "amount": 1.6, "low_mono_hz": 180.0},
+            {"type": "delay", "steps": 3, "feedback": 0.22, "mix": 0.14, "ping_pong": true, "tone": 5000.0},
+            {"type": "reverb", "mode": "fdn_plate", "size": 0.45, "mix": 0.16}
+        ])),
+        ("bright_cymbals", "a drum bus with air: kick and snare kept, cymbals and hats lifted above 5 kHz, gentle glue", json!([
+            {"type": "parametric_eq", "bands": [{"kind": "high_shelf", "freq": 5000.0, "gain_db": 3.5, "q": 0.7}, {"kind": "bell", "freq": 3000.0, "gain_db": 1.5, "q": 0.9}, {"kind": "bell", "freq": 400.0, "gain_db": -1.5, "q": 1.0}]},
+            {"type": "compressor", "threshold_db": -14.0, "ratio": 2.0, "attack_ms": 25.0, "release_ms": 120.0, "makeup_db": 1.0}
+        ])),
         ("tape_master", "a warm finishing chain for the master: tape, gentle glue, ceiling -1 dBTP", json!([
             {"type": "saturator", "mode": "tape", "drive_db": 3.0, "mix": 0.4},
             {"type": "compressor", "threshold_db": -12.0, "ratio": 1.8, "attack_ms": 30.0, "release_ms": 200.0, "makeup_db": 1.0},
