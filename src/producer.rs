@@ -2870,9 +2870,15 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         }
     }
     // a pocket for the voice: the melodic beds step back 3 dB around 1-2 kHz
-    // (critic, 6b round 2: 800-2k ran ~8 dB over a hip-hop reference)
+    // (critic, 6b round 2: 800-2k ran ~8 dB over a hip-hop reference). Only
+    // when a voice is there: on an instrumental the beds ARE the melody.
+    let voice = !e.project.audio_clips.is_empty()
+        || e.project.tracks.iter().any(|t| {
+            let n = t.name.to_lowercase();
+            n.contains("vocal") || n.contains("vox") || n.contains("voice")
+        });
     for t in ["chords", "counter", "texture"] {
-        if have(e, t) {
+        if voice && have(e, t) {
             e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 1400.0, "gain_db": -3.0, "q": 0.9}]}}), "producer")?;
         }
     }

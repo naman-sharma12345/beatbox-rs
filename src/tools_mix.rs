@@ -138,7 +138,11 @@ fn genre_targets(genre: &str) -> Result<Vec<(&'static str, f32)>> {
         // boom bap / desi hip-hop: the low end carries it (critic, Oct 2026: only
         // ~30% of power under 250 Hz with mids and air heavy; hip-hop sits at
         // 60-70%), so the 808 sits level with the kick and the top is quieter
-        "boom_bap" | "hiphop" | "hip_hop" => vec![("bass", 0.0), ("snare", -1.5), ("hats", -12.0), ("perc", -11.0), ("cymbal", -14.0), ("lead", -7.0), ("keys", -7.0), ("pad", -12.0), ("fx", -17.0)],
+        // melody forward (restored Oct 12 2026: the Oct 11 04:20 targets put the
+        // 808 level with the kick and pushed lead/keys/pads 2 dB down; desi
+        // and hip-hop beats came out darker, sub 47% / mids 22%, lead 3.5 dB
+        // lower, and the person heard them as worse)
+        "boom_bap" | "hiphop" | "hip_hop" => vec![("bass", -2.0), ("snare", -1.0), ("hats", -9.0), ("perc", -9.0), ("cymbal", -12.0), ("lead", -5.0), ("keys", -5.0), ("pad", -10.0), ("fx", -14.0)],
         // lo-fi: dusty, the top stays soft (critic, beat 9: air +11 dB, all hats;
         // r4 against the lofi profile: harsh +8 = snare 48% + lead 36%, air +11 =
         // hats 54% + perc 23%, so those sit 2.5-4 dB lower than first set)
