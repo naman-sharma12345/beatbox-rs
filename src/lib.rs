@@ -88,6 +88,7 @@ pub mod tools_chain;
 pub mod tools_ids;
 pub mod tools_timeline;
 pub mod tools_ab_listen;
+pub mod vocal_corpus;
 pub mod tools_click;
 pub mod tools_markers;
 pub mod tools_tempo;
