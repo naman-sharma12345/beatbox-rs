@@ -254,10 +254,39 @@ fn strength_near(peaks: &[(usize, f32)], f: usize, w: usize) -> f32 {
 
 /// Transcribe a drum stem (or a mix) onto a grid.
 pub fn transcribe_drums(x: &[f32], grid: Grid, steps_per_bar: usize) -> DrumScore {
+    transcribe_drums_opts(x, grid, steps_per_bar, false)
+}
+
+/// Peak strengths re-scaled to the level of the surrounding `win` frames
+/// (90th percentile of that band's peaks there), floored at `floor` of the
+/// whole song's, so a section played softer (hats pulled back in a quiet
+/// chorus) is read with the same thresholds as the loud ones.
+pub fn adapt_peaks(p: &mut [(usize, f32)], win: usize, floor: f32) {
+    let src: Vec<(usize, f32)> = p.to_vec();
+    for (i, q) in p.iter_mut().enumerate() {
+        let lo = src[..i].partition_point(|r| r.0 + win < q.0);
+        let hi = i + src[i..].partition_point(|r| r.0 <= q.0 + win);
+        let v: Vec<f32> = src[lo..hi].iter().map(|r| r.1).collect();
+        let local = pct(&v, 0.9).max(floor);
+        if local < 1.0 {
+            q.1 /= local;
+        }
+    }
+}
+
+/// transcribe_drums with `follow_level`: band strengths read against the
+/// local level (about 8 s around each hit) instead of the whole song's.
+pub fn transcribe_drums_opts(x: &[f32], grid: Grid, steps_per_bar: usize, follow_level: bool) -> DrumScore {
     let fps = fps();
     let b = band_analysis(x, 2048, &DRUM_BANDS);
     let gap = ((0.045 * fps) as usize).max(2);
-    let peaks: Vec<Vec<(usize, f32)>> = b.flux.iter().enumerate().map(|(i, f)| pick_peaks(f, if i == 3 || i == 2 { 0.3 } else { 0.6 }, gap)).collect();
+    let mut peaks: Vec<Vec<(usize, f32)>> = b.flux.iter().enumerate().map(|(i, f)| pick_peaks(f, if i == 3 || i == 2 { 0.3 } else { 0.6 }, gap)).collect();
+    if follow_level {
+        let win = (4.0 * fps) as usize;
+        for p in peaks.iter_mut() {
+            adapt_peaks(p, win, 0.35);
+        }
+    }
     // candidate events: every band peak, clustered within +-2 frames
     let mut cand: Vec<usize> = peaks.iter().flat_map(|p| p.iter().map(|q| q.0)).collect();
     cand.sort_unstable();
@@ -1436,5 +1465,22 @@ mod reattack_tests {
         for t0 in [0.5f32, 2.0] {
             assert!(on.iter().any(|t| (t - t0).abs() < 0.04), "{t0} not in {on:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod adapt_tests {
+    use super::*;
+    #[test]
+    fn soft_passage_peaks_are_lifted_to_the_local_level() {
+        // loud hits (1.0) for the first 1000 frames, then the same pattern 6 dB down (0.5)
+        let mut p: Vec<(usize, f32)> = (0..40).map(|i| (i * 50, if i < 20 { 1.0 } else { 0.5 })).collect();
+        adapt_peaks(&mut p, 200, 0.35);
+        assert!((p[5].1 - 1.0).abs() < 1e-3, "{:?}", p[5]);
+        assert!((p[35].1 - 1.0).abs() < 1e-3, "{:?}", p[35]);
+        // a whisper far below the floor is not lifted past floor scaling
+        let mut q = vec![(0usize, 0.1f32), (10, 0.1)];
+        adapt_peaks(&mut q, 200, 0.35);
+        assert!(q[0].1 < 0.3, "{q:?}");
     }
 }

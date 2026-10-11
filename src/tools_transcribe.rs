@@ -106,7 +106,7 @@ fn transcribe_drums(e: &mut Engine, a: &Value) -> Result<Value> {
     let (path, x) = load(e, a)?;
     let steps = steps_arg(a)?;
     let (grid, src) = grid_for(e, a, &path, &x)?;
-    let s = tr::transcribe_drums(&x, grid, steps);
+    let s = tr::transcribe_drums_opts(&x, grid, steps, b_or(a, "follow_level", false));
     let base = out_base(e, a, &path, "drums")?;
     let midi = base.with_extension("mid");
     write_midi(&midi, &tr::drums_midi(&s, b_or(a, "keep_timing", false)))?;
@@ -351,7 +351,7 @@ pub fn tools() -> Vec<Tool> {
             name: "transcribe_drums",
             description: "Drum transcription per bar: kick, snare (with ghost notes), closed and open hi-hat, crash and toms on a 16th (or 32nd) grid with velocities, plus swing %, how far each drum sits ahead of or behind the beat, a letter per bar (bars playing the same pattern share one) and the fill bars. Works best on the drums stem from separate_stems; pass the full mix as grid_from so bars match the other parts. Writes a General MIDI drum file and a per-bar JSON; import:true adds it to the project.",
             mutates: true,
-            schema: || obj(grid_props(json!({"steps_per_bar": {"type": "integer", "enum": [16, 32]}})), &["path"]),
+            schema: || obj(grid_props(json!({"steps_per_bar": {"type": "integer", "enum": [16, 32]}, "follow_level": {"type": "boolean", "description": "read each drum against the level of the ~8 s around it rather than the whole song, so a section played softer (hats pulled back) keeps its hits. Off by default"}})), &["path"]),
             run: transcribe_drums,
         },
         Tool {

@@ -26,6 +26,7 @@ pub struct AnalyzeState {
     pub bpm: String,
     pub add_to_project: bool,
     pub reattacks: bool,
+    pub follow_level: bool,
     pub reattack_delta: f32,
     pub stems_dir: String,
     pub compare_with: String,
@@ -416,9 +417,14 @@ impl Studio {
                     if ui.add_enabled(ready, egui::Button::new("SPLIT INTO STEMS").small()).on_hover_text(format!("separate_stems {}", json!({"path": path}))).clicked() {
                         job = Some(("separate_stems", json!({"path": path})));
                     }
-                    if ui.add_enabled(ready, egui::Button::new("DRUMS TO MIDI").small()).on_hover_text(format!("transcribe_drums {args}")).clicked() {
-                        job = Some(("transcribe_drums", args.clone()));
+                    let mut da = args.clone();
+                    if self.analyze.follow_level {
+                        da["follow_level"] = json!(true);
                     }
+                    if ui.add_enabled(ready, egui::Button::new("DRUMS TO MIDI").small()).on_hover_text(format!("transcribe_drums {da}")).clicked() {
+                        job = Some(("transcribe_drums", da));
+                    }
+                    ui.checkbox(&mut self.analyze.follow_level, "follow soft sections").on_hover_text("drums: read each hit against the level around it, so a softer section keeps its hats");
                     let mut ba = args.clone();
                     if self.analyze.reattack_delta <= 0.0 {
                         self.analyze.reattack_delta = 0.07;
