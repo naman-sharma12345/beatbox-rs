@@ -13,6 +13,8 @@ mod theme;
 mod views;
 mod vocal_view;
 mod create_view;
+mod critique_view;
+mod browser_view;
 mod widgets;
 
 use crate::analysis::{self, Report};
@@ -74,9 +76,13 @@ pub struct Studio {
     vocal_wave: Option<(String, Vec<(f32, f32)>, f32)>,
     /// create view: prompt / lyrics / recording -> make_beat, produce_song
     create: create_view::CreateState,
+    /// critique view: critique_mix with its fixes as APPLY buttons
+    critique: critique_view::CritiqueState,
+    /// browser view: presets, effects, palettes, samples
+    browser: browser_view::BrowserState,
 }
 
-const VIEWS: [&str; 6] = ["SEQUENCER", "MIXER", "AUTOMATION", "PLAYLIST", "VOCAL", "CREATE"];
+const VIEWS: [&str; 8] = ["SEQUENCER", "MIXER", "AUTOMATION", "PLAYLIST", "VOCAL", "CREATE", "CRITIQUE", "BROWSER"];
 
 pub fn run(
     engine: Engine,
@@ -127,6 +133,8 @@ pub fn run(
                 },
                 vocal_wave: None,
                 create: Default::default(),
+                critique: Default::default(),
+                browser: Default::default(),
             }))
         }),
     )
@@ -1277,6 +1285,8 @@ impl eframe::App for Studio {
                             None => "vocal_to_song builds a song around a sung take".to_string(),
                         },
                         5 => "make_beat \u{00B7} produce_song \u{00B7} the prompt and lyrics are read live".to_string(),
+                        6 => "critique_mix \u{00B7} an AI listener's measurements, each fix a tool call".to_string(),
+                        7 => format!("{} samples \u{00B7} presets, effects, palettes \u{00B7} each button an MCP tool", p.samples.len()),
                         2 => format!(
                             "{} lanes · {:.0} beats · {:.0} BPM",
                             p.automation.len(),
@@ -1303,6 +1313,8 @@ impl eframe::App for Studio {
                     2 => self.automation_view(ui, &p),
                     4 => self.vocal_view(ui, &p),
                     5 => self.create_view(ui, &p),
+                    6 => self.critique_view(ui, &p),
+                    7 => self.browser_view(ui, &p),
                     _ => self.sequencer(ui, &p),
                 }
             });
@@ -1341,11 +1353,17 @@ impl eframe::App for Studio {
                 self.player.seek(p.song_seconds() * 0.38);
                 self.player.play();
             }
+            // the critique view is shot with a finished critique on it
+            if self.view == 6 && self.frames == 3 {
+                let now = ctx.input(|i| i.time);
+                self.start_critique(now);
+            }
             let ready = self
                 .rendered
                 .as_ref()
                 .map(|r| r.rev == rev)
-                .unwrap_or(false);
+                .unwrap_or(false)
+                && (self.view != 6 || self.critique_done());
             if ready && self.frames > 30 && !self.shot_requested {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
                 self.shot_requested = true;

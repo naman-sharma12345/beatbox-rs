@@ -4,7 +4,7 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 70 have, 10 partial, 11 missing of 91** (parity 70/91; counting partial as half: 75/91).
+**Score: 71 have, 9 partial, 11 missing of 91** (parity 71/91; counting partial as half: 75.5/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -19,7 +19,7 @@ hosting.
 | Windows | Playlist audio clips | have | add_audio_clip, list_audio_clips, remove_audio_clip |
 | Windows | Automation clips | have | create_automation_clip, place_automation_clip, add_automation; AUTOMATION view |
 | Windows | Mixer (inserts, sends, routing) | have | set_mixer, add_bus, set_send, route_track, route_bus; MIXER view |
-| Windows | Browser | partial | search_samples, list_samples, find_samples, list_palettes (no GUI browser panel yet) |
+| Windows | Browser | have | search_samples, list_samples, find_samples, list_palettes, list_presets; studio BROWSER view (F8): searchable instruments (LOAD / +TRACK), effects (ADD), palettes (APPLY), project samples (+TRACK), each button the same MCP call |
 | Windows | Undo history | have | undo, redo, get_history (100 steps) |
 | Windows | Edison (audio editor) | partial | edit_sample, strip_silence, slice_sample, analyze_audio (no recording, no spectral edit) |
 | Piano roll tools | Quantize | have | quantize |

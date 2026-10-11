@@ -31,7 +31,7 @@ enum Cmd {
         /// Save a PNG screenshot of the studio after N frames and exit (for docs/CI)
         #[arg(long, hide = true)]
         screenshot: Option<PathBuf>,
-        /// Start in a view: sequencer | mixer | automation
+        /// Start in a view: sequencer | mixer | automation | playlist | vocal | create | critique | browser
         #[arg(long, hide = true)]
         view: Option<String>,
     },
