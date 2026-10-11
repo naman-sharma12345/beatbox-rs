@@ -28,7 +28,7 @@ fn modules() -> Vec<(&'static str, &'static str, Vec<Tool>)> {
         ("produce", "the producer loop: plan, critique, revise", crate::tools_producer::tools()),
         ("creative", "variations, wildcards, contrast", crate::tools_creative::tools()),
         ("samples", "palettes, kits, sample search and flips, stem separation", { let mut v = crate::tools_palette::tools(); v.extend(crate::stems::tools()); v }),
-        ("vocal", "vocals: transcribe, tune, vocal_to_song, audio clips, flex-time alignment, phrase placement, repair (denoise, de-hum, de-click, gate, de-reverb), de-muffle, seamless edits", { let mut v = crate::tools_vocal::tools(); v.extend(crate::vocal_flex::tools()); v.extend(crate::vocal_repair::tools()); v.extend(crate::vocal_clarity::tools()); v.extend(crate::vocal_edits::tools()); v }),
+        ("vocal", "vocals: transcribe, tune, vocal_to_song, audio clips, flex-time alignment, phrase placement, repair (denoise, de-hum, de-click, gate, de-reverb), de-muffle, seamless edits", { let mut v = crate::tools_vocal::tools(); v.extend(crate::vocal_flex::tools()); v.extend(crate::vocal_repair::tools()); v.extend(crate::vocal_clarity::tools()); v.extend(crate::vocal_edits::tools()); v.extend(crate::vocal_sections::tools()); v }),
         ("groove", "groove extraction and drum tuning", crate::tools_groove::tools()),
         ("export", "render to wav/flac/mp3, stems, mastering, bounce a track to audio", { let mut v = crate::tools_delivery::tools(); v.extend(crate::tools_bounce::tools()); v }),
     ]
