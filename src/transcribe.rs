@@ -587,7 +587,62 @@ pub fn transcribe_bass(x: &[f32], grid: Grid, steps_per_bar: usize) -> Vec<PNote
         }
     }
     let min_s = (grid.bar_s() / steps_per_bar as f32 * 0.4).max(0.05);
-    segment_notes(&midi, &rms, &onsets, fr, win as f32 / 2.0 / psr, min_s, grid, steps_per_bar)
+    let mut notes = segment_notes(&midi, &rms, &onsets, fr, win as f32 / 2.0 / psr, min_s, grid, steps_per_bar);
+    refine_onsets(&y, psr, &mut notes, grid, steps_per_bar);
+    notes
+}
+
+/// Move each note's start to the steepest level rise just before it, measured
+/// with a short (23 ms) window. The long pitch window places low notes up to
+/// ~100 ms late, which rounds them onto the next 16th; this pulls them back.
+pub fn refine_onsets(y: &[f32], psr: f32, notes: &mut [PNote], grid: Grid, steps_per_bar: usize) {
+    let (win, hop) = (256usize, 32usize);
+    if y.len() < win * 2 || notes.is_empty() {
+        return;
+    }
+    let n = (y.len() - win) / hop + 1;
+    let e: Vec<f32> = (0..n)
+        .map(|k| {
+            let s = &y[k * hop..k * hop + win];
+            db(s.iter().map(|v| v * v).sum::<f32>() / win as f32 + 1e-12)
+        })
+        .collect();
+    let center = |k: usize| (k * hop) as f32 / psr + win as f32 / 2.0 / psr;
+    let step_s = grid.bar_s() / steps_per_bar as f32;
+    let lag = 3usize; // rise measured over ~9 ms
+    let mut prev_t = f32::MIN;
+    for i in 0..notes.len() {
+        let t0 = notes[i].t0;
+        let lo = ((t0 - 0.11 - win as f32 / 2.0 / psr) * psr / hop as f32).floor().max(lag as f32) as usize;
+        let hi = (((t0 + 0.02 - win as f32 / 2.0 / psr) * psr / hop as f32).ceil().max(0.0) as usize).min(n - 1);
+        let mut best = (0.0f32, None);
+        for k in lo..=hi.max(lo) {
+            if k >= n {
+                break;
+            }
+            let r = e[k] - e[k - lag];
+            if r > best.0 {
+                best = (r, Some(k));
+            }
+        }
+        if let (r, Some(k)) = best {
+            let t = center(k - lag / 2);
+            if r >= 3.0 && t < t0 && t > prev_t + step_s * 0.5 {
+                let end = notes[i].step + notes[i].len;
+                let s0 = ((t - grid.downbeat_s) / step_s).round().max(0.0) as usize;
+                let ok_prev = i == 0 || s0 > notes[i - 1].step;
+                if ok_prev && s0 < end {
+                    notes[i].t0 = t;
+                    notes[i].step = s0;
+                    notes[i].len = end - s0;
+                    if i > 0 && notes[i - 1].step + notes[i - 1].len > s0 {
+                        notes[i - 1].len = s0 - notes[i - 1].step;
+                    }
+                }
+            }
+        }
+        prev_t = notes[i].t0;
+    }
 }
 
 /// Top line of a (possibly polyphonic) part: the most salient pitch per frame
@@ -1124,6 +1179,25 @@ mod tests {
             }
             x[i] += amp * env * v;
         }
+    }
+
+    #[test]
+    fn low_bass_8ths_land_on_their_steps() {
+        // 124 bpm, downbeat at 0.167 s, plucked low 8ths (E1/G1/A1) repeated and changing
+        let g = Grid::new(124.0, 0.167, 4);
+        let step = 60.0 / 124.0 / 4.0;
+        let mut x = vec![0.0f32; (SR * 8.5) as usize];
+        let pitches = [28.0f32, 28.0, 28.0, 31.0, 33.0, 33.0, 31.0, 28.0];
+        for bar in 0..4 {
+            for (i, m) in pitches.iter().enumerate() {
+                let t0 = 0.167 + ((bar * 16 + i * 2) as f32) * step;
+                tone(&mut x, t0, t0 + 2.0 * step, *m, 0.5, 6);
+            }
+        }
+        let notes = transcribe_bass(&x, g, 16);
+        let odd: Vec<usize> = notes.iter().map(|n| n.step).filter(|s| s % 2 == 1).collect();
+        assert!(notes.len() >= 16, "too few notes: {}", notes.len());
+        assert!(odd.len() * 10 <= notes.len(), "notes landed between the 8ths: {odd:?}");
     }
 
     #[test]
