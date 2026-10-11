@@ -4,7 +4,7 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 73 have, 7 partial, 11 missing of 91** (parity 73/91; counting partial as half: 76.5/91).
+**Score: 74 have, 7 partial, 10 missing of 91** (parity 74/91; counting partial as half: 77.5/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -89,7 +89,7 @@ hosting.
 | Audio | Vocal chops | have | vocal_chop |
 | Audio | Reverse samples | have | edit_sample reverse |
 | Mixing | Mixer track groups / buses | have | add_bus, route_bus |
-| Mixing | Patcher (FX chains as one) | missing |  |
+| Mixing | Patcher (FX chains as one) | have | list_fx_chains, apply_fx_chain (built-in or saved chain, or an effects list, append/replace), save_fx_chain, copy_fx_chain; built-ins vocal_clean, vocal_radio, lofi_keys, dusty_drums, 808_grit, wide_pad, tape_master, old_record; BROWSER view FX CHAINS (APPLY / SAVE) |
 | Mixing | Sidechain routing | have | sidechain source track |
 | Arrange | Pattern variants | have | add_pattern copy_from, vary_section, generate_variation |
 | Arrange | Transitions / risers / fills | have | add_transition, generate_fill, add_roll |

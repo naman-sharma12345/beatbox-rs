@@ -73,6 +73,7 @@ pub mod tools_parity;
 pub mod tools_producer;
 pub mod tools_prompt;
 pub mod tools_meta;
+pub mod tools_chain;
 pub mod tools_critic;
 pub mod tools_drone;
 pub mod tools_sound;

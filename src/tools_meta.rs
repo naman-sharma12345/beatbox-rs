@@ -23,7 +23,7 @@ fn modules() -> Vec<(&'static str, &'static str, Vec<Tool>)> {
         ("compose", "generators and song structure", crate::tools_compose::tools()),
         ("listen", "ears: analysis, loudness, masking, spectrogram", { let mut v = crate::tools_ears::tools(); v.extend(crate::tools_listen::tools()); v.extend(crate::tools_ears_pro::tools()); v }),
         ("mix", "levels, balance, routing, buses, drone notches", { let mut v = crate::tools_mix::tools(); v.extend(crate::tools_drone::tools()); v.extend(crate::tools_critic::tools()); v }),
-        ("fx", "effects: add, tweak, place, compare", crate::tools_fx2::tools()),
+        ("fx", "effects: add, tweak, place, compare, whole FX chains", { let mut v = crate::tools_fx2::tools(); v.extend(crate::tools_chain::tools()); v }),
         ("playlist", "FL-style playlist, automation clips, patterns", { let mut v = crate::tools_parity::tools(); v.extend(crate::tools_fl::tools()); v }),
         ("produce", "the producer loop: plan, critique, revise", crate::tools_producer::tools()),
         ("creative", "variations, wildcards, contrast", crate::tools_creative::tools()),

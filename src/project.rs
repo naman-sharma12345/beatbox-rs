@@ -272,6 +272,10 @@ pub struct Project {
     /// sections) for the studio's vocal view and for AIs editing around it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vocal_map: Option<VocalMap>,
+    /// Saved effect chains (FL Patcher-style: a whole chain as one preset),
+    /// by name; save_fx_chain / apply_fx_chain.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub fx_chains: std::collections::BTreeMap<String, Vec<Effect>>,
 }
 
 /// A sung vocal mapped onto the song: every time is in song beats.
@@ -381,6 +385,7 @@ impl Project {
             automation_clips: Vec::new(),
             audio_clips: Vec::new(),
             vocal_map: None,
+            fx_chains: Default::default(),
         }
     }
 

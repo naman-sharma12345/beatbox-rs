@@ -16,6 +16,8 @@ pub struct BrowserState {
     pub track: String,
     /// list_presets + list_palettes, fetched once
     pub catalog: Option<(Value, Value)>,
+    /// list_fx_chains, refetched after any browser call (saved chains change)
+    pub chains: Option<Value>,
 }
 
 fn matches(q: &str, a: &str, b: &str) -> bool {
@@ -33,6 +35,11 @@ impl Studio {
             drop(e);
             self.browser.catalog = Some((pr, pa));
         }
+        if self.browser.chains.is_none() {
+            let c = self.engine.lock().unwrap().call_from("list_fx_chains", &json!({}), "you").unwrap_or(Value::Null);
+            self.browser.chains = Some(c);
+        }
+        let chains = self.browser.chains.clone().unwrap_or(Value::Null);
         if self.browser.track.is_empty() || p.track_index(&self.browser.track).is_err() {
             self.browser.track = p.tracks.first().map(|t| t.name.clone()).unwrap_or_default();
         }
@@ -75,10 +82,32 @@ impl Studio {
                     });
                 }
             });
-            // ---------- effects
+            // ---------- fx chains (Patcher-style presets) + effects
             let ui = &mut cols[1];
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("FX CHAINS").size(11.0).strong().color(tk.header_text));
+                if ui.small_button("SAVE TRACK'S CHAIN").on_hover_text(format!("save_fx_chain {{track: {track}, name: {track}_chain}}")).clicked() && !track.is_empty() {
+                    call = Some(("save_fx_chain".into(), json!({"track": track, "name": format!("{track}_chain")})));
+                }
+            });
+            for it in chains["chains"].as_array().cloned().unwrap_or_default() {
+                let n = it["name"].as_str().unwrap_or("");
+                let d = it["use"].as_str().unwrap_or("saved in this project");
+                if !matches(&q, n, d) {
+                    continue;
+                }
+                let fx: Vec<String> = it["effects"].as_array().map(|a| a.iter().map(|x| x["type"].as_str().unwrap_or("?").to_string()).collect()).unwrap_or_default();
+                ui.horizontal(|ui| {
+                    if ui.small_button("APPLY").on_hover_text(format!("apply_fx_chain {{track: {track}, chain: {n}}}")).clicked() && !track.is_empty() {
+                        call = Some(("apply_fx_chain".into(), json!({"track": track, "chain": n})));
+                    }
+                    ui.label(RichText::new(n).size(12.0).color(tk.text)).on_hover_text(d);
+                    ui.add(egui::Label::new(RichText::new(fx.join(" > ")).size(10.0).color(tk.text_dim)).truncate()).on_hover_text(d);
+                });
+            }
+            ui.add_space(8.0);
             ui.label(RichText::new("EFFECTS").size(11.0).strong().color(tk.header_text));
-            egui::ScrollArea::vertical().id_salt("br_fx").max_height(h).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("br_fx").max_height((ui.available_height() - 8.0).max(120.0)).show(ui, |ui| {
                 for it in presets["effects"].as_array().cloned().unwrap_or_default() {
                     let (n, d) = (it["type"].as_str().unwrap_or(""), it["params"].as_str().unwrap_or(""));
                     if !matches(&q, n, d) {
@@ -130,6 +159,7 @@ impl Studio {
         });
         if let Some((tool, args)) = call {
             self.call(&tool, args);
+            self.browser.chains = None;
         }
     }
 }
