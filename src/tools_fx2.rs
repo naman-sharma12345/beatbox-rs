@@ -167,7 +167,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "ab_compare",
-            description: "Loudness-matched A/B of two project versions (snapshot names or 'current'; default A = newest snapshot, B = current). Louder always sounds better, so the louder version is turned down to the quieter one's integrated LUFS before judging. Returns the gain applied, the matched score, crest, stereo correlation and spectral-band deltas (B minus A), a verdict, and two level-matched WAVs (ab_<a>.wav / ab_<b>.wav in the renders folder) to listen to blind.",
+            description: "Loudness-matched A/B of two project versions (snapshot names or 'current'; default A = newest snapshot, B = current). Louder always sounds better, so the louder version is turned down to the quieter one's integrated LUFS before judging. Returns the gain applied, the matched score, crest, stereo correlation and spectral-band deltas (B minus A), a technical verdict (measurements only; taste is the listener's, see ab_listen), and two level-matched WAVs (ab_<a>.wav / ab_<b>.wav in the renders folder) to listen to blind.",
             mutates: false,
             schema: || obj(json!({
                 "a": {"type": "string", "description": "snapshot name or 'current' (default: newest snapshot)"},
@@ -195,9 +195,9 @@ pub fn tools() -> Vec<Tool> {
                     .collect();
                 let ds = rb.score as i64 - ra.score as i64;
                 let verdict = if ds >= 2 {
-                    format!("B ('{bn}') wins at matched loudness by {ds} points")
+                    format!("B ('{bn}') scores {ds} points higher on the technical checks at matched loudness (a measurement, not taste: listen with ab_listen)")
                 } else if ds <= -2 {
-                    format!("A ('{an}') wins at matched loudness by {} points", -ds)
+                    format!("A ('{an}') scores {} points higher on the technical checks at matched loudness (a measurement, not taste: listen with ab_listen)", -ds)
                 } else {
                     "a tie on the measurements at matched loudness: decide by ear".to_string()
                 };
