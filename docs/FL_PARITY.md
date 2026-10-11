@@ -4,7 +4,10 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 81 have, 5 partial, 5 missing of 91** (parity 81/91; counting partial as half: 83.5/91).
+The studio GUI is fully manual (a hand-operated DAW). The one-call production
+helpers (make_beat, produce_song, critique_mix, ...) are MCP tools only.
+
+**Score: 82 have, 5 partial, 4 missing of 91** (parity 82/91; counting partial as half: 84.5/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -50,7 +53,7 @@ hosting.
 | Instruments | DirectWave / Sampler | have | sampler, multisample, install_instrument_pack |
 | Instruments | Fruity Granulizer | have | granular instrument |
 | Instruments | Wavetable (Harmless-style) | have | wavetable instrument |
-| Instruments | Harmor / Morphine (additive, resynthesis) | missing |  |
+| Instruments | Harmor / Morphine (additive, resynthesis) | have | resynthesize_sample (sample -> tracked sine partials -> re-pitch with/without formants, partial count, time blur, tilt, odd/even), additive_sample (harmonic recipes or your own harmonic amplitudes, inharmonicity, per-partial decay), analyze_partials |
 | Instruments | Transistor Bass (303) | have | acid_bass preset |
 | Instruments | BooBass / 808 | have | bass808 instrument |
 | Instruments | FLEX (preset player) | partial | design_sound presets, list_presets |

@@ -19,7 +19,7 @@ fn modules() -> Vec<(&'static str, &'static str, Vec<Tool>)> {
         ("project", "new/load/save, tempo, key, tracks, notes, effects, undo/redo, snapshots", tools::core_tools().into_iter().filter(|t| !DISCOVERY.contains(&t.name)).collect()),
         ("studio", "transport, history, screenshot, live studio, metronome click", { let mut v = crate::tools_studio::tools(); v.extend(crate::tools_click::tools()); v }),
         ("notes", "piano roll and MIDI: write, edit, quantize, arpeggiate, strum", crate::tools_midi::tools()),
-        ("sound", "instruments and sound design", crate::tools_sound::tools()),
+        ("sound", "instruments and sound design, additive synthesis and resynthesis", { let mut v = crate::tools_sound::tools(); v.extend(crate::resynth::tools()); v }),
         ("compose", "generators and song structure", crate::tools_compose::tools()),
         ("listen", "ears: analysis, loudness, masking, spectrogram", { let mut v = crate::tools_ears::tools(); v.extend(crate::tools_listen::tools()); v.extend(crate::tools_ears_pro::tools()); v }),
         ("mix", "levels, balance, routing, buses, drone notches", { let mut v = crate::tools_mix::tools(); v.extend(crate::tools_drone::tools()); v.extend(crate::tools_critic::tools()); v }),
