@@ -32,6 +32,9 @@ pub struct BrowserState {
     pub job_result: String,
     /// the audio editor's sample, region and band
     pub edit: SampleEdit,
+    /// soundgoodizer row: mode 0-3 (A-D) and amount 1-100 (0 = not set yet)
+    pub good_mode: usize,
+    pub good_amount: f32,
 }
 
 /// Audio editor (Edison) form: the chosen sample, a time region and a band.
@@ -136,6 +139,22 @@ impl Studio {
                     ui.add(egui::Label::new(RichText::new(fx.join(" > ")).size(10.0).color(tk.text_dim)).truncate()).on_hover_text(d);
                 });
             }
+            ui.add_space(6.0);
+            if self.browser.good_amount <= 0.0 {
+                self.browser.good_amount = 50.0;
+            }
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("SOUNDGOODIZER").size(11.0).strong().color(tk.header_text));
+                for (i, m) in ["A", "B", "C", "D"].iter().enumerate() {
+                    let tip = ["even lift", "forward mids", "brighter top", "heavy low end"][i];
+                    ui.selectable_value(&mut self.browser.good_mode, i, *m).on_hover_text(tip);
+                }
+                ui.add(egui::Slider::new(&mut self.browser.good_amount, 1.0..=100.0).integer());
+                let mode = ["A", "B", "C", "D"][self.browser.good_mode.min(3)];
+                if ui.small_button("APPLY").on_hover_text(format!("polish {track} (mode {mode}); again on the same track retunes it")).clicked() && !track.is_empty() {
+                    call = Some(("soundgoodizer".into(), json!({"track": track, "mode": mode, "amount": self.browser.good_amount.round()})));
+                }
+            });
             ui.add_space(8.0);
             ui.label(RichText::new("EFFECTS").size(11.0).strong().color(tk.header_text));
             egui::ScrollArea::vertical().id_salt("br_fx").max_height((ui.available_height() - 8.0).max(120.0)).show(ui, |ui| {

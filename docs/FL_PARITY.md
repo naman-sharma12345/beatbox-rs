@@ -7,7 +7,7 @@ anything listed as **have**.
 The studio GUI is fully manual (a hand-operated DAW). The one-call production
 helpers (make_beat, produce_song, critique_mix, ...) are MCP tools only.
 
-**Score: 86 have, 2 partial, 3 missing of 91** (parity 86/91; counting partial as half: 87/91).
+**Score: 87 have, 1 partial, 3 missing of 91** (parity 87/91; counting partial as half: 87.5/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -71,7 +71,7 @@ hosting.
 | Effects | Stereo Enhancer | have | width, haas |
 | Effects | Stereo Shaper | have | add_effect type stereo_shaper: L/R matrix (left_from_left ... right_from_right), delay_ms on one side, phase invert per side, presets mono/swap/wide/narrow/side_only/pseudo_stereo; plus width, haas, autopan |
 | Effects | Transient Processor | have | transient |
-| Effects | Soundgoodizer | partial | master_assistant, multiband |
+| Effects | Soundgoodizer | have | soundgoodizer {track, mode A-D, amount 0-100}: one knob, 3-band compressor by mode + -1 dB ceiling, re-call retunes; SOUNDGOODIZER row in the browser; also master_assistant, multiband |
 | Effects | Love Philter / Fruity Filter | have | filter + automation |
 | Effects | Vocoder / Vocodex | have | add_effect type vocoder: the track's own vocal modulates a built-in saw chord (notes), 4-40 bands, carrier noise + sibilance pass-through |
 | Effects | Pitcher / NewTone (pitch correction) | have | tune_vocal (PSOLA autotune), pitch_shift |

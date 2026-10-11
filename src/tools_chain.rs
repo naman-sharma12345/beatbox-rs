@@ -5,7 +5,7 @@
 
 use crate::engine::Engine;
 use crate::fx::Effect;
-use crate::tools::{b_or, effects_of, obj, s_req, Tool};
+use crate::tools::{b_or, effects_of, f_or, obj, s_opt, s_req, Tool};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
@@ -141,6 +141,42 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "soundgoodizer",
+            description: "One-knob loudness and polish (FL Soundgoodizer) on a track, bus or 'master': a 3-band compressor tuned by mode, blended in by amount, then a -1 dB ceiling. mode A (default) = even lift, B = forward mids (vocals, leads), C = brighter top (air, hats), D = heavy low end and loud. amount 0-100 (default 50). Calling it again on the same track retunes the existing one instead of stacking.",
+            mutates: true,
+            schema: || obj(json!({
+                "track": {"type": "string", "description": "Track, bus or 'master'"},
+                "mode": {"type": "string", "enum": ["A", "B", "C", "D"]},
+                "amount": {"type": "number", "description": "0-100, default 50"}
+            }), &["track"]),
+            run: |e, a| {
+                let track = s_req(a, "track")?;
+                let mode = s_opt(a, "mode").unwrap_or_else(|| "A".into()).to_uppercase();
+                let amount = f_or(a, "amount", 50.0);
+                if !(0.0..=100.0).contains(&amount) {
+                    bail!("amount is 0-100");
+                }
+                let fx = goodizer_chain(&mode, amount / 100.0)?;
+                let chain = parse_chain(&fx, "soundgoodizer")?;
+                let dst = effects_of(&mut e.project, &track)?;
+                // retune: drop the previous soundgoodizer pair (tagged multiband + limiter right after it)
+                let mut retuned = false;
+                if let Some(i) = dst.iter().position(|f| serde_json::to_value(f).map(|v| v["low_freq"] == json!(GOOD_TAG)).unwrap_or(false)) {
+                    let n = if i + 1 < dst.len() && serde_json::to_value(&dst[i + 1]).map(|v| v["type"] == "limiter").unwrap_or(false) { 2 } else { 1 };
+                    dst.drain(i..i + n);
+                    for (k, f) in chain.into_iter().enumerate() {
+                        dst.insert(i + k, f);
+                    }
+                    retuned = true;
+                } else {
+                    dst.extend(chain);
+                }
+                let now = types(dst);
+                e.project.ensure_fx_ids();
+                Ok(json!({"track": track, "mode": mode, "amount": amount, "retuned": retuned, "chain": now}))
+            },
+        },
+        Tool {
             name: "save_fx_chain",
             description: "Save the effect chain of a track, bus or 'master' under a name in the project (FL Patcher-style preset), to apply_fx_chain elsewhere. Overwrites a saved chain with the same name.",
             mutates: true,
@@ -197,9 +233,50 @@ pub fn tools() -> Vec<Tool> {
     ]
 }
 
+/// Crossover the soundgoodizer's compressor uses; also how a re-call finds it.
+const GOOD_TAG: f32 = 180.0;
+
+/// Mode presets: (low thr, ratio, gain), (mid ...), (high ...); amount 0..1
+/// blends the compressor in and scales the band lifts.
+fn goodizer_chain(mode: &str, k: f32) -> Result<Value> {
+    let p: [(f32, f32, f32); 3] = match mode {
+        "A" => [(-20.0, 2.5, 2.0), (-20.0, 2.5, 2.0), (-22.0, 2.5, 2.5)],
+        "B" => [(-20.0, 2.5, 1.0), (-24.0, 3.5, 3.5), (-22.0, 2.5, 2.0)],
+        "C" => [(-20.0, 2.0, 1.0), (-20.0, 2.5, 1.5), (-26.0, 3.0, 4.5)],
+        "D" => [(-26.0, 4.0, 4.0), (-24.0, 3.0, 3.0), (-24.0, 3.0, 3.0)],
+        m => bail!("mode '{m}': use A, B, C or D"),
+    };
+    let k = k.clamp(0.0, 1.0);
+    Ok(json!([
+        {"type": "multiband", "low_freq": GOOD_TAG, "high_freq": 4000.0,
+         "low_threshold_db": p[0].0, "low_ratio": p[0].1, "low_gain_db": p[0].2 * k,
+         "mid_threshold_db": p[1].0, "mid_ratio": p[1].1, "mid_gain_db": p[1].2 * k,
+         "high_threshold_db": p[2].0, "high_ratio": p[2].1, "high_gain_db": p[2].2 * k,
+         "attack_ms": 10.0, "release_ms": 120.0, "mix": k},
+        {"type": "limiter", "ceiling_db": -1.0}
+    ]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn soundgoodizer_adds_then_retunes() {
+        let mut e = Engine::new(std::env::temp_dir().join("beatbox_chain_tests"));
+        e.call("add_track", &json!({"name": "keys"})).unwrap();
+        let r = e.call("soundgoodizer", &json!({"track": "keys", "mode": "b", "amount": 70})).unwrap();
+        assert_eq!(r["chain"], json!(["multiband", "limiter"]), "{r}");
+        assert_eq!(r["retuned"], false);
+        let r = e.call("soundgoodizer", &json!({"track": "keys", "mode": "D", "amount": 30})).unwrap();
+        assert_eq!(r["chain"], json!(["multiband", "limiter"]), "{r}");
+        assert_eq!(r["retuned"], true);
+        let fx = serde_json::to_value(&e.project.tracks.iter().find(|t| t.name == "keys").unwrap().effects[0]).unwrap();
+        assert!((fx["mix"].as_f64().unwrap() - 0.3).abs() < 1e-4, "{fx}");
+        assert!(e.call("soundgoodizer", &json!({"track": "keys", "mode": "Z"})).is_err());
+        assert!(e.call("soundgoodizer", &json!({"track": "keys", "amount": 150})).is_err());
+        e.call("soundgoodizer", &json!({"track": "master"})).unwrap();
+    }
 
     #[test]
     fn builtin_chains_parse_and_apply() {
