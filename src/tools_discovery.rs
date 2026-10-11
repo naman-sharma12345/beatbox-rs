@@ -15,7 +15,7 @@
 //! away without its schema sitting in the model's context.
 
 use crate::tools::{self, obj, s_opt, s_req, Tool};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
 
 /// The tools a compact `tools/list` advertises: discovery, the one-call

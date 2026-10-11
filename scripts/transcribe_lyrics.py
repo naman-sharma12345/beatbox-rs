@@ -14,20 +14,23 @@ def main():
     ap.add_argument("--model", default="base")
     ap.add_argument("--language", default=None)
     ap.add_argument("--prompt", default=None)
+    ap.add_argument("--no-vad", action="store_true", help="whole records: keep lines sung under a band")
+    ap.add_argument("--beam", type=int, default=5)
+    ap.add_argument("--threads", type=int, default=2)
     a = ap.parse_args()
     try:
         from faster_whisper import WhisperModel
     except Exception as e:  # pragma: no cover
         print(json.dumps({"error": f"faster-whisper is not installed ({e}); pip install faster-whisper"}))
         sys.exit(2)
-    m = WhisperModel(a.model, device="cpu", compute_type="int8", cpu_threads=2)
+    m = WhisperModel(a.model, device="cpu", compute_type="int8", cpu_threads=a.threads)
     segs, info = m.transcribe(
         a.audio,
         language=a.language,
         initial_prompt=a.prompt,
         word_timestamps=True,
-        vad_filter=True,
-        beam_size=5,
+        vad_filter=not a.no_vad,
+        beam_size=a.beam,
         condition_on_previous_text=False,
     )
     out = {"language": info.language, "duration": round(info.duration, 3), "model": a.model, "segments": []}

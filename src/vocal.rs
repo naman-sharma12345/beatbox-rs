@@ -914,7 +914,13 @@ pub const TRANSCRIBE_PY: &str = include_str!("../scripts/transcribe_lyrics.py");
 /// Transcribe sung lyrics with word timestamps. Uses `BEATBOX_PYTHON` (or
 /// python3) with faster-whisper; `model` is tiny / base / small.
 pub fn transcribe(audio: &Path, workdir: &Path, model: &str, language: Option<&str>, prompt: Option<&str>) -> Result<Lyrics> {
-    let cache = audio.with_extension(format!("lyrics.{model}.json"));
+    transcribe_with(audio, workdir, model, language, prompt, false)
+}
+
+/// `full_mix`: a whole record (singer inside the music): no voice-activity
+/// filter (it drops sung lines under a band), greedy decoding, 4 threads.
+pub fn transcribe_with(audio: &Path, workdir: &Path, model: &str, language: Option<&str>, prompt: Option<&str>, full_mix: bool) -> Result<Lyrics> {
+    let cache = audio.with_extension(format!("lyrics.{model}{}.json", if full_mix { ".mix" } else { "" }));
     if prompt.is_none() {
         if let Ok(s) = std::fs::read_to_string(&cache) {
             if let Ok(l) = serde_json::from_str::<Lyrics>(&s) {
@@ -927,6 +933,9 @@ pub fn transcribe(audio: &Path, workdir: &Path, model: &str, language: Option<&s
     let py = std::env::var("BEATBOX_PYTHON").unwrap_or_else(|_| "python3".into());
     let mut cmd = std::process::Command::new(&py);
     cmd.arg(&script).arg(audio).arg("--model").arg(model);
+    if full_mix {
+        cmd.arg("--no-vad").arg("--beam").arg("1").arg("--threads").arg("4");
+    }
     if let Some(l) = language {
         cmd.arg("--language").arg(l);
     }

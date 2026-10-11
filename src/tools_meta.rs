@@ -14,7 +14,7 @@ const DISCOVERY: [&str; 3] = ["get_guide", "list_presets", "list_tools"];
 /// (category, one-line purpose) per tool module, in the order list_tools shows them.
 fn modules() -> Vec<(&'static str, &'static str, Vec<Tool>)> {
     vec![
-        ("start", "one call does it all: make_beat from a prompt or lyrics, produce_song from a recording", crate::tools_prompt::tools()),
+        ("start", "one call does it all: make_beat from a prompt or lyrics, produce_song from a recording, cover_song: a finished song around a sung take (finds the record, analyses it, arranges real instruments, mixes, masters, QA)", { let mut v = crate::tools_prompt::tools(); v.extend(crate::tools_cover::tools()); v }),
         ("discover", "learn the engine: guide, catalog, tool groups, search, describe a tool, call any tool", { let mut v: Vec<Tool> = tools::core_tools().into_iter().filter(|t| DISCOVERY.contains(&t.name)).collect(); v.extend(tools()); v.extend(crate::tools_discovery::tools()); v }),
         ("project", "new/load/save, tempo, key, tracks, notes, effects, undo/redo, snapshots, stable object ids", { let mut v: Vec<Tool> = tools::core_tools().into_iter().filter(|t| !DISCOVERY.contains(&t.name)).collect(); v.extend(crate::tools_ids::tools()); v }),
         ("studio", "transport, history, screenshot, live studio, metronome click", { let mut v = crate::tools_studio::tools(); v.extend(crate::tools_click::tools()); v }),

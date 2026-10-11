@@ -402,6 +402,10 @@ pub fn parse_sfz(text: &str) -> Result<(Vec<SfzRegion>, Option<f32>)> {
     let mut default_path = String::new();
     let mut global: Vec<(String, String)> = Vec::new();
     let mut group: Vec<(String, String)> = Vec::new();
+    // <master> sits above <group>: a <group> clears only its own opcodes (Big
+    // Rusty Drums sets key= on <master> and opens <group>s under it; clearing
+    // both left every zone on keys 0-127, so each drum note played any drum)
+    let mut master: Vec<(String, String)> = Vec::new();
     let mut regions = Vec::new();
     let mut release = None;
     let mut cur: Option<Vec<(String, String)>> = None;
@@ -473,14 +477,18 @@ pub fn parse_sfz(text: &str) -> Result<(Vec<SfzRegion>, Option<f32>)> {
                 &mut cur,
                 &mut regions,
                 &global,
-                &group,
+                &[master.clone(), group.clone()].concat(),
                 &default_path,
                 &mut release,
             );
             section = header.clone();
             match header.as_str() {
                 "region" => cur = Some(Vec::new()),
-                "group" | "master" => group.clear(),
+                "group" => group.clear(),
+                "master" => {
+                    master.clear();
+                    group.clear();
+                }
                 "global" => global.clear(),
                 _ => {}
             }
@@ -524,7 +532,8 @@ pub fn parse_sfz(text: &str) -> Result<(Vec<SfzRegion>, Option<f32>)> {
                 }
             }
             "global" => global.push(kv),
-            "group" | "master" => group.push(kv),
+            "group" => group.push(kv),
+            "master" => master.push(kv),
             "region" => {
                 if let Some(c) = cur.as_mut() {
                     c.push(kv)
@@ -537,7 +546,7 @@ pub fn parse_sfz(text: &str) -> Result<(Vec<SfzRegion>, Option<f32>)> {
         &mut cur,
         &mut regions,
         &global,
-        &group,
+        &[master.clone(), group.clone()].concat(),
         &default_path,
         &mut release,
     );
@@ -712,6 +721,15 @@ pub fn pack(name: &str) -> Option<&'static Pack> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn master_key_survives_groups_under_it() {
+        let t = "<master> key=38\n<group> amp_velcurve_1=1\n<region> sample=a.wav\n<master> key=36\n<group>\n<region> sample=b.wav\n";
+        let (r, _) = super::parse_sfz(t).unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!((r[0].lo, r[0].hi, r[0].root), (38, 38, 38));
+        assert_eq!((r[1].lo, r[1].hi), (36, 36));
+    }
+
     use super::*;
 
     #[test]
