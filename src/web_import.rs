@@ -33,8 +33,40 @@ fn check_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Downloads done ahead of the tool call (the studio fetches off the UI
+/// thread, then runs import_from_url on the engine): url -> (bytes, final url).
+static PREFETCHED: std::sync::Mutex<Vec<(String, Vec<u8>, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Download `url` now and keep it for the next import_from_url of the same
+/// URL in this process (used by the studio so the engine is never blocked
+/// on the network).
+pub fn prefetch(url: &str, max_mb: u64) -> Result<()> {
+    let (b, f) = fetch(url, max_mb)?;
+    let mut q = PREFETCHED.lock().unwrap();
+    q.retain(|(u, _, _)| u != url);
+    q.push((url.to_string(), b, f));
+    if q.len() > 2 {
+        q.remove(0);
+    }
+    Ok(())
+}
+
 /// GET with a byte cap and timeouts; returns (bytes, final url).
 pub fn download(url: &str, max_mb: u64) -> Result<(Vec<u8>, String)> {
+    check_url(url)?;
+    {
+        let mut q = PREFETCHED.lock().unwrap();
+        if let Some(i) = q.iter().position(|(u, _, _)| u == url) {
+            let (_, b, f) = q.remove(i);
+            if b.len() as u64 <= max_mb * 1_000_000 {
+                return Ok((b, f));
+            }
+        }
+    }
+    fetch(url, max_mb)
+}
+
+fn fetch(url: &str, max_mb: u64) -> Result<(Vec<u8>, String)> {
     check_url(url)?;
     let agent = ureq::AgentBuilder::new().redirects(8).timeout_connect(std::time::Duration::from_secs(20)).timeout_read(std::time::Duration::from_secs(120)).build();
     let resp = agent.get(url).set("User-Agent", "beatbox-rs (music tool)").call().map_err(|e| anyhow!("download {url}: {e}"))?;
@@ -639,6 +671,14 @@ mod tests {
         assert_eq!(r["loaded"], "sample", "{r}");
         assert_eq!(r["license"], "CC0");
         assert!(e.project.samples.iter().any(|s| s.name == "clean_hit"), "{r}");
+
+        // prefetch (the studio's off-thread download) is used once by the next download
+        let u = format!("{base}/sounds/clean_hit.wav");
+        super::prefetch(&u, 10).unwrap();
+        assert!(super::PREFETCHED.lock().unwrap().iter().any(|x| x.0 == u));
+        let (b, _) = super::download(&u, 10).unwrap();
+        assert_eq!(b, tone(220.0, 0.3));
+        assert!(!super::PREFETCHED.lock().unwrap().iter().any(|x| x.0 == u));
 
         // 2. zip of one-shots -> kit by drum names, licence found in the archive, no escape
         let r = e.call("import_from_url", &json!({"url": format!("{base}/kits/mykit.zip"), "name": "my kit"})).unwrap();

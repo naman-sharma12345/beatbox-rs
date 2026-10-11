@@ -528,8 +528,119 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
     Ok((out, fetched))
 }
 
+/// Families and tag words that fit a musical role, for pick_for_role.
+fn role_words(role: &str) -> (Vec<&'static str>, Vec<&'static str>) {
+    let r = role.to_lowercase().replace([' ', '-'], "_");
+    let (f, t): (&[&str], &[&str]) = match r.as_str() {
+        "drums" | "kit" | "drum_kit" | "beat" => (&["drums"], &["kit", "drum kit", "full"]),
+        "kick" => (&["drums"], &["kick", "bass drum", "kit"]),
+        "snare" => (&["drums"], &["snare"]),
+        "hats" | "hihat" | "hi_hat" | "cymbals" => (&["drums"], &["hat", "hihat", "cymbal"]),
+        "percussion" | "perc" => (&["percussion", "world"], &["percussion", "conga", "bongo", "shaker", "cajon"]),
+        "tabla" => (&["percussion"], &["tabla"]),
+        "dhol" | "dholak" => (&["percussion"], &["dholak", "dhol"]),
+        "bass" | "electric_bass" => (&["bass"], &["electric", "finger", "pick", "pluck"]),
+        "upright_bass" | "double_bass" => (&["bass"], &["upright", "arco", "pizz", "double bass"]),
+        "guitar" | "clean_guitar" | "electric_guitar" => (&["guitar"], &["electric", "clean", "di"]),
+        "overdriven_guitar" | "distorted_guitar" | "rock_guitar" => (&["guitar"], &["electric", "di", "crunch"]),
+        "acoustic_guitar" => (&["guitar"], &["acoustic", "nylon", "steel"]),
+        "piano" | "keys" => (&["piano", "keys"], &["grand", "piano", "upright"]),
+        "epiano" | "e_piano" | "rhodes" => (&["keys", "piano"], &["fm", "electric", "rhodes"]),
+        "organ" => (&["keys"], &["organ"]),
+        "strings" | "pad" => (&["strings", "orchestra"], &["violins", "strings", "sus", "ensemble"]),
+        "cello" => (&["strings"], &["cello"]),
+        "brass" | "horns" => (&["brass"], &["trumpet", "trombone", "horn"]),
+        "sax" | "saxophone" => (&["winds"], &["sax"]),
+        "flute" | "bansuri" => (&["winds"], &["flute", "recorder", "bansuri"]),
+        "lead" => (&["winds", "synth", "keys"], &["lead", "sax", "flute", "harmonica"]),
+        "harmonium" => (&["keys", "world"], &["harmonium"]),
+        "santoor" => (&["world", "strings"], &["santoor", "dulcimer", "psaltery"]),
+        "mallets" | "bells" | "marimba" | "vibes" => (&["mallets"], &["marimba", "vibraphone", "glock", "kalimba"]),
+        "choir" | "vocals" => (&["choir"], &["choir", "voice"]),
+        _ => (&[], &[]),
+    };
+    (f.to_vec(), t.to_vec())
+}
+
+/// Rank catalog entries for a role (kick, drums, bass, guitar, piano ...)
+/// in a genre: family fit, tag fit, genre tag, size under max_mb, already
+/// installed first among equals. Returns (score, entry, reasons).
+pub fn pick_for_role(role: &str, genre: Option<&str>, max_mb: Option<f64>) -> Vec<(f32, Entry, Vec<String>)> {
+    let (fams, words) = role_words(role);
+    let rl = role.to_lowercase();
+    let g = genre.map(|g| g.to_lowercase().replace([' ', '-'], "_"));
+    let mut out = Vec::new();
+    for e in entries() {
+        if e.format == "sf2" || e.family.starts_with("ir") || e.status == "listed" {
+            continue;
+        }
+        if let (Some(m), true) = (max_mb, e.bytes > 0) {
+            if e.bytes as f64 / 1e6 > m {
+                continue;
+            }
+        }
+        let blob = format!("{} {} {}", e.id, e.name, e.tags.join(" ")).to_lowercase();
+        let mut s = 0.0f32;
+        let mut why = Vec::new();
+        if fams.iter().any(|f| e.family.eq_ignore_ascii_case(f)) {
+            s += 3.0;
+            why.push(format!("family {}", e.family));
+        }
+        let hits: Vec<&str> = words.iter().copied().filter(|w| blob.contains(w)).collect();
+        if !hits.is_empty() {
+            s += 1.5 + 0.5 * hits.len().min(3) as f32;
+            why.push(format!("tags {}", hits.join("/")));
+        } else if fams.is_empty() && blob.contains(&rl) {
+            s += 3.0;
+            why.push(format!("matches '{rl}'"));
+        }
+        if s <= 0.0 {
+            continue;
+        }
+        if let Some(g) = &g {
+            if e.genres.iter().any(|x| x.eq_ignore_ascii_case(g)) {
+                s += 2.0;
+                why.push(format!("genre {g}"));
+            }
+        }
+        if blob.contains("noises") || blob.contains("keyswitch") || blob.contains("fx") {
+            s -= 1.0;
+        }
+        if entry_json(&e)["installed"] == true {
+            s += 0.5;
+            why.push("installed".into());
+        }
+        out.push((s, e, why));
+    }
+    out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.bytes.cmp(&b.1.bytes)));
+    out
+}
+
 pub fn tools() -> Vec<Tool> {
     vec![
+        Tool {
+            name: "pick_instrument_for_role",
+            description: "Shortlist recorded catalog instruments for a role in a song: role kick|snare|hats|drums|percussion|tabla|dholak|bass|upright_bass|guitar|overdriven_guitar|acoustic_guitar|piano|epiano|organ|strings|cello|brass|sax|flute|lead|harmonium|santoor|mallets|choir (other words match names and tags), genre (a style from search_instruments), max_mb. Ranked by family and tag fit, genre tag, then already-installed and smaller downloads first; each with the reasons. Audition the top few with audition_instrument and choose by ear, then load_instrument {track, catalog_id}.",
+            mutates: false,
+            schema: || obj(json!({"role": {"type": "string"}, "genre": {"type": "string"}, "max_mb": {"type": "number"}, "limit": {"type": "integer", "description": "default 5"}}), &["role"]),
+            run: |_e, a| {
+                let role = crate::tools::s_req(a, "role")?;
+                let genre = s_opt(a, "genre");
+                let picks = pick_for_role(&role, genre.as_deref(), a.get("max_mb").and_then(|v| v.as_f64()));
+                let n = picks.len();
+                let lim = a.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+                let rows: Vec<Value> = picks.into_iter().take(lim).map(|(s, e, why)| {
+                    let mut j = entry_json(&e);
+                    j["score"] = json!((s * 10.0).round() / 10.0);
+                    j["why"] = json!(why);
+                    j
+                }).collect();
+                if rows.is_empty() {
+                    return Ok(json!({"role": role, "matches": 0, "results": [], "hint": "nothing in the catalog fits; try search_instruments with a query, or import_from_url / freesound_search"}));
+                }
+                Ok(json!({"role": role, "genre": genre, "matches": n, "results": rows, "next": "audition_instrument {catalog_id} for the top 2-3, then load_instrument {track, catalog_id}"}))
+            },
+        },
         Tool {
             name: "search_instruments",
             description: "Search the sound catalog of real recorded instruments and impulse responses (permissive licences only: CC0, CC-BY, MIT-style): query matches name/tags/genres, family filters (gm, guitar, bass, drums, percussion, piano, keys, mallets, strings, brass, winds, choir, world, synth, orchestra, ir_room, ir_cab), genre filters by style (lofi, indie, jazz, bollywood, classical_indian, cinematic ...), max_mb by download size, license by substring (e.g. cc0). Returns ids for fetch_instrument / load_instrument, size, licence and whether each is installed.",
@@ -640,6 +751,16 @@ mod tests {
         for fam in ["guitar", "bass", "drums", "piano", "strings", "percussion", "world", "mallets", "keys"] {
             assert!(all.iter().any(|e| e.family == fam), "no {fam}");
         }
+    }
+
+    #[test]
+    fn pick_for_role_ranks_fitting_families_first() {
+        let p = super::pick_for_role("tabla", Some("bollywood"), None);
+        assert_eq!(p[0].1.id, "mmiron_tabla_bols", "{:?}", p.iter().take(3).map(|x| &x.1.id).collect::<Vec<_>>());
+        let p = super::pick_for_role("bass", Some("rock"), Some(400.0));
+        assert!(!p.is_empty() && p.iter().take(5).all(|x| x.1.family == "bass"), "{:?}", p.iter().take(5).map(|x| &x.1.id).collect::<Vec<_>>());
+        let p = super::pick_for_role("drums", None, None);
+        assert!(p.iter().take(5).all(|x| x.1.family == "drums"));
     }
 
     #[test]

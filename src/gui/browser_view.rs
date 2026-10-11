@@ -2,7 +2,11 @@
 //! palettes and the project's samples, searchable, with a target track. Every
 //! button sends the same MCP tool an MCP client would (set_instrument, add_track,
 //! add_effect, apply_palette, add_sample_track); the lists come from the same
-//! discovery tools (list_presets, list_palettes, list_samples).
+//! discovery tools (list_presets, list_palettes, list_samples). The sound
+//! library panel searches the recorded-instrument catalog (search_instruments,
+//! audition_instrument, load_instrument) and imports from a URL
+//! (import_from_url, list_imports, export_credits); downloads run off the UI
+//! thread first, then the same tool runs on the engine.
 
 use super::theme::Tokens;
 use super::Studio;
@@ -18,6 +22,14 @@ pub struct BrowserState {
     pub catalog: Option<(Value, Value)>,
     /// list_fx_chains, refetched after any browser call (saved chains change)
     pub chains: Option<Value>,
+    /// sound library: import field, catalog search, background job
+    pub url: String,
+    pub url_name: String,
+    pub lib_hits: Option<(String, Value)>,
+    pub imports: Option<Value>,
+    pub credits: String,
+    pub job: Option<(String, std::sync::mpsc::Receiver<Result<Value, String>>)>,
+    pub job_result: String,
 }
 
 fn matches(q: &str, a: &str, b: &str) -> bool {
@@ -60,6 +72,8 @@ impl Studio {
         ui.add_space(6.0);
         let q = self.browser.search.clone();
         let track = self.browser.track.clone();
+        self.sound_library(ui, &track);
+        ui.add_space(6.0);
         let h = ui.available_height() - 8.0;
         ui.columns(3, |cols| {
             // ---------- instrument presets
@@ -160,6 +174,147 @@ impl Studio {
         if let Some((tool, args)) = call {
             self.call(&tool, args);
             self.browser.chains = None;
+        }
+    }
+}
+
+impl Studio {
+    /// Run a library action off the UI thread: downloads happen without the
+    /// engine lock, then the same MCP tool runs on the engine.
+    fn library_job(&mut self, label: String, ctx: egui::Context, tool: &'static str, args: Value) {
+        if self.browser.job.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let eng = self.engine.clone();
+        std::thread::spawn(move || {
+            let pre: Result<(), String> = match tool {
+                "import_from_url" => crate::web_import::prefetch(args["url"].as_str().unwrap_or(""), args.get("max_mb").and_then(|v| v.as_u64()).unwrap_or(200)).map_err(|e| format!("{e:#}")),
+                "load_instrument" | "audition_instrument" => match crate::sound_catalog::entry(args["catalog_id"].as_str().unwrap_or("")) {
+                    Some(ent) if ent.format == "sfz_git" => crate::sound_catalog::fetch_sfz_git(&ent, 400, 2).map(|_| ()).map_err(|e| format!("{e:#}")),
+                    _ => Ok(()),
+                },
+                _ => Ok(()),
+            };
+            let r = pre.and_then(|_| eng.lock().unwrap().call_from(tool, &args, "you").map_err(|e| format!("{e:#}")));
+            let _ = tx.send(r);
+            ctx.request_repaint();
+        });
+        self.browser.job = Some((label, rx));
+        self.browser.job_result.clear();
+    }
+
+    fn sound_library(&mut self, ui: &mut egui::Ui, track: &str) {
+        let tk = Tokens::DARK;
+        if let Some((label, rx)) = &self.browser.job {
+            if let Ok(r) = rx.try_recv() {
+                self.browser.job_result = match r {
+                    Ok(v) if v["played_as"].is_string() => {
+                        format!("{label}: {} \u{00B7} peak {:.1} dBFS \u{00B7} {}", v["name"].as_str().unwrap_or(""), v["peak_dbfs"].as_f64().unwrap_or(0.0), v["path"].as_str().unwrap_or(""))
+                    }
+                    Ok(v) => {
+                        let what = v["loaded"].as_str().or(v["name"].as_str()).unwrap_or("done");
+                        format!("{label}: {what} {}", v["license"].as_str().map(|l| format!("({l})")).unwrap_or_default())
+                    }
+                    Err(e) => format!("{label} failed: {e}"),
+                };
+                self.browser.job = None;
+                self.browser.imports = None;
+                self.browser.lib_hits = None;
+            }
+        }
+        let q = self.browser.search.trim().to_string();
+        if self.browser.lib_hits.as_ref().map(|h| h.0 != q).unwrap_or(true) {
+            let r = self.engine.lock().unwrap().call_from("search_instruments", &json!({"query": q, "limit": 60}), "you").unwrap_or(Value::Null);
+            self.browser.lib_hits = Some((q.clone(), r));
+        }
+        if self.browser.imports.is_none() {
+            let r = self.engine.lock().unwrap().call_from("list_imports", &json!({}), "you").unwrap_or(Value::Null);
+            self.browser.imports = Some(r);
+        }
+        let hits = self.browser.lib_hits.clone().map(|h| h.1).unwrap_or(Value::Null);
+        let imports = self.browser.imports.clone().unwrap_or(Value::Null);
+        let busy = self.browser.job.as_ref().map(|j| j.0.clone());
+        let mut job: Option<(String, &'static str, Value)> = None;
+        egui::CollapsingHeader::new(RichText::new(format!("SOUND LIBRARY  \u{00B7}  {} recorded instruments", hits["catalog_size"].as_u64().unwrap_or(0))).size(11.0).strong().color(tk.header_text))
+            .id_salt("br_library")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("IMPORT FROM URL").size(11.0).color(tk.text_dim));
+                    ui.add(egui::TextEdit::singleline(&mut self.browser.url).desired_width(360.0).hint_text("https://... .wav / .sf2 / .zip of samples"));
+                    ui.add(egui::TextEdit::singleline(&mut self.browser.url_name).desired_width(120.0).hint_text("name (optional)"));
+                    let ready = self.browser.url.trim().starts_with("https://") && busy.is_none();
+                    let mut args = json!({"url": self.browser.url.trim()});
+                    if !self.browser.url_name.trim().is_empty() {
+                        args["name"] = json!(self.browser.url_name.trim());
+                    }
+                    if ui.add_enabled(ready, egui::Button::new("IMPORT").small()).on_hover_text(format!("import_from_url {args}")).clicked() {
+                        job = Some((String::from("import"), "import_from_url", args.clone()));
+                    }
+                    let mut a2 = args.clone();
+                    a2["track"] = json!(track);
+                    if ui.add_enabled(ready && !track.is_empty(), egui::Button::new("IMPORT TO TARGET TRACK").small()).on_hover_text(format!("import_from_url {a2}")).clicked() {
+                        job = Some((String::from("import"), "import_from_url", a2));
+                    }
+                    if let Some(b) = &busy {
+                        ui.spinner();
+                        ui.label(RichText::new(format!("{b}...")).size(11.0).color(tk.text_dim));
+                    } else if !self.browser.job_result.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(&self.browser.job_result).size(11.0).color(tk.text)).truncate());
+                    }
+                });
+                ui.add_space(4.0);
+                ui.columns(2, |cols| {
+                    let ui = &mut cols[0];
+                    ui.label(RichText::new(format!("CATALOG ({} match the search box)", hits["matches"].as_u64().unwrap_or(0))).size(11.0).color(tk.text_dim));
+                    egui::ScrollArea::vertical().id_salt("br_cat").max_height(150.0).show(ui, |ui| {
+                        for it in hits["results"].as_array().cloned().unwrap_or_default() {
+                            let id = it["id"].as_str().unwrap_or("").to_string();
+                            let name = it["name"].as_str().unwrap_or("");
+                            let mb = it["mb"].as_f64().map(|m| format!("{m:.0} MB")).unwrap_or_default();
+                            let lic = it["license"].as_str().unwrap_or("");
+                            let fmt = it["format"].as_str().unwrap_or("");
+                            ui.horizontal(|ui| {
+                                let can = busy.is_none() && !track.is_empty() && (fmt == "sfz_git" || fmt == "vsco_pack");
+                                if ui.add_enabled(can, egui::Button::new("LOAD TO TRACK").small()).on_hover_text(format!("load_instrument {{track: {track}, catalog_id: {id}}}")).clicked() {
+                                    job = Some((format!("loading {id}"), "load_instrument", json!({"track": track, "catalog_id": id})));
+                                }
+                                if ui.add_enabled(busy.is_none() && (fmt == "sfz_git" || fmt == "vsco_pack"), egui::Button::new("+TRACK").small()).on_hover_text(format!("load_instrument {{track: {id}, catalog_id: {id}}}")).clicked() {
+                                    job = Some((format!("loading {id}"), "load_instrument", json!({"track": id, "catalog_id": id})));
+                                }
+                                if ui.add_enabled(busy.is_none() && fmt == "sfz_git", egui::Button::new("AUDITION").small()).on_hover_text(format!("audition_instrument {{catalog_id: {id}}}: renders a 4 s preview WAV")).clicked() {
+                                    job = Some((format!("audition {id}"), "audition_instrument", json!({"catalog_id": id})));
+                                }
+                                let inst = if it["installed"] == true { " \u{2713}" } else { "" };
+                                ui.add(egui::Label::new(RichText::new(format!("{name}{inst}")).size(12.0).color(tk.text)).truncate()).on_hover_text(format!("{id} \u{00B7} {} \u{00B7} {mb} \u{00B7} {lic}", it["family"].as_str().unwrap_or("")));
+                            });
+                        }
+                    });
+                    let ui = &mut cols[1];
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("IMPORTED ({})", imports["count"].as_u64().unwrap_or(0))).size(11.0).color(tk.text_dim));
+                        if ui.small_button("CREDITS").on_hover_text("export_credits {}").clicked() {
+                            let r = self.engine.lock().unwrap().call_from("export_credits", &json!({}), "you").unwrap_or(Value::Null);
+                            self.browser.credits = r["credits"].as_str().unwrap_or("").to_string();
+                        }
+                    });
+                    egui::ScrollArea::vertical().id_salt("br_imp").max_height(150.0).show(ui, |ui| {
+                        for it in imports["imports"].as_array().cloned().unwrap_or_default().iter().rev() {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(it["slug"].as_str().unwrap_or("")).size(12.0).color(tk.text));
+                                ui.add(egui::Label::new(RichText::new(format!("{} \u{00B7} {}", it["loaded"].as_str().unwrap_or(""), it["license"].as_str().unwrap_or(""))).size(10.0).color(tk.text_dim)).truncate()).on_hover_text(it["url"].as_str().unwrap_or(""));
+                            });
+                        }
+                        if !self.browser.credits.is_empty() {
+                            ui.separator();
+                            ui.label(RichText::new(&self.browser.credits).size(10.0).color(tk.text_dim));
+                        }
+                    });
+                });
+            });
+        if let Some((label, tool, args)) = job {
+            self.library_job(label, ui.ctx().clone(), tool, args);
         }
     }
 }

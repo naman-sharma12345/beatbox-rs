@@ -359,6 +359,30 @@ fx_struct!(AmpSimFx {
     mic: String = "close".to_string(),
     mix: f32 = 1.0
 });
+fx_struct!(ModDelayFx {
+    time_ms: f32 = 250.0,
+    feedback: f32 = 0.3,
+    mix: f32 = 0.3,
+    mod_rate_hz: f32 = 0.5,
+    mod_depth: f32 = 0.0,
+    lpf_hz: f32 = 12000.0
+});
+fx_struct!(MaximizerFx {
+    threshold_db: f32 = 0.0,
+    ceiling_db: f32 = -0.3,
+    release_ms: f32 = 50.0
+});
+fx_struct!(LoFiFx {
+    bits: f32 = 8.0,
+    sample_rate_hz: f32 = 11025.0,
+    noise: f32 = 0.0,
+    mix: f32 = 1.0
+});
+fx_struct!(RectifierFx {
+    mode: String = "full".to_string(),
+    mix: f32 = 1.0,
+    output_db: f32 = 0.0
+});
 fx_struct!(CabIrFx {
     path: String = String::new(),
     mix: f32 = 1.0,
@@ -438,6 +462,10 @@ pub enum Effect {
     Waveshaper(WaveshaperFx),
     AmpSim(AmpSimFx),
     CabIr(CabIrFx),
+    ModDelay(ModDelayFx),
+    Maximizer(MaximizerFx),
+    Lofi(LoFiFx),
+    Rectifier(RectifierFx),
 }
 
 macro_rules! each_fx {
@@ -479,6 +507,10 @@ macro_rules! each_fx {
             Effect::Waveshaper($p) => $body,
             Effect::AmpSim($p) => $body,
             Effect::CabIr($p) => $body,
+            Effect::ModDelay($p) => $body,
+            Effect::Maximizer($p) => $body,
+            Effect::Lofi($p) => $body,
+            Effect::Rectifier($p) => $body,
         }
     };
 }
@@ -510,6 +542,10 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("pitch_shift", "Granular pitch shifter. semitones -24..24, cents, window_ms, mix (octave-up doubles, chipmunk/dark vocal FX)"),
     ("amp_sim", "Guitar/bass amp: model clean|crunch|lead|bass (preamp waveshaper, 2x oversampled), gain_db, tone stack bass/mid/treble/presence 0..1, cab 1x12|2x12|4x12|bass_4x10|none (modelled speaker cabinet), mic close|room, master_db, mix. Output is level-matched to the input."),
     ("cab_ir", "Cabinet impulse response insert: path = an IR audio file or a catalog id (search_instruments family:ir), mix, gain_db, max_ms"),
+    ("mod_delay", "Modulated feedback delay in milliseconds (not tempo-synced; use delay for that): time_ms 1..2000, feedback -0.99..0.99, mix 0..1, mod_rate_hz 0.01..10, mod_depth 0..1 (up to 5 ms of wobble, right channel a quarter cycle ahead), lpf_hz 500..20000 (low-pass inside the loop, so repeats darken). Tape echo, slapback, chorus-y doubling"),
+    ("maximizer", "Loudness maximizer: lookahead brickwall limiter driven by -threshold_db (threshold_db -30..0: -6 = 6 dB louder), never above ceiling_db (-30..0, default -0.3), release_ms 1..1000; latency compensated"),
+    ("lofi", "Lo-fi crusher: bits 1..24, sample_rate_hz 500..48000 (sample-and-hold decimation, aliasing on purpose), noise 0..1 (hiss), mix 0..1"),
+    ("rectifier", "Rectifier: mode full (octave up) | half (octave up plus the original), DC removed, mix 0..1, output_db -24..12. Octave fuzz on bass/synths, gritty textures"),
     ("convolution", "Convolution reverb with synthesized impulse responses, or a real recorded space with ir_path (an IR file or catalog id). space room|hall|plate|chamber|spring|cathedral, decay_s, predelay_ms, damping, early (reflections), width, mix"),
     ("autopan", "Tempo-synced auto-pan or tremolo. steps (16ths per cycle), depth 0..1, tremolo (true = volume instead of pan)"),
     ("saturator", "Character saturator. mode tape (soft, even+odd warmth, high-end roll-off) | tube (asymmetric, even harmonics) | transistor (hard odd-harmonic edge) | diode (clipped, gritty) | fold (wavefolder, metallic) | exciter (adds only new harmonics above a corner of tone_hz, capped 1.5-8 kHz). drive_db 0..36, tone_hz (post low-pass), bias -0.5..0.5 (asymmetry), mix, output_db, oversample (2x, less aliasing)"),
@@ -601,6 +637,12 @@ impl Effect {
             Effect::Waveshaper(p) => crate::fx_char::waveshaper(p, l, r),
             Effect::AmpSim(p) => crate::fx_amp::amp_sim(p, l, r),
             Effect::CabIr(p) => crate::fx_amp::cab_ir(p, l, r),
+            Effect::ModDelay(p) => crate::fx_sc::mod_delay(p, l, r),
+            Effect::Maximizer(p) => {
+                crate::fx_sc::maximizer(p, l, r);
+            }
+            Effect::Lofi(p) => crate::fx_sc::lofi(p, l, r),
+            Effect::Rectifier(p) => crate::fx_sc::rectifier(p, l, r),
             Effect::Filter(p) => {
                 let (mut fl, mut fr) = (Svf::default(), Svf::default());
                 for i in 0..l.len() {

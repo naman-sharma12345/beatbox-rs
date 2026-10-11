@@ -28,6 +28,7 @@ Beatbox is MIT licensed. It includes code adapted from the projects below.
 | `src/gui/views.rs` (mixer strips, master strip) | `crates/ui-egui/src/mix_window.rs` (`strip`, `insert_slot`, `section_label`) | Console strip layout: INSERTS / SENDS / OUTPUT sections, pan over counter, S/M, fader + stereo meters, dB counter, name plate |
 | `src/gui/piano.rs` | `crates/ui-egui/src/midi_editor.rs` | Piano roll: keyboard, grid, velocity-shaded notes, drag move/resize with snap, rubber-band + shift selection, arrows/Delete, toolbar ops, velocity lane |
 | `src/note_edit.rs` | `crates/ui-egui/src/midi_editor.rs` (drag math) | Snap and move/resize of a note selection, written back through `add_notes` |
+| `src/fx_sc.rs` | `crates/dsp/src/plugins/modulation.rs` (`ModDelay`), `crates/dsp/src/plugins/dynamics.rs` (`Maximizer`), `crates/dsp/src/plugins/harmonic.rs` (`LoFi`, `Rectifier`), `crates/dsp/src/util.rs` (`DelayLine`, `DcBlocker`, `Rng`), at commit `7414719` | Insert effects `mod_delay`, `maximizer` (latency compensated), `lofi`, `rectifier` |
 | `src/sc_strip.rs` | `crates/dsp/src/biquad.rs` (`Coeffs::design`, `Biquad::process_sample`, `butterworth_qs`), `crates/dsp/src/plugins/eq.rs` (`pass_filter`, `design_eq7`, `design_eq1`), `crates/dsp/src/plugins/dynamics.rs` (`ExpanderGate`, `DeEsser`), `crates/dsp/src/plugins/strip.rs` (`ChannelStrip`) | EQ 7-Band, EQ 1-Band, expander/gate with hold, dynamic-EQ de-esser, channel strip (trim, gate, comp, EQ); offline whole-buffer versions with automatic thresholds |
 
 ```
@@ -68,5 +69,7 @@ SOFTWARE.
 - **Versilian Community Sample Library (VCSL)** (Sam Gossner and contributors), CC0 1.0. Catalog programs `vcsl_*` fetch individual files from github.com/sgossner/VCSL at commit c1ea7bc, each checked against its git blob id; the key / velocity / round-robin mapping is generated from the file names. https://github.com/sgossner/VCSL
 - **Euterpea Studio Harmonium** (Evan Yerburgh; recorded at the Euterpea Studio, Yale Department of Computer Science), CC0 1.0. Catalog program `euterpea_harmonium`, files from commit a7cb611, blob-id checked. https://github.com/evanyerburgh/euterpea-harmonium
 - **Tabla bols** pack by mmiron on Freesound (pack 8162), CC0 1.0. Catalog program `mmiron_tabla_bols` downloads Freesound's high-quality previews, each pinned by sha256. https://freesound.org/people/mmiron/packs/8162/
+- **India Santoor** pack by batchku on Freesound (pack 581), CC0 1.0. Catalog program `batchku_santoor_rolls` (12 tremolo-roll notes) downloads Freesound's high-quality previews, each pinned by sha256. https://freesound.org/people/batchku/packs/581/
+- **Dholak** bass and treble skin strokes from the Percussion pack by curesforbrokenhearts on Freesound (pack 24506), CC0 1.0. Catalog program `cfbh_dholak`, previews pinned by sha256. https://freesound.org/people/curesforbrokenhearts/packs/24506/
 - **zip** (MIT), **tar** (MIT OR Apache-2.0), **flate2** (MIT OR Apache-2.0) Rust crates: archive unpacking for `import_from_url`.
 - The sound catalog (`src/sound_catalog.json`) is metadata only; each entry carries its own licence and source, and only CC0 / CC BY / MIT-style items are listed.
