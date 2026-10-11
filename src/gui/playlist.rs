@@ -6,13 +6,17 @@
 // used in Beatbox under the MIT License. See THIRD_PARTY_NOTICES.md.
 
 //! The playlist view: the song arrangement shown as clips, one lane per track, laid out on
-//! the PPQ timebase (`timebase::TempoMap`, 960 ticks per quarter). Read-only groundwork for
-//! native clips: clicking a clip selects its pattern and track for the piano roll.
+//! the PPQ timebase (`timebase::TempoMap`, 960 ticks per quarter). Clicking a pattern clip
+//! selects its pattern and track for the piano roll. Audio clips (takes, bounces) sit on
+//! their track's lane; click one to select it and right-click it for the edit menu (split,
+//! trim, move, duplicate, slip, fades, crossfade, consolidate, ripple delete). Every menu
+//! item is one call to the same timeline tool an MCP client uses (one undo step).
 
 use super::theme::{clip_colors, Tokens};
 use super::widgets::*;
 use super::Studio;
-use crate::project::Project;
+use crate::project::{AudioClip, Project};
+use serde_json::{json, Value};
 use crate::timebase::{step_to_tick, TempoMap, TICKS_PER_QUARTER};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke};
 
@@ -56,10 +60,29 @@ impl Studio {
         let tk = Tokens::DARK;
         let map = TempoMap::for_project(p);
         let clips = placed_clips(p);
+        // audio clip lengths need the decoded takes
+        let take_secs: Vec<f32> = {
+            let e = self.engine.lock().unwrap();
+            p.audio_clips
+                .iter()
+                .map(|c| audio_clip_secs(c, e.bank.get(&c.sample).map(|d| d.len() as f32 / crate::dsp::SR)))
+                .collect()
+        };
+        let tick_of_beat = |b: f32| (f64::from(b) * TICKS_PER_QUARTER as f64).round() as i64;
+        let audio_end = p
+            .audio_clips
+            .iter()
+            .zip(&take_secs)
+            .map(|(c, s)| tick_of_beat(c.start_beat + s * p.bpm / 60.0))
+            .max()
+            .unwrap_or(0);
         let total = clips
             .last()
             .map_or(TICKS_PER_QUARTER * 16, |c| c.end)
+            .max(audio_end)
             .max(1);
+        let playhead_beat = self.player.position_secs() * p.bpm / 60.0;
+        let mut actions: Vec<(&'static str, Value)> = Vec::new();
         let lanes = p.tracks.len().max(1);
         let want_h = RULER_H * 2.0 + LANE_H * lanes as f32 + 4.0;
         egui::ScrollArea::vertical()
@@ -266,6 +289,73 @@ impl Studio {
                             self.pattern = c.pattern;
                         }
                     }
+                    // audio clips on this track's channel
+                    for (ai, c) in p.audio_clips.iter().enumerate() {
+                        if !c.track.eq_ignore_ascii_case(&t.name) {
+                            continue;
+                        }
+                        let secs = take_secs[ai];
+                        let (s0, s1) = (tick_of_beat(c.start_beat), tick_of_beat(c.start_beat + secs * p.bpm / 60.0));
+                        let r = Rect::from_min_max(
+                            pos2(x_of(s0.max(0)) + 1.0, y + 2.0),
+                            pos2(x_of(s1).max(x_of(s0.max(0)) + 3.0) - 1.0, y + LANE_H - 2.0),
+                        );
+                        let selected = self.clip_sel.as_deref() == Some(c.id.as_str()) && !c.id.is_empty();
+                        let audio_c = Color32::from_rgb(92, 150, 190);
+                        let (body, bar_c, ink) = clip_colors(audio_c, selected);
+                        pt.rect_filled(r, 2.0, body);
+                        let title = Rect::from_min_size(r.min, vec2(r.width(), 11.0));
+                        pt.rect_filled(title, 2.0, bar_c);
+                        pt.with_clip_rect(title).text(
+                            pos2(title.min.x + 3.0, title.center().y),
+                            Align2::LEFT_CENTER,
+                            &c.sample,
+                            FontId::proportional(8.5),
+                            tk.text_dark,
+                        );
+                        // fade ramps
+                        let px_s = r.width() / secs.max(1e-3);
+                        for (ms, left) in [(c.fade_in_ms, true), (c.fade_out_ms, false)] {
+                            if let Some(ms) = ms.filter(|m| *m > 6.0) {
+                                let w = (ms / 1000.0 * px_s).min(r.width());
+                                let (a, b) = if left {
+                                    (pos2(r.min.x, r.max.y), pos2(r.min.x + w, title.max.y))
+                                } else {
+                                    (pos2(r.max.x - w, title.max.y), pos2(r.max.x, r.max.y))
+                                };
+                                pt.line_segment([a, b], Stroke::new(1.0_f32, ink));
+                            }
+                        }
+                        if selected {
+                            pt.rect_stroke(r, 2.0, Stroke::new(1.0_f32, Color32::WHITE));
+                        }
+                        let resp = ui
+                            .interact(r, ui.id().with(("pl_audio", ai)), Sense::click())
+                            .on_hover_text(format!(
+                                "{} · {} · beat {:.2} · {:.2} s",
+                                t.name, c.sample, c.start_beat, secs
+                            ));
+                        if resp.clicked() || resp.secondary_clicked() {
+                            self.selected = ti;
+                            self.clip_sel = Some(c.id.clone());
+                        }
+                        let id = c.id.clone();
+                        let next = p
+                            .audio_clips
+                            .iter()
+                            .filter(|o| o.track.eq_ignore_ascii_case(&c.track) && o.start_beat > c.start_beat)
+                            .min_by(|a, b| a.start_beat.total_cmp(&b.start_beat))
+                            .map(|o| o.id.clone());
+                        let track = t.name.clone();
+                        resp.context_menu(|ui| {
+                            for (label, tool, args) in clip_menu(&id, &track, playhead_beat, next.as_deref()) {
+                                if ui.button(label).clicked() {
+                                    actions.push((tool, args));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
                 }
                 // playhead
                 let tick = step_to_tick(self.player.position_secs() / p.step_secs().max(1e-4));
@@ -286,5 +376,60 @@ impl Studio {
                     );
                 }
             });
+        for (tool, args) in actions {
+            self.call(tool, args);
+        }
     }
 }
+
+/// Seconds an audio clip plays, given its take's length when known.
+pub fn audio_clip_secs(c: &AudioClip, take_secs: Option<f32>) -> f32 {
+    let avail = take_secs.map(|t| (t - c.offset_s.max(0.0)).max(0.0));
+    match (c.length_s, avail) {
+        (Some(l), Some(a)) => l.min(a),
+        (Some(l), None) => l,
+        (None, Some(a)) => a,
+        (None, None) => 1.0,
+    }
+}
+
+/// The audio clip edit menu: label, timeline tool, arguments.
+pub fn clip_menu(id: &str, track: &str, playhead_beat: f32, next: Option<&str>) -> Vec<(&'static str, &'static str, Value)> {
+    let mut v = vec![
+        ("Split at playhead", "split_clip", json!({"id": id, "at_beat": playhead_beat})),
+        ("Trim start to playhead", "trim_clip", json!({"id": id, "start_beat": playhead_beat})),
+        ("Trim end to playhead", "trim_clip", json!({"id": id, "end_beat": playhead_beat})),
+        ("Move to playhead", "move_clip", json!({"id": id, "start_beat": playhead_beat})),
+        ("Duplicate", "duplicate_clip", json!({"id": id})),
+        ("Slip 10 ms earlier", "slip_clip", json!({"id": id, "by_s": -0.01})),
+        ("Slip 10 ms later", "slip_clip", json!({"id": id, "by_s": 0.01})),
+        ("Fade in 200 ms", "fade_clip", json!({"id": id, "fade_in_ms": 200})),
+        ("Fade out 500 ms", "fade_clip", json!({"id": id, "fade_out_ms": 500})),
+        ("Remove fades", "fade_clip", json!({"id": id, "fade_in_ms": 0, "fade_out_ms": 0})),
+    ];
+    if let Some(n) = next {
+        v.push(("Crossfade with next clip", "crossfade_clips", json!({"first": id, "second": n, "ms": 30})));
+    }
+    v.push(("Consolidate track clips", "consolidate_clips", json!({"track": track})));
+    v.push(("Ripple delete", "ripple_delete", json!({"id": id})));
+    v.push(("Delete", "remove_audio_clip", json!({"id": id})));
+    v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_clip_menu_item_is_a_registered_tool_with_valid_args() {
+        for (label, tool, args) in clip_menu("clip1", "vox", 2.0, Some("clip2")) {
+            let t = crate::tools::find(tool).unwrap_or_else(|| panic!("{label}: no tool {tool}"));
+            let schema = (t.schema)();
+            for k in args.as_object().unwrap().keys() {
+                assert!(schema["properties"].get(k).is_some(), "{label}: {tool} has no argument {k}");
+            }
+            assert!(!label.to_lowercase().contains("ai "), "manual wording: {label}");
+        }
+    }
+}
+

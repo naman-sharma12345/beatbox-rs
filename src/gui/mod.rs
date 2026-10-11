@@ -74,6 +74,8 @@ pub struct Studio {
     vocal_wave: Option<(String, Vec<(f32, f32)>, f32)>,
     /// browser view: presets, effects, palettes, samples
     browser: browser_view::BrowserState,
+    /// playlist view: the selected audio clip's stable id
+    clip_sel: Option<String>,
 }
 
 /// The studio is a hand-operated DAW: one view per manual workspace. The
@@ -130,6 +132,7 @@ pub fn run(
                 },
                 vocal_wave: None,
                 browser: Default::default(),
+                clip_sel: None,
             }))
         }),
     )
