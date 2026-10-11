@@ -821,7 +821,7 @@ pub(crate) fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "save_project",
-            description: "Save the project as JSON. Snapshots (A/B versions) are saved alongside in <path>.snapshots.json and come back with load_project, so compare_variants works across sessions.",
+            description: "Save the project as JSON (with the MIDI controller setup: links, keys track, record grid). Snapshots (A/B versions) are saved alongside in <path>.snapshots.json and come back with load_project, so compare_variants works across sessions.",
             mutates: false,
             schema: || obj(json!({"path": {"type": "string", "description": "File path, e.g. mybeat.beatbox.json"}}), &["path"]),
             run: |e, a| {
@@ -829,6 +829,7 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent).ok();
                 }
+                e.project.midi = crate::midi_in::snapshot(e);
                 std::fs::write(&path, serde_json::to_string_pretty(&e.project)?)?;
                 let side = snapshots_path(&path);
                 if e.snapshots.is_empty() {
@@ -837,12 +838,12 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                     let snaps: Vec<Value> = e.snapshots.iter().map(|(n, s)| json!({"name": n, "note": s.note, "revision": s.revision, "project": s.project})).collect();
                     std::fs::write(&side, serde_json::to_string(&snaps)?)?;
                 }
-                Ok(json!({"saved": path, "snapshots": e.snapshots.len()}))
+                Ok(json!({"saved": path, "snapshots": e.snapshots.len(), "midi_links": e.project.midi.as_ref().map_or(0, |m| m.links.len())}))
             },
         },
         Tool {
             name: "load_project",
-            description: "Load a project JSON file (replaces the current project; undo restores it).",
+            description: "Load a project JSON file (replaces the current project; undo restores it). Its saved MIDI links and keys track come back; a connected controller stays connected.",
             mutates: false,
             schema: || obj(json!({"path": {"type": "string"}}), &["path"]),
             run: |e, a| {
@@ -850,6 +851,8 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
                 let p: Project = serde_json::from_str(&text).context("not a beatbox project")?;
                 e.replace_project(p);
+                let saved_midi = e.project.midi.clone();
+                let (midi_links, midi_skipped) = crate::midi_in::restore(e, saved_midi.as_ref());
                 let mut loaded = 0;
                 if let Ok(t) = std::fs::read_to_string(snapshots_path(&path)) {
                     if let Ok(Value::Array(v)) = serde_json::from_str::<Value>(&t) {
@@ -864,6 +867,9 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 }
                 let mut out = summary(&e.project);
                 out["snapshots_loaded"] = json!(loaded);
+                if saved_midi.is_some() {
+                    out["midi"] = json!({"links": midi_links, "track": e.midi.track, "skipped": midi_skipped});
+                }
                 let missing = render::missing_clip_samples(&e.project, &e.bank);
                 if !missing.is_empty() {
                     out["warnings"] = json!(missing.iter().map(|m| format!("audio clip {m}; renders fail until it is fixed")).collect::<Vec<_>>());

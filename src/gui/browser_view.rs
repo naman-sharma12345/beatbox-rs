@@ -129,47 +129,9 @@ impl Studio {
             });
             // ---------- fx chains (Patcher-style presets) + effects
             let ui = &mut cols[1];
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("FX CHAINS").size(11.0).strong().color(tk.header_text));
-                if ui.small_button("SAVE TRACK'S CHAIN").on_hover_text(format!("save_fx_chain {{track: {track}, name: {track}_chain}}")).clicked() && !track.is_empty() {
-                    call = Some(("save_fx_chain".into(), json!({"track": track, "name": format!("{track}_chain")})));
-                }
-            });
-            for it in chains["chains"].as_array().cloned().unwrap_or_default() {
-                let n = it["name"].as_str().unwrap_or("");
-                let d = it["use"].as_str().unwrap_or("saved in this project");
-                if !matches(&q, n, d) {
-                    continue;
-                }
-                let fx: Vec<String> = it["effects"].as_array().map(|a| a.iter().map(|x| x["type"].as_str().unwrap_or("?").to_string()).collect()).unwrap_or_default();
-                ui.horizontal(|ui| {
-                    if ui.small_button("APPLY").on_hover_text(format!("apply_fx_chain {{track: {track}, chain: {n}}}")).clicked() && !track.is_empty() {
-                        call = Some(("apply_fx_chain".into(), json!({"track": track, "chain": n})));
-                    }
-                    ui.label(RichText::new(n).size(12.0).color(tk.text)).on_hover_text(d);
-                    ui.add(egui::Label::new(RichText::new(fx.join(" > ")).size(10.0).color(tk.text_dim)).truncate()).on_hover_text(d);
-                });
-            }
-            ui.add_space(6.0);
-            if self.browser.good_amount <= 0.0 {
-                self.browser.good_amount = 50.0;
-            }
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("SOUNDGOODIZER").size(11.0).strong().color(tk.header_text));
-                for (i, m) in ["A", "B", "C", "D"].iter().enumerate() {
-                    let tip = ["even lift", "forward mids", "brighter top", "heavy low end"][i];
-                    ui.selectable_value(&mut self.browser.good_mode, i, *m).on_hover_text(tip);
-                }
-                ui.add(egui::Slider::new(&mut self.browser.good_amount, 1.0..=100.0).integer());
-                let mode = ["A", "B", "C", "D"][self.browser.good_mode.min(3)];
-                if ui.small_button("APPLY").on_hover_text(format!("polish {track} (mode {mode}); again on the same track retunes it")).clicked() && !track.is_empty() {
-                    call = Some(("soundgoodizer".into(), json!({"track": track, "mode": mode, "amount": self.browser.good_amount.round()})));
-                }
-            });
-            ui.add_space(6.0);
-            let (port, rec, learning, links) = {
+            let (port, rec, learning, links, keys) = {
                 let e = self.engine.lock().unwrap();
-                (e.midi.port.clone(), e.midi.record, e.midi.learn.clone(), e.midi.links.len())
+                (e.midi.port.clone(), e.midi.record, e.midi.learn.clone(), e.midi.links.len(), if e.midi.track.is_empty() { p.tracks.first().map(|t| t.name.clone()).unwrap_or_default() } else { e.midi.track.clone() })
             };
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("MIDI IN").size(11.0).strong().color(tk.header_text));
@@ -223,10 +185,49 @@ impl Studio {
                 }
                 if let Some(l) = &learning {
                     ui.label(RichText::new(format!("move a control for {l}")).size(10.0).color(tk.text_dim));
-                } else if links > 0 {
-                    ui.label(RichText::new(format!("{links} linked")).size(10.0).color(tk.text_dim));
+                } else {
+                    ui.label(RichText::new(format!("keys: {keys}  \u{00B7}  {links} linked")).size(10.0).color(tk.text_dim)).on_hover_text("links and the keys track are saved with the project");
                 }
             });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("FX CHAINS").size(11.0).strong().color(tk.header_text));
+                if ui.small_button("SAVE TRACK'S CHAIN").on_hover_text(format!("save_fx_chain {{track: {track}, name: {track}_chain}}")).clicked() && !track.is_empty() {
+                    call = Some(("save_fx_chain".into(), json!({"track": track, "name": format!("{track}_chain")})));
+                }
+            });
+            for it in chains["chains"].as_array().cloned().unwrap_or_default() {
+                let n = it["name"].as_str().unwrap_or("");
+                let d = it["use"].as_str().unwrap_or("saved in this project");
+                if !matches(&q, n, d) {
+                    continue;
+                }
+                let fx: Vec<String> = it["effects"].as_array().map(|a| a.iter().map(|x| x["type"].as_str().unwrap_or("?").to_string()).collect()).unwrap_or_default();
+                ui.horizontal(|ui| {
+                    if ui.small_button("APPLY").on_hover_text(format!("apply_fx_chain {{track: {track}, chain: {n}}}")).clicked() && !track.is_empty() {
+                        call = Some(("apply_fx_chain".into(), json!({"track": track, "chain": n})));
+                    }
+                    ui.label(RichText::new(n).size(12.0).color(tk.text)).on_hover_text(d);
+                    ui.add(egui::Label::new(RichText::new(fx.join(" > ")).size(10.0).color(tk.text_dim)).truncate()).on_hover_text(d);
+                });
+            }
+            ui.add_space(6.0);
+            if self.browser.good_amount <= 0.0 {
+                self.browser.good_amount = 50.0;
+            }
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("SOUNDGOODIZER").size(11.0).strong().color(tk.header_text));
+                for (i, m) in ["A", "B", "C", "D"].iter().enumerate() {
+                    let tip = ["even lift", "forward mids", "brighter top", "heavy low end"][i];
+                    ui.selectable_value(&mut self.browser.good_mode, i, *m).on_hover_text(tip);
+                }
+                ui.add(egui::Slider::new(&mut self.browser.good_amount, 1.0..=100.0).integer());
+                let mode = ["A", "B", "C", "D"][self.browser.good_mode.min(3)];
+                if ui.small_button("APPLY").on_hover_text(format!("polish {track} (mode {mode}); again on the same track retunes it")).clicked() && !track.is_empty() {
+                    call = Some(("soundgoodizer".into(), json!({"track": track, "mode": mode, "amount": self.browser.good_amount.round()})));
+                }
+            });
+            ui.add_space(6.0);
             ui.add_space(8.0);
             ui.label(RichText::new("EFFECTS").size(11.0).strong().color(tk.header_text));
             egui::ScrollArea::vertical().id_salt("br_fx").max_height((ui.available_height() - 8.0).max(120.0)).show(ui, |ui| {

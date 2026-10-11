@@ -320,6 +320,52 @@ pub fn pump(e: &mut Engine) -> usize {
     msgs.len()
 }
 
+/// The setup worth keeping with the project (None when it is all defaults).
+pub fn snapshot(e: &Engine) -> Option<crate::project::MidiSetup> {
+    let m = &e.midi;
+    if m.links.is_empty() && m.track.is_empty() && m.quantize == 1.0 && m.gate_s == 0.6 {
+        return None;
+    }
+    Some(crate::project::MidiSetup {
+        links: m.links.iter().map(|l| crate::project::MidiLinkSave { control: l.control.label(), target: l.target.clone() }).collect(),
+        track: m.track.clone(),
+        quantize: m.quantize,
+        gate_s: m.gate_s,
+    })
+}
+
+/// Put a saved setup back (or the defaults for a project without one). The
+/// connected port stays connected. Links whose control or target no longer
+/// parse against this project are skipped and named.
+pub fn restore(e: &mut Engine, s: Option<&crate::project::MidiSetup>) -> (usize, Vec<String>) {
+    let d = crate::project::MidiSetup { quantize: 1.0, gate_s: 0.6, ..Default::default() };
+    let s = s.cloned().unwrap_or(d);
+    let mut links = Vec::new();
+    let mut skipped = Vec::new();
+    for l in &s.links {
+        match Control::parse(&l.control).and_then(|c| check_target(e, &l.target).map(|t| (c, t))) {
+            Ok((control, target)) => {
+                links.retain(|x: &Link| x.control != control);
+                links.push(Link { control, target });
+            }
+            Err(err) => skipped.push(format!("{} -> {}: {err}", l.control, l.target)),
+        }
+    }
+    let track = if s.track.is_empty() || e.project.track_index(&s.track).is_ok() { s.track.clone() } else {
+        skipped.push(format!("keys track '{}' is not in this project", s.track));
+        String::new()
+    };
+    let n = links.len();
+    let m = &mut e.midi;
+    m.links = links;
+    m.track = track;
+    m.quantize = s.quantize.max(0.0);
+    m.gate_s = if s.gate_s > 0.0 { s.gate_s } else { 0.6 };
+    m.learn = None;
+    m.held.clear();
+    (n, skipped)
+}
+
 fn parse_msg(v: &Value) -> Result<[u8; 3]> {
     let bytes: Vec<u8> = if let Some(a) = v.as_array() {
         a.iter().map(|x| x.as_u64().filter(|b| *b < 256).map(|b| b as u8).ok_or_else(|| anyhow!("message bytes must be 0-255"))).collect::<Result<_>>()?
@@ -598,6 +644,44 @@ mod tests {
         e.call("midi_input", &json!({"action": "link", "control": "note 36", "target": format!("launch:{pat}")})).unwrap();
         e.call("midi_event", &json!({"messages": [[0x99, 36, 90]]})).unwrap();
         assert_eq!(e.transport.pending_launch.as_ref().and_then(|l| l.pattern.clone()), Some(pat));
+    }
+
+    #[test]
+    fn links_and_keys_track_survive_save_and_load() {
+        let mut e = eng();
+        let t = e.project.tracks[1].name.clone();
+        let pat = e.project.patterns[0].name.clone();
+        e.call("midi_input", &json!({"action": "link", "control": "cc 7 ch 2", "target": format!("volume:{t}")})).unwrap();
+        e.call("midi_input", &json!({"action": "link", "control": "note 36", "target": format!("launch:{pat}")})).unwrap();
+        e.call("midi_input", &json!({"action": "set", "track": t, "quantize": 4, "gate_s": 0.3})).unwrap();
+        let dir = std::env::temp_dir().join(format!("bb_midi_save_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("m.beatbox.json");
+        let r = e.call("save_project", &json!({"path": f.to_string_lossy()})).unwrap();
+        assert_eq!(r["midi_links"], 2);
+        // a fresh engine (a restart) gets the setup back from the file
+        let mut e2 = eng();
+        assert!(e2.midi.links.is_empty());
+        let r = e2.call("load_project", &json!({"path": f.to_string_lossy()})).unwrap();
+        assert_eq!(r["midi"]["links"], 2, "{r}");
+        assert_eq!(e2.midi.track, t);
+        assert_eq!(e2.midi.quantize, 4.0);
+        assert!((e2.midi.gate_s - 0.3).abs() < 1e-6);
+        e2.call("midi_event", &json!({"messages": [[0xB1, 7, 127]]})).unwrap();
+        assert!((e2.project.tracks[1].volume_db - 6.0).abs() < 0.01);
+        // a project with no setup clears the links; a stale link is skipped and named
+        let mut p = e2.project.clone();
+        p.midi = Some(crate::project::MidiSetup { links: vec![crate::project::MidiLinkSave { control: "cc 1".into(), target: "volume:gone".into() }], track: "gone".into(), quantize: 1.0, gate_s: 0.6 });
+        std::fs::write(&f, serde_json::to_string(&p).unwrap()).unwrap();
+        let r = e2.call("load_project", &json!({"path": f.to_string_lossy()})).unwrap();
+        assert_eq!(r["midi"]["links"], 0);
+        assert_eq!(r["midi"]["skipped"].as_array().unwrap().len(), 2);
+        p.midi = None;
+        std::fs::write(&f, serde_json::to_string(&p).unwrap()).unwrap();
+        e2.call("midi_input", &json!({"action": "link", "control": "cc 9", "target": "song"})).unwrap();
+        e2.call("load_project", &json!({"path": f.to_string_lossy()})).unwrap();
+        assert!(e2.midi.links.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

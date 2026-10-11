@@ -381,6 +381,35 @@ pub struct Project {
     /// Next stable-id number (ids are never reused, even after a delete).
     #[serde(default)]
     pub id_seq: u64,
+    /// MIDI controller setup (links, the keys track, record grid), written
+    /// by save_project and restored by load_project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub midi: Option<MidiSetup>,
+}
+
+/// A saved MIDI controller setup: which controls drive what, which track the
+/// keyboard plays, the record grid and live note length.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct MidiSetup {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<MidiLinkSave>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub track: String,
+    #[serde(default = "one_f32")]
+    pub quantize: f32,
+    #[serde(default = "default_gate")]
+    pub gate_s: f32,
+}
+
+fn default_gate() -> f32 {
+    0.6
+}
+
+/// One saved link: a control label ('cc 7 ch 2', 'note 36') and its target.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct MidiLinkSave {
+    pub control: String,
+    pub target: String,
 }
 
 /// One tempo change: from `beat` on the song plays at `bpm`. With `ramp`
@@ -527,6 +556,7 @@ impl Project {
             tempo_points: Vec::new(),
             schema_version: crate::ids::SCHEMA_VERSION,
             id_seq: 0,
+            midi: None,
         }
     }
 
