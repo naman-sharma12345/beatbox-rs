@@ -9,7 +9,7 @@
 //! The piano roll panel. Notes are in Beatbox steps (16ths); the snap grid comes from the
 //! PPQ timebase (`timebase::NoteValue`). Every edit is ONE engine tool call
 //! (`add_notes` with `replace`, or `quantize` / `legato` / `edit_notes` for toolbar ops), so
-//! a gesture is one undo step and an AI watching the project sees the same change.
+//! a gesture is one undo step and an MCP client watching the project sees the same change.
 
 use super::theme::Tokens;
 use super::widgets::*;

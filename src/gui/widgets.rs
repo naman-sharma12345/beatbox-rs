@@ -261,52 +261,6 @@ pub fn transport_button(ui: &mut Ui, playing: bool) -> Response {
     resp
 }
 
-/// Circular score gauge 0..100.
-pub fn score_ring(ui: &mut Ui, score: u32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(76.0), Sense::hover());
-    let c = rect.center();
-    let r = 31.0;
-    let p = ui.painter();
-    let ring = |from: f32, to: f32| -> Vec<Pos2> {
-        (0..=48)
-            .map(|i| {
-                let a = from + (to - from) * i as f32 / 48.0;
-                Pos2::new(c.x + r * a.cos(), c.y + r * a.sin())
-            })
-            .collect()
-    };
-    p.add(Shape::line(
-        ring(-PI / 2.0, PI * 1.5),
-        Stroke::new(6.0_f32, Color32::from_rgb(52, 52, 54)),
-    ));
-    let t = score as f32 / 100.0;
-    let col = if score >= 85 {
-        GOOD
-    } else if score >= 65 {
-        WARN
-    } else {
-        HOT
-    };
-    p.add(Shape::line(
-        ring(-PI / 2.0, -PI / 2.0 + 2.0 * PI * t),
-        Stroke::new(6.0_f32, col),
-    ));
-    p.text(
-        c - Vec2::new(0.0, 5.0),
-        Align2::CENTER_CENTER,
-        score.to_string(),
-        FontId::proportional(22.0),
-        TEXT,
-    );
-    p.text(
-        c + Vec2::new(0.0, 14.0),
-        Align2::CENTER_CENTER,
-        "MIX",
-        FontId::proportional(9.5),
-        DIM,
-    );
-}
-
 /// Gradient-ish filled bar used in meters/spectrum.
 pub fn vgradient_bar(p: &egui::Painter, rect: Rect, bottom: Color32, top: Color32) {
     let mut mesh = egui::Mesh::default();

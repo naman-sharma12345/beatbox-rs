@@ -59,7 +59,7 @@ Screenshots are produced headlessly by the `screenshots` GitHub Actions workflow
 - **DSP from SoundCraft (MIT/Apache)** — Kaiser windowed-sinc resampler (sample import and multisample pitching), 8-line FDN reverb (`reverb {mode: fdn_room|fdn_plate|fdn_hall, decay_s}`), soft-knee lookahead compressor with sidechain HPF and parallel mix, YIN pitch detection, spectral-flux transients, TPDF dither and FLAC. See THIRD_PARTY_NOTICES.md.
 - **Strict, stable parameters** — unknown top-level or nested parameters are rejected with the valid names (never silently dropped), `add_effect` / `tweak_effect` echo the effective values, and every effect has a stable id (`reverb1`) usable anywhere an index is (`tweak_effect {index:"reverb1"}`, automation `fx.reverb1.mix`); old projects get ids on load.
 - **Studio parity** — `transport` (play / stop / seek over the live link), `get_history`, `screenshot` (studio view as an MCP image), `render` with a region and tail.
-- **Studio** — native egui desktop app: arrangement strip, step sequencer, piano roll, **mixer** (channel strips with live meters from stems, faders, pan, sends, bus and master strips with LUFS / true peak), **automation editor** (lane list, curve view over the song with sections, click to add points, one-click shapes), inspector with knobs, live waveform / spectrum, mix score and the AI activity feed. Every click is a tool call, so the AI and you share one undo history.
+- **Studio** — native egui desktop app: arrangement strip, step sequencer, piano roll, **mixer** (channel strips with live meters from stems, faders, pan, sends, bus and master strips with LUFS / true peak), **automation editor** (lane list, curve view over the song with sections, click to add points, one-click shapes), inspector with knobs, live waveform / spectrum and the activity feed. The GUI is fully manual, a hand-operated DAW: the one-call production tools (`make_beat`, `produce_song`, `critique_mix`, ...) live in MCP only. Every click is a tool call, so an MCP client and you share one undo history.
 
 ## Quick start
 
@@ -133,7 +133,7 @@ Discovery `get_guide` `list_presets` `list_tools` · Project `new_project` `get_
 ## Roadmap
 
 - [x] Engine, MCP tools, CLI
-- [x] Native desktop studio (egui): step sequencer, piano roll, knobs, mixer, live waveform/spectrum, live AI activity feed
+- [x] Native desktop studio (egui), fully manual: step sequencer, piano roll, knobs, mixer, live waveform/spectrum, live activity feed (your clicks and MCP calls)
 - [x] Studio ↔ MCP live link (`beatbox mcp --connect`) so you watch the AI produce
 - [x] Automation lanes, buses/sends/returns, A/B snapshots + diff, validation and master QC
 - [x] Piano roll + MIDI import/export, song structure + transitions, studio FX rack, wavetable / granular / modelled piano + ensembles / multisample instruments, sample slicing and stretching, persistent snapshots, batch

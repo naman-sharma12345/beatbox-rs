@@ -1,6 +1,6 @@
 //! The browser view (FL's Browser): instrument presets, effects, sound
 //! palettes and the project's samples, searchable, with a target track. Every
-//! button sends the MCP tool an AI would (set_instrument, add_track,
+//! button sends the same MCP tool an MCP client would (set_instrument, add_track,
 //! add_effect, apply_palette, add_sample_track); the lists come from the same
 //! discovery tools (list_presets, list_palettes, list_samples).
 

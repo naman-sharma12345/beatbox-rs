@@ -1,6 +1,6 @@
 //! Beatbox Studio — the native desktop GUI (egui).
 //!
-//! Every click goes through `Engine::call`, exactly like an AI would, so the
+//! Every click goes through `Engine::call`, exactly like an MCP client would, so the
 //! studio and MCP clients always see the same project. A local control server
 //! lets `beatbox mcp --connect` drive this window live.
 
@@ -12,8 +12,6 @@ mod shortcuts;
 mod theme;
 mod views;
 mod vocal_view;
-mod create_view;
-mod critique_view;
 mod browser_view;
 mod widgets;
 
@@ -74,15 +72,14 @@ pub struct Studio {
     piano: piano::PianoState,
     /// vocal view: (sample, waveform peaks, seconds)
     vocal_wave: Option<(String, Vec<(f32, f32)>, f32)>,
-    /// create view: prompt / lyrics / recording -> make_beat, produce_song
-    create: create_view::CreateState,
-    /// critique view: critique_mix with its fixes as APPLY buttons
-    critique: critique_view::CritiqueState,
     /// browser view: presets, effects, palettes, samples
     browser: browser_view::BrowserState,
 }
 
-const VIEWS: [&str; 8] = ["SEQUENCER", "MIXER", "AUTOMATION", "PLAYLIST", "VOCAL", "CREATE", "CRITIQUE", "BROWSER"];
+/// The studio is a hand-operated DAW: one view per manual workspace. The
+/// one-call production tools (make_beat, produce_song, critique_mix, ...)
+/// are MCP tools only and have no place in the GUI.
+pub const VIEWS: [&str; 6] = ["SEQUENCER", "MIXER", "AUTOMATION", "PLAYLIST", "VOCAL", "BROWSER"];
 
 pub fn run(
     engine: Engine,
@@ -132,8 +129,6 @@ pub fn run(
                     ..Default::default()
                 },
                 vocal_wave: None,
-                create: Default::default(),
-                critique: Default::default(),
                 browser: Default::default(),
             }))
         }),
@@ -585,7 +580,7 @@ impl Studio {
                 self.call("set_key", json!({"root": root, "scale": scale}));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // live AI badge
+                // MCP server badge
                 let (r, _) = ui.allocate_exact_size(Vec2::new(214.0, 26.0), Sense::hover());
                 let t = ui.input(|i| i.time) as f32;
                 let pulse = 0.55 + 0.45 * (t * 2.5).sin().abs();
@@ -600,9 +595,9 @@ impl Studio {
                     Pos2::new(r.left() + 26.0, r.center().y),
                     Align2::LEFT_CENTER,
                     if self.server_ok {
-                        format!("AI LINK {}", self.listen.rsplit(':').next().unwrap_or(""))
+                        format!("MCP {}", self.listen.rsplit(':').next().unwrap_or(""))
                     } else {
-                        "AI LINK OFF".into()
+                        "MCP OFF".into()
                     },
                     FontId::proportional(11.5),
                     col,
@@ -642,27 +637,6 @@ impl Studio {
     // ---------------- browser ----------------
     fn browser(&mut self, ui: &mut egui::Ui, p: &Project) {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            section_label(ui, "INSTANT BEAT");
-            let styles: Vec<&str> = theory::GROOVES.iter().map(|g| g.name).collect();
-            egui::Grid::new("styles").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
-                for (i, s) in styles.iter().enumerate() {
-                    let hue = i as f32 / styles.len() as f32;
-                    let col = lerp_color(ACCENT, ACCENT2, hue);
-                    let b = egui::Button::new(RichText::new(s.replace('_', " ")).size(12.5).color(TEXT))
-                        .fill(col.gamma_multiply(0.22))
-                        .stroke(Stroke::new(1.0_f32, col.gamma_multiply(0.6)))
-                        .min_size(Vec2::new(98.0, 30.0));
-                    if ui.add(b).on_hover_text(format!("generate_beat style={s}")).clicked() {
-                        self.call("generate_beat", json!({"style": s, "seed": (ui.input(|i| i.time) * 1000.0) as u64 % 9973}));
-                        self.pattern = 0;
-                        self.selected = 0;
-                    }
-                    if i % 2 == 1 {
-                        ui.end_row();
-                    }
-                }
-            });
-            ui.add_space(8.0);
             section_label(ui, "PATTERNS");
             for (i, pat) in p.patterns.iter().enumerate() {
                 let sel = i == self.pattern;
@@ -869,7 +843,7 @@ impl Studio {
             if p.tracks.is_empty() {
                 ui.add_space(40.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("Pick a style on the left or ask your AI to start a beat").size(16.0).color(DIM));
+                    ui.label(RichText::new("Add a track to start: click an instrument under INSTRUMENTS on the left").size(16.0).color(DIM));
                 });
             }
         });
@@ -882,7 +856,6 @@ impl Studio {
             return;
         };
         ui.horizontal(|ui| {
-            score_ring(ui, r.report.score);
             ui.vertical(|ui| {
                 ui.label(RichText::new("MASTER").size(11.0).color(DIM).strong());
                 ui.label(
@@ -992,14 +965,6 @@ impl Studio {
                 FontId::proportional(9.5),
                 DIM,
             );
-        }
-        ui.add_space(4.0);
-        ui.label(RichText::new("AI MIX NOTES").size(10.5).color(DIM).strong());
-        for s in r.report.suggestions.iter().take(2) {
-            if ui.available_height() < 30.0 {
-                break;
-            }
-            ui.label(RichText::new(format!("- {s}")).size(11.5).color(WARN));
         }
         let _ = p;
     }
@@ -1142,7 +1107,7 @@ impl Studio {
                 for e in log.iter().take(9) {
                     ui.horizontal(|ui| {
                         let (col, tag) = match e.source.as_str() {
-                            "ai" | "mcp" => (ACCENT, "AI"),
+                            "ai" | "mcp" => (ACCENT, "MCP"),
                             "you" => (ACCENT2, "YOU"),
                             _ => (DIM, "SYS"),
                         };
@@ -1282,11 +1247,9 @@ impl eframe::App for Studio {
                         ),
                         4 => match &p.vocal_map {
                             Some(m) => format!("{} words · {} sung notes · {} chords", m.words.len(), m.notes.len(), m.chords.len()),
-                            None => "vocal_to_song builds a song around a sung take".to_string(),
+                            None => "no vocal take in this project".to_string(),
                         },
-                        5 => "make_beat \u{00B7} produce_song \u{00B7} the prompt and lyrics are read live".to_string(),
-                        6 => "critique_mix \u{00B7} an AI listener's measurements, each fix a tool call".to_string(),
-                        7 => format!("{} samples \u{00B7} presets, effects, palettes \u{00B7} each button an MCP tool", p.samples.len()),
+                        5 => format!("{} samples \u{00B7} presets, effects, palettes", p.samples.len()),
                         2 => format!(
                             "{} lanes · {:.0} beats · {:.0} BPM",
                             p.automation.len(),
@@ -1312,9 +1275,7 @@ impl eframe::App for Studio {
                     3 => self.playlist_view(ui, &p),
                     2 => self.automation_view(ui, &p),
                     4 => self.vocal_view(ui, &p),
-                    5 => self.create_view(ui, &p),
-                    6 => self.critique_view(ui, &p),
-                    7 => self.browser_view(ui, &p),
+                    5 => self.browser_view(ui, &p),
                     _ => self.sequencer(ui, &p),
                 }
             });
@@ -1353,17 +1314,11 @@ impl eframe::App for Studio {
                 self.player.seek(p.song_seconds() * 0.38);
                 self.player.play();
             }
-            // the critique view is shot with a finished critique on it
-            if self.view == 6 && self.frames == 3 {
-                let now = ctx.input(|i| i.time);
-                self.start_critique(now);
-            }
             let ready = self
                 .rendered
                 .as_ref()
                 .map(|r| r.rev == rev)
-                .unwrap_or(false)
-                && (self.view != 6 || self.critique_done());
+                .unwrap_or(false);
             if ready && self.frames > 30 && !self.shot_requested {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
                 self.shot_requested = true;
@@ -1395,3 +1350,6 @@ impl eframe::App for Studio {
         ));
     }
 }
+
+#[cfg(test)]
+mod manual_ui_tests;

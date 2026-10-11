@@ -708,7 +708,7 @@ impl Studio {
                 egui::ScrollArea::vertical().id_salt("lanes").auto_shrink([false, false]).show(ui, |ui| {
                     ui.label(RichText::new("LANES").size(10.5).color(DIM).strong().extra_letter_spacing(1.2));
                     if lanes.is_empty() {
-                        ui.label(RichText::new("No automation yet. Add a lane below or ask your AI for a riser before the drop.").size(11.0).color(DIM));
+                        ui.label(RichText::new("No automation yet. Add a lane below, then draw on it or pick a shape.").size(11.0).color(DIM));
                     }
                     for (_, l) in &lanes {
                         let sel = self.auto_sel.as_ref().is_some_and(|s| l.is_target(&s.0, &s.1));
@@ -772,7 +772,7 @@ impl Studio {
                             .enumerate()
                             {
                                 let b = egui::Button::new(RichText::new(*label).size(11.5)).fill(PANEL2).min_size(Vec2::new(92.0, 24.0));
-                                if ui.add(b).on_hover_text(format!("generate_automation shape={shape}")).clicked() {
+                                if ui.add(b).on_hover_text(format!("draw a {label} curve on this lane")).clicked() {
                                     self.call("generate_automation", json!({"track": target, "param": param, "shape": shape, "section": section, "rate": rate}));
                                 }
                                 if i % 2 == 1 {

@@ -26,7 +26,7 @@ impl Studio {
             ui.vertical_centered(|ui| {
                 ui.label(egui::RichText::new("No vocal yet").size(18.0).color(tk.text));
                 ui.label(
-                    egui::RichText::new("Drop a sung take in with vocal_to_song {path} (MCP or CLI): lyrics, key, tempo, chords and a full beat are built around it and shown here.")
+                    egui::RichText::new("A mapped vocal take shows here: its sections, chords, words and sung notes on the song grid.")
                         .size(12.0)
                         .color(tk.text_dim),
                 );
@@ -102,7 +102,7 @@ impl Studio {
         let ruler_r = lane("BAR", ruler, false);
         let sec_r = lane("SECTIONS", sec_h, true);
         let chord_r = lane("CHORDS", chord_h, false);
-        let lyr_r = lane("LYRICS", lyr_h, true);
+        let lyr_r = lane("WORDS", lyr_h, true);
         let mel_r = lane("MELODY", mel_h, false);
         let wav_r = lane(if m.warped { "VOCAL (warped)" } else { "VOCAL" }, wav_h, true);
         // grid + bar numbers
