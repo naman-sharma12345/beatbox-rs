@@ -73,6 +73,8 @@ impl Studio {
         let track = self.browser.track.clone();
         self.sound_library(ui, &track);
         ui.add_space(6.0);
+        self.analyze_panel(ui);
+        ui.add_space(6.0);
         let h = ui.available_height() - 8.0;
         ui.columns(3, |cols| {
             // ---------- instrument presets

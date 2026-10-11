@@ -13,6 +13,7 @@ mod theme;
 mod views;
 mod vocal_view;
 mod browser_view;
+mod analyze_view;
 mod widgets;
 
 use crate::analysis::{self, Report};
@@ -74,6 +75,8 @@ pub struct Studio {
     vocal_wave: Option<(String, Vec<(f32, f32)>, f32)>,
     /// browser view: presets, effects, palettes, samples
     browser: browser_view::BrowserState,
+    /// analysis panel: file, grid source, background job
+    analyze: analyze_view::AnalyzeState,
     /// playlist view: the selected audio clip's stable id
     clip_sel: Option<String>,
 }
@@ -132,6 +135,7 @@ pub fn run(
                 },
                 vocal_wave: None,
                 browser: Default::default(),
+                analyze: Default::default(),
                 clip_sel: None,
             }))
         }),
