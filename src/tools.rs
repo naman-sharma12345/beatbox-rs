@@ -713,6 +713,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_critic::tools());
     v.extend(crate::tools_chain::tools());
     v.extend(crate::tools_bounce::tools());
+    v.extend(crate::tools_click::tools());
     v
 }
 

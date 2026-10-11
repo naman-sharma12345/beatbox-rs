@@ -4,7 +4,7 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 75 have, 7 partial, 9 missing of 91** (parity 75/91; counting partial as half: 78.5/91).
+**Score: 76 have, 7 partial, 8 missing of 91** (parity 76/91; counting partial as half: 79.5/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -101,5 +101,5 @@ hosting.
 | Export | Render to audio clip (bounce) | have | bounce_track: instrument + FX + fader + pan + automation printed to a WAV sample, placed as an audio clip on a new track with the same routing/sends; original muted |
 | Live | MIDI controller input | missing |  |
 | Live | Performance mode | missing |  |
-| Live | Metronome | missing |  |
+| Live | Metronome | have | export_click: click WAV in tempo with count-in and accented downbeats, returns where beat 0 falls for lining up a take |
 | Plugins | VST/CLAP hosting | missing | (roadmap sprint 12) |

@@ -17,7 +17,7 @@ fn modules() -> Vec<(&'static str, &'static str, Vec<Tool>)> {
         ("start", "one call does it all: make_beat from a prompt or lyrics, produce_song from a recording", crate::tools_prompt::tools()),
         ("discover", "learn the engine: guide, catalog, describe a tool", { let mut v: Vec<Tool> = tools::core_tools().into_iter().filter(|t| DISCOVERY.contains(&t.name)).collect(); v.extend(tools()); v }),
         ("project", "new/load/save, tempo, key, tracks, notes, effects, undo/redo, snapshots", tools::core_tools().into_iter().filter(|t| !DISCOVERY.contains(&t.name)).collect()),
-        ("studio", "transport, history, screenshot, live studio", crate::tools_studio::tools()),
+        ("studio", "transport, history, screenshot, live studio, metronome click", { let mut v = crate::tools_studio::tools(); v.extend(crate::tools_click::tools()); v }),
         ("notes", "piano roll and MIDI: write, edit, quantize, arpeggiate, strum", crate::tools_midi::tools()),
         ("sound", "instruments and sound design", crate::tools_sound::tools()),
         ("compose", "generators and song structure", crate::tools_compose::tools()),
