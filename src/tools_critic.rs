@@ -78,6 +78,44 @@ pub fn band_owners(e: &mut Engine) -> Result<Vec<Vec<(String, f32)>>> {
     Ok(out)
 }
 
+/// -30 dBFS as mean power over the 1 ms window (above 6 kHz).
+pub const CLICK_FLOOR_POWER: f32 = 1.0e-3;
+
+/// Split click-like transients into real clicks and drum attacks: an onset
+/// within 6 ms of a scheduled drum hit is that drum's attack, not a splice.
+pub fn split_clicks(clicks: &[f32], drum_hits: &[f32]) -> (Vec<f32>, usize) {
+    let mut hits = drum_hits.to_vec();
+    hits.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut real = Vec::new();
+    let mut drums = 0usize;
+    for &t in clicks {
+        let k = hits.partition_point(|h| *h < t - 0.006);
+        if k < hits.len() && hits[k] <= t + 0.006 {
+            drums += 1;
+        } else {
+            real.push(t);
+        }
+    }
+    (real, drums)
+}
+
+/// Seconds of every scheduled drum hit in the project (tracks whose name or
+/// instrument reads as a drum), for split_clicks.
+pub fn drum_hit_times(p: &crate::project::Project) -> Vec<f32> {
+    const DRUMS: [&str; 16] = ["kick", "snare", "clap", "hat", "open_hat", "perc", "crash", "cymbal", "rim", "shaker", "tom", "ride", "tabla", "dholak", "conga", "drum"];
+    let opts = crate::render::RenderOptions::default();
+    let (events, _) = crate::render::schedule(p, &opts);
+    let mut out = Vec::new();
+    for (ti, t) in p.tracks.iter().enumerate() {
+        let name = t.name.to_lowercase();
+        let inst = serde_json::to_value(&t.instrument).ok().and_then(|v| v.get("type").and_then(|x| x.as_str()).map(|x| x.to_lowercase())).unwrap_or_default();
+        if DRUMS.iter().any(|d| name.contains(d) || inst.contains(d)) {
+            out.extend(events[ti].iter().map(|e| e.start as f32 / SR));
+        }
+    }
+    out
+}
+
 /// Click-like transients (seconds): a 1 ms window whose energy above 6 kHz
 /// jumps 18 dB over its neighbourhood median and dies within ~4 ms (a hat
 /// rings longer). The same rule the critic agent counts with.
@@ -106,6 +144,12 @@ pub fn find_clicks(mono: &[f32]) -> Vec<f32> {
         nb.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let med = nb[nb.len() / 2];
         if e[i] < 63.0 * med {
+            continue;
+        }
+        // absolute floor (critic v17): a darker top lowers the median, so
+        // the relative rule alone flagged quiet ticks; under -30 dBFS in the
+        // 1 ms window above 6 kHz nothing is audible as a click
+        if e[i] < CLICK_FLOOR_POWER {
             continue;
         }
         let after = if i + 8 < n { e[i + 4..i + 8].iter().copied().fold(0.0, f32::max) } else { e[i] };
@@ -237,7 +281,9 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
     }
 
     // 3. clicks
-    let clicks = find_clicks(&mono);
+    let raw_clicks = find_clicks(&mono);
+    // onsets on a scheduled drum hit are attacks (critic v17), not splices
+    let (clicks, drum_attacks) = if from_file.is_none() { split_clicks(&raw_clicks, &drum_hit_times(&e.project)) } else { (raw_clicks.clone(), 0) };
     if clicks.len() > 10 {
         score -= if clicks.len() > 40 { 1.5 } else { 0.75 };
         let first: Vec<String> = clicks.iter().take(5).map(|t| format!("{t:.2}")).collect();
@@ -339,6 +385,7 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
             "loudness_range_lu": r1(ld.loudness_range_lu),
             "bands": bands,
             "clicks": clicks.len(),
+            "drum_attacks_skipped": drum_attacks,
             "drones_hz": drones.iter().take(5).map(|d| d.0.round()).collect::<Vec<_>>(),
             "sections": sections,
             "vocal": vocal,
@@ -379,5 +426,17 @@ mod tests {
         assert!(!c.is_empty() && c.len() <= 4, "clicks {c:?}");
         let s = band_shares(&x);
         assert!(s[1] > s[5], "a 220 Hz tone lives in the low band: {s:?}");
+        // the same steps 40 dB quieter sit under the absolute floor
+        let mut q: Vec<f32> = (0..n).map(|i| 0.2 * (i as f32 * 220.0 * std::f32::consts::TAU / SR).sin()).collect();
+        for at in [SR as usize, 2 * SR as usize] {
+            for v in q[at..at + 40].iter_mut() {
+                *v += 0.006;
+            }
+        }
+        assert!(find_clicks(&q).is_empty(), "quiet ticks are not clicks");
+        // a click on a scheduled drum hit is that drum's attack
+        let (real, drums) = split_clicks(&c, &[1.002]);
+        assert_eq!(drums, 1);
+        assert_eq!(real.len(), c.len() - 1);
     }
 }

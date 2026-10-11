@@ -749,7 +749,13 @@ pub fn render_cached(
                     Instrument::Drum(d) if d.kind == crate::instruments::DrumKind::OpenHat);
                 // mono voices choke themselves: 808s, and open hats (which
                 // the closed hats of any other track also choke)
-                let mono_voice = matches!(track.instrument, Instrument::Bass808(_)) || open_hat;
+                // a kick chokes its own previous hit too (critic v17: a long
+                // lo-fi kick still rang at 0.6 full scale when the syncopated
+                // kick on step 7 landed, and the two summed into a ~200 Hz
+                // step every 2 bars, the "x.32" events)
+                let kick = matches!(&track.instrument,
+                    Instrument::Drum(d) if d.kind == crate::instruments::DrumKind::Kick);
+                let mono_voice = matches!(track.instrument, Instrument::Bass808(_)) || open_hat || kick;
                 let hat_chokers: Vec<usize> = if open_hat {
                     let mut v: Vec<usize> = p
                         .tracks
@@ -1321,6 +1327,18 @@ mod tests {
         let b = ((6.5 * step) * SR) as usize;
         let pk = m.left[a..b].iter().fold(0.0f32, |x, y| x.max(y.abs()));
         assert!(pk < 1.2, "peak {pk}");
+    }
+
+    #[test]
+    fn retriggered_kick_chokes_its_ringing_tail() {
+        let mut p = Project::new("k", 80.0);
+        let inst = crate::instruments::preset("kick").unwrap();
+        p.tracks.push(Track::new("kick", inst));
+        p.patterns[0].clips.insert("kick".into(), vec![Note::new(0.0, 1.0, 60, 0.9), Note::new(3.0, 1.0, 60, 0.9), Note::new(4.0, 1.0, 60, 0.9)]);
+        p.master_effects.clear();
+        let m = render(&p, &SampleBank::default(), &RenderOptions::default()).unwrap();
+        let c = crate::ears::clicks(&m.left, 50);
+        assert!(c.is_empty(), "clicks at {c:?}");
     }
 
     /// An 808 that glides into its next note continues it (legato): no

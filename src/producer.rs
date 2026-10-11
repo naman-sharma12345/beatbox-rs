@@ -1684,6 +1684,36 @@ impl Ctx<'_> {
     }
 }
 
+/// Highest MIDI pitch a lo-fi lead/counter may reach (E5, ~660 Hz).
+const LOFI_LEAD_CEILING: u8 = 76;
+
+/// Keep a line under `ceiling`: when the line sits mostly above it the whole
+/// phrase moves down an octave (contour intact), and the few notes still over
+/// it fold down an octave each.
+fn cap_register(notes: &mut [Note], ceiling: u8) {
+    if notes.is_empty() {
+        return;
+    }
+    let mean = notes.iter().map(|n| n.pitch as f32).sum::<f32>() / notes.len() as f32;
+    let max = notes.iter().map(|n| n.pitch).max().unwrap_or(0);
+    if max > ceiling && mean > ceiling as f32 - 6.0 {
+        for n in notes.iter_mut() {
+            n.pitch = n.pitch.saturating_sub(12);
+            n.slide_to = n.slide_to.map(|x| x.saturating_sub(12));
+        }
+    }
+    for n in notes.iter_mut() {
+        while n.pitch > ceiling && n.pitch >= 12 {
+            n.pitch -= 12;
+        }
+        if let Some(t) = n.slide_to.as_mut() {
+            while *t > ceiling && *t >= 12 {
+                *t -= 12;
+            }
+        }
+    }
+}
+
 /// Lead line for one section, developed from the motif.
 fn lead_notes(
     cx: &Ctx,
@@ -2408,6 +2438,12 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         let mut lead = Vec::new();
         if has("lead") {
             lead = lead_notes(&cx, sec, lead_oct, &ornament, &mut rng);
+            if pb.mix.balance_genre == "lofi" {
+                // critic v16/v17: the last hook's register lift put the lead
+                // 1.7-2.3 dB hotter in 2-5 kHz than hook 1. A lo-fi lead is a
+                // muffled keys line: it develops by rhythm, not by climbing.
+                cap_register(&mut lead, LOFI_LEAD_CEILING);
+            }
             for n in lead.iter_mut() {
                 n.vel = (n.vel * mel).clamp(0.05, 1.0);
             }
@@ -2432,6 +2468,9 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             };
             for n in c.iter_mut() {
                 n.vel *= mel;
+            }
+            if pb.mix.balance_genre == "lofi" {
+                cap_register(&mut c, LOFI_LEAD_CEILING + 3);
             }
             pat.clips.insert(track_name("counter"), c);
         }
@@ -2731,7 +2770,9 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             if have(e, t) {
                 e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
                     {"kind": "high_cut", "freq": 4500.0, "gain_db": 0.0, "q": 0.707},
-                    {"kind": "bell", "freq": 3200.0, "gain_db": -4.0, "q": 0.9}]}}), "producer")?;
+                    // critic v17: once 3-5k was tamed, 2-3 kHz became the
+                    // hottest top band (mix share -16.2), so the dip sits at 2.5k
+                    {"kind": "bell", "freq": 2500.0, "gain_db": -4.0, "q": 0.9}]}}), "producer")?;
             }
         }
         // the lead made 38% of 2-5 kHz and climbed in hook 2 (critic v16):
@@ -2739,7 +2780,9 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         for t in ["lead", "counter"] {
             if have(e, t) {
                 e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
-                    {"kind": "high_cut", "freq": 3500.0, "gain_db": 0.0, "q": 0.707}]}}), "producer")?;
+                    {"kind": "high_cut", "freq": 3500.0, "gain_db": 0.0, "q": 0.707},
+                    // critic v17: lead/counter still co-own 2-3 kHz with the snare
+                    {"kind": "bell", "freq": 2500.0, "gain_db": -3.0, "q": 1.0}]}}), "producer")?;
             }
         }
         // the chords made 53% of 250-800 Hz: rootless up top, no mud under
