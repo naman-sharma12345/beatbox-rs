@@ -175,8 +175,23 @@ pub fn chance_hit(track: usize, note: usize, pass_offset: u32, p: f32) -> bool {
 }
 
 /// Build the event list for every track (index aligned with project.tracks).
+/// Seconds from song start to an absolute step of a (possibly looped) render:
+/// each loop replays the tempo curve from the top.
+pub fn song_secs_at_step(curve: &crate::tempo_curve::TempoCurve, song_steps: f64, abs_step: f64) -> f64 {
+    if song_steps <= 0.0 || abs_step < song_steps {
+        return curve.secs_at_step(abs_step);
+    }
+    let lp = (abs_step / song_steps).floor();
+    lp * curve.secs_at_step(song_steps) + curve.secs_at_step(abs_step - lp * song_steps)
+}
+
 pub fn schedule(p: &Project, opts: &RenderOptions) -> (Vec<Vec<Event>>, usize) {
     let step = p.step_secs();
+    // tempo automation: positions go through the tempo curve; with no tempo
+    // points the constant-step arithmetic below is kept bit for bit
+    let curve = crate::tempo_curve::TempoCurve::new(p);
+    let song_steps = p.song_steps() as f64;
+    let tsec = |abs: f32| song_secs_at_step(&curve, song_steps, abs as f64);
     let swing_steps = p.swing.clamp(0.0, 1.0) * 0.5;
     let mut events: Vec<Vec<Event>> = vec![Vec::new(); p.tracks.len()];
     let mut offset: u32 = 0;
@@ -203,9 +218,15 @@ pub fn schedule(p: &Project, opts: &RenderOptions) -> (Vec<Vec<Event>>, usize) {
                             continue;
                         }
                         let rel = abs - r0 as f32;
+                        let (start, gate) = if curve.is_constant() {
+                            ((rel * step * SR) as usize, (n.len * step).max(0.01))
+                        } else {
+                            let t = tsec(abs);
+                            (((t - tsec(r0 as f32)) * SR as f64) as usize, ((tsec(abs + n.len) - t) as f32).max(0.01))
+                        };
                         events[ti].push(Event {
-                            start: (rel * step * SR) as usize,
-                            gate: (n.len * step).max(0.01),
+                            start,
+                            gate,
                             pitch: n.pitch as f32,
                             vel: n.vel,
                             slide_to: n.slide_to.map(|x| x as f32),
@@ -217,7 +238,11 @@ pub fn schedule(p: &Project, opts: &RenderOptions) -> (Vec<Vec<Event>>, usize) {
         }
     }
     let end_step = offset.min(r1).saturating_sub(r0);
-    let len = (end_step as f32 * step * SR) as usize;
+    let len = if curve.is_constant() {
+        (end_step as f32 * step * SR) as usize
+    } else {
+        ((tsec(offset.min(r1) as f32) - tsec(r0 as f32)) * SR as f64) as usize
+    };
     for e in events.iter_mut() {
         e.sort_by_key(|x| x.start);
     }
@@ -225,7 +250,7 @@ pub fn schedule(p: &Project, opts: &RenderOptions) -> (Vec<Vec<Event>>, usize) {
 }
 
 /// Song-time mapping for automation during one render.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Timeline {
     /// Song beat at sample 0 of this render.
     pub beat0: f32,
@@ -235,19 +260,38 @@ pub struct Timeline {
     /// Number of loops rendered; past the last one (the reverb tail) every
     /// lane holds its final value instead of wrapping back to the start.
     pub loops: u32,
+    /// Tempo automation: (curve, seconds at beat0, seconds per loop).
+    pub tempo: Option<(std::sync::Arc<crate::tempo_curve::TempoCurve>, f64, f64)>,
 }
 
 impl Timeline {
     pub fn new(p: &Project, opts: &RenderOptions) -> Self {
         let r0 = opts.step_range.map(|r| r.0).unwrap_or(0);
+        let curve = crate::tempo_curve::TempoCurve::new(p);
+        let tempo = if curve.is_constant() {
+            None
+        } else {
+            let t0 = curve.secs_at_step(r0 as f64);
+            let loop_secs = curve.secs_at_beat(p.song_beats() as f64);
+            Some((std::sync::Arc::new(curve), t0, loop_secs))
+        };
         Timeline {
             beat0: r0 as f32 / 4.0,
             beats_per_sample: 1.0 / (4.0 * p.step_secs() * SR),
             song_beats: p.song_beats(),
             loops: opts.loops.max(1),
+            tempo,
         }
     }
     pub fn beat_at(&self, sample: usize) -> f32 {
+        if let Some((curve, t0, loop_secs)) = &self.tempo {
+            let t = t0 + sample as f64 / SR as f64;
+            let lp = if *loop_secs > 0.0 { (t / loop_secs).floor() } else { 0.0 };
+            if lp >= self.loops as f64 {
+                return self.song_beats;
+            }
+            return curve.beat_at_secs(t - lp * loop_secs) as f32;
+        }
         let b = self.beat0 + sample as f32 * self.beats_per_sample;
         if self.song_beats <= 0.0 || b < self.song_beats {
             return b;
@@ -658,6 +702,7 @@ pub fn render_cached(
     let total = body_len + (opts.tail.max(0.0) * SR) as usize;
     let any_solo = p.tracks.iter().any(|t| t.solo);
     let tl = Timeline::new(p, opts);
+    let tcurve = crate::tempo_curve::TempoCurve::new(p);
 
     let mut triggers: HashMap<String, Vec<usize>> = p
         .tracks
@@ -678,7 +723,12 @@ pub fn render_cached(
         let ons = audio_onsets(&data[off..off + len]);
         let tr = triggers.entry(c.track.to_lowercase()).or_default();
         for lp in 0..opts.loops.max(1) {
-            let start = ((c.start_beat * 4.0 + lp as f32 * song_steps - r0) * p.step_secs() * SR).round() as i64;
+            let start = if tcurve.is_constant() {
+                ((c.start_beat * 4.0 + lp as f32 * song_steps - r0) * p.step_secs() * SR).round() as i64
+            } else {
+                let abs = (c.start_beat * 4.0 + lp as f32 * song_steps) as f64;
+                ((song_secs_at_step(&tcurve, song_steps as f64, abs) - song_secs_at_step(&tcurve, song_steps as f64, r0 as f64)) * SR as f64).round() as i64
+            };
             for &o in &ons {
                 let at = start + o as i64;
                 if at >= 0 && (at as usize) < total {
@@ -951,7 +1001,12 @@ pub fn render_cached(
                     let fade = (0.004 * SR) as usize;
                     for lp in 0..opts.loops.max(1) {
                         let start_step = c.start_beat * 4.0 + lp as f32 * song_steps - r0;
-                        let start = (start_step * step * SR).round() as i64;
+                        let start = if tcurve.is_constant() {
+                            (start_step * step * SR).round() as i64
+                        } else {
+                            let abs = (c.start_beat * 4.0 + lp as f32 * song_steps) as f64;
+                            ((song_secs_at_step(&tcurve, song_steps as f64, abs) - song_secs_at_step(&tcurve, song_steps as f64, r0 as f64)) * SR as f64).round() as i64
+                        };
                         for i in 0..len {
                             let o = start + i as i64;
                             if o < 0 {

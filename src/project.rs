@@ -280,6 +280,20 @@ pub struct Project {
     /// time-signature label; add_marker / list_markers / remove_marker.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<Marker>,
+    /// Tempo automation (FL tempo clip): bpm points on the song timeline;
+    /// `bpm` above is the tempo at beat 0. add_tempo_point / tempo_ramp.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tempo_points: Vec<TempoPoint>,
+}
+
+/// One tempo change: from `beat` on the song plays at `bpm`. With `ramp`
+/// the tempo glides linearly from the previous point to this one.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TempoPoint {
+    pub beat: f32,
+    pub bpm: f32,
+    #[serde(default)]
+    pub ramp: bool,
 }
 
 /// A named position on the song timeline.
@@ -403,6 +417,7 @@ impl Project {
             vocal_map: None,
             fx_chains: Default::default(),
             markers: Vec::new(),
+            tempo_points: Vec::new(),
         }
     }
 
