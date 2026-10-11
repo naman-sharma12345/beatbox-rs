@@ -490,6 +490,29 @@ impl Studio {
                     self.player.play();
                 }
             }
+            // record: start/stop a take from the default input; the take is
+            // placed on the "rec" track where recording started
+            let rec = crate::recorder::recording_seconds();
+            let tip = match rec {
+                Some(s) => format!("Recording ({s:.0} s). Click to stop; the take goes on the 'rec' track."),
+                None => "Record from the default audio input. Click again to stop; the take goes on the 'rec' track where recording started.".to_string(),
+            };
+            if record_button(ui, rec.is_some()).on_hover_text(tip).clicked() {
+                match rec {
+                    None => self.call("start_recording", json!({})),
+                    Some(s) => {
+                        let start_beat = if self.player.is_playing() {
+                            (self.player.position_secs() - s).max(0.0) * p.bpm / 60.0
+                        } else {
+                            0.0
+                        };
+                        self.call("stop_recording", json!({"track": "rec", "start_beat": start_beat}));
+                    }
+                }
+            }
+            if rec.is_some() {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+            }
             let pos = self.player.position_secs();
             let total = p.song_seconds();
             ui.add_space(6.0);

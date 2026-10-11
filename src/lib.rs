@@ -61,6 +61,7 @@ pub mod fx_amp;
 pub mod fx_sc;
 pub mod sound_catalog;
 pub mod tools_library;
+pub mod recorder;
 pub mod web_import;
 pub mod server;
 pub mod smf;

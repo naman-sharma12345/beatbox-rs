@@ -1135,6 +1135,21 @@ pub fn build_structure(e: &mut Engine, a: &Value) -> Result<Value> {
 
 // ---------------- the tools ----------------
 
+/// One LFO sample in -1..1 at `pos` periods (fractional part is the phase).
+/// tension > 1 sharpens the peaks, < 1 rounds them.
+pub fn lfo_value(shape: &str, pos: f32, tension: f32, rng: &mut Rng) -> f32 {
+    let ph = pos - pos.floor();
+    let v = match shape {
+        "triangle" => 1.0 - 4.0 * (ph - 0.5).abs(),
+        "saw_up" => 2.0 * ph - 1.0,
+        "saw_down" => 1.0 - 2.0 * ph,
+        "square" => if ph < 0.5 { 1.0 } else { -1.0 },
+        "random" => rng.bipolar(),
+        _ => (2.0 * std::f32::consts::PI * ph).sin(),
+    };
+    v.signum() * v.abs().powf(tension)
+}
+
 pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
@@ -1732,6 +1747,50 @@ pub fn tools() -> Vec<Tool> {
             }), &["into", "type"]),
             run: add_transition,
         },
+        Tool {
+            name: "lfo_tool",
+            description: "FL's LFO tool for the piano roll: shape a note property with a tempo-synced LFO across the selected notes. property velocity | gate (note length, times the current one) | timing (microtiming nudge in steps) | chance (probability). shape sine | triangle | saw_up | saw_down | square | random (held per note, seeded). rate '1/4', '1/8t', '1 bar', '2 bars' or beats; center and depth set the swing (velocity: center 0.7 depth 0.25 = 0.45..0.95); phase 0..1; tension bends the curve (>1 sharper peaks). For parameter LFOs (cutoff, pan, volume) use generate_automation shape lfo.",
+            mutates: true,
+            schema: || obj(props(props(target_props(), selection_props()), json!({
+                "property": {"type": "string", "enum": ["velocity", "gate", "timing", "chance"]},
+                "shape": {"type": "string", "enum": ["sine", "triangle", "saw_up", "saw_down", "square", "random"]},
+                "rate": {"type": ["string", "number"], "description": "LFO period: '1/4', '1/8t', '1 bar', '2 bars' or beats (default 1 bar)"},
+                "center": {"type": "number"}, "depth": {"type": "number"}, "phase": {"type": "number"}, "tension": {"type": "number"}, "seed": {"type": "integer"}
+            })), &["track", "property"]),
+            run: |e, a| {
+                let sel = selection_of(a)?;
+                let prop = s_req(a, "property")?;
+                let shape = s_opt(a, "shape").unwrap_or_else(|| "sine".into());
+                if !["sine", "triangle", "saw_up", "saw_down", "square", "random"].contains(&shape.as_str()) { bail!("unknown shape '{shape}'"); }
+                let rate = a.get("rate").cloned().unwrap_or_else(|| json!("1 bar"));
+                let period_steps = (crate::tools_studio::parse_rate(Some(&rate))? * 4.0).max(0.25);
+                let (dc, dd) = match prop.as_str() {
+                    "velocity" => (0.7, 0.25),
+                    "gate" => (1.0, 0.4),
+                    "timing" => (0.0, 0.08),
+                    "chance" => (0.8, 0.2),
+                    p => bail!("unknown property '{p}' (velocity, gate, timing, chance)"),
+                };
+                let (center, depth) = (f_or(a, "center", dc), f_or(a, "depth", dd));
+                let (phase, tension) = (f_or(a, "phase", 0.0), f_or(a, "tension", 1.0).clamp(0.1, 10.0));
+                let mut rng = Rng::new(seed_of(a));
+                with_notes(e, a, |notes, _, _| {
+                    let mut k = 0;
+                    for n in notes.iter_mut().filter(|n| sel.matches(n)) {
+                        let v = lfo_value(&shape, n.start / period_steps + phase, tension, &mut rng);
+                        let x = center + depth * v;
+                        match prop.as_str() {
+                            "velocity" => n.vel = x.clamp(0.01, 1.0),
+                            "gate" => n.len = (n.len * x).max(0.05),
+                            "timing" => n.offset = x.clamp(-0.5, 0.5),
+                            _ => n.prob = x.clamp(0.0, 1.0),
+                        }
+                        k += 1;
+                    }
+                    Ok(k)
+                })
+            },
+        },
     ]
 }
 
@@ -1741,6 +1800,22 @@ mod tests {
 
     fn eng() -> Engine {
         Engine::new(std::env::temp_dir().join("beatbox_midi_tests"))
+    }
+
+    #[test]
+    fn lfo_tool_shapes_velocity_and_gate() {
+        let mut e = Engine::new(std::env::temp_dir().join("beatbox_midi_lfo"));
+        e.call("add_track", &json!({"name": "hat", "preset": "hat"})).unwrap();
+        let notes: Vec<Value> = (0..16).map(|i| json!({"start": i, "len": 1, "pitch": 60})).collect();
+        e.call("add_notes", &json!({"track": "hat", "notes": notes})).unwrap();
+        let r = e.call("lfo_tool", &json!({"track": "hat", "property": "velocity", "shape": "sine", "rate": "1 bar", "center": 0.6, "depth": 0.3})).unwrap();
+        assert_eq!(r["affected"], 16);
+        let v: Vec<f32> = e.project.patterns[0].notes("hat").iter().map(|n| n.vel).collect();
+        assert!((v[0] - 0.6).abs() < 1e-3 && (v[4] - 0.9).abs() < 1e-3 && (v[12] - 0.3).abs() < 1e-3, "{v:?}");
+        e.call("lfo_tool", &json!({"track": "hat", "property": "gate", "shape": "saw_down", "rate": 4, "center": 1.0, "depth": 0.5, "from": 8})).unwrap();
+        let l: Vec<f32> = e.project.patterns[0].notes("hat").iter().map(|n| n.len).collect();
+        assert!((l[0] - 1.0).abs() < 1e-3 && (l[8] - 1.0).abs() < 1e-3 && (l[9] - 0.9375).abs() < 1e-3 && l[15] < l[9], "{l:?}");
+        assert!(e.call("lfo_tool", &json!({"track": "hat", "property": "pan"})).is_err());
     }
 
     #[test]

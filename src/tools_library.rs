@@ -223,7 +223,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "audition_instrument",
-            description: "Hear a catalog instrument before choosing it: fetches it (once, like load_instrument) and renders a ~4 s preview to a WAV without touching the project. Melodic instruments play an arpeggio and a chord in the middle of their range (or around root); kits and percussion play a groove across their mapped hits. Returns the path, peak and RMS, key range and the number of zones, so you can compare candidates by ear or by numbers.",
+            description: "Hear a catalog instrument before choosing it: fetches it (once, like load_instrument) and renders a ~4 s preview to a WAV without touching the project. Melodic instruments play an arpeggio and a chord in the middle of their range (or around root); kits and percussion play a groove across their mapped hits; drones and transition swells play one held note. Returns the path, peak and RMS, key range and the number of zones, so you can compare candidates by ear or by numbers.",
             mutates: false,
             schema: || obj(json!({"catalog_id": {"type": "string"}, "root": {"type": "integer", "description": "MIDI note to centre the phrase on"}, "path": {"type": "string"}, "max_mb": {"type": "integer"}, "max_rr": {"type": "integer"}}), &["catalog_id"]),
             run: |e, a| {
@@ -258,9 +258,16 @@ pub fn tools() -> Vec<Tool> {
                     Instrument::SoundFont(p) => (vec![], 0, if p.drums { 81 } else { 108 }),
                     _ => (vec![], 0, 127),
                 };
-                let perc = matches!(ent.family.as_str(), "drums" | "percussion") || (roots.len() > 1 && roots.len() <= 24 && ent.tags.iter().any(|t| t.contains("drum") || t.contains("percussion") || t.contains("kit")));
+                // swells, chime glisses and other transition fx are one long sound per key
+                let swell = ent.tags.iter().any(|t| t == "transition" || t == "swell");
+                let perc = !swell && (matches!(ent.family.as_str(), "drums" | "percussion") || (roots.len() > 1 && roots.len() <= 24 && ent.tags.iter().any(|t| t.contains("drum") || t.contains("percussion") || t.contains("kit"))));
+                let drone = !perc && (swell || ent.tags.iter().any(|t| t == "drone"));
                 let mut notes = Vec::new();
-                if perc {
+                if drone {
+                    // a drone (tanpura, shruti box) is heard as one held note at its own pitch
+                    let c = a.get("root").and_then(|v| v.as_u64()).map(|v| v.min(120) as u8).unwrap_or_else(|| roots.first().copied().unwrap_or(52)).clamp(lo, hi.max(lo));
+                    notes.push(json!({"start": 0.0, "pitch": c, "len": 30, "vel": 0.8}));
+                } else if perc {
                     // a two-bar groove over up to four mapped hits
                     // General MIDI drum keys when the kit maps them (kick, snare, closed hat, open hat)
                     let keys: Vec<u8> = if roots.is_empty() {
@@ -323,7 +330,7 @@ pub fn tools() -> Vec<Tool> {
                 if st.peak_dbfs < -60.0 {
                     bail!("{} rendered silence (peak {:.0} dBFS)", ent.id, st.peak_dbfs);
                 }
-                Ok(json!({"catalog_id": ent.id, "name": ent.name, "path": path, "seconds": (m.left.len() as f32 / SR * 10.0).round() / 10.0, "peak_dbfs": st.peak_dbfs, "rms_dbfs": st.rms_dbfs, "played_as": if perc { "groove" } else { "arpeggio + chord" }, "zones": loaded["zones"], "key_range": [lo, hi], "license": ent.license, "downloaded_mb": loaded["downloaded_mb"]}))
+                Ok(json!({"catalog_id": ent.id, "name": ent.name, "path": path, "seconds": (m.left.len() as f32 / SR * 10.0).round() / 10.0, "peak_dbfs": st.peak_dbfs, "rms_dbfs": st.rms_dbfs, "played_as": if swell { "held swell" } else if drone { "held drone" } else if perc { "groove" } else { "arpeggio + chord" }, "zones": loaded["zones"], "key_range": [lo, hi], "license": ent.license, "downloaded_mb": loaded["downloaded_mb"]}))
             },
         },
     ]

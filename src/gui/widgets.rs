@@ -261,6 +261,23 @@ pub fn transport_button(ui: &mut Ui, playing: bool) -> Response {
     resp
 }
 
+/// Record button: a red dot; while a take is running the dot turns into a
+/// solid red disc with a white ring.
+pub fn record_button(ui: &mut Ui, recording: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
+    let c = rect.center();
+    let p = ui.painter();
+    let base = if resp.hovered() { HOT } else { HOT.gamma_multiply(0.85) };
+    if recording {
+        p.circle_filled(c, 14.0, base);
+        p.circle_stroke(c, 9.0, Stroke::new(2.0_f32, Color32::WHITE));
+    } else {
+        p.circle_stroke(c, 14.0, Stroke::new(1.5_f32, base));
+        p.circle_filled(c, 7.0, base);
+    }
+    resp
+}
+
 /// Gradient-ish filled bar used in meters/spectrum.
 pub fn vgradient_bar(p: &egui::Painter, rect: Rect, bottom: Color32, top: Color32) {
     let mut mesh = egui::Mesh::default();

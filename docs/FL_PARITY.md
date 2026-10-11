@@ -7,7 +7,7 @@ anything listed as **have**.
 The studio GUI is fully manual (a hand-operated DAW). The one-call production
 helpers (make_beat, produce_song, critique_mix, ...) are MCP tools only.
 
-**Score: 83 have, 4 partial, 4 missing of 91** (parity 83/91; counting partial as half: 85/91).
+**Score: 85 have, 3 partial, 3 missing of 91** (parity 85/91; counting partial as half: 86.5/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -39,7 +39,7 @@ hosting.
 | Piano roll tools | Chord stamps | have | chord_voicing, generate_chords, theory_chords |
 | Piano roll tools | Scale highlighting / snap | have | scale_snap, theory_scale |
 | Piano roll tools | Riff machine | have | write_riff, generate_melody, counter_melody |
-| Piano roll tools | LFO tool (CC/velocity shapes) | partial | velocity_curve, generate_automation |
+| Piano roll tools | LFO tool (CC/velocity shapes) | have | lfo_tool (tempo-synced sine / triangle / saw / square / random on note velocity, gate, timing or chance, with center, depth, phase and tension), generate_automation shape lfo for parameter curves, velocity_curve |
 | Piano roll tools | Slide / portamento notes | have | add_slides |
 | Piano roll tools | Ghost notes | have | generate_ghost_notes |
 | Piano roll tools | Velocity editing | have | velocity_curve, edit_notes |
@@ -86,7 +86,7 @@ hosting.
 | Effects | Panning / Balance | have | set_mixer pan, autopan |
 | Effects | Tape stop / vinyl | have | add_effect type vinyl: crackle, surface hiss, wow + flutter (modulated delay), age (worn band), mono; stutter tape_stop, gross_beat tape_stop / tape_stop_end |
 | Audio | Time stretching | have | stretch_sample |
-| Audio | Audio recording | missing | (produce_song takes a recorded file) |
+| Audio | Audio recording | have | record button in the studio's top bar; start_recording / stop_recording / record_audio {seconds} capture any input (list_audio_inputs) to recordings/take_N.wav at the device rate, resampled to 44.1 kHz, registered as a sample and placed as an audio clip on a track at the playhead; reports peak, RMS and clipping; trim_start_ms removes latency or a count-in (no automatic latency compensation yet) |
 | Audio | Noise reduction | have | denoise_sample: spectral gate (noise floor read from the quietest frames) into a new sample, strength + floor_db; also inside produce_song |
 | Audio | Stem separation | have | separate_stems: drums / bass / vocals / other WAVs from any audio file (harmonic-percussive median filtering, bass band, centre-panned voice band; no model, stems sum back to the input; dense mixes bleed) |
 | Audio | Vocal chops | have | vocal_chop |
