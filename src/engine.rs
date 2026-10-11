@@ -166,6 +166,18 @@ impl Engine {
     }
 
     pub fn call_from(&mut self, name: &str, args: &Value, source: &str) -> Result<Value> {
+        // a category tool (project, mixer, ...) names one engine tool by `action`
+        if let Some(cat) = crate::tools_categories::find(name) {
+            return match crate::tools_categories::resolve(cat, args)? {
+                crate::tools_categories::Resolved::Answer(v) => Ok(v),
+                crate::tools_categories::Resolved::Call(t, a) => self.call_tool_from(t, &a, source),
+            };
+        }
+        self.call_tool_from(name, args, source)
+    }
+
+    /// Run one engine tool by its own name (no category resolution).
+    fn call_tool_from(&mut self, name: &str, args: &Value, source: &str) -> Result<Value> {
         let tool = match tools::find(name) {
             Some(t) => t,
             None => return Err(unknown_tool(name)),
@@ -313,6 +325,16 @@ impl Engine {
     /// rolled back on its own failure; the outer call keeps the single undo
     /// step and the revision bump.
     pub(crate) fn call_nested(&mut self, name: &str, args: &Value, source: &str) -> Result<Value> {
+        if let Some(cat) = crate::tools_categories::find(name) {
+            return match crate::tools_categories::resolve(cat, args)? {
+                crate::tools_categories::Resolved::Answer(v) => Ok(v),
+                crate::tools_categories::Resolved::Call(t, a) => self.call_nested_tool(t, &a, source),
+            };
+        }
+        self.call_nested_tool(name, args, source)
+    }
+
+    fn call_nested_tool(&mut self, name: &str, args: &Value, source: &str) -> Result<Value> {
         let tool = tools::find(name).ok_or_else(|| unknown_tool(name))?;
         let snapshot = if tool.mutates {
             Some(self.project.clone())
@@ -575,8 +597,9 @@ impl Engine {
 
 fn unknown_tool(name: &str) -> anyhow::Error {
     anyhow!(
-        "unknown tool '{name}'. Did you mean: {}? (list_tools shows every tool by category; suggest_tools {{goal}} finds one from plain words)",
-        crate::tools_meta::suggest(name, 3).join(", ")
+        "unknown tool '{name}'. Did you mean: {}? (tools: {}; each takes {{\"action\":...}}, action \"help\" lists its actions)",
+        crate::tools_meta::suggest(name, 3).join(", "),
+        crate::tools_categories::CATEGORIES.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")
     )
 }
 

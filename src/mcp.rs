@@ -39,23 +39,53 @@ impl Backend {
     }
 }
 
-static COMPACT_TOOLS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Which tool list `tools/list` advertises: 0 categories (default),
+/// 1 legacy (every engine tool by name), 2 compact.
+static TOOL_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-/// Advertise only the compact tool set in `tools/list` (`beatbox mcp --tools
-/// compact` or BEATBOX_MCP_TOOLS=compact): discovery tools plus everyday
-/// edits; every other tool stays callable by name or through call_tool.
+/// `beatbox mcp --tools categories|legacy|full|compact` (or --legacy-tools).
+pub fn set_tool_mode(mode: &str) {
+    let m = match mode.to_ascii_lowercase().as_str() {
+        "legacy" | "full" | "all" => 1,
+        "compact" => 2,
+        _ => 0,
+    };
+    TOOL_MODE.store(m, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Kept for older callers: compact on/off.
 pub fn set_compact_tools(on: bool) {
-    COMPACT_TOOLS.store(on, std::sync::atomic::Ordering::Relaxed);
+    set_tool_mode(if on { "compact" } else { "categories" });
 }
 
-fn compact_tools() -> bool {
-    COMPACT_TOOLS.load(std::sync::atomic::Ordering::Relaxed)
-        || std::env::var("BEATBOX_MCP_TOOLS").is_ok_and(|v| v.eq_ignore_ascii_case("compact"))
+/// The mode in force: the flag, else BEATBOX_LEGACY_TOOLS=1 or BEATBOX_MCP_TOOLS.
+fn tool_mode() -> u8 {
+    let m = TOOL_MODE.load(std::sync::atomic::Ordering::Relaxed);
+    if m != 0 {
+        return m;
+    }
+    if std::env::var("BEATBOX_LEGACY_TOOLS").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) {
+        return 1;
+    }
+    match std::env::var("BEATBOX_MCP_TOOLS").unwrap_or_default().to_ascii_lowercase().as_str() {
+        "legacy" | "full" | "all" => 1,
+        "compact" => 2,
+        _ => 0,
+    }
 }
 
-/// The `tools/list` result, full or compact.
+/// The `tools/list` result for a mode (0 categories, 1 legacy, 2 compact).
+pub fn tools_list_mode(mode: u8) -> Value {
+    json!({ "tools": match mode {
+        1 => tools::tools_json(),
+        2 => crate::tools_discovery::compact_tools_json(),
+        _ => crate::tools_categories::tools_json(),
+    } })
+}
+
+/// The `tools/list` result, compact or the default categories.
 pub fn tools_list(compact: bool) -> Value {
-    json!({ "tools": if compact { crate::tools_discovery::compact_tools_json() } else { tools::tools_json() } })
+    tools_list_mode(if compact { 2 } else { 0 })
 }
 
 pub fn handle(backend: &mut Backend, msg: &Value) -> Option<Value> {
@@ -67,14 +97,14 @@ pub fn handle(backend: &mut Backend, msg: &Value) -> Option<Value> {
             "protocolVersion": params.get("protocolVersion").and_then(|v| v.as_str()).unwrap_or("2025-06-18"),
             "capabilities": { "tools": { "listChanged": false } },
             "serverInfo": { "name": "beatbox", "title": "Beatbox — AI-native beat maker", "version": env!("CARGO_PKG_VERSION") },
-            "instructions": if compact_tools() {
-                format!("{} This server lists a compact tool set; list_tool_groups, search_tools and describe_tool find the other {} tools, and call_tool runs any of them.", tools::GUIDE, tools::registry().len().saturating_sub(crate::tools_discovery::COMPACT.len()))
-            } else {
-                tools::GUIDE.to_string()
+            "instructions": match tool_mode() {
+                1 => tools::GUIDE.to_string(),
+                2 => format!("{} This server lists a compact tool set; list_tool_groups, search_tools and describe_tool find the other {} tools, and call_tool runs any of them.", tools::GUIDE, tools::registry().len().saturating_sub(crate::tools_discovery::COMPACT.len())),
+                _ => format!("Beatbox: a beat-making engine. Each tool is a category; call it with {{\"action\": \"<name>\", \"params\": {{...}}}} (the actions and their arguments are listed in the action field). Fastest start: generate {{\"action\":\"make_beat\",\"params\":{{\"prompt\":\"dark trap 140 bpm\"}}}}, then transport render or export export_audio. {{\"action\":\"help\",\"params\":{{\"action\":\"<name>\"}}}} on any tool gives one action's full schema and an example; help search_tools finds an action from plain words. Engine tool names in the guide below are actions.\n\n{}", tools::GUIDE),
             },
         })),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(tools_list(compact_tools())),
+        "tools/list" => Ok(tools_list_mode(tool_mode())),
         "tools/call" => {
             let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
@@ -135,7 +165,7 @@ mod tests {
 
     #[test]
     fn compact_tools_list_is_small_and_still_reaches_every_tool() {
-        let full = tools_list(false)["tools"].as_array().unwrap().len();
+        let full = tools_list_mode(1)["tools"].as_array().unwrap().len();
         let small = tools_list(true)["tools"].as_array().unwrap().len();
         assert_eq!(full, tools::registry().len());
         assert!(small <= 30 && small * 5 < full, "{small} of {full}");
@@ -160,10 +190,20 @@ mod tests {
             &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
         )
         .unwrap();
-        assert!(list["result"]["tools"].as_array().unwrap().len() >= 40);
-        let call = handle(&mut b, &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"set_tempo","arguments":{"bpm":97}}})).unwrap();
-        assert_eq!(call["result"]["isError"], false);
+        // the default list is the category tools, never more than the ceiling
+        let n = list["result"]["tools"].as_array().unwrap().len();
+        assert!((10..=crate::tools_categories::MAX_TOOLS).contains(&n), "{n} tools listed");
+        assert!(list["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "mixer"));
+        // a category call
+        let call = handle(&mut b, &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"project","arguments":{"action":"set_tempo","params":{"bpm":97}}}})).unwrap();
+        assert_eq!(call["result"]["isError"], false, "{call}");
         assert_eq!(call["result"]["structuredContent"]["bpm"], 97.0);
+        // the old fine-grained name still works
+        let call = handle(&mut b, &json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"set_tempo","arguments":{"bpm":98}}})).unwrap();
+        assert_eq!(call["result"]["isError"], false);
+        assert_eq!(call["result"]["structuredContent"]["bpm"], 98.0);
+        // legacy mode lists every engine tool
+        assert_eq!(tools_list_mode(1)["tools"].as_array().unwrap().len(), tools::registry().len());
         let bad = handle(
             &mut b,
             &json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"nope"}}),

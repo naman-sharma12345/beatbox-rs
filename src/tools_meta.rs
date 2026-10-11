@@ -51,6 +51,22 @@ fn cat_index() -> &'static BTreeMap<&'static str, &'static str> {
 /// Every group with its purpose and tool names (each tool in its first
 /// group only); tools no module maps yet are listed under "other".
 pub fn groups() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
+    // the MCP category tools are the groups (tools_categories.rs)
+    let mut out: Vec<(&'static str, &'static str, Vec<&'static str>)> = crate::tools_categories::CATEGORIES
+        .iter()
+        .map(|c| (c.name, c.description, c.actions.iter().copied().filter(|a| tools::find(a).is_some()).collect()))
+        .collect();
+    let known: std::collections::HashSet<&str> = out.iter().flat_map(|g| g.2.iter().copied()).collect();
+    let other: Vec<&'static str> = tools::registry().iter().map(|t| t.name).filter(|n| !known.contains(n)).collect();
+    if !other.is_empty() {
+        out.push(("other", "not grouped yet", other));
+    }
+    out
+}
+
+/// The old per-module grouping (kept for reference by older callers).
+#[allow(dead_code)]
+fn module_groups() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
     let mut seen = std::collections::HashSet::new();
     let mut out: Vec<(&'static str, &'static str, Vec<&'static str>)> = modules()
         .into_iter()
@@ -66,7 +82,7 @@ pub fn groups() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
 
 /// The category a tool belongs to ("other" when a module is not mapped yet).
 pub fn category(name: &str) -> &'static str {
-    cat_index().get(name).copied().unwrap_or("other")
+    crate::tools_categories::category_of(name).map(|c| c.name).or_else(|| cat_index().get(name).copied()).unwrap_or("other")
 }
 
 /// First sentence of a description, at most ~110 chars (compact listings).
@@ -79,6 +95,11 @@ pub fn short(desc: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Edit distance between two names.
+pub fn distance(a: &str, b: &str) -> usize {
+    levenshtein(a, b)
 }
 
 fn levenshtein(a: &str, b: &str) -> usize {
@@ -426,7 +447,7 @@ mod tests {
             }
         }
         let d = e.call("describe_tool", &json!({"name": "make_beat"})).unwrap();
-        assert_eq!(d["category"], "start");
+        assert_eq!(d["category"], "generate");
         assert!(d["example"]["args"]["prompt"].is_string());
     }
 
@@ -435,8 +456,8 @@ mod tests {
         let mut e = Engine::new(std::env::temp_dir().join("bb_meta_ls"));
         let l = e.call("list_tools", &json!({})).unwrap();
         assert_eq!(l["count"], l["total_tools"]);
-        assert!(l["tools"]["start"].as_array().unwrap().iter().any(|t| t["name"] == "make_beat"));
-        let v = e.call("list_tools", &json!({"category": "vocal"})).unwrap();
+        assert!(l["tools"]["generate"].as_array().unwrap().iter().any(|t| t["name"] == "make_beat"));
+        let v = e.call("list_tools", &json!({"category": "vocals"})).unwrap();
         assert!(v["count"].as_u64().unwrap() > 2);
         assert!(e.call("list_tools", &json!({"category": "nope"})).is_err());
         let err = format!("{:#}", e.call("make_song", &json!({})).unwrap_err());

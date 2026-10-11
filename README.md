@@ -101,8 +101,9 @@ beatbox beat trap --key A -o trap.wav --save trap.json
 
 # call any tool from the shell
 beatbox call add_effect '{"track":"lead","type":"reverb","params":{"size":0.9}}' --project trap.json
+beatbox call mixer '{"action":"set_mixer","params":{"track":"lead","volume_db":-3}}' --project trap.json
 beatbox analyze trap.json
-beatbox tools            # everything an AI can do
+beatbox tools            # the category tools an AI sees (--legacy: every engine tool)
 ```
 
 ## Use it from an AI (MCP)
@@ -132,32 +133,45 @@ Optional environment: `BEATBOX_FREESOUND_KEY` (or `FREESOUND_API_KEY`; free at f
 - **FL-style workflow, as tools.** Playlist pattern clips, automation clips and mixer bus routing (`place_pattern`, `create_automation_clip`, `route_bus`) with cycle checks.
 - **Deterministic project JSON.** The whole song is one readable, stable JSON file, so every change can be diffed, reviewed and undone.
 
-## Tool surface (296 tools)
+## Tool surface: 19 category tools
 
-| Category | Tools | What |
+An AI client sees **19 tools**, one per category, never more than 24 (a test enforces it). Each tool takes an `action` and that action's arguments:
+
+```json
+{"name": "project", "arguments": {"action": "set_tempo", "params": {"bpm": 140}}}
+{"name": "generate", "arguments": {"action": "make_beat", "params": {"prompt": "dark trap 140 bpm", "seed": 7}}}
+{"name": "effects", "arguments": {"action": "add_effect", "track": "lead", "type": "reverb"}}
+```
+
+Arguments go in `params` or flat next to `action`. Each tool's `action` field lists its actions with their arguments; `{"action": "help", "params": {"action": "<name>"}}` returns one action's full schema and a ready example. Four actions have an argument of their own called `action` (`transport`, `perform`, `midi_input`, `playlist_clip`): in flat form, pass it as `op`.
+
+| Tool | Actions | What |
 |---|---|---|
-| compose | 7 | generators and song structure |
-| creative | 7 | variations, wildcards, contrast |
-| discover | 6 | learn the engine: guide, catalog, describe a tool |
-| export | 6 | render to wav/flac/mp3, stems, mastering, bounce a track to audio |
-| fx | 7 | effects: add, tweak, place, compare, whole FX chains |
-| groove | 3 | groove extraction and drum tuning |
-| listen | 18 | ears: analysis, loudness, masking, spectrogram |
-| mix | 8 | levels, balance, routing, buses, drone notches |
-| notes | 26 | piano roll and MIDI: write, edit, quantize, arpeggiate, strum |
-| playlist | 22 | FL-style playlist, automation clips, patterns, markers, tempo automation, time signatures |
-| produce | 12 | the producer loop: plan, critique, revise |
-| project | 42 | new/load/save, tempo, key, tracks, notes, effects, undo/redo, snapshots |
-| samples | 5 | palettes, kits, sample search and flips, stem separation |
-| sound | 27 | instruments and sound design, additive synthesis and resynthesis, real recorded instruments (SoundFont library: fetch, list, load, preview) |
-| start | 4 | one call does it all: make_beat from a prompt or lyrics, produce_song from a recording |
-| studio | 18 | transport, history, screenshot, live studio, metronome click |
-| vocal | 38 | vocals: transcribe, tune, vocal_to_song, audio clips, flex-time alignment, phrase placement, repair (denoise, de-hum, de-click, gate, de-reverb), de-muffle, seamless edits, channel tools (EQ 7-band/1-band, expander/gate, de-esser, channel strip, vocal_clean_chain), neural denoise (denoise_voice), tone matching (match_vocal_tone), DNSMOS scoring (score_voice_quality) |
+| `project` | 15 | Song file and global settings: new/load/save, tempo, key, time signature, tracks, project summary, ids, validation. |
+| `history` | 7 | Undo/redo, the edit history, snapshots and restore. |
+| `transport` | 10 | Play/stop/seek, render or preview the song, metronome click, record audio input, studio screenshot. |
+| `pattern` | 15 | Patterns and drums: step sequencer, drum generators, rolls, fills, ghost notes, groove, swing, humanize. |
+| `notes` | 28 | Piano roll: add/edit/delete notes, quantize, transpose, chords, arpeggios, strum, slides, riffs, scales and theory. |
+| `midi` | 4 | MIDI files and controllers: import/export .mid, live MIDI input and events. |
+| `instrument` | 25 | Instruments and sound design: set/tweak a synth, recorded instrument library (search, fetch, load, preview), multisample packs, macros, resynthesis. |
+| `sample` | 27 | Samples: search/download/import audio (Freesound, any URL), sample tracks, slice/stretch/edit, kits, palettes, flips, chops, stem separation, credits. |
+| `arrange` | 29 | Song structure and playlist: arrangement, place patterns, clips (move/split/trim/fade), sections, transitions, markers, tempo changes, performance mode. |
+| `automation` | 8 | Automation: draw or generate parameter curves (filter sweeps, risers, fades, LFOs) and automation clips. |
+| `mixer` | 13 | Mixer: volume, pan, mute, buses, sends, routing, auto-balance, carve space, strip silence, drone notches. |
+| `effects` | 15 | Effects: add/tweak/remove/bypass/reorder effects, FX chains, one-knob polish, A/B an effect. |
+| `vocals` | 42 | Vocals: add recordings as clips, tune, align to the grid, clean (denoise, de-hum, de-ess, gate), EQ and channel strip, edit, lyrics, vocal-to-song. |
+| `analyze` | 28 | Listen and measure: mix analysis, loudness, spectrum, masking, stereo, punch, hooks, structure, artifacts, render diffs, blind A/B tests with a listener. |
+| `transcribe` | 11 | Write a recording down as MIDI: drums, bass, melody, chords, FX, arrangement map; identify and analyze a reference song. |
+| `generate` | 12 | Make music in one call: make_beat from a prompt or lyrics, drill beats, full-song generators, chords, bass, melody, counter-melody, variations. |
+| `produce` | 11 | Whole songs: produce a song from a recording, cover a song around a sung take, song from a reference or vocal, plan/critique/revise loop, QA. |
+| `export` | 7 | Master and export: wav/flac/mp3, stems, bounce a track, mastering assistant, check the master, compare to a reference. |
+| `help` | 8 | Guide and discovery: how to use this engine, search every action, describe one with an example, run several calls in one undo step. |
 
+**Adding a feature:** add an action to a category (one line in `src/tools_categories.rs`), never a new top-level tool. Tests fail if `tools/list` grows past 24 or if an engine tool is missing from the table or sits in two categories.
 
-New to driving it from a model? Read [docs/SMALL_MODEL_GUIDE.md](docs/SMALL_MODEL_GUIDE.md): `list_tools` (by category), `suggest_tools {goal}`, `describe_tool {name}` (arguments + a ready example), `get_project_summary`. FL Studio feature coverage: [docs/FL_PARITY.md](docs/FL_PARITY.md).
+**Old names still work.** All 315 fine-grained engine tools stay callable by their own names: `beatbox call set_tempo '{"bpm":140}'`, `tools/call` with the old name, inside `batch`, and through `call_tool`. `beatbox mcp --legacy-tools` (or `BEATBOX_LEGACY_TOOLS=1`, or `--tools legacy`) lists them all again; `--tools compact` keeps the old compact list. `beatbox tools` prints the categories and `beatbox tools --legacy` every engine tool.
 
-Discovery `get_guide` `list_presets` `list_tools` · Project `new_project` `get_project` `save_project` `load_project` `set_tempo` `set_key` `undo` `redo` `batch` · Tracks `add_track` `remove_track` `set_instrument` `tweak_instrument` `set_mixer` · Sound design `design_sound` `layer_instrument` `create_macro` `set_macro` `describe_instrument` `set_parameters` · Multisample `add_multisample_track` `install_instrument_pack` · FX `add_effect` `tweak_effect` `remove_effect` `get_effects` `describe_effect` `bypass_effect` `reorder_effects` · Patterns `add_pattern` `remove_pattern` `set_pattern_length` `set_steps` `toggle_step` `add_notes` `clear` `get_pattern` `transpose` `humanize` · Piano roll `edit_notes` `delete_notes` `quantize` `split_notes` `merge_notes` `legato` `arpeggiate` `strum` `roll_notes` `chord_voicing` `harmonize` `detect_key` `velocity_curve` `lfo_tool` `apply_groove` · Writing `write_riff` `add_roll` `write_phrase` `copy_notes` `add_slides` · Generators `generate_drums` `generate_bassline` `generate_chords` `generate_melody` `generate_beat` `generate_variation` `generate_fill` `counter_melody` · Theory `theory_scale` `theory_chords` · Song `set_arrangement` `build_structure` `vary_section` `add_transition` `set_section_mix` · MIDI `import_midi` `export_midi` · Samples `search_samples` `download_sample` `import_sample` `list_samples` `add_sample_track` `slice_sample` `stretch_sample` `edit_sample` `analyze_audio` · Output `render` `analyze_mix` · Automation `add_automation` `set_automation_points` `clear_automation` `list_automation` `generate_automation` · Routing `add_bus` `remove_bus` `set_send` `route_track` `list_routing` · Variants `snapshot` `list_snapshots` `restore_snapshot` `diff_project` `compare_variants` · QC `validate_project` `check_master` · Ears `analyze_sections` `detect_artifacts` `render_spectrogram` `render_preview` `waveform_peaks` `spectrum` `eq_curve` `analyze_track` `detect_transients` `strip_silence` · Mix `level_hints` `balance_mix` · Delivery `export_audio` `export_stems` `master_assistant` `analyze_reference` `compare_to_reference` · Studio `transport` `get_history` `screenshot` `list_audio_inputs` `start_recording` `stop_recording` `record_audio` · Producer `produce_track` `plan_track` `apply_plan` `critique_track` `revise_track` `list_genres` `describe_genre` `install_kit` `index_samples` `find_samples` `flip_sample` `vocal_chop` · Listen `ears_report` `diff_renders` `loudness_report` `masking_matrix` `groove_analysis` `hook_analysis` `structure` · Ears pro `stereo_image` `punch` `vocal_pocket` `reference_match` · Playlist & FL parity `place_pattern` `arrangement_to_playlist` `list_playlist` `remove_clip` `clear_playlist` `create_automation_clip` `place_automation_clip` `list_automation_clips` `route_bus` `scale_snap` `generate_ghost_notes` · FX placement `place_fx` `move_effect` `ab_compare`
+New to driving it from a model? Read [docs/SMALL_MODEL_GUIDE.md](docs/SMALL_MODEL_GUIDE.md).
 
 ## Architecture
 

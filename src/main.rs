@@ -43,10 +43,14 @@ enum Cmd {
         /// Project file to open at start (local mode)
         #[arg(long)]
         project: Option<PathBuf>,
-        /// Tool list to advertise: full (default) or compact (discovery
-        /// tools + everyday edits, for small models; the rest stay callable)
-        #[arg(long, default_value = "full")]
+        /// Tool list to advertise: categories (default: one tool per
+        /// category, each with an `action`), legacy (every engine tool by its
+        /// own name) or compact. Every engine tool stays callable by name.
+        #[arg(long, default_value = "categories")]
         tools: String,
+        /// Same as --tools legacy (or BEATBOX_LEGACY_TOOLS=1)
+        #[arg(long)]
+        legacy_tools: bool,
     },
     /// Call any tool: beatbox call generate_beat '{"style":"trap"}' --project song.json
     Call {
@@ -62,6 +66,9 @@ enum Cmd {
         /// Full JSON schemas
         #[arg(long)]
         json: bool,
+        /// Every engine tool by its own name instead of the categories
+        #[arg(long)]
+        legacy: bool,
     },
     /// Make a complete beat in one shot and render it
     Beat {
@@ -128,8 +135,8 @@ fn main() -> Result<()> {
             }
             beatbox::gui::run(e, &listen, project, screenshot, view)?;
         }
-        Cmd::Mcp { connect, project, tools: list } => {
-            mcp::set_compact_tools(list.eq_ignore_ascii_case("compact"));
+        Cmd::Mcp { connect, project, tools: list, legacy_tools } => {
+            mcp::set_tool_mode(if legacy_tools { "legacy" } else { &list });
             let backend = match connect {
                 Some(url) => mcp::Backend::Remote(url),
                 None => {
@@ -158,14 +165,23 @@ fn main() -> Result<()> {
             let r = beatbox::media::summarize_content(e.call(&tool, &a)?);
             print(&r);
             if let Some(p) = &project {
-                if tools::find(&tool).map(|t| t.mutates).unwrap_or(false) {
+                if beatbox::tools_categories::engine_tool(&tool, &a).map(|t| t.mutates).unwrap_or(false) {
                     e.call("save_project", &json!({"path": p}))?;
                     eprintln!("saved {}", p.display());
                 }
             }
         }
-        Cmd::Tools { json: full } => {
-            if full {
+        Cmd::Tools { json: full, legacy } => {
+            if !legacy {
+                if full {
+                    print(&beatbox::tools_categories::tools_json());
+                } else {
+                    for c in beatbox::tools_categories::CATEGORIES {
+                        println!("{:<11} {} ({} actions)", c.name, c.description, c.actions.len());
+                    }
+                    println!("\n{} tools; each takes {{\"action\": ...}}. `beatbox tools --legacy` lists the {} engine tools, all still callable by name.", beatbox::tools_categories::CATEGORIES.len(), tools::registry().len());
+                }
+            } else if full {
                 print(&tools::tools_json());
             } else {
                 for t in tools::registry() {

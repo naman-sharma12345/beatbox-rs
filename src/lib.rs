@@ -11,6 +11,7 @@
 )]
 
 pub mod analysis;
+pub mod tools_categories;
 pub mod gui_words;
 pub mod history;
 pub mod audio_edit;

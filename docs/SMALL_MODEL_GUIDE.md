@@ -4,6 +4,13 @@ beatbox is MCP first: every button in the studio is a tool an AI can call, and
 the tools are shaped so a small local model (3-8B) can drive the whole DAW.
 This page is the short version; `get_guide` is the long one.
 
+**The tool list is categories.** `tools/list` shows about 20 tools (`project`,
+`pattern`, `notes`, `instrument`, `sample`, `arrange`, `mixer`, `effects`,
+`vocals`, `analyze`, `generate`, `export`, ...). Call one with
+`{"action": "<name>", "params": {...}}`; the engine tool names on this page are
+those actions (`set_tempo` is `project` / `set_tempo`). `{"action": "help"}` on
+any tool lists its actions. Old names still work when called directly.
+
 ## Run it
 
 ```sh

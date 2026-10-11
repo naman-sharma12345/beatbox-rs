@@ -158,6 +158,7 @@ pub fn tools() -> Vec<Tool> {
                 let list: Vec<Value> = hits
                     .iter()
                     .map(|(s, t)| json!({"name": t.name, "does": crate::tools_meta::short(t.description), "group": crate::tools_meta::category(t.name),
+                        "call": json!({"tool": crate::tools_meta::category(t.name), "action": t.name}),
                         "required": required_of(t), "changes_project": t.mutates, "score": s}))
                     .collect();
                 if list.is_empty() {
@@ -179,7 +180,7 @@ pub fn tools() -> Vec<Tool> {
                 if name == "call_tool" {
                     bail!("call_tool cannot call itself");
                 }
-                if tools::find(&name).is_none() {
+                if tools::find(&name).is_none() && crate::tools_categories::find(&name).is_none() {
                     return Err(anyhow!(
                         "unknown tool '{name}'. Did you mean: {}? (search_tools finds tools)",
                         crate::tools_meta::suggest(&name, 3).join(", ")
