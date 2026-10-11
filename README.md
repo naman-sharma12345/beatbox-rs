@@ -1,23 +1,21 @@
 # Beatbox 🥁
 
-**An AI-native beat maker written in Rust.** Every feature — synths, drums, samples, effects, music theory, arrangement, mixing and mix analysis — is a tool an AI model can call over [MCP](https://modelcontextprotocol.io). Humans get a CLI and a native desktop studio (egui) on the same engine, and can watch an AI produce live.
+**An MCP-first music studio written in Rust.** Every feature (recorded and synthesized instruments, drums, samples, effects, vocals, theory, arrangement, mixing, mastering and mix analysis) is a tool a model can call over [MCP](https://modelcontextprotocol.io): **256 tools** today. People get a CLI and a fully manual native desktop studio (egui) on the same engine; every action in the studio is also an MCP tool, so a model and a person work on the same project.
 
-> FL Studio was built for hands on a mouse. Beatbox is built for models: every knob is addressable, every action is undoable, and the engine can *listen back* to its own mix and tell the AI what to fix.
+> FL Studio was built for hands on a mouse. Beatbox is built so that every knob is addressable, every action is undoable, and the engine can *listen back* to its own mix and say what to fix. FL Studio feature parity: **83 of 91** ([docs/FL_PARITY.md](docs/FL_PARITY.md)).
 
-![Beatbox Studio: mixer view](docs/studio.png)
-
-![Automation editor](docs/automation.png)
+![Beatbox Studio: mixer with an amp, EQ, chorus and plate reverb on a recorded clean electric guitar](docs/studio.png)
 
 ## Why it's different
 
 | | Typical DAW | Beatbox |
 |---|---|---|
-| AI control | none / plugins | 175 MCP tools, every feature; `batch` makes 50 edits one atomic undo step |
+| Model control | none / plugins | 256 MCP tools, every feature; `batch` makes 50 edits one atomic undo step |
+| Instruments | ship with sample packs | real recorded instruments on demand: a General MIDI SoundFont (GeneralUser GS, ~260 instruments), 209 CC0 / CC BY SFZ instruments (electric guitars, basses, acoustic kits, pianos, strings) and VSCO 2 CE orchestral packs, fetched with checksums; plus modelled piano/ensembles and synths |
 | Feedback loop | your ears | `analyze_mix`: LUFS, true peak, spectrum balance, stereo, masking, 0-100 score + fixes |
+| Vocals | plugins | channel strip, neural noise removal checked by a speech-quality score, tone matching, flex-time alignment, seamless edits |
 | Trying ideas | save-as copies | `snapshot` A/B variants, `diff_project` structured diffs, `compare_variants` renders and scores each |
 | Delivery | trust the meters | `validate_project` / `check_master`: overs, true peak, LUFS target, DC, mono, missing samples, broken routing |
-| Sounds | ship with sample packs | synthesizes everything (incl. modelled piano, strings, choir), installs CC0 multisampled orchestral packs, fetches sounds from Freesound or any URL |
-| Theory | piano roll | roman-numeral progressions, voice leading, scale-locked melodies |
 | Mistakes | Ctrl+Z if you're lucky | every tool call is undoable, failed calls roll back |
 | Format | binary project | one readable JSON file |
 
@@ -25,14 +23,30 @@
 
 | | |
 |---|---|
-| ![Step sequencer](docs/screenshots/sequencer.png) | ![Mixer](docs/screenshots/mixer.png) |
-| **Step sequencer** — channel rack with per-step velocity | **Mixer** — console strips with live meters, sends, bus and master LUFS / true peak |
-| ![Playlist and tempo map](docs/screenshots/playlist_tempo_map.png) | ![Automation](docs/screenshots/automation.png) |
-| **Playlist** — clips over the song with the tick tempo map | **Automation editor** — lanes and curves over the sections |
-| ![Piano roll](docs/screenshots/piano_roll.png) | ![Tempo map ruler](docs/screenshots/tempo_map_ruler.png) |
-| **Piano roll** — snap, quantize, velocity tools and the velocity lane | **Tempo ruler** — bar:beat:tick timebase |
+| ![Playlist](docs/screenshots/playlist_tempo_map.png) | ![Mixer](docs/screenshots/mixer.png) |
+| **Playlist**: clips over the song, sections, tempo map | **Mixer**: strips with meters, inserts (here `amp_sim`, EQ, chorus, reverb on a recorded guitar), sends, master LUFS / true peak |
+| ![Step sequencer](docs/screenshots/sequencer.png) | ![Automation](docs/screenshots/automation.png) |
+| **Step sequencer**: channel rack with per-step velocity, instrument panel | **Automation editor**: lanes and curves over the sections |
+| ![Piano roll](docs/screenshots/piano_roll.png) | ![Vocal view](docs/screenshots/vocal.png) |
+| **Piano roll** with the velocity lane | **Vocal view**: takes, clips and edits |
 
-Screenshots are produced headlessly by the `screenshots` GitHub Actions workflow.
+All screenshots are the real studio rendering a real project (`screenshot` tool, headless).
+
+## Real recorded instruments
+
+- **SoundFont player**: a `soundfont` instrument plays SF2 multisamples (rustysynth) in stereo with the font's own panning. `load_instrument {track, instrument:'clean_electric_guitar'}` creates or swaps a track; curated names cover guitars (clean, jazz, muted, overdriven, acoustic, nylon), basses (finger, pick, fretless, upright), pianos, strings, brass, winds, choir and GM drum kits, plus one-drum tracks (`kick`, `snare`, `closed_hat`, `open_hat`, toms, `crash`, `ride`, `tambourine`, `shaker`). `list_instruments` shows every preset; `preview_instrument` renders a short phrase.
+- **SFZ instruments**: `search_instruments {query, family, license}` searches the catalog (333 entries); `load_instrument {track, catalog_id}` downloads just the samples one program needs (pinned to a commit, checked against git blob ids, `max_mb` / `max_rr` caps) and builds a multisample track (key zones x velocity layers x round robins). `add_multisample_track {sfz}` loads any local SFZ.
+- **Library**: everything lands in `~/.beatbox/library`, never in the project or git. `list_installed`, `remove_instrument`, `cache_limit_mb` (default 1500 MB, least-recently-used eviction). Each catalog entry carries its licence; only CC0, CC BY and MIT-style sources are listed.
+- **Amp and cabinet**: `amp_sim` (clean / crunch / lead / bass preamp, tone stack, power amp, modelled 1x12 / 2x12 / 4x12 / bass 4x10 cabinets, level-matched) and `cab_ir` for impulse-response cabinets. `convolution` takes `ir_path` for real recorded rooms, or synthesizes room / hall / plate / chamber / spring / cathedral IRs.
+- **Next**: `import_from_url` (any audio, SF2, SFZ or archive from the web), a library browser panel in the studio.
+
+## Vocal tools
+
+- **Channel tools** (ported from SoundCraft): `eq_7band`, `eq_1band`, `expander_gate`, `de_ess`, `channel_strip`, and `vocal_clean_chain` (HPF, low-mid dip, presence lift, de-ess, gentle gate, 3:1 comp, level-matched).
+- **`denoise_voice`**: DeepFilterNet 3 neural noise removal (RNNoise as the built-in fallback) with an attenuation limit (default 15 dB) and dry/wet mix. It scores the raw take and the result with DNSMOS and only switches the clips when the voice (SIG) and overall (OVRL) scores both improve.
+- **`match_vocal_tone`**: corrective EQ from the take's long-term spectrum against a clean close-mic vocal curve or a reference vocal (at most ±6 dB, never lifting bands that sit in the noise floor), plus a dynamic 200-500 Hz cut for boxy moments. Nothing is synthesized.
+- **`score_voice_quality`**: DNSMOS P.835 SIG / BAK / OVRL for any samples against a baseline.
+- Transcription, tuning, flex-time alignment (`align_vocal_to_grid`, `place_vocal_phrases`), `measure_vocal_vs_beat`, de-hum, de-click, de-reverb, seamless edits that cut between syllables, `vocal_to_song` / `produce_song` from a recording.
 
 ## Features
 
@@ -87,7 +101,7 @@ beatbox tools            # everything an AI can do
 
 ## Use it from an AI (MCP)
 
-Add to Claude Desktop / Cursor / any MCP client:
+Add to any MCP client:
 
 ```json
 {
@@ -97,9 +111,10 @@ Add to Claude Desktop / Cursor / any MCP client:
 }
 ```
 
-Then ask: *"Make a dark phonk beat at 130 BPM, sidechain the 808 to the kick, check the mix and fix whatever it complains about."*
+Then ask: *"Make a moody indie track at 117 BPM with a clean electric guitar, a finger bass and a real drum kit, put my vocal on it, check the mix and fix whatever it complains about."*
 
-Set `FREESOUND_API_KEY` (free at freesound.org/apiv2/apply) to let the AI pull real sounds.
+Optional environment: `FREESOUND_API_KEY` (free at freesound.org/apiv2/apply) for Freesound search, `BEATBOX_PYTHON` (a python with numpy + onnxruntime) for `score_voice_quality`, `BEATBOX_LIBRARY` to move the instrument library, `BEATBOX_GITHUB_TOKEN` to raise the rate limit for checked SFZ downloads.
+
 
 ## Why Beatbox beats FL Studio for AI
 
@@ -111,7 +126,28 @@ Set `FREESOUND_API_KEY` (free at freesound.org/apiv2/apply) to let the AI pull r
 - **FL-style workflow, as tools.** Playlist pattern clips, automation clips and mixer bus routing (`place_pattern`, `create_automation_clip`, `route_bus`) with cycle checks.
 - **Deterministic project JSON.** The whole song is one readable, stable JSON file, so every change can be diffed, reviewed and undone.
 
-## Tool surface (175 tools)
+## Tool surface (256 tools)
+
+| Category | Tools | What |
+|---|---|---|
+| compose | 7 | generators and song structure |
+| creative | 7 | variations, wildcards, contrast |
+| discover | 6 | learn the engine: guide, catalog, describe a tool |
+| export | 6 | render to wav/flac/mp3, stems, mastering, bounce a track to audio |
+| fx | 7 | effects: add, tweak, place, compare, whole FX chains |
+| groove | 3 | groove extraction and drum tuning |
+| listen | 18 | ears: analysis, loudness, masking, spectrogram |
+| mix | 8 | levels, balance, routing, buses, drone notches |
+| notes | 26 | piano roll and MIDI: write, edit, quantize, arpeggiate, strum |
+| playlist | 22 | FL-style playlist, automation clips, patterns, markers, tempo automation, time signatures |
+| produce | 12 | the producer loop: plan, critique, revise |
+| project | 42 | new/load/save, tempo, key, tracks, notes, effects, undo/redo, snapshots |
+| samples | 5 | palettes, kits, sample search and flips, stem separation |
+| sound | 27 | instruments and sound design, additive synthesis and resynthesis, real recorded instruments (SoundFont library: fetch, list, load, preview) |
+| start | 4 | one call does it all: make_beat from a prompt or lyrics, produce_song from a recording |
+| studio | 18 | transport, history, screenshot, live studio, metronome click |
+| vocal | 38 | vocals: transcribe, tune, vocal_to_song, audio clips, flex-time alignment, phrase placement, repair (denoise, de-hum, de-click, gate, de-reverb), de-muffle, seamless edits, channel tools (EQ 7-band/1-band, expander/gate, de-esser, channel strip, vocal_clean_chain), neural denoise (denoise_voice), tone matching (match_vocal_tone), DNSMOS scoring (score_voice_quality) |
+
 
 New to driving it from a model? Read [docs/SMALL_MODEL_GUIDE.md](docs/SMALL_MODEL_GUIDE.md): `list_tools` (by category), `suggest_tools {goal}`, `describe_tool {name}` (arguments + a ready example), `get_project_summary`. FL Studio feature coverage: [docs/FL_PARITY.md](docs/FL_PARITY.md).
 
