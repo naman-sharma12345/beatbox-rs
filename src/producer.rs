@@ -2869,19 +2869,12 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             e.call_from("add_effect", &json!({"track": "kick", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 75.0, "gain_db": 3.0, "q": 1.0}]}}), "producer")?;
         }
     }
-    // a pocket for the voice: the melodic beds step back 3 dB around 1-2 kHz
-    // (critic, 6b round 2: 800-2k ran ~8 dB over a hip-hop reference). Only
-    // when a voice is there: on an instrumental the beds ARE the melody.
-    let voice = !e.project.audio_clips.is_empty()
-        || e.project.tracks.iter().any(|t| {
-            let n = t.name.to_lowercase();
-            n.contains("vocal") || n.contains("vox") || n.contains("voice")
-        });
-    for t in ["chords", "counter", "texture"] {
-        if voice && have(e, t) {
-            e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 1400.0, "gain_db": -3.0, "q": 0.9}]}}), "producer")?;
-        }
-    }
+    // a pocket for the voice (critic, 6b round 2: 800-2k ran ~8 dB over a
+    // hip-hop reference): one rule in mix_rules, applied whenever a voice is
+    // in the project, also when the vocal arrives after this compose (the
+    // engine re-applies it the moment a voice appears). On an instrumental
+    // the beds ARE the melody, so nothing happens here then.
+    crate::mix_rules::ensure_vocal_pocket(e, "producer")?;
     // R&B and sad/melodic beds: the sustained harmony builds a 300 Hz band
     // under the vocal range (critic, beat 8)
     let soft = rnb || ["sad", "melancholic", "heartbreak", "romantic", "dreamy"].iter().any(|m| plan.mood.contains(m));
@@ -2997,6 +2990,15 @@ fn prof_drain() -> Value {
 
 /// Gain staging + mastering for the plan (balance_mix then master_assistant).
 pub fn mix_and_master(e: &mut Engine, plan: &Plan) -> Result<Value> {
+    let bal = balance_beat(e, plan)?;
+    let t = std::time::Instant::now();
+    let master = e.call_from("master_assistant", &json!({"target_lufs": plan.knobs.target_lufs, "style": playbook(&plan.genre)?.mix.master_style, "max_iterations": 3, "true_peak_ceiling": -1.6}), "producer")?;
+    prof("master_assistant", t);
+    Ok(json!({"balance": compact(&bal, 600), "master": compact(&master, 600)}))
+}
+
+/// The beat's level balance by the genre's targets (no master stage).
+pub fn balance_beat(e: &mut Engine, plan: &Plan) -> Result<Value> {
     let pb = playbook(&plan.genre)?;
     let mut offsets: serde_json::Map<String, Value> = plan
         .knobs
@@ -3027,10 +3029,7 @@ pub fn mix_and_master(e: &mut Engine, plan: &Plan) -> Result<Value> {
         "producer",
     )?;
     prof("balance_mix", t);
-    let t = std::time::Instant::now();
-    let master = e.call_from("master_assistant", &json!({"target_lufs": plan.knobs.target_lufs, "style": pb.mix.master_style, "max_iterations": 3, "true_peak_ceiling": -1.6}), "producer")?;
-    prof("master_assistant", t);
-    Ok(json!({"balance": compact(&bal, 600), "master": compact(&master, 600)}))
+    Ok(bal)
 }
 
 fn compact(v: &Value, max: usize) -> Value {
@@ -3637,7 +3636,7 @@ pub struct ProduceOpts {
 
 /// Fetch the plan's sample kit (falls back to the synth kit offline) and
 /// record the files in the plan's asset manifest.
-fn prepare_kit(e: &mut Engine, plan: &mut Plan) {
+pub fn prepare_kit(e: &mut Engine, plan: &mut Plan) {
     if let Some(k) = plan.sample_kit.clone() {
         match crate::sample_lib::install_kit(e, &k) {
             Ok(files) => {

@@ -195,6 +195,14 @@ impl Engine {
         let mut result = result;
         match &mut result {
             Ok(v) => {
+                // mix rule: the vocal pocket follows a voice that arrives
+                // after the beat (an AI or script adding a take); the manual
+                // GUI is left exactly as the person sets it
+                if let Some(s) = &snapshot {
+                    if source != "you" && source != "gui" && !crate::mix_rules::has_voice(s) && crate::mix_rules::has_voice(&self.project) {
+                        let _ = crate::mix_rules::ensure_vocal_pocket(self, "mix_rules");
+                    }
+                }
                 if let Some(s) = snapshot {
                     if s != self.project {
                         // every mutation reports its state version and an exact change list

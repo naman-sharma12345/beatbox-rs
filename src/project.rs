@@ -393,6 +393,10 @@ pub struct Project {
     /// by save_project and restored by load_project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub midi: Option<MidiSetup>,
+    /// The song this project was built from (song_create): its spec, seed,
+    /// sections and last checks, so song_patch can change it by path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub song: Option<crate::song::SongState>,
 }
 
 /// A saved MIDI controller setup: which controls drive what, which track the
@@ -565,6 +569,7 @@ impl Project {
             schema_version: crate::ids::SCHEMA_VERSION,
             id_seq: 0,
             midi: None,
+            song: None,
         }
     }
 

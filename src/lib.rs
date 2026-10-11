@@ -87,6 +87,8 @@ pub mod tools_palette;
 pub mod tools_parity;
 pub mod midi_in;
 pub mod tools_producer;
+pub mod mix_rules;
+pub mod song;
 pub mod tools_prompt;
 pub mod tools_meta;
 pub mod tools_bounce;

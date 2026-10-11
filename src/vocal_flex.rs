@@ -423,7 +423,7 @@ fn mono(l: &[f32], r: &[f32]) -> Vec<f32> {
     l.iter().zip(r.iter()).map(|(x, y)| 0.5 * (x + y)).collect()
 }
 
-fn band_rms_db(x: &[f32], lo: f32, hi: f32) -> f32 {
+pub(crate) fn band_rms_db(x: &[f32], lo: f32, hi: f32) -> f32 {
     let mut h = Biquad::new(BiquadKind::LowCut, lo, 0.707, 0.0);
     let mut l = Biquad::new(BiquadKind::HighCut, hi, 0.707, 0.0);
     let e: f64 = x.iter().map(|v| { let y = l.process(h.process(*v)); (y * y) as f64 }).sum::<f64>() / x.len().max(1) as f64;

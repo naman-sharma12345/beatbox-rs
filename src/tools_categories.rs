@@ -113,8 +113,8 @@ pub const CATEGORIES: &[Category] = &[
     },
     Category {
         name: "produce",
-        description: "Whole songs: produce a song from a recording, cover a song around a sung take, song from a reference or vocal, plan/critique/revise loop, QA.",
-        actions: &["produce_song", "cover_song", "make_song_from_reference", "make_song_from_vocal", "plan_cover", "qa_song", "produce_track", "plan_track", "apply_plan", "critique_track", "revise_track"],
+        description: "Whole songs. START HERE: song_create = one SongSpec in, finished checked song out; song_patch edits by JSON path. Also song from a recording, covers, reference songs, critique loop, QA.",
+        actions: &["song_create", "song_patch", "song_get", "song_validate", "song_schema", "song_render", "produce_song", "cover_song", "make_song_from_reference", "make_song_from_vocal", "plan_cover", "qa_song", "produce_track", "plan_track", "apply_plan", "critique_track", "revise_track"],
     },
     Category {
         name: "export",
