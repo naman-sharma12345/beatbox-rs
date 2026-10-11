@@ -4,7 +4,7 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 76 have, 7 partial, 8 missing of 91** (parity 76/91; counting partial as half: 79.5/91).
+**Score: 77 have, 6 partial, 8 missing of 91** (parity 77/91; counting partial as half: 80/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -84,7 +84,7 @@ hosting.
 | Effects | Tape stop / vinyl | have | add_effect type vinyl: crackle, surface hiss, wow + flutter (modulated delay), age (worn band), mono; stutter tape_stop, gross_beat tape_stop / tape_stop_end |
 | Audio | Time stretching | have | stretch_sample |
 | Audio | Audio recording | missing | (produce_song takes a recorded file) |
-| Audio | Noise reduction | partial | inside produce_song (spectral gate); not its own tool yet |
+| Audio | Noise reduction | have | denoise_sample: spectral gate (noise floor read from the quietest frames) into a new sample, strength + floor_db; also inside produce_song |
 | Audio | Stem separation | missing |  |
 | Audio | Vocal chops | have | vocal_chop |
 | Audio | Reverse samples | have | edit_sample reverse |

@@ -1057,6 +1057,26 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "denoise_sample",
+            description: "Noise reduction (FL Edison denoise) into a new sample: a spectral gate reads the noise floor per frequency from the quietest frames and pulls bins near it down. Use it on a hissy recording, an old tape or a vocal take before tuning. strength 0..1 (default 0.8), floor_db = the deepest cut (default -24; -12 is gentle). new_name defaults to <sample>_denoised.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "strength": {"type": "number"}, "floor_db": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
+            run: |e, a| {
+                let (info, d) = sample_data(e, &s_req(a, "sample")?)?;
+                let strength = f_or(a, "strength", 0.8).clamp(0.0, 1.0);
+                let floor = f_or(a, "floor_db", -24.0).clamp(-60.0, 0.0);
+                if d.len() < 4096 {
+                    bail!("sample too short to read a noise floor (needs ~0.1 s)");
+                }
+                let (y, reduced) = crate::speech_song::denoise(&d, floor, strength);
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_denoised", info.name));
+                let what = format!("denoise strength {strength} floor {floor} dB");
+                let mut r = save_new_sample(e, &info, &nn, &y, &what)?;
+                r["noise_reduced_db"] = json!((reduced * 10.0).round() / 10.0);
+                Ok(r)
+            },
+        },
+        Tool {
             name: "analyze_audio",
             description: "Listen to any audio: a registered sample (sample), a file (path: wav/mp3/flac/ogg) or the current mix (neither). Returns tempo (BPM + confidence), key candidates, onset count/times, LUFS, true peak, loudness range, crest, spectral balance, stereo width. Use it to check a downloaded loop's tempo/key before stretch_sample, or to inspect a bounce.",
             mutates: false,
@@ -1116,6 +1136,28 @@ mod tests {
 
     fn eng() -> Engine {
         Engine::new(std::env::temp_dir().join("beatbox_sound_tests"))
+    }
+
+    #[test]
+    fn denoise_sample_lowers_the_hiss_floor() {
+        let mut e = eng();
+        let dir = std::env::temp_dir().join("bb_denoise_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut rng = crate::dsp::Rng::new(3);
+        // 1 s hiss, then 1 s tone + hiss
+        let x: Vec<f32> = (0..(2.0 * SR) as usize)
+            .map(|i| 0.02 * rng.bipolar() + if i as f32 > SR { 0.4 * (i as f32 * 440.0 / SR * std::f32::consts::TAU).sin() } else { 0.0 })
+            .collect();
+        let wav = dir.join("hiss.wav");
+        crate::render::write_wav(&wav, &x, &x).unwrap();
+        e.call("import_sample", &json!({"path": wav.to_string_lossy(), "name": "hiss"})).unwrap();
+        let r = e.call("denoise_sample", &json!({"sample": "hiss"})).unwrap();
+        // (the tone dominates the total, so the overall figure is small)
+        assert!(r["noise_reduced_db"].as_f64().unwrap() <= 0.0, "{r}");
+        let (_, y) = sample_data(&mut e, r["sample"].as_str().unwrap()).unwrap();
+        let rms = |s: &[f32]| (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt();
+        let q = (0.8 * SR) as usize;
+        assert!(rms(&y[2048..q]) < 0.5 * rms(&x[2048..q]), "hiss not reduced");
     }
 
     #[test]
