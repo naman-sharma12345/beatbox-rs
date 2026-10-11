@@ -57,6 +57,7 @@ impl Default for MasterTargets {
     }
 }
 
+#[allow(dead_code)]
 fn bad_number(v: &Value, path: &str, out: &mut Vec<String>) {
     match v {
         Value::Null => out.push(path.to_string()),
@@ -74,11 +75,50 @@ fn bad_number(v: &Value, path: &str, out: &mut Vec<String>) {
     }
 }
 
+/// Fields holding NaN or infinity, read from a value's Debug text. Serde
+/// writes NaN as null, but so is every empty Option (a fixed_key of None),
+/// so nulls alone cannot tell a broken number from an unset option.
+pub(crate) fn nan_fields<T: std::fmt::Debug>(v: &T) -> Vec<String> {
+    let d = format!("{v:?}");
+    let mut out = Vec::new();
+    let b = d.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let rest = &d[i..];
+        let tok = if rest.starts_with("NaN") {
+            3
+        } else if rest.starts_with("-inf") {
+            4
+        } else if rest.starts_with("inf") && (i == 0 || !b[i - 1].is_ascii_alphanumeric()) {
+            3
+        } else {
+            0
+        };
+        let end_ok = |n: usize| i + n >= b.len() || !(b[i + n].is_ascii_alphanumeric() || b[i + n] == b'_');
+        let start_ok = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+        if tok > 0 && end_ok(tok) && start_ok {
+            // the field name before ": "
+            let before = d[..i].trim_end();
+            let name = before
+                .strip_suffix(':')
+                .map(|s| s.rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "(list value)".to_string());
+            if !out.contains(&name) {
+                out.push(name);
+            }
+            i += tok;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 fn effect_issues(owner: &str, chain: &[Effect], p: &Project, out: &mut Vec<Check>) {
     for (i, fx) in chain.iter().enumerate() {
         let v = serde_json::to_value(fx).unwrap_or_default();
-        let mut nulls = Vec::new();
-        bad_number(&v, "", &mut nulls);
+        let nulls = nan_fields(fx);
         if !nulls.is_empty() {
             out.push(item(
                 "illegal_values",
@@ -241,9 +281,7 @@ pub fn structural(p: &Project, bank: &SampleBank) -> Vec<Check> {
                 Some("set_mixer"),
             ));
         }
-        let iv = serde_json::to_value(&t.instrument).unwrap_or_default();
-        let mut nulls = Vec::new();
-        bad_number(&iv, "", &mut nulls);
+        let nulls = nan_fields(&t.instrument);
         if !nulls.is_empty() {
             out.push(item(
                 "illegal_values",
@@ -775,6 +813,16 @@ pub fn summarize(items: &[Check]) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nan_fields_ignores_unset_options() {
+        #[derive(Debug)]
+        struct I { fixed_key: Option<u8>, gain: f32, tune: f32, list: Vec<f32>, infinite_mode: bool }
+        let ok = I { fixed_key: None, gain: 1.0, tune: 0.0, list: vec![1.0], infinite_mode: true };
+        assert!(super::nan_fields(&ok).is_empty(), "{:?}", super::nan_fields(&ok));
+        let bad = I { fixed_key: None, gain: f32::NAN, tune: f32::INFINITY, list: vec![f32::NAN], infinite_mode: false };
+        assert_eq!(super::nan_fields(&bad), vec!["gain", "tune", "(list value)"]);
+    }
+
     use super::*;
     use crate::instruments;
     use crate::project::Track;

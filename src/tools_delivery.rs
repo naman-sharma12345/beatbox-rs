@@ -24,6 +24,16 @@ pub struct DeliverOpts {
     pub target_lufs: Option<f32>,
     pub ceiling_dbtp: f32,
     pub limit: bool,
+    /// Most dB the soft clipper may take off the peaks before the limiter
+    /// (0 = limiter only). Short peaks clipped softly cost far less
+    /// loudness than the limiter's release dips, so loud sections keep
+    /// their lift over quiet ones.
+    pub soft_clip_db: f32,
+    /// 0..1: how much of the song's own loud/quiet contrast survives the
+    /// limiter (1 = all of it, 0 = whatever the limiter leaves). Quieter
+    /// sections are turned down by the gain the limiter took from the loud
+    /// ones, after the limiter, so no peak can rise.
+    pub preserve_dynamics: f32,
     pub bitrate_kbps: u32,
     pub sample_rate: u32,
 }
@@ -38,6 +48,8 @@ impl Default for DeliverOpts {
             target_lufs: None,
             ceiling_dbtp: -1.0,
             limit: true,
+            soft_clip_db: 3.0,
+            preserve_dynamics: 0.8,
             bitrate_kbps: 320,
             sample_rate: 44_100,
         }
@@ -144,11 +156,115 @@ fn encode_to(path: &Path, l: &[f32], r: &[f32], o: &DeliverOpts) -> Result<Decod
     DecodedOutput::read(path)
 }
 
+/// Soft clipper: linear below 1/2 of `ceiling` (-6 dB), a smooth tanh knee
+/// above, never past `ceiling`. Applied per sample to both channels.
+pub fn soft_clip(l: &mut [f32], r: &mut [f32], ceiling: f32) {
+    let c = ceiling.max(1e-6);
+    let k = 0.5 * c;
+    let span = c - k;
+    for v in l.iter_mut().chain(r.iter_mut()) {
+        let a = v.abs();
+        if a > k {
+            *v = v.signum() * (k + span * ((a - k) / span).tanh());
+        }
+    }
+}
+
+/// After the limiter: turn the quieter stretches down by the extra gain the
+/// limiter took from the loudest ones, so the song keeps `amount` (0..1) of
+/// its own contrast. Only ever lowers gain, so peaks stay under the ceiling.
+/// `l`/`r` is the input before `gain_db`; `wl`/`wr` the limited output.
+pub fn restore_contour(l: &[f32], r: &[f32], gain_db: f32, wl: &mut [f32], wr: &mut [f32], amount: f32) {
+    let win = (2.0 * SR) as usize;
+    let hop = (0.5 * SR) as usize;
+    let n = wl.len().min(l.len());
+    if n < 2 * win {
+        return;
+    }
+    let g2 = crate::dsp::db_to_gain(gain_db).powi(2);
+    let energy = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * x + y * y).sum::<f32>() / (2 * a.len()).max(1) as f32;
+    // limiter loss per window (dB), only where there is music
+    let mut centers = Vec::new();
+    let mut loss = Vec::new();
+    let mut start = 0;
+    while start + win <= n {
+        let ein = energy(&l[start..start + win], &r[start..start + win]) * g2;
+        let eout = energy(&wl[start..start + win], &wr[start..start + win]);
+        centers.push(start + win / 2);
+        loss.push(if ein > 1e-7 && eout > 1e-9 { Some(10.0 * (ein / eout).log10()) } else { None });
+        start += hop;
+    }
+    let mut known: Vec<f32> = loss.iter().flatten().copied().collect();
+    if known.len() < 4 {
+        return;
+    }
+    known.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // the loud sections' loss (90th percentile, robust to one spike)
+    let top = known[(known.len() * 9 / 10).min(known.len() - 1)];
+    let corr_db: Vec<f32> = loss.iter().map(|x| x.map(|d| -(amount * (top - d)).max(0.0)).unwrap_or(0.0)).collect();
+    // smooth the window curve (3 taps either side), then per-sample linear interpolation
+    let sm: Vec<f32> = (0..corr_db.len())
+        .map(|i| {
+            let lo = i.saturating_sub(2);
+            let hi = (i + 3).min(corr_db.len());
+            corr_db[lo..hi].iter().sum::<f32>() / (hi - lo) as f32
+        })
+        .collect();
+    let mut k = 0;
+    for i in 0..n {
+        while k + 1 < centers.len() && centers[k + 1] <= i {
+            k += 1;
+        }
+        let db = if i <= centers[0] {
+            sm[0]
+        } else if k + 1 >= centers.len() {
+            sm[centers.len() - 1]
+        } else {
+            let t = (i - centers[k]) as f32 / (centers[k + 1] - centers[k]) as f32;
+            sm[k] + (sm[k + 1] - sm[k]) * t
+        };
+        if db < -0.01 {
+            let g = crate::dsp::db_to_gain(db);
+            wl[i] *= g;
+            wr[i] *= g;
+        }
+    }
+}
+
+/// Short-term loudness lift of the loudest quarter over the quietest
+/// quarter of the 3 s windows (dB): how much louder the drops are than the
+/// verses. Used to show whether delivery kept the song's dynamics.
+pub fn section_lift_db(l: &[f32], r: &[f32]) -> f32 {
+    let w = (3.0 * SR) as usize;
+    if l.len() < 4 * w {
+        return 0.0;
+    }
+    let mut lv: Vec<f32> = l
+        .chunks(w)
+        .zip(r.chunks(w))
+        .filter(|(a, _)| a.len() == w)
+        .map(|(a, b)| {
+            let e: f32 = a.iter().zip(b).map(|(x, y)| x * x + y * y).sum::<f32>() / (2 * w) as f32;
+            10.0 * e.max(1e-12).log10()
+        })
+        .filter(|d| *d > -60.0)
+        .collect();
+    if lv.len() < 4 {
+        return 0.0;
+    }
+    lv.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let q = lv.len() / 4;
+    let lo: f32 = lv[..q.max(1)].iter().sum::<f32>() / q.max(1) as f32;
+    let hi: f32 = lv[lv.len() - q.max(1)..].iter().sum::<f32>() / q.max(1) as f32;
+    ((hi - lo) * 100.0).round() / 100.0
+}
+
 /// Codec-aware delivery: loudness-normalise to a target, true-peak limit,
 /// encode, re-measure the decoded file and trim gain until the decoded true
 /// peak meets the ceiling.
 pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Value> {
     let before = analysis::loudness(l, r);
+    let lift_before = section_lift_db(l, r);
     let mut steps = Vec::new();
     let trig = HashMap::new();
     let ctx = FxContext {
@@ -167,22 +283,37 @@ pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Val
         .map(|t| t - before.integrated_lufs)
         .unwrap_or(0.0);
     let (mut l, mut r) = (l.to_vec(), r.to_vec());
-    for pass in 0..4 {
+    // keeping the contrast turns the quiet parts down, so the loudness
+    // target takes more passes and bigger steps to reach
+    let preserving = o.preserve_dynamics > 0.0 && o.limit;
+    let passes = if preserving { 10 } else { 4 };
+    for pass in 0..passes {
         let (mut wl, mut wr) = (l.clone(), r.clone());
         scale(&mut wl, &mut wr, gain);
-        let limited = o.limit && tp_db(&wl, &wr) > o.ceiling_dbtp - 0.3;
+        let peak = tp_db(&wl, &wr);
+        let limited = o.limit && peak > o.ceiling_dbtp - 0.3;
         if limited {
+            // soft clip the top (up to soft_clip_db) first, then the limiter
+            // catches the rest and the inter-sample peaks
+            let over = peak - (o.ceiling_dbtp - 0.5);
+            let take = over.min(o.soft_clip_db.max(0.0));
+            if take > 0.05 {
+                soft_clip(&mut wl, &mut wr, crate::dsp::db_to_gain(peak - take));
+            }
             limiter.process(&mut wl, &mut wr, &ctx);
+            if o.preserve_dynamics > 0.0 {
+                restore_contour(&l, &r, gain, &mut wl, &mut wr, o.preserve_dynamics);
+            }
         }
         let now = analysis::loudness(&wl, &wr).integrated_lufs;
         steps.push(json!({"step": "gain_stage", "pass": pass + 1, "gain_db": (gain * 100.0).round() / 100.0, "limited": limited, "lufs": now}));
         let err = o.target_lufs.map(|t| t - now).unwrap_or(0.0);
-        if err.abs() <= 0.3 || pass == 3 {
+        if err.abs() <= 0.3 || pass == passes - 1 {
             l = wl;
             r = wr;
             break;
         }
-        gain += err * if limited { 1.2 } else { 1.0 };
+        gain += err * if limited && preserving { 1.8 } else if limited { 1.2 } else { 1.0 };
     }
     if o.sample_rate != SR as u32 {
         l = crate::resample::resample(&l, SR as u32, o.sample_rate);
@@ -224,6 +355,13 @@ pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Val
         "before": {"integrated_lufs": before.integrated_lufs, "true_peak_dbtp": before.true_peak_dbtp},
         "after": {"integrated_lufs": after.integrated_lufs, "true_peak_dbtp": (decoded_tp * 100.0).round() / 100.0, "short_term_max_lufs": after.short_term_max_lufs, "loudness_range_lu": after.loudness_range_lu},
         "codec_trim_db": (trim_total * 100.0).round() / 100.0,
+        "section_lift_db": {"before": lift_before, "after": if o.sample_rate == SR as u32 { section_lift_db(&l, &r) } else { lift_before }, "note": "loudest vs quietest quarter of 3 s windows"},
+        "dynamics_note": match o.target_lufs {
+            Some(t) if preserving && after.integrated_lufs < t - 0.5 => Value::from(format!(
+                "Stopped {:.1} dB under the target to keep the loud sections louder than the quiet ones (preserve_dynamics {:.1}); preserve_dynamics 0 gets closer to the target but flattens them.",
+                t - after.integrated_lufs, o.preserve_dynamics)),
+            _ => Value::Null,
+        },
         "steps": steps,
         "passed": decoded_tp <= o.ceiling_dbtp + 0.05 && lufs_ok,
     }))
@@ -247,6 +385,8 @@ fn opts_from(a: &Value, default_fmt: &str) -> Result<DeliverOpts> {
         target_lufs: f_opt(a, "target_lufs"),
         ceiling_dbtp: f_opt(a, "true_peak_ceiling").unwrap_or(d.ceiling_dbtp),
         limit: b_or(a, "limit", true),
+        soft_clip_db: f_opt(a, "soft_clip_db").unwrap_or(d.soft_clip_db).clamp(0.0, 6.0),
+        preserve_dynamics: f_opt(a, "preserve_dynamics").unwrap_or(d.preserve_dynamics).clamp(0.0, 1.0),
         bitrate_kbps: (u_or(a, "bitrate_kbps", 320) as u32).clamp(64, 320),
         sample_rate: sr,
     })
@@ -294,6 +434,8 @@ pub fn tools() -> Vec<Tool> {
                 "target_lufs": {"type": "number", "description": "Normalise integrated loudness to this (e.g. -14 streaming, -9 club). Omit to keep the mix level"},
                 "true_peak_ceiling": {"type": "number", "description": "dBTP ceiling after encoding (default -1)"},
                 "limit": {"type": "boolean", "description": "Apply a true-peak limiter when the gain would exceed the ceiling (default true)"},
+                "preserve_dynamics": {"type": "number", "minimum": 0, "maximum": 1, "description": "How much of the loud/quiet section contrast survives limiting (default 0.8; 0 = limiter only)"},
+                "soft_clip_db": {"type": "number", "description": "Most dB a soft clipper takes off the peaks before the limiter (default 3, 0 = limiter only); keeps drops louder than verses at loud targets"},
                 "tail_s": {"type": "number"},
             })), &[]),
             run: |e, a| {
@@ -565,6 +707,32 @@ fn window_s(a: &Value, n: usize) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn delivery_keeps_section_contrast() {
+        // 8 s "verse" of one tone, 8 s "drop" 4 dB louder with dense peaks
+        let sr = super::SR as usize;
+        let mut l = Vec::new();
+        for i in 0..16 * sr {
+            let t = i as f32 / sr as f32;
+            let base = (t * 220.0 * std::f32::consts::TAU).sin() * 0.2;
+            let kick = if (t * 2.0).fract() < 0.05 { 0.6 * (t * 60.0 * std::f32::consts::TAU).sin() } else { 0.0 };
+            let lift = if t >= 8.0 { 1.58 } else { 1.0 };
+            l.push(base * lift + kick);
+        }
+        let r = l.clone();
+        let lift_in = super::section_lift_db(&l, &r);
+        let run = |pres: f32, clip: f32| {
+            let o = super::DeliverOpts { target_lufs: Some(-8.0), preserve_dynamics: pres, soft_clip_db: clip, format: "wav".into(), bits: 32, dither: false, ..Default::default() };
+            let path = std::env::temp_dir().join(format!("bb_lift_{pres}_{clip}.wav"));
+            let v = super::deliver(&l, &r, &path, &o).unwrap();
+            v["section_lift_db"]["after"].as_f64().unwrap() as f32
+        };
+        let flat = run(0.0, 0.0);
+        let kept = run(0.8, 3.0);
+        // never flatter than the limiter alone, and most of the song's own lift survives
+        assert!(kept >= flat - 0.2 && kept >= 0.7 * lift_in, "lift in {lift_in}, limiter only {flat}, preserved {kept}");
+    }
+
     use crate::engine::Engine;
     use serde_json::json;
 

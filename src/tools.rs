@@ -1750,18 +1750,21 @@ pub(crate) fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "import_sample",
-            description: "Register a local audio file (wav/mp3/flac/ogg) as a sample.",
+            description: "Register a local audio file (wav/mp3/flac/ogg) as a sample. license / author / source (where it came from: a URL or a description) are kept for credits (list_samples, export_credits).",
             mutates: true,
-            schema: || obj(json!({"path": {"type": "string"}, "name": {"type": "string"}}), &["path"]),
+            schema: || obj(json!({"path": {"type": "string"}, "name": {"type": "string"},
+                "license": {"type": "string", "description": "e.g. CC0, CC-BY-4.0, own recording"},
+                "author": {"type": "string", "description": "who made or recorded it"},
+                "source": {"type": "string", "description": "where it came from (URL or description); default 'local file'"}}), &["path"]),
             run: |e, a| {
                 let path = e.resolve(&s_req(a, "path")?);
                 let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("sample").to_string();
                 let info = SampleInfo {
                     name: samples::sample_name(&s_opt(a, "name").unwrap_or(stem)),
                     path: path.to_string_lossy().into(),
-                    source: "local file".into(),
-                    license: String::new(),
-                    author: String::new(),
+                    source: s_opt(a, "source").filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "local file".into()),
+                    license: s_opt(a, "license").unwrap_or_default(),
+                    author: s_opt(a, "author").unwrap_or_default(),
                     duration: 0.0,
                 };
                 register_sample(e, info)
