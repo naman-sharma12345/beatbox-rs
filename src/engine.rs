@@ -50,6 +50,34 @@ pub struct Transport {
     pub pending_audition: Option<Option<std::sync::Arc<(Vec<f32>, Vec<f32>)>>>,
     /// True while the studio is sounding a preview.
     pub auditioning: bool,
+    /// Performance mode: a pattern loop (or the song, `pattern: None`) for
+    /// the studio to switch to on the next quantum boundary.
+    pub pending_launch: Option<PerfLaunch>,
+    /// Pattern looping live in performance mode (published by the studio).
+    pub perf_playing: Option<String>,
+    /// Pattern waiting for the next boundary (published by the studio).
+    pub perf_queued: Option<String>,
+}
+
+/// One performance-mode launch: what to loop, how long one loop is, and the
+/// grid it waits for (0 = switch at once).
+#[derive(Clone)]
+pub struct PerfLaunch {
+    /// Pattern name, or None to go back to the song arrangement.
+    pub pattern: Option<String>,
+    pub mix: Option<Arc<Mix>>,
+    pub loop_secs: f32,
+    pub quantum_secs: f32,
+}
+
+impl std::fmt::Debug for PerfLaunch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PerfLaunch")
+            .field("pattern", &self.pattern)
+            .field("loop_secs", &self.loop_secs)
+            .field("quantum_secs", &self.quantum_secs)
+            .finish()
+    }
 }
 
 /// Full renders kept by project hash.
@@ -72,6 +100,8 @@ pub struct Engine {
     /// same audio), so a tool that renders a candidate and then applies it
     /// does not make the next listener render it again.
     render_cache: Vec<(String, Arc<Mix>)>,
+    /// Pattern loops rendered for performance mode, keyed by loop-project hash.
+    perf_cache: Vec<(String, Arc<Mix>)>,
     /// Pre-fader track audio reused across renders that only move faders or
     /// the master (the producer turns it on for its loop; it costs memory).
     pub track_cache: Option<render::TrackCache>,
@@ -95,6 +125,7 @@ impl Engine {
             log: Vec::new(),
             cached_mix: None,
             render_cache: Vec::new(),
+            perf_cache: Vec::new(),
             track_cache: None,
             mask_cache: None,
         };
@@ -395,6 +426,39 @@ impl Engine {
         }
         self.render_cache.push((key, m.clone()));
         Ok(m)
+    }
+
+    /// The project reduced to one pass of a pattern: what performance mode
+    /// loops. Timeline audio and clip automation are left out (they belong
+    /// to song positions, not to the pattern).
+    pub fn pattern_loop_project(&self, key: &str) -> Result<Project> {
+        let i = self.project.pattern_index(key)?;
+        let mut p = self.project.clone();
+        p.arrangement = vec![crate::project::Section {
+            pattern: p.patterns[i].name.clone(),
+            repeats: 1,
+        }];
+        p.audio_clips.clear();
+        p.automation_clips.clear();
+        Ok(p)
+    }
+
+    /// Render one pass of a pattern for live looping; returns the mix and the
+    /// loop length in seconds. Kept per project content (16 loops).
+    pub fn render_pattern_loop(&mut self, key: &str) -> Result<(Arc<Mix>, f32)> {
+        let p = self.pattern_loop_project(key)?;
+        let secs = p.song_seconds();
+        let hash = crate::listen::project_hash(&p);
+        if let Some((_, m)) = self.perf_cache.iter().find(|(k, _)| *k == hash) {
+            return Ok((m.clone(), secs));
+        }
+        self.bank.sync(&p.samples);
+        let m = Arc::new(render::render_cached(&p, &self.bank, &RenderOptions::default(), None)?);
+        if self.perf_cache.len() >= 16 {
+            self.perf_cache.remove(0);
+        }
+        self.perf_cache.push((hash, m.clone()));
+        Ok((m, secs))
     }
 
     /// Look up a version by name: a snapshot or "current".

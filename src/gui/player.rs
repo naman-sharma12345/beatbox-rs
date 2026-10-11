@@ -18,6 +18,43 @@ struct Shared {
     /// One-shot preview sounded on top of the song (instrument previews,
     /// samples): buffer and its read position.
     one: Option<(Arc<(Vec<f32>, Vec<f32>)>, f64)>,
+    /// Performance mode: the next loop (mix, loop length) and the grid it
+    /// waits for, in source samples (0 = switch on the next frame).
+    queued: Option<(Arc<Mix>, usize)>,
+    quantum: usize,
+}
+
+impl Shared {
+    /// The song's next stereo frame; advances the play head and swaps in a
+    /// queued loop when the head crosses a quantum boundary or wraps.
+    fn song_frame(&mut self) -> (f32, f32) {
+        if !self.playing {
+            return (0.0, 0.0);
+        }
+        let Some(m) = &self.mix else { return (0.0, 0.0) };
+        let i = self.pos as usize;
+        let v = (
+            m.left.get(i).copied().unwrap_or(0.0),
+            m.right.get(i).copied().unwrap_or(0.0),
+        );
+        let old = self.pos;
+        self.pos += self.step;
+        let wrapped = self.pos as usize >= self.loop_len;
+        if wrapped {
+            self.pos = 0.0;
+        }
+        if self.queued.is_some() {
+            let q = self.quantum as f64;
+            let crossed = q <= 0.0 || wrapped || (old / q).floor() != (self.pos / q).floor();
+            if crossed {
+                let (mix, len) = self.queued.take().unwrap();
+                self.pos = if wrapped || q <= 0.0 { 0.0 } else { self.pos - (self.pos / q).floor() * q };
+                self.mix = Some(mix);
+                self.loop_len = len.max(1);
+            }
+        }
+        v
+    }
 }
 
 pub struct Player {
@@ -26,6 +63,8 @@ pub struct Player {
     pub device_name: String,
     virtual_clock: Option<Instant>,
     virtual_start: f64,
+    /// Silent transport: a queued loop and when it takes over.
+    virtual_queued: Option<(Arc<Mix>, usize, Instant)>,
 }
 
 impl Player {
@@ -37,6 +76,8 @@ impl Player {
             playing: false,
             step: 1.0,
             one: None,
+            queued: None,
+            quantum: 0,
         }));
         let (stream, device_name) = match open_stream(shared.clone()) {
             Ok((s, n)) => (Some(s), n),
@@ -48,6 +89,72 @@ impl Player {
             device_name,
             virtual_clock: None,
             virtual_start: 0.0,
+            virtual_queued: None,
+        }
+    }
+
+    /// Performance mode: loop `mix` (one pass is `loop_secs`). When nothing
+    /// plays it starts at once; while playing it takes over on the next
+    /// `quantum_secs` boundary of the current play head (or when the current
+    /// loop wraps); 0 switches now.
+    pub fn launch(&mut self, mix: Arc<Mix>, loop_secs: f32, quantum_secs: f32) {
+        let len = ((loop_secs * crate::dsp::SR) as usize).max(1);
+        if !self.is_playing() || quantum_secs <= 0.0 {
+            let was = self.is_playing();
+            {
+                let mut s = self.shared.lock().unwrap();
+                s.queued = None;
+                s.mix = Some(mix);
+                s.loop_len = len;
+                s.pos = 0.0;
+            }
+            self.virtual_queued = None;
+            self.virtual_start = 0.0;
+            if was && !self.has_audio() {
+                self.virtual_clock = Some(Instant::now());
+            } else if !was {
+                self.play();
+            }
+            return;
+        }
+        if self.has_audio() {
+            let mut s = self.shared.lock().unwrap();
+            s.queued = Some((mix, len));
+            s.quantum = ((quantum_secs * crate::dsp::SR) as usize).max(1);
+        } else {
+            let now = self.position_secs();
+            let loop_now = self.shared.lock().unwrap().loop_len as f32 / crate::dsp::SR;
+            let next = (((now / quantum_secs).floor() + 1.0) * quantum_secs).min(loop_now.max(now));
+            let wait = (next - now).max(0.0);
+            self.virtual_queued = Some((mix, len, Instant::now() + std::time::Duration::from_secs_f32(wait)));
+        }
+    }
+
+    /// True while a launched loop waits for its boundary.
+    pub fn launch_pending(&self) -> bool {
+        self.virtual_queued.is_some() || self.shared.lock().unwrap().queued.is_some()
+    }
+
+    /// Drop a launch that has not happened yet.
+    pub fn cancel_launch(&mut self) {
+        self.virtual_queued = None;
+        self.shared.lock().unwrap().queued = None;
+    }
+
+    /// Silent transport: apply a queued loop whose time has come (the audio
+    /// callback does this itself on a real device). Call once per frame.
+    pub fn poll(&mut self) {
+        let due = matches!(&self.virtual_queued, Some((_, _, t)) if Instant::now() >= *t);
+        if due {
+            let (mix, len, t) = self.virtual_queued.take().unwrap();
+            let mut s = self.shared.lock().unwrap();
+            s.mix = Some(mix);
+            s.loop_len = len;
+            s.pos = 0.0;
+            self.virtual_start = 0.0;
+            if self.virtual_clock.is_some() {
+                self.virtual_clock = Some(t);
+            }
         }
     }
 
@@ -73,9 +180,11 @@ impl Player {
     }
 
     pub fn stop(&mut self) {
+        self.virtual_queued = None;
         let mut s = self.shared.lock().unwrap();
         s.playing = false;
         s.pos = 0.0;
+        s.queued = None;
         self.virtual_clock = None;
         self.virtual_start = 0.0;
     }
@@ -156,21 +265,7 @@ where
                 return;
             };
             for frame in data.chunks_mut(channels) {
-                let (l, r) = match (&s.mix, s.playing) {
-                    (Some(m), true) => {
-                        let i = s.pos as usize;
-                        let v = (
-                            m.left.get(i).copied().unwrap_or(0.0),
-                            m.right.get(i).copied().unwrap_or(0.0),
-                        );
-                        s.pos += s.step;
-                        if s.pos as usize >= s.loop_len {
-                            s.pos = 0.0;
-                        }
-                        v
-                    }
-                    _ => (0.0, 0.0),
-                };
+                let (l, r) = s.song_frame();
                 let step = s.step;
                 let (mut l, mut r) = (l, r);
                 let mut done = false;
@@ -201,4 +296,47 @@ where
         None,
     )?;
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mix(v: f32, n: usize) -> Arc<Mix> {
+        Arc::new(Mix { left: vec![v; n], right: vec![v; n], stems: vec![], track_info: vec![], bus_stems: vec![], seconds: n as f32 / crate::dsp::SR })
+    }
+
+    fn shared(m: Arc<Mix>, len: usize) -> Shared {
+        Shared { mix: Some(m), pos: 0.0, loop_len: len, playing: true, step: 1.0, one: None, queued: None, quantum: 0 }
+    }
+
+    #[test]
+    fn launch_waits_for_the_next_bar_then_loops_from_the_top() {
+        let mut s = shared(mix(1.0, 1000), 1000);
+        for _ in 0..130 { s.song_frame(); }
+        s.queued = Some((mix(2.0, 300), 300));
+        s.quantum = 100;
+        let mut first_new = None;
+        for n in 0..200 {
+            let (l, _) = s.song_frame();
+            if l == 2.0 && first_new.is_none() { first_new = Some(n); }
+        }
+        // 130 frames in: the old loop sounds through frame 199, the new one from 200
+        assert_eq!(first_new, Some(70));
+        assert_eq!(s.loop_len, 300);
+        assert!(s.queued.is_none());
+    }
+
+    #[test]
+    fn launch_also_happens_when_the_old_loop_wraps() {
+        let mut s = shared(mix(1.0, 150), 150);
+        s.queued = Some((mix(2.0, 300), 300));
+        s.quantum = 1000; // longer than the playing loop
+        let mut first_new = None;
+        for n in 0..400 {
+            let (l, _) = s.song_frame();
+            if l == 2.0 && first_new.is_none() { first_new = Some(n); }
+        }
+        assert_eq!(first_new, Some(150));
+    }
 }

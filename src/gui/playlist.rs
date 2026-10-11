@@ -85,6 +85,27 @@ impl Studio {
         let mut actions: Vec<(&'static str, Value)> = Vec::new();
         let lanes = p.tracks.len().max(1);
         let want_h = RULER_H * 2.0 + LANE_H * lanes as f32 + 4.0;
+        // performance strip: launch any pattern live, on the next bar
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("PERFORM").size(11.0).color(tk.ruler_text));
+            for pat in &p.patterns {
+                let live = self.perf.as_deref() == Some(pat.name.as_str());
+                let next = matches!(&self.perf_next, Some(Some(n)) if *n == pat.name);
+                let label = if next { format!("{} (next bar)", pat.name) } else { pat.name.clone() };
+                let b = ui.selectable_label(live, label).on_hover_text(format!("Loop {} ({} bars), switching on the next bar", pat.name, pat.bars));
+                if b.clicked() {
+                    let key = if pat.id.is_empty() { pat.name.clone() } else { pat.id.clone() };
+                    actions.push(("perform", json!({"action": "launch", "pattern": key})));
+                }
+            }
+            if self.perf.is_some() || self.perf_next.is_some() {
+                let back = matches!(&self.perf_next, Some(None));
+                let label = if back { "SONG (next bar)" } else { "SONG" };
+                if ui.button(label).on_hover_text("Back to the song arrangement on the next bar").clicked() {
+                    actions.push(("perform", json!({"action": "exit"})));
+                }
+            }
+        });
         egui::ScrollArea::vertical()
             .id_salt("playlist")
             .auto_shrink([false, false])

@@ -67,6 +67,10 @@ pub struct Studio {
     screenshot: Option<PathBuf>,
     frames: u64,
     shot_requested: bool,
+    /// Performance mode: the pattern looping live, and a launch waiting for
+    /// its boundary (Some(None) = back to the song).
+    perf: Option<String>,
+    perf_next: Option<Option<String>>,
     // central view: 0 sequencer, 1 mixer, 2 automation, 3 playlist
     view: usize,
     auto_sel: Option<(String, String)>,
@@ -127,6 +131,8 @@ pub fn run(
                 screenshot,
                 frames: 0,
                 shot_requested: false,
+                perf: None,
+                perf_next: None,
                 view,
                 auto_sel: None,
                 piano: piano::PianoState {
@@ -332,7 +338,11 @@ impl Studio {
         if let Some((want, rx)) = &self.rendering {
             if let Ok(r) = rx.try_recv() {
                 let _ = want;
-                self.player.set_mix(r.mix.clone(), r.loop_secs);
+                // performance mode keeps looping its pattern; the song comes
+                // back on exit
+                if self.perf.is_none() && self.perf_next.is_none() {
+                    self.player.set_mix(r.mix.clone(), r.loop_secs);
+                }
                 self.rendered = Some(r);
                 self.rendering = None;
             }
@@ -1177,6 +1187,35 @@ impl eframe::App for Studio {
                 Some(None) => self.player.stop_audition(),
                 None => {}
             }
+            if let Some(l) = e.transport.pending_launch.take() {
+                let song = self.rendered.as_ref().map(|r| (r.mix.clone(), r.loop_secs));
+                match (l.mix, song) {
+                    (Some(m), _) => {
+                        self.player.launch(m, l.loop_secs, l.quantum_secs);
+                        self.perf_next = Some(l.pattern);
+                    }
+                    (None, Some((m, secs))) => {
+                        self.player.launch(m, secs, l.quantum_secs);
+                        self.perf_next = Some(None);
+                    }
+                    (None, None) => {
+                        self.perf = None;
+                        self.perf_next = None;
+                    }
+                }
+            }
+            self.player.poll();
+            if self.perf_next.is_some() && !self.player.launch_pending() {
+                self.perf = self.perf_next.take().unwrap();
+                if self.perf.is_none() {
+                    // the song render may be newer than the one queued on exit
+                    if let Some(r) = &self.rendered {
+                        self.player.set_mix(r.mix.clone(), r.loop_secs);
+                    }
+                }
+            }
+            e.transport.perf_playing = self.perf.clone();
+            e.transport.perf_queued = self.perf_next.clone().map(|n| n.unwrap_or_else(|| "song".into()));
             e.transport.auditioning = self.player.auditioning();
             e.transport.playing = self.player.is_playing();
             e.transport.position_s = self.player.position_secs();

@@ -7,7 +7,7 @@ anything listed as **have**.
 The studio GUI is fully manual (a hand-operated DAW). The one-call production
 helpers (make_beat, produce_song, critique_mix, ...) are MCP tools only.
 
-**Score: 88 have, 0 partial, 3 missing of 91** (parity 88/91).
+**Score: 89 have, 0 partial, 2 missing of 91** (parity 89/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -103,6 +103,6 @@ hosting.
 | Export | MIDI import / export | have | import_midi, export_midi |
 | Export | Render to audio clip (bounce) | have | bounce_track: instrument + FX + fader + pan + automation printed to a WAV sample, placed as an audio clip on a new track with the same routing/sends; original muted |
 | Live | MIDI controller input | missing |  |
-| Live | Performance mode | missing |  |
+| Live | Performance mode | have | `perform` (launch / exit / prepare / status, quantize bar, beat or now; the project is not changed); PERFORM strip in the playlist: one button per pattern, SONG to go back |
 | Live | Metronome | have | export_click: click WAV in tempo with count-in and accented downbeats, returns where beat 0 falls for lining up a take |
 | Plugins | VST/CLAP hosting | missing | (roadmap sprint 12) |
