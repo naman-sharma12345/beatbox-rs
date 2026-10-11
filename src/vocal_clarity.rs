@@ -34,7 +34,7 @@ fn band_db(spec: &[f32], lo: f32, hi: f32) -> f32 {
 
 /// Tone balance relative to the 500 Hz-2 kHz core (dB): body 200-500,
 /// presence 2-5k, brilliance 5-8k, air 8-16k; and the top frequency still
-/// within 35 dB of the core (where a phone mic or codec cut it off).
+/// within 24 dB of the core (where a phone mic or codec cut it off).
 pub fn tone(x: &[f32]) -> Value {
     let s = ltas(x);
     let core = band_db(&s, 500.0, 2000.0);
@@ -48,12 +48,14 @@ pub fn tone(x: &[f32]) -> Value {
     })
 }
 
-/// The highest frequency whose 1/3-octave level is within 35 dB of the core.
+/// The highest frequency whose 1/3-octave level is within 24 dB of the core
+/// (on Naman's phone take, 35 dB put the cutoff at 8.9 kHz where the voice
+/// had already faded 20+ dB, and the extension added nothing).
 pub fn cutoff(s: &[f32]) -> f32 {
     let core = band_db(s, 500.0, 2000.0);
     let mut f = 16000.0f32;
     while f > 1500.0 {
-        if band_db(s, f / 1.12, f * 1.12) > core - 35.0 {
+        if band_db(s, f / 1.12, f * 1.12) > core - 24.0 {
             return f.round();
         }
         f /= 1.06;
@@ -171,7 +173,7 @@ pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "analyze_vocal_tone",
-            description: "How muffled or bright a vocal is: body (200-500 Hz), presence (2-5k), brilliance (5-8k) and air (8-16k) relative to the 500 Hz-2 kHz core, and top_hz, the highest frequency the recording still carries (a phone take often stops near 4-8 kHz). Read-only; sample or path.",
+            description: "How muffled or bright a vocal is: body (200-500 Hz), presence (2-5k), brilliance (5-8k) and air (8-16k) relative to the 500 Hz-2 kHz core, and top_hz, the highest frequency still within 24 dB of the core (a phone take often fades out near 3-6 kHz). Read-only; sample or path.",
             mutates: false,
             schema: || obj(json!({"sample": {"type": "string"}, "path": {"type": "string"}}), &[]),
             run: |e, a| {
@@ -179,7 +181,7 @@ pub fn tools() -> Vec<Tool> {
                 let m: Vec<f32> = l.iter().zip(r.iter()).map(|(x, y)| 0.5 * (x + y)).collect();
                 let t = tone(&m);
                 let mut find = Vec::new();
-                if t["top_hz"].as_f64().unwrap_or(16000.0) < 9000.0 {
+                if t["top_hz"].as_f64().unwrap_or(16000.0) < 7000.0 {
                     find.push("band-limited (phone/codec): extend_bandwidth rebuilds the top");
                 }
                 if t["presence_2k_5k"].as_f64().unwrap_or(0.0) < -12.0 {
@@ -193,17 +195,17 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "extend_bandwidth",
-            description: "De-muffle a band-limited vocal (phone mic, voice note, old codec): rebuilds the missing top band from harmonics of the octave below the cutoff (spectral bandwidth extension). cutoff_hz default = detected top_hz; amount 0..1.5 (default 0.7). Writes <sample>_bright and reports tone before/after.",
+            description: "De-muffle a band-limited vocal (phone mic, voice note, old codec): rebuilds the missing top band from harmonics of the octave below the cutoff (spectral bandwidth extension). cutoff_hz default = detected top_hz; amount 0..1.5 (default 0.8). Writes <sample>_bright and reports tone before/after.",
             mutates: true,
             schema: || obj(json!({"sample": {"type": "string"}, "cutoff_hz": {"type": "number"}, "amount": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
             run: |e, a| {
                 let (info, x) = crate::tools_sound::sample_data(e, &s_req(a, "sample")?)?;
                 let before = tone(&x);
                 let fc = f_opt(a, "cutoff_hz").unwrap_or_else(|| before["top_hz"].as_f64().unwrap_or(8000.0) as f32);
-                if fc >= 15000.0 && f_opt(a, "cutoff_hz").is_none() {
+                if fc >= 12000.0 && f_opt(a, "cutoff_hz").is_none() {
                     bail!("the take already reaches {fc} Hz: nothing to extend (try clarity_eq or exciter)");
                 }
-                let y = extend_bandwidth(&x, fc, f_or(a, "amount", 0.7));
+                let y = extend_bandwidth(&x, fc, f_or(a, "amount", 0.8));
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_bright", info.name));
                 let s = save(e, &info, &nn, &y, &format!("bandwidth extension from {fc:.0} Hz"))?;
                 Ok(json!({"sample": s, "cutoff_hz": fc, "tone_db": {"before": before, "after": tone(&y)}}))

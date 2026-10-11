@@ -60,7 +60,9 @@ pub fn melodic_score(x: &[f32]) -> (f32, f32, f32) {
     let h = held as f32 / voiced.len().max(1) as f32;
     let longest = best as f32 * dt;
     // sung: mostly voiced, mostly held, notes that last
-    let score = (0.35 * ((v - 0.45) / 0.35).clamp(0.0, 1.0) + 0.45 * ((h - 0.35) / 0.35).clamp(0.0, 1.0) + 0.2 * ((longest - 0.12) / 0.3).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+    // voicing only counts when notes are held (a gliding rap line is voiced too)
+    let gate = (h / 0.25).clamp(0.0, 1.0);
+    let score = (0.35 * gate * ((v - 0.45) / 0.35).clamp(0.0, 1.0) + 0.45 * ((h - 0.35) / 0.35).clamp(0.0, 1.0) + 0.2 * ((longest - 0.12) / 0.3).clamp(0.0, 1.0)).clamp(0.0, 1.0);
     (score, v.min(1.0), h)
 }
 
@@ -115,7 +117,7 @@ fn detect_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         bail!("give the vocal: sample or path");
     }
     let x: Vec<f32> = l.iter().zip(r.iter()).map(|(p, q)| 0.5 * (p + q)).collect();
-    let st = styles(&x, f_or(a, "min_pause_s", 0.35), f_or(a, "threshold", 0.5), f_or(a, "min_section_s", 2.0));
+    let st = styles(&x, f_or(a, "min_pause_s", 0.35), f_or(a, "threshold", 0.3), f_or(a, "min_section_s", 2.0));
     let bpm = e.project.bpm;
     let sb = f_opt(a, "start_beat");
     let rows: Vec<Value> = st
@@ -131,7 +133,7 @@ fn detect_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         .collect();
     let sung: f32 = st.iter().filter(|s| s.style == "melodic").map(|s| s.end_s - s.start_s).sum();
     let all: f32 = st.iter().map(|s| s.end_s - s.start_s).sum::<f32>().max(1e-3);
-    Ok(json!({"source": name, "sections": rows, "melodic_share_pct": (sung / all * 100.0).round(), "note": "melodic = voiced and held on notes (sung); rap = short, gliding or unvoiced syllables. threshold (default 0.5) moves the line."}))
+    Ok(json!({"source": name, "sections": rows, "melodic_share_pct": (sung / all * 100.0).round(), "note": "melodic = voiced and held on notes (sung); rap = short, gliding or unvoiced syllables. threshold (default 0.3) moves the line."}))
 }
 
 /// Tune only inside `ranges` (seconds), with 30 ms crossfades at the edges.
@@ -193,7 +195,7 @@ fn chain_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     if clips.is_empty() {
         bail!("no clip of '{}' on '{tname}': add_audio_clip the take first (or place_vocal_phrases)", info.name);
     }
-    let st = styles(&x, f_or(a, "min_pause_s", 0.35), f_or(a, "threshold", 0.5), 2.0);
+    let st = styles(&x, f_or(a, "min_pause_s", 0.35), f_or(a, "threshold", 0.3), 2.0);
     let mel: Vec<(f32, f32)> = st.iter().filter(|s| s.style == "melodic").map(|s| (s.start_s, s.end_s)).collect();
     if mel.is_empty() {
         return Ok(json!({"melodic_sections": 0, "note": "no sung part found in the take (all rap); nothing changed", "sections": st}));
@@ -331,7 +333,7 @@ pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "detect_vocal_styles",
-            description: "Melodic vs rap sections in a vocal take: each phrase is scored by voicing and how steadily pitch is held (sung notes) vs gliding/short syllables (rap), then merged into time ranges (start_s/end_s, and song beats when start_beat is given). threshold 0..1 (default 0.5). Read-only; sample or path.",
+            description: "Melodic vs rap sections in a vocal take: each phrase is scored by voicing and how steadily pitch is held (sung notes) vs gliding/short syllables (rap), then merged into time ranges (start_s/end_s, and song beats when start_beat is given). threshold 0..1 (default 0.3). Read-only; sample or path.",
             mutates: false,
             schema: || obj(json!({"sample": {"type": "string"}, "path": {"type": "string"}, "threshold": {"type": "number"}, "min_pause_s": {"type": "number"}, "min_section_s": {"type": "number"}, "start_beat": {"type": "number"}}), &[]),
             run: detect_tool,
@@ -386,7 +388,7 @@ mod tests {
     #[test]
     fn sung_and_rapped_parts_are_told_apart() {
         let x = sung_then_rap();
-        let st = styles(&x, 0.35, 0.5, 2.0);
+        let st = styles(&x, 0.35, 0.3, 2.0);
         assert!(st.len() >= 2, "{st:?}");
         assert_eq!(st[0].style, "melodic", "{st:?}");
         assert_eq!(st.last().unwrap().style, "rap", "{st:?}");
