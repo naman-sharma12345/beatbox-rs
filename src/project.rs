@@ -276,6 +276,22 @@ pub struct Project {
     /// by name; save_fx_chain / apply_fx_chain.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub fx_chains: std::collections::BTreeMap<String, Vec<Effect>>,
+    /// Playlist markers (FL): named song positions, optionally carrying a
+    /// time-signature label; add_marker / list_markers / remove_marker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<Marker>,
+}
+
+/// A named position on the song timeline.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Marker {
+    pub name: String,
+    /// Song beat (quarter notes from the start).
+    pub beat: f32,
+    /// Time-signature label from here on ("3/4"); metadata for now (the
+    /// renderer counts 4/4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_signature: Option<String>,
 }
 
 /// A sung vocal mapped onto the song: every time is in song beats.
@@ -386,6 +402,7 @@ impl Project {
             audio_clips: Vec::new(),
             vocal_map: None,
             fx_chains: Default::default(),
+            markers: Vec::new(),
         }
     }
 

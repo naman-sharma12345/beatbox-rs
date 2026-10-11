@@ -4,7 +4,7 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 78 have, 5 partial, 8 missing of 91** (parity 78/91; counting partial as half: 80.5/91).
+**Score: 78 have, 6 partial, 7 missing of 91** (parity 78/91; counting partial as half: 81/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -93,7 +93,7 @@ hosting.
 | Mixing | Sidechain routing | have | sidechain source track |
 | Arrange | Pattern variants | have | add_pattern copy_from, vary_section, generate_variation |
 | Arrange | Transitions / risers / fills | have | add_transition, generate_fill, add_roll |
-| Arrange | Markers / time signature | missing |  |
+| Arrange | Markers / time signature | partial | add_marker / list_markers / remove_marker (named song positions, section starts listed too, time-signature label as metadata); the renderer counts 4/4 |
 | Arrange | Tempo automation | missing |  |
 | Export | WAV / MP3 / FLAC | have | export_audio |
 | Export | Stems | have | export_stems |
