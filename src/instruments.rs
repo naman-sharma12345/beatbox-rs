@@ -1838,6 +1838,10 @@ fn ks_string(fs: f32, vel: f32, kind: &str, p: &PluckParams, n: usize, t60: f32,
     // loss filter H = (1-s) + s z^-1: darker = larger s (its delay is ~s samples)
     let bright = p.brightness.clamp(0.0, 1.0);
     let s = (0.45 - 0.42 * bright * (0.7 + 0.3 * vel)).clamp(0.04, 0.5);
+    // santoor: thin steel strings struck by light mallets keep their upper
+    // partials ringing (the shimmer); the loop low-pass loses half as much
+    // per pass, so the 2-6 kHz partials live about twice as long
+    let s = if kind == "santoor" { (s * 0.5).max(0.02) } else { s };
     let nd = ((period - s - 0.15).floor() as usize).max(2);
     let d = (period - nd as f32 - s).clamp(0.05, 1.2);
     let c = (1.0 - d) / (1.0 + d);
@@ -1930,7 +1934,9 @@ fn render_pluck(p: &PluckParams, pitch: f32, vel: f32, gate: f32, rng: &mut Rng)
     let n = secs(total);
     // courses: santoor strings come in detuned pairs, a guitar string beats a little
     let detunes: &[f32] = match kind {
-        "santoor" => &[-3.5, 3.0],
+        // a santoor course is up to four strings in near-unison: three
+        // slightly detuned ones give its chorus-like shimmer
+        "santoor" => &[-3.5, 0.6, 3.0],
         "guitar" => &[0.0, 1.2],
         _ => &[0.0],
     };
