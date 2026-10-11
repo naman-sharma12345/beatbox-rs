@@ -213,6 +213,14 @@ pub struct PlaylistClip {
     /// Playlist lane, for display only (clips on any lane all play).
     #[serde(default)]
     pub lane: u32,
+    /// The clip starts this many bars into its pattern (looping), so a split
+    /// or a trimmed start plays on where the original left off.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub offset_bars: u32,
+}
+
+fn is_zero_u32(x: &u32) -> bool {
+    *x == 0
 }
 
 /// A reusable automation clip: a shape for one parameter, in beats from

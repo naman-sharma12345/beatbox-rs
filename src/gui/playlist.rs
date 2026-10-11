@@ -106,6 +106,33 @@ impl Studio {
                 }
             }
         });
+        // pattern clips on the playlist, by stable id: click to select, right-click to edit
+        if !p.playlist.is_empty() {
+            let playhead_bar = playhead_beat / 4.0;
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("CLIPS").size(11.0).color(tk.ruler_text));
+                let mut order: Vec<&crate::project::PlaylistClip> = p.playlist.iter().collect();
+                order.sort_by_key(|c| (c.start_bar, c.lane));
+                for c in order {
+                    let sel = self.clip_sel.as_deref() == Some(c.id.as_str()) && !c.id.is_empty();
+                    let b = ui
+                        .selectable_label(sel, format!("{} \u{00B7} bar {}\u{2013}{}", c.pattern, c.start_bar + 1, c.start_bar + c.bars.max(1)))
+                        .on_hover_text(format!("{} · lane {} · right-click to move, split, trim, duplicate or delete", c.id, c.lane));
+                    if b.clicked() || b.secondary_clicked() {
+                        self.clip_sel = Some(c.id.clone());
+                    }
+                    let menu = pattern_clip_menu(c, playhead_bar);
+                    b.context_menu(|ui| {
+                        for (label, tool, args) in menu.clone() {
+                            if ui.button(label).clicked() {
+                                actions.push((tool, args));
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                }
+            });
+        }
         egui::ScrollArea::vertical()
             .id_salt("playlist")
             .auto_shrink([false, false])
@@ -454,3 +481,55 @@ mod tests {
     }
 }
 
+/// The pattern clip edit menu: label, tool, arguments (each one undo step).
+pub fn pattern_clip_menu(c: &crate::project::PlaylistClip, playhead_bar: f32) -> Vec<(&'static str, &'static str, Value)> {
+    let id = c.id.as_str();
+    let (s0, s1) = (i64::from(c.start_bar), i64::from(c.start_bar + c.bars.max(1)));
+    let mut v = vec![
+        ("Move left a bar", "playlist_clip", json!({"action": "move", "id": id, "by_bars": -1})),
+        ("Move right a bar", "playlist_clip", json!({"action": "move", "id": id, "by_bars": 1})),
+    ];
+    let at = playhead_bar.round() as i64;
+    if at > s0 && at < s1 {
+        v.push(("Split at playhead", "playlist_clip", json!({"action": "split", "id": id, "at_bar": at})));
+    }
+    if s1 - s0 > 1 {
+        v.push(("Trim start a bar", "playlist_clip", json!({"action": "trim", "id": id, "start_bar": s0 + 1})));
+        v.push(("Trim end a bar", "playlist_clip", json!({"action": "trim", "id": id, "end_bar": s1 - 1})));
+    }
+    v.push(("Extend end a bar", "playlist_clip", json!({"action": "trim", "id": id, "end_bar": s1 + 1})));
+    v.push(("Duplicate after", "playlist_clip", json!({"action": "duplicate", "id": id})));
+    v.push(("Lane down", "playlist_clip", json!({"action": "move", "id": id, "lane": c.lane + 1})));
+    if c.lane > 0 {
+        v.push(("Lane up", "playlist_clip", json!({"action": "move", "id": id, "lane": c.lane - 1})));
+    }
+    v.push(("Delete", "playlist_clip", json!({"action": "delete", "id": id})));
+    v
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use crate::engine::Engine;
+    use serde_json::json;
+
+    #[test]
+    fn pattern_clip_menu_items_are_valid_calls() {
+        let d = std::env::temp_dir().join("beatbox_pl_menu_tests");
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d.clone());
+        e.call("new_project", &json!({"name": "m", "bpm": 120})).unwrap();
+        e.call("add_track", &json!({"name": "kick", "preset": "kick"})).unwrap();
+        e.call("add_pattern", &json!({"name": "riff", "bars": 1})).unwrap();
+        e.call("place_pattern", &json!({"pattern": "riff", "start_bar": 2, "bars": 4, "lane": 1})).unwrap();
+        let c = e.project.playlist[0].clone();
+        let menu = super::pattern_clip_menu(&c, 3.6);
+        assert!(menu.iter().any(|m| m.0 == "Split at playhead" && m.2["at_bar"] == 4));
+        assert!(menu.iter().any(|m| m.0 == "Lane up"));
+        for (label, tool, args) in menu {
+            let mut e2 = Engine::new(d.clone());
+            e2.project = e.project.clone();
+            let r = e2.call(tool, &args).unwrap_or_else(|err| panic!("{label}: {err:#}"));
+            assert!(r["clips"].is_array(), "{label}");
+        }
+    }
+}
