@@ -702,6 +702,111 @@ pub const PACKS: &[Pack] = &[
         release: 0.35,
         one_shot: false,
     },
+    Pack {
+        name: "glockenspiel",
+        folder: "Percussion/Glock",
+        description: "Glockenspiel (real, C of each octave)",
+        release: 1.2,
+        one_shot: true,
+    },
+    Pack {
+        name: "marimba",
+        folder: "Percussion/Marimba",
+        description: "Marimba, hard mallets (real)",
+        release: 0.8,
+        one_shot: true,
+    },
+    Pack {
+        name: "xylophone",
+        folder: "Percussion/Xylo",
+        description: "Xylophone (real)",
+        release: 0.5,
+        one_shot: true,
+    },
+    Pack {
+        name: "trumpet_stac",
+        folder: "Brass/Trumpet/stac",
+        description: "Trumpet staccato, 2 dynamics x round robins (brass stabs)",
+        release: 0.15,
+        one_shot: true,
+    },
+    Pack {
+        name: "trumpet_mute_sus",
+        folder: "Brass/Trumpet/straightM-sus",
+        description: "Trumpet with straight mute, sustain",
+        release: 0.35,
+        one_shot: false,
+    },
+    Pack {
+        name: "horn_stac",
+        folder: "Brass/F Horn/stac",
+        description: "French horn staccato (cinematic hits)",
+        release: 0.15,
+        one_shot: true,
+    },
+    Pack {
+        name: "trombone_stac",
+        folder: "Brass/Tenor Trombone/stac",
+        description: "Tenor trombone staccato (brass stabs)",
+        release: 0.15,
+        one_shot: true,
+    },
+    Pack {
+        name: "tuba_stac",
+        folder: "Brass/Tuba/stac",
+        description: "Tuba staccato (low brass punches)",
+        release: 0.15,
+        one_shot: true,
+    },
+    Pack {
+        name: "flute_stac",
+        folder: "Woodwinds/Flute/stac",
+        description: "Flute staccato",
+        release: 0.12,
+        one_shot: true,
+    },
+    Pack {
+        name: "clarinet_stac",
+        folder: "Woodwinds/Clarinet/stac",
+        description: "Clarinet staccato",
+        release: 0.12,
+        one_shot: true,
+    },
+    Pack {
+        name: "oboe_stac",
+        folder: "Woodwinds/Oboe/Stacc",
+        description: "Oboe staccato",
+        release: 0.12,
+        one_shot: true,
+    },
+    Pack {
+        name: "bassoon_stac",
+        folder: "Woodwinds/Bassoon/stac",
+        description: "Bassoon staccato",
+        release: 0.12,
+        one_shot: true,
+    },
+    Pack {
+        name: "piccolo_sus",
+        folder: "Woodwinds/Piccolo/Sus",
+        description: "Piccolo sustain (bright top line)",
+        release: 0.35,
+        one_shot: false,
+    },
+    Pack {
+        name: "violas_pizz",
+        folder: "Strings/Viola Section/pizz",
+        description: "Viola section pizzicato",
+        release: 0.2,
+        one_shot: true,
+    },
+    Pack {
+        name: "contrabass_pizz",
+        folder: "Strings/Solo Contrabass/Pizz",
+        description: "Solo double bass pizzicato (real upright-style bass)",
+        release: 0.25,
+        one_shot: true,
+    },
 ];
 
 pub fn pack(name: &str) -> Option<&'static Pack> {
@@ -731,6 +836,34 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn new_vsco_packs_have_pitched_file_names() {
+        let cases: &[(&str, &[&str])] = &[
+            ("glockenspiel", &["glock_medium_C5.wav", "glock_medium_C6.wav", "glock_medium_G6.wav"]),
+            ("marimba", &["Marimba_hit_Outrigger_B2_loud_01.wav", "Marimba_hit_Outrigger_B4_loud_01.wav", "Marimba_hit_Outrigger_G4_loud_01.wav"]),
+            ("xylophone", &["Xylo_Medium_C4_ff_01_far.wav", "Xylo_Medium_C5_ff_01_far.wav", "Xylo_Medium_G6_ff_01_far.wav"]),
+            ("trumpet_stac", &["Sum_SHTrumpet_stac_A#3_v1_rr1.wav", "Sum_SHTrumpet_stac_A#3_v1_rr2.wav", "Sum_SHTrumpet_stac_G3_v3_rr2.wav"]),
+            ("trumpet_mute_sus", &["Sum_SHTrumpet_straightM-sus_A#2_v1_rr1.wav", "Sum_SHTrumpet_straightM-sus_A#2_v3_rr1.wav", "Sum_SHTrumpet_straightM-sus_G3_v3_rr1.wav"]),
+            ("horn_stac", &["MOHorn_stac_A#1_v1_rr1.wav", "MOHorn_stac_A#1_v2_rr1.wav", "MOHorn_stac_G1_v2_rr2.wav"]),
+            ("trombone_stac", &["tenortbn_stac_A#0_v1_rr1.wav", "tenortbn_stac_A#0_v1_rr2.wav", "tenortbn_stac_F3_v4_rr2.wav"]),
+            ("tuba_stac", &["Tuba3_stac_A#0_v1_rr1_Sum.wav", "Tuba3_stac_A#0_v1_rr2_Sum.wav", "Tuba3_stac_F2_v2_rr4_Sum.wav"]),
+            ("flute_stac", &["LDFlute_stac_A3_v1_rr1.wav", "LDFlute_stac_A3_v1_rr2.wav", "LDFlute_stac_E5_v3_rr2.wav"]),
+            ("clarinet_stac", &["DCClar_stac_A#2_v1_rr1_sum.wav", "DCClar_stac_A#2_v1_rr2_sum.wav", "DCClar_stac_F5_v3_rr2_sum.wav"]),
+            ("oboe_stac", &["Oboe_Stacc_A#2_v1_rr1_Main.wav", "Oboe_Stacc_A#2_v1_rr2_Main.wav", "Oboe_Stacc_F5_v3_rr2_Main.wav"]),
+            ("bassoon_stac", &["PSBassoon_A#0_v2_rr1.wav", "PSBassoon_A#0_v2_rr2.wav", "PSBassoon_G3_v2_rr2.wav"]),
+            ("piccolo_sus", &["piccolo_C5_sustain1.wav", "piccolo_C6_sustain1.wav", "piccolo_G6_sustain1.wav"]),
+            ("violas_pizz", &["ViolaEns_pizz_A3_v1_rr1.wav", "ViolaEns_pizz_A3_v1_rr2.wav", "ViolaEns_pizz_G4_v2_rr2.wav"]),
+            ("contrabass_pizz", &["BKCtbss_Pizz_A#0_v1_rr1.wav", "BKCtbss_Pizz_A#0_v1_rr2.wav", "BKCtbss_Pizz_G0_v3_rr2.wav"]),
+        ];
+        for (pack_name, files) in cases {
+            assert!(pack(pack_name).is_some(), "{pack_name}");
+            for f in *files {
+                let (key, _, _) = parse_sample_name(f).unwrap_or_else(|| panic!("{pack_name}: {f}"));
+                assert!((12..=108).contains(&key), "{f} -> {key}");
+            }
+        }
+    }
 
     #[test]
     fn filename_parsing() {
