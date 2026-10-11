@@ -79,6 +79,7 @@ pub mod tools_click;
 pub mod tools_markers;
 pub mod tools_tempo;
 pub mod tempo_curve;
+pub mod stems;
 pub mod tools_critic;
 pub mod tools_drone;
 pub mod tools_sound;

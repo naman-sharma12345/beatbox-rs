@@ -4,7 +4,7 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 80 have, 5 partial, 6 missing of 91** (parity 80/91; counting partial as half: 82.5/91).
+**Score: 81 have, 5 partial, 5 missing of 91** (parity 81/91; counting partial as half: 83.5/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -85,7 +85,7 @@ hosting.
 | Audio | Time stretching | have | stretch_sample |
 | Audio | Audio recording | missing | (produce_song takes a recorded file) |
 | Audio | Noise reduction | have | denoise_sample: spectral gate (noise floor read from the quietest frames) into a new sample, strength + floor_db; also inside produce_song |
-| Audio | Stem separation | missing |  |
+| Audio | Stem separation | have | separate_stems: drums / bass / vocals / other WAVs from any audio file (harmonic-percussive median filtering, bass band, centre-panned voice band; no model, stems sum back to the input; dense mixes bleed) |
 | Audio | Vocal chops | have | vocal_chop |
 | Audio | Reverse samples | have | edit_sample reverse |
 | Mixing | Mixer track groups / buses | have | add_bus, route_bus |
