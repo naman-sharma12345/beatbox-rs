@@ -297,6 +297,27 @@ fx_struct!(StereoShaperFx {
     invert_right: bool = false,
     mix: f32 = 1.0
 });
+fx_struct!(VinylFx {
+    crackle: f32 = 6.0,
+    crackle_db: f32 = -30.0,
+    hiss_db: f32 = -54.0,
+    wow_cents: f32 = 6.0,
+    wow_hz: f32 = 0.5,
+    flutter_cents: f32 = 2.0,
+    flutter_hz: f32 = 7.0,
+    age: f32 = 0.3,
+    mono: f32 = 0.0,
+    seed: u32 = 7,
+    mix: f32 = 1.0
+});
+fx_struct!(WaveshaperFx {
+    preset: String = "soft".to_string(),
+    curve: String = String::new(),
+    symmetric: bool = true,
+    drive_db: f32 = 6.0,
+    output_db: f32 = -3.0,
+    mix: f32 = 1.0
+});
 fx_struct!(PitchShiftFx {
     semitones: f32 = 12.0,
     cents: f32 = 0.0,
@@ -394,6 +415,8 @@ pub enum Effect {
     FreqShift(FreqShiftFx),
     RingMod(RingModFx),
     StereoShaper(StereoShaperFx),
+    Vinyl(VinylFx),
+    Waveshaper(WaveshaperFx),
 }
 
 macro_rules! each_fx {
@@ -431,6 +454,8 @@ macro_rules! each_fx {
             Effect::FreqShift($p) => $body,
             Effect::RingMod($p) => $body,
             Effect::StereoShaper($p) => $body,
+            Effect::Vinyl($p) => $body,
+            Effect::Waveshaper($p) => $body,
         }
     };
 }
@@ -468,6 +493,8 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("freq_shift", "Frequency shifter (FL Frequency Shifter): moves every partial by shift_hz Hz (-5000..5000), not by a ratio, so harmonics turn inharmonic. 0.5-5 Hz = slow phasing swirl on pads; 50-500 Hz = metallic, robotic, sci-fi; automate shift_hz for risers. stereo_hz adds that much extra shift on the right (wide drifting stereo), feedback 0..0.9 (barber-pole), mix"),
     ("ring_mod", "Ring modulator: multiplies the track by a carrier at freq_hz (0.1..10000), so each partial f becomes f-c and f+c: bells, robot voice, dirty 808, sci-fi FX. shape sine|triangle|square|saw, stereo_phase 0..1 (right carrier offset), lfo_hz + lfo_depth (semitones) wobble the carrier, mix (0.2-0.4 for subtle grit)"),
     ("stereo_shaper", "Stereo Shaper (FL): a 2x2 L/R matrix + a delay + a phase flip. preset custom|mono|swap|left_only|right_only|wide|narrow|side_only|pseudo_stereo (mono source -> stereo with a 12 ms delayed side); custom gains left_from_left, left_from_right, right_from_left, right_from_right; delay_ms 0..50 on delay_side (1 right, -1 left); invert_left / invert_right (phase); mix"),
+    ("vinyl", "Vinyl / tape simulator (lo-fi): crackle (pops per second 0..200) at crackle_db, surface hiss_db (-120 = off), wow_cents + wow_hz (slow pitch drift, 0.05-4 Hz), flutter_cents + flutter_hz (fast wobble, 2-20 Hz), age 0..1 (a worn record: the band closes from both ends, 1 = AM-radio narrow), mono 0..1 (folds the sides in), seed, mix. Defaults are a gentle dusty record"),
+    ("waveshaper", "Waveshaper (FL Fruity WaveShaper): the transfer curve as drawn points curve 'x:y, x:y' (x 0..1 input level, y -1..1 output; mirrored for the negative half when symmetric) or preset soft|hard|tube|fold|sine|steps|crush_curve; drive_db (-24..36) pushes into the curve, output_db, symmetric false = the negative half passes softly (even harmonics), mix"),
     ("haas", "Haas widener: delays one side by delay_ms (1..40) for width without comb filtering the mix. side 1 = delay right, -1 = delay left, low_cut_hz keeps bass centred (only highs are widened), level_db trims the delayed side, mix"),
 ];
 
@@ -500,6 +527,8 @@ impl Effect {
             Effect::FreqShift(p) => crate::fx_mod::check_freq_shift(p),
             Effect::RingMod(p) => crate::fx_mod::check_ring_mod(p),
             Effect::StereoShaper(p) => crate::fx_mod::check_stereo_shaper(p),
+            Effect::Vinyl(p) => crate::fx_char::check_vinyl(p),
+            Effect::Waveshaper(p) => crate::fx_char::check_waveshaper(p),
             _ => Ok(()),
         }
     }
@@ -543,6 +572,8 @@ impl Effect {
             Effect::FreqShift(p) => crate::fx_mod::freq_shift(p, l, r),
             Effect::RingMod(p) => crate::fx_mod::ring_mod(p, l, r),
             Effect::StereoShaper(p) => crate::fx_mod::stereo_shaper(p, l, r),
+            Effect::Vinyl(p) => crate::fx_char::vinyl(p, l, r),
+            Effect::Waveshaper(p) => crate::fx_char::waveshaper(p, l, r),
             Effect::Filter(p) => {
                 let (mut fl, mut fr) = (Svf::default(), Svf::default());
                 for i in 0..l.len() {

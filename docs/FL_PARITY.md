@@ -4,7 +4,7 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 71 have, 9 partial, 11 missing of 91** (parity 71/91; counting partial as half: 75.5/91).
+**Score: 73 have, 7 partial, 11 missing of 91** (parity 73/91; counting partial as half: 76.5/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -78,10 +78,10 @@ hosting.
 | Effects | Peak controller / sidechain | have | sidechain, carve_mix |
 | Effects | Frequency shifter | have | add_effect type freq_shift: shift_hz (every partial by Hz, analytic-signal shifter), stereo_hz drift, feedback, mix |
 | Effects | Ring modulator | have | add_effect type ring_mod: carrier freq_hz, shape sine/triangle/square/saw, stereo_phase, lfo_hz/lfo_depth wobble, mix |
-| Effects | Waveshaper | partial | saturator, soft_clipper (no drawn curve) |
+| Effects | Waveshaper | have | add_effect type waveshaper: drawn curve 'x:y, x:y' (mirrored when symmetric) or presets soft/hard/tube/fold/sine/steps/crush_curve, drive_db, output_db; also saturator, soft_clipper |
 | Effects | Wave Candy / Spectroman | have | spectrum, render_spectrogram, waveform_peaks, loudness_report |
 | Effects | Panning / Balance | have | set_mixer pan, autopan |
-| Effects | Tape stop / vinyl | partial | stutter tape_stop, gross_beat tape_stop / tape_stop_end (no vinyl noise/wow) |
+| Effects | Tape stop / vinyl | have | add_effect type vinyl: crackle, surface hiss, wow + flutter (modulated delay), age (worn band), mono; stutter tape_stop, gross_beat tape_stop / tape_stop_end |
 | Audio | Time stretching | have | stretch_sample |
 | Audio | Audio recording | missing | (produce_song takes a recorded file) |
 | Audio | Noise reduction | partial | inside produce_song (spectral gate); not its own tool yet |
