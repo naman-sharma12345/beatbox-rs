@@ -1082,6 +1082,19 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "sample_spectrogram",
+            description: "See a sample's spectrum over time (the audio editor's spectrogram): frames (default 160) x bands (default 48, log-spaced from_hz..to_hz, default 30-16000) of dB relative to the loudest cell (0 = loudest). Use it to find where a squeak, hum or cymbal sits before spectral_edit_sample.",
+            mutates: false,
+            schema: || obj(json!({"sample": {"type": "string"}, "frames": {"type": "integer"}, "bands": {"type": "integer"}, "from_hz": {"type": "number"}, "to_hz": {"type": "number"}}), &["sample"]),
+            run: |e, a| {
+                let (info, d) = sample_data(e, &s_req(a, "sample")?)?;
+                let (edges, grid, peak) = audio_edit::spectrogram_grid(&d, SR, u_or(a, "frames", 160) as usize, u_or(a, "bands", 48) as usize, f_or(a, "from_hz", 30.0), f_or(a, "to_hz", 16000.0));
+                let db: Vec<Vec<i32>> = grid.iter().map(|r| r.iter().map(|v| ((v - peak).max(-90.0)).round() as i32).collect()).collect();
+                Ok(json!({"sample": info.name, "duration": d.len() as f32 / SR, "frames": db.len(), "bands": edges.len() - 1,
+                          "band_edges_hz": edges.iter().map(|v| v.round()).collect::<Vec<_>>(), "peak_db": (peak * 10.0).round() / 10.0, "db": db}))
+            },
+        },
+        Tool {
             name: "spectral_edit_sample",
             description: "Spectral edit (FL Edison) into a new sample: pick a time span (start_s..end_s, default the whole clip) and a band (low_hz..high_hz) and change only that part of the spectrum. gain_db -60 (default) removes it (a squeak, a cough, a hum, a cymbal wash), a positive gain lifts it. mode \"band\" (default) changes the band inside the span; \"outside\" keeps only the band there. soft_ms / soft_octaves round the region's edges (default 10 ms, 0.1 oct). Returns the new sample and changed_db (energy change of the clip).",
             mutates: true,
@@ -1404,5 +1417,22 @@ mod tests {
         assert!(db(band(&z, 0.45, 440.0), band(&x, 0.45, 440.0)) < -40.0);
         assert!(db(band(&z, 0.45, 5000.0), band(&x, 0.45, 5000.0)).abs() < 0.5);
         assert!(e.call("spectral_edit_sample", &json!({"sample": "tones", "low_hz": 900, "high_hz": 100})).is_err());
+    }
+
+    #[test]
+    fn sample_spectrogram_finds_the_tone() {
+        let mut e = eng();
+        let n = (0.5 * SR) as usize;
+        let x: Vec<f32> = (0..n).map(|i| 0.5 * (std::f32::consts::TAU * 2000.0 * i as f32 / SR).sin()).collect();
+        let path = std::env::temp_dir().join("beatbox_sound_tests/tone2k.wav");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        crate::render::write_wav(&path, &x, &x).unwrap();
+        e.call("import_sample", &json!({"path": path, "name": "tone2k"})).unwrap();
+        let r = e.call("sample_spectrogram", &json!({"sample": "tone2k", "frames": 20, "bands": 24})).unwrap();
+        assert_eq!(r["frames"], 20);
+        let edges: Vec<f64> = r["band_edges_hz"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let row = r["db"][10].as_array().unwrap();
+        let best = (0..row.len()).max_by_key(|&b| row[b].as_i64().unwrap()).unwrap();
+        assert!(edges[best] <= 2100.0 && edges[best + 1] >= 1900.0, "loudest band {}..{}", edges[best], edges[best + 1]);
     }
 }

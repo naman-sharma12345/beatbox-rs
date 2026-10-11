@@ -723,6 +723,41 @@ pub fn spectral_edit(x: &[f32], sr: f32, r: &SpectralRegion) -> (Vec<f32>, f32) 
     (y, ch)
 }
 
+
+/// Spectrogram grid for display: `frames` evenly spaced 2048-point Hann
+/// spectra summed into `bands` log-spaced bands between lo and hi Hz.
+/// Returns (band edges, dB per frame per band, peak dB).
+pub fn spectrogram_grid(x: &[f32], sr: f32, frames: usize, bands: usize, lo: f32, hi: f32) -> (Vec<f32>, Vec<Vec<f32>>, f32) {
+    const N: usize = 2048;
+    let frames = frames.clamp(8, 1024);
+    let bands = bands.clamp(4, 256);
+    let (lo, hi) = (lo.max(10.0), hi.min(sr / 2.0).max(lo.max(10.0) * 2.0));
+    let edges: Vec<f32> = (0..=bands).map(|i| lo * (hi / lo).powf(i as f32 / bands as f32)).collect();
+    let win: Vec<f32> = (0..N).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / N as f32).cos()).collect();
+    let mut grid = Vec::with_capacity(frames);
+    let mut peak = -200.0f32;
+    for f in 0..frames {
+        let c = if x.is_empty() { 0 } else { (f as f64 + 0.5) as usize * x.len() / frames };
+        let s0 = c as isize - (N / 2) as isize;
+        let mut re: Vec<f32> = (0..N).map(|i| {
+            let j = s0 + i as isize;
+            if j >= 0 && (j as usize) < x.len() { x[j as usize] * win[i] } else { 0.0 }
+        }).collect();
+        let mut im = vec![0.0f32; N];
+        crate::analysis::fft(&mut re, &mut im);
+        let mut row = vec![0.0f32; bands];
+        for (b, v) in row.iter_mut().enumerate() {
+            let k0 = ((edges[b] * N as f32 / sr) as usize).max(1);
+            let k1 = ((edges[b + 1] * N as f32 / sr).ceil() as usize).max(k0 + 1).min(N / 2);
+            let p: f32 = (k0..k1).map(|k| re[k] * re[k] + im[k] * im[k]).sum::<f32>() / (k1 - k0).max(1) as f32;
+            *v = 10.0 * (p + 1e-12).log10();
+            peak = peak.max(*v);
+        }
+        grid.push(row);
+    }
+    (edges, grid, peak)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

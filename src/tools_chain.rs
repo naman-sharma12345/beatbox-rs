@@ -235,6 +235,8 @@ pub fn tools() -> Vec<Tool> {
 
 /// Crossover the soundgoodizer's compressor uses; also how a re-call finds it.
 const GOOD_TAG: f32 = 180.0;
+/// Band level the makeup is calibrated to.
+const NOMINAL_DB: f32 = -14.0;
 
 /// Mode presets: (low thr, ratio, gain), (mid ...), (high ...); amount 0..1
 /// blends the compressor in and scales the band lifts.
@@ -247,12 +249,22 @@ fn goodizer_chain(mode: &str, k: f32) -> Result<Value> {
         m => bail!("mode '{m}': use A, B, C or D"),
     };
     let k = k.clamp(0.0, 1.0);
+    // amount scales the compression itself (threshold toward 0 dB, ratio
+    // toward 1:1) rather than a dry/wet blend: the crossover's phase shift
+    // would comb against the dry signal. Makeup gives back what the
+    // compressor takes from a band at a typical mix level (-14 dBFS) plus
+    // the mode's lift, so the result is denser AND louder, as in FL.
+    let eff = |b: (f32, f32, f32)| {
+        let (t, r) = (b.0 * k, 1.0 + (b.1 - 1.0) * k);
+        (t, r, (NOMINAL_DB - t).max(0.0) * (1.0 - 1.0 / r) + b.2 * k)
+    };
+    let (l, m, h) = (eff(p[0]), eff(p[1]), eff(p[2]));
     Ok(json!([
         {"type": "multiband", "low_freq": GOOD_TAG, "high_freq": 4000.0,
-         "low_threshold_db": p[0].0, "low_ratio": p[0].1, "low_gain_db": p[0].2 * k,
-         "mid_threshold_db": p[1].0, "mid_ratio": p[1].1, "mid_gain_db": p[1].2 * k,
-         "high_threshold_db": p[2].0, "high_ratio": p[2].1, "high_gain_db": p[2].2 * k,
-         "attack_ms": 10.0, "release_ms": 120.0, "mix": k},
+         "low_threshold_db": l.0, "low_ratio": l.1, "low_gain_db": l.2,
+         "mid_threshold_db": m.0, "mid_ratio": m.1, "mid_gain_db": m.2,
+         "high_threshold_db": h.0, "high_ratio": h.1, "high_gain_db": h.2,
+         "attack_ms": 10.0, "release_ms": 120.0, "mix": 1.0},
         {"type": "limiter", "ceiling_db": -1.0}
     ]))
 }
@@ -272,7 +284,9 @@ mod tests {
         assert_eq!(r["chain"], json!(["multiband", "limiter"]), "{r}");
         assert_eq!(r["retuned"], true);
         let fx = serde_json::to_value(&e.project.tracks.iter().find(|t| t.name == "keys").unwrap().effects[0]).unwrap();
-        assert!((fx["mix"].as_f64().unwrap() - 0.3).abs() < 1e-4, "{fx}");
+        // D at 30%: threshold -26*0.3, ratio 1+3*0.3
+        assert!((fx["low_threshold_db"].as_f64().unwrap() + 7.8).abs() < 1e-3, "{fx}");
+        assert!((fx["low_ratio"].as_f64().unwrap() - 1.9).abs() < 1e-3, "{fx}");
         assert!(e.call("soundgoodizer", &json!({"track": "keys", "mode": "Z"})).is_err());
         assert!(e.call("soundgoodizer", &json!({"track": "keys", "amount": 150})).is_err());
         e.call("soundgoodizer", &json!({"track": "master"})).unwrap();

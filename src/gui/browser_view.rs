@@ -48,6 +48,10 @@ pub struct SampleEdit {
     pub gain: f32,
     pub outside: bool,
     pub fade_ms: f32,
+    /// spectrogram of `spec_for` (fetched once per sample) and the drag anchor
+    pub spec: Option<Value>,
+    pub spec_for: String,
+    pub anchor: Option<egui::Pos2>,
 }
 
 
@@ -204,11 +208,17 @@ impl Studio {
                     }
                     if ui.small_button("EDIT").on_hover_text("open in the audio editor").clicked() {
                         let ed = &mut self.browser.edit;
-                        *ed = SampleEdit { sample: s.name.clone(), start: 0.0, end: s.duration, lo: 2000.0, hi: 8000.0, gain: -60.0, outside: false, fade_ms: 10.0 };
+                        *ed = SampleEdit { sample: s.name.clone(), start: 0.0, end: s.duration, lo: 2000.0, hi: 8000.0, gain: -60.0, outside: false, fade_ms: 10.0, ..Default::default() };
                     }
                     ui.label(RichText::new(&s.name).size(12.0).color(tk.text));
                     ui.label(RichText::new(format!("{:.1} s \u{00B7} {}", s.duration, s.license)).size(10.0).color(tk.text_dim));
                 });
+            }
+            if !self.browser.edit.sample.is_empty() && self.browser.edit.spec_for != self.browser.edit.sample {
+                let nm = self.browser.edit.sample.clone();
+                let v = self.engine.lock().unwrap().call_from("sample_spectrogram", &json!({"sample": nm}), "you").ok();
+                self.browser.edit.spec = v;
+                self.browser.edit.spec_for = nm;
             }
             if let Some(si) = p.samples.iter().find(|x| !self.browser.edit.sample.is_empty() && x.name == self.browser.edit.sample) {
                 if let Some(c) = audio_editor(ui, &tk, &mut self.browser.edit, si.duration) {
@@ -376,6 +386,9 @@ fn audio_editor(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, dur: f32) -
         }
     });
     let top = if dur > 0.0 { dur } else { 600.0 };
+    if let Some(sp) = ed.spec.clone() {
+        spectrogram_view(ui, tk, ed, &sp, top);
+    }
     ui.horizontal(|ui| {
         ui.label(RichText::new("region s").size(10.0).color(tk.text_dim));
         ui.add(egui::DragValue::new(&mut ed.start).speed(0.01).range(0.0..=top).max_decimals(3));
@@ -418,4 +431,62 @@ fn audio_editor(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, dur: f32) -
     });
     ui.label(RichText::new("each edit keeps the original and adds a new sample").size(10.0).color(tk.text_dim));
     call
+}
+
+fn mix_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    egui::Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
+/// Spectrogram of the sample being edited; drag a box on it to set the
+/// region (time) and the band (frequency) the edits use.
+fn spectrogram_view(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, sp: &Value, dur: f32) {
+    let rows = sp["db"].as_array().cloned().unwrap_or_default();
+    let edges: Vec<f32> = sp["band_edges_hz"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).map(|v| v as f32).collect()).unwrap_or_default();
+    if rows.is_empty() || edges.len() < 2 {
+        return;
+    }
+    let (lo_e, hi_e) = (edges[0].max(1.0), *edges.last().unwrap());
+    let w = ui.available_width().clamp(160.0, 560.0);
+    let h = 96.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::drag());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, tk.panel_bg2);
+    let nf = rows.len();
+    let nb = edges.len() - 1;
+    let (cw, ch) = (w / nf as f32, h / nb as f32);
+    for (fi, row) in rows.iter().enumerate() {
+        for (bi, v) in row.as_array().map(|r| r.as_slice()).unwrap_or(&[]).iter().enumerate() {
+            let t = ((v.as_f64().unwrap_or(-90.0) as f32 + 60.0) / 60.0).clamp(0.0, 1.0);
+            if t <= 0.02 {
+                continue;
+            }
+            let x = rect.left() + fi as f32 * cw;
+            let y = rect.bottom() - (bi + 1) as f32 * ch;
+            painter.rect_filled(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cw + 0.5, ch + 0.5)), 0.0, mix_color(tk.panel_bg2, tk.accent, t));
+        }
+    }
+    let span = (hi_e / lo_e).ln().max(1e-3);
+    let t_of = |x: f32| ((x - rect.left()) / w).clamp(0.0, 1.0) * dur;
+    let f_of = |y: f32| lo_e * (((rect.bottom() - y) / h).clamp(0.0, 1.0) * span).exp();
+    let x_of = |t: f32| rect.left() + (t / dur).clamp(0.0, 1.0) * w;
+    let y_of = |f: f32| rect.bottom() - ((f.max(lo_e) / lo_e).ln() / span).clamp(0.0, 1.0) * h;
+    if resp.drag_started() {
+        ed.anchor = resp.interact_pointer_pos();
+    }
+    if resp.dragged() {
+        if let (Some(a), Some(q)) = (ed.anchor, resp.interact_pointer_pos()) {
+            ed.start = (t_of(a.x.min(q.x)) * 1000.0).round() / 1000.0;
+            ed.end = (t_of(a.x.max(q.x)) * 1000.0).round() / 1000.0;
+            ed.lo = f_of(a.y.max(q.y)).round();
+            ed.hi = f_of(a.y.min(q.y)).round();
+        }
+    }
+    if resp.drag_stopped() {
+        ed.anchor = None;
+    }
+    let end = if ed.end > ed.start { ed.end } else { dur };
+    let sel = egui::Rect::from_min_max(egui::pos2(x_of(ed.start), y_of(ed.hi)), egui::pos2(x_of(end), y_of(ed.lo)));
+    painter.rect_stroke(sel, 0.0, egui::Stroke::new(1.5, tk.text));
+    resp.on_hover_text("drag a box to choose the region and the band");
 }
