@@ -17,7 +17,7 @@ mod analyze_view;
 mod widgets;
 
 use crate::analysis::{self, Report};
-use crate::engine::{Engine, LogEntry};
+use crate::engine::Engine;
 use crate::instruments;
 use crate::project::Project;
 use crate::render::{self, Mix, RenderOptions};
@@ -54,6 +54,7 @@ pub struct Studio {
     project_path: Option<PathBuf>,
     listen: String,
     server_ok: bool,
+    show_about: bool,
     // view state
     pattern: usize,
     selected: usize,
@@ -121,6 +122,7 @@ pub fn run(
                 project_path: project,
                 listen,
                 server_ok,
+                show_about: false,
                 pattern: 0,
                 selected: 0,
                 rendered: None,
@@ -328,10 +330,9 @@ impl Studio {
         }
     }
 
-    fn snapshot(&self) -> (Project, u64, Vec<LogEntry>, (usize, usize)) {
+    fn snapshot(&self) -> (Project, u64, (Vec<String>, Vec<String>), (usize, usize)) {
         let e = self.engine.lock().unwrap();
-        let log = e.log.iter().rev().take(40).cloned().collect();
-        (e.project.clone(), e.revision, log, e.undo_depth())
+        (e.project.clone(), e.revision, e.history(), e.undo_depth())
     }
 
     fn pump_render(&mut self, project: &Project, rev: u64, ctx: &egui::Context) {
@@ -620,35 +621,9 @@ impl Studio {
                 self.call("set_key", json!({"root": root, "scale": scale}));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // MCP server badge
-                let (r, _) = ui.allocate_exact_size(Vec2::new(214.0, 26.0), Sense::hover());
-                let t = ui.input(|i| i.time) as f32;
-                let pulse = 0.55 + 0.45 * (t * 2.5).sin().abs();
-                let col = if self.server_ok { GOOD } else { HOT };
-                ui.painter().rect_filled(r, 13.0, col.gamma_multiply(0.12));
-                ui.painter().circle_filled(
-                    Pos2::new(r.left() + 14.0, r.center().y),
-                    4.5,
-                    col.gamma_multiply(pulse),
-                );
-                ui.painter().text(
-                    Pos2::new(r.left() + 26.0, r.center().y),
-                    Align2::LEFT_CENTER,
-                    if self.server_ok {
-                        format!("PORT {}", self.listen.rsplit(':').next().unwrap_or(""))
-                    } else {
-                        "OFFLINE".into()
-                    },
-                    FontId::proportional(11.5),
-                    col,
-                );
-                ui.painter().text(
-                    Pos2::new(r.right() - 12.0, r.center().y),
-                    Align2::RIGHT_CENTER,
-                    format!("{} tools", crate::tools::registry().len()),
-                    FontId::proportional(10.5),
-                    DIM,
-                );
+                if ui.button("About").clicked() {
+                    self.show_about = !self.show_about;
+                }
                 ui.add_space(6.0);
                 if ui.button("Render WAV").on_hover_text("Cmd+R").clicked() {
                     self.render_wav();
@@ -1010,7 +985,7 @@ impl Studio {
     }
 
     // ---------------- inspector ----------------
-    fn inspector(&mut self, ui: &mut egui::Ui, p: &Project, rev: u64, log: &[LogEntry]) {
+    fn inspector(&mut self, ui: &mut egui::Ui, p: &Project, rev: u64, log: &(Vec<String>, Vec<String>)) {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             if let Some(t) = p.tracks.get(self.selected) {
                 let color = track_color(&t.name, t.instrument.kind_name());
@@ -1140,27 +1115,26 @@ impl Studio {
             }
             ui.add_space(8.0);
             card().show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("ACTIVITY").size(10.5).color(DIM).strong());
-                });
-                for e in log.iter().take(9) {
-                    ui.horizontal(|ui| {
-                        let (col, tag) = match e.source.as_str() {
-                            "ai" | "mcp" => (ACCENT, "EXT"),
-                            "you" => (ACCENT2, "YOU"),
-                            _ => (DIM, "SYS"),
-                        };
-                        let (r, _) = ui.allocate_exact_size(Vec2::new(30.0, 16.0), Sense::hover());
-                        ui.painter().rect_filled(r, 4.0, col.gamma_multiply(0.25));
-                        ui.painter().text(r.center(), Align2::CENTER_CENTER, tag, FontId::proportional(9.5), col);
-                        ui.label(RichText::new(&e.tool).monospace().size(11.5).color(if e.ok { TEXT } else { HOT }));
-                        let budget = ((236.0 - e.tool.len() as f32 * 7.2) / 5.6).max(6.0) as usize;
-                        let mut s: String = e.summary.chars().take(budget).collect();
-                        if e.summary.chars().count() > budget {
-                            s.push('…');
-                        }
-                        ui.label(RichText::new(s).size(10.5).color(DIM));
-                    });
+                ui.label(RichText::new("HISTORY").size(10.5).color(DIM).strong());
+                let (done, undone) = log;
+                if done.is_empty() && undone.is_empty() {
+                    ui.label(RichText::new("No changes yet").size(11.5).color(DIM));
+                }
+                // undone steps (redo brings them back), farthest first, dimmed
+                let skip = undone.len().saturating_sub(4);
+                for (i, l) in undone.iter().enumerate().skip(skip) {
+                    let steps = undone.len() - i;
+                    let r = ui.add(egui::Label::new(RichText::new(l).size(11.5).color(DIM).italics()).sense(Sense::click()).truncate());
+                    if r.on_hover_text("Redo up to here").clicked() {
+                        self.call("redo", json!({"steps": steps}));
+                    }
+                }
+                for (k, l) in done.iter().enumerate().take(9) {
+                    let col = if k == 0 { TEXT } else { TEXT.gamma_multiply(0.8) };
+                    let r = ui.add(egui::Label::new(RichText::new(l).size(11.5).color(col)).sense(Sense::click()).truncate());
+                    if k > 0 && r.on_hover_text("Go back to this step").clicked() {
+                        self.call("undo", json!({"steps": k}));
+                    }
                 }
             });
         });
@@ -1230,6 +1204,23 @@ impl eframe::App for Studio {
         // a connected controller is polled every few ms so playing feels live
         ctx.request_repaint_after(std::time::Duration::from_millis(if midi_live { 5 } else { 250 }));
         let (p, rev, log, undo) = self.snapshot();
+        if self.show_about {
+            let mut open = true;
+            egui::Window::new("About Beatbox Studio")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("Beatbox Studio {}", env!("CARGO_PKG_VERSION")));
+                    let port = self.listen.rsplit(':').next().unwrap_or("").to_string();
+                    ui.label(if self.server_ok {
+                        format!("Remote control on port {port}")
+                    } else {
+                        "Remote control is off".to_string()
+                    });
+                });
+            self.show_about = open;
+        }
         if self.pattern >= p.patterns.len() {
             self.pattern = 0;
         }

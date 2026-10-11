@@ -910,17 +910,44 @@ pub(crate) fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "undo",
-            description: "Undo the last change.",
+            description: "Undo the last change, or the last `steps` changes.",
             mutates: false,
-            schema: || obj(json!({}), &[]),
-            run: |e, _| Ok(json!({"undone": e.undo(), "remaining": e.undo_depth().0})),
+            schema: || obj(json!({"steps": {"type": "integer", "minimum": 1, "maximum": 100, "description": "How many changes to undo (default 1)."}}), &[]),
+            run: |e, a| {
+                let n = a.get("steps").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 100);
+                let mut done = 0;
+                while done < n && e.undo() {
+                    done += 1;
+                }
+                Ok(json!({"undone": done > 0, "steps": done, "remaining": e.undo_depth().0}))
+            },
         },
         Tool {
             name: "redo",
-            description: "Redo the last undone change.",
+            description: "Redo the last undone change, or the next `steps` undone changes.",
             mutates: false,
-            schema: || obj(json!({}), &[]),
-            run: |e, _| Ok(json!({"redone": e.redo(), "remaining": e.undo_depth().1})),
+            schema: || obj(json!({"steps": {"type": "integer", "minimum": 1, "maximum": 100, "description": "How many undone changes to redo (default 1)."}}), &[]),
+            run: |e, a| {
+                let n = a.get("steps").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 100);
+                let mut done = 0;
+                while done < n && e.redo() {
+                    done += 1;
+                }
+                Ok(json!({"redone": done > 0, "steps": done, "remaining": e.undo_depth().1}))
+            },
+        },
+        Tool {
+            name: "history",
+            description: "The change history in plain words (\"Added clip · Drums · bar 5\"): `done` lists changes undo can take back, newest first; `undone` lists changes redo can bring back, the next redo last. undo/redo with `steps` jump to any line.",
+            mutates: false,
+            schema: || obj(json!({"limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Most lines per list (default 20)."}}), &[]),
+            run: |e, a| {
+                let n = a.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).clamp(1, 100) as usize;
+                let (done, undone) = e.history();
+                let ul = undone.len();
+                let undone: Vec<String> = undone.into_iter().skip(ul.saturating_sub(n)).collect();
+                Ok(json!({"done": done.into_iter().take(n).collect::<Vec<_>>(), "undone": undone, "can_undo": e.undo_depth().0, "can_redo": e.undo_depth().1}))
+            },
         },
         // ----- tracks -----
         Tool {

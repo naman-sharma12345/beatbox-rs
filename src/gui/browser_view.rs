@@ -384,7 +384,7 @@ impl Studio {
                     if !self.browser.url_name.trim().is_empty() {
                         args["name"] = json!(self.browser.url_name.trim());
                     }
-                    if ui.add_enabled(ready, egui::Button::new("IMPORT").small()).on_hover_text(format!("import_from_url {args}")).clicked() {
+                    if ui.add_enabled(ready, egui::Button::new("IMPORT").small()).on_hover_text("Import the audio at this link").clicked() {
                         job = Some((String::from("import"), "import_from_url", args.clone()));
                     }
                     let mut a2 = args.clone();

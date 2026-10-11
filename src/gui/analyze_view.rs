@@ -354,7 +354,7 @@ impl Studio {
             }
             let args = b.to_json(bpm);
             let has = args["parts"].as_array().is_some_and(|p| !p.is_empty());
-            if ui.add_enabled(ready && has, egui::Button::new("BUILD SONG").small()).on_hover_text(format!("arrange_transcription {args}")).clicked() {
+            if ui.add_enabled(ready && has, egui::Button::new("BUILD SONG").small()).on_hover_text("Build a song from the transcribed parts").clicked() {
                 out = Some(args);
             }
         });
@@ -440,19 +440,19 @@ impl Studio {
                     if self.analyze.reattacks {
                         ui.add(egui::Slider::new(&mut self.analyze.reattack_delta, 0.02..=0.3).text("attack threshold")).on_hover_text("lower finds softer re-picks");
                     }
-                    if ui.add_enabled(ready, egui::Button::new("CHORDS + KEY").small()).on_hover_text(format!("transcribe_chords {args}")).clicked() {
+                    if ui.add_enabled(ready, egui::Button::new("CHORDS + KEY").small()).on_hover_text("Find the chords and key of this recording").clicked() {
                         job = Some(("transcribe_chords", args.clone()));
                     }
-                    if ui.add_enabled(ready, egui::Button::new("RIFF / MELODY TO MIDI").small()).on_hover_text(format!("transcribe_melody {args}")).clicked() {
+                    if ui.add_enabled(ready, egui::Button::new("RIFF / MELODY TO MIDI").small()).on_hover_text("Turn the riff or melody into notes").clicked() {
                         job = Some(("transcribe_melody", args.clone()));
                     }
-                    if ui.add_enabled(ready, egui::Button::new("PICKED GUITAR TO MIDI").small()).on_hover_text(format!("transcribe_melody {args} mode:picked (one note per pluck: arpeggios)")).clicked() {
+                    if ui.add_enabled(ready, egui::Button::new("PICKED GUITAR TO MIDI").small()).on_hover_text("Turn picked guitar into notes, one note per pluck (arpeggios)").clicked() {
                         let mut a = args.clone();
                         a["mode"] = json!("picked");
                         a["name"] = json!("picked");
                         job = Some(("transcribe_melody", a));
                     }
-                    if ui.add_enabled(ready, egui::Button::new("EFFECTS").small()).on_hover_text(format!("detect_fx {args}")).clicked() {
+                    if ui.add_enabled(ready, egui::Button::new("EFFECTS").small()).on_hover_text("Hear which effects are on the recording").clicked() {
                         job = Some(("detect_fx", args.clone()));
                     }
                 });

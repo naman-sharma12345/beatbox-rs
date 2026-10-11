@@ -95,6 +95,9 @@ pub struct Engine {
     pub bank: SampleBank,
     undo: Vec<Project>,
     redo: Vec<Project>,
+    /// Plain-language name of each undo / redo step, in lockstep with them.
+    undo_labels: Vec<String>,
+    redo_labels: Vec<String>,
     pub workdir: PathBuf,
     /// Bumped on every successful mutation (the GUI watches this).
     pub revision: u64,
@@ -124,6 +127,8 @@ impl Engine {
             snapshots: Vec::new(),
             bank: SampleBank::default(),
             undo: Vec::new(),
+            undo_labels: Vec::new(),
+            redo_labels: Vec::new(),
             redo: Vec::new(),
             workdir,
             revision: 0,
@@ -199,10 +204,12 @@ impl Engine {
                             }
                         }
                         self.undo.push(s);
+                        self.undo_labels.push(crate::history::label(name, args));
                         if self.undo.len() > MAX_UNDO {
                             self.undo.remove(0);
                         }
                         self.redo.clear();
+                        self.align_labels();
                         self.revision += 1;
                     }
                 }
@@ -336,10 +343,36 @@ impl Engine {
         }
     }
 
+    /// Keep the step names the same length as the steps (oldest dropped first).
+    fn align_labels(&mut self) {
+        while self.undo_labels.len() > self.undo.len() {
+            self.undo_labels.remove(0);
+        }
+        while self.undo_labels.len() < self.undo.len() {
+            self.undo_labels.insert(0, "Change".into());
+        }
+        while self.redo_labels.len() > self.redo.len() {
+            self.redo_labels.remove(0);
+        }
+        while self.redo_labels.len() < self.redo.len() {
+            self.redo_labels.insert(0, "Change".into());
+        }
+    }
+
+    /// The change history as a person reads it: steps that can be undone,
+    /// newest first, and steps that were undone and can be redone, the
+    /// next redo last (so the list reads top to bottom, newest to oldest).
+    pub fn history(&self) -> (Vec<String>, Vec<String>) {
+        (self.undo_labels.iter().rev().cloned().collect(), self.redo_labels.clone())
+    }
+
     pub fn undo(&mut self) -> bool {
         if let Some(prev) = self.undo.pop() {
             let cur = std::mem::replace(&mut self.project, prev);
             self.redo.push(cur);
+            let l = self.undo_labels.pop().unwrap_or_else(|| "Change".into());
+            self.redo_labels.push(l);
+            self.align_labels();
             self.revision += 1;
             true
         } else {
@@ -351,6 +384,9 @@ impl Engine {
         if let Some(next) = self.redo.pop() {
             let cur = std::mem::replace(&mut self.project, next);
             self.undo.push(cur);
+            let l = self.redo_labels.pop().unwrap_or_else(|| "Change".into());
+            self.undo_labels.push(l);
+            self.align_labels();
             self.revision += 1;
             true
         } else {
@@ -368,7 +404,9 @@ impl Engine {
         p.ensure_fx_ids();
         let old = std::mem::replace(&mut self.project, p);
         self.undo.push(old);
+        self.undo_labels.push("Opened project".into());
         self.redo.clear();
+        self.align_labels();
         self.revision += 1;
         let errs = self.bank.sync(&self.project.samples);
         for e in errs {

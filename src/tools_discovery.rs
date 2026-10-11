@@ -26,7 +26,7 @@ pub const COMPACT: &[&str] = &[
     "make_beat", "produce_song",
     "add_track", "add_notes", "get_pattern", "set_mixer", "add_effect", "tweak_effect",
     "set_tempo", "set_key", "list_ids", "lookup_id",
-    "render", "export_audio", "undo", "redo",
+    "render", "export_audio", "undo", "redo", "history",
 ];
 
 /// The compact tool list in MCP `tools/list` shape.

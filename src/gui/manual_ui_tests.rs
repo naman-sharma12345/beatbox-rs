@@ -67,12 +67,19 @@ fn is_ident(s: &str) -> bool {
 
 #[test]
 fn gui_text_has_no_ai_wording() {
-    let banned = ["ai", "assistant", "generate", "generated", "generates", "generating", "generator", "smart", "prompt", "critique", "lyrics", "magic", "copilot", "llm", "gpt", "mcp"];
+    let banned = crate::gui_words::BANNED;
     let mut bad = Vec::new();
     for (file, src) in SOURCES {
+        // a file's own tests are not on screen
+        let src = src.split("#[cfg(test)]").next().unwrap_or(src);
         for (line, lit) in literals(src) {
             // tool names and JSON keys are identifiers, not words a user reads
             if is_ident(&lit) {
+                continue;
+            }
+            // default file names (a saved project, a part file) are names, not wording
+            let is_file = lit.contains('.') && !lit.contains(' ') && lit.chars().all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c));
+            if is_file {
                 continue;
             }
             let low = lit.to_lowercase();
@@ -83,6 +90,47 @@ fn gui_text_has_no_ai_wording() {
         }
     }
     assert!(bad.is_empty(), "AI wording in the GUI:\n{}", bad.join("\n"));
+}
+
+/// The studio never shows its plumbing: no call names or raw arguments in
+/// the history panel, no server port or call count in the top bar (the port
+/// lives in About), no YOU / SYS / EXT source tags.
+#[test]
+fn gui_shows_no_plumbing() {
+    for (file, src) in SOURCES {
+        let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        for needle in ["{args}\")", "{args} ", "registry().len()", "tools::registry()", "e.tool", ".summary", "e.source", "\"YOU\"", "\"SYS\"", "\"EXT\"", "\"PORT", "ACTIVITY", "to_string_pretty(", "summarize_args"] {
+            assert!(!code.contains(needle), "{file} shows plumbing: {needle}");
+        }
+    }
+    // the port appears only inside the About window
+    let src = include_str!("mod.rs");
+    let about = src.find("About Beatbox Studio").expect("About window");
+    for (i, _) in src.match_indices("rsplit(':')") {
+        assert!(i > about && i - about < 800, "port shown outside About");
+    }
+}
+
+#[test]
+fn history_panel_reads_plainly() {
+    let mut e = crate::Engine::new(std::env::temp_dir());
+    let _ = e.call_from("set_tempo", &serde_json::json!({"bpm": 96}), "you");
+    let _ = e.call_from("add_track", &serde_json::json!({"name": "drums", "preset": "kick"}), "you");
+    let (done, _) = e.history();
+    assert!(!done.is_empty());
+    for l in &done {
+        assert!(!l.contains(['{', '"', '_', ':']), "{l}");
+        let low = l.to_lowercase();
+        assert!(!low.split(|c: char| !c.is_alphanumeric()).any(|w| crate::gui_words::BANNED.contains(&w)), "{l}");
+    }
+    assert_eq!(done[0], "Added track · drums");
+    // undo two steps from the panel, then redo one
+    e.call_from("undo", &serde_json::json!({"steps": 2}), "you").unwrap();
+    let (d2, u2) = e.history();
+    assert_eq!(u2.len(), 2);
+    assert_eq!(d2.len(), done.len() - 2);
+    e.call_from("redo", &serde_json::json!({"steps": 1}), "you").unwrap();
+    assert_eq!(e.history().0[0], "Tempo · 96 BPM");
 }
 
 #[test]

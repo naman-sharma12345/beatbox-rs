@@ -11,6 +11,8 @@
 )]
 
 pub mod analysis;
+pub mod gui_words;
+pub mod history;
 pub mod audio_edit;
 pub mod automation;
 pub mod blind_ab;
