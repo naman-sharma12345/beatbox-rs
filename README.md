@@ -11,7 +11,7 @@
 | | Typical DAW | Beatbox |
 |---|---|---|
 | Model control | none / plugins | 256 MCP tools, every feature; `batch` makes 50 edits one atomic undo step |
-| Instruments | ship with sample packs | real recorded instruments on demand: a General MIDI SoundFont (GeneralUser GS, ~260 instruments), 209 CC0 / CC BY SFZ instruments (electric guitars, basses, acoustic kits, pianos, strings) and VSCO 2 CE orchestral packs, fetched with checksums; plus modelled piano/ensembles and synths |
+| Instruments | ship with sample packs | real recorded instruments on demand: a General MIDI SoundFont (GeneralUser GS, ~260 instruments), 260 CC0 / CC BY multisampled instruments (electric guitars, basses, acoustic kits, grand and upright pianos, FM keys, organs, sax, harmonica, mallets, harps, world percussion, tabla, harmonium) and VSCO 2 CE orchestral packs, fetched with checksums; plus any sound from the web (`import_from_url`); plus modelled piano/ensembles and synths |
 | Feedback loop | your ears | `analyze_mix`: LUFS, true peak, spectrum balance, stereo, masking, 0-100 score + fixes |
 | Vocals | plugins | channel strip, neural noise removal checked by a speech-quality score, tone matching, flex-time alignment, seamless edits |
 | Trying ideas | save-as copies | `snapshot` A/B variants, `diff_project` structured diffs, `compare_variants` renders and scores each |
@@ -35,10 +35,13 @@ All screenshots are the real studio rendering a real project (`screenshot` tool,
 ## Real recorded instruments
 
 - **SoundFont player**: a `soundfont` instrument plays SF2 multisamples (rustysynth) in stereo with the font's own panning. `load_instrument {track, instrument:'clean_electric_guitar'}` creates or swaps a track; curated names cover guitars (clean, jazz, muted, overdriven, acoustic, nylon), basses (finger, pick, fretless, upright), pianos, strings, brass, winds, choir and GM drum kits, plus one-drum tracks (`kick`, `snare`, `closed_hat`, `open_hat`, toms, `crash`, `ride`, `tambourine`, `shaker`). `list_instruments` shows every preset; `preview_instrument` renders a short phrase.
-- **SFZ instruments**: `search_instruments {query, family, license}` searches the catalog (333 entries); `load_instrument {track, catalog_id}` downloads just the samples one program needs (pinned to a commit, checked against git blob ids, `max_mb` / `max_rr` caps) and builds a multisample track (key zones x velocity layers x round robins). `add_multisample_track {sfz}` loads any local SFZ.
+- **SFZ instruments**: `search_instruments {query, family, genre, max_mb, license}` searches the catalog (280 entries; families include guitar, bass, drums, percussion, piano, keys, mallets, strings, brass, winds, choir, world; genres such as lofi, indie, jazz, bollywood, classical_indian, latin, afro, cinematic) and `audition_instrument {catalog_id}` renders a 4 s preview (a groove for kits, an arpeggio and chord otherwise) without touching the project; `load_instrument {track, catalog_id}` downloads just the samples one program needs (pinned to a commit, checked against git blob ids, `max_mb` / `max_rr` caps) and builds a multisample track (key zones x velocity layers x round robins). `add_multisample_track {sfz}` loads any local SFZ.
 - **Library**: everything lands in `~/.beatbox/library`, never in the project or git. `list_installed`, `remove_instrument`, `cache_limit_mb` (default 1500 MB, least-recently-used eviction). Each catalog entry carries its licence; only CC0, CC BY and MIT-style sources are listed.
 - **Amp and cabinet**: `amp_sim` (clean / crunch / lead / bass preamp, tone stack, power amp, modelled 1x12 / 2x12 / 4x12 / bass 4x10 cabinets, level-matched) and `cab_ir` for impulse-response cabinets. `convolution` takes `ir_path` for real recorded rooms, or synthesizes room / hall / plate / chamber / spring / cathedral IRs.
-- **Next**: `import_from_url` (any audio, SF2, SFZ or archive from the web), a library browser panel in the studio.
+- **Catalog sources**: the sfzinstruments collection (Karoryfer, DrumGizmo, Virtuosity and more), the Versilian Community Sample Library (VCSL, CC0: Steinway and Kawai grands, Yamaha and Knight uprights, TX81Z FM keys, harpsichords, pipe organ, tenor sax, harmonicas, recorders, harps, kalimba, mbira, balafon, marimba, vibraphone, an acoustic drum kit and a world-percussion kit with darbuka, cajon, frame drum, congas and bongos), the Euterpea Studio harmonium (CC0) and a 26-stroke tabla set (CC0, Freesound). Programs without an .sfz are mapped from their file names and every file is pinned (git blob id or sha256).
+- **Anything from the web**: `import_from_url {url}` downloads a WAV/AIFF/FLAC/MP3/OGG (sample), an SF2 (SoundFont track), or a zip/tar.gz (unpacked safely: confined paths, size caps, nothing executable), then loads its SFZ as a multisample track, its one-shots as a kit by drum name, or note-named files as a multisample. `import_from_page {url}` lists the sound links on a page; `freesound_search` / `freesound_fetch` search and pull Freesound sounds (CC0 / CC BY by default; needs `BEATBOX_FREESOUND_KEY`). Every import is recorded in `~/.beatbox/library/sources.json` (URL, page, licence, sha256); `list_imports` shows them and `export_credits` prints the credits a project needs.
+- **Disk guard**: downloads refuse to leave less than `BEATBOX_MIN_FREE_MB` (default 2048) free.
+- **Next**: a library browser panel in the studio.
 
 ## Vocal tools
 
@@ -113,7 +116,7 @@ Add to any MCP client:
 
 Then ask: *"Make a moody indie track at 117 BPM with a clean electric guitar, a finger bass and a real drum kit, put my vocal on it, check the mix and fix whatever it complains about."*
 
-Optional environment: `FREESOUND_API_KEY` (free at freesound.org/apiv2/apply) for Freesound search, `BEATBOX_PYTHON` (a python with numpy + onnxruntime) for `score_voice_quality`, `BEATBOX_LIBRARY` to move the instrument library, `BEATBOX_GITHUB_TOKEN` to raise the rate limit for checked SFZ downloads.
+Optional environment: `BEATBOX_FREESOUND_KEY` (or `FREESOUND_API_KEY`; free at freesound.org/apiv2/apply) for Freesound search, `BEATBOX_MIN_FREE_MB` for the download disk guard, `BEATBOX_PYTHON` (a python with numpy + onnxruntime) for `score_voice_quality`, `BEATBOX_LIBRARY` to move the instrument library, `BEATBOX_GITHUB_TOKEN` to raise the rate limit for checked SFZ downloads.
 
 
 ## Why Beatbox beats FL Studio for AI

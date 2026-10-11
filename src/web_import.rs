@@ -21,8 +21,12 @@ fn slug(s: &str) -> String {
     t.chars().take(48).collect()
 }
 
+fn local_url(url: &str) -> bool {
+    url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost")
+}
+
 fn check_url(url: &str) -> Result<()> {
-    let local = url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost");
+    let local = local_url(url);
     if !(url.starts_with("https://") || local) {
         bail!("only https:// URLs are imported");
     }
@@ -39,6 +43,9 @@ pub fn download(url: &str, max_mb: u64) -> Result<(Vec<u8>, String)> {
     if let Some(len) = resp.header("Content-Length").and_then(|v| v.parse::<u64>().ok()) {
         if len > cap {
             bail!("{url} is {:.0} MB, over max_mb {max_mb}", len as f64 / 1e6);
+        }
+        if !local_url(url) {
+            crate::sound_catalog::ensure_free(len * 3)?;
         }
     }
     let mut buf = Vec::new();
@@ -402,7 +409,7 @@ pub fn import_url(e: &mut crate::engine::Engine, a: &Value) -> Result<Value> {
 // ------------------------------------------------------------ freesound
 
 fn freesound_key() -> Result<String> {
-    std::env::var("BEATBOX_FREESOUND_KEY").ok().filter(|k| !k.trim().is_empty()).ok_or_else(|| anyhow!("set BEATBOX_FREESOUND_KEY to a freesound.org API key (free at freesound.org/apiv2/apply) to search Freesound; import_from_url works without one"))
+    std::env::var("BEATBOX_FREESOUND_KEY").or_else(|_| std::env::var("FREESOUND_API_KEY")).ok().filter(|k| !k.trim().is_empty()).ok_or_else(|| anyhow!("set BEATBOX_FREESOUND_KEY to a freesound.org API key (free at freesound.org/apiv2/apply) to search Freesound; import_from_url works without one"))
 }
 
 fn freesound_base() -> String {

@@ -65,4 +65,8 @@ SOFTWARE.
 - **nnnoiseless** (Rust crate, BSD-3-Clause; a port of Xiph's RNNoise, BSD-3-Clause): fallback backend of `denoise_voice`.
 - **DeepFilterNet 3** (`deep-filter` v0.5.6 release binary, MIT OR Apache-2.0, Hendrik Schröter), fetched once by `denoise_voice` and sha256-checked; it is run as a separate program and not redistributed here. https://github.com/Rikorose/DeepFilterNet
 - **DNSMOS P.835** (`sig_bak_ovr.onnx`, MIT, Microsoft DNS Challenge), fetched once by `scripts/dnsmos.py` (embedded in the binary) and sha256-checked, for `score_voice_quality`. https://github.com/microsoft/DNS-Challenge
+- **Versilian Community Sample Library (VCSL)** (Sam Gossner and contributors), CC0 1.0. Catalog programs `vcsl_*` fetch individual files from github.com/sgossner/VCSL at commit c1ea7bc, each checked against its git blob id; the key / velocity / round-robin mapping is generated from the file names. https://github.com/sgossner/VCSL
+- **Euterpea Studio Harmonium** (Evan Yerburgh; recorded at the Euterpea Studio, Yale Department of Computer Science), CC0 1.0. Catalog program `euterpea_harmonium`, files from commit a7cb611, blob-id checked. https://github.com/evanyerburgh/euterpea-harmonium
+- **Tabla bols** pack by mmiron on Freesound (pack 8162), CC0 1.0. Catalog program `mmiron_tabla_bols` downloads Freesound's high-quality previews, each pinned by sha256. https://freesound.org/people/mmiron/packs/8162/
+- **zip** (MIT), **tar** (MIT OR Apache-2.0), **flate2** (MIT OR Apache-2.0) Rust crates: archive unpacking for `import_from_url`.
 - The sound catalog (`src/sound_catalog.json`) is metadata only; each entry carries its own licence and source, and only CC0 / CC BY / MIT-style items are listed.

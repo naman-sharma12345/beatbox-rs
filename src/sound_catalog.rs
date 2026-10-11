@@ -47,6 +47,45 @@ pub struct Entry {
     pub sfz: String,
     #[serde(default)]
     pub repo_bytes: u64,
+    /// Pinned-file programs (repos with samples but no .sfz, e.g. VCSL):
+    /// the mapping as SFZ text (sample paths relative to the repo root;
+    /// `sfz` is then a virtual name) and every file it may use as
+    /// [path, git blob sha1, bytes] (a fourth element, a direct https URL,
+    /// makes the second a sha256 of that download instead).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sfz_text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<Vec<Value>>,
+    /// Styles this sound suits (rap, lofi, indie, rock, jazz, orchestral,
+    /// bollywood, classical_indian, edm ...), for search_instruments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub genres: Vec<String>,
+}
+
+/// Free space where the library lives, in MB (None when unknown).
+pub fn free_mb() -> Option<u64> {
+    let d = crate::soundfont::library_dir();
+    let mut p = d.as_path();
+    while !p.exists() {
+        p = p.parent()?;
+    }
+    let out = std::process::Command::new("df").arg("-Pk").arg(p).output().ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    let line = s.lines().nth(1)?;
+    line.split_whitespace().nth(3)?.parse::<u64>().ok().map(|k| k / 1024)
+}
+
+/// Refuse a download that would leave less than BEATBOX_MIN_FREE_MB
+/// (default 2048) free on the library's disk.
+pub fn ensure_free(need_bytes: u64) -> Result<()> {
+    let min: u64 = std::env::var("BEATBOX_MIN_FREE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(2048);
+    if let Some(f) = free_mb() {
+        let need = need_bytes / 1_000_000;
+        if f < min + need {
+            bail!("not enough disk: {f} MB free, this needs {need} MB and {min} MB must stay free (BEATBOX_MIN_FREE_MB; remove_instrument frees space)");
+        }
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -78,6 +117,9 @@ pub fn entries() -> Vec<Entry> {
             branch: String::new(),
             sfz: String::new(),
             repo_bytes: 0,
+            sfz_text: String::new(),
+            files: Vec::new(),
+            genres: vec!["orchestral".into(), "cinematic".into()],
         });
     }
     v
@@ -213,6 +255,7 @@ pub fn fetch(e: &Entry) -> Result<PathBuf> {
         touch(&p);
         return Ok(p);
     }
+    ensure_free(e.bytes)?;
     let resp = ureq::get(&e.url).timeout(std::time::Duration::from_secs(900)).call().map_err(|er| anyhow!("download {}: {er}", e.id))?;
     let mut buf = Vec::with_capacity(e.bytes as usize);
     std::io::Read::read_to_end(&mut resp.into_reader(), &mut buf)?;
@@ -235,8 +278,8 @@ fn entry_json(e: &Entry) -> Value {
         "sfz_git" => json!(crate::soundfont::library_dir().join(e.repo.replace('/', "__")).join(dir_of(&e.sfz)).join(format!("{}.beatbox_flat.sfz", e.sfz.rsplit('/').next().unwrap_or("").trim_end_matches(".sfz"))).is_file()),
         _ => json!(!e.file.is_empty() && path_of(e).is_file()),
     };
-    let mb = if e.format == "sfz_git" { Value::Null } else { json!((e.bytes as f64 / 1e6 * 10.0).round() / 10.0) };
-    json!({"id": e.id, "name": e.name, "family": e.family, "tags": e.tags, "format": e.format, "license": e.license, "source": e.source, "mb": mb, "status": e.status, "installed": inst})
+    let mb = if e.bytes == 0 { Value::Null } else { json!((e.bytes as f64 / 1e6 * 10.0).round() / 10.0) };
+    json!({"id": e.id, "name": e.name, "family": e.family, "tags": e.tags, "genres": e.genres, "format": e.format, "license": e.license, "source": e.source, "mb": mb, "status": e.status, "installed": inst})
 }
 
 
@@ -380,7 +423,11 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
     // API is unreachable (rate limit, offline) files still come from raw URLs
     // pinned to the commit, which cannot change.
     let tf = dir.join("tree.json");
-    let tj: Option<Value> = match std::fs::read(&tf).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).filter(|v| v["tree"].is_array()) {
+    let pinned = !e.files.is_empty();
+    let tj: Option<Value> = if pinned {
+        Some(json!({"tree": e.files.iter().map(|f| json!({"type": "blob", "path": f.first(), "sha": f.get(1), "size": f.get(2), "url": f.get(3)})).collect::<Vec<_>>()}))
+    } else {
+        match std::fs::read(&tf).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).filter(|v| v["tree"].is_array()) {
         Some(v) => Some(v),
         None => {
             let url = format!("https://api.github.com/repos/{repo}/git/trees/{tree}?recursive=1");
@@ -399,13 +446,18 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
                 Err(_) => None,
             }
         }
+    }
     };
     let verified = tj.is_some();
     let mut blobs: std::collections::HashMap<String, (String, String, u64)> = std::collections::HashMap::new();
+    let mut direct: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if let Some(tj) = &tj {
         for it in tj["tree"].as_array().cloned().unwrap_or_default() {
             if it["type"] == "blob" {
                 let p = it["path"].as_str().unwrap_or("").to_string();
+                if let Some(u) = it["url"].as_str().filter(|u| u.starts_with("https://")) {
+                    direct.insert(p.to_lowercase(), u.to_string());
+                }
                 blobs.insert(p.to_lowercase(), (p, it["sha"].as_str().unwrap_or("").to_string(), it["size"].as_u64().unwrap_or(0)));
             }
         }
@@ -423,8 +475,17 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
         if local.is_file() && (size == 0 || std::fs::metadata(&local).map(|m| m.len()).unwrap_or(u64::MAX) == size) {
             return Ok(local);
         }
-        let data = http_bytes(&format!("https://raw.githubusercontent.com/{repo}/{tree}/{}", url_path(&rp)))?;
-        if verified && git_blob_sha1(&data) != sha {
+        let data = match direct.get(&rp.to_lowercase()) {
+            Some(u) => {
+                let d = http_bytes(u)?;
+                if crate::voice_ai::sha256_hex(&d) != sha {
+                    bail!("{rp}: download from {u} does not match its pinned sha256; not installed");
+                }
+                d
+            }
+            None => http_bytes(&format!("https://raw.githubusercontent.com/{repo}/{tree}/{}", url_path(&rp)))?,
+        };
+        if verified && sha.len() == 40 && git_blob_sha1(&data) != sha {
             bail!("{rp}: content does not match the pinned tree; not installed");
         }
         std::fs::create_dir_all(local.parent().unwrap())?;
@@ -433,6 +494,9 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
         Ok(local)
     };
     let flat = flatten_sfz(sfz, &mut |p| {
+        if pinned && !e.sfz_text.is_empty() && p == sfz {
+            return Ok(e.sfz_text.clone());
+        }
         let lp = get(p, &mut fetched)?;
         Ok(String::from_utf8_lossy(&std::fs::read(lp)?).to_string())
     })?;
@@ -446,6 +510,8 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
     need.sort();
     need.dedup();
     let total: u64 = need.iter().filter_map(|p| blobs.get(&p.to_lowercase()).map(|b| b.2)).sum();
+    let missing: u64 = need.iter().filter_map(|p| blobs.get(&p.to_lowercase())).filter(|b| !dir.join(&b.0).is_file()).map(|b| b.2).sum();
+    ensure_free(missing)?;
     if total > max_mb * 1_000_000 {
         bail!("{}: this program needs {:.0} MB of samples, over max_mb {max_mb}; pick a smaller program or raise max_mb", e.id, total as f64 / 1e6);
     }
@@ -466,22 +532,33 @@ pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "search_instruments",
-            description: "Search the sound catalog of real recorded instruments and impulse responses (permissive licences only: CC0, CC-BY, MIT-style): query matches name/tags, family filters (gm, guitar, bass, drums, piano, keys, strings, brass, winds, choir, orchestra, ir_room, ir_cab), license filters by substring (e.g. cc0). Returns ids for fetch_instrument / load_instrument, size, licence and whether each is installed.",
+            description: "Search the sound catalog of real recorded instruments and impulse responses (permissive licences only: CC0, CC-BY, MIT-style): query matches name/tags/genres, family filters (gm, guitar, bass, drums, percussion, piano, keys, mallets, strings, brass, winds, choir, world, synth, orchestra, ir_room, ir_cab), genre filters by style (lofi, indie, jazz, bollywood, classical_indian, cinematic ...), max_mb by download size, license by substring (e.g. cc0). Returns ids for fetch_instrument / load_instrument, size, licence and whether each is installed.",
             mutates: false,
-            schema: || obj(json!({"query": {"type": "string"}, "family": {"type": "string"}, "license": {"type": "string"}}), &[]),
+            schema: || obj(json!({"query": {"type": "string"}, "family": {"type": "string"}, "genre": {"type": "string", "description": "a style: rap, trap, lofi, pop, indie, rock, metal, jazz, blues, funk, soul, edm, house, ambient, cinematic, orchestral, classical, folk, world, bollywood, classical_indian, latin, afro, reggae, country, gospel"}, "license": {"type": "string"}, "max_mb": {"type": "number", "description": "only items whose download is at most this size (unknown sizes are kept)"}, "limit": {"type": "integer"}}), &[]),
             run: |_e, a| {
                 let q = s_opt(a, "query").map(|s| s.to_lowercase());
                 let fam = s_opt(a, "family").map(|s| s.to_lowercase());
                 let lic = s_opt(a, "license").map(|s| s.to_lowercase());
+                let genre = s_opt(a, "genre").map(|s| s.to_lowercase().replace([' ', '-'], "_"));
+                let max_mb = a.get("max_mb").and_then(|v| v.as_f64());
                 let all = entries();
-                let hits: Vec<Value> = all
+                let mut hits: Vec<Value> = all
                     .iter()
                     .filter(|e| fam.as_ref().map_or(true, |f| e.family.to_lowercase() == *f || e.tags.iter().any(|t| t.to_lowercase().contains(f.as_str()))))
                     .filter(|e| lic.as_ref().map_or(true, |l| e.license.to_lowercase().contains(l.as_str())))
-                    .filter(|e| q.as_ref().map_or(true, |q| q.split_whitespace().all(|w| e.name.to_lowercase().contains(w) || e.id.contains(w) || e.tags.iter().any(|t| t.to_lowercase().contains(w)))))
+                    .filter(|e| genre.as_ref().map_or(true, |g| e.genres.iter().any(|x| x.to_lowercase() == *g) || e.tags.iter().any(|t| t.to_lowercase().replace([' ', '-'], "_") == *g)))
+                    .filter(|e| max_mb.map_or(true, |m| e.bytes == 0 || e.bytes as f64 / 1e6 <= m))
+                    .filter(|e| q.as_ref().map_or(true, |q| q.split_whitespace().all(|w| e.name.to_lowercase().contains(w) || e.id.contains(w) || e.family.to_lowercase().contains(w) || e.genres.iter().any(|t| t.contains(w)) || e.tags.iter().any(|t| t.to_lowercase().contains(w)))))
                     .map(entry_json)
                     .collect();
-                Ok(json!({"catalog_size": all.len(), "matches": hits.len(), "results": hits}))
+                let n = hits.len();
+                if let Some(l) = a.get("limit").and_then(|v| v.as_u64()) {
+                    hits.truncate(l as usize);
+                }
+                let mut fams: Vec<String> = all.iter().map(|e| e.family.clone()).collect();
+                fams.sort();
+                fams.dedup();
+                Ok(json!({"catalog_size": all.len(), "matches": n, "results": hits, "families": fams, "audition": "audition_instrument {catalog_id} renders a 4 s preview to hear before loading"}))
             },
         },
         Tool {
@@ -544,11 +621,41 @@ mod tests {
         let ids: std::collections::HashSet<&str> = all.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids.len(), all.len(), "duplicate ids");
         for e in all.iter().filter(|e| e.format == "sfz_git") {
-            assert!(!e.repo.is_empty() && e.tree.len() == 40 && e.sfz.ends_with(".sfz"), "{}", e.id);
+            let direct = !e.files.is_empty() && e.files.iter().all(|f| f.len() == 4);
+            assert!(!e.repo.is_empty() && (e.tree.len() == 40 || direct) && e.sfz.ends_with(".sfz"), "{}", e.id);
         }
-        for fam in ["guitar", "bass", "drums", "piano", "strings"] {
+        // pinned-file programs: every region's sample is pinned, with a checksum
+        for e in all.iter().filter(|e| !e.sfz_text.is_empty()) {
+            let (regions, _) = crate::multisample::parse_sfz(&e.sfz_text).unwrap();
+            let regions = crate::multisample::playable_regions(regions);
+            assert!(!regions.is_empty(), "{}", e.id);
+            let pinned: std::collections::HashMap<String, &Vec<Value>> = e.files.iter().map(|f| (f[0].as_str().unwrap_or("").to_lowercase(), f)).collect();
+            for r in &regions {
+                let f = pinned.get(&r.sample.to_lowercase()).unwrap_or_else(|| panic!("{}: {} not pinned", e.id, r.sample));
+                let sha = f[1].as_str().unwrap_or("");
+                assert!(sha.len() == 40 || (sha.len() == 64 && f.len() == 4), "{}: {}", e.id, r.sample);
+            }
+            assert!(e.bytes > 0, "{}", e.id);
+        }
+        for fam in ["guitar", "bass", "drums", "piano", "strings", "percussion", "world", "mallets", "keys"] {
             assert!(all.iter().any(|e| e.family == fam), "no {fam}");
         }
+    }
+
+    #[test]
+    fn search_by_genre_family_and_size() {
+        let mut e = crate::engine::Engine::new(std::env::temp_dir().join("beatbox_catalog_search"));
+        let r = e.call("search_instruments", &json!({"genre": "bollywood", "query": "tabla"})).unwrap();
+        assert!(r["results"].as_array().unwrap().iter().any(|x| x["id"] == "mmiron_tabla_bols"), "{r}");
+        let r = e.call("search_instruments", &json!({"query": "harmonium"})).unwrap();
+        assert!(r["matches"].as_u64().unwrap() >= 1, "{r}");
+        let r = e.call("search_instruments", &json!({"family": "piano", "max_mb": 150})).unwrap();
+        for x in r["results"].as_array().unwrap() {
+            assert!(x["mb"].is_null() || x["mb"].as_f64().unwrap() <= 150.0, "{x}");
+        }
+        let r = e.call("search_instruments", &json!({"genre": "classical indian", "limit": 3})).unwrap();
+        assert!(r["matches"].as_u64().unwrap() >= 3 && r["results"].as_array().unwrap().len() == 3, "{r}");
+        assert!(free_mb().is_some());
     }
 
     #[test]
