@@ -4,7 +4,7 @@ What FL Studio gives a producer, tool by tool, and where beatbox stands. Every
 beatbox entry is an MCP tool (and most have a studio view), so an AI can do
 anything listed as **have**.
 
-**Score: 79 have, 6 partial, 6 missing of 91** (parity 79/91; counting partial as half: 82/91).
+**Score: 80 have, 5 partial, 6 missing of 91** (parity 80/91; counting partial as half: 82.5/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -93,7 +93,7 @@ hosting.
 | Mixing | Sidechain routing | have | sidechain source track |
 | Arrange | Pattern variants | have | add_pattern copy_from, vary_section, generate_variation |
 | Arrange | Transitions / risers / fills | have | add_transition, generate_fill, add_roll |
-| Arrange | Markers / time signature | partial | add_marker / list_markers / remove_marker (named song positions, section starts listed too, time-signature label as metadata); the renderer counts 4/4 |
+| Arrange | Markers / time signature | have | add_marker / list_markers / remove_marker (named song positions, section starts listed too); set_time_signature plays a pattern (or all) in 3/4, 6/8, 7/8, 5/4... (bar = numerator*16/denominator steps, notes refit to the new bar), bar numbers and the grid follow each pattern's meter, and export_click follows the song's meters and tempo automation |
 | Arrange | Tempo automation | have | add_tempo_point (jump or linear ramp at a beat/bar), tempo_ramp (glide between two bars in one call), list_tempo (points, section bpm and start times, song length), remove_tempo_point; notes, automation and audio clips follow the tempo curve |
 | Export | WAV / MP3 / FLAC | have | export_audio |
 | Export | Stems | have | export_stems |

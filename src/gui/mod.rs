@@ -20,7 +20,7 @@ mod widgets;
 use crate::analysis::{self, Report};
 use crate::engine::{Engine, LogEntry};
 use crate::instruments;
-use crate::project::{Project, STEPS_PER_BAR};
+use crate::project::Project;
 use crate::render::{self, Mix, RenderOptions};
 use crate::{fx, theory};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2};
@@ -787,7 +787,7 @@ impl Studio {
             let grid_left = ruler.left() + header_w;
             let cell = ((ruler.width() - header_w - 6.0) / steps as f32).max(4.0);
             for b in 0..pat.bars {
-                let x = grid_left + (b * STEPS_PER_BAR) as f32 * cell;
+                let x = grid_left + (b * pat.steps_per_bar()) as f32 * cell;
                 ui.painter().text(Pos2::new(x + 3.0, ruler.center().y), Align2::LEFT_CENTER, format!("{}", b + 1), FontId::monospace(11.0), DIM);
             }
             for (ti, t) in p.tracks.iter().enumerate() {
@@ -846,7 +846,7 @@ impl Studio {
                 } else {
                     // mini piano roll lane
                     for b in 0..=pat.bars {
-                        let x = grid.left() + (b * STEPS_PER_BAR) as f32 * cell;
+                        let x = grid.left() + (b * pat.steps_per_bar()) as f32 * cell;
                         painter.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.0_f32, LINE));
                     }
                     let (lo, hi) = notes.iter().fold((127u8, 0u8), |(l, h), n| (l.min(n.pitch), h.max(n.pitch)));

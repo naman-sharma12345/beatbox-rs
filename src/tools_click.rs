@@ -39,7 +39,71 @@ pub fn click_track(bpm: f32, bars: u32, beats_per_bar: u32, accent: bool) -> Vec
     out
 }
 
+/// A click track that follows the song itself: each pattern's time signature
+/// (accented bar lines, dotted quarters in 6/8) and the tempo automation,
+/// after `count_in` bars of the first pattern's meter at the song bpm.
+/// Returns (samples, seconds of count-in, bars).
+pub fn song_click(p: &crate::project::Project, count_in: u32, accent: bool) -> (Vec<f32>, f32, u32) {
+    let curve = crate::tempo_curve::TempoCurve::new(p);
+    let first = p.song_sections().first().and_then(|s| p.pattern_index(&s.pattern).ok()).map(|i| p.patterns[i].meter()).unwrap_or((4, 4));
+    let step_s = p.step_secs() as f64;
+    let ci_steps = count_in as f64 * crate::project::meter_steps(first) as f64;
+    let lead = ci_steps * step_s;
+    let mut hits: Vec<(f64, bool)> = Vec::new();
+    for b in 0..count_in {
+        for (s, down) in crate::project::meter_clicks(first) {
+            hits.push(((b * crate::project::meter_steps(first) + s) as f64 * step_s, down));
+        }
+    }
+    let mut off = 0u32;
+    let mut bars = 0u32;
+    for sec in p.song_sections() {
+        let Ok(pi) = p.pattern_index(&sec.pattern) else { continue };
+        let pat = &p.patterns[pi];
+        let (m, spb) = (pat.meter(), pat.steps_per_bar());
+        for _ in 0..sec.repeats.max(1) * pat.bars {
+            for (s, down) in crate::project::meter_clicks(m) {
+                hits.push((lead + curve.secs_at_step((off + s) as f64), down));
+            }
+            off += spb;
+            bars += 1;
+        }
+    }
+    let total = ((lead + curve.secs_at_step(off as f64)) * SR as f64) as usize + (0.05 * SR) as usize;
+    let mut out = vec![0.0f32; total];
+    for (t, down) in hits {
+        let b = blip(accent && down);
+        let at = (t * SR as f64).round() as usize;
+        for (j, v) in b.iter().enumerate() {
+            if at + j < out.len() {
+                out[at + j] += v;
+            }
+        }
+    }
+    (out, lead as f32, bars)
+}
+
 fn export_click(e: &mut Engine, a: &Value) -> Result<Value> {
+    // no explicit grid asked for: follow the song (meters + tempo automation)
+    if f_opt(a, "bpm").is_none() && f_opt(a, "bars").is_none() && f_opt(a, "beats_per_bar").is_none() {
+        let count_in = f_opt(a, "count_in_bars").unwrap_or(1.0).clamp(0.0, 8.0) as u32;
+        let (x, lead, bars) = song_click(&e.project, count_in, b_or(a, "accent", true));
+        let path = match s_opt(a, "path") {
+            Some(p) => e.resolve(&p),
+            None => e.renders_dir().join(format!("{}_click.wav", crate::samples::sample_name(&e.project.name))),
+        };
+        if let Some(d) = path.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        crate::render::write_wav(&path, &x, &x)?;
+        let meters: Vec<String> = e.project.patterns.iter().map(|p| { let (n, d) = p.meter(); format!("{}: {n}/{d}", p.name) }).collect();
+        return Ok(json!({
+            "path": path.to_string_lossy(), "follows": "song (time signatures + tempo automation)", "bars": bars,
+            "count_in_bars": count_in, "meters": meters, "tempo_points": e.project.tempo_points.len(),
+            "seconds": (x.len() as f32 / SR * 100.0).round() / 100.0, "song_starts_at_s": (lead * 1000.0).round() / 1000.0,
+            "note": "record against this; the song's beat 0 is after the count-in (song_starts_at_s)"
+        }));
+    }
     let bpm = f_opt(a, "bpm").map(|x| x as f32).unwrap_or(e.project.bpm);
     let song_bars = (e.project.song_steps() as f32 / 16.0).ceil().max(1.0) as u32;
     let count_in = f_opt(a, "count_in_bars").unwrap_or(1.0).clamp(0.0, 8.0) as u32;
@@ -69,7 +133,7 @@ fn export_click(e: &mut Engine, a: &Value) -> Result<Value> {
 pub fn tools() -> Vec<Tool> {
     vec![Tool {
         name: "export_click",
-        description: "Metronome: write a click track WAV in the project's tempo (or bpm) to record a vocal or instrument against: count_in_bars (default 1) before the song, bars (default the song's length), beats_per_bar (default 4), accented downbeats. Returns where the song's beat 0 falls (song_starts_at_s) so the take lines up with add_audio_clip.",
+        description: "Metronome: write a click track WAV to record a vocal or instrument against. With no bpm/bars/beats_per_bar it follows the song: every pattern's time signature (accented bar lines; dotted quarters in 6/8, 9/8, 12/8) and the tempo automation, after count_in_bars (default 1). With bpm/bars/beats_per_bar it writes a fixed grid instead. Returns where the song's beat 0 falls (song_starts_at_s) so the take lines up with add_audio_clip.",
         mutates: false,
         schema: || obj(json!({
             "path": {"type": "string", "description": "Output WAV (default renders/<project>_click_<bpm>bpm.wav)"},
@@ -103,5 +167,22 @@ mod tests {
         let r = e.call("export_click", &json!({"bars": 2, "count_in_bars": 1})).unwrap();
         assert!(r["seconds"].as_f64().unwrap() > 5.0);
         assert!(std::path::Path::new(r["path"].as_str().unwrap()).exists());
+    }
+
+    #[test]
+    fn song_click_follows_meter_and_tempo() {
+        let mut p = crate::project::Project::new("w", 120.0);
+        p.patterns[0].meter = Some((3, 4));
+        // 4 bars of 3/4 = 12 clicks, 4 accented; no count-in; 6 s at 120 bpm
+        let (x, lead, bars) = song_click(&p, 0, true);
+        assert_eq!((bars, lead), (4, 0.0));
+        let beat = (0.5 * SR) as usize;
+        let peak = |at: usize| x[at..at + 400].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak(0) > peak(beat) * 1.3 && peak(3 * beat) > peak(beat) * 1.3, "bar 2 starts on beat 3");
+        assert!((x.len() as f32 / SR - 6.05).abs() < 0.02);
+        // half tempo from beat 6: the song gets longer
+        p.tempo_points.push(crate::project::TempoPoint { beat: 6.0, bpm: 60.0, ramp: false });
+        let (y, _, _) = song_click(&p, 1, true);
+        assert!(y.len() > x.len() + (4.0 * SR) as usize);
     }
 }

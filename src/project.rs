@@ -195,6 +195,36 @@ pub struct Pattern {
     /// Notes per track, keyed by lowercase track name.
     #[serde(default)]
     pub clips: BTreeMap<String, Vec<Note>>,
+    /// Time signature [numerator, denominator] (default 4/4). A bar holds
+    /// numerator * 16 / denominator steps: 3/4 and 6/8 = 12, 7/8 = 14, 5/4 = 20.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meter: Option<(u32, u32)>,
+}
+
+/// Steps (16ths) in one bar of a meter.
+pub fn meter_steps(meter: (u32, u32)) -> u32 {
+    let (n, d) = (meter.0.clamp(1, 32), meter.1.clamp(1, 16));
+    (n * 16 / d).max(1)
+}
+
+/// Parse "7/8" into (7, 8): numerator 1-32, denominator 2, 4, 8 or 16.
+pub fn parse_meter(s: &str) -> Option<(u32, u32)> {
+    let (n, d) = s.trim().split_once('/')?;
+    let n: u32 = n.trim().parse().ok()?;
+    let d: u32 = d.trim().parse().ok()?;
+    ((1..=32).contains(&n) && matches!(d, 2 | 4 | 8 | 16)).then_some((n, d))
+}
+
+/// Click positions inside one bar, in steps from the bar start, and whether
+/// each is the downbeat: quarter-note meters click every beat, compound
+/// eighth meters (6/8, 9/8, 12/8) on each dotted quarter, other x/8 and x/16
+/// meters on every eighth / sixteenth.
+pub fn meter_clicks(meter: (u32, u32)) -> Vec<(u32, bool)> {
+    let (n, d) = (meter.0.clamp(1, 32), meter.1.clamp(1, 16));
+    let unit = (16 / d).max(1);
+    let step = if d == 8 && n % 3 == 0 && n > 3 { unit * 3 } else { unit };
+    let bar = meter_steps(meter);
+    (0..bar).step_by(step as usize).map(|s| (s, s == 0)).collect()
 }
 
 impl Pattern {
@@ -203,10 +233,18 @@ impl Pattern {
             name: name.to_string(),
             bars: bars.clamp(1, 64),
             clips: BTreeMap::new(),
+            meter: None,
         }
     }
+    /// Steps in one bar of this pattern (16 in 4/4).
+    pub fn steps_per_bar(&self) -> u32 {
+        self.meter.map(meter_steps).unwrap_or(STEPS_PER_BAR)
+    }
+    pub fn meter(&self) -> (u32, u32) {
+        self.meter.unwrap_or((4, 4))
+    }
     pub fn steps(&self) -> u32 {
-        self.bars * STEPS_PER_BAR
+        self.bars * self.steps_per_bar()
     }
     pub fn notes_mut(&mut self, track: &str) -> &mut Vec<Note> {
         self.clips.entry(track.to_lowercase()).or_default()
@@ -491,6 +529,43 @@ impl Project {
                     .map(|i| self.patterns[i].steps() * s.repeats)
             })
             .sum()
+    }
+
+    /// 1-based bar number (fractional) at a song beat, counting each
+    /// pattern's own bar length (3/4 bars are 3 beats long).
+    pub fn bar_at_beat(&self, beat: f32) -> f32 {
+        let mut b0 = 0.0f32;
+        let mut bar = 1.0f32;
+        for s in self.song_sections() {
+            let Ok(i) = self.pattern_index(&s.pattern) else { continue };
+            let pat = &self.patterns[i];
+            let bb = pat.steps_per_bar() as f32 / 4.0;
+            let span = bb * (pat.bars * s.repeats.max(1)) as f32;
+            if beat < b0 + span {
+                return bar + (beat - b0) / bb;
+            }
+            b0 += span;
+            bar += (pat.bars * s.repeats.max(1)) as f32;
+        }
+        bar + (beat - b0) / 4.0
+    }
+
+    /// Song beat at a 1-based bar (the inverse of bar_at_beat).
+    pub fn beat_at_bar(&self, bar: f32) -> f32 {
+        let mut b0 = 0.0f32;
+        let mut first = 1.0f32;
+        for s in self.song_sections() {
+            let Ok(i) = self.pattern_index(&s.pattern) else { continue };
+            let pat = &self.patterns[i];
+            let n = (pat.bars * s.repeats.max(1)) as f32;
+            let bb = pat.steps_per_bar() as f32 / 4.0;
+            if bar < first + n {
+                return b0 + (bar - first).max(0.0) * bb;
+            }
+            b0 += n * bb;
+            first += n;
+        }
+        b0 + (bar - first).max(0.0) * 4.0
     }
 
     pub fn song_beats(&self) -> f32 {

@@ -15,8 +15,8 @@ fn section_starts(e: &Engine) -> Vec<(String, f32)> {
     let mut v = Vec::new();
     for s in &p.arrangement {
         v.push((s.pattern.clone(), beat));
-        let bars = p.patterns.iter().find(|x| x.name == s.pattern).map(|x| x.bars).unwrap_or(4) as f32;
-        beat += bars * 4.0 * s.repeats.max(1) as f32;
+        let beats = p.patterns.iter().find(|x| x.name == s.pattern).map(|x| x.steps() as f32 / 4.0).unwrap_or(16.0);
+        beat += beats * s.repeats.max(1) as f32;
     }
     v
 }
@@ -25,7 +25,7 @@ fn add_marker(e: &mut Engine, a: &Value) -> Result<Value> {
     let name = s_req(a, "name")?;
     let beat = match (f_opt(a, "beat"), f_opt(a, "bar")) {
         (Some(b), _) => b,
-        (None, Some(bar)) => (bar - 1.0).max(0.0) * 4.0,
+        (None, Some(bar)) => e.project.beat_at_bar(bar.max(1.0)),
         (None, None) => bail!("add_marker: give beat (song beats from 0) or bar (1-based)"),
     };
     if beat < 0.0 {
@@ -41,14 +41,14 @@ fn add_marker(e: &mut Engine, a: &Value) -> Result<Value> {
     e.project.markers.retain(|m| m.name != name);
     e.project.markers.push(Marker { name: name.clone(), beat, time_signature: ts });
     e.project.markers.sort_by(|x, y| x.beat.partial_cmp(&y.beat).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(json!({"added": name, "beat": beat, "bar": beat / 4.0 + 1.0, "markers": e.project.markers.len()}))
+    Ok(json!({"added": name, "beat": beat, "bar": e.project.bar_at_beat(beat), "markers": e.project.markers.len()}))
 }
 
 pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "add_marker",
-            description: "Add (or move) a named playlist marker at a song position: beat (quarter notes from 0) or bar (1-based). Optional time_signature label ('3/4', '6/8'; metadata, the renderer counts 4/4). Use marker beats with render start_beat/end_beat.",
+            description: "Add (or move) a named playlist marker at a song position: beat (quarter notes from 0) or bar (1-based). Optional time_signature label ('3/4', '6/8'; a label: set_time_signature makes a pattern play in it). Bars count each pattern's own bar length. Use marker beats with render start_beat/end_beat.",
             mutates: true,
             schema: || obj(json!({
                 "name": {"type": "string"},
@@ -65,7 +65,7 @@ pub fn tools() -> Vec<Tool> {
             schema: || obj(json!({}), &[]),
             run: |e, _| {
                 let spb = 60.0 / e.project.bpm;
-                let m: Vec<Value> = e.project.markers.iter().map(|m| json!({"name": m.name, "beat": m.beat, "bar": m.beat / 4.0 + 1.0, "seconds": (m.beat * spb * 100.0).round() / 100.0, "time_signature": m.time_signature})).collect();
+                let m: Vec<Value> = e.project.markers.iter().map(|m| json!({"name": m.name, "beat": m.beat, "bar": e.project.bar_at_beat(m.beat), "seconds": (m.beat * spb * 100.0).round() / 100.0, "time_signature": m.time_signature})).collect();
                 let s: Vec<Value> = section_starts(e).into_iter().map(|(n, b)| json!({"section": n, "beat": b, "bar": b / 4.0 + 1.0, "seconds": (b * spb * 100.0).round() / 100.0})).collect();
                 Ok(json!({"markers": m, "sections": s}))
             },
