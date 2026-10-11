@@ -57,6 +57,7 @@ pub mod soundfont;
 pub mod fx_amp;
 pub mod sound_catalog;
 pub mod tools_library;
+pub mod web_import;
 pub mod server;
 pub mod smf;
 pub mod synth_extra;

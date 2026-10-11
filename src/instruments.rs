@@ -549,6 +549,7 @@ pub enum Instrument {
     Piano(PianoParams),
     Ensemble(EnsembleParams),
     /// Real recorded instrument from a SoundFont (SF2) library.
+    #[serde(rename = "soundfont", alias = "sound_font")]
     SoundFont(crate::soundfont::SoundFontParams),
 }
 

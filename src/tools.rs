@@ -727,6 +727,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::voice_ai::tools());
     v.extend(crate::tools_library::tools());
     v.extend(crate::sound_catalog::tools());
+    v.extend(crate::web_import::tools());
     v
 }
 
