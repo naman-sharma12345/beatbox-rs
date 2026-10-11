@@ -218,6 +218,27 @@ pub fn fetch_reference(src: &str) -> Result<(PathBuf, bool)> {
 }
 
 /// Song analysis of a reference file, cached next to it.
+/// The word-timing line sync helper: scripts/align_words.py (faster-whisper, local model only).
+pub const ALIGN_WORDS_PY: &str = include_str!("../scripts/align_words.py");
+
+fn align_words(e: &Engine, take: &Path, refv: &Path, a: &Value) -> Result<Value> {
+    let script = e.workdir.join(".beatbox_align_words.py");
+    std::fs::write(&script, ALIGN_WORDS_PY)?;
+    let py = std::env::var("BEATBOX_PYTHON").unwrap_or_else(|_| "python3".into());
+    let mut cmd = std::process::Command::new(&py);
+    cmd.arg(&script).arg(take).arg(refv)
+        .arg("--model").arg(s_opt(a, "model").unwrap_or_else(|| "small".into()))
+        .arg("--max-phrase").arg(f_opt(a, "max_phrase_s").unwrap_or(6.0).to_string());
+    let o = cmd.output().map_err(|err| anyhow!("running {py}: {err}"))?;
+    let txt = String::from_utf8_lossy(&o.stdout);
+    let v: Value = serde_json::from_str(txt.lines().find(|l| l.trim_start().starts_with('{')).unwrap_or("").trim())
+        .map_err(|_| anyhow!("line sync helper failed: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("no output")))?;
+    if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
+        bail!("{err}");
+    }
+    Ok(v)
+}
+
 pub fn analysis_of(path: &Path) -> Result<(SongAnalysis, Features)> {
     let x = samples::decode_file(path)?;
     let fe = cover::features(&x);
@@ -2035,6 +2056,53 @@ pub fn tools() -> Vec<Tool> {
                 let t = samples::decode_file(&e.resolve(&s_req(a, "vocal")?))?;
                 let (_, rf) = analysis_of(&e.resolve(&s_req(a, "reference")?))?;
                 Ok(serde_json::to_value(cover::align_take(&cover::features(&t), &rf))?)
+            },
+        },
+        Tool {
+            name: "align_phrases",
+            description: "Line-by-line sync of a sung take to a record's vocal stem (from separate_stems): splits the take into phrases and finds where the record sings each one, keeping the lines in order. method words matches speech-recognised word timing inside a helper process that outputs times only (no lyrics are stored or returned); audio matches melody and syllable rhythm. Returns phrases [{from_s, to_s, at_s, score, followed}] (at_s on the reference's clock) and writes them to out (JSON) for arrange_transcription's vocal_phrases.",
+            mutates: false,
+            schema: || obj(json!({"vocal": {"type": "string", "description": "the sung take"}, "reference_vocal": {"type": "string", "description": "the record's vocal stem"}, "min_pause_s": {"type": "number", "description": "silence that ends a phrase (default 0.35)"}, "max_phrase_s": {"type": "number", "description": "longer phrases are split at their quietest point (default 6)"}, "method": {"type": "string", "enum": ["auto", "words", "audio"], "description": "words: speech-recognised word timing matched in memory (only times leave the helper; needs faster-whisper with a cached model); audio: melody + syllable rhythm; auto (default) tries words first"}, "model": {"type": "string", "description": "faster-whisper model name already in the local cache (default small)"}, "out": {"type": "string"}}), &["vocal", "reference_vocal"]),
+            run: |e, a| {
+                let method = s_opt(a, "method").unwrap_or_else(|| "auto".into());
+                let vocal = e.resolve(&s_req(a, "vocal")?);
+                let refv = e.resolve(&s_req(a, "reference_vocal")?);
+                let mut note = Value::Null;
+                let mut v = Value::Null;
+                if method == "words" || method == "auto" {
+                    match align_words(e, &vocal, &refv, a) {
+                        Ok(w) => v = w,
+                        Err(err) if method == "auto" => note = json!(format!("word timing unavailable ({err}); used the audio match")),
+                        Err(err) => return Err(err),
+                    }
+                }
+                if v.is_null() {
+                    let t = samples::decode_file(&vocal)?;
+                    let r = samples::decode_file(&refv)?;
+                    let (ft, fr) = (cover::features(&t), cover::features(&r));
+                    drop(t);
+                    drop(r);
+                    let ph = cover::align_phrases(&ft, &fr, f_opt(a, "min_pause_s").unwrap_or(0.35), f_opt(a, "max_phrase_s").unwrap_or(6.0));
+                    if ph.is_empty() {
+                        bail!("no phrases found in the take");
+                    }
+                    v = json!({"phrases": ph, "method": "audio (melody + syllable rhythm)"});
+                }
+                let ph = v["phrases"].as_array().cloned().unwrap_or_default();
+                let mean_score = ph.iter().filter_map(|p| p["score"].as_f64()).sum::<f64>() / ph.len().max(1) as f64;
+                let followed = ph.iter().filter(|p| p["followed"].as_bool() == Some(true)).count();
+                v["count"] = json!(ph.len());
+                v["mean_score"] = json!((mean_score * 1000.0).round() / 1000.0);
+                v["followed"] = json!(followed);
+                if !note.is_null() {
+                    v["note"] = note;
+                }
+                if let Some(o) = s_opt(a, "out") {
+                    let op = e.resolve(&o);
+                    if let Some(d) = op.parent() { std::fs::create_dir_all(d)?; }
+                    std::fs::write(&op, serde_json::to_string_pretty(&v)?)?;
+                }
+                Ok(v)
             },
         },
         Tool {

@@ -715,9 +715,22 @@ fn score_tool(e: &mut Engine, a: &Value) -> Result<Value> {
             }
         }
     } else if let Some(f) = s_opt(a, "sections_file") {
+        // a sections file (arrangement_map's, or bars only) is on the reference's clock: times come
+        // from its t0/t1, else from its bars on its own grid or the reference's
         let v: Value = serde_json::from_str(&std::fs::read_to_string(e.resolve(&f))?)?;
+        let grid = match (v["grid"]["bpm"].as_f64(), v["grid"]["downbeat_s"].as_f64()) {
+            (Some(bpm), Some(db)) => crate::transcribe::Grid::new(bpm as f32, db as f32, v["grid"]["beats_per_bar"].as_u64().unwrap_or(4) as usize),
+            _ => crate::tools_transcribe::grid_for(e, a, &pr, &xr)?.0,
+        };
         for s in v["sections"].as_array().cloned().unwrap_or_default() {
-            spans.push((format!("{} {}", s["kind"].as_str().unwrap_or(""), s["bars"].as_str().unwrap_or("")).trim().to_string(), s["t0"].as_f64().unwrap_or(0.0) as f32, s["t1"].as_f64().unwrap_or(0.0) as f32));
+            let bars = s["bars"].as_str().unwrap_or("");
+            let from_bars = bars.split_once('-').and_then(|(x, y)| Some((x.trim().parse::<usize>().ok()?, y.trim().parse::<usize>().ok()?)));
+            let (t0, t1) = match (s["t0"].as_f64(), s["t1"].as_f64(), from_bars) {
+                (Some(x), Some(y), _) if y > x => (x as f32, y as f32),
+                (_, _, Some((b0, b1))) if b1 >= b0 && b0 >= 1 => (grid.bar_t(b0 - 1), grid.bar_t(b1)),
+                _ => continue,
+            };
+            spans.push((format!("{} {}", s["kind"].as_str().unwrap_or(""), bars).trim().to_string(), (t0 - offset).max(0.0), (t1 - offset).min(dur_o)));
         }
     } else {
         let (grid, _) = crate::tools_transcribe::grid_for(e, a, &po, &xo)?;

@@ -1384,3 +1384,217 @@ pub fn tone_db(fe: &Features, t0: f32, t1: f32) -> [f32; 9] {
     }
     out
 }
+
+
+/// One phrase of a take and where it lands on the reference's clock.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PhraseMap {
+    pub from_s: f32,
+    pub to_s: f32,
+    /// reference time (s) where this phrase's first sample plays
+    pub at_s: f32,
+    /// match quality 0..1 (melody chroma x syllable-rhythm agreement)
+    pub score: f32,
+    /// true when no confident match was found and the phrase follows the previous one at his own spacing
+    pub followed: bool,
+}
+
+/// Phrase-level alignment of a sung take against the reference's vocal stem,
+/// using audio only (no words): the take is split at its pauses, every phrase
+/// is matched over the whole reference on melody (chroma) and syllable rhythm
+/// (where each side is voiced), and a monotonic path through the best
+/// candidates picks one position per phrase, so a singer who skipped an
+/// instrumental gap or drifted against the record lands each line where the
+/// record sings it.
+pub fn align_phrases(take: &Features, refv: &Features, min_pause_s: f32, max_phrase_s: f32) -> Vec<PhraseMap> {
+    const D: usize = 2;
+    let fr = SR / HOP as f32;
+    let cfr = fr / D as f32;
+    let voiced = |e: &[f32]| -> Vec<bool> {
+        let db: Vec<f32> = e.iter().map(|v| 10.0 * (v + 1e-12).log10()).collect();
+        let mut s = db.clone();
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let p95 = s[((s.len() as f32 * 0.95) as usize).min(s.len().saturating_sub(1))];
+        let p20 = s[((s.len() as f32 * 0.20) as usize).min(s.len().saturating_sub(1))];
+        let thr = (p95 - 28.0).max(p20 + 6.0);
+        db.iter().map(|d| *d > thr).collect()
+    };
+    let coarse_e = |e: &[f32]| -> Vec<f32> { (0..e.len() / D).map(|i| mean(&e[i * D..i * D + D])).collect() };
+    let et = coarse_e(&take.h_full);
+    let er = coarse_e(&refv.h_full);
+    let vt = voiced(&et);
+    let vr = voiced(&er);
+    let ct = coarse_chroma(&take.chroma, D);
+    let cr = coarse_chroma(&refv.chroma, D);
+    let nt = ct.len().min(vt.len());
+    let nr = cr.len().min(vr.len());
+    if nt < 20 || nr < 20 {
+        return Vec::new();
+    }
+    // phrases: voiced runs separated by >= min_pause of silence
+    let gap = (min_pause_s * cfr).round() as usize;
+    let mut phrases: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < nt {
+        if !vt[i] { i += 1; continue; }
+        let s = i;
+        let mut last = i;
+        let mut k = i;
+        while k < nt && k - last <= gap {
+            if vt[k] { last = k; }
+            k += 1;
+        }
+        phrases.push((s, last + 1));
+        i = last + 1;
+    }
+    // drop blips, split long phrases at their quietest point
+    phrases.retain(|p| (p.1 - p.0) as f32 / cfr >= 0.25);
+    let maxf = (max_phrase_s * cfr) as usize;
+    let edge = (1.5 * cfr) as usize;
+    let mut q = 0;
+    while q < phrases.len() {
+        let (a, b) = phrases[q];
+        if b - a > maxf && b - a > 2 * edge + 2 {
+            let w = (0.15 * cfr).max(1.0) as usize;
+            let mut best = (a + edge, f32::MAX);
+            for c in (a + edge)..(b - edge) {
+                let lo = c.saturating_sub(w);
+                let hi = (c + w).min(nt);
+                let m = mean(&et[lo..hi]);
+                if m < best.1 { best = (c, m); }
+            }
+            phrases[q] = (a, best.0);
+            phrases.insert(q + 1, (best.0, b));
+            continue;
+        }
+        q += 1;
+    }
+    if phrases.is_empty() {
+        return Vec::new();
+    }
+    // candidate positions per phrase: (ref start frame, score)
+    let score_at = |p: (usize, usize), r0: isize| -> f32 {
+        let mut s = 0.0;
+        let mut n = 0.0;
+        let mut mis = 0.0;
+        for i in p.0..p.1 {
+            let j = r0 + (i - p.0) as isize;
+            if j < 0 || j as usize >= nr { mis += 1.0; continue; }
+            let j = j as usize;
+            if vt[i] != vr[j] { mis += 1.0; }
+            if vt[i] {
+                n += 1.0;
+                if vr[j] { s += cos12(&ct[i], &cr[j]); }
+            }
+        }
+        let len = (p.1 - p.0) as f32;
+        if n < 1.0 { return 0.0; }
+        (s / n) * (1.0 - mis / len).max(0.0)
+    };
+    let k_best = 8usize;
+    let sup = (1.0 * cfr) as isize;
+    let mut cands: Vec<Vec<(isize, f32)>> = Vec::new();
+    for p in &phrases {
+        let len = (p.1 - p.0) as isize;
+        let mut curve: Vec<(isize, f32)> = Vec::new();
+        let mut r = 0isize;
+        while r + len / 2 < nr as isize {
+            curve.push((r, score_at(*p, r)));
+            r += 1;
+        }
+        curve.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut picked: Vec<(isize, f32)> = Vec::new();
+        for c in curve {
+            if picked.len() >= k_best { break; }
+            if picked.iter().all(|x| (x.0 - c.0).abs() > sup) { picked.push(c); }
+        }
+        cands.push(picked);
+    }
+    // monotonic path: maximise total score, mild preference for his own spacing
+    let np = phrases.len();
+    let lam = 0.12f32;
+    // state: candidate index, or k_best = "follow previous at his spacing"
+    let mut best: Vec<Vec<(f32, usize, isize)>> = Vec::new(); // (total, back pointer, ref start)
+    for pi in 0..np {
+        let mut row: Vec<(f32, usize, isize)> = Vec::new();
+        let opts: Vec<(isize, f32, bool)> = cands[pi].iter().map(|c| (c.0, c.1, false)).collect();
+        if pi == 0 {
+            for o in &opts { row.push((o.1, usize::MAX, o.0)); }
+        } else {
+            let prev = &best[pi - 1];
+            let (ta, tb) = (phrases[pi - 1], phrases[pi]);
+            let my_gap = (tb.0 as isize) - (ta.0 as isize);
+            for o in &opts {
+                let mut bb = (f32::MIN, usize::MAX);
+                for (k, pr) in prev.iter().enumerate() {
+                    if pr.0 == f32::MIN { continue; }
+                    let need = ((ta.1 - ta.0) as f32 * 0.85) as isize;
+                    if o.0 < pr.2 + need { continue; }
+                    let dev = ((o.0 - pr.2 - my_gap).abs() as f32 / cfr).min(8.0) / 8.0;
+                    let v = pr.0 + o.1 - lam * dev;
+                    if v > bb.0 { bb = (v, k); }
+                }
+                row.push((bb.0, bb.1, o.0));
+            }
+            // follow option from every previous state
+            let mut bf = (f32::MIN, usize::MAX, 0isize);
+            for (k, pr) in prev.iter().enumerate() {
+                if pr.0 == f32::MIN { continue; }
+                let r0 = pr.2 + my_gap;
+                let v = pr.0 + 0.5 * score_at(tb, r0);
+                if v > bf.0 { bf = (v, k, r0); }
+            }
+            row.push(bf);
+        }
+        if row.iter().all(|x| x.0 == f32::MIN) {
+            // nothing reachable: restart the path at this phrase's best candidate
+            row = opts.iter().map(|o| (o.1, usize::MAX, o.0)).collect();
+            if pi > 0 { row.push((f32::MIN, usize::MAX, 0)); }
+        }
+        best.push(row);
+    }
+    let mut out: Vec<PhraseMap> = vec![PhraseMap { from_s: 0.0, to_s: 0.0, at_s: 0.0, score: 0.0, followed: false }; np];
+    let last = &best[np - 1];
+    let mut k = (0..last.len()).fold(0usize, |a, b| if last[b].0 > last[a].0 { b } else { a });
+    for pi in (0..np).rev() {
+        let st = best[pi][k];
+        let followed = pi > 0 && k == best[pi].len() - 1 && best[pi].len() > cands[pi].len();
+        let p = phrases[pi];
+        let sc = score_at(p, st.2);
+        out[pi] = PhraseMap { from_s: p.0 as f32 / cfr, to_s: p.1 as f32 / cfr, at_s: st.2 as f32 / cfr, score: (sc * 1000.0).round() / 1000.0, followed };
+        if st.1 == usize::MAX { if pi > 0 { k = (0..best[pi - 1].len()).fold(0usize, |a, b| if best[pi - 1][b].0 > best[pi - 1][a].0 { b } else { a }); } } else { k = st.1; }
+    }
+    out
+}
+
+#[cfg(test)]
+mod align_phrases_tests {
+    use super::*;
+    fn tone_phrases(spec: &[(f32, f32, f32)], total: f32) -> Vec<f32> {
+        // (start s, len s, hz): a sung-like tone with 4 Hz syllable pulses
+        let n = (total * SR) as usize;
+        let mut x = vec![0.0f32; n];
+        for &(s, l, hz) in spec {
+            let a = (s * SR) as usize;
+            let b = ((s + l) * SR) as usize;
+            for i in a..b.min(n) {
+                let t = (i - a) as f32 / SR;
+                let env = (0.5 + 0.5 * (2.0 * std::f32::consts::PI * 4.0 * t).sin()).powf(0.5);
+                x[i] = 0.3 * env * ((2.0 * std::f32::consts::PI * hz * t).sin() + 0.4 * (2.0 * std::f32::consts::PI * 2.0 * hz * t).sin());
+            }
+        }
+        x
+    }
+    #[test]
+    fn phrases_land_where_the_record_sings_them() {
+        // the take sings three lines back to back; the record spreads them out with an instrumental gap
+        let take = tone_phrases(&[(0.5, 2.0, 220.0), (3.2, 2.0, 330.0), (5.9, 2.0, 262.0)], 9.0);
+        let rec = tone_phrases(&[(2.0, 2.0, 220.0), (4.6, 2.0, 330.0), (12.0, 2.0, 262.0)], 16.0);
+        let ph = align_phrases(&features(&take), &features(&rec), 0.35, 6.0);
+        assert_eq!(ph.len(), 3, "{ph:?}");
+        let want = [2.0, 4.6, 12.0];
+        for (p, w) in ph.iter().zip(want) {
+            assert!((p.at_s - w).abs() < 0.15, "{ph:?}");
+        }
+    }
+}

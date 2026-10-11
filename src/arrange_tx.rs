@@ -59,6 +59,74 @@ fn notes_of(v: &Value, kind: &str) -> Result<Vec<(usize, f32, f32, u8, f32)>> {
     Ok(out)
 }
 
+
+type Nt = (usize, f32, f32, u8, f32);
+
+/// Majority-vote a section's bars into a repeating 1-, 2- or 4-bar part:
+/// a note survives when it sits on the same step and pitch in at least half
+/// the repeats, so a transcriber's stray hits and drop-outs vanish while the
+/// played figure stays. A last bar that departs from the figure (a fill) is
+/// kept as played. Notes are (bar within section, step, len, pitch, vel).
+fn consolidate(ns: &[Nt], nb: usize) -> (Vec<Nt>, usize) {
+    if nb < 2 || ns.is_empty() {
+        return (ns.to_vec(), 0);
+    }
+    let key = |n: &Nt| -> (i32, u8) { ((n.1 * 2.0).round() as i32, n.3) };
+    let f1 = |a: &std::collections::BTreeSet<(i32, u8)>, b: &std::collections::BTreeSet<(i32, u8)>| -> f32 {
+        if a.is_empty() && b.is_empty() { return 1.0; }
+        let i = a.intersection(b).count() as f32;
+        2.0 * i / (a.len() + b.len()).max(1) as f32
+    };
+    let bar_set = |bar: usize| -> std::collections::BTreeSet<(i32, u8)> { ns.iter().filter(|n| n.0 == bar).map(key).collect() };
+    let mut best: Option<(usize, f32, Vec<Nt>)> = None;
+    // the last bar may be a fill: it votes only when the section is two bars long
+    let vote_n = if nb >= 3 { nb - 1 } else { nb };
+    for p in [1usize, 2, 4] {
+        if p > 1 && p > vote_n / 2 { break; }
+        let mut rep: Vec<Nt> = Vec::new();
+        for ph in 0..p {
+            let bars: Vec<usize> = (ph..vote_n).step_by(p).collect();
+            let need = if bars.len() >= 2 { ((bars.len() as f32) * 0.5).ceil().max(2.0) as usize } else { 1 };
+            let mut acc: std::collections::BTreeMap<(i32, u8), (usize, f32, f32, f32)> = std::collections::BTreeMap::new();
+            for n in ns.iter().filter(|n| bars.contains(&n.0)) {
+                let e = acc.entry(key(n)).or_insert((0, 0.0, 0.0, 0.0));
+                e.0 += 1;
+                e.1 += n.1;
+                e.2 += n.2;
+                e.3 += n.4;
+            }
+            for (k, (c, st, ln, vl)) in acc {
+                if c >= need {
+                    let c = c as f32;
+                    rep.push((ph, st / c, ln / c, k.1, vl / c));
+                }
+            }
+        }
+        // how well the figure explains every bar
+        let mut tot = 0.0;
+        for b in 0..vote_n {
+            let rs: std::collections::BTreeSet<(i32, u8)> = rep.iter().filter(|n| n.0 == b % p).map(key).collect();
+            tot += f1(&rs, &bar_set(b));
+        }
+        let score = tot / vote_n as f32;
+        let better = match &best { None => true, Some((_, s, _)) => score > *s + 0.04 };
+        if better { best = Some((p, score, rep)); }
+    }
+    let Some((p, _, rep)) = best else { return (ns.to_vec(), 0) };
+    let mut out: Vec<Nt> = Vec::new();
+    let last = nb - 1;
+    let rs_last: std::collections::BTreeSet<(i32, u8)> = rep.iter().filter(|n| n.0 == last % p).map(key).collect();
+    let fill = f1(&rs_last, &bar_set(last)) < 0.6;
+    for b in 0..nb {
+        if b == last && fill {
+            out.extend(ns.iter().filter(|n| n.0 == last).cloned());
+            continue;
+        }
+        out.extend(rep.iter().filter(|n| n.0 == b % p).map(|n| (b, n.1, n.2, n.3, n.4)));
+    }
+    (out, p)
+}
+
 fn instrument(e: &mut Engine, track: &str, spec: &str, drums: bool) -> Result<String> {
     let (k, v) = spec.split_once(':').unwrap_or(("catalog", spec));
     match k {
@@ -139,6 +207,7 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
     call(e, "new_project", np)?;
     call(e, "set_arrangement", json!({"sections": secs.iter().map(|s| json!({"pattern": s.0, "repeats": 1})).collect::<Vec<_>>()}))?;
     let mut tracks = Vec::new();
+    let mut periods: Vec<Value> = Vec::new();
     for (pname, spec, ns, is_drums) in &loaded {
         let inst = spec["instrument"].as_str().map(String::from).unwrap_or_else(|| if *is_drums { "gm:0".into() } else { "preset:keys".into() });
         let used = instrument(e, pname, &inst, *is_drums)?;
@@ -150,10 +219,12 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
         }
         let mut count = 0;
         for (sname, b0, nb) in &secs {
-            let notes: Vec<Value> = ns
+            let sec: Vec<Nt> = ns.iter().filter(|n| n.0 >= *b0 && n.0 < b0 + nb).map(|n| (n.0 - b0, n.1, n.2, n.3, n.4)).collect();
+            let cons = spec["consolidate"].as_bool().unwrap_or_else(|| a.get("consolidate").and_then(|v| v.as_bool()).unwrap_or(false));
+            let sec = if cons { let (c, per) = consolidate(&sec, *nb); periods.push(json!({"track": pname, "pattern": sname, "period_bars": per})); c } else { sec };
+            let notes: Vec<Value> = sec
                 .iter()
-                .filter(|n| n.0 >= *b0 && n.0 < b0 + nb)
-                .map(|n| json!({"start": (n.0 - b0) as f32 * 16.0 + n.1, "len": n.2, "pitch": n.3, "vel": (n.4 * 100.0).round() / 100.0}))
+                .map(|n| json!({"start": n.0 as f32 * 16.0 + n.1, "len": n.2, "pitch": n.3, "vel": (n.4 * 100.0).round() / 100.0}))
                 .collect();
             if !notes.is_empty() {
                 count += notes.len();
@@ -173,7 +244,38 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
         let dur = e.project.samples.iter().find(|s| s.name == "take").map(|s| s.duration).unwrap_or(0.0);
         let rel = start_s - downbeat;
         let (start_beat, offset_s) = if rel >= 0.0 { (rel / beat_s, 0.0) } else { (0.0, -rel) };
-        call(e, "add_audio_clip", json!({"sample": "take", "track": "vox", "start_beat": start_beat, "offset_s": offset_s, "length_s": (dur - offset_s).max(0.1), "fade_in_ms": 5, "fade_out_ms": 30}))?;
+        // vocal_phrases (align_phrases output: [{from_s, to_s, at_s}] or a file holding {"phrases": [...]}) puts
+        // each line of the take where the record sings it; otherwise the take plays whole from vocal_start_s
+        let phrases: Option<Vec<Value>> = match a.get("vocal_phrases") {
+            Some(Value::Array(v)) => Some(v.clone()),
+            Some(Value::String(f)) => {
+                let txt = std::fs::read_to_string(e.resolve(f))?;
+                let v: Value = serde_json::from_str(&txt)?;
+                Some(v.get("phrases").and_then(|p| p.as_array()).cloned().ok_or_else(|| anyhow!("{} has no phrases", f))?)
+            }
+            _ => None,
+        };
+        let mut placed = 0usize;
+        if let Some(ph) = &phrases {
+            let n = ph.len();
+            for (k, p) in ph.iter().enumerate() {
+                let (Some(f0), Some(f1), Some(at)) = (p.get("from_s").and_then(|x| x.as_f64()), p.get("to_s").and_then(|x| x.as_f64()), p.get("at_s").and_then(|x| x.as_f64())) else { continue };
+                let (f0, f1, at) = (f0 as f32, f1 as f32, at as f32);
+                // a little air either side, never into the neighbouring phrases
+                let prev_end = if k > 0 { ph[k - 1].get("to_s").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32 } else { 0.0 };
+                let next_start = if k + 1 < n { ph[k + 1].get("from_s").and_then(|x| x.as_f64()).unwrap_or(dur as f64) as f32 } else { dur };
+                let pre = 0.08f32.min(((f0 - prev_end) * 0.5).max(0.0));
+                let post = 0.20f32.min(((next_start - f1) * 0.5).max(0.0));
+                let (s0, s1) = ((f0 - pre).max(0.0), (f1 + post).min(dur));
+                let t0 = at - (f0 - s0) - downbeat;
+                let (sb, extra) = if t0 >= 0.0 { (t0 / beat_s, 0.0) } else { (0.0, -t0) };
+                if s1 - s0 - extra < 0.1 { continue; }
+                call(e, "add_audio_clip", json!({"sample": "take", "track": "vox", "start_beat": sb, "offset_s": s0 + extra, "length_s": s1 - s0 - extra, "fade_in_ms": 8, "fade_out_ms": 40}))?;
+                placed += 1;
+            }
+        } else {
+            call(e, "add_audio_clip", json!({"sample": "take", "track": "vox", "start_beat": start_beat, "offset_s": offset_s, "length_s": (dur - offset_s).max(0.1), "fade_in_ms": 5, "fade_out_ms": 30}))?;
+        }
         call(e, "add_effect", json!({"track": "vox", "type": "parametric_eq", "params": {"bands": [{"kind": "low_cut", "freq": 85.0, "stages": 2}]}}))?;
         call(e, "add_effect", json!({"track": "vox", "type": "deesser", "params": {"freq": 6500.0, "threshold_db": -30.0, "range_db": 4.0, "release_ms": 60.0}}))?;
         call(e, "add_effect", json!({"track": "vox", "type": "compressor", "params": {"threshold_db": -20.0, "ratio": 2.5, "attack_ms": 10.0, "release_ms": 100.0, "makeup_db": 3.0, "knee_db": 6.0}}))?;
@@ -183,11 +285,11 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
         call(e, "add_effect", json!({"track": "vdelay", "type": "delay", "params": {"steps": 6.0, "feedback": 0.35, "mix": 1.0, "ping_pong": true, "tone": 4500.0}}))?;
         call(e, "set_send", json!({"track": "vox", "bus": "plate", "db": -16.0}))?;
         call(e, "set_send", json!({"track": "vox", "bus": "vdelay", "db": -25.0}))?;
-        vocal = json!({"track": "vox", "start_beat": (start_beat * 100.0).round() / 100.0, "offset_s": (offset_s * 1000.0).round() / 1000.0,
+        vocal = json!({"track": "vox", "start_beat": (start_beat * 100.0).round() / 100.0, "offset_s": (offset_s * 1000.0).round() / 1000.0, "phrases_placed": placed,
             "chain": "high-pass 85 Hz, de-ess, 2.5:1 compression, plate and delay sends (no denoise, gate, tuning or tone shaping)"});
     }
     Ok(json!({"project": name, "bpm": bpm, "sections": secs.iter().map(|s| json!({"pattern": s.0, "bars": format!("{}-{}", s.1 + 1, s.1 + s.2)})).collect::<Vec<_>>(),
-        "tracks": tracks, "vocal": vocal, "music_starts_at_s": (downbeat * 1000.0).round() / 1000.0,
+        "tracks": tracks, "consolidated": periods, "vocal": vocal, "music_starts_at_s": (downbeat * 1000.0).round() / 1000.0,
         "next": ["match_timbre", "render", "score_sections", "balance_mix"]}))
 }
 
@@ -203,7 +305,9 @@ pub fn tools() -> Vec<Tool> {
             "name": {"type": "string"}, "bpm": {"type": "number"}, "key": {"type": "string", "description": "e.g. \"D minor\""},
             "vocal": {"type": "string", "description": "a vocal take to place"},
             "vocal_start_s": {"type": "number", "description": "where the take's first sample sits on the transcription's clock (s)"},
-            "vocal_db": {"type": "number"}
+            "vocal_db": {"type": "number"},
+            "consolidate": {"type": "boolean", "description": "majority-vote each section's bars into its repeating 1/2/4-bar figure (cleans transcription noise, keeps a last-bar fill); per part too"},
+            "vocal_phrases": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "object"}}], "description": "align_phrases output (its out file, or the phrases array): each line of the take placed where the record sings it, instead of one clip from vocal_start_s"}
         }), &["parts"]),
         run: arrange,
     }]
@@ -232,5 +336,26 @@ mod tests {
         assert!(p2.notes("bass").iter().any(|n| (n.start - 8.0).abs() < 1e-3 && n.pitch == 41), "{:?}", p2.notes("bass"));
         let p1 = e.project.patterns.iter().find(|p| p.name == "s01").unwrap();
         assert!(p1.notes("keys").iter().any(|n| (n.start - 16.0).abs() < 1e-3), "chords re-struck at bar 2");
+    }
+}
+
+#[cfg(test)]
+mod consolidate_tests {
+    use super::*;
+    #[test]
+    fn majority_vote_removes_strays_and_keeps_fill() {
+        // 4 bars of kick on 0,8 and snare on 4,12; a stray hat in bar 1, a dropped kick in bar 2, a fill in bar 3
+        let mut ns: Vec<Nt> = Vec::new();
+        for b in 0..4 {
+            for st in [0.0, 8.0] { if !(b == 2 && st == 8.0) { ns.push((b, st, 1.0, 36, 0.9)); } }
+            if b < 3 { for st in [4.0, 12.0] { ns.push((b, st, 1.0, 38, 0.8)); } }
+        }
+        ns.push((1, 6.0, 1.0, 42, 0.5));
+        for st in [4.0, 10.0, 12.0, 13.0, 14.0, 15.0] { ns.push((3, st, 1.0, 45, 0.8)); }
+        let (out, p) = consolidate(&ns, 4);
+        assert_eq!(p, 1);
+        assert!(!out.iter().any(|n| n.3 == 42), "stray hat removed");
+        assert!(out.iter().any(|n| n.0 == 2 && n.3 == 36 && (n.1 - 8.0).abs() < 0.1), "dropped kick restored");
+        assert!(out.iter().filter(|n| n.0 == 3 && n.3 == 45).count() == 6, "fill kept");
     }
 }

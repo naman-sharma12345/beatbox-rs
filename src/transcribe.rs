@@ -273,7 +273,20 @@ pub fn transcribe_drums(x: &[f32], grid: Grid, steps_per_bar: usize) -> DrumScor
     for &f in &events {
         let s: Vec<f32> = (0..6).map(|k| strength_near(&peaks[k], f + 1, 3)).collect();
         let t = f as f32 / fps;
-        let kick = s[0] >= 0.3 && (s[0] >= 0.7 * s[1] || (s[3] < 0.3 && s[0] >= 0.4 * s[1]));
+        // a kick is a low-end onset whose low end is mostly sub (30-110 Hz over 160-400 Hz): a fat
+        // snare also moves the low band but its weight sits in its body, and a ringing kick's
+        // decay moves the low band again without any new energy, so both shape and rise decide
+        let e0 = (f..f + 5).map(|i| energy_at(0, i)).fold(0.0f32, f32::max);
+        let e2 = (f..f + 5).map(|i| energy_at(2, i)).fold(0.0f32, f32::max);
+        // the loudest low end of the ~90 ms before: a kick's own tail never rises above it
+        let before = {
+            let a = f.saturating_sub(8);
+            let b = f.saturating_sub(1).max(a + 1);
+            (a..b).map(|i| energy_at(0, i)).fold(0.0f32, f32::max)
+        };
+        let sub_db = 10.0 * ((e0 + 1e-12) / (e2 + 1e-12)).log10();
+        let rise = (e0 + 1e-12) / (before + 1e-12);
+        let kick = s[0] >= 0.3 && sub_db > -1.0 && rise >= 1.5 && (s[0] >= 0.4 * s[1] || sub_db > 3.0);
         let snare = (s[3] >= 0.35 && s[2] >= 0.2) || s[3] >= 0.7 || (s[3] >= 0.15 && s[2] >= 0.1 && s[3] >= 0.8 * s[4] && s[0] < 0.3);
         let tom = !kick && !snare && s[1] >= 0.45 && s[3] < 0.3;
         if kick {
@@ -302,6 +315,23 @@ pub fn transcribe_drums(x: &[f32], grid: Grid, steps_per_bar: usize) -> DrumScor
             raw.push((t, kind, s[4]));
         }
     }
+    // one hit per kind within 60 ms (the low band's onset trails the crack by a few frames,
+    // so one drum can show up as two candidate events)
+    raw.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut dedup: Vec<(f32, usize, f32)> = Vec::new();
+    for r in raw {
+        if let Some(p) = dedup.iter_mut().rev().take(8).find(|p| p.1 == r.1 && r.0 - p.0 < 0.06) {
+            if r.2 > p.2 {
+                p.2 = r.2;
+            }
+            continue;
+        }
+        dedup.push(r);
+    }
+    // a tom right after a snare or kick is that drum's body ringing on, not a second drum
+    let hits_sk: Vec<f32> = dedup.iter().filter(|r| r.1 <= 1).map(|r| r.0).collect();
+    dedup.retain(|r| r.1 != 5 || !hits_sk.iter().any(|t| r.0 - t >= -0.01 && r.0 - t < 0.07));
+    let raw = dedup;
     // velocities per kind relative to that kind's median strength; quiet snares are ghosts
     let mut med = [1.0f32; 6];
     for (k, m) in med.iter_mut().enumerate() {
@@ -821,7 +851,9 @@ pub fn key_of(chroma: &[[f32; 12]]) -> (u8, bool, f32) {
 
 /// Chord state per beat by Viterbi over chord templates (+ bass note), with a
 /// cost for changing. Returns a state per beat (see chord_label).
-pub fn chords_per_beat(ch: &[[f32; 12]], bch: &[[f32; 12]], en: &[f32], change_cost: f32) -> Vec<usize> {
+/// `bass_w` weighs the bass's pitch class as the chord root (0.25 on a full mix;
+/// higher when `bch` comes from an isolated bass stem).
+pub fn chords_per_beat(ch: &[[f32; 12]], bch: &[[f32; 12]], en: &[f32], change_cost: f32, bass_w: f32) -> Vec<usize> {
     let nq = QUALITIES.len();
     let ns = 12 * nq + 1;
     let n = ch.len();
@@ -832,7 +864,7 @@ pub fn chords_per_beat(ch: &[[f32; 12]], bch: &[[f32; 12]], en: &[f32], change_c
     let emis: Vec<Vec<f32>> = (0..n)
         .map(|t| {
             let c = norm12(&ch[t]);
-            let bmax = bch[t].iter().cloned().fold(0.0f32, f32::max).max(1e-12);
+            let bmax = bch.get(t).map(|b| b.iter().cloned().fold(0.0f32, f32::max)).unwrap_or(0.0).max(1e-12);
             let mut row = vec![0.0f32; ns];
             for q in 0..nq {
                 let (_, iv, w) = QUALITIES[q];
@@ -853,7 +885,7 @@ pub fn chords_per_beat(ch: &[[f32; 12]], bch: &[[f32; 12]], en: &[f32], change_c
                             wq *= 0.85;
                         }
                     }
-                    row[q * 12 + r] = wq * cos + 0.25 * bch[t][r] / bmax;
+                    row[q * 12 + r] = wq * cos + bass_w * bch.get(t).map(|b| b[r]).unwrap_or(0.0) / bmax;
                 }
             }
             row[ns - 1] = if en[t] < egate { 1.0 } else { 0.25 };
@@ -1075,7 +1107,7 @@ mod tests {
             }
         }
         let (ch, bch, en) = beat_chroma(&x, g);
-        let path = chords_per_beat(&ch, &bch, &en, 0.15);
+        let path = chords_per_beat(&ch, &bch, &en, 0.15, 0.25);
         for rep in 0..2 {
             for (i, (_, name)) in prog.iter().enumerate() {
                 let beat = (rep * 4 + i) * 4 + 1;

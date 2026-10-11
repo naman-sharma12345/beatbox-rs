@@ -85,7 +85,12 @@ def main():
     so = ort.SessionOptions()
     so.intra_op_num_threads = max(1, a.threads)
     so.inter_op_num_threads = 1
-    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    # graph optimisation folds the fp16 weights into fp32 copies and the arena
+    # keeps every chunk's buffers: ~5 GB on a 4-minute song; plain execution
+    # stays under 1 GB
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    so.enable_cpu_mem_arena = False
+    so.enable_mem_pattern = False
     sess = ort.InferenceSession(str(mp), sess_options=so, providers=["CPUExecutionProvider"])
     ov = N // 4
     stride = N - ov

@@ -233,8 +233,32 @@ fn transcribe_melody(e: &mut Engine, a: &Value) -> Result<Value> {
 fn transcribe_chords(e: &mut Engine, a: &Value) -> Result<Value> {
     let (path, x) = load(e, a)?;
     let (grid, src) = grid_for(e, a, &path, &x)?;
-    let (ch, bch, en) = tr::beat_chroma(&x, grid);
-    let path_st = tr::chords_per_beat(&ch, &bch, &en, f_opt(a, "change_cost").unwrap_or(0.15).clamp(0.0, 2.0));
+    let (ch, mut bch, en) = tr::beat_chroma(&x, grid);
+    // an isolated bass stem names the roots far better than the low end of a mix (kick, riff overtones)
+    let mut bass_w = 0.25f32;
+    if let Some(bp) = s_opt(a, "bass") {
+        let bx = crate::samples::decode_file(&e.resolve(&bp))?;
+        // the bass line's own pitch-tracked notes (an FFT can't tell D1 from D#1), weighted by how
+        // long each sounds inside each beat
+        let notes = tr::transcribe_bass(&bx, grid, 16);
+        let nb = bch.len();
+        bch = vec![[0.0f32; 12]; nb];
+        let bs = grid.beat_s();
+        for n in &notes {
+            let b0 = ((n.t0 - grid.downbeat_s) / bs).floor().max(0.0) as usize;
+            let b1 = ((n.t1 - grid.downbeat_s) / bs).ceil().max(0.0) as usize;
+            for b in b0..b1.min(nb) {
+                let (s0, s1) = (grid.downbeat_s + b as f32 * bs, grid.downbeat_s + (b + 1) as f32 * bs);
+                let ov = n.t1.min(s1) - n.t0.max(s0);
+                if ov > 0.0 {
+                    bch[b][(n.pitch % 12) as usize] += ov;
+                }
+            }
+        }
+        bass_w = 0.6;
+    }
+    let bass_w = f_opt(a, "bass_weight").unwrap_or(bass_w).clamp(0.0, 2.0);
+    let path_st = tr::chords_per_beat(&ch, &bch, &en, f_opt(a, "change_cost").unwrap_or(0.15).clamp(0.0, 2.0), bass_w);
     let (k, minor, kconf) = tr::key_of(&ch);
     let bpb = grid.beats_per_bar;
     let bars = path_st.len().div_ceil(bpb);
@@ -339,7 +363,7 @@ pub fn tools() -> Vec<Tool> {
             name: "transcribe_chords",
             description: "Chord transcription: the chord on every beat (major, minor, 7, maj7, m7, sus2, sus4, dim, power) with the key, the repeating progression loop and the first bars as text. Works on a full mix or the 'other' stem. Writes block-chord MIDI and a per-beat JSON; import:true adds it to the project. change_cost (default 0.15) higher = fewer chord changes.",
             mutates: true,
-            schema: || obj(grid_props(json!({"change_cost": {"type": "number"}})), &["path"]),
+            schema: || obj(grid_props(json!({"change_cost": {"type": "number"}, "bass": {"type": "string", "description": "the bass stem from separate_stems: its notes name the chord roots (pass the bass+other mix or the full mix as path)"}, "bass_weight": {"type": "number", "description": "how much the bass note decides the root (default 0.6 with bass, 0.25 without)"}})), &["path"]),
             run: transcribe_chords,
         },
     ]
