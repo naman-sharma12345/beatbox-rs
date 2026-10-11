@@ -1170,6 +1170,7 @@ impl Studio {
 impl eframe::App for Studio {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frames += 1;
+        let mut midi_live = false;
         // live link: apply transport commands from MCP and publish the state
         {
             let mut e = self.engine.lock().unwrap();
@@ -1216,11 +1217,18 @@ impl eframe::App for Studio {
             }
             e.transport.perf_playing = self.perf.clone();
             e.transport.perf_queued = self.perf_next.clone().map(|n| n.unwrap_or_else(|| "song".into()));
+            // MIDI controller: apply what it sent, then sound the live notes
+            crate::midi_in::pump(&mut e);
+            for buf in std::mem::take(&mut e.transport.pending_notes) {
+                self.player.layer(buf);
+            }
+            midi_live = e.midi.port.is_some();
             e.transport.auditioning = self.player.auditioning();
             e.transport.playing = self.player.is_playing();
             e.transport.position_s = self.player.position_secs();
         }
-        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        // a connected controller is polled every few ms so playing feels live
+        ctx.request_repaint_after(std::time::Duration::from_millis(if midi_live { 5 } else { 250 }));
         let (p, rev, log, undo) = self.snapshot();
         if self.pattern >= p.patterns.len() {
             self.pattern = 0;

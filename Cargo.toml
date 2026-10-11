@@ -29,6 +29,10 @@ eframe = { version = "0.29", optional = true }
 cpal = { version = "0.15", optional = true }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# MIDI controller input through the ALSA sequencer (already used by cpal)
+alsa = { version = "0.9", optional = true }
+
 [profile.release]
 lto = "thin"
 
@@ -42,4 +46,4 @@ debug = false
 
 [features]
 default = ["gui"]
-gui = ["dep:eframe", "dep:cpal", "dep:image"]
+gui = ["dep:eframe", "dep:cpal", "dep:image", "dep:alsa"]

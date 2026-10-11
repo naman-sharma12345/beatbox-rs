@@ -35,6 +35,8 @@ pub struct BrowserState {
     /// soundgoodizer row: mode 0-3 (A-D) and amount 1-100 (0 = not set yet)
     pub good_mode: usize,
     pub good_amount: f32,
+    /// MIDI row: controllers found by FIND (a list, or the reason there is none)
+    pub midi_ports: Option<Value>,
 }
 
 /// Audio editor (Edison) form: the chosen sample, a time region and a band.
@@ -162,6 +164,67 @@ impl Studio {
                 let mode = ["A", "B", "C", "D"][self.browser.good_mode.min(3)];
                 if ui.small_button("APPLY").on_hover_text(format!("polish {track} (mode {mode}); again on the same track retunes it")).clicked() && !track.is_empty() {
                     call = Some(("soundgoodizer".into(), json!({"track": track, "mode": mode, "amount": self.browser.good_amount.round()})));
+                }
+            });
+            ui.add_space(6.0);
+            let (port, rec, learning, links) = {
+                let e = self.engine.lock().unwrap();
+                (e.midi.port.clone(), e.midi.record, e.midi.learn.clone(), e.midi.links.len())
+            };
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("MIDI IN").size(11.0).strong().color(tk.header_text));
+                match &port {
+                    Some(n) => {
+                        ui.label(RichText::new(n).size(11.0).color(tk.text));
+                        if ui.small_button("DISCONNECT").clicked() {
+                            call = Some(("midi_input".into(), json!({"action": "disconnect"})));
+                        }
+                    }
+                    None => {
+                        if ui.small_button("FIND").on_hover_text("look for connected controllers").clicked() {
+                            let r = self.engine.lock().unwrap().call_from("midi_input", &json!({"action": "ports"}), "you");
+                            self.browser.midi_ports = Some(match r {
+                                Ok(v) => v["ports"].clone(),
+                                Err(err) => json!(format!("{err:#}")),
+                            });
+                        }
+                        match self.browser.midi_ports.clone() {
+                            Some(Value::Array(list)) if list.is_empty() => {
+                                ui.label(RichText::new("no controller found").size(10.0).color(tk.text_dim));
+                            }
+                            Some(Value::Array(list)) => {
+                                for pt in list {
+                                    let a = pt["port"].as_str().unwrap_or("").to_string();
+                                    if ui.small_button(pt["name"].as_str().unwrap_or(&a)).on_hover_text(format!("connect {a}")).clicked() {
+                                        call = Some(("midi_input".into(), json!({"action": "connect", "port": a})));
+                                    }
+                                }
+                            }
+                            Some(Value::String(why)) => {
+                                ui.label(RichText::new(why).size(10.0).color(tk.text_dim));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                if ui.small_button(format!("KEYS PLAY {track}")).on_hover_text("the keyboard plays this track").clicked() && !track.is_empty() {
+                    call = Some(("midi_input".into(), json!({"action": "set", "track": track})));
+                }
+                let mut r = rec;
+                if ui.checkbox(&mut r, "RECORD").on_hover_text("write what you play into the pattern under the play head").changed() {
+                    call = Some(("midi_input".into(), json!({"action": "set", "record": r})));
+                }
+                for (lbl, tgt) in [("LEARN VOL", format!("volume:{track}")), ("LEARN PAN", format!("pan:{track}"))] {
+                    if ui.small_button(lbl).on_hover_text(format!("the next knob you move controls {tgt}")).clicked() && !track.is_empty() {
+                        call = Some(("midi_input".into(), json!({"action": "learn", "target": tgt})));
+                    }
+                }
+                if let Some(l) = &learning {
+                    ui.label(RichText::new(format!("move a control for {l}")).size(10.0).color(tk.text_dim));
+                } else if links > 0 {
+                    ui.label(RichText::new(format!("{links} linked")).size(10.0).color(tk.text_dim));
                 }
             });
             ui.add_space(8.0);

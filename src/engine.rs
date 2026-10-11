@@ -57,6 +57,8 @@ pub struct Transport {
     pub perf_playing: Option<String>,
     /// Pattern waiting for the next boundary (published by the studio).
     pub perf_queued: Option<String>,
+    /// Live notes from the MIDI keyboard, layered on the studio's speakers.
+    pub pending_notes: Vec<std::sync::Arc<(Vec<f32>, Vec<f32>)>>,
 }
 
 /// One performance-mode launch: what to loop, how long one loop is, and the
@@ -85,6 +87,8 @@ const RENDER_CACHE: usize = 3;
 
 pub struct Engine {
     pub transport: Transport,
+    /// MIDI controller links, keyboard track, recorder and connected port.
+    pub midi: crate::midi_in::MidiState,
     pub project: Project,
     /// Named versions for A/B comparison, in creation order.
     pub snapshots: Vec<(String, Snapshot)>,
@@ -115,6 +119,7 @@ impl Engine {
     pub fn new(workdir: PathBuf) -> Self {
         let mut e = Engine {
             transport: Transport::default(),
+            midi: Default::default(),
             project: Project::default(),
             snapshots: Vec::new(),
             bank: SampleBank::default(),

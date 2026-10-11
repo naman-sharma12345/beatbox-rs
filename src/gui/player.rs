@@ -208,6 +208,34 @@ impl Player {
         self.shared.lock().unwrap().one = Some((buf, 0.0));
     }
 
+    /// Layer a buffer on top of whatever preview is still sounding (live
+    /// keyboard notes: a chord rings together instead of cutting off).
+    pub fn layer(&self, buf: Arc<(Vec<f32>, Vec<f32>)>) {
+        let mut s = self.shared.lock().unwrap();
+        let next = match s.one.take() {
+            Some((old, p)) => {
+                let at = p as usize;
+                let rest = old.0.len().saturating_sub(at);
+                let n = rest.max(buf.0.len());
+                let mut l = vec![0f32; n];
+                let mut r = vec![0f32; n];
+                for i in 0..n {
+                    if i < rest {
+                        l[i] += old.0[at + i];
+                        r[i] += old.1.get(at + i).copied().unwrap_or(old.0[at + i]);
+                    }
+                    if i < buf.0.len() {
+                        l[i] += buf.0[i];
+                        r[i] += buf.1.get(i).copied().unwrap_or(buf.0[i]);
+                    }
+                }
+                Arc::new((l, r))
+            }
+            None => buf,
+        };
+        s.one = Some((next, 0.0));
+    }
+
     pub fn stop_audition(&self) {
         self.shared.lock().unwrap().one = None;
     }
