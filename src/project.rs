@@ -388,6 +388,11 @@ pub struct AudioClip {
     pub length_s: Option<f32>,
     #[serde(default)]
     pub gain_db: f32,
+    /// Equal-power fade at the clip's start / end in ms (None = a 4 ms ramp).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_in_ms: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_out_ms: Option<f32>,
 }
 
 /// One parameter a macro drives, mapped from the macro's 0..1 value.

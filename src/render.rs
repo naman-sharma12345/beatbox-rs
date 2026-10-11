@@ -1016,9 +1016,16 @@ pub fn render_cached(
                             if o >= total {
                                 break;
                             }
-                            let env = (i as f32 / fade as f32)
-                                .min((len - i) as f32 / fade as f32)
-                                .min(1.0);
+                            let env = if c.fade_in_ms.is_some() || c.fade_out_ms.is_some() {
+                                // equal-power edges (seamless edits)
+                                let fi = (c.fade_in_ms.unwrap_or(4.0).max(0.5) / 1000.0 * SR).max(1.0);
+                                let fo = (c.fade_out_ms.unwrap_or(4.0).max(0.5) / 1000.0 * SR).max(1.0);
+                                let a = (i as f32 / fi).min(1.0);
+                                let b = ((len - i) as f32 / fo).min(1.0);
+                                (a * std::f32::consts::FRAC_PI_2).sin() * (b * std::f32::consts::FRAC_PI_2).sin()
+                            } else {
+                                (i as f32 / fade as f32).min((len - i) as f32 / fade as f32).min(1.0)
+                            };
                             let v = data[off + i] * g * env;
                             mono[o] += v;
                             if spread > 0.0 {

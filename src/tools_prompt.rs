@@ -357,7 +357,7 @@ pub fn sing_over_plan(e: &mut Engine, plan: &crate::producer::Plan, sections: &[
     let inst = crate::instruments::Instrument::Sampler(crate::instruments::SamplerParams { sample: sample.clone(), one_shot: true, ..Default::default() });
     crate::tools::ensure_track(&mut e.project, "vocal", "pad", Some(inst))?;
     e.project.audio_clips.retain(|c| c.track != "vocal");
-    e.project.audio_clips.push(crate::project::AudioClip { track: "vocal".into(), sample, start_beat: 0.0, offset_s: 0.0, length_s: None, gain_db: 0.0 });
+    e.project.audio_clips.push(crate::project::AudioClip { track: "vocal".into(), sample, start_beat: 0.0, offset_s: 0.0, length_s: None, gain_db: 0.0, fade_in_ms: None, fade_out_ms: None });
     crate::tools_vocal::vocal_chain(e)?;
     // the voice sits on top (measured: at 0 dB the words were masked; +5 dB
     // made them intelligible to a speech recogniser), the melodic parts step back

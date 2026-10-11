@@ -65,7 +65,7 @@ fn bounce(e: &mut Engine, a: &Value) -> Result<Value> {
     t.output = orig.output.clone();
     t.sends = orig.sends.clone();
     e.project.tracks.push(t);
-    e.project.audio_clips.push(AudioClip { track: name.clone(), sample: sample.clone(), start_beat: 0.0, offset_s: 0.0, length_s: None, gain_db: 0.0 });
+    e.project.audio_clips.push(AudioClip { track: name.clone(), sample: sample.clone(), start_beat: 0.0, offset_s: 0.0, length_s: None, gain_db: 0.0, fade_in_ms: None, fade_out_ms: None });
     let mute = b_or(a, "mute_original", true);
     if mute {
         e.project.tracks[ti].mute = true;

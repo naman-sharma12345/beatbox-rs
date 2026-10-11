@@ -411,7 +411,7 @@ fn place_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     let gain = f_or(a, "gain_db", 0.0);
     let mut placed = Vec::new();
     for (p, &beat) in ph.iter().zip(at.iter()) {
-        e.project.audio_clips.push(AudioClip { track: track.clone(), sample: info.name.clone(), start_beat: beat, offset_s: p.start_s, length_s: Some(p.end_s - p.start_s), gain_db: gain });
+        e.project.audio_clips.push(AudioClip { track: track.clone(), sample: info.name.clone(), start_beat: beat, offset_s: p.start_s, length_s: Some(p.end_s - p.start_s), gain_db: gain, fade_in_ms: None, fade_out_ms: None });
         let natural = sb + p.start_s * bpm / 60.0;
         placed.push(json!({"from_s": r3(p.start_s), "to_s": r3(p.end_s), "beat": r3(beat), "bar": (beat / 4.0).floor() as i64 + 1, "moved_ms": r3((beat - natural) * 60.0 / bpm * 1000.0)}));
     }

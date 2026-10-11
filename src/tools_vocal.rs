@@ -345,7 +345,7 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let sample = reg["sample"].as_str().unwrap_or("vocal").to_string();
     let inst = crate::instruments::Instrument::Sampler(crate::instruments::SamplerParams { sample: sample.clone(), one_shot: true, ..Default::default() });
     ensure_track(&mut e.project, "vocal", "pad", Some(inst))?;
-    e.project.audio_clips.push(AudioClip { track: "vocal".into(), sample: sample.clone(), start_beat: clip_start_beat, offset_s: 0.0, length_s: None, gain_db: 0.0 });
+    e.project.audio_clips.push(AudioClip { track: "vocal".into(), sample: sample.clone(), start_beat: clip_start_beat, offset_s: 0.0, length_s: None, gain_db: 0.0, fade_in_ms: None, fade_out_ms: None });
 
     // per-section parts
     let drums: Vec<&str> = g.parts.iter().map(|p| p.0).collect();
@@ -660,9 +660,9 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "add_audio_clip",
-            description: "Place a sample on the song timeline at a beat (a vocal take, a long loop, a bounce), played through a track's channel (its FX, fader, sends). offset_s trims the start, length_s the end.",
+            description: "Place a sample on the song timeline at a beat (a vocal take, a long loop, a bounce), played through a track's channel (its FX, fader, sends). offset_s trims the start, length_s the end, fade_in_ms/fade_out_ms set equal-power edge fades.",
             mutates: true,
-            schema: || obj(json!({"track": {"type": "string"}, "sample": {"type": "string"}, "start_beat": {"type": "number"}, "offset_s": {"type": "number"}, "length_s": {"type": "number"}, "gain_db": {"type": "number"}}), &["track", "sample", "start_beat"]),
+            schema: || obj(json!({"track": {"type": "string"}, "sample": {"type": "string"}, "start_beat": {"type": "number"}, "offset_s": {"type": "number"}, "length_s": {"type": "number"}, "gain_db": {"type": "number"}, "fade_in_ms": {"type": "number", "description": "equal-power fade at the clip start (default a 4 ms ramp)"}, "fade_out_ms": {"type": "number"}}), &["track", "sample", "start_beat"]),
             run: |e, a| {
                 let sample = s_req(a, "sample")?;
                 if !e.project.samples.iter().any(|s| s.name == sample) {
@@ -677,6 +677,8 @@ pub fn tools() -> Vec<Tool> {
                     offset_s: f_opt(a, "offset_s").unwrap_or(0.0),
                     length_s: f_opt(a, "length_s"),
                     gain_db: f_opt(a, "gain_db").unwrap_or(0.0),
+                    fade_in_ms: f_opt(a, "fade_in_ms").map(|v| v.clamp(0.5, 200.0)),
+                    fade_out_ms: f_opt(a, "fade_out_ms").map(|v| v.clamp(0.5, 200.0)),
                 });
                 Ok(json!({"index": e.project.audio_clips.len() - 1, "track": track, "clips": e.project.audio_clips.len()}))
             },
