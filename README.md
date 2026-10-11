@@ -122,7 +122,7 @@ Optional environment: `BEATBOX_FREESOUND_KEY` (or `FREESOUND_API_KEY`; free at f
 
 ## Why Beatbox beats FL Studio for AI
 
-- **Every action is a typed MCP tool.** 175 tools with JSON schemas cover the whole DAW, so a model drives it directly instead of clicking pixels or scripting around a GUI.
+- **Every action is a typed MCP tool.** Typed JSON schemas cover the whole DAW, so a model drives it directly instead of clicking pixels or scripting around a GUI; small models get a compact tool list plus staged discovery (`list_tool_groups`, `search_tools`, `describe_tool`, `call_tool`, see docs/SMALL_MODEL_GUIDE.md).
 - **AI ears with ranked verdicts and fix calls.** `ears_report`, `diff_renders`, `masking_matrix`, `loudness_report`, `groove_analysis` / `hook_analysis` / `structure`, `stereo_image`, `punch`, `vocal_pocket` and `reference_match` return ranked problems, each with the exact tool call that fixes it.
 - **Diff-verified revisions.** `produce_track` runs render → critique → `diff_renders` against the best render so far, and keeps a revision only when the ears agree it is better.
 - **Nine genre playbooks.** trap, melodic_rap, drill, boom_bap, desi_hiphop (sitar, tabla, tanpura drone), lofi, rnb, phonk and afrobeats, readable with `describe_genre`.

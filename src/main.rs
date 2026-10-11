@@ -43,6 +43,10 @@ enum Cmd {
         /// Project file to open at start (local mode)
         #[arg(long)]
         project: Option<PathBuf>,
+        /// Tool list to advertise: full (default) or compact (discovery
+        /// tools + everyday edits, for small models; the rest stay callable)
+        #[arg(long, default_value = "full")]
+        tools: String,
     },
     /// Call any tool: beatbox call generate_beat '{"style":"trap"}' --project song.json
     Call {
@@ -124,7 +128,8 @@ fn main() -> Result<()> {
             }
             beatbox::gui::run(e, &listen, project, screenshot, view)?;
         }
-        Cmd::Mcp { connect, project } => {
+        Cmd::Mcp { connect, project, tools: list } => {
+            mcp::set_compact_tools(list.eq_ignore_ascii_case("compact"));
             let backend = match connect {
                 Some(url) => mcp::Backend::Remote(url),
                 None => {

@@ -8,6 +8,7 @@ This page is the short version; `get_guide` is the long one.
 
 ```sh
 beatbox mcp                      # MCP over stdio (Claude Desktop, Cursor, any MCP client)
+beatbox mcp --tools compact      # advertise ~25 tools instead of all of them (small models)
 beatbox mcp --connect http://127.0.0.1:7878   # drive a running studio window live
 beatbox call make_beat '{"prompt":"dark 90 bpm desi hip-hop with a beat switch"}'
 ```
@@ -22,15 +23,42 @@ beatbox call make_beat '{"prompt":"dark 90 bpm desi hip-hop with a beat switch"}
 
 Everything else is for changing details.
 
+## Compact tool list (staged schemas)
+
+The full registry is large. A small model should not carry every schema in
+its context, so the server can advertise a short list instead:
+
+```sh
+beatbox mcp --tools compact        # or BEATBOX_MCP_TOOLS=compact
+```
+
+`tools/list` then holds about 25 tools: discovery (`list_tool_groups`,
+`search_tools`, `describe_tool`, `call_tool`, `get_guide`), the one-call
+producers, the everyday edits (tracks, notes, mixer, effects, tempo, key,
+ids), render/export and undo/redo. Everything else is still there and runs
+the same way; it is found and called in three steps, and only the schema of
+the tool about to be called is ever loaded:
+
+1. `list_tool_groups`: every group, what it is for, how many tools, a few
+   to start with (a few hundred tokens).
+2. `search_tools {query: "split clip"}`: ranked matches, one line each, with
+   the required arguments and whether the tool changes the project.
+3. `describe_tool {name}`: the full JSON schema (`input_schema`), every
+   argument explained and a ready-to-send `example`.
+
+Then `call_tool {name, arguments}` (or the tool directly, if the client
+allows calling unlisted tools). Same validation, undo and results.
+
 ## Finding a tool (never guess names)
 
-1. `list_tools` returns every tool grouped by category, one line each.
-   `list_tools {category: "vocal"}` or `{search: "reverb"}` narrows it.
+1. `list_tool_groups` for the map, `search_tools {query}` for a goal in
+   plain words, or `list_tools` for every tool grouped by category, one line
+   each (`list_tools {category: "vocal"}` or `{search: "reverb"}`).
 2. `suggest_tools {goal: "make the vocal louder"}` matches plain words to tools
    and returns an example call for the best one.
 3. `describe_tool {name}` gives every argument (type, range, default,
-   required), a ready-to-send `example`, the usual `next` tools and related
-   tools. Copy the example, change the values, send it.
+   required), the full `input_schema`, a ready-to-send `example`, the usual
+   `next` tools and related tools. Copy the example, change the values, send it.
 
 A wrong tool name is answered with `Did you mean: ...` and the three closest
 names. A wrong argument name is refused with the list of valid ones and
@@ -68,3 +96,17 @@ nothing is changed.
 {"tool": "set_mixer", "args": {"track": "lead", "volume_db": -3}}
 {"tool": "export_audio", "args": {"path": "sad_rnb.mp3"}}
 ```
+
+## Stable ids
+
+Every track, bus, pattern, note, clip and automation lane has an id
+(`trk3`, `n41`, `clip7`) that survives renames, undo and save/load. Any
+argument that takes a track, bus or pattern name also takes its id; note
+tools take `ids`; clip tools take `id`. `list_ids` and `lookup_id` show them.
+
+## Listening is not measuring
+
+`ab_listen` writes loudness-matched A/B clips for a listener and never names
+a winner. Loudness, spectrum and DNSMOS scores describe level and damage,
+not taste: when two versions differ musically, a listener decides (a
+person, or a model that can hear the attached audio).

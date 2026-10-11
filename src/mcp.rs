@@ -39,6 +39,25 @@ impl Backend {
     }
 }
 
+static COMPACT_TOOLS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Advertise only the compact tool set in `tools/list` (`beatbox mcp --tools
+/// compact` or BEATBOX_MCP_TOOLS=compact): discovery tools plus everyday
+/// edits; every other tool stays callable by name or through call_tool.
+pub fn set_compact_tools(on: bool) {
+    COMPACT_TOOLS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn compact_tools() -> bool {
+    COMPACT_TOOLS.load(std::sync::atomic::Ordering::Relaxed)
+        || std::env::var("BEATBOX_MCP_TOOLS").is_ok_and(|v| v.eq_ignore_ascii_case("compact"))
+}
+
+/// The `tools/list` result, full or compact.
+pub fn tools_list(compact: bool) -> Value {
+    json!({ "tools": if compact { crate::tools_discovery::compact_tools_json() } else { tools::tools_json() } })
+}
+
 pub fn handle(backend: &mut Backend, msg: &Value) -> Option<Value> {
     let id = msg.get("id").cloned()?; // notifications get no response
     let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
@@ -48,10 +67,14 @@ pub fn handle(backend: &mut Backend, msg: &Value) -> Option<Value> {
             "protocolVersion": params.get("protocolVersion").and_then(|v| v.as_str()).unwrap_or("2025-06-18"),
             "capabilities": { "tools": { "listChanged": false } },
             "serverInfo": { "name": "beatbox", "title": "Beatbox — AI-native beat maker", "version": env!("CARGO_PKG_VERSION") },
-            "instructions": tools::GUIDE,
+            "instructions": if compact_tools() {
+                format!("{} This server lists a compact tool set; list_tool_groups, search_tools and describe_tool find the other {} tools, and call_tool runs any of them.", tools::GUIDE, tools::registry().len().saturating_sub(crate::tools_discovery::COMPACT.len()))
+            } else {
+                tools::GUIDE.to_string()
+            },
         })),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tools::tools_json() })),
+        "tools/list" => Ok(tools_list(compact_tools())),
         "tools/call" => {
             let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
@@ -109,6 +132,18 @@ pub fn serve(mut backend: Backend) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_tools_list_is_small_and_still_reaches_every_tool() {
+        let full = tools_list(false)["tools"].as_array().unwrap().len();
+        let small = tools_list(true)["tools"].as_array().unwrap().len();
+        assert_eq!(full, tools::registry().len());
+        assert!(small <= 30 && small * 5 < full, "{small} of {full}");
+        // a tool outside the compact list still runs by name through call_tool
+        let mut b = Backend::Local(Box::new(Engine::new(std::env::temp_dir().join("bb_mcp_compact"))));
+        let r = handle(&mut b, &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"call_tool","arguments":{"name":"theory_scale","arguments":{"root":"C","scale":"minor"}}}})).unwrap();
+        assert_eq!(r["result"]["isError"], false, "{r}");
+    }
 
     #[test]
     fn mcp_handshake_list_and_call() {

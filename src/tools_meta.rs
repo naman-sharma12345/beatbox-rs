@@ -15,7 +15,7 @@ const DISCOVERY: [&str; 3] = ["get_guide", "list_presets", "list_tools"];
 fn modules() -> Vec<(&'static str, &'static str, Vec<Tool>)> {
     vec![
         ("start", "one call does it all: make_beat from a prompt or lyrics, produce_song from a recording", crate::tools_prompt::tools()),
-        ("discover", "learn the engine: guide, catalog, describe a tool", { let mut v: Vec<Tool> = tools::core_tools().into_iter().filter(|t| DISCOVERY.contains(&t.name)).collect(); v.extend(tools()); v }),
+        ("discover", "learn the engine: guide, catalog, tool groups, search, describe a tool, call any tool", { let mut v: Vec<Tool> = tools::core_tools().into_iter().filter(|t| DISCOVERY.contains(&t.name)).collect(); v.extend(tools()); v.extend(crate::tools_discovery::tools()); v }),
         ("project", "new/load/save, tempo, key, tracks, notes, effects, undo/redo, snapshots, stable object ids", { let mut v: Vec<Tool> = tools::core_tools().into_iter().filter(|t| !DISCOVERY.contains(&t.name)).collect(); v.extend(crate::tools_ids::tools()); v }),
         ("studio", "transport, history, screenshot, live studio, metronome click", { let mut v = crate::tools_studio::tools(); v.extend(crate::tools_click::tools()); v }),
         ("notes", "piano roll and MIDI: write, edit, quantize, arpeggiate, strum", crate::tools_midi::tools()),
@@ -45,6 +45,22 @@ fn cat_index() -> &'static BTreeMap<&'static str, &'static str> {
         }
         m
     })
+}
+
+/// Every group with its purpose and tool names (each tool in its first
+/// group only); tools no module maps yet are listed under "other".
+pub fn groups() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<(&'static str, &'static str, Vec<&'static str>)> = modules()
+        .into_iter()
+        .map(|(c, p, ts)| (c, p, ts.iter().map(|t| t.name).filter(|n| seen.insert(*n)).collect()))
+        .collect();
+    let other: Vec<&'static str> = tools::registry().iter().map(|t| t.name).filter(|n| !seen.contains(n)).collect();
+    if !other.is_empty() {
+        out.push(("other", "not grouped yet", other));
+    }
+    out.retain(|g| !g.2.is_empty());
+    out
 }
 
 /// The category a tool belongs to ("other" when a module is not mapped yet).
@@ -258,6 +274,7 @@ pub fn describe(name: &str) -> Result<Value> {
         "description": t.description,
         "changes_project": t.mutates,
         "args": args,
+        "input_schema": s,
         "example": example_call(t),
         "next": next_steps(t.name),
         "related": related,

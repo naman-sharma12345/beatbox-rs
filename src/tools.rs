@@ -715,6 +715,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_ids::tools());
     v.extend(crate::tools_timeline::tools());
     v.extend(crate::tools_ab_listen::tools());
+    v.extend(crate::tools_discovery::tools());
     v.extend(crate::tools_bounce::tools());
     v.extend(crate::tools_click::tools());
     v.extend(crate::tools_markers::tools());
