@@ -1172,6 +1172,12 @@ impl eframe::App for Studio {
                     crate::engine::TransportCmd::Seek(s) => self.player.seek(s.max(0.0)),
                 }
             }
+            match e.transport.pending_audition.take() {
+                Some(Some(buf)) => self.player.audition(buf),
+                Some(None) => self.player.stop_audition(),
+                None => {}
+            }
+            e.transport.auditioning = self.player.auditioning();
             e.transport.playing = self.player.is_playing();
             e.transport.position_s = self.player.position_secs();
         }

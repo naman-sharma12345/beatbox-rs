@@ -45,6 +45,11 @@ pub struct Transport {
     pub playing: bool,
     pub position_s: f32,
     pub pending: Vec<TransportCmd>,
+    /// One-shot preview for the studio's speakers: Some(Some(buf)) plays it
+    /// once on top of the song, Some(None) stops it (applied on the next frame).
+    pub pending_audition: Option<Option<std::sync::Arc<(Vec<f32>, Vec<f32>)>>>,
+    /// True while the studio is sounding a preview.
+    pub auditioning: bool,
 }
 
 /// Full renders kept by project hash.

@@ -15,6 +15,9 @@ struct Shared {
     loop_len: usize,
     playing: bool,
     step: f64,
+    /// One-shot preview sounded on top of the song (instrument previews,
+    /// samples): buffer and its read position.
+    one: Option<(Arc<(Vec<f32>, Vec<f32>)>, f64)>,
 }
 
 pub struct Player {
@@ -33,6 +36,7 @@ impl Player {
             loop_len: 0,
             playing: false,
             step: 1.0,
+            one: None,
         }));
         let (stream, device_name) = match open_stream(shared.clone()) {
             Ok((s, n)) => (Some(s), n),
@@ -87,6 +91,21 @@ impl Player {
             self.virtual_start = secs as f64;
             self.virtual_clock = Some(Instant::now());
         }
+    }
+
+    /// Sound a buffer once on top of whatever is playing (replaces a preview
+    /// that is still sounding).
+    pub fn audition(&self, buf: Arc<(Vec<f32>, Vec<f32>)>) {
+        self.shared.lock().unwrap().one = Some((buf, 0.0));
+    }
+
+    pub fn stop_audition(&self) {
+        self.shared.lock().unwrap().one = None;
+    }
+
+    /// True while a preview is sounding on a real output device.
+    pub fn auditioning(&self) -> bool {
+        self.has_audio() && self.shared.lock().unwrap().one.is_some()
     }
 
     pub fn position_secs(&self) -> f32 {
@@ -152,6 +171,22 @@ where
                     }
                     _ => (0.0, 0.0),
                 };
+                let step = s.step;
+                let (mut l, mut r) = (l, r);
+                let mut done = false;
+                if let Some((b, p)) = s.one.as_mut() {
+                    let i = *p as usize;
+                    if i < b.0.len() {
+                        l += b.0[i];
+                        r += b.1.get(i).copied().unwrap_or(b.0[i]);
+                        *p += step;
+                    } else {
+                        done = true;
+                    }
+                }
+                if done {
+                    s.one = None;
+                }
                 for (c, out) in frame.iter_mut().enumerate() {
                     let v = match c {
                         0 => l,

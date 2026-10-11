@@ -7,7 +7,7 @@ anything listed as **have**.
 The studio GUI is fully manual (a hand-operated DAW). The one-call production
 helpers (make_beat, produce_song, critique_mix, ...) are MCP tools only.
 
-**Score: 87 have, 1 partial, 3 missing of 91** (parity 87/91; counting partial as half: 87.5/91).
+**Score: 88 have, 0 partial, 3 missing of 91** (parity 88/91).
 
 Build order for the gaps, by musical impact: noise reduction as its own tool, bounce to audio,
 tempo automation and markers, additive synth, then live input and plugin
@@ -56,7 +56,7 @@ hosting.
 | Instruments | Harmor / Morphine (additive, resynthesis) | have | resynthesize_sample (sample -> tracked sine partials -> re-pitch with/without formants, partial count, time blur, tilt, odd/even), additive_sample (harmonic recipes or your own harmonic amplitudes, inharmonicity, per-partial decay), analyze_partials |
 | Instruments | Transistor Bass (303) | have | acid_bass preset |
 | Instruments | BooBass / 808 | have | bass808 instrument |
-| Instruments | FLEX (preset player) | partial | design_sound presets, list_presets |
+| Instruments | FLEX (preset player) | have | list_presets + HEAR on every preset (preview_instrument preset + play: sounds a phrase on the studio speakers), audition_instrument play for the sound catalog, play_audio for any file or sample, design_sound |
 | Instruments | Layer channel | have | layer_instrument |
 | Effects | Parametric EQ 2 | have | parametric_eq, eq, eq_curve |
 | Effects | Fruity Limiter / Compressor | have | limiter, compressor |

@@ -99,6 +99,8 @@ impl Studio {
         self.analyze_panel(ui);
         ui.add_space(6.0);
         let h = ui.available_height() - 8.0;
+        let hear_busy = self.browser.job.as_ref().map(|j| j.0.clone());
+        let mut hear: Option<String> = None;
         ui.columns(3, |cols| {
             // ---------- instrument presets
             let ui = &mut cols[0];
@@ -110,6 +112,9 @@ impl Studio {
                         continue;
                     }
                     ui.horizontal(|ui| {
+                        if ui.add_enabled(hear_busy.is_none(), egui::Button::new("HEAR").small()).on_hover_text(format!("preview_instrument {{preset: {n}, play: true}}: plays a short phrase")).clicked() {
+                            hear = Some(n.to_string());
+                        }
                         if ui.small_button("LOAD").on_hover_text(format!("set_instrument {{track: {track}, preset: {n}}}")).clicked() && !track.is_empty() {
                             call = Some(("set_instrument".into(), json!({"track": track, "preset": n})));
                         }
@@ -230,6 +235,9 @@ impl Studio {
             self.call(&tool, args);
             self.browser.chains = None;
         }
+        if let Some(n) = hear {
+            self.library_job(format!("hear {n}"), ui.ctx().clone(), "preview_instrument", json!({"preset": n, "play": true}));
+        }
     }
 }
 
@@ -264,6 +272,14 @@ impl Studio {
         if let Some((label, rx)) = &self.browser.job {
             if let Ok(r) = rx.try_recv() {
                 self.browser.job_result = match r {
+                    Ok(v) if v["played_as"].is_string() && v["playing"].is_boolean() => {
+                        let name = v["name"].as_str().or(v["preset"].as_str()).unwrap_or("");
+                        if v["playing"] == true {
+                            format!("{label}: playing {name} ({:.1} s, peak {:.1} dBFS)", v["play_seconds"].as_f64().unwrap_or(0.0), v["peak_dbfs"].as_f64().unwrap_or(0.0))
+                        } else {
+                            format!("{label}: no audio output here \u{00B7} saved {}", v["path"].as_str().unwrap_or(""))
+                        }
+                    }
                     Ok(v) if v["played_as"].is_string() => {
                         format!("{label}: {} \u{00B7} peak {:.1} dBFS \u{00B7} {}", v["name"].as_str().unwrap_or(""), v["peak_dbfs"].as_f64().unwrap_or(0.0), v["path"].as_str().unwrap_or(""))
                     }
@@ -338,8 +354,8 @@ impl Studio {
                                 if ui.add_enabled(busy.is_none() && (fmt == "sfz_git" || fmt == "vsco_pack"), egui::Button::new("+TRACK").small()).on_hover_text(format!("load_instrument {{track: {id}, catalog_id: {id}}}")).clicked() {
                                     job = Some((format!("loading {id}"), "load_instrument", json!({"track": id, "catalog_id": id})));
                                 }
-                                if ui.add_enabled(busy.is_none() && fmt == "sfz_git", egui::Button::new("AUDITION").small()).on_hover_text(format!("audition_instrument {{catalog_id: {id}}}: renders a 4 s preview WAV")).clicked() {
-                                    job = Some((format!("audition {id}"), "audition_instrument", json!({"catalog_id": id})));
+                                if ui.add_enabled(busy.is_none() && fmt == "sfz_git", egui::Button::new("AUDITION").small()).on_hover_text(format!("audition_instrument {{catalog_id: {id}, play: true}}: plays a 4 s preview")).clicked() {
+                                    job = Some((format!("audition {id}"), "audition_instrument", json!({"catalog_id": id, "play": true})));
                                 }
                                 let inst = if it["installed"] == true { " \u{2713}" } else { "" };
                                 ui.add(egui::Label::new(RichText::new(format!("{name}{inst}")).size(12.0).color(tk.text)).truncate()).on_hover_text(format!("{id} \u{00B7} {} \u{00B7} {mb} \u{00B7} {lic}", it["family"].as_str().unwrap_or("")));
