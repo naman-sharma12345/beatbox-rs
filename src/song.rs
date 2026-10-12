@@ -841,7 +841,10 @@ pub(crate) fn apply_section_energy(e: &mut Engine, spec: &SongSpec, voice: Optio
 fn apply_role_levels(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<()> {
     for (role, db) in &spec.mix.levels {
         let track = crate::producer::track_name(role);
-        let ti = e.project.track_index(&track).map_err(|_| no_part(e, role))?;
+        let Ok(ti) = e.project.track_index(&track) else {
+            log.push(format!("{}; its level offset was not applied", no_part(e, role)));
+            continue;
+        };
         e.project.tracks[ti].volume_db += db;
         log.push(format!("level: {role} {db:+.1} dB (/mix/levels)"));
     }
@@ -855,7 +858,12 @@ fn swap_instruments(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> R
         let track = crate::producer::track_name(role);
         let InstrumentSpec::Name(n) = ins else {
             if let InstrumentSpec::Samples { samples, gain_db } = ins {
-                let ti = e.project.track_index(&track).map_err(|_| no_part(e, role))?;
+                // a role the arrangement does not play (a perc kit on a beat
+                // with no perc part) is skipped with a note, not a failed song
+                let Ok(ti) = e.project.track_index(&track) else {
+                    log.push(format!("{}; your samples for it were not used", no_part(e, role)));
+                    continue;
+                };
                 // the pitch the part plays: the hits sound at their own pitch there
                 let mut count: BTreeMap<u8, usize> = BTreeMap::new();
                 for pt in &e.project.patterns {
@@ -879,7 +887,10 @@ fn swap_instruments(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> R
             continue;
         };
         let Some(id) = n.strip_prefix("catalog:") else { continue };
-        let ti = e.project.track_index(&track).map_err(|_| no_part(e, role))?;
+        let Ok(ti) = e.project.track_index(&track) else {
+            log.push(format!("{}; instrument {id} was not loaded", no_part(e, role)));
+            continue;
+        };
         let tmp = format!("__song_{role}");
         e.call_nested("load_instrument", &json!({"track": tmp, "catalog_id": id}), "song")?;
         let tj = e.project.track_index(&tmp)?;
@@ -1060,8 +1071,17 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
+    // the file's extension names its format: "song.wav" with the default
+    // format used to get mp3 bytes under a .wav name, which the delivered-file
+    // check then could not decode ("unsupported wave format")
+    let format = path
+        .extension()
+        .and_then(|x| x.to_str())
+        .map(|x| x.to_ascii_lowercase())
+        .filter(|x| ["mp3", "wav", "flac"].contains(&x.as_str()))
+        .unwrap_or_else(|| spec.export.format.clone());
     let o = crate::tools_delivery::DeliverOpts {
-        format: spec.export.format.clone(),
+        format,
         target_lufs: Some(spec.master.lufs),
         ceiling_dbtp: spec.master.true_peak - mix_rules::DELIVERY_CEILING_MARGIN_DB,
         soft_clip_db: mix_rules::DELIVERY_SOFT_CLIP_DB,
@@ -1078,7 +1098,7 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     // aimed lower by what delivery added
     let mut o = o;
     let mut d = Value::Null;
-    let mut checks = Value::Null;
+    let mut checks;
     let mut lift_log = Vec::new();
     let mut tone_rounds = 0usize;
     // what the level rule took from each bright part (the air floor may
@@ -1559,6 +1579,21 @@ pub fn tools() -> Vec<Tool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_role_the_beat_does_not_play_is_skipped_not_fatal() {
+        // the known bug: perc samples on a beat with no perc part failed the song
+        let (spec, probs) = validate(&json!({"genre": "trap", "instruments": {"perc": {"samples": ["/nonexistent/perc.wav"]}, "counter": "catalog:vcsl_pipe_organ_soft"}, "mix": {"levels": {"perc": 2.0}}}));
+        let spec = spec.unwrap_or_else(|| panic!("{probs:?}"));
+        let d = std::env::temp_dir().join(format!("song_noperc_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        let mut log = Vec::new();
+        swap_instruments(&mut e, &spec, &mut log).unwrap();
+        apply_role_levels(&mut e, &spec, &mut log).unwrap();
+        assert!(log.iter().any(|l| l.contains("no perc part") && l.contains("not used")), "{log:?}");
+        assert!(log.iter().any(|l| l.contains("level offset was not applied")), "{log:?}");
+    }
 
     #[test]
     fn every_problem_comes_with_a_path_and_a_fix() {

@@ -6,6 +6,7 @@
 
 mod console;
 mod piano;
+mod fl_playlist;
 mod player;
 mod playlist;
 mod shortcuts;
@@ -766,7 +767,8 @@ impl Studio {
             return;
         };
         let steps = pat.steps() as usize;
-        let header_w = 210.0;
+        // channel rack header: name | pan | volume | piano roll | M S
+        let header_w = 286.0;
         let playing_here = locate(p, self.player.position_secs())
             .filter(|(pi, _)| *pi == self.pattern)
             .map(|(_, s)| s);
@@ -795,6 +797,23 @@ impl Studio {
                 painter.text(head.left_center() + Vec2::new(14.0, 8.0), Align2::LEFT_CENTER, kind, FontId::proportional(10.0), DIM);
                 let head_resp = ui.interact(head, ui.id().with(("head", ti)), Sense::click());
                 if head_resp.clicked() {
+                    self.selected = ti;
+                }
+                // rack controls, FL-style: pan and volume knobs, then the
+                // piano-roll button; each gesture is one set_mixer call
+                let ky = head.center().y;
+                let ms_left = head.right() - 58.0;
+                let pr = Rect::from_center_size(Pos2::new(ms_left - 16.0, ky), Vec2::new(22.0, 16.0));
+                let vk = Rect::from_center_size(Pos2::new(pr.left() - 16.0, ky), Vec2::splat(22.0));
+                let pk = Rect::from_center_size(Pos2::new(vk.left() - 14.0, ky), Vec2::splat(22.0));
+                let (pan_id, vol_id, pr_id) = (ui.id().with(("pan", ti)), ui.id().with(("vol", ti)), ui.id().with(("pr", ti)));
+                if let Some(pn) = mini_knob(ui, pk, pan_id, t.pan, -1.0, 1.0, 0.0, true, color, "pan") {
+                    self.call("set_mixer", json!({"track": t.name, "pan": pn}));
+                }
+                if let Some(v) = mini_knob(ui, vk, vol_id, t.volume_db, -40.0, 12.0, 0.0, false, color, "volume dB") {
+                    self.call("set_mixer", json!({"track": t.name, "volume_db": v}));
+                }
+                if keys_button(ui, pr, pr_id, selected, color).clicked() {
                     self.selected = ti;
                 }
                 // M / S pills
@@ -830,6 +849,20 @@ impl Studio {
                         if resp.clicked() {
                             self.selected = ti;
                             self.call("toggle_step", json!({"track": t.name, "step": s, "pattern": pat.name}));
+                        }
+                        // velocity: a lit step shows its level as a bar; the
+                        // wheel over it turns it up or down
+                        if let Some(n) = hit {
+                            let h = (r.height() - 4.0) * n.vel.clamp(0.0, 1.0);
+                            painter.rect_filled(Rect::from_min_size(Pos2::new(r.left() + 2.0, r.bottom() - 2.0 - h), Vec2::new(2.0, h)), 1.0, Color32::from_white_alpha(150));
+                            if resp.hovered() {
+                                let dy = ui.input(|i| i.raw_scroll_delta.y);
+                                if dy.abs() > 0.5 {
+                                    let add = if dy > 0.0 { 0.05 } else { -0.05 };
+                                    self.call("edit_notes", json!({"track": t.name, "pattern": pat.name, "from": s, "to": s + 1, "vel_add": add}));
+                                }
+                                resp.on_hover_text(format!("velocity {:.0}% (scroll to change)", n.vel * 100.0));
+                            }
                         }
                     }
                 } else {
@@ -1144,7 +1177,7 @@ impl Studio {
 impl eframe::App for Studio {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frames += 1;
-        let mut midi_live = false;
+        let midi_live;
         // live link: apply transport commands from MCP and publish the state
         {
             let mut e = self.engine.lock().unwrap();

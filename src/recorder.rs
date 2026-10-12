@@ -114,6 +114,7 @@ mod live {
         info: Arc<Mutex<Option<(u32, usize, String)>>>,
         thread: Option<std::thread::JoinHandle<Result<()>>>,
         pub started: Instant,
+        #[allow(dead_code)]
         pub max_seconds: f32,
     }
 

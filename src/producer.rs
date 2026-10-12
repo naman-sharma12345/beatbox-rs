@@ -2569,10 +2569,17 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         })
         .collect();
     e.revision += 1;
+    // feel: per-role micro-timing (the kick on the grid, the snare laid
+    // back, the hats carrying the swing, chords strummed) and velocity
+    // shaping (beat accents, phrase arcs, builds into 8-bar boundaries),
+    // baked into note offsets so starts stay on the grid. Replaces the old
+    // random start jitter, which also knocked notes off the grid the global
+    // swing reads, so the swing silently stopped applying.
     if plan.knobs.humanize > 0.0 {
-        for s in &plan.sections {
-            e.call_from("humanize", &json!({"pattern": s.name, "timing": plan.knobs.humanize, "velocity": 0.06, "seed": plan.seed}), "producer")?;
-        }
+        let amount = (plan.knobs.humanize / 0.04).clamp(0.5, 1.25);
+        let r = crate::groove_feel::apply(&mut e.project, plan.seed, amount);
+        e.revision += 1;
+        let _ = r;
     }
 
     // tracks that never play (an empty grammar variation) only add noise
@@ -2666,6 +2673,24 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                 "producer",
             )?;
         }
+    }
+    // mud: every melodic/pad part gives up a little of 200-500 Hz, where
+    // stacked keys, pads and leads pile into a boxy blur over the 808 and
+    // under the vocal's body
+    let melodic: Vec<String> = e
+        .project
+        .tracks
+        .iter()
+        .map(|t| t.name.clone())
+        .filter(|n| matches!(crate::groove_feel::role_of(n), "keys" | "lead"))
+        .collect();
+    for t in &melodic {
+        let cut = if crate::groove_feel::role_of(t) == "keys" { -3.0 } else { -2.0 };
+        e.call_from(
+            "add_effect",
+            &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 320.0, "gain_db": cut, "q": 0.9}]}}),
+            "producer",
+        )?;
     }
     if have(e, "bass") && have(e, "kick") {
         // the 808/bass starts on the kick in most of these grooves: duck it

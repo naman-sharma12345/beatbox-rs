@@ -106,8 +106,11 @@ impl Studio {
                 }
             }
         });
+        // FL-style pattern playlist: paint, drag and resize pattern clips
+        self.fl_playlist(ui, p);
+        ui.add_space(6.0);
         // pattern clips on the playlist, by stable id: click to select, right-click to edit
-        if !p.playlist.is_empty() {
+        if false && !p.playlist.is_empty() {
             let playhead_bar = playhead_beat / 4.0;
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new("CLIPS").size(11.0).color(tk.ruler_text));

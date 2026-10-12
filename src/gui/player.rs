@@ -136,6 +136,7 @@ impl Player {
     }
 
     /// Drop a launch that has not happened yet.
+    #[allow(dead_code)]
     pub fn cancel_launch(&mut self) {
         self.virtual_queued = None;
         self.shared.lock().unwrap().queued = None;

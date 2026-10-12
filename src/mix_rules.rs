@@ -838,7 +838,18 @@ pub fn set_glue(e: &mut Engine) -> Result<Value> {
             n += 1;
         }
     }
-    Ok(json!({"compressors": n, "threshold_db": r1(thr), "ratio": 1.5}))
+    // multiband glue under the broadband one: the sub band is held a little
+    // tighter (the 808 and kick stop pumping the whole mix), the mids barely
+    // touched, the top kept from spitting; gentle ratios, no makeup
+    let has_mb = e.project.master_effects.iter().any(|f| serde_json::to_value(f).map(|v| v["type"] == "multiband").unwrap_or(false));
+    let mb = json!({"type": "multiband", "low_freq": 150.0, "high_freq": 4500.0,
+        "low_threshold_db": loud - 4.0, "mid_threshold_db": loud - 2.0, "high_threshold_db": loud - 8.0,
+        "low_ratio": 1.8, "mid_ratio": 1.3, "high_ratio": 1.6, "attack_ms": 25.0, "release_ms": 160.0,
+        "low_gain_db": 0.0, "mid_gain_db": 0.0, "high_gain_db": 0.0, "mix": 1.0});
+    if !has_mb && loud > -100.0 {
+        e.project.master_effects.push(serde_json::from_value(mb)?);
+    }
+    Ok(json!({"compressors": n, "threshold_db": r1(thr), "ratio": 1.5, "multiband": !has_mb && loud > -100.0}))
 }
 
 /// Step the verses down by `db` more on the master's section automation.

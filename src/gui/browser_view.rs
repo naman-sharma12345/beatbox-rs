@@ -567,6 +567,6 @@ fn spectrogram_view(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, sp: &Va
     }
     let end = if ed.end > ed.start { ed.end } else { dur };
     let sel = egui::Rect::from_min_max(egui::pos2(x_of(ed.start), y_of(ed.hi)), egui::pos2(x_of(end), y_of(ed.lo)));
-    painter.rect_stroke(sel, 0.0, egui::Stroke::new(1.5, tk.text));
+    painter.rect_stroke(sel, 0.0, egui::Stroke::new(1.5_f32, tk.text));
     resp.on_hover_text("drag a box to choose the region and the band");
 }

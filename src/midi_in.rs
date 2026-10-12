@@ -223,7 +223,7 @@ pub fn process(e: &mut Engine, msgs: &[[u8; 3]], at_s: Option<f32>) -> Vec<Value
         let on = kind == 0x90 && m[2] > 0;
         let off = kind == 0x80 || (kind == 0x90 && m[2] == 0);
         let cc = kind == 0xb0;
-        let mut did = String::new();
+        let mut did: String;
         if let (Some(t), true) = (e.midi.learn.clone(), cc || on) {
             let control = Control { cc, number: m[1], channel: None };
             e.midi.links.retain(|l| l.control != control && l.target != t);
