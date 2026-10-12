@@ -84,9 +84,14 @@ A song judges itself; no ear in the loop is needed.
   `{"file": ..., "genre": ...}` judges any audio file (no fixes: a file has no spec).
 * `song_improve {"rounds": 2}` applies the fixes for the biggest weaknesses
   (up to 3 a round), rebuilds, critiques again and **keeps the best take**
-  (a round that scores clearly worse is rolled back and its fix is not tried again; one that comes out only a little worse is built on, so a hook lift that cost a little air gets the air back next round).
+  (a round that scores clearly worse is rolled back and its fixes are not tried again; a fix that helped can be applied again, up to 3 times, from the new measures; one that comes out only a little worse is built on, so a hook lift that cost a little air gets the air back next round).
   The song's file ends as the best take; the spec keeps the knobs that made it.
   `song_create {..., "improve": 2}` builds and improves in one call.
+* `reference: "approved.mp3"` (song_critique, song_improve, or `improve: {"rounds": 3, "reference": ...}`)
+  also holds the song to an approved mix: 5-10 kHz within 1 dB under it
+  (`/mix/air_floor_db`, which every delivery then enforces), 40-120 Hz no
+  more than 0.5 dB heavier (`/mix/levels/bass`, `/mix/levels/kick`), loudness
+  within 0.6 LU (`/master/lufs`, `/master/preserve_dynamics`).
 * The knobs it turns: `/mix/levels/<role>` (fader offsets, -12..12 dB, applied
   when the beat is composed: a change recomposes with the same seed),
   `/mix/drop_lift_db`, `/density`, `/master/preserve_dynamics`,

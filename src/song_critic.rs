@@ -92,6 +92,9 @@ pub struct Metrics {
     pub lra_lu: f32,
     pub true_peak_db: f32,
     pub sub_rel_lufs_db: f32,
+    /// 40-120 Hz (kick + 808 body) minus integrated LUFS (dB).
+    #[serde(default)]
+    pub low_rel_lufs_db: f32,
     pub presence_rel_lufs_db: f32,
     pub air_rel_lufs_db: f32,
     pub width_db: f32,
@@ -108,6 +111,14 @@ fn r1(x: f32) -> f32 {
 }
 fn r2(x: f32) -> f32 {
     (x * 100.0).round() / 100.0
+}
+/// A knob value as the spec should read it (an f32 widened to f64 carries
+/// float noise: -25.200000762939453).
+fn clean(v: Value) -> Value {
+    match v.as_f64() {
+        Some(x) if v.is_f64() => json!((x * 100.0).round() / 100.0),
+        _ => v,
+    }
 }
 fn db(x: f64) -> f32 {
     (10.0 * x.max(1e-12).log10()) as f32
@@ -165,6 +176,7 @@ pub fn measure(path: &std::path::Path, spans: &[mix_rules::Span], bpm: f32) -> R
         lra_lu: r1(ld.loudness_range_lu),
         true_peak_db: r1(ld.true_peak_dbtp),
         sub_rel_lufs_db: r1(rel(30.0, 80.0)),
+        low_rel_lufs_db: r1(rel(40.0, 120.0)),
         presence_rel_lufs_db: r1(rel(2000.0, 5000.0)),
         air_rel_lufs_db: r1(rel(5000.0, 10000.0)),
         width_db: r1(width),
@@ -214,7 +226,7 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
     let mut out = Vec::new();
     let level = |role: &str| spec.mix.levels.get(role).copied().unwrap_or(0.0);
     let mut w = |id: &str, says: String, measured: Value, target: Value, severity: f32, fix: Vec<(&str, Value)>| {
-        out.push(Weakness { id: id.into(), says, measured, target, severity: r2(severity), fix: fix.into_iter().map(|(k, v)| (k.to_string(), v)).collect() });
+        out.push(Weakness { id: id.into(), says, measured, target, severity: r2(severity), fix: fix.into_iter().map(|(k, v)| (k.to_string(), clean(v))).collect() });
     };
     if let Some(r) = p.sub_rel_lufs_db {
         let s = sev(m.sub_rel_lufs_db, r);
@@ -273,7 +285,13 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
     }
     let [alo, ahi] = t.air_rel_lufs_db;
     if m.air_rel_lufs_db < alo - 0.15 {
-        w("top_dull", format!("the top end is dull ({} dB in 5-10 kHz under the loudness, wants {}..{}): the hats have lost their sparkle", m.air_rel_lufs_db, alo, ahi), json!(m.air_rel_lufs_db), json!([alo, ahi]), sev(m.air_rel_lufs_db, [alo, ahi]), vec![("/mix/levels/hat", json!(r1((level("hat") + 2.0).min(12.0))))]);
+        let mut fix = vec![("/mix/levels/hat", json!(r1((level("hat") + 2.0).min(12.0))))];
+        // a floor above the song's own (a reference's) goes into the spec so
+        // every delivery holds it
+        if alo > spec.targets().air_rel_lufs_db[0] + 0.05 {
+            fix.push(("/mix/air_floor_db", json!(r1(alo))));
+        }
+        w("top_dull", format!("the top end is dull ({} dB in 5-10 kHz under the loudness, wants {}..{}): the hats have lost their sparkle", m.air_rel_lufs_db, alo, ahi), json!(m.air_rel_lufs_db), json!([alo, ahi]), sev(m.air_rel_lufs_db, [alo, ahi]), fix);
     }
     let [plo, phi] = t.presence_rel_lufs_db;
     if m.presence_rel_lufs_db > phi + 0.15 {
@@ -295,6 +313,58 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
     out
 }
 
+/// A reference file's measures turned into targets: the song should land
+/// near it where it matters most on a phone (top end within ~1 dB, low end
+/// no heavier, loudness within ~0.6 LU). Returns the extra weaknesses (the
+/// top end is judged by `judge` against the raised floor this sets on `t`).
+pub fn judge_reference(m: &Metrics, r: &Metrics, t: &mut Targets, spec: &SongSpec) -> Vec<Weakness> {
+    let mut out = Vec::new();
+    let level = |role: &str| spec.mix.levels.get(role).copied().unwrap_or(0.0);
+    // the top end: within REF_AIR_BELOW_DB under the reference (never over
+    // the song's own ceiling)
+    let floor = (r.air_rel_lufs_db - REF_AIR_BELOW_DB).min(t.air_rel_lufs_db[1] - 0.4);
+    if floor > t.air_rel_lufs_db[0] {
+        t.air_rel_lufs_db[0] = r1(floor);
+    }
+    let over = m.low_rel_lufs_db - (r.low_rel_lufs_db + REF_LOW_OVER_DB);
+    if over > 0.0 {
+        let down = (over + 0.5).clamp(1.0, 4.0);
+        out.push(Weakness {
+            id: "low_heavier_than_reference".into(),
+            says: format!("the kick and 808 sit heavier than the reference ({} dB in 40-120 Hz under the loudness, the reference {}): it eats the loudness", m.low_rel_lufs_db, r.low_rel_lufs_db),
+            measured: json!(m.low_rel_lufs_db),
+            target: json!(r1(r.low_rel_lufs_db + REF_LOW_OVER_DB)),
+            severity: r2((over / 2.0).min(3.0)),
+            fix: [("/mix/levels/bass".to_string(), clean(json!(r1((level("bass") - down).max(-12.0))))), ("/mix/levels/kick".to_string(), clean(json!(r1((level("kick") - down * 0.5).max(-12.0)))))].into_iter().collect(),
+        });
+    }
+    let quiet = r.lufs - m.lufs - REF_LUFS_TOL;
+    if quiet > 0.0 {
+        let mut fix: BTreeMap<String, Value> = BTreeMap::new();
+        fix.insert("/master/lufs".into(), clean(json!(r1(r.lufs))));
+        let pd = (spec.master.preserve_dynamics - 0.15).max(0.3);
+        if pd < spec.master.preserve_dynamics - 0.01 {
+            fix.insert("/master/preserve_dynamics".into(), clean(json!(r2(pd))));
+        }
+        out.push(Weakness {
+            id: "quieter_than_reference".into(),
+            says: format!("quieter than the reference ({} LUFS, the reference {})", m.lufs, r.lufs),
+            measured: json!(m.lufs),
+            target: json!(r.lufs),
+            severity: r2((quiet / 1.0).min(3.0)),
+            fix,
+        });
+    }
+    out
+}
+
+/// The top end may sit at most this far under a reference's (dB).
+pub const REF_AIR_BELOW_DB: f32 = 1.0;
+/// The low end (40-120 Hz) may sit at most this far over a reference's (dB).
+pub const REF_LOW_OVER_DB: f32 = 0.5;
+/// Loudness may sit this far under a reference's before it counts (LU).
+pub const REF_LUFS_TOL: f32 = 0.6;
+
 /// How far the song is from its profile: the sum of the severities (0 =
 /// meets every range).
 pub fn score(ws: &[Weakness]) -> f32 {
@@ -310,13 +380,31 @@ fn song_parts(e: &Engine) -> Result<(song::SongState, SongSpec)> {
     Ok((st, spec))
 }
 
-fn critique_song(e: &Engine, genre: Option<&str>) -> Result<(Metrics, Vec<Weakness>, String, Profile)> {
+fn critique_song(e: &Engine, genre: Option<&str>, reference: Option<&Metrics>) -> Result<(Metrics, Vec<Weakness>, String, Profile)> {
     let (st, spec) = song_parts(e)?;
     let audio = st.audio.clone().ok_or_else(|| anyhow!("the song has no delivered file yet: song_render makes one"))?;
     let (pname, prof) = profile_for(genre.or(spec.genre.as_deref()))?;
     let m = measure(std::path::Path::new(&audio), &st.sections, e.project.bpm)?;
-    let ws = judge(&m, &prof, &spec.targets(), &spec, &st.checks);
+    let mut t = spec.targets();
+    let mut extra = match reference {
+        Some(r) => judge_reference(&m, r, &mut t, &spec),
+        None => Vec::new(),
+    };
+    let mut ws = judge(&m, &prof, &t, &spec, &st.checks);
+    ws.append(&mut extra);
+    ws.sort_by(|a, b| b.severity.partial_cmp(&a.severity).unwrap_or(std::cmp::Ordering::Equal));
     Ok((m, ws, pname, prof))
+}
+
+pub fn reference_metrics(e: &Engine, a: &Value) -> Result<Option<(String, Metrics)>> {
+    match a.get("reference").and_then(|v| v.as_str()) {
+        Some(f) => {
+            let p = e.resolve(f);
+            let m = measure(&p, &[], e.project.bpm).map_err(|err| anyhow!("reference: {err}"))?;
+            Ok(Some((p.to_string_lossy().to_string(), m)))
+        }
+        None => Ok(None),
+    }
 }
 
 fn verdict(ws: &[Weakness]) -> String {
@@ -341,9 +429,10 @@ pub fn critique_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         }).collect();
         return Ok(json!({"file": path.to_string_lossy(), "profile": pname, "profile_ranges": prof, "metrics": m, "weaknesses": ws, "score": score(&ws), "verdict": verdict(&ws), "note": "a file has no spec: weaknesses are named without fixes, and section measures (hook lift, build) need a song"}));
     }
-    let (m, ws, pname, prof) = critique_song(e, genre)?;
+    let rf = reference_metrics(e, a)?;
+    let (m, ws, pname, prof) = critique_song(e, genre, rf.as_ref().map(|x| &x.1))?;
     let fixable = ws.iter().filter(|w| !w.fix.is_empty()).count();
-    Ok(json!({"profile": pname, "profile_ranges": prof, "metrics": m, "weaknesses": ws, "score": score(&ws), "verdict": verdict(&ws),
+    Ok(json!({"profile": pname, "profile_ranges": prof, "reference": rf.map(|(p, m)| json!({"file": p, "metrics": m})), "metrics": m, "weaknesses": ws, "score": score(&ws), "verdict": verdict(&ws),
         "next": if fixable > 0 { json!(format!("song_improve applies the {fixable} automatic fix(es) and keeps the better take")) } else { json!("nothing here has an automatic fix: song_patch by hand, or leave it") }}))
 }
 
@@ -356,6 +445,8 @@ fn round_path(final_path: &std::path::Path, n: usize) -> String {
 /// How much worse (score) a round may come out and still be built on by the
 /// next one (the best take is kept regardless).
 pub const EXPLORE_MARGIN: f32 = 0.35;
+/// The same weakness's fix is applied at most this many times in one run.
+pub const MAX_TRIES_PER_FIX: usize = 3;
 
 /// song_improve: critique -> patch the knobs that own the biggest
 /// weaknesses -> rebuild -> critique again, keeping the best take, for up to
@@ -365,21 +456,24 @@ pub fn improve_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     let rounds = a.get("rounds").and_then(|v| v.as_u64()).unwrap_or(2).clamp(1, 4) as usize;
     let max_fixes = a.get("max_fixes").and_then(|v| v.as_u64()).unwrap_or(3).clamp(1, 6) as usize;
     let genre = a.get("genre").and_then(|v| v.as_str()).map(String::from);
-    improve(e, rounds, max_fixes, genre.as_deref())
+    let rf = reference_metrics(e, a)?;
+    improve(e, rounds, max_fixes, genre.as_deref(), rf)
 }
 
-pub fn improve(e: &mut Engine, rounds: usize, max_fixes: usize, genre: Option<&str>) -> Result<Value> {
+pub fn improve(e: &mut Engine, rounds: usize, max_fixes: usize, genre: Option<&str>, reference: Option<(String, Metrics)>) -> Result<Value> {
+    let rm = reference.as_ref().map(|x| &x.1);
     let t0 = std::time::Instant::now();
     let (st0, _) = song_parts(e)?;
     let final_path = std::path::PathBuf::from(st0.audio.clone().ok_or_else(|| anyhow!("the song has no delivered file yet: song_render makes one"))?);
     let orig_export = st0.spec.pointer("/export/path").cloned();
-    let (m0, w0, pname, _) = critique_song(e, genre)?;
+    let (m0, w0, pname, _) = critique_song(e, genre, rm)?;
     let s0 = score(&w0);
     // the take we keep: the project, its spec and its file
     let keep0 = round_path(&final_path, 0);
     std::fs::copy(&final_path, &keep0).map_err(|err| anyhow!("could not keep the first take: {err}"))?;
     let mut best = (s0, e.project.clone(), keep0.clone(), 0usize);
-    let mut tried: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    let mut tries: BTreeMap<String, usize> = BTreeMap::new();
     let mut history = vec![json!({"round": 0, "score": s0, "verdict": verdict(&w0), "weaknesses": w0.iter().map(|w| &w.id).collect::<Vec<_>>()})];
     let mut ws = w0.clone();
     let mut best_ws = w0.clone();
@@ -387,7 +481,9 @@ pub fn improve(e: &mut Engine, rounds: usize, max_fixes: usize, genre: Option<&s
     for n in 1..=rounds {
         let mut set: Map<String, Value> = Map::new();
         let mut using = Vec::new();
-        for w in ws.iter().filter(|w| !w.fix.is_empty() && !tried.contains(&w.id)) {
+        // a fix that helped may be applied again (its values are worked out
+        // from the new measures); one from a round that went worse is not
+        for w in ws.iter().filter(|w| !w.fix.is_empty() && !failed.contains(&w.id) && tries.get(&w.id).copied().unwrap_or(0) < MAX_TRIES_PER_FIX) {
             if using.len() >= max_fixes {
                 break;
             }
@@ -400,18 +496,22 @@ pub fn improve(e: &mut Engine, rounds: usize, max_fixes: usize, genre: Option<&s
             using.push(w.id.clone());
         }
         if set.is_empty() {
-            stop = Some(if ws.is_empty() { "the song meets its profile".to_string() } else { "what is left has no automatic fix (or its fix was tried and did not help)".to_string() });
+            stop = Some(if ws.is_empty() { "the song meets its profile".to_string() } else { "what is left has no automatic fix (or its fix made the song worse, or was applied 3 times)".to_string() });
             break;
         }
         set.insert("/export/path".into(), json!(round_path(&final_path, n)));
-        tried.extend(using.iter().cloned());
+        for id in &using {
+            *tries.entry(id.clone()).or_insert(0) += 1;
+        }
         let built = song::patch_song(e, &set, &[]);
         if let Err(err) = built {
             history.push(json!({"round": n, "tried": using, "set": set, "error": err.to_string()}));
             e.project = best.1.clone();
+            ws = best_ws.clone();
+            failed.extend(using.iter().cloned());
             continue;
         }
-        let (_m, w, _, _) = critique_song(e, genre)?;
+        let (_m, w, _, _) = critique_song(e, genre, rm)?;
         let s = score(&w);
         let better = s < best.0 - 0.05;
         // a take close to the best is built on (its new weaknesses may have
@@ -428,6 +528,7 @@ pub fn improve(e: &mut Engine, rounds: usize, max_fixes: usize, genre: Option<&s
             // back to the best take; its weaknesses stand, minus what failed
             e.project = best.1.clone();
             ws = best_ws.clone();
+            failed.extend(using.iter().cloned());
         }
         if better {
             best_ws = ws.clone();
@@ -455,10 +556,11 @@ pub fn improve(e: &mut Engine, rounds: usize, max_fixes: usize, genre: Option<&s
     for n in 0..=rounds {
         let _ = std::fs::remove_file(round_path(&final_path, n));
     }
-    let (m, w, _, _) = critique_song(e, genre)?;
+    let (m, w, _, _) = critique_song(e, genre, rm)?;
     Ok(json!({
         "audio": final_path.to_string_lossy(),
         "profile": pname,
+        "reference": reference.as_ref().map(|(p, m)| json!({"file": p, "metrics": m})),
         "kept_round": best.3,
         "score": {"before": s0, "after": score(&w)},
         "before": {"metrics": m0, "verdict": verdict(&w0)},
@@ -497,13 +599,13 @@ mod tests {
     }
 
     fn metrics_ok() -> Metrics {
-        Metrics { lufs: -10.0, lra_lu: 5.0, true_peak_db: -1.5, sub_rel_lufs_db: -12.0, presence_rel_lufs_db: -22.7, air_rel_lufs_db: -25.0, width_db: -14.0, onsets_per_s: 6.0, hook_lift_db: Some(3.0), hook_vs_verse_onsets: Some(1.1), sections: vec![], seconds: 120.0 }
+        Metrics { lufs: -10.0, lra_lu: 5.0, true_peak_db: -1.5, sub_rel_lufs_db: -12.0, low_rel_lufs_db: -12.0, presence_rel_lufs_db: -22.7, air_rel_lufs_db: -25.0, width_db: -14.0, onsets_per_s: 6.0, hook_lift_db: Some(3.0), hook_vs_verse_onsets: Some(1.1), sections: vec![], seconds: 120.0 }
     }
 
     #[test]
     fn the_approved_mix_meets_its_own_genre_profile() {
         // naman_freestyle_song2.mp3 as `song_critique {file}` measures it
-        let m = Metrics { lufs: -9.7, lra_lu: 2.2, true_peak_db: -1.8, sub_rel_lufs_db: -19.4, presence_rel_lufs_db: -22.4, air_rel_lufs_db: -24.2, width_db: -18.2, onsets_per_s: 8.08, hook_lift_db: None, hook_vs_verse_onsets: None, sections: vec![], seconds: 135.9 };
+        let m = Metrics { lufs: -9.7, lra_lu: 2.2, true_peak_db: -1.8, sub_rel_lufs_db: -19.4, low_rel_lufs_db: -15.4, presence_rel_lufs_db: -22.4, air_rel_lufs_db: -24.2, width_db: -18.2, onsets_per_s: 8.08, hook_lift_db: None, hook_vs_verse_onsets: None, sections: vec![], seconds: 135.9 };
         let (_, p) = profile_for(Some("desi_hiphop")).unwrap();
         let ws = judge(&m, &p, &Targets::default(), &SongSpec::default(), &Value::Null);
         assert!(ws.is_empty(), "the mix the person approved must pass: {ws:?}");
@@ -540,6 +642,43 @@ mod tests {
         }
         let (ok, probs) = song::validate(&sv);
         assert!(ok.is_some(), "{probs:?}");
+    }
+
+    #[test]
+    fn a_reference_raises_the_floor_and_names_low_end_and_loudness() {
+        let (_, p) = profile_for(Some("punjabi_party")).unwrap();
+        let spec = SongSpec::default();
+        let mut song2 = metrics_ok();
+        song2.air_rel_lufs_db = -24.2;
+        song2.low_rel_lufs_db = -15.4;
+        song2.lufs = -9.7;
+        let mut m = metrics_ok();
+        m.air_rel_lufs_db = -25.9;
+        m.low_rel_lufs_db = -13.9;
+        m.lufs = -10.9;
+        let mut t = Targets::default();
+        let extra = judge_reference(&m, &song2, &mut t, &spec);
+        assert!((t.air_rel_lufs_db[0] - -25.2).abs() < 0.05, "{:?}", t.air_rel_lufs_db);
+        let ids: Vec<&str> = extra.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, ["low_heavier_than_reference", "quieter_than_reference"]);
+        let ws = judge(&m, &p, &t, &spec, &Value::Null);
+        let dull = ws.iter().find(|w| w.id == "top_dull").expect("the top end is judged against the raised floor");
+        assert_eq!(dull.fix["/mix/air_floor_db"], json!(-25.2));
+        // every fix validates as a spec change
+        let mut sv = serde_json::to_value(&spec).unwrap();
+        for w in extra.iter().chain(ws.iter()) {
+            for (k, v) in &w.fix {
+                song::set_pointer(&mut sv, k, v.clone()).unwrap();
+            }
+        }
+        let (ok, probs) = song::validate(&sv);
+        assert!(ok.is_some(), "{probs:?}");
+        // a reference never lifts the floor over the song's own ceiling
+        let mut bright = song2.clone();
+        bright.air_rel_lufs_db = -20.0;
+        let mut t2 = Targets::default();
+        judge_reference(&m, &bright, &mut t2, &spec);
+        assert!(t2.air_rel_lufs_db[0] <= t2.air_rel_lufs_db[1] - 0.4 + 1e-3);
     }
 
     #[test]

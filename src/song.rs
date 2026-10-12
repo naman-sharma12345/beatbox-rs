@@ -166,12 +166,18 @@ pub struct MixSpec {
     /// change recomposes (same seed) and re-mixes. song_improve writes here.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub levels: BTreeMap<String, f32>,
+    /// The 5-10 kHz floor on the delivered file (dB minus LUFS; default
+    /// -26): raise it toward a reference's top end (song_improve with a
+    /// reference sets it). The delivery loop gives the bright parts back
+    /// what the level rule took until the floor is met.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub air_floor_db: Option<f32>,
 }
 
 impl Default for MixSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new() }
+        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None }
     }
 }
 
@@ -217,6 +223,7 @@ impl SongSpec {
             lufs: self.master.lufs,
             lufs_tolerance: d.lufs_tolerance,
             true_peak_max_db: self.master.true_peak,
+            air_rel_lufs_db: [self.mix.air_floor_db.unwrap_or(d.air_rel_lufs_db[0]), d.air_rel_lufs_db[1]],
             ..d
         }
     }
@@ -310,7 +317,7 @@ const TOP_ALIAS: &[(&str, &str)] = &[("tempo", "bpm"), ("sections", "structure")
 const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain"];
 const PHRASE_KEYS: &[&str] = &["src_s", "src", "len_s", "len", "end_s", "section", "bar", "beat", "start_beat", "at_s", "start_s", "gain_db", "name", "fade_in_ms", "fade_out_ms"];
 const SECTION_KEYS: &[&str] = &["kind", "bars", "name"];
-const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels"];
+const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db"];
 const MASTER_KEYS: &[&str] = &["lufs", "true_peak", "preserve_dynamics"];
 const EXPORT_KEYS: &[&str] = &["path", "format", "bitrate_kbps"];
 const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db"];
@@ -516,6 +523,12 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
             out.push(p(format!("/mix/levels/{role}"), format!("'{role}' is not a role"), did_you_mean(role, crate::creative::ROLES, &[("melody", "lead"), ("chords", "harmony"), ("808", "bass"), ("hats", "hat"), ("dhol", "bayan")])));
         } else if !(-12.0..=12.0).contains(db) || !db.is_finite() {
             out.push(p(format!("/mix/levels/{role}"), format!("{db} dB"), "a fader offset in -12..12 dB"));
+        }
+    }
+    if let Some(f) = spec.mix.air_floor_db {
+        let ceil = Targets::default().air_rel_lufs_db[1];
+        if !(-32.0..=ceil - 0.4).contains(&f) {
+            out.push(p("/mix/air_floor_db", format!("{f} dB"), format!("a 5-10 kHz floor in -32..{} dB (minus LUFS; the ceiling is {ceil})", ceil - 0.4)));
         }
     }
     if !(1..=6).contains(&spec.mix.balance_passes) {
@@ -1196,8 +1209,15 @@ fn create_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     // {"improve": N} beside the spec: N self-critique rounds after the build
     let improve = spec.as_object_mut().and_then(|m| m.remove("improve")).or_else(|| a.get("improve").cloned());
     let mut r = build(e, &spec, Scope::Full)?;
-    if let Some(n) = improve.and_then(|v| v.as_u64()).filter(|n| *n > 0) {
-        let imp = crate::song_critic::improve(e, (n as usize).min(4), 3, None)?;
+    // {"improve": 2} or {"improve": {"rounds": 2, "reference": "song2.mp3"}}
+    let (rounds, reference) = match &improve {
+        Some(Value::Object(o)) => (o.get("rounds").and_then(|v| v.as_u64()).unwrap_or(2), o.get("reference").cloned()),
+        Some(v) => (v.as_u64().unwrap_or(0), None),
+        None => (0, None),
+    };
+    if rounds > 0 {
+        let rf = crate::song_critic::reference_metrics(e, &json!({"reference": reference}))?;
+        let imp = crate::song_critic::improve(e, (rounds as usize).min(4), 3, None, rf)?;
         r["checks"] = e.project.song.as_ref().map(|s| s.checks.clone()).unwrap_or(Value::Null);
         r["improve"] = imp;
     }
@@ -1327,7 +1347,7 @@ pub fn tools() -> Vec<Tool> {
             mutates: true,
             schema: || {
                 let mut p = spec_props();
-                p["improve"] = json!({"type": "integer", "description": "self-critique rounds after the build (song_improve: judge against the genre profile, fix, rebuild, keep the best take; 0 = none, max 4)"});
+                p["improve"] = json!({"anyOf": [{"type": "integer"}, {"type": "object", "properties": {"rounds": {"type": "integer"}, "reference": {"type": "string"}}}], "description": "self-critique after the build (song_improve: judge against the genre profile, fix, rebuild, keep the best take): a number of rounds (max 4), or {\"rounds\": 2, \"reference\": \"approved.mp3\"} to also aim at a reference file's top end, low end and loudness"});
                 obj(p, &[])
             },
             run: create_tool,
@@ -1371,14 +1391,14 @@ pub fn tools() -> Vec<Tool> {
             name: "song_critique",
             description: "Judge the song as delivered against its genre's target profile (data: low end, hook lift, loudness range, width, groove density, the hook's build, top end, vocal over beat) and name each weakness in plain words, with the spec change that fixes it. Changes nothing. Give {file, genre} to judge any audio file.",
             mutates: false,
-            schema: || obj(json!({"genre": {"type": "string", "description": "judge against this genre's profile (default: the song's genre)"}, "file": {"type": "string", "description": "judge this audio file instead of the song (needs genre for its profile)"}}), &[]),
+            schema: || obj(json!({"genre": {"type": "string", "description": "judge against this genre's profile (default: the song's genre)"}, "file": {"type": "string", "description": "judge this audio file instead of the song (needs genre for its profile)"}, "reference": {"type": "string", "description": "also hold the song to this audio file: top end within 1 dB under it, 40-120 Hz no heavier than 0.5 dB over it, loudness within 0.6 LU"}}), &[]),
             run: crate::song_critic::critique_tool,
         },
         Tool {
             name: "song_improve",
             description: "Make the song better on its own: critique it against its genre profile, apply the fixes for the biggest weaknesses (spec knobs: /mix/levels, /mix/drop_lift_db, /density, /master/preserve_dynamics, /mix/vocal_over_beat_db), rebuild, critique again and keep the best take, for up to `rounds` rebuilds (default 2, max 4; each is a full render). The song's file ends as the best take. song_create {..., \"improve\": 2} does the same in one call.",
             mutates: true,
-            schema: || obj(json!({"rounds": {"type": "integer", "description": "rebuilds at most (1..4, default 2)"}, "max_fixes": {"type": "integer", "description": "fixes per round (default 3)"}, "genre": {"type": "string", "description": "judge against this genre's profile (default: the song's genre)"}}), &[]),
+            schema: || obj(json!({"rounds": {"type": "integer", "description": "rebuilds at most (1..4, default 2)"}, "max_fixes": {"type": "integer", "description": "fixes per round (default 3)"}, "genre": {"type": "string", "description": "judge against this genre's profile (default: the song's genre)"}, "reference": {"type": "string", "description": "an approved mix to aim at: top end within 1 dB under it, 40-120 Hz no heavier, loudness within 0.6 LU (sets /mix/air_floor_db, /mix/levels, /master/lufs)"}}), &[]),
             run: crate::song_critic::improve_tool,
         },
     ]
