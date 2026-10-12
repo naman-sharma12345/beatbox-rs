@@ -169,6 +169,7 @@ impl Engine {
             return match crate::tools_categories::resolve(cat, args)? {
                 crate::tools_categories::Resolved::Answer(v) => Ok(v),
                 crate::tools_categories::Resolved::Call(t, a) => self.call_tool_from(t, &a, source),
+                crate::tools_categories::Resolved::Routed(t, a, note) => self.call_tool_from(t, &a, source).map(|v| with_note(v, note)),
             };
         }
         self.call_tool_from(name, args, source)
@@ -335,6 +336,7 @@ impl Engine {
             return match crate::tools_categories::resolve(cat, args)? {
                 crate::tools_categories::Resolved::Answer(v) => Ok(v),
                 crate::tools_categories::Resolved::Call(t, a) => self.call_nested_tool(t, &a, source),
+                crate::tools_categories::Resolved::Routed(t, a, note) => self.call_nested_tool(t, &a, source).map(|v| with_note(v, note)),
             };
         }
         self.call_nested_tool(name, args, source)
@@ -743,5 +745,17 @@ pub fn clean_floats(v: Value) -> Value {
             Value::Object(o.into_iter().map(|(k, v)| (k, clean_floats(v))).collect())
         }
         other => other,
+    }
+}
+
+/// Add a `note` to a tool's answer (an object gets the field; anything else
+/// is wrapped as {result, note}).
+fn with_note(v: Value, note: String) -> Value {
+    match v {
+        Value::Object(mut m) => {
+            m.entry("note").or_insert(Value::String(note));
+            Value::Object(m)
+        }
+        other => serde_json::json!({"result": other, "note": note}),
     }
 }

@@ -840,6 +840,8 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     let mut tl = std::time::Instant::now();
     let voice = spec.vocal.as_ref().map(|v| v.track.clone()).filter(|v| e.project.track_index(v).is_ok());
     let mut mix = Map::new();
+    // the beat's bright parts are voiced softer before anything is measured
+    mix.insert("source_tone".into(), mix_rules::soften_beat_source(e, voice.as_deref())?);
     mix.insert("peaks".into(), mix_rules::tame_peaks(e)?);
     if let Some(v) = &voice {
         let i = e.project.track_index(v)?;
@@ -859,10 +861,13 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     // its top), the vocal is re-balanced over the darker beat, and the
     // master tone only takes what the beat could not (small, capped)
     lap(log, &mut tl, "peaks, vocal balance, top end, glue");
-    mix.insert("top_tone".into(), mix_rules::shape_top(e, voice.as_deref(), &t, 1.5)?);
+    let (mut top_p, mut top_a) = (0.0f32, 0.0f32);
+    let m0 = mix_rules::TOP_DELIVERY_MARGIN_DB;
+    mix.insert("top_tone".into(), mix_rules::shape_top_with(e, voice.as_deref(), &t, m0, m0)?);
     lap(log, &mut tl, "beat tone");
     let lift = mix_rules::ensure_drop_lift(e, &t)?;
     mix.insert("drop_lift".into(), lift);
+    mix.insert("quiet_sections".into(), mix_rules::lift_quiet_sections(e, &t)?);
     let pre = mix_rules::measure_sections(e, voice.as_deref())?;
     let path = out_path(e, spec);
     if let Some(d) = path.parent() {
@@ -889,7 +894,7 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     let mut checks = Value::Null;
     let mut lift_log = Vec::new();
     let mut last_try: Option<(f32, f32)> = None;
-    let mut top_shift = 0.0f32;
+    let mut tone_rounds = 0usize;
     for round in 0..4 {
         let full = e.mix()?;
         d = crate::tools_delivery::deliver(&full.left, &full.right, &path, &o)?;
@@ -925,14 +930,26 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
                 changed = true;
             }
         }
-        if harsh["pass"] == false {
-            let pt = harsh["measured"]["tilt_2_5k_db"].as_f64().unwrap_or(-99.0) as f32;
-            let at = harsh["measured"]["tilt_5_10k_db"].as_f64().unwrap_or(-99.0) as f32;
-            let over = (pt - t.presence_tilt_max_db).max(at - t.air_tilt_max_db);
-            if over > 0.0 && top_shift < 6.0 {
-                top_shift += over + 0.3;
-                let r = mix_rules::shape_top(e, voice.as_deref(), &t, 1.5 + top_shift)?;
-                lift_log.push(json!({"delivered_too_bright_db": (over * 10.0).round() / 10.0, "top_tone": r}));
+        if harsh["pass"] == false && tone_rounds < 2 {
+            // each band aims at its own window on the delivered file: too
+            // bright -> the top rule again aimed lower; too dark -> eased
+            let pr = harsh["measured"]["presence_rel_lufs_db"].as_f64().map(|x| x as f32);
+            let ar = harsh["measured"]["air_rel_lufs_db"].as_f64().map(|x| x as f32);
+            let [lo, hi] = t.presence_rel_lufs_db;
+            let mut moved = Vec::new();
+            if let Some(pr) = pr.filter(|p| *p > hi + 0.15 || *p < lo - 0.15) {
+                let d = pr - t.presence_rel_aim_db();
+                top_p = (top_p + d).clamp(-4.0, 8.0);
+                moved.push(json!({"band": "2-5k", "delivered_rel_lufs_db": (pr * 10.0).round() / 10.0, "aim_db": t.presence_rel_aim_db()}));
+            }
+            if let Some(ar) = ar.filter(|a| *a > t.air_rel_lufs_max_db + 0.15) {
+                top_a = (top_a + ar - (t.air_rel_lufs_max_db - 0.2)).clamp(-4.0, 8.0);
+                moved.push(json!({"band": "5-10k", "delivered_rel_lufs_db": (ar * 10.0).round() / 10.0, "max_db": t.air_rel_lufs_max_db}));
+            }
+            if !moved.is_empty() {
+                tone_rounds += 1;
+                let r = mix_rules::shape_top_with(e, voice.as_deref(), &t, m0 + top_p, m0 + top_a)?;
+                lift_log.push(json!({"delivered_tone": moved, "top_tone": r}));
                 changed = true;
             }
         }

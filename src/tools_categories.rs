@@ -214,7 +214,7 @@ pub fn tools_json() -> Value {
 pub fn engine_tool(name: &str, args: &Value) -> Option<&'static Tool> {
     match find(name) {
         Some(c) => match resolve(c, args) {
-            Ok(Resolved::Call(t, _)) => tools::find(t),
+            Ok(Resolved::Call(t, _)) | Ok(Resolved::Routed(t, _, _)) => tools::find(t),
             _ => None,
         },
         None => tools::find(name),
@@ -227,6 +227,9 @@ pub enum Resolved {
     Answer(Value),
     /// run this engine tool with these arguments
     Call(&'static str, Value),
+    /// the action lives in another category: run it there (every engine tool
+    /// is exactly one action, so this is never ambiguous) and say so
+    Routed(&'static str, Value, String),
 }
 
 fn help(c: &Category, which: Option<&str>) -> Result<Value> {
@@ -291,7 +294,16 @@ pub fn resolve(c: &'static Category, args: &Value) -> Result<Resolved> {
         // arguments pass straight through, so `transport {"action":"play"}`
         // and `history {}` keep meaning what they always did
         _ if legacy_same_name.is_some() => return Ok(Resolved::Call(legacy_same_name.unwrap().name, args.clone())),
-        Some(a) => return Err(wrong_action(c, a)),
+        Some(a) => {
+            if let Some(home) = category_of(a).filter(|h| h.name != c.name) {
+                let note = format!("'{a}' lives in the '{}' tool; it ran there (call {} with {{\"action\":\"{a}\"}} next time)", home.name, home.name);
+                return match resolve(home, args)? {
+                    Resolved::Call(t, x) => Ok(Resolved::Routed(t, x, note)),
+                    other => Ok(other),
+                };
+            }
+            return Err(wrong_action(c, a));
+        }
         None => return help(c, None).map(Resolved::Answer),
     };
     let tool = tools::find(action).ok_or_else(|| anyhow!("action '{action}' is not available in this build"))?;
@@ -363,9 +375,13 @@ mod tests {
         assert!(h["actions"].as_array().unwrap().len() >= 5, "{h}");
         let h = e.call("mixer", &json!({"action": "help", "params": {"action": "set_mixer"}})).unwrap();
         assert!(h["params_schema"]["properties"]["volume_db"].is_object(), "{h}");
-        // a wrong category points at the right one
-        let err = e.call("mixer", &json!({"action": "set_tempo", "bpm": 90})).unwrap_err().to_string();
-        assert!(err.contains("project"), "{err}");
+        // an action called on the wrong category runs in its own, and says so
+        let r = e.call("mixer", &json!({"action": "set_tempo", "bpm": 90})).unwrap();
+        assert_eq!(e.project.bpm, 90.0);
+        assert!(r["note"].as_str().map(|n| n.contains("project")).unwrap_or(false), "{r}");
+        // an action no category has is still a clear error with suggestions
+        let err = e.call("mixer", &json!({"action": "set_mixr"})).unwrap_err().to_string();
+        assert!(err.contains("set_mixer"), "{err}");
     }
 
     #[test]

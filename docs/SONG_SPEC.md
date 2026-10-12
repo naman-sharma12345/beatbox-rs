@@ -37,7 +37,8 @@ what that path touches.
 |---|---|---|
 | vocal_over_beat | ≥ +6 dB, ≤ +12 dB in every section with vocal | vocal TRACK fader automation + a gain stage after the compressor (never clip gain, which the 3:1 compressor eats) |
 | drop_lift | hooks ≥ +2 dB over verses, on the delivered file | master section automation; deliver → measure → deepen verses → deliver |
-| not_harsh | 2-5 kHz ≤ −17 dB, 5-10 kHz ≤ −18.5 dB against the 250 Hz-2 kHz body; every beat part ≥ 6 dB under the vocal at 2-5 kHz | the beat's own tone on the `beat` bus (3.15 kHz bell + 7.5 kHz shelf, up to 12 dB); the master tone (≤ 2 dB) only when the beat tone is at its limit, so the vocal keeps its top |
+| not_harsh | on the delivered file, each band (4th-order HP + LP) minus integrated LUFS: 2-5 kHz between −23.0 and −22.4 dB (the reference master the person approved reads −22.4; under −23.0 the beat turns dull), 5-10 kHz ≤ −24.3 dB | 1) at the source, in a vocal song: hats/cymbals voiced darker (`SOURCE_TONE`), a 7.5 kHz shelf on the snare (−6) and clap (−4), hats/cymbals 13 dB and shakers 12 dB under the snare (`UNDER_SNARE_DB`, faders, only ever down), drum-bus grit at most 0.15; 2) every beat part ≥ 6 dB under the vocal at 2-5 kHz (a 3 kHz bell, up to 7 dB); 3) the `beat` bus takes what is left (aim ≤ 5 dB, at most 12); 4) the master tone (≤ 2 dB) only when the bus is at its limit. The delivery loop aims 2-5 kHz at the middle of its window from both sides |
+| quiet sections | intro / outro / breakdown at most 9 dB under the verses (mix RMS) | master section automation (beat and vocal together, so the vocal over beat holds) |
 | loudness | −10 LUFS ± 1 | delivery stage (soft clip + true-peak limiter, section contrast kept) |
 | true_peak | ≤ −1 dBTP, decoded file | delivery ceiling with margin for lossy encoding |
 
@@ -45,6 +46,10 @@ The vocal chain is the raw-take chain: HPF 85 Hz, light de-ess, 3:1
 compression, small reverb/delay sends. No noise reduction, gate, tuning or
 extra EQ. The 1.4 kHz pocket in the melodic beds follows any voice, also one
 added after the beat.
+
+Calling an action on the wrong tool (for example `export {"action":"render"}`)
+runs it in the tool it belongs to and adds a `note` naming that tool: the
+call never fails just because the category guess was off.
 
 ## Patching
 
