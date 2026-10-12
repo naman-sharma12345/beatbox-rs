@@ -58,10 +58,12 @@ pub struct SongSpec {
     pub seed: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub structure: Vec<SectionSpec>,
-    /// role -> preset (roles: lead, harmony, counter, texture, bass, kick,
-    /// snare, hat, open_hat, perc, tabla, bayan).
+    /// role -> instrument (roles: lead, harmony, counter, texture, bass,
+    /// kick, snare, hat, open_hat, perc, tabla, bayan): a preset name, a
+    /// recorded instrument "catalog:<id>" (search_instruments), or one-shot
+    /// samples {"samples": [files], "gain_db": 0} (e.g. real dhol hits).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub instruments: BTreeMap<String, String>,
+    pub instruments: BTreeMap<String, InstrumentSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vocal: Option<VocalSpec>,
     #[serde(default)]
@@ -70,6 +72,20 @@ pub struct SongSpec {
     pub master: MasterSpec,
     #[serde(default)]
     pub export: ExportSpec,
+}
+
+/// What plays a role.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum InstrumentSpec {
+    /// A preset name, or "catalog:<id>" for a recorded (SFZ) instrument.
+    Name(String),
+    /// One-shot recordings played round-robin at the role's own pitch.
+    Samples {
+        samples: Vec<String>,
+        #[serde(default)]
+        gain_db: f32,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -165,7 +181,7 @@ pub struct MasterSpec {
 impl Default for MasterSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MasterSpec { lufs: t.lufs, true_peak: t.true_peak_max_db, preserve_dynamics: mix_rules::DELIVERY_PRESERVE_DYNAMICS }
+        MasterSpec { lufs: t.lufs, true_peak: t.true_peak_max_db, preserve_dynamics: mix_rules::SONG_PRESERVE_DYNAMICS }
     }
 }
 
@@ -196,6 +212,7 @@ impl SongSpec {
             lufs: self.master.lufs,
             lufs_tolerance: d.lufs_tolerance,
             true_peak_max_db: self.master.true_peak,
+            ..d
         }
     }
 
@@ -405,12 +422,35 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
         out.push(p("/structure", "a song needs at least two sections", "e.g. [{\"kind\":\"intro\",\"bars\":4},{\"kind\":\"verse\",\"bars\":16},{\"kind\":\"hook\",\"bars\":8}]"));
     }
     // instruments
-    for (role, preset) in &spec.instruments {
+    for (role, ins) in &spec.instruments {
         if !crate::creative::ROLES.contains(&role.as_str()) {
-            out.push(p(format!("/instruments/{role}"), format!("'{role}' is not a role"), did_you_mean(role, crate::creative::ROLES, &[("melody", "lead"), ("chords", "harmony"), ("keys", "harmony"), ("pad", "texture"), ("808", "bass"), ("hats", "hat"), ("drums", "kick")])));
-        } else if crate::instruments::preset(preset).is_none() {
-            let names: Vec<&str> = crate::instruments::PRESETS.iter().map(|x| x.0).collect();
-            out.push(p(format!("/instruments/{role}"), format!("'{preset}' is not an instrument preset"), did_you_mean(preset, &names, &[])));
+            out.push(p(format!("/instruments/{role}"), format!("'{role}' is not a role"), did_you_mean(role, crate::creative::ROLES, &[("melody", "lead"), ("chords", "harmony"), ("keys", "harmony"), ("pad", "texture"), ("808", "bass"), ("hats", "hat"), ("drums", "kick"), ("dhol", "bayan"), ("dagga", "bayan"), ("tilli", "tabla")])));
+            continue;
+        }
+        match ins {
+            InstrumentSpec::Name(n) => {
+                if let Some(id) = n.strip_prefix("catalog:") {
+                    if crate::sound_catalog::entry(id).is_none() {
+                        out.push(p(format!("/instruments/{role}"), format!("no recorded instrument '{id}' in the catalog"), "search_instruments (instrument category) lists the ids, e.g. catalog:euterpea_harmonium"));
+                    }
+                } else if crate::instruments::preset(n).is_none() {
+                    let names: Vec<&str> = crate::instruments::PRESETS.iter().map(|x| x.0).collect();
+                    out.push(p(format!("/instruments/{role}"), format!("'{n}' is not an instrument preset"), did_you_mean(n, &names, &[])));
+                }
+            }
+            InstrumentSpec::Samples { samples, gain_db } => {
+                if samples.is_empty() {
+                    out.push(p(format!("/instruments/{role}/samples"), "no files", "give one or more wav/mp3 one-shots (several = round robin)"));
+                }
+                for (i, f) in samples.iter().enumerate() {
+                    if !Path::new(f).is_file() {
+                        out.push(p(format!("/instruments/{role}/samples/{i}"), format!("'{f}' is not a file on this machine"), "give the full path of a wav/mp3 one-shot"));
+                    }
+                }
+                if !(-24.0..=24.0).contains(gain_db) {
+                    out.push(p(format!("/instruments/{role}/gain_db"), format!("{gain_db} dB"), "use -24..24"));
+                }
+            }
         }
     }
     // vocal
@@ -548,8 +588,16 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
     if !spec.structure.is_empty() {
         intent.insert("form".into(), json!(spec.structure.iter().map(|s| json!({"kind": canon_kind(&s.kind), "bars": s.bars})).collect::<Vec<_>>()));
     }
-    if !spec.instruments.is_empty() {
-        intent.insert("palette".into(), json!(spec.instruments));
+    let presets: BTreeMap<&String, &String> = spec
+        .instruments
+        .iter()
+        .filter_map(|(r, i)| match i {
+            InstrumentSpec::Name(n) if !n.starts_with("catalog:") => Some((r, n)),
+            _ => None,
+        })
+        .collect();
+    if !presets.is_empty() {
+        intent.insert("palette".into(), json!(presets));
     }
     if let Some(d) = &spec.density {
         intent.insert("density".into(), json!(d));
@@ -589,7 +637,23 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
     // the structure is a contract: the creative wildcards may not move it
     if !spec.structure.is_empty() {
         if plan.sections.len() != spec.structure.len() {
-            bail!("the producer planned {} sections for a {}-section structure; this is a bug, please report it", plan.sections.len(), spec.structure.len());
+            // a wildcard inserted a section (a breakdown, a switch): the
+            // structure asked for wins; keep the planned sections that match
+            // it in order, drop the rest
+            let mut kept = Vec::new();
+            let mut j = 0;
+            for s in plan.sections.drain(..) {
+                if j < spec.structure.len() && s.kind == canon_kind(&spec.structure[j].kind) {
+                    kept.push(s);
+                    j += 1;
+                } else {
+                    log.push(format!("left out a planned extra '{}' section: the structure is the one asked for", s.kind));
+                }
+            }
+            if kept.len() != spec.structure.len() {
+                bail!("the producer could not keep the asked structure ({} of {} sections matched); try another seed, and please report it", kept.len(), spec.structure.len());
+            }
+            plan.sections = kept;
         }
         for (i, s) in plan.sections.iter_mut().enumerate() {
             if s.bars != spec.structure[i].bars {
@@ -604,6 +668,7 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
     }
     crate::producer::prepare_kit(e, &mut plan);
     crate::producer::compose(e, &plan)?;
+    swap_instruments(e, spec, log)?;
     crate::producer::balance_beat(e, &plan)?;
     // loudness and peaks belong to delivery: a limiter in the project would
     // flatten the drops before the mix rules see them
@@ -616,6 +681,56 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
         plan.genre, plan.bpm, plan.key, plan.scale, plan.sections.len()
     ));
     Ok(())
+}
+
+/// Recorded instruments for the roles that asked for them (after compose,
+/// before the level balance, so the balance hears the real sound).
+fn swap_instruments(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<()> {
+    for (role, ins) in &spec.instruments {
+        let track = crate::producer::track_name(role);
+        let InstrumentSpec::Name(n) = ins else {
+            if let InstrumentSpec::Samples { samples, gain_db } = ins {
+                let ti = e.project.track_index(&track).map_err(|_| no_part(e, role))?;
+                // the pitch the part plays: the hits sound at their own pitch there
+                let mut count: BTreeMap<u8, usize> = BTreeMap::new();
+                for pt in &e.project.patterns {
+                    for nt in pt.clips.get(&track.to_lowercase()).into_iter().flatten() {
+                        *count.entry(nt.pitch).or_default() += 1;
+                    }
+                }
+                let root = count.iter().max_by_key(|(_, c)| **c).map(|(p, _)| *p).unwrap_or(60);
+                let mut zones = Vec::new();
+                for (i, f) in samples.iter().enumerate() {
+                    let name = format!("song_{role}_{i}");
+                    e.project.samples.retain(|s| s.name != name);
+                    e.call_nested("import_sample", &json!({"path": f, "name": name, "source": format!("song instrument for {role}")}), "song")?;
+                    zones.push(json!({"sample": name, "root": root, "lo_note": 0, "hi_note": 127, "vel_lo": 0.0, "vel_hi": 1.0, "tune_cents": 0.0, "gain_db": gain_db, "rr": i}));
+                }
+                let inst = json!({"type": "multisample", "zones": zones, "attack": 0.002, "release": 0.35, "one_shot": true, "round_robin": samples.len() > 1, "vel_crossfade": true, "vel_to_gain": 0.6, "gain": 0.9, "source": ""});
+                e.project.tracks[ti].instrument = serde_json::from_value(inst).map_err(|err| anyhow!("instrument for {role}: {err}"))?;
+                e.bank.sync(&e.project.samples);
+                log.push(format!("{role}: {} recorded one-shot(s) at the part's pitch", samples.len()));
+            }
+            continue;
+        };
+        let Some(id) = n.strip_prefix("catalog:") else { continue };
+        let ti = e.project.track_index(&track).map_err(|_| no_part(e, role))?;
+        let tmp = format!("__song_{role}");
+        e.call_nested("load_instrument", &json!({"track": tmp, "catalog_id": id}), "song")?;
+        let tj = e.project.track_index(&tmp)?;
+        let inst = e.project.tracks[tj].instrument.clone();
+        e.project.tracks.remove(tj);
+        let ti = if tj < ti { ti - 1 } else { ti };
+        e.project.tracks[ti].instrument = inst;
+        e.bank.sync(&e.project.samples);
+        log.push(format!("{role}: recorded instrument {id}"));
+    }
+    Ok(())
+}
+
+fn no_part(e: &Engine, role: &str) -> anyhow::Error {
+    let have: Vec<&str> = crate::creative::ROLES.iter().copied().filter(|r| e.project.track_index(&crate::producer::track_name(r)).is_ok()).collect();
+    anyhow!("/instruments/{role}: this arrangement has no {role} part; roles that play here: {}", have.join(", "))
 }
 
 fn remove_vocal(e: &mut Engine, track: &str) {
@@ -707,13 +822,22 @@ fn mix_deliver(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result
     let t = spec.targets();
     let voice = spec.vocal.as_ref().map(|v| v.track.clone()).filter(|v| e.project.track_index(v).is_ok());
     let mut mix = Map::new();
+    mix.insert("peaks".into(), mix_rules::tame_peaks(e)?);
     if let Some(v) = &voice {
         let i = e.project.track_index(v)?;
         e.project.tracks[i].volume_db = spec.vocal.as_ref().map(|x| x.gain_db).unwrap_or(0.0);
+        // level first (the top-end rule compares the beat to the vocal as
+        // it will sit), then the top end, then the level again
+        mix_rules::balance_vocal(e, v, &t, 2)?;
+    }
+    mix.insert("top_end".into(), mix_rules::tame_top(e, voice.as_deref(), &t, 0.0)?);
+    if let Some(v) = &voice {
         let b = mix_rules::balance_vocal(e, v, &t, spec.mix.balance_passes as usize)?;
         log.push(format!("vocal balance: {}", b["fader_offsets_db"]));
         mix.insert("vocal_balance".into(), b);
     }
+    mix.insert("glue".into(), mix_rules::set_glue(e)?);
+    mix.insert("tone".into(), mix_rules::tone_stage(e, &t, 1.5)?);
     let lift = mix_rules::ensure_drop_lift(e, &t)?;
     mix.insert("drop_lift".into(), lift);
     let pre = mix_rules::measure_sections(e, voice.as_deref())?;
@@ -721,7 +845,6 @@ fn mix_deliver(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let full = e.mix()?;
     let o = crate::tools_delivery::DeliverOpts {
         format: spec.export.format.clone(),
         target_lufs: Some(spec.master.lufs),
@@ -731,9 +854,74 @@ fn mix_deliver(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result
         bitrate_kbps: spec.export.bitrate_kbps,
         ..Default::default()
     };
-    let d = crate::tools_delivery::deliver(&full.left, &full.right, &path, &o)?;
     let spans = mix_rules::section_spans(&e.project);
-    let checks = mix_rules::check(&path, &pre, &spans, e.project.bpm, &t)?;
+    // deliver -> check the delivered file -> fix each failed target with
+    // the knob that owns it -> deliver again (at most 4 deliveries):
+    // lift -> verses step down on the master automation (undone if the
+    // limiter took it back); loudness -> less of the contrast is kept
+    // (only while the lift has room); harshness -> the top-end rule again,
+    // aimed lower by what delivery added
+    let mut o = o;
+    let mut d = Value::Null;
+    let mut checks = Value::Null;
+    let mut lift_log = Vec::new();
+    let mut last_try: Option<(f32, f32)> = None;
+    let mut top_shift = 0.0f32;
+    for round in 0..3 {
+        let full = e.mix()?;
+        d = crate::tools_delivery::deliver(&full.left, &full.right, &path, &o)?;
+        checks = mix_rules::check(&path, &pre, &spans, e.project.bpm, &t)?;
+        let get = |name: &str| checks["checks"].as_array().and_then(|c| c.iter().find(|x| x["check"] == name)).cloned().unwrap_or(Value::Null);
+        let lift = get("drop_lift")["measured"].as_f64().map(|x| x as f32);
+        let lufs = get("loudness")["measured"].as_f64().map(|x| x as f32);
+        let harsh = get("not_harsh");
+        if round == 2 {
+            break;
+        }
+        let mut changed = false;
+        if let (Some(l), Some((prev_l, prev_need))) = (lift, last_try) {
+            if l < prev_l + 0.3 {
+                mix_rules::deepen_verses(e, -prev_need)?;
+                lift_log.push(json!({"undone": true, "why": "the limiter took the extra contrast back"}));
+                last_try = None;
+                changed = true;
+            }
+        } else if let Some(l) = lift.filter(|l| *l < t.drop_lift_db[0]) {
+            let need = (t.drop_lift_db[0] + 0.5 - l).clamp(0.3, 3.0);
+            mix_rules::deepen_verses(e, need)?;
+            last_try = Some((l, need));
+            lift_log.push(json!({"delivered_lift_db": (l * 10.0).round() / 10.0, "verses_down_db": (need * 10.0).round() / 10.0}));
+            changed = true;
+        }
+        if let Some(lu) = lufs {
+            let room = lift.map(|l| l >= t.drop_lift_db[0] + 0.3).unwrap_or(true);
+            if lu < t.lufs - t.lufs_tolerance && room && o.preserve_dynamics > 0.3 {
+                o.preserve_dynamics = (o.preserve_dynamics - 0.15).max(0.3);
+                lift_log.push(json!({"delivered_lufs": (lu * 10.0).round() / 10.0, "preserve_dynamics": (o.preserve_dynamics * 100.0).round() / 100.0}));
+                changed = true;
+            }
+        }
+        if harsh["pass"] == false {
+            let pt = harsh["measured"]["tilt_2_5k_db"].as_f64().unwrap_or(-99.0) as f32;
+            let at = harsh["measured"]["tilt_5_10k_db"].as_f64().unwrap_or(-99.0) as f32;
+            let over = (pt - t.presence_tilt_max_db).max(at - t.air_tilt_max_db);
+            if over > 0.0 && top_shift < 6.0 {
+                top_shift += over + 0.3;
+                let r = mix_rules::tone_stage(e, &t, 0.5 + top_shift)?;
+                lift_log.push(json!({"delivered_too_bright_db": (over * 10.0).round() / 10.0, "tone": r}));
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let pre = mix_rules::measure_sections(e, voice.as_deref())?;
+    checks = mix_rules::check(&path, &pre, &spans, e.project.bpm, &t)?;
+    if !lift_log.is_empty() {
+        log.push(format!("delivery loop: {} fix(es) after checking the delivered file", lift_log.len()));
+        mix.insert("delivery_fixes".into(), json!(lift_log));
+    }
     mix.insert("delivery".into(), json!({"format": spec.export.format, "lufs_before": d.get("before").cloned().unwrap_or(Value::Null), "notes": d.get("notes").cloned().unwrap_or(Value::Null)}));
     Ok((Value::Object(mix), path, checks))
 }
@@ -877,7 +1065,7 @@ fn spec_props() -> Value {
         "density": {"type": "string", "enum": ["sparse", "balanced", "dense"]},
         "seed": {"type": "integer", "description": "Same spec + same seed = same song. Omitted: a fresh one, returned and kept for patches."},
         "structure": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": SECTION_KINDS}, "bars": {"type": "integer"}, "name": {"type": "string"}}, "required": ["kind", "bars"]}},
-        "instruments": {"type": "object", "description": "role -> preset, e.g. {\"lead\": \"indian_flute\", \"perc\": \"dholak\", \"harmony\": \"harmonium\"}"},
+        "instruments": {"type": "object", "description": "role -> preset name | \"catalog:<id>\" (a recorded instrument, e.g. catalog:euterpea_harmonium) | {\"samples\": [one-shot files], \"gain_db\": 0} (e.g. real dhol hits on tabla/bayan)"},
         "vocal": {"type": "object", "description": "{file, track?, phrases?: [{src_s, len_s|end_s, section, bar, beat, gain_db?}], start_section?, lyrics?, gain_db?, chain?}"},
         "mix": {"type": "object", "description": "{vocal_over_beat_db: 6, vocal_over_beat_max_db: 12, drop_lift_db: 2, balance_passes: 3}"},
         "master": {"type": "object", "description": "{lufs: -10, true_peak: -1, preserve_dynamics: 0.8}"},

@@ -102,7 +102,6 @@ pub struct Engine {
     /// Bumped on every successful mutation (the GUI watches this).
     pub revision: u64,
     pub log: Vec<LogEntry>,
-    cached_mix: Option<(u64, Arc<Mix>)>,
     /// Full renders keyed by project hash (the same project renders to the
     /// same audio), so a tool that renders a candidate and then applies it
     /// does not make the next listener render it again.
@@ -133,7 +132,6 @@ impl Engine {
             workdir,
             revision: 0,
             log: Vec::new(),
-            cached_mix: None,
             render_cache: Vec::new(),
             perf_cache: Vec::new(),
             track_cache: None,
@@ -452,14 +450,12 @@ impl Engine {
     /// Render the song (cached per revision and by project hash) with
     /// per-track stats.
     pub fn mix(&mut self) -> Result<Arc<Mix>> {
-        if let Some((rev, m)) = &self.cached_mix {
-            if *rev == self.revision {
-                return Ok(m.clone());
-            }
-        }
+        // keyed by the project's content, not only the revision: a tool that
+        // changes the project and renders again inside ONE call (a mix loop,
+        // a delivery loop) keeps the same revision until it returns, and a
+        // revision-only key handed it the render from before its own change
         let p = self.project.clone();
         let m = self.render_version(&p)?;
-        self.cached_mix = Some((self.revision, m.clone()));
         Ok(m)
     }
 
