@@ -84,6 +84,7 @@ impl std::fmt::Debug for PerfLaunch {
 
 /// Full renders kept by project hash.
 const RENDER_CACHE: usize = 3;
+const RENDER_CACHE_MB: f32 = 240.0;
 
 pub struct Engine {
     pub transport: Transport,
@@ -351,7 +352,9 @@ impl Engine {
         };
         // a call in a user's batch is a user's call: same fresh-seed rule
         let top = tools::CallDepth::current() <= 1;
+        crate::dsp::memtrace(&format!("> {name}"));
         let (result, args) = self.dispatch_validated(tool, name, args, top);
+        crate::dsp::memtrace(&format!("< {name}"));
         if result.is_err() {
             if let Some(s) = snapshot {
                 self.project = s;
@@ -469,6 +472,16 @@ impl Engine {
             self.render_cache.remove(0);
         }
         self.render_cache.push((key, m));
+        self.trim_render_cache();
+    }
+
+    /// Long songs: the kept full renders stay under RENDER_CACHE_MB (the
+    /// newest is always kept); three 5:00 mixes would hold ~320 MB.
+    fn trim_render_cache(&mut self) {
+        let mb = |m: &Mix| (m.left.len() + m.right.len() + m.stems.iter().chain(m.bus_stems.iter()).map(|s| s.left.len() + s.right.len()).sum::<usize>()) as f32 * 4.0 / 1_048_576.0;
+        while self.render_cache.len() > 1 && self.render_cache.iter().map(|(_, m)| mb(m)).sum::<f32>() > RENDER_CACHE_MB {
+            self.render_cache.remove(0);
+        }
     }
 
     /// Render any project version with per-track stats. Full-quality render;
@@ -496,6 +509,7 @@ impl Engine {
             self.render_cache.remove(0);
         }
         self.render_cache.push((key, m.clone()));
+        self.trim_render_cache();
         Ok(m)
     }
 
@@ -503,12 +517,25 @@ impl Engine {
     /// the pre-fader track cache when one is active (a song build turns it
     /// on), so mix rules that move faders, buses or the master re-sum
     /// instead of re-synthesising.
+    /// `render_stems` keeping every track stem's audio (an instrumental's
+    /// per-part comparisons read them sample by sample).
+    pub fn render_stems_all(&mut self, p: &Project) -> Result<Mix> {
+        self.bank.sync(&p.samples);
+        render::render_cached(p, &self.bank, &RenderOptions { keep_stems: true, ..Default::default() }, self.track_cache.as_mut())
+    }
+
     pub fn render_stems(&mut self, p: &Project) -> Result<Mix> {
         self.bank.sync(&p.samples);
         render::render_cached(
             p,
             &self.bank,
-            &RenderOptions { keep_stems: true, ..Default::default() },
+            &RenderOptions {
+                keep_stems: true,
+                // the voice keeps its audio (the balance reads it sample by
+                // sample); every other stem keeps its band levels only
+                full_stems: Some(render::voice_stem),
+                ..Default::default()
+            },
             self.track_cache.as_mut(),
         )
     }

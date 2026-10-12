@@ -126,6 +126,15 @@ pub struct VocalSpec {
     pub gain_db: f32,
     #[serde(default)]
     pub chain: VocalChain,
+    /// Beat follows the vocal (on unless false): when the take is cut at its
+    /// pauses, each phrase starts where its syllables land on the 1/16 grid,
+    /// and with no "bpm" in the spec the tempo is picked from the take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock: Option<bool>,
+    /// How hard syllables inside each phrase are pulled onto the grid after
+    /// the lock (0..1, default 0.5; 0 keeps every phrase untouched).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flex: Option<f32>,
 }
 
 /// One piece of the take: from `src_s` for `len_s` seconds (or to `end_s`),
@@ -331,7 +340,7 @@ fn did_you_mean(w: &str, known: &[&str], alias: &[(&str, &str)]) -> String {
 
 const TOP_KEYS: &[&str] = &["title", "prompt", "genre", "bpm", "key", "scale", "mood", "density", "seed", "structure", "instruments", "vocal", "mix", "master", "export"];
 const TOP_ALIAS: &[(&str, &str)] = &[("tempo", "bpm"), ("sections", "structure"), ("form", "structure"), ("arrangement", "structure"), ("vocals", "vocal"), ("voice", "vocal"), ("instrumentation", "instruments"), ("palette", "instruments"), ("style", "genre"), ("lufs", "master.lufs"), ("name", "title"), ("brief", "prompt")];
-const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain"];
+const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain", "lock", "flex"];
 const PHRASE_KEYS: &[&str] = &["src_s", "src", "len_s", "len", "end_s", "section", "bar", "beat", "start_beat", "at_s", "start_s", "gain_db", "name", "fade_in_ms", "fade_out_ms"];
 const SECTION_KEYS: &[&str] = &["kind", "bars", "name", "energy"];
 const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db"];
@@ -552,7 +561,7 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
         out.push(p("/mix/balance_passes", format!("{}", spec.mix.balance_passes), "use 1..6"));
     }
     if !(0.0..=20.0).contains(&spec.mix.vocal_over_beat_db) || spec.mix.vocal_over_beat_max_db <= spec.mix.vocal_over_beat_db + 1.0 {
-        out.push(p("/mix/vocal_over_beat_db", format!("{}..{} dB", spec.mix.vocal_over_beat_db, spec.mix.vocal_over_beat_max_db), "a floor in 0..20 and a max at least 2 dB above it (default 6..12)"));
+        out.push(p("/mix/vocal_over_beat_db", format!("{}..{} dB", spec.mix.vocal_over_beat_db, spec.mix.vocal_over_beat_max_db), "a floor in 0..20 and a max at least 2 dB above it (default 11..17: a user vocal sits on top)"));
     }
     if !(-20.0..=-6.0).contains(&spec.master.lufs) {
         out.push(p("/master/lufs", format!("{} LUFS", spec.master.lufs), "use -20..-6 (-14 streaming-safe, -10 loud rap, -8 very loud)"));
@@ -628,6 +637,31 @@ fn seed_for(spec: &SongSpec) -> u64 {
     spec.seed.unwrap_or_else(crate::creative::fresh_seed)
 }
 
+/// Beat follows the vocal: with a vocal and no "bpm", the tempo where the
+/// take's phrases lock best, inside the genre's range (at least 12 bpm wide;
+/// 80-112 without a genre).
+fn vocal_tempo(spec: &SongSpec, log: &mut Vec<String>) -> Option<f32> {
+    let vs = spec.vocal.as_ref()?;
+    if vs.lock == Some(false) {
+        return None;
+    }
+    let x = crate::samples::decode_file(Path::new(&vs.file)).ok()?;
+    let (mut lo, mut hi) = spec.genre.as_deref().and_then(|g| crate::producer::playbook(g).ok()).map(|pb| (pb.bpm[0], pb.bpm[1])).unwrap_or((80.0, 112.0));
+    if hi - lo < 12.0 {
+        let mid = (lo + hi) * 0.5;
+        lo = mid - 6.0;
+        hi = mid + 6.0;
+    }
+    let ph = crate::vocal_flex::phrases(&x, 0.3, None);
+    let on = crate::vocal_flex::syllable_onsets(&x, 0.5, 0.09);
+    let groups: Vec<Vec<f32>> = ph.iter().map(|p| on.iter().filter(|&&t| t >= p.start_s && t < p.end_s).map(|&t| t - p.start_s).collect()).collect();
+    let c = crate::vocal_flex::lock_tempo(&groups, lo, hi, 0.25);
+    let (b, s) = *c.first()?;
+    let b = (b * 4.0).round() / 4.0;
+    log.push(format!("tempo {b} bpm picked from the vocal (lock score {:.2} over {} phrases, searched {lo:.0}-{hi:.0}); give \"bpm\" to override", s, ph.len()));
+    Some(b)
+}
+
 fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String>) -> Result<()> {
     let names = spec.section_names();
     let mut intent = Map::new();
@@ -665,7 +699,7 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
     let args = crate::producer::PlanArgs {
         brief,
         genre: spec.genre.clone(),
-        bpm: spec.bpm,
+        bpm: spec.bpm.or_else(|| vocal_tempo(spec, log)),
         key: root,
         scale: spec.scale.clone().or(kscale.flatten()),
         mood: spec.mood.clone(),
@@ -893,14 +927,26 @@ fn place_vocal(e: &mut Engine, spec: &SongSpec, vs: &VocalSpec, log: &mut Vec<St
     let names = spec.section_names();
     let bs = 60.0 / e.project.bpm;
     let mut placed = 0;
+    let mut lock = Value::Null;
     if vs.phrases.is_empty() {
         let start = match &vs.start_section {
             Some(s) => spans.iter().find(|x| &x.name == s).map(|x| x.start_beat).ok_or_else(|| anyhow!("/vocal/start_section: no section '{s}'"))?,
             None => spans.iter().find(|x| x.kind == "verse").or(spans.first()).map(|x| x.start_beat).unwrap_or(0.0),
         };
-        let r = e.call_nested("place_vocal_phrases", &json!({"sample": VOCAL_SAMPLE, "track": vs.track, "start_beat": start, "grid": "beat", "keep_gaps": true}), "song")?;
-        placed = r["phrases"].as_u64().unwrap_or(0) as usize;
-        log.push(format!("vocal: {placed} phrases cut at the pauses, in take order from beat {start}"));
+        if vs.lock != Some(false) {
+            let r = e.call_nested("lock_vocal_to_beat", &json!({"sample": VOCAL_SAMPLE, "track": vs.track, "start_beat": start, "bpm": e.project.bpm, "flex": vs.flex.unwrap_or(0.5)}), "song")?;
+            placed = r["phrases"].as_u64().unwrap_or(0) as usize;
+            let l = &r["lock"];
+            log.push(format!(
+                "vocal: {placed} phrases locked to the beat from beat {start}: {}% of syllables within 25 ms of the 1/16 grid (median {} ms); laid free-time it would be {}% (median {} ms)",
+                l["locked"]["within_25ms_pct"], l["locked"]["median_ms"], l["free_time"]["within_25ms_pct"], l["free_time"]["median_ms"]
+            ));
+            lock = l.clone();
+        } else {
+            let r = e.call_nested("place_vocal_phrases", &json!({"sample": VOCAL_SAMPLE, "track": vs.track, "start_beat": start, "grid": "beat", "keep_gaps": true}), "song")?;
+            placed = r["phrases"].as_u64().unwrap_or(0) as usize;
+            log.push(format!("vocal: {placed} phrases cut at the pauses, in take order from beat {start}"));
+        }
     } else {
         let mut problems = Vec::new();
         for (i, ph) in vs.phrases.iter().enumerate() {
@@ -934,7 +980,7 @@ fn place_vocal(e: &mut Engine, spec: &SongSpec, vs: &VocalSpec, log: &mut Vec<St
         log.push(format!("vocal: {placed} phrases placed whole (no time-stretch)"));
     }
     let chain = mix_rules::apply_vocal_chain(e, &vs.track, &vs.chain, "song")?;
-    Ok(json!({"track": vs.track, "phrases": placed, "take_s": (take_s * 10.0).round() / 10.0, "chain": chain}))
+    Ok(json!({"track": vs.track, "phrases": placed, "take_s": (take_s * 10.0).round() / 10.0, "chain": chain, "lock": lock}))
 }
 
 fn out_path(e: &Engine, spec: &SongSpec) -> PathBuf {
@@ -1293,7 +1339,7 @@ fn spec_props() -> Value {
         "seed": {"type": "integer", "description": "Same spec + same seed = same song. Omitted: a fresh one, returned and kept for patches."},
         "structure": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": SECTION_KINDS}, "bars": {"type": "integer"}, "name": {"type": "string"}}, "required": ["kind", "bars"]}},
         "instruments": {"type": "object", "description": "role -> preset name | \"catalog:<id>\" (a recorded instrument, e.g. catalog:euterpea_harmonium) | {\"samples\": [one-shot files], \"gain_db\": 0} (e.g. real dhol hits on tabla/bayan)"},
-        "vocal": {"type": "object", "description": "{file, track?, phrases?: [{src_s, len_s|end_s, section, bar, beat, gain_db?}], start_section?, lyrics?, gain_db?, chain?}"},
+        "vocal": {"type": "object", "description": "{file, track?, phrases?: [{src_s, len_s|end_s, section, bar, beat, gain_db?}], start_section?, lyrics?, gain_db?, chain?, lock? (default true: beat follows the vocal; no bpm = tempo picked from the take, each phrase locked to the grid), flex? (0..1 syllable pull, default 0.5)}"},
         "mix": {"type": "object", "description": "{vocal_over_beat_db: 6, vocal_over_beat_max_db: 12, drop_lift_db: 2, balance_passes: 3, levels: {role: dB offset, e.g. \"bass\": 2}}"},
         "master": {"type": "object", "description": "{lufs: -10, true_peak: -1, preserve_dynamics: 0.8}"},
         "export": {"type": "object", "description": "{path?, format: mp3|wav|flac, bitrate_kbps: 320}"},

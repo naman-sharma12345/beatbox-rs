@@ -25,8 +25,53 @@ pub struct Event {
 
 pub struct Stem {
     pub name: String,
+    /// Empty when the render kept only this stem's band levels (`bands`).
     pub left: Vec<f32>,
     pub right: Vec<f32>,
+    /// Band energies of the stem's mono sum, dB: [20-20k, 2-5k, 5-10k].
+    /// Always set for a summarized stem (no audio kept).
+    pub bands: Option<[f32; 3]>,
+}
+
+/// The bands a summarized stem keeps (Hz): the ones the mix rules read.
+pub const STEM_BANDS: [(f32, f32); 3] = [(20.0, 20000.0), (2000.0, 5000.0), (5000.0, 10000.0)];
+
+impl Stem {
+    /// Band energy (dB) of the stem's mono sum: from the audio when it was
+    /// kept, else from the summary (one of STEM_BANDS; -200 for another).
+    pub fn band_db(&self, lo: f32, hi: f32) -> f32 {
+        if !self.left.is_empty() {
+            let m: Vec<f32> = self.left.iter().zip(self.right.iter()).map(|(a, b)| 0.5 * (a + b)).collect();
+            return crate::mix_rules::band_energy_db(&m, lo, hi);
+        }
+        match (self.bands, STEM_BANDS.iter().position(|b| (b.0 - lo).abs() < 0.5 && (b.1 - hi).abs() < 0.5)) {
+            (Some(b), Some(i)) => b[i],
+            _ => -200.0,
+        }
+    }
+
+    fn summarize(name: String, l: &[f32], r: &[f32]) -> Stem {
+        let m: Vec<f32> = l.iter().zip(r.iter()).map(|(a, b)| 0.5 * (a + b)).collect();
+        let b = STEM_BANDS.map(|(lo, hi)| crate::mix_rules::band_energy_db(&m, lo, hi));
+        Stem { name, left: Vec::new(), right: Vec::new(), bands: Some(b) }
+    }
+}
+
+/// Memory budgets for long renders (MB; env overrides): the tracks rendered
+/// at once, and the pre-fader track cache kept between renders. A 5:00 song
+/// is ~106 MB per stereo buffer, so 12 tracks with stems, cache and four
+/// tracks in flight reached 3.7 GB (the 2026-10-12 brutal test was killed).
+pub const RENDER_BATCH_MB: f32 = 700.0;
+
+/// The stems a voice-aware mix rule reads sample by sample: voice-named
+/// tracks and tracks that play audio clips (a recorded take).
+pub fn voice_stem(p: &Project, name: &str) -> bool {
+    crate::mix_rules::is_voice_name(name) || p.audio_clips.iter().any(|c| c.track.eq_ignore_ascii_case(name))
+}
+pub const TRACK_CACHE_MB: f32 = 900.0;
+
+fn budget_mb(var: &str, default: f32) -> f32 {
+    std::env::var(var).ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| *v > 0.0).unwrap_or(default)
 }
 
 /// Per-track measurements taken during the render (no audio kept), so the
@@ -152,6 +197,11 @@ pub struct RenderOptions {
     /// (they stay silent). Off by default: such a render fails and names
     /// every missing clip, so a vocal can never vanish without an error.
     pub allow_missing_clips: bool,
+    /// With keep_stems: only tracks this says yes to (project, track name)
+    /// keep their audio; every other track stem keeps its band levels only
+    /// (Stem::band_db), so a long song's stems do not hold the whole mix
+    /// again in RAM. None = every stem keeps its audio.
+    pub full_stems: Option<fn(&Project, &str) -> bool>,
 }
 
 impl Default for RenderOptions {
@@ -163,6 +213,7 @@ impl Default for RenderOptions {
             track_stats: false,
             step_range: None,
             allow_missing_clips: false,
+            full_stems: None,
         }
     }
 }
@@ -758,6 +809,16 @@ pub fn render_cached(
             );
         }
     }
+    let mut cache = cache;
+    // a cache over its budget first lets go of buffers no track can use
+    // any more (their track changed since)
+    if let Some(c) = cache.as_deref_mut() {
+        let est_mb = ((p.song_steps() as f32 * p.step_secs() * opts.loops.max(1) as f32 + opts.tail.max(0.0)) * SR * 8.0) / 1_048_576.0;
+        if c.tracks.len() as f32 * est_mb > budget_mb("BEATBOX_TRACK_CACHE_MB", TRACK_CACHE_MB) {
+            let g = TrackCache::global_key(p, opts);
+            c.tracks.retain(|ti, (k, _)| *ti < p.tracks.len() && TrackCache::track_key(g, p, *ti) == *k);
+        }
+    }
     let track_keys: Vec<u64> = if cache.is_some() {
         let g = TrackCache::global_key(p, opts);
         (0..p.tracks.len()).map(|ti| TrackCache::track_key(g, p, ti)).collect()
@@ -776,9 +837,38 @@ pub fn render_cached(
     let keep = cache.is_some();
     let (events, body_len) = schedule(p, opts);
     let total = body_len + (opts.tail.max(0.0) * SR) as usize;
+    // one stereo buffer of this render, MB
+    let buf_mb = (total * 8) as f32 / 1_048_576.0;
+    // the track cache stays under its budget: tracks already cached keep
+    // their slot, new ones are cached in track order while room is left
+    // (the rest re-synthesise on the next render: slower, never OOM)
+    let cache_ok: Vec<bool> = {
+        let slots = (budget_mb("BEATBOX_TRACK_CACHE_MB", TRACK_CACHE_MB) / buf_mb.max(1e-3)).floor() as usize;
+        let mut used = cached.len();
+        (0..p.tracks.len())
+            .map(|ti| {
+                if !keep || cached.contains_key(&ti) {
+                    return false;
+                }
+                if used < slots {
+                    used += 1;
+                    true
+                } else {
+                    false
+                }
+            })
+            .collect()
+    };
+    let full_stem = |name: &str| -> bool {
+        match opts.full_stems {
+            None => true,
+            Some(f) => f(p, name),
+        }
+    };
     let any_solo = p.tracks.iter().any(|t| t.solo);
     let tl = Timeline::new(p, opts);
     let tcurve = crate::tempo_curve::TempoCurve::new(p);
+    crate::dsp::memtrace(&format!("render start: {} tracks, {} buses, {:.0} s, stems {}, cached {}", p.tracks.len(), p.buses.len(), total as f32 / SR, opts.keep_stems, cached.len()));
 
     let mut triggers: HashMap<String, Vec<usize>> = p
         .tracks
@@ -1147,7 +1237,7 @@ pub fn render_cached(
                 drop(mono);
                 drop(mono2);
                 process_chain(&track.effects, &lanes, &mut l, &mut r, &ctx, &tl);
-                let fresh = keep.then(|| std::sync::Arc::new((l.clone(), r.clone())));
+                let fresh = cache_ok[ti].then(|| std::sync::Arc::new((l.clone(), r.clone())));
                 (l, r, fresh)
             }
         };
@@ -1170,7 +1260,9 @@ pub fn render_cached(
     };
     let mut fresh_tracks = Vec::new();
     let t_tracks = std::time::Instant::now();
-    let batch = rayon::current_num_threads().clamp(1, 4);
+    // tracks in flight at once: each holds up to ~4 stereo buffers (its
+    // voices, the panned pair, a pre-fader copy, the cache copy)
+    let batch = rayon::current_num_threads().clamp(1, 4).min(((budget_mb("BEATBOX_RENDER_BATCH_MB", RENDER_BATCH_MB) / (4.0 * buf_mb).max(1e-3)).floor() as usize).max(1));
     let order: Vec<usize> = (0..p.tracks.len()).collect();
     for chunk in order.chunks(batch) {
         use rayon::prelude::*;
@@ -1224,11 +1316,11 @@ pub fn render_cached(
                 track_infos.push(info);
             }
             if opts.keep_stems {
-                stems.push(Stem {
-                    name: track.name.clone(),
-                    left: l,
-                    right: r,
-                });
+                if full_stem(&track.name) {
+                    stems.push(Stem { name: track.name.clone(), left: l, right: r, bands: None });
+                } else {
+                    stems.push(Stem::summarize(track.name.clone(), &l, &r));
+                }
             }
         }
     }
@@ -1272,11 +1364,7 @@ pub fn render_cached(
             }
         }
         if opts.keep_stems {
-            bus_stems.push(Stem {
-                name: bus.name.clone(),
-                left: l,
-                right: r,
-            });
+            bus_stems.push(Stem { name: bus.name.clone(), left: l, right: r, bands: None });
         }
     }
 
@@ -1314,6 +1402,7 @@ pub fn render_cached(
         }
     }
     crate::producer::prof("render.master", t_master);
+    crate::dsp::memtrace("render end");
     Ok(Mix {
         seconds: total as f32 / SR,
         left: ml,

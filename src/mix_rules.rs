@@ -77,13 +77,19 @@ pub struct Targets {
     /// Quiet sections (intro, outro, breakdown) sit at most this far under
     /// the verses (mix RMS, pre-delivery); further down they read as a gap.
     pub quiet_section_floor_db: f32,
+    /// Where the vocal sings, its 1-4 kHz (the words) sits at least this far
+    /// over the beat's 1-4 kHz in every section.
+    pub vocal_presence_over_beat_db: f32,
 }
 
 impl Default for Targets {
     fn default() -> Self {
         Targets {
-            vocal_over_beat_db: 6.0,
-            vocal_over_beat_max_db: 12.0,
+            // vocal first (Naman, 2026-10-12, on a mix measured 7.6-8.3 dB
+            // over the beat: "the instruments are so loud the voice is
+            // getting overpowered"): a user's vocal sits 11+ dB over the beat
+            vocal_over_beat_db: 11.0,
+            vocal_over_beat_max_db: 17.0,
             drop_lift_db: [2.0, 3.0],
             lufs: -10.0,
             lufs_tolerance: 1.0,
@@ -97,6 +103,7 @@ impl Default for Targets {
             presence_rel_lufs_db: [-23.0, -22.4],
             air_rel_lufs_db: [-26.0, -24.3],
             quiet_section_floor_db: 9.0,
+            vocal_presence_over_beat_db: 6.0,
         }
     }
 }
@@ -135,7 +142,56 @@ pub const POCKET_Q: f32 = 0.9;
 pub const POCKET_TRACKS: &[&str] = &["chords", "counter", "texture"];
 /// The melodic parts that duck a little under the vocal (sidechain).
 pub const DUCK_TRACKS: &[&str] = &["lead", "counter", "chords", "texture"];
-pub const DUCK_AMOUNT: f32 = 0.3;
+/// Vocal first: the beds duck clearly while the words sound (0.3 left the
+/// vocal buried under piano/organ on the 2026-10-12 brutal test).
+pub const DUCK_AMOUNT: f32 = 0.55;
+/// Vocal first: the melodic beds' low end is trimmed under a vocal (the
+/// low-cut frequency, Hz), so their body does not mask the voice's.
+pub const BED_LOW_TRIM_HZ: f32 = 150.0;
+
+/// Dark-source fix aims (vocal_clarity::tone, dB against the 500 Hz-2 kHz
+/// core): a clear vocal's 2-5 kHz sits about here, and its 5-8 kHz here.
+/// A take more than 3 dB under an aim gets a corrective boost (at most
+/// 6 dB) on its own track, before the de-esser.
+pub const VOCAL_PRESENCE_AIM_DB: f32 = -10.0;
+pub const VOCAL_BRILLIANCE_AIM_DB: f32 = -17.0;
+
+/// A dull recording (a phone voice note): the presence bell and air shelf
+/// (dB) that bring it toward a clear vocal, with the measured tone. None
+/// when the take is not dark.
+pub fn dark_source_fix(x: &[f32]) -> Option<(f32, f32, Value)> {
+    if x.len() < (SR * 1.0) as usize {
+        return None;
+    }
+    let t = crate::vocal_clarity::tone(x);
+    let g = |k: &str| t[k].as_f64().unwrap_or(0.0) as f32;
+    let (pres, bril) = (g("presence_2k_5k"), g("brilliance_5k_8k"));
+    let need = |aim: f32, v: f32| if v < aim - 3.0 { (aim - v).min(6.0) } else { 0.0 };
+    let (pg, ag) = (need(VOCAL_PRESENCE_AIM_DB, pres), need(VOCAL_BRILLIANCE_AIM_DB, bril));
+    if pg <= 0.0 && ag <= 0.0 {
+        return None;
+    }
+    Some(((pg * 10.0).round() / 10.0, (ag * 10.0).round() / 10.0, t))
+}
+
+/// Up to `max_s` seconds of the audio the clips on `track` play (their own
+/// samples, no FX): what the vocal chain measures the take on.
+pub fn track_clip_audio(e: &mut Engine, track: &str, max_s: f32) -> Option<Vec<f32>> {
+    e.bank.sync(&e.project.samples);
+    let cap = (max_s * SR) as usize;
+    let mut out = Vec::new();
+    for c in e.project.audio_clips.iter().filter(|c| c.track.eq_ignore_ascii_case(track)) {
+        let Some(d) = e.bank.get(&c.sample) else { continue };
+        let off = ((c.offset_s.max(0.0) * SR) as usize).min(d.len());
+        let len = c.length_s.map(|l| ((l.max(0.0) * SR) as usize).min(d.len() - off)).unwrap_or(d.len() - off);
+        let take = len.min(cap - out.len());
+        out.extend_from_slice(&d[off..off + take]);
+        if out.len() >= cap {
+            break;
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
 
 /// The beat's top end starts at the source. Measured on the desi hip-hop
 /// demo (B20): before any EQ the beat's 5-10 kHz was ~5.5 dB and its 2-5 kHz
@@ -289,7 +345,7 @@ pub fn soften_beat_source_with(e: &mut Engine, voice: Option<&str>, offsets: &st
         pre.master_effects.clear();
         e.bank.sync(&pre.samples);
         let mix = e.render_stems(&pre)?;
-        let lvl = |name: &str| mix.stems.iter().find(|s| s.name == name).map(|s| band_energy_db(&mono(&s.left, &s.right), 20.0, 20000.0));
+        let lvl = |name: &str| mix.stems.iter().find(|s| s.name == name).map(|s| s.band_db(20.0, 20000.0));
         let snare = e.project.tracks.iter().filter(|t| source_role(t) == Some("snare") && !is_v(&t.name)).filter_map(|t| lvl(&t.name)).fold(-200.0f32, f32::max);
         for ti in 0..e.project.tracks.len() {
             let t = &e.project.tracks[ti];
@@ -361,6 +417,11 @@ pub struct VocalChain {
     pub reverb_send_db: Option<f32>,
     /// Delay send level (dB); None = no delay send.
     pub delay_send_db: Option<f32>,
+    /// Dark-source fix: when the take measures dull (2-5 kHz / 5-8 kHz far
+    /// under a clear vocal, e.g. a phone voice note), a corrective presence
+    /// bell (3.5 kHz) and air shelf (7 kHz) go on the vocal before the
+    /// de-esser. false keeps the take's own tone.
+    pub brighten: bool,
 }
 
 impl Default for VocalChain {
@@ -374,6 +435,7 @@ impl Default for VocalChain {
             comp_makeup_db: 6.0,
             reverb_send_db: Some(-20.0),
             delay_send_db: Some(-28.0),
+            brighten: true,
         }
     }
 }
@@ -449,6 +511,22 @@ pub fn apply_vocal_chain(e: &mut Engine, track: &str, c: &VocalChain, source: &s
     let mut steps = Vec::new();
     e.call_nested("add_effect", &json!({"track": track, "type": "parametric_eq", "params": {"bands": [{"kind": "low_cut", "freq": c.hpf_hz, "gain_db": 0.0, "q": 0.707, "stages": 2}]}}), source)?;
     steps.push(format!("high-pass {} Hz", c.hpf_hz));
+    if c.brighten {
+        if let Some((pg, ag, t)) = track_clip_audio(e, track, 90.0).as_deref().and_then(dark_source_fix) {
+            let mut bands = Vec::new();
+            if pg > 0.0 {
+                bands.push(json!({"kind": "bell", "freq": 3500.0, "gain_db": pg, "q": 0.8}));
+            }
+            if ag > 0.0 {
+                bands.push(json!({"kind": "high_shelf", "freq": 7000.0, "gain_db": ag, "q": 0.707}));
+            }
+            e.call_nested("add_effect", &json!({"track": track, "type": "parametric_eq", "params": {"bands": bands}}), source)?;
+            steps.push(format!(
+                "dull recording (2-5 kHz {} dB, 5-8 kHz {} dB against the voice's core; a clear vocal is about {VOCAL_PRESENCE_AIM_DB} / {VOCAL_BRILLIANCE_AIM_DB}): presence +{pg} dB at 3.5 kHz, air +{ag} dB shelf at 7 kHz",
+                t["presence_2k_5k"], t["brilliance_5k_8k"]
+            ));
+        }
+    }
     e.call_nested("add_effect", &json!({"track": track, "type": "deesser", "params": {"freq": c.deess_freq_hz, "threshold_db": -30.0, "range_db": c.deess_range_db, "release_ms": 60.0}}), source)?;
     steps.push(format!("de-ess {} kHz, at most {} dB", c.deess_freq_hz / 1000.0, c.deess_range_db));
     // two stages, both inside the 2:1-3:1 rule: a fast one 12 dB up that
@@ -477,6 +555,9 @@ pub fn apply_vocal_chain(e: &mut Engine, track: &str, c: &VocalChain, source: &s
             if !already {
                 e.call_nested("add_effect", &json!({"track": t, "type": "sidechain", "params": {"source": track, "amount": DUCK_AMOUNT, "release_ms": 180.0}}), source)?;
                 steps.push(format!("{t} ducks under the vocal"));
+                // and its low end steps out of the voice's body
+                e.call_nested("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "low_cut", "freq": BED_LOW_TRIM_HZ, "gain_db": 0.0, "q": 0.707, "stages": 1}]}}), source)?;
+                steps.push(format!("{t} low end trimmed under {BED_LOW_TRIM_HZ} Hz"));
             }
         }
     }
@@ -775,7 +856,7 @@ pub fn deepen_verses(e: &mut Engine, db: f32) -> Result<()> {
 
 /// Band energy (dB, mean square) with 4th-order edges, so a loud sub does
 /// not leak into a 2-5 kHz reading.
-fn band_energy_db(x: &[f32], lo: f32, hi: f32) -> f32 {
+pub(crate) fn band_energy_db(x: &[f32], lo: f32, hi: f32) -> f32 {
     use crate::dsp::{Biquad, BiquadKind};
     let mut f = [
         Biquad::new(BiquadKind::LowCut, lo, 0.707, 0.0),
@@ -880,7 +961,7 @@ pub fn tame_top(e: &mut Engine, voice: Option<&str>, t: &Targets, shift_db: f32)
     let mut pre = e.project.clone();
     pre.master_effects.clear();
     e.bank.sync(&pre.samples);
-    let mix = e.render_stems(&pre)?;
+    let mix = if voice.is_none() { e.render_stems_all(&pre)? } else { e.render_stems(&pre)? };
     let m = mono(&mix.left, &mix.right);
     let total = band_energy_db(&m, 20.0, 20000.0);
     let pres_share = band_energy_db(&m, 2000.0, 5000.0) - total;
@@ -888,10 +969,9 @@ pub fn tame_top(e: &mut Engine, voice: Option<&str>, t: &Targets, shift_db: f32)
     let mut parts: Vec<(String, f32, f32, f32)> = Vec::new(); // name, 2-5k dB, 5-10k dB, full dB
     let mut vocal_p = None;
     for st in mix.stems.iter() {
-        let x = mono(&st.left, &st.right);
-        let p = band_energy_db(&x, 2000.0, 5000.0);
-        let a = band_energy_db(&x, 5000.0, 10000.0);
-        let f = band_energy_db(&x, 20.0, 20000.0);
+        let p = st.band_db(2000.0, 5000.0);
+        let a = st.band_db(5000.0, 10000.0);
+        let f = st.band_db(20.0, 20000.0);
         if voice.map(|v| v.eq_ignore_ascii_case(&st.name)).unwrap_or(false) {
             vocal_p = Some(p);
         } else if f > -90.0 {
@@ -973,10 +1053,7 @@ pub fn tame_top(e: &mut Engine, voice: Option<&str>, t: &Targets, shift_db: f32)
             .stems
             .iter()
             .filter(|st| !voice.map(|v| v.eq_ignore_ascii_case(&st.name)).unwrap_or(false))
-            .map(|st| {
-                let x = mono(&st.left, &st.right);
-                (st.name.clone(), band_energy_db(&x, 2000.0, 5000.0), band_energy_db(&x, 5000.0, 10000.0), band_energy_db(&x, 20.0, 20000.0))
-            })
+            .map(|st| (st.name.clone(), st.band_db(2000.0, 5000.0), st.band_db(5000.0, 10000.0), st.band_db(20.0, 20000.0)))
             .filter(|p| p.3 > -90.0)
             .collect();
         (band_energy_db(&m, 2000.0, 5000.0) - total, band_energy_db(&m, 5000.0, 10000.0) - total, parts)
@@ -1398,6 +1475,17 @@ pub fn check(file: &std::path::Path, sections_pre: &[SectionLevel], spans: &[Spa
             "song_patch /mix/vocal_over_beat_db, or re-render: the vocal balance loop runs on every render",
         ));
     }
+    let pob: Vec<(String, f32)> = sections_pre.iter().filter_map(|x| x.presence_over_beat_db.map(|v| (x.name.clone(), v))).collect();
+    if !pob.is_empty() {
+        let lo = pob.iter().map(|x| x.1).fold(f32::MAX, f32::min);
+        checks.push(chk(
+            "vocal_presence",
+            format!(">= {} dB of the vocal's 1-4 kHz over the beat's in every section with vocal (the words)", t.vocal_presence_over_beat_db),
+            json!({"min_db": r1(lo), "by_section": pob.iter().map(|(n, v)| json!([n, r1(*v)])).collect::<Vec<_>>()}),
+            lo >= t.vocal_presence_over_beat_db - 0.25,
+            "the beat masks the words: song_patch /mix/vocal_over_beat_db higher, or a darker/sparser part in /instruments",
+        ));
+    }
     if let Some(lv) = lift {
         checks.push(chk(
             "drop_lift",
@@ -1656,7 +1744,7 @@ mod tests {
     #[test]
     fn targets_defaults_are_the_documented_ones() {
         let t = Targets::default();
-        assert_eq!(t.vocal_over_beat_db, 6.0);
+        assert_eq!(t.vocal_over_beat_db, 11.0);
         assert_eq!(t.lufs, -10.0);
         assert_eq!(t.true_peak_max_db, -1.0);
         assert!(t.vocal_aim_db() > t.vocal_over_beat_db && t.vocal_aim_db() < t.vocal_over_beat_max_db);

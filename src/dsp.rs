@@ -10,6 +10,23 @@ pub fn midi_to_hz(m: f32) -> f32 {
     440.0 * 2f32.powf((m - 69.0) / 12.0)
 }
 
+/// Resident memory of this process in MB (Linux /proc; 0 elsewhere).
+pub fn rss_mb() -> f32 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| l.split_whitespace().nth(1)).and_then(|k| k.parse::<f32>().ok()))
+        .map(|k| k / 1024.0)
+        .unwrap_or(0.0)
+}
+
+/// BEATBOX_MEMTRACE=1: one stderr line per traced step with the resident
+/// memory, so a long render that runs the box out of memory says where.
+pub fn memtrace(label: &str) {
+    if std::env::var_os("BEATBOX_MEMTRACE").is_some() {
+        eprintln!("[mem] {:.0} MB {label}", rss_mb());
+    }
+}
+
 pub fn db_to_gain(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
