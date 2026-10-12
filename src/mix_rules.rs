@@ -236,6 +236,12 @@ pub fn soften_beat_source_with(e: &mut Engine, voice: Option<&str>, offsets: &st
         let &(_, tone_max, shelf) = SOURCE_TONE.iter().find(|r| r.0 == role).expect("role from the table");
         let t = &mut e.project.tracks[ti];
         let mut what = json!({"part": t.name, "role": role});
+        // a bright part the song turned up (a dull top end's fix) may also
+        // be brighter: 0.05 tone per dB of offset, at most +0.3 (sparkle
+        // lives over 5 kHz, so the top lifts more than the 2-5k presence)
+        let bright = UNDER_SNARE_DB.iter().any(|r| r.0 == role);
+        let lift = if bright { (0.05 * offsets.get(role).copied().unwrap_or(0.0).max(0.0)).min(0.3) } else { 0.0 };
+        let tone_max = tone_max.map(|m| (m + lift).min(1.0));
         if let (Instrument::Drum(d), Some(mx)) = (&mut t.instrument, tone_max) {
             if d.tone > mx + 1e-3 {
                 what["tone"] = json!([r1(d.tone), mx]);
@@ -1537,6 +1543,41 @@ mod tests {
         let r = soften_beat_source_with(&mut e, Some("vocal"), &off).unwrap();
         let d = e.project.tracks[hi].volume_db - a.project.tracks[hi].volume_db;
         assert!((d - 3.0).abs() < 0.2, "hat offset kept: {d} {r} {ra}");
+    }
+
+    #[test]
+    fn beat_source_tone_cap_rises_with_a_positive_hat_offset() {
+        // a dull top end's fix turns the hat up; the tone cap rises with it
+        // (0.05 per dB, at most +0.3) so the top brightens past 5 kHz
+        let mut e = Engine::new(std::env::temp_dir().join("bb_mixrules_hat_tonecap"));
+        e.call("add_track", &json!({"name": "hat", "preset": "hat_crisp"})).unwrap();
+        e.call("add_track", &json!({"name": "snare", "preset": "snare_tight"})).unwrap();
+        let hi = e.project.track_index("hat").unwrap();
+        if let crate::instruments::Instrument::Drum(d) = &mut e.project.tracks[hi].instrument { d.tone = 1.0; }
+        let tone = |e: &Engine| match &e.project.tracks[hi].instrument {
+            crate::instruments::Instrument::Drum(d) => d.tone,
+            other => panic!("hat is not a drum: {other:?}"),
+        };
+        let mut plain = Engine::new(std::env::temp_dir().join("bb_mixrules_hat_tonecap_plain"));
+        plain.project = e.project.clone();
+        soften_beat_source(&mut plain, Some("vocal")).unwrap();
+        assert!((tone(&plain) - -0.3).abs() < 1e-3, "no offset: base cap {}", tone(&plain));
+        let mut small = Engine::new(std::env::temp_dir().join("bb_mixrules_hat_tonecap_small"));
+        small.project = e.project.clone();
+        let mut off = std::collections::BTreeMap::new();
+        off.insert("hat".to_string(), 2.0f32);
+        soften_beat_source_with(&mut small, Some("vocal"), &off).unwrap();
+        assert!((tone(&small) - -0.2).abs() < 1e-3, "+2 dB: cap -0.2, got {}", tone(&small));
+        off.insert("hat".to_string(), 12.0f32);
+        soften_beat_source_with(&mut e, Some("vocal"), &off).unwrap();
+        assert!((tone(&e) - 0.0).abs() < 1e-3, "+12 dB: cap clamps at base+0.3, got {}", tone(&e));
+        // a cut never darkens the cap below the base
+        let mut cut = Engine::new(std::env::temp_dir().join("bb_mixrules_hat_tonecap_cut"));
+        cut.project = plain.project.clone();
+        if let crate::instruments::Instrument::Drum(d) = &mut cut.project.tracks[hi].instrument { d.tone = 1.0; }
+        off.insert("hat".to_string(), -4.0f32);
+        soften_beat_source_with(&mut cut, Some("vocal"), &off).unwrap();
+        assert!((tone(&cut) - -0.3).abs() < 1e-3, "negative offset keeps base cap, got {}", tone(&cut));
     }
 
     #[test]
