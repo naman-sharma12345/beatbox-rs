@@ -299,7 +299,10 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
     }
     let [alo, ahi] = t.air_rel_lufs_db;
     if m.air_rel_lufs_db < alo - 0.15 {
-        let mut fix = vec![("/mix/levels/hat", json!(r1((level("hat") + 2.0).min(12.0))))];
+        // the hats sit nearer the snare by about 1.5x the shortfall (2..6 dB a
+        // round); the source level rule keeps the offset on every rebuild
+        let up = (1.5 * (alo - m.air_rel_lufs_db)).clamp(2.0, 6.0);
+        let mut fix = vec![("/mix/levels/hat", json!(r1((level("hat") + up).min(12.0))))];
         // a floor above the song's own (a reference's) goes into the spec so
         // every delivery holds it
         if alo > spec.targets().air_rel_lufs_db[0] + 0.05 {

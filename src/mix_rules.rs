@@ -212,6 +212,16 @@ fn source_role(t: &crate::project::Track) -> Option<&'static str> {
 /// rule took, so the delivery loop can give some back if the delivered top
 /// end reads dull (Targets::air_rel_lufs_db[0]).
 pub fn soften_beat_source(e: &mut Engine, voice: Option<&str>) -> Result<Value> {
+    soften_beat_source_with(e, voice, &std::collections::BTreeMap::new())
+}
+
+/// `soften_beat_source` with the song's own level offsets (`/mix/levels`,
+/// role -> dB): a bright role's offset moves where the rule puts it (+2 on
+/// "hat" = the hats sit 2 dB nearer the snare than the rule's distance), so
+/// the level rule and the song's levels have one owner: a dull top end
+/// raises `/mix/levels/hat` and the rule keeps it on every rebuild instead
+/// of pulling it back under the snare.
+pub fn soften_beat_source_with(e: &mut Engine, voice: Option<&str>, offsets: &std::collections::BTreeMap<String, f32>) -> Result<Value> {
     use crate::instruments::Instrument;
     let relief = if voice.is_some() { 0.0 } else { INSTRUMENTAL_UNDER_SNARE_RELIEF_DB };
     let is_v = |n: &str| voice.map(|v| n.eq_ignore_ascii_case(v)).unwrap_or(false) || is_voice_name(n);
@@ -283,11 +293,12 @@ pub fn soften_beat_source(e: &mut Engine, voice: Option<&str>) -> Result<Value> 
             let Some(role) = source_role(t) else { continue };
             let Some(&(_, under)) = UNDER_SNARE_DB.iter().find(|r| r.0 == role) else { continue };
             let Some(l) = lvl(&t.name) else { continue };
-            let over = l - (snare - (under - relief));
+            let offset = offsets.get(role).copied().unwrap_or(0.0);
+            let over = l - (snare - (under - relief - offset));
             if snare > -90.0 && l > -90.0 && over > 0.3 {
                 let name = t.name.clone();
                 e.project.tracks[ti].volume_db -= over;
-                levels.push(json!({"part": name, "under_snare_db": r1(snare - l), "down_db": r1(over)}));
+                levels.push(json!({"part": name, "under_snare_db": r1(snare - l), "down_db": r1(over), "level_offset_db": r1(offset)}));
             }
         }
     }
@@ -1508,6 +1519,24 @@ mod tests {
         tone_stage(&mut e, &t, 0.0).unwrap();
         let (_, gp, ga) = tone_gains(&e.project).unwrap();
         assert!(gp >= -MASTER_TONE_MAX_CUT_DB - 1e-3 && ga >= -MASTER_TONE_MAX_CUT_DB - 1e-3, "{gp} {ga}");
+    }
+
+    #[test]
+    fn beat_source_level_rule_keeps_the_songs_hat_offset() {
+        // one owner for the hat level: an offset in /mix/levels moves where
+        // the under-snare rule puts the hat instead of being pulled back
+        let mut e = Engine::new(std::env::temp_dir().join("bb_mixrules_hat_offset"));
+        e.call("generate_beat", &json!({"style": "boom_bap", "bars": 2, "seed": 3})).unwrap();
+        let hi = (0..e.project.tracks.len()).find(|&i| source_role(&e.project.tracks[i]) == Some("hat")).expect("a hat");
+        e.project.tracks[hi].volume_db += 12.0; // far over the snare: the rule must take
+        let mut a = Engine::new(std::env::temp_dir().join("bb_mixrules_hat_offset_a"));
+        a.project = e.project.clone();
+        let ra = soften_beat_source(&mut a, Some("vocal")).unwrap();
+        let mut off = std::collections::BTreeMap::new();
+        off.insert("hat".to_string(), 3.0f32);
+        let r = soften_beat_source_with(&mut e, Some("vocal"), &off).unwrap();
+        let d = e.project.tracks[hi].volume_db - a.project.tracks[hi].volume_db;
+        assert!((d - 3.0).abs() < 0.2, "hat offset kept: {d} {r} {ra}");
     }
 
     #[test]

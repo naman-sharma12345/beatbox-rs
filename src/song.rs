@@ -977,7 +977,7 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     let voice = spec.vocal.as_ref().map(|v| v.track.clone()).filter(|v| e.project.track_index(v).is_ok());
     let mut mix = Map::new();
     // the beat's bright parts are voiced softer before anything is measured
-    mix.insert("source_tone".into(), mix_rules::soften_beat_source(e, voice.as_deref())?);
+    mix.insert("source_tone".into(), mix_rules::soften_beat_source_with(e, voice.as_deref(), &spec.mix.levels)?);
     mix.insert("peaks".into(), mix_rules::tame_peaks(e)?);
     if let Some(v) = &voice {
         let i = e.project.track_index(v)?;
