@@ -411,3 +411,56 @@ pub fn keys_button(ui: &mut Ui, rect: Rect, id: egui::Id, on: bool, color: Color
     }
     resp
 }
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+    use eframe::egui::{Event, Modifiers, PointerButton, RawInput};
+
+    /// Drive mini_knob with real pointer events (what a mouse produces after
+    /// the windowing layer has mapped pixels to points) and return its result.
+    fn drag_knob(steps: &[f32], shift: bool, ppp: f32) -> Option<f32> {
+        let ctx = egui::Context::default();
+        ctx.set_pixels_per_point(ppp);
+        let rect = Rect::from_min_size(Pos2::new(100.0, 100.0), Vec2::splat(20.0));
+        // events in points (the windowing layer maps pixels through ppp)
+        let c = rect.center();
+        let mods = Modifiers { shift, ..Default::default() };
+        let mut frames: Vec<Vec<Event>> = vec![vec![], vec![Event::PointerMoved(c)], vec![Event::PointerButton { pos: c, button: PointerButton::Primary, pressed: true, modifiers: mods }]];
+        let mut y = c.y;
+        for dy in steps {
+            y += dy;
+            frames.push(vec![Event::PointerMoved(Pos2::new(c.x, y))]);
+        }
+        frames.push(vec![Event::PointerButton { pos: Pos2::new(c.x, y), button: PointerButton::Primary, pressed: false, modifiers: mods }]);
+        frames.push(vec![]);
+        let mut out = None;
+        for (k, ev) in frames.into_iter().enumerate() {
+            let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(400.0))), events: ev, modifiers: mods, time: Some(k as f64 * 0.05), ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if let Some(v) = mini_knob(ui, rect, egui::Id::new("knob"), 0.0, -1.0, 1.0, 0.0, true, Color32::WHITE, "pan") {
+                        out = Some(v);
+                    }
+                });
+            });
+        }
+        out
+    }
+
+    #[test]
+    fn a_mouse_drag_up_turns_the_knob_relatively_and_shift_is_fine() {
+        let up = [-10.0_f32; 7]; // 70 points up
+        let normal = drag_knob(&up, false, 1.0).expect("drag released -> value");
+        assert!(normal > 0.4 && normal <= 1.0, "{normal}");
+        let fine = drag_knob(&up, true, 1.0).expect("fine drag");
+        assert!(fine > 0.0 && fine < normal * 0.4, "{fine} vs {normal}");
+        // HiDPI: the same drag in points gives the same turn at 2x scale
+        let hidpi = drag_knob(&up, false, 2.0).expect("hidpi drag");
+        assert!((hidpi - normal).abs() < 0.05, "{hidpi} vs {normal}");
+        // dragging down turns it the other way; a bare click changes nothing
+        let down = drag_knob(&[10.0_f32; 7], false, 1.0).unwrap();
+        assert!(down < -0.4, "{down}");
+        assert_eq!(drag_knob(&[], false, 1.0), None);
+    }
+}

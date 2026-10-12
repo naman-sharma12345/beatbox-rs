@@ -46,8 +46,36 @@ enum Grab {
     Resize,
 }
 
+/// What the grid reads and changes besides the project: the selected
+/// pattern (what a click paints), the selected clip and a toast to show.
+#[derive(Clone, Debug, Default)]
+pub struct GridSel {
+    pub pattern: usize,
+    pub clip_sel: Option<String>,
+    pub toast: Option<String>,
+}
+
 impl Studio {
     pub(super) fn fl_playlist(&mut self, ui: &mut egui::Ui, p: &Project) {
+        let bar_now = self.player.position_secs() * p.bpm / 240.0;
+        let mut sel = GridSel { pattern: self.pattern, clip_sel: self.clip_sel.clone(), toast: None };
+        let actions = playlist_grid(ui, p, &mut sel, bar_now);
+        self.pattern = sel.pattern;
+        self.clip_sel = sel.clip_sel;
+        if let Some(t) = sel.toast {
+            self.toast = Some((t, 0.0, false));
+        }
+        for (tool, args) in actions {
+            self.call(tool, args);
+        }
+    }
+}
+
+/// The playlist grid itself, driven by egui pointer input (a real mouse,
+/// or synthetic events in tests): returns the engine calls a click, drag or
+/// edge drag asks for.
+pub fn playlist_grid(ui: &mut egui::Ui, p: &Project, sel: &mut GridSel, bar_now: f32) -> Vec<(&'static str, Value)> {
+    {
         let mut actions: Vec<(&'static str, Value)> = Vec::new();
         let lanes = p.playlist.iter().map(|c| c.lane + 1).max().unwrap_or(0).max(3) as usize + 1;
         let end_bar = p.playlist.iter().map(|c| c.start_bar + c.bars.max(1)).max().unwrap_or(0);
@@ -83,9 +111,9 @@ impl Studio {
             if resp.clicked() {
                 if let Some(pos) = resp.interact_pointer_pos() {
                     let bar = ((pos.x - grid.min.x) / bar_px).floor().max(0.0) as u32;
-                    match p.patterns.get(self.pattern).map(|pt| pt.name.clone()).filter(|n| !n.starts_with("pl:")) {
+                    match p.patterns.get(sel.pattern).map(|pt| pt.name.clone()).filter(|n| !n.starts_with("pl:")) {
                         Some(name) => actions.extend(paint_calls(p, &name, bar, l as u32)),
-                        None => self.toast = Some(("Select a pattern to paint (the generated pl: sections can't be placed)".into(), 0.0, false)),
+                        None => sel.toast = Some("Select a pattern to paint (the generated pl: sections can't be placed)".into()),
                     }
                 }
             }
@@ -107,7 +135,7 @@ impl Studio {
             let len = (c.bars.max(1) as i64 + dlen).max(1) as f32;
             let r = Rect::from_min_size(pos2(x_of(start) + 1.0, grid.min.y + lane * LANE_H + 2.0), vec2(len * bar_px - 2.0, LANE_H - 4.0));
             let col = pattern_color(&c.pattern);
-            let sel = self.clip_sel.as_deref() == Some(c.id.as_str()) && !c.id.is_empty();
+            let is_sel = sel.clip_sel.as_deref() == Some(c.id.as_str()) && !c.id.is_empty();
             pt.rect_filled(r, 3.0, col.gamma_multiply(0.38));
             let title = Rect::from_min_size(r.min, vec2(r.width(), 10.0));
             pt.rect_filled(title, 3.0, col);
@@ -132,7 +160,7 @@ impl Studio {
                     }
                 }
             }
-            pt.rect_stroke(r, 3.0, Stroke::new(if sel { 1.5_f32 } else { 1.0 }, if sel { Color32::WHITE } else { col.gamma_multiply(0.7) }));
+            pt.rect_stroke(r, 3.0, Stroke::new(if is_sel { 1.5_f32 } else { 1.0 }, if is_sel { Color32::WHITE } else { col.gamma_multiply(0.7) }));
             // right edge grip
             let edge = Rect::from_min_max(pos2(r.max.x - EDGE_PX, r.min.y), r.max);
             pt.line_segment([pos2(r.max.x - 3.0, r.min.y + 12.0), pos2(r.max.x - 3.0, r.max.y - 3.0)], Stroke::new(1.0_f32, Color32::from_white_alpha(90)));
@@ -156,12 +184,12 @@ impl Studio {
                 }
             }
             if body_resp.clicked() {
-                self.clip_sel = Some(c.id.clone());
+                sel.clip_sel = Some(c.id.clone());
                 if let Ok(pi) = p.pattern_index(&c.pattern) {
-                    self.pattern = pi;
+                    sel.pattern = pi;
                 }
             }
-            let menu = super::playlist::pattern_clip_menu(c, self.player.position_secs() * p.bpm / 240.0);
+            let menu = super::playlist::pattern_clip_menu(c, bar_now);
             body_resp.on_hover_text(format!("{} · bar {}–{} · drag to move, drag the edge to resize, right-click for more", c.pattern, c.start_bar + 1, c.start_bar + c.bars.max(1))).context_menu(|ui| {
                 for (label, tool, args) in menu.clone() {
                     if ui.button(label).clicked() {
@@ -172,7 +200,6 @@ impl Studio {
             });
         }
         // playhead
-        let bar_now = self.player.position_secs() * p.bpm / 240.0;
         if bar_now > 0.0 && bar_now < total_bars as f32 {
             let x = x_of(bar_now);
             pt.line_segment([pos2(x, full.min.y), pos2(x, full.max.y)], Stroke::new(1.5_f32, Color32::from_rgb(120, 220, 140)));
@@ -180,9 +207,7 @@ impl Studio {
         if p.playlist.is_empty() {
             pt.text(grid.center(), Align2::CENTER_CENTER, "Click a cell to paint the selected pattern here", FontId::proportional(12.0), DIM);
         }
-        for (tool, args) in actions {
-            self.call(tool, args);
-        }
+        actions
     }
 }
 
@@ -220,5 +245,78 @@ mod tests {
             e.call(t, &a).unwrap();
         }
         assert!(e.project.playlist.iter().any(|c| c.start_bar == 6 && c.lane == 1), "{:?}", e.project.playlist.iter().map(|c| (c.start_bar, c.lane)).collect::<Vec<_>>());
+    }
+
+    /// Drive the grid with real egui pointer events (press, moves, release)
+    /// and return every engine call it asked for. `at` maps (bar, lane) to a
+    /// point using the grid geometry of the first frame.
+    fn drive(p: &Project, ppp: f32, gesture: &dyn Fn(&dyn Fn(f32, f32) -> egui::Pos2) -> Vec<Vec<egui::Event>>) -> Vec<(&'static str, Value)> {
+        let ctx = egui::Context::default();
+        ctx.set_pixels_per_point(ppp);
+        let mut sel = GridSel::default();
+        let mut out = Vec::new();
+        let mut geo: Option<(egui::Pos2, f32)> = None;
+        // egui input is in points; the windowing layer has already divided
+        // physical pixels by pixels_per_point (HiDPI) before it gets here
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 400.0));
+        let frame = |events: Vec<egui::Event>, k: usize, out: &mut Vec<(&'static str, Value)>, geo: &mut Option<(egui::Pos2, f32)>, sel: &mut GridSel| {
+            let input = egui::RawInput { screen_rect: Some(screen), events, time: Some(k as f64 * 0.05), ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let full = ui.available_rect_before_wrap();
+                    let end_bar = p.playlist.iter().map(|c| c.start_bar + c.bars.max(1)).max().unwrap_or(0);
+                    let total = (end_bar + 8).max(32) as f32;
+                    let gmin = pos2(full.min.x + HEAD_W, full.min.y + RULER_H);
+                    *geo = Some((gmin, ((full.max.x - gmin.x) / total).max(10.0)));
+                    out.extend(playlist_grid(ui, p, sel, 0.0));
+                });
+            });
+        };
+        frame(vec![], 0, &mut out, &mut geo, &mut sel);
+        frame(vec![], 0, &mut out, &mut geo, &mut sel);
+        let (gmin, bar_px) = geo.unwrap();
+        let at = move |bar: f32, lane: f32| pos2(gmin.x + bar * bar_px, gmin.y + lane * LANE_H + LANE_H * 0.5);
+        for (k, ev) in gesture(&at).into_iter().enumerate() {
+            frame(ev, k + 1, &mut out, &mut geo, &mut sel);
+        }
+        out
+    }
+
+    fn drag(from: egui::Pos2, to: egui::Pos2) -> Vec<Vec<egui::Event>> {
+        use egui::{Event, Modifiers, PointerButton};
+        let mut f = vec![vec![Event::PointerMoved(from)], vec![Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::default() }]];
+        for i in 1..=8 {
+            f.push(vec![Event::PointerMoved(from + (to - from) * (i as f32 / 8.0))]);
+        }
+        f.push(vec![Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::default() }]);
+        f.push(vec![]);
+        f
+    }
+
+    fn one_clip_project() -> Project {
+        let d = std::env::temp_dir().join(format!("flpl_ptr_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        e.call("add_pattern", &json!({"name": "verse", "bars": 2})).unwrap();
+        e.call("place_pattern", &json!({"pattern": "verse", "start_bar": 0, "lane": 0})).unwrap();
+        e.project.clone()
+    }
+
+    #[test]
+    fn a_real_pointer_drags_resizes_and_paints_clips() {
+        let p = one_clip_project();
+        let clip = p.playlist[0].clone();
+        assert_eq!((clip.start_bar, clip.lane, clip.bars.max(1)), (0, 0, 2));
+        for ppp in [1.0_f32, 2.0] {
+            // grab the clip's body and drag it 3 bars right and one lane down
+            let moved = drive(&p, ppp, &|at| drag(at(0.8, 0.0), at(3.8, 1.0)));
+            assert!(moved.iter().any(|(t, a)| *t == "playlist_clip" && a["action"] == "move" && a["to_bar"] == 3 && a["lane"] == 1), "ppp {ppp}: {moved:?}");
+            // grab the right edge and pull it 2 bars longer
+            let resized = drive(&p, ppp, &|at| { let e = at(2.0, 0.0) - egui::vec2(3.0, 0.0); drag(e, e + egui::vec2(at(4.0, 0.0).x - at(2.0, 0.0).x, 0.0)) });
+            assert!(resized.iter().any(|(t, a)| *t == "playlist_clip" && a["action"] == "trim" && a["end_bar"] == 4), "ppp {ppp}: {resized:?}");
+            // click an empty cell: the selected pattern is painted there
+            let painted = drive(&p, ppp, &|at| { let c = at(10.5, 1.0); drag(c, c) });
+            assert!(painted.iter().any(|(t, a)| *t == "place_pattern" && a["start_bar"] == 10 && a["lane"] == 1), "ppp {ppp}: {painted:?}");
+        }
     }
 }
