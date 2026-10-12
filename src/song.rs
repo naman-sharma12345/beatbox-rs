@@ -638,27 +638,27 @@ fn seed_for(spec: &SongSpec) -> u64 {
 }
 
 /// Beat follows the vocal: with a vocal and no "bpm", the tempo where the
-/// take's phrases lock best, inside the genre's range (at least 12 bpm wide;
-/// 80-112 without a genre).
+/// take's phrases lock best, searched over 70-140 (vocal_flex::TEMPO_RANGE);
+/// half/double-time ties fold toward the genre's range (96 without a genre).
 fn vocal_tempo(spec: &SongSpec, log: &mut Vec<String>) -> Option<f32> {
     let vs = spec.vocal.as_ref()?;
     if vs.lock == Some(false) {
         return None;
     }
     let x = crate::samples::decode_file(Path::new(&vs.file)).ok()?;
-    let (mut lo, mut hi) = spec.genre.as_deref().and_then(|g| crate::producer::playbook(g).ok()).map(|pb| (pb.bpm[0], pb.bpm[1])).unwrap_or((80.0, 112.0));
-    if hi - lo < 12.0 {
-        let mid = (lo + hi) * 0.5;
-        lo = mid - 6.0;
-        hi = mid + 6.0;
-    }
+    // search the wide range (a sung take's real pulse can sit anywhere in
+    // it); the genre's own range only decides between half/double-time ties
+    let genre = spec.genre.as_deref().and_then(|g| crate::producer::playbook(g).ok()).map(|pb| (pb.bpm[0], pb.bpm[1]));
+    let (lo, hi) = crate::vocal_flex::TEMPO_RANGE;
+    let pref = genre.map(|(a, b)| (a * b).sqrt()).unwrap_or(96.0);
     let ph = crate::vocal_flex::phrases(&x, 0.3, None);
     let on = crate::vocal_flex::syllable_onsets(&x, 0.5, 0.09);
     let groups: Vec<Vec<f32>> = ph.iter().map(|p| on.iter().filter(|&&t| t >= p.start_s && t < p.end_s).map(|&t| t - p.start_s).collect()).collect();
-    let c = crate::vocal_flex::lock_tempo(&groups, lo, hi, 0.25);
+    let (c, folded) = crate::vocal_flex::fold_tempo(crate::vocal_flex::lock_tempo(&groups, lo, hi, 0.25), pref);
     let (b, s) = *c.first()?;
     let b = (b * 4.0).round() / 4.0;
-    log.push(format!("tempo {b} bpm picked from the vocal (lock score {:.2} over {} phrases, searched {lo:.0}-{hi:.0}); give \"bpm\" to override", s, ph.len()));
+    let fold = folded.map(|f| format!("; {f} scored the same, folded to the {pref:.0} bpm side")).unwrap_or_default();
+    log.push(format!("tempo {b} bpm picked from the vocal (lock score {:.2} over {} phrases, searched {lo:.0}-{hi:.0}{fold}); give \"bpm\" to override", s, ph.len()));
     Some(b)
 }
 

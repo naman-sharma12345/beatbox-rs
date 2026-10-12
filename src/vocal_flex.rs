@@ -318,8 +318,10 @@ fn best_phase_d(r: &[f32], period: f32) -> (f32, usize, f32) {
 
 /// Tempo candidates for phrases that are each free to start anywhere: for
 /// every bpm in lo..=hi (0.25 steps) each phrase gets its own best grid phase
-/// and the score is the share of onsets on the grid, minus what a random grid
-/// of that fineness would catch (so a finer grid is not a free win).
+/// and the score is the share of onsets on the grid, minus what the same
+/// search catches on random onsets of the same count and span (so a finer
+/// grid, i.e. a faster tempo, is not a free win: the best-of-48-phases pick
+/// alone lands far more random onsets than 2*tol/period).
 /// Best first: (bpm, score 0..1).
 pub fn lock_tempo(groups: &[Vec<f32>], lo: f32, hi: f32, grid_beats: f32) -> Vec<(f32, f32)> {
     let n: usize = groups.iter().map(|g| g.len()).sum();
@@ -327,18 +329,35 @@ pub fn lock_tempo(groups: &[Vec<f32>], lo: f32, hi: f32, grid_beats: f32) -> Vec
         return Vec::new();
     }
     let (lo, hi) = (lo.min(hi).max(40.0), hi.max(lo).min(240.0));
+    // random onset sets matched to each phrase (count and span), fixed seed
+    const SIMS: usize = 6;
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut rnd = || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((seed >> 40) as f32) / ((1u64 << 24) as f32)
+    };
+    let nulls: Vec<Vec<Vec<f32>>> = groups
+        .iter()
+        .map(|g| {
+            let span = g.iter().cloned().fold(0.0f32, f32::max) + 0.05;
+            (0..SIMS).map(|_| g.iter().map(|_| rnd() * span).collect()).collect()
+        })
+        .collect();
     let mut out = Vec::new();
     let mut b = lo;
     while b <= hi + 1e-3 {
         let period = grid_beats * 60.0 / b;
-        let (mut hits, mut dist) = (0usize, 0.0f32);
-        for g in groups {
+        let (mut hits, mut dist, mut null_hits) = (0usize, 0.0f32, 0usize);
+        for (g, ns) in groups.iter().zip(nulls.iter()) {
             let (_, h, d) = best_phase_d(g, period);
             hits += h;
             dist += d;
+            for s in ns {
+                null_hits += best_phase_d(s, period).1;
+            }
         }
-        let rnd = (2.0 * LOCK_TOL_S / period).min(0.99);
-        let score = (hits as f32 / n as f32 - rnd) / (1.0 - rnd);
+        let null = (null_hits as f32 / (SIMS * n) as f32).min(0.99);
+        let score = (hits as f32 / n as f32 - null) / (1.0 - null);
         out.push((b, score, dist / n as f32));
         b += 0.25;
     }
@@ -351,12 +370,47 @@ pub fn lock_tempo(groups: &[Vec<f32>], lo: f32, hi: f32, grid_beats: f32) -> Vec
     out.into_iter().map(|(b, s, _)| (b, s)).collect()
 }
 
+/// Half/double time: a vocal that locks at b also locks at b/2 and 2b (and
+/// often 2b/3, 3b/2). Among the candidates related to the best one by those
+/// ratios and scoring within `OCTAVE_SLACK` of it, the one nearest `pref`
+/// (log scale) goes first. Returns the reordered list and, when it moved,
+/// the bpm it replaced.
+pub const OCTAVE_SLACK: f32 = 0.03;
+pub fn fold_tempo(c: Vec<(f32, f32)>, pref: f32) -> (Vec<(f32, f32)>, Option<f32>) {
+    let Some(&(b0, s0)) = c.first() else { return (c, None) };
+    let mut best = (b0, s0, (b0 / pref).ln().abs());
+    for &(b, s) in &c {
+        if s < s0 - OCTAVE_SLACK {
+            continue;
+        }
+        let r = b / b0;
+        let related = [0.5f32, 2.0, 2.0 / 3.0, 1.5].iter().any(|&k| (r / k - 1.0).abs() < 0.02);
+        let d = (b / pref).ln().abs();
+        if related && d + 0.05 < best.2 {
+            best = (b, s, d);
+        }
+    }
+    if best.0 == b0 {
+        return (c, None);
+    }
+    let mut c = c;
+    let k = c.iter().position(|x| x.0 == best.0).unwrap();
+    let x = c.remove(k);
+    c.insert(0, x);
+    (c, Some(b0))
+}
+
+/// The default tempo search for a vocal with no bpm given.
+pub const TEMPO_RANGE: (f32, f32) = (70.0, 140.0);
+
 /// Knobs for `lock_vocal`.
 #[derive(Clone, Debug)]
 pub struct LockOpts {
     /// The song tempo; None = pick it from the vocal within `range`.
     pub bpm: Option<f32>,
     pub range: (f32, f32),
+    /// Half/double-time candidates fold toward this tempo (see `fold_tempo`).
+    pub pref_bpm: f32,
     /// The song beat the first phrase is placed near.
     pub start_beat: f32,
     pub grid_beats: f32,
@@ -370,7 +424,7 @@ pub struct LockOpts {
 
 impl Default for LockOpts {
     fn default() -> Self {
-        LockOpts { bpm: None, range: (80.0, 112.0), start_beat: 0.0, grid_beats: 0.25, min_pause_s: 0.3, keep_gaps: true, flex: 0.5, max_shift_s: 0.045 }
+        LockOpts { bpm: None, range: TEMPO_RANGE, pref_bpm: 96.0, start_beat: 0.0, grid_beats: 0.25, min_pause_s: 0.3, keep_gaps: true, flex: 0.5, max_shift_s: 0.045 }
     }
 }
 
@@ -394,6 +448,8 @@ pub struct LockReport {
     pub grid_beats: f32,
     /// Best tempi with their lock score (when the tempo was picked).
     pub candidates: Vec<(f32, f32)>,
+    /// The top-scoring tempo when half/double-time folding moved the pick.
+    pub folded_from: Option<f32>,
     pub onsets: usize,
     pub phrases: usize,
     /// The take laid whole at the best single phase (what a free-time lay gets).
@@ -415,10 +471,12 @@ pub fn lock_vocal(x: &[f32], o: &LockOpts) -> (Vec<f32>, Vec<LockedPhrase>, Lock
     let ph = phrases(x, o.min_pause_s, None);
     let groups: Vec<Vec<f32>> = ph.iter().map(|p| on.iter().filter(|&&t| t >= p.start_s && t < p.end_s).map(|&t| t - p.start_s).collect()).collect();
     let g = o.grid_beats.max(0.05);
+    let mut folded_from = None;
     let (bpm, picked, candidates) = match o.bpm {
         Some(b) => (b, false, Vec::new()),
         None => {
-            let c = lock_tempo(&groups, o.range.0, o.range.1, g);
+            let (c, folded) = fold_tempo(lock_tempo(&groups, o.range.0, o.range.1, g), o.pref_bpm);
+            folded_from = folded;
             let b = c.first().map(|x| x.0).unwrap_or((o.range.0 + o.range.1) * 0.5);
             (b, true, c.into_iter().take(5).map(|(b, s)| (b, (s * 1000.0).round() / 1000.0)).collect())
         }
@@ -485,6 +543,7 @@ pub fn lock_vocal(x: &[f32], o: &LockOpts) -> (Vec<f32>, Vec<LockedPhrase>, Lock
         bpm_picked: picked,
         grid_beats: g,
         candidates,
+        folded_from,
         onsets: on.len(),
         phrases: ph.len(),
         free_time,
@@ -672,13 +731,14 @@ fn lock_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     let auto = matches!(a.get("bpm"), Some(Value::String(s)) if s == "auto") || (a.get("bpm").is_none() && track.is_none());
     let bpm = if auto { None } else { Some(f_opt(a, "bpm").unwrap_or(e.project.bpm)) };
     let range = match a.get("bpm_range").and_then(|v| v.as_array()) {
-        Some(r) if r.len() == 2 => (r[0].as_f64().unwrap_or(80.0) as f32, r[1].as_f64().unwrap_or(112.0) as f32),
-        Some(_) => bail!("bpm_range is [low, high], e.g. [80, 112]"),
-        None => (80.0, 112.0),
+        Some(r) if r.len() == 2 => (r[0].as_f64().unwrap_or(TEMPO_RANGE.0 as f64) as f32, r[1].as_f64().unwrap_or(TEMPO_RANGE.1 as f64) as f32),
+        Some(_) => bail!("bpm_range is [low, high], e.g. [70, 140]"),
+        None => TEMPO_RANGE,
     };
     let o = LockOpts {
         bpm,
         range,
+        pref_bpm: f_or(a, "pref_bpm", 96.0).clamp(40.0, 240.0),
         start_beat: f_or(a, "start_beat", 0.0),
         grid_beats: grid_of(a, "1/16")?,
         min_pause_s: f_or(a, "min_pause_s", 0.3).clamp(0.08, 3.0),
@@ -908,9 +968,9 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "lock_vocal_to_beat",
-            description: "Beat follows the vocal: for a take with no steady pulse (a free-time a cappella), find its phrases and syllables, pick the tempo that locks it best (bpm 'auto', within bpm_range, default [80,112]) or use the song's, start EACH phrase where its syllables land on the 1/16 grid (its own offset, near its natural time, gaps kept), pull the syllables inside each phrase toward the grid (flex 0..1, default 0.5, max_shift_ms 45; 0 keeps phrases untouched), and report the lock: median onset-to-grid ms and % within 25 ms for the take laid free-time, placed, and locked. Without track it only analyses; with track + sample it places the clips (playing <sample>_locked when flex > 0). set_bpm:true sets the project tempo to the picked one.",
+            description: "Beat follows the vocal: for a take with no steady pulse (a free-time a cappella), find its phrases and syllables, pick the tempo that locks it best (bpm 'auto', within bpm_range, default [70,140]; half/double-time ties fold toward pref_bpm, default 96) or use the song's, start EACH phrase where its syllables land on the 1/16 grid (its own offset, near its natural time, gaps kept), pull the syllables inside each phrase toward the grid (flex 0..1, default 0.5, max_shift_ms 45; 0 keeps phrases untouched), and report the lock: median onset-to-grid ms and % within 25 ms for the take laid free-time, placed, and locked. Without track it only analyses; with track + sample it places the clips (playing <sample>_locked when flex > 0). set_bpm:true sets the project tempo to the picked one.",
             mutates: true,
-            schema: || obj(json!({"sample": {"type": "string"}, "path": {"type": "string"}, "track": {"type": "string"}, "bpm": {"anyOf": [{"type": "number"}, {"type": "string", "enum": ["auto"]}], "description": "number, or 'auto' to pick from the vocal (default: auto without track, the song's with track)"}, "bpm_range": {"type": "array", "items": {"type": "number"}}, "set_bpm": {"type": "boolean"}, "start_beat": {"type": "number"}, "grid": {"description": "default '1/16'"}, "flex": {"type": "number"}, "max_shift_ms": {"type": "number"}, "min_pause_s": {"type": "number"}, "keep_gaps": {"type": "boolean"}, "gain_db": {"type": "number"}, "replace": {"type": "boolean"}, "new_name": {"type": "string"}, "max_rows": {"type": "integer"}}), &[]),
+            schema: || obj(json!({"sample": {"type": "string"}, "path": {"type": "string"}, "track": {"type": "string"}, "bpm": {"anyOf": [{"type": "number"}, {"type": "string", "enum": ["auto"]}], "description": "number, or 'auto' to pick from the vocal (default: auto without track, the song's with track)"}, "bpm_range": {"type": "array", "items": {"type": "number"}}, "pref_bpm": {"type": "number"}, "set_bpm": {"type": "boolean"}, "start_beat": {"type": "number"}, "grid": {"description": "default '1/16'"}, "flex": {"type": "number"}, "max_shift_ms": {"type": "number"}, "min_pause_s": {"type": "number"}, "keep_gaps": {"type": "boolean"}, "gain_db": {"type": "number"}, "replace": {"type": "boolean"}, "new_name": {"type": "string"}, "max_rows": {"type": "integer"}}), &[]),
             run: lock_tool,
         },
         Tool {
@@ -1015,6 +1075,41 @@ mod tests {
         e.call("lock_vocal_to_beat", &json!({"sample": "take", "track": "vocal", "start_beat": 4})).unwrap();
         assert_eq!(e.project.audio_clips.iter().filter(|c| c.track == "vocal").count(), 8);
         assert_eq!(e.project.samples.iter().filter(|s| s.name.starts_with("take_locked")).count(), 1);
+    }
+
+    #[test]
+    fn tempo_search_over_70_140_does_not_drift_to_the_fast_edge() {
+        // 12 phrases of syllables on 96 bpm 16ths (+-8 ms), each phrase at
+        // its own offset: the 70-140 search must find 96, not the top edge
+        // where a finer grid catches more by chance.
+        let mut seed: u32 = 7;
+        let mut r = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32
+        };
+        let six = 60.0 / 96.0 / 4.0;
+        let groups: Vec<Vec<f32>> = (0..12)
+            .map(|_| {
+                let mut slots: Vec<u32> = (0..32).filter(|_| r() < 0.35).collect();
+                slots.dedup();
+                slots.iter().map(|&k| k as f32 * six + (r() - 0.5) * 0.016).collect()
+            })
+            .collect();
+        let c = lock_tempo(&groups, TEMPO_RANGE.0, TEMPO_RANGE.1, 0.25);
+        let (c, _) = fold_tempo(c, 96.0);
+        assert!((c[0].0 - 96.0).abs() <= 1.0, "picked {:?}", &c[..5]);
+    }
+
+    #[test]
+    fn half_and_double_time_fold_toward_the_preferred_tempo() {
+        let c = vec![(140.0, 0.50), (70.0, 0.49), (100.0, 0.20)];
+        let (f, from) = fold_tempo(c.clone(), 96.0);
+        assert_eq!((f[0].0, from), (70.0, Some(140.0)));
+        let (f, from) = fold_tempo(c.clone(), 130.0);
+        assert_eq!((f[0].0, from), (140.0, None));
+        // a related tempo that scores clearly worse does not win
+        let (f, _) = fold_tempo(vec![(140.0, 0.50), (70.0, 0.40)], 96.0);
+        assert_eq!(f[0].0, 140.0);
     }
 
     #[test]
