@@ -1325,7 +1325,11 @@ pub fn tools() -> Vec<Tool> {
             name: "song_create",
             description: "START HERE for a whole song. One SongSpec in, one finished song out: the beat composed to your structure and instruments, your vocal take cut and placed (phrases at section/bar/beat, or cut at its pauses), the vocal chain (HPF, light de-ess, 3:1, small sends), the vocal balanced over the beat section by section, hooks lifted over verses, delivered as mp3/wav/flac at -10 LUFS / -1 dBTP, and every target CHECKED on the delivered file (checks[] with pass/fail and the fix). One undo step. song_schema shows every field; song_validate checks a spec without building.",
             mutates: true,
-            schema: || obj(spec_props(), &[]),
+            schema: || {
+                let mut p = spec_props();
+                p["improve"] = json!({"type": "integer", "description": "self-critique rounds after the build (song_improve: judge against the genre profile, fix, rebuild, keep the best take; 0 = none, max 4)"});
+                obj(p, &[])
+            },
             run: create_tool,
         },
         Tool {
@@ -1442,6 +1446,12 @@ mod tests {
         assert_eq!(split_key("D minor"), ("D".into(), Some("minor".into())));
         assert_eq!(split_key("F#m"), ("F#".into(), Some("minor".into())));
         assert_eq!(split_key("Bb"), ("Bb".into(), None));
+    }
+
+    #[test]
+    fn song_create_takes_improve_beside_the_spec() {
+        let tool = tools().into_iter().find(|t| t.name == "song_create").unwrap();
+        assert!((tool.schema)()["properties"]["improve"].is_object(), "improve must pass the argument check");
     }
 
     #[test]

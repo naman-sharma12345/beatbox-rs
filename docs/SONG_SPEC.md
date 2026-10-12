@@ -84,7 +84,7 @@ A song judges itself; no ear in the loop is needed.
   `{"file": ..., "genre": ...}` judges any audio file (no fixes: a file has no spec).
 * `song_improve {"rounds": 2}` applies the fixes for the biggest weaknesses
   (up to 3 a round), rebuilds, critiques again and **keeps the best take**
-  (a round that scores worse is rolled back and its fix is not tried again).
+  (a round that scores clearly worse is rolled back and its fix is not tried again; one that comes out only a little worse is built on, so a hook lift that cost a little air gets the air back next round).
   The song's file ends as the best take; the spec keeps the knobs that made it.
   `song_create {..., "improve": 2}` builds and improves in one call.
 * The knobs it turns: `/mix/levels/<role>` (fader offsets, -12..12 dB, applied

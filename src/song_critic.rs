@@ -228,7 +228,9 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
     }
     if let (Some(r), Some(l)) = (p.hook_lift_db, m.hook_lift_db) {
         if l < r[0] {
-            let want = (r[0] + 0.5).max(spec.mix.drop_lift_db + 0.5).min(5.0);
+            // a little over the floor: the song's own lift check holds the delivered
+            // file to this value less its tolerance, and the limiter takes some back
+            let want = (r[0] + 0.3).max(spec.mix.drop_lift_db + 0.3).min(5.0);
             w("hook_flat", format!("the hook barely lifts over the verse ({l} dB, wants {}..{})", r[0], r[1]), json!(l), json!(r), sev(l, r), vec![("/mix/drop_lift_db", json!(r1(want)))]);
         } else if l > r[1] {
             w("hook_jumps", format!("the hook jumps {l} dB over the verse (wants at most {}): the verses may read thin", r[1]), json!(l), json!(r), sev(l, r), vec![]);
@@ -351,6 +353,10 @@ fn round_path(final_path: &std::path::Path, n: usize) -> String {
     final_path.with_file_name(format!("{stem}_try{n}.{ext}")).to_string_lossy().to_string()
 }
 
+/// How much worse (score) a round may come out and still be built on by the
+/// next one (the best take is kept regardless).
+pub const EXPLORE_MARGIN: f32 = 0.35;
+
 /// song_improve: critique -> patch the knobs that own the biggest
 /// weaknesses -> rebuild -> critique again, keeping the best take, for up to
 /// `rounds` rebuilds. The delivered file at the song's own path is the best
@@ -376,6 +382,7 @@ pub fn improve(e: &mut Engine, rounds: usize, max_fixes: usize, genre: Option<&s
     let mut tried: Vec<String> = Vec::new();
     let mut history = vec![json!({"round": 0, "score": s0, "verdict": verdict(&w0), "weaknesses": w0.iter().map(|w| &w.id).collect::<Vec<_>>()})];
     let mut ws = w0.clone();
+    let mut best_ws = w0.clone();
     let mut stop = None;
     for n in 1..=rounds {
         let mut set: Map<String, Value> = Map::new();
@@ -407,13 +414,23 @@ pub fn improve(e: &mut Engine, rounds: usize, max_fixes: usize, genre: Option<&s
         let (_m, w, _, _) = critique_song(e, genre)?;
         let s = score(&w);
         let better = s < best.0 - 0.05;
-        history.push(json!({"round": n, "tried": using, "set": set, "score": s, "kept": better, "verdict": verdict(&w)}));
+        // a take close to the best is built on (its new weaknesses may have
+        // fixes of their own: a hook lift that cost a little air gets the air
+        // back next round); a take that went clearly worse is dropped
+        let explore = !better && s <= best.0 + EXPLORE_MARGIN;
+        history.push(json!({"round": n, "tried": using, "set": set, "score": s, "kept": better, "built_on": better || explore, "verdict": verdict(&w)}));
         if better {
             best = (s, e.project.clone(), round_path(&final_path, n), n);
+            ws = w;
+        } else if explore {
             ws = w;
         } else {
             // back to the best take; its weaknesses stand, minus what failed
             e.project = best.1.clone();
+            ws = best_ws.clone();
+        }
+        if better {
+            best_ws = ws.clone();
         }
     }
     // the best take becomes the song: its file at the song's own path, its
