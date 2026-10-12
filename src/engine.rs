@@ -321,6 +321,23 @@ impl Engine {
             };
         }
         let mut result = result;
+        // persist every generation seed in the project so it reproduces
+        if top && result.is_ok() {
+            if let Some(seed) = resolved.get("seed").and_then(|v| v.as_u64()) {
+                let mut args_kept = resolved.clone();
+                if let Value::Object(m) = &mut args_kept {
+                    m.remove("project");
+                }
+                let source = if fresh_seed.is_some() { "fresh" } else { "given" };
+                eprintln!("seed: {name} seed={seed} ({source})");
+                let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                self.project.seed_log.push(crate::project::SeedEntry { tool: name.to_string(), seed, source: source.into(), args: args_kept, at });
+                let n = self.project.seed_log.len();
+                if n > crate::project::SEED_LOG_MAX {
+                    self.project.seed_log.drain(..n - crate::project::SEED_LOG_MAX);
+                }
+            }
+        }
         if let (Some(s), Ok(Value::Object(m))) = (fresh_seed, &mut result) {
             m.entry("seed").or_insert(Value::from(s));
             m.insert("seed_source".into(), Value::from("fresh"));

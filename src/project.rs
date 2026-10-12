@@ -397,7 +397,28 @@ pub struct Project {
     /// sections and last checks, so song_patch can change it by path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub song: Option<crate::song::SongState>,
+    /// Every seed a generating tool ran with (given or fresh), oldest first,
+    /// so any arrangement can be rebuilt on demand: rerun `tool` with `args`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seed_log: Vec<SeedEntry>,
 }
+
+/// One generation: the tool, the seed it ran with, where the seed came
+/// from ("given" or "fresh"), the call's arguments (seed included) and
+/// when (unix seconds).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SeedEntry {
+    pub tool: String,
+    pub seed: u64,
+    pub source: String,
+    #[serde(default)]
+    pub args: serde_json::Value,
+    #[serde(default)]
+    pub at: u64,
+}
+
+/// The seed log keeps the newest entries up to this many.
+pub const SEED_LOG_MAX: usize = 256;
 
 /// A saved MIDI controller setup: which controls drive what, which track the
 /// keyboard plays, the record grid and live note length.
@@ -570,6 +591,7 @@ impl Project {
             id_seq: 0,
             midi: None,
             song: None,
+            seed_log: Vec::new(),
         }
     }
 
