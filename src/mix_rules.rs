@@ -507,6 +507,9 @@ pub fn ensure_vocal_pocket(e: &mut Engine, source: &str) -> Result<Vec<String>> 
 /// The vocal's own mud cut (dynamic, before the de-esser and compressors).
 pub const VOCAL_MUD_HZ: f32 = 300.0;
 pub const VOCAL_MUD_CUT_DB: f32 = -3.5;
+/// The same body trimmed again after the compressors (wide, static).
+pub const VOCAL_POST_MUD_DB: f32 = -3.0;
+pub const VOCAL_POST_MUD_Q: f32 = 0.9;
 /// Vocal reverb/delay returns start here (24 dB/oct).
 pub const RETURN_LOW_CUT_HZ: f32 = 400.0;
 
@@ -547,6 +550,11 @@ pub fn apply_vocal_chain(e: &mut Engine, track: &str, c: &VocalChain, source: &s
     e.call_nested("add_effect", &json!({"track": track, "type": "compressor", "params": {"threshold_db": c.comp_threshold_db + 12.0, "ratio": c.comp_ratio, "attack_ms": 0.3, "release_ms": 40.0, "makeup_db": 0.0, "knee_db": 3.0, "lookahead_ms": 2.0}}), source)?;
     e.call_nested("add_effect", &json!({"track": track, "type": "compressor", "params": {"threshold_db": c.comp_threshold_db, "ratio": c.comp_ratio, "attack_ms": 1.0, "release_ms": 100.0, "makeup_db": c.comp_makeup_db, "knee_db": 6.0, "lookahead_ms": 2.0}}), source)?;
     steps.push(format!("compressor {}:1 in two stages (peak catch, then body)", c.comp_ratio));
+    // the compressors give a pre-comp cut back (measured on the freestyle
+    // take: dynamic cut on, the vocal stem's 250-500 Hz did not move while its
+    // total rose 0.5 dB), so the body is also trimmed after them, wide
+    e.call_nested("add_effect", &json!({"track": track, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": VOCAL_MUD_HZ, "gain_db": VOCAL_POST_MUD_DB, "q": VOCAL_POST_MUD_Q}]}}), source)?;
+    steps.push(format!("post-comp mud bell {VOCAL_POST_MUD_DB} dB at {VOCAL_MUD_HZ} Hz (Q {VOCAL_POST_MUD_Q})"));
     for (bus, db) in [("verb", c.reverb_send_db), ("echo", c.delay_send_db)] {
         if let Some(db) = db {
             if e.project.buses.iter().any(|b| b.name == bus) {
