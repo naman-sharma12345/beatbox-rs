@@ -1041,6 +1041,9 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
         .as_array()
         .map(|a| a.iter().filter_map(|x| Some((x["part"].as_str()?.to_string(), x["down_db"].as_f64()? as f32))).collect())
         .unwrap_or_default();
+    // preserve_dynamics is searched between where the hook went flat (lift
+    // short) and where the lift had room to spare (loudness may take some)
+    let (mut pd_flat, mut pd_room): (f32, Option<f32>) = (0.0, None);
     for round in 0..DELIVERY_ROUNDS {
         // faders may have moved since: the energy lanes follow them
         apply_section_energy(e, &spec_e, voice.as_deref())?;
@@ -1058,20 +1061,29 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
         let mut changed = false;
         // a flat hook on the delivered file: the limiter took the contrast,
         // so the delivery keeps more of the song's own (gentler limiting)
+        let pd = o.preserve_dynamics;
         if let Some(l) = lift.filter(|l| *l < t.drop_lift_db[0]) {
-            if o.preserve_dynamics < 0.89 {
-                let step = ((t.drop_lift_db[0] + 0.3 - l) * 0.2).clamp(0.1, 0.3);
-                o.preserve_dynamics = (o.preserve_dynamics + step).min(0.9);
-                lift_log.push(json!({"delivered_lift_db": (l * 10.0).round() / 10.0, "preserve_dynamics": (o.preserve_dynamics * 100.0).round() / 100.0, "why": "the limiter flattened the hook"}));
+            pd_flat = pd_flat.max(pd);
+            let next = match pd_room {
+                Some(h) => 0.5 * (pd + h),
+                None => pd + ((t.drop_lift_db[0] + 0.3 - l) * 0.2).clamp(0.1, 0.3),
+            }
+            .min(0.9);
+            if next > pd + 0.03 {
+                o.preserve_dynamics = next;
+                lift_log.push(json!({"delivered_lift_db": (l * 10.0).round() / 10.0, "preserve_dynamics": (next * 100.0).round() / 100.0, "why": "the limiter flattened the hook"}));
                 changed = true;
             }
-        }
-        if let Some(lu) = lufs {
-            let room = lift.map(|l| l >= t.drop_lift_db[0] + 0.3).unwrap_or(true);
-            if lu < t.lufs - t.lufs_tolerance && room && o.preserve_dynamics > 0.3 {
-                o.preserve_dynamics = (o.preserve_dynamics - 0.15).max(0.3);
-                lift_log.push(json!({"delivered_lufs": (lu * 10.0).round() / 10.0, "preserve_dynamics": (o.preserve_dynamics * 100.0).round() / 100.0}));
-                changed = true;
+        } else if let (Some(l), Some(lu)) = (lift, lufs) {
+            let room = l >= t.drop_lift_db[0] + 0.3;
+            if lu < t.lufs - t.lufs_tolerance && room && pd > 0.3 {
+                pd_room = Some(pd_room.map_or(pd, |h| h.min(pd)));
+                let next = if pd_flat > 0.0 { 0.5 * (pd + pd_flat) } else { pd - 0.15 }.max(0.3);
+                if next < pd - 0.03 {
+                    o.preserve_dynamics = next;
+                    lift_log.push(json!({"delivered_lufs": (lu * 10.0).round() / 10.0, "delivered_lift_db": (l * 10.0).round() / 10.0, "preserve_dynamics": (next * 100.0).round() / 100.0}));
+                    changed = true;
+                }
             }
         }
         if harsh["pass"] == false && tone_rounds < 2 {
