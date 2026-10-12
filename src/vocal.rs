@@ -920,7 +920,44 @@ pub fn transcribe(audio: &Path, workdir: &Path, model: &str, language: Option<&s
 /// `full_mix`: a whole record (singer inside the music): no voice-activity
 /// filter (it drops sung lines under a band), greedy decoding, 4 threads.
 pub fn transcribe_with(audio: &Path, workdir: &Path, model: &str, language: Option<&str>, prompt: Option<&str>, full_mix: bool) -> Result<Lyrics> {
-    let cache = audio.with_extension(format!("lyrics.{model}{}.json", if full_mix { ".mix" } else { "" }));
+    // a rapped Hindi take loops the whole-file decoder (2026-10-12): such
+    // takes, a helper that failed and a looped result all go to the chunked
+    // fallback (30 s chunks, VAD, segment times only, loop filter)
+    let chunk_first = !full_mix && matches!(language, Some("hi"));
+    if !chunk_first {
+        match transcribe_run(audio, workdir, model, language, prompt, full_mix, false) {
+            Ok(l) if !lyrics_looped(&l) => return Ok(l),
+            _ => {}
+        }
+    }
+    transcribe_run(audio, workdir, model, language, prompt, full_mix, true)
+}
+
+/// A decoder loop: one short phrase over and over in a segment, or a
+/// transcript of very few distinct words.
+pub fn lyrics_looped(l: &Lyrics) -> bool {
+    let all: Vec<String> = l.segments.iter().flat_map(|s| norm_words(&s.text)).collect();
+    if all.len() < 12 {
+        return false;
+    }
+    let mut uniq = all.clone();
+    uniq.sort();
+    uniq.dedup();
+    if uniq.len() * 6 <= all.len() {
+        return true;
+    }
+    l.segments.iter().any(|s| {
+        let w = norm_words(&s.text);
+        if w.len() < 8 {
+            return false;
+        }
+        let top = w.iter().map(|x| w.iter().filter(|y| *y == x).count()).max().unwrap_or(0);
+        top * 10 >= w.len() * 6 && top >= 4
+    })
+}
+
+fn transcribe_run(audio: &Path, workdir: &Path, model: &str, language: Option<&str>, prompt: Option<&str>, full_mix: bool, chunked: bool) -> Result<Lyrics> {
+    let cache = audio.with_extension(format!("lyrics.{model}{}{}.json", if full_mix { ".mix" } else { "" }, if chunked { ".chunks" } else { "" }));
     if prompt.is_none() {
         if let Ok(s) = std::fs::read_to_string(&cache) {
             if let Ok(l) = serde_json::from_str::<Lyrics>(&s) {
@@ -935,6 +972,9 @@ pub fn transcribe_with(audio: &Path, workdir: &Path, model: &str, language: Opti
     cmd.arg(&script).arg(audio).arg("--model").arg(model);
     if full_mix {
         cmd.arg("--no-vad").arg("--beam").arg("1").arg("--threads").arg("4");
+    }
+    if chunked {
+        cmd.arg("--chunk-s").arg("30");
     }
     if let Some(l) = language {
         cmd.arg("--language").arg(l);
@@ -1230,5 +1270,17 @@ mod tests {
     fn lyric_similarity_finds_the_repeat() {
         assert!(lyric_similarity("Twinkle twinkle little star", "twinkle, twinkle little star!") > 0.9);
         assert!(lyric_similarity("Up above the world so high", "When the blazing sun is gone") < 0.2);
+    }
+
+    #[test]
+    fn lyrics_looped_catches_decoder_loops() {
+        let line = |t: &str| LyricLine { start: 0.0, end: 1.0, text: t.into(), words: Vec::new() };
+        let mk = |v: Vec<LyricLine>| Lyrics { language: "hi".into(), text: String::new(), segments: v };
+        let looped = mk(vec![line("मैं हूँ मैं हूँ मैं हूँ मैं हूँ मैं हूँ मैं हूँ")]);
+        assert!(lyrics_looped(&looped));
+        let fine = mk(vec![line("तवकी धुम की लगती लिब दनते है"), line("मैंने तो मश्वी शहिया देकाया"), line("निमन देखाम खाँवा ने ना")]);
+        assert!(!lyrics_looped(&fine));
+        let same = mk((0..8).map(|_| line("ना ना ना")).collect());
+        assert!(lyrics_looped(&same));
     }
 }
