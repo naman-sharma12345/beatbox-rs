@@ -816,6 +816,7 @@ mod tests {
     #[test]
     fn nan_fields_ignores_unset_options() {
         #[derive(Debug)]
+        #[allow(dead_code)]
         struct I { fixed_key: Option<u8>, gain: f32, tune: f32, list: Vec<f32>, infinite_mode: bool }
         let ok = I { fixed_key: None, gain: 1.0, tune: 0.0, list: vec![1.0], infinite_mode: true };
         assert!(super::nan_fields(&ok).is_empty(), "{:?}", super::nan_fields(&ok));

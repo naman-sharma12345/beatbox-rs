@@ -696,6 +696,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_compose::tools());
     v.extend(crate::tools_ears::tools());
     v.extend(crate::tools_delivery::tools());
+    v.extend(crate::judge::tools());
     v.extend(crate::tools_mix::tools());
     v.extend(crate::tools_parity::tools());
     v.extend(crate::midi_in::tools());

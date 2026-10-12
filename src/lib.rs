@@ -35,6 +35,7 @@ pub mod fx_time;
 pub mod fx_vocoder;
 pub mod groove_extract;
 pub mod groove_feel;
+pub mod judge;
 pub mod ids;
 #[cfg(feature = "gui")]
 pub mod gui;

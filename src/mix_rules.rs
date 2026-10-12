@@ -504,6 +504,12 @@ pub fn ensure_vocal_pocket(e: &mut Engine, source: &str) -> Result<Vec<String>> 
 
 /// Put the vocal chain on `track` (replacing an earlier one this module
 /// wrote) and the melodic beds' ducking under it.
+/// The vocal's own mud cut (dynamic, before the de-esser and compressors).
+pub const VOCAL_MUD_HZ: f32 = 300.0;
+pub const VOCAL_MUD_CUT_DB: f32 = -3.5;
+/// Vocal reverb/delay returns start here (24 dB/oct).
+pub const RETURN_LOW_CUT_HZ: f32 = 400.0;
+
 pub fn apply_vocal_chain(e: &mut Engine, track: &str, c: &VocalChain, source: &str) -> Result<Value> {
     let ti = e.project.track_index(track)?;
     e.project.tracks[ti].effects.clear();
@@ -511,6 +517,11 @@ pub fn apply_vocal_chain(e: &mut Engine, track: &str, c: &VocalChain, source: &s
     let mut steps = Vec::new();
     e.call_nested("add_effect", &json!({"track": track, "type": "parametric_eq", "params": {"bands": [{"kind": "low_cut", "freq": c.hpf_hz, "gain_db": 0.0, "q": 0.707, "stages": 2}]}}), source)?;
     steps.push(format!("high-pass {} Hz", c.hpf_hz));
+    // the take's own mud: a dynamic cut at ~300 Hz on the vocal itself (most
+    // home/phone takes carry a boxy 250-500 Hz body that no beat-side cut
+    // can reach); it only works while the voice sounds there
+    e.call_nested("add_effect", &json!({"track": track, "type": "dynamic_eq", "params": {"freq": VOCAL_MUD_HZ, "q": 1.5, "threshold_db": -40.0, "ratio": 4.0, "range_db": VOCAL_MUD_CUT_DB, "attack_ms": 5.0, "release_ms": 120.0}}), source)?;
+    steps.push(format!("dynamic mud cut {VOCAL_MUD_CUT_DB} dB at {VOCAL_MUD_HZ} Hz (Q 1.5)"));
     if c.brighten {
         if let Some((pg, ag, t)) = track_clip_audio(e, track, 90.0).as_deref().and_then(dark_source_fix) {
             let mut bands = Vec::new();
@@ -541,6 +552,18 @@ pub fn apply_vocal_chain(e: &mut Engine, track: &str, c: &VocalChain, source: &s
             if e.project.buses.iter().any(|b| b.name == bus) {
                 e.call_nested("set_send", &json!({"track": track, "bus": bus, "db": db}), source)?;
                 steps.push(format!("{bus} send {db} dB"));
+                // the return carries the voice's body too: measured on the
+                // freestyle take, the reverb return held ~19% of the whole
+                // song's 250-500 Hz (the vocal ~72%); returns start above it
+                if let Some(b) = e.project.buses.iter_mut().find(|b| b.name == bus) {
+                    let has = serde_json::to_value(&b.effects).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default().iter().any(|x| {
+                        x["type"] == "parametric_eq" && x["bands"].as_array().map(|bs| bs.iter().any(|q| q["kind"] == "low_cut" && q["freq"].as_f64().unwrap_or(0.0) >= RETURN_LOW_CUT_HZ as f64 - 1.0)).unwrap_or(false)
+                    });
+                    if !has {
+                        b.effects.insert(0, serde_json::from_value(json!({"type": "parametric_eq", "bands": [{"kind": "low_cut", "freq": RETURN_LOW_CUT_HZ, "gain_db": 0.0, "q": 0.707, "stages": 2}]}))?);
+                        steps.push(format!("{bus} return high-passed at {RETURN_LOW_CUT_HZ} Hz (no mud from the tail)"));
+                    }
+                }
             }
         }
     }
