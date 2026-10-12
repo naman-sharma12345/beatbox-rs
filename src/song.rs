@@ -161,12 +161,17 @@ pub struct MixSpec {
     pub drop_lift_db: f32,
     /// Render-measure-correct passes for the vocal balance.
     pub balance_passes: u32,
+    /// Role -> fader offset (dB, -12..12) on top of the genre's balance,
+    /// e.g. {"bass": 2, "hat": -1}. Applied when the beat is composed, so a
+    /// change recomposes (same seed) and re-mixes. song_improve writes here.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub levels: BTreeMap<String, f32>,
 }
 
 impl Default for MixSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3 }
+        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new() }
     }
 }
 
@@ -305,7 +310,7 @@ const TOP_ALIAS: &[(&str, &str)] = &[("tempo", "bpm"), ("sections", "structure")
 const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain"];
 const PHRASE_KEYS: &[&str] = &["src_s", "src", "len_s", "len", "end_s", "section", "bar", "beat", "start_beat", "at_s", "start_s", "gain_db", "name", "fade_in_ms", "fade_out_ms"];
 const SECTION_KEYS: &[&str] = &["kind", "bars", "name"];
-const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes"];
+const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels"];
 const MASTER_KEYS: &[&str] = &["lufs", "true_peak", "preserve_dynamics"];
 const EXPORT_KEYS: &[&str] = &["path", "format", "bitrate_kbps"];
 const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db"];
@@ -506,6 +511,13 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
             }
         }
     }
+    for (role, db) in &spec.mix.levels {
+        if !crate::creative::ROLES.contains(&role.as_str()) {
+            out.push(p(format!("/mix/levels/{role}"), format!("'{role}' is not a role"), did_you_mean(role, crate::creative::ROLES, &[("melody", "lead"), ("chords", "harmony"), ("808", "bass"), ("hats", "hat"), ("dhol", "bayan")])));
+        } else if !(-12.0..=12.0).contains(db) || !db.is_finite() {
+            out.push(p(format!("/mix/levels/{role}"), format!("{db} dB"), "a fader offset in -12..12 dB"));
+        }
+    }
     if !(1..=6).contains(&spec.mix.balance_passes) {
         out.push(p("/mix/balance_passes", format!("{}", spec.mix.balance_passes), "use 1..6"));
     }
@@ -571,6 +583,8 @@ pub fn scope_of(path: &str) -> Scope {
     let p = path.trim_start_matches('/');
     let head = p.split('/').next().unwrap_or("");
     match head {
+        // role levels are set when the beat is composed
+        "mix" if p == "mix/levels" || p.starts_with("mix/levels/") => Scope::Full,
         "mix" | "master" | "export" | "title" => Scope::Mix,
         "vocal" if p == "vocal/gain_db" => Scope::Mix,
         "vocal" => Scope::Vocal,
@@ -670,6 +684,7 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
     crate::producer::compose(e, &plan)?;
     swap_instruments(e, spec, log)?;
     crate::producer::balance_beat(e, &plan)?;
+    apply_role_levels(e, spec, log)?;
     // loudness and peaks belong to delivery: a limiter in the project would
     // flatten the drops before the mix rules see them
     e.project.master_effects.retain(|f| {
@@ -680,6 +695,17 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
         "beat: {} {} bpm {} {}, {} sections, seed {seed}",
         plan.genre, plan.bpm, plan.key, plan.scale, plan.sections.len()
     ));
+    Ok(())
+}
+
+/// The spec's role level offsets (/mix/levels), after the genre balance.
+fn apply_role_levels(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<()> {
+    for (role, db) in &spec.mix.levels {
+        let track = crate::producer::track_name(role);
+        let ti = e.project.track_index(&track).map_err(|_| no_part(e, role))?;
+        e.project.tracks[ti].volume_db += db;
+        log.push(format!("level: {role} {db:+.1} dB (/mix/levels)"));
+    }
     Ok(())
 }
 
@@ -835,6 +861,11 @@ fn lap(log: &mut Vec<String>, t: &mut std::time::Instant, what: &str) {
     *t = std::time::Instant::now();
 }
 
+/// Most deliveries one song build makes (deliver -> check -> fix): lift,
+/// loudness and both tone bands each own a knob, and the top end can need a
+/// round from each side.
+const DELIVERY_ROUNDS: usize = 5;
+
 fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<(Value, PathBuf, Value)> {
     let t = spec.targets();
     let mut tl = std::time::Instant::now();
@@ -884,7 +915,7 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     };
     let spans = mix_rules::section_spans(&e.project);
     // deliver -> check the delivered file -> fix each failed target with
-    // the knob that owns it -> deliver again (at most 4 deliveries):
+    // the knob that owns it -> deliver again (at most DELIVERY_ROUNDS deliveries):
     // lift -> verses step down on the master automation (undone if the
     // limiter took it back); loudness -> less of the contrast is kept
     // (only while the lift has room); harshness -> the top-end rule again,
@@ -895,7 +926,13 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     let mut lift_log = Vec::new();
     let mut last_try: Option<(f32, f32)> = None;
     let mut tone_rounds = 0usize;
-    for round in 0..4 {
+    // what the level rule took from each bright part (the air floor may
+    // give some of it back)
+    let mut air_owed: Vec<(String, f32)> = mix["source_tone"]["levels"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| Some((x["part"].as_str()?.to_string(), x["down_db"].as_f64()? as f32))).collect())
+        .unwrap_or_default();
+    for round in 0..DELIVERY_ROUNDS {
         let full = e.mix()?;
         d = crate::tools_delivery::deliver(&full.left, &full.right, &path, &o)?;
         checks = mix_rules::check(&path, &pre, &spans, e.project.bpm, &t)?;
@@ -904,7 +941,7 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
         let lift = get("drop_lift")["measured"].as_f64().map(|x| x as f32);
         let lufs = get("loudness")["measured"].as_f64().map(|x| x as f32);
         let harsh = get("not_harsh");
-        if round == 3 {
+        if round + 1 == DELIVERY_ROUNDS {
             break;
         }
         let mut changed = false;
@@ -942,9 +979,25 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
                 top_p = (top_p + d).clamp(-4.0, 8.0);
                 moved.push(json!({"band": "2-5k", "delivered_rel_lufs_db": (pr * 10.0).round() / 10.0, "aim_db": t.presence_rel_aim_db()}));
             }
-            if let Some(ar) = ar.filter(|a| *a > t.air_rel_lufs_max_db + 0.15) {
-                top_a = (top_a + ar - (t.air_rel_lufs_max_db - 0.2)).clamp(-4.0, 8.0);
-                moved.push(json!({"band": "5-10k", "delivered_rel_lufs_db": (ar * 10.0).round() / 10.0, "max_db": t.air_rel_lufs_max_db}));
+            let [a_lo, a_hi] = t.air_rel_lufs_db;
+            if let Some(ar) = ar.filter(|a| *a > a_hi + 0.15) {
+                top_a = (top_a + ar - (a_hi - 0.2)).clamp(-4.0, 8.0);
+                moved.push(json!({"band": "5-10k", "delivered_rel_lufs_db": (ar * 10.0).round() / 10.0, "max_db": a_hi}));
+            }
+            // too dull up top: first the beat bus's 7.5k shelf eases (it is
+            // the cut that made it dull), then the bright parts get back some
+            // of what the level rule took (a fader move: the cache re-sums it)
+            let air_aim = 0.5 * (a_lo + a_hi);
+            let shelf = mix_rules::beat_shelf_db(&e.project);
+            if let Some(ar) = ar.filter(|a| *a < a_lo - 0.15 && shelf < -0.5) {
+                top_a = (top_a + ar - air_aim).clamp(-6.0, 8.0);
+                moved.push(json!({"band": "5-10k", "delivered_rel_lufs_db": (ar * 10.0).round() / 10.0, "floor_db": a_lo, "beat_shelf_7k5_db": (shelf * 10.0).round() / 10.0}));
+            } else if let Some(ar) = ar.filter(|a| *a < a_lo - 0.15) {
+                let up = mix_rules::give_back_air(e, &mut air_owed, ar, &t)?;
+                if !up.is_empty() {
+                    lift_log.push(json!({"delivered_air_rel_lufs_db": (ar * 10.0).round() / 10.0, "floor_db": a_lo, "air_given_back": up}));
+                    changed = true;
+                }
             }
             if !moved.is_empty() {
                 tone_rounds += 1;
@@ -1122,7 +1175,7 @@ fn spec_props() -> Value {
         "structure": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": SECTION_KINDS}, "bars": {"type": "integer"}, "name": {"type": "string"}}, "required": ["kind", "bars"]}},
         "instruments": {"type": "object", "description": "role -> preset name | \"catalog:<id>\" (a recorded instrument, e.g. catalog:euterpea_harmonium) | {\"samples\": [one-shot files], \"gain_db\": 0} (e.g. real dhol hits on tabla/bayan)"},
         "vocal": {"type": "object", "description": "{file, track?, phrases?: [{src_s, len_s|end_s, section, bar, beat, gain_db?}], start_section?, lyrics?, gain_db?, chain?}"},
-        "mix": {"type": "object", "description": "{vocal_over_beat_db: 6, vocal_over_beat_max_db: 12, drop_lift_db: 2, balance_passes: 3}"},
+        "mix": {"type": "object", "description": "{vocal_over_beat_db: 6, vocal_over_beat_max_db: 12, drop_lift_db: 2, balance_passes: 3, levels: {role: dB offset, e.g. \"bass\": 2}}"},
         "master": {"type": "object", "description": "{lufs: -10, true_peak: -1, preserve_dynamics: 0.8}"},
         "export": {"type": "object", "description": "{path?, format: mp3|wav|flac, bitrate_kbps: 320}"},
     })
@@ -1139,24 +1192,38 @@ pub fn example() -> Value {
 }
 
 fn create_tool(e: &mut Engine, a: &Value) -> Result<Value> {
-    let spec = spec_arg(a);
-    build(e, &spec, Scope::Full)
+    let mut spec = spec_arg(a);
+    // {"improve": N} beside the spec: N self-critique rounds after the build
+    let improve = spec.as_object_mut().and_then(|m| m.remove("improve")).or_else(|| a.get("improve").cloned());
+    let mut r = build(e, &spec, Scope::Full)?;
+    if let Some(n) = improve.and_then(|v| v.as_u64()).filter(|n| *n > 0) {
+        let imp = crate::song_critic::improve(e, (n as usize).min(4), 3, None)?;
+        r["checks"] = e.project.song.as_ref().map(|s| s.checks.clone()).unwrap_or(Value::Null);
+        r["improve"] = imp;
+    }
+    Ok(r)
 }
 
 fn patch_tool(e: &mut Engine, a: &Value) -> Result<Value> {
-    let st = e.project.song.clone().ok_or_else(|| anyhow!("this project has no song yet: song_create builds one from a spec first"))?;
     let set = a.get("set").and_then(|v| v.as_object()).cloned().unwrap_or_default();
     let remove: Vec<String> = a.get("remove").and_then(|v| v.as_array()).map(|x| x.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default();
+    patch_song(e, &set, &remove)
+}
+
+/// Set / remove spec values by JSON pointer and rebuild only what they touch
+/// (the same seed unless /seed is set).
+pub fn patch_song(e: &mut Engine, set: &Map<String, Value>, remove: &[String]) -> Result<Value> {
+    let st = e.project.song.clone().ok_or_else(|| anyhow!("this project has no song yet: song_create builds one from a spec first"))?;
     if set.is_empty() && remove.is_empty() {
         bail!("nothing to change: give set {{\"/path\": value}} and/or remove [\"/path\"]; song_get shows the spec and its paths");
     }
     let mut spec = st.spec.clone();
     let mut scope = Scope::Mix;
-    for (k, v) in &set {
+    for (k, v) in set {
         set_pointer(&mut spec, k, v.clone())?;
         scope = scope.max_by(scope_of(k));
     }
-    for k in &remove {
+    for k in remove {
         set_pointer(&mut spec, k, Value::Null)?;
         scope = scope.max_by(scope_of(k));
     }
@@ -1236,7 +1303,7 @@ fn schema_tool(_e: &mut Engine, _a: &Value) -> Result<Value> {
         "genres": crate::producer::playbooks().iter().map(|b| b.name.clone()).collect::<Vec<_>>(),
         "defaults": {"mix": MixSpec::default(), "master": MasterSpec::default(), "export": ExportSpec::default(), "vocal_chain": VocalChain::default()},
         "example": example(),
-        "patch_scopes": {"mix": "/mix, /master, /export, /title, /vocal/gain_db: re-mix and deliver", "vocal": "/vocal/...: rebuild the vocal track", "full": "anything else: recompose the beat with the same seed"},
+        "patch_scopes": {"mix": "/mix (except /mix/levels), /master, /export, /title, /vocal/gain_db: re-mix and deliver", "vocal": "/vocal/...: rebuild the vocal track", "full": "anything else: recompose the beat with the same seed"},
     }))
 }
 
@@ -1296,6 +1363,20 @@ pub fn tools() -> Vec<Tool> {
             schema: || obj(json!({}), &[]),
             run: render_tool,
         },
+        Tool {
+            name: "song_critique",
+            description: "Judge the song as delivered against its genre's target profile (data: low end, hook lift, loudness range, width, groove density, the hook's build, top end, vocal over beat) and name each weakness in plain words, with the spec change that fixes it. Changes nothing. Give {file, genre} to judge any audio file.",
+            mutates: false,
+            schema: || obj(json!({"genre": {"type": "string", "description": "judge against this genre's profile (default: the song's genre)"}, "file": {"type": "string", "description": "judge this audio file instead of the song (needs genre for its profile)"}}), &[]),
+            run: crate::song_critic::critique_tool,
+        },
+        Tool {
+            name: "song_improve",
+            description: "Make the song better on its own: critique it against its genre profile, apply the fixes for the biggest weaknesses (spec knobs: /mix/levels, /mix/drop_lift_db, /density, /master/preserve_dynamics, /mix/vocal_over_beat_db), rebuild, critique again and keep the best take, for up to `rounds` rebuilds (default 2, max 4; each is a full render). The song's file ends as the best take. song_create {..., \"improve\": 2} does the same in one call.",
+            mutates: true,
+            schema: || obj(json!({"rounds": {"type": "integer", "description": "rebuilds at most (1..4, default 2)"}, "max_fixes": {"type": "integer", "description": "fixes per round (default 3)"}, "genre": {"type": "string", "description": "judge against this genre's profile (default: the song's genre)"}}), &[]),
+            run: crate::song_critic::improve_tool,
+        },
     ]
 }
 
@@ -1343,6 +1424,8 @@ mod tests {
     fn patch_paths_pick_the_smallest_redo() {
         assert_eq!(scope_of("/mix/vocal_over_beat_db"), Scope::Mix);
         assert_eq!(scope_of("/vocal/gain_db"), Scope::Mix);
+        assert_eq!(scope_of("/mix/levels/bass"), Scope::Full);
+        assert_eq!(scope_of("/mix/levels"), Scope::Full);
         assert_eq!(scope_of("/vocal/phrases/3/beat"), Scope::Vocal);
         assert_eq!(scope_of("/bpm"), Scope::Full);
         assert_eq!(scope_of("/structure/1/bars"), Scope::Full);

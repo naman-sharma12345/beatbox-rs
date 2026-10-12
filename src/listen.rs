@@ -815,6 +815,13 @@ pub fn ears_report(e: &mut Engine, focus_track: Option<&str>) -> Result<Value> {
 /// payload). Every score, finding and summary number is identical to the
 /// full report; the kept render always gets the full report.
 pub fn ears_report_mode(e: &mut Engine, focus_track: Option<&str>, fast: bool) -> Result<Value> {
+    ears_report_summary(e, focus_track, fast).map(|(v, _)| v)
+}
+
+/// `ears_report_mode` plus the summary it stored, straight from this call
+/// (the shared store is keyed by the project's hash, so two engines with the
+/// same project in one process can overwrite each other's entry).
+pub fn ears_report_summary(e: &mut Engine, focus_track: Option<&str>, fast: bool) -> Result<(Value, RenderSummary)> {
     use crate::producer::prof;
     let t = std::time::Instant::now();
     let rid = project_hash(&e.project);
@@ -979,7 +986,7 @@ pub fn ears_report_mode(e: &mut Engine, focus_track: Option<&str>, fast: bool) -
         fast,
     };
     remember(summary.clone());
-    Ok(json!({
+    let out = json!({
         "render_id": rid,
         "mode": if fast { "fast" } else { "full" },
         "scores": {"technical": r1(technical), "musical": r1(musical), "by_area": {"mix": report.score, "loudness_lufs": summary.integrated_lufs, "true_peak_dbtp": tp, "psr_min_db": summary.psr_min_db, "masking_pairs": mask.len(), "distinct_sections": distinct, "hook_score": hook.as_ref().map(|h| h["hook_score"].clone())}},
@@ -987,7 +994,8 @@ pub fn ears_report_mode(e: &mut Engine, focus_track: Option<&str>, fast: bool) -
         "next_best_action": f.iter().find(|x| !x.2.is_null()).map(|x| x.2.clone()),
         "details": if fast { json!({"masking": {"section": mask_sec, "pairs": mask}}) } else { json!({"loudness": lr, "masking": {"section": mask_sec, "pairs": mask}, "hook": hook, "groove": groove, "structure": st}) },
         "note": "technical and musical scores are kept separate; pass this render_id to diff_renders after your next change",
-    }))
+    });
+    Ok((out, summary))
 }
 
 pub fn diff(a: &RenderSummary, b: &RenderSummary) -> Value {
@@ -1117,9 +1125,12 @@ mod tests {
         e.call("generate_beat", &json!({"style": "trap", "seed": 4}))
             .unwrap();
         let measure = |e: &mut Engine, fast: bool| {
-            let r = ears_report_mode(e, None, fast).unwrap();
+            // the summary this call made (the shared store can be
+            // overwritten by a parallel test rendering the same project)
+            let (r, sum) = ears_report_summary(e, None, fast).unwrap();
             assert_eq!(r["mode"], if fast { "fast" } else { "full" });
-            recall(r["render_id"].as_str().unwrap()).unwrap()
+            assert_eq!(r["render_id"].as_str(), Some(sum.render_id.as_str()));
+            sum
         };
         let (fa, ua) = (measure(&mut e, true), measure(&mut e, false));
         // a candidate revision: lead up, hats down

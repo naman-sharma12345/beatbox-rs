@@ -37,7 +37,7 @@ what that path touches.
 |---|---|---|
 | vocal_over_beat | ≥ +6 dB, ≤ +12 dB in every section with vocal | vocal TRACK fader automation + a gain stage after the compressor (never clip gain, which the 3:1 compressor eats) |
 | drop_lift | hooks ≥ +2 dB over verses, on the delivered file | master section automation; deliver → measure → deepen verses → deliver |
-| not_harsh | on the delivered file, each band (4th-order HP + LP) minus integrated LUFS: 2-5 kHz between −23.0 and −22.4 dB (the reference master the person approved reads −22.4; under −23.0 the beat turns dull), 5-10 kHz ≤ −24.3 dB | 1) at the source, in a vocal song: hats/cymbals voiced darker (`SOURCE_TONE`), a 7.5 kHz shelf on the snare (−6) and clap (−4), hats/cymbals 13 dB and shakers 12 dB under the snare (`UNDER_SNARE_DB`, faders, only ever down), drum-bus grit at most 0.15; 2) every beat part ≥ 6 dB under the vocal at 2-5 kHz (a 3 kHz bell, up to 7 dB); 3) the `beat` bus takes what is left (aim ≤ 5 dB, at most 12); 4) the master tone (≤ 2 dB) only when the bus is at its limit. The delivery loop aims 2-5 kHz at the middle of its window from both sides |
+| not_harsh | on the delivered file, each band (4th-order HP + LP) minus integrated LUFS: 2-5 kHz between −23.0 and −22.4 dB (the reference master the person approved reads −22.4; under −23.0 the beat turns dull), 5-10 kHz between −26.0 and −24.3 dB (under −26 the hats have lost their sparkle) | 1) at the source, in every song (an instrumental keeps its bright parts 2 dB nearer the snare): hats/cymbals voiced darker (`SOURCE_TONE`), a 7.5 kHz shelf on the snare (−6) and clap (−4), hats/cymbals 13 dB and shakers 12 dB under the snare (`UNDER_SNARE_DB`, faders, only ever down), drum-bus grit at most 0.15; 2) every beat part ≥ 6 dB under the vocal at 2-5 kHz (a 3 kHz bell, up to 7 dB); 3) the `beat` bus takes what is left (aim ≤ 5 dB, at most 12); 4) the master tone (≤ 2 dB) only when the bus is at its limit. The delivery loop aims 2-5 kHz at the middle of its window from both sides; if 5-10 kHz reads dull it gives the bright parts back part of what step 1 took (≤ 4 dB a round, never more than was taken) |
 | quiet sections | intro / outro / breakdown at most 9 dB under the verses (mix RMS) | master section automation (beat and vocal together, so the vocal over beat holds) |
 | loudness | −10 LUFS ± 1 | delivery stage (soft clip + true-peak limiter, section contrast kept) |
 | true_peak | ≤ −1 dBTP, decoded file | delivery ceiling with margin for lossy encoding |
@@ -68,6 +68,33 @@ The smallest Punjabi party song is one call:
 ```json
 {"action": "song_create", "params": {"genre": "punjabi_party", "vocal": {"file": "/path/take.wav"}}}
 ```
+
+## Self-critique: song_critique and song_improve
+
+A song judges itself; no ear in the loop is needed.
+
+* `song_critique` measures the delivered file against the genre's **target
+  profile** (data: `src/genre_profiles.json`, one entry per playbook genre,
+  each filled from `default`): sub/808 weight (30-80 Hz minus LUFS), hook lift
+  over the verse, loudness range, stereo width (side over mid), groove density
+  (onsets per second), the hook's build (hook onsets over verse onsets), plus
+  the song checks' own tone floor/ceiling and vocal-over-beat. Every weakness
+  comes back in plain words with the range it was held to, a severity
+  (range-widths outside, biggest first) and the spec change that owns it.
+  `{"file": ..., "genre": ...}` judges any audio file (no fixes: a file has no spec).
+* `song_improve {"rounds": 2}` applies the fixes for the biggest weaknesses
+  (up to 3 a round), rebuilds, critiques again and **keeps the best take**
+  (a round that scores worse is rolled back and its fix is not tried again).
+  The song's file ends as the best take; the spec keeps the knobs that made it.
+  `song_create {..., "improve": 2}` builds and improves in one call.
+* The knobs it turns: `/mix/levels/<role>` (fader offsets, -12..12 dB, applied
+  when the beat is composed: a change recomposes with the same seed),
+  `/mix/drop_lift_db`, `/density`, `/master/preserve_dynamics`,
+  `/mix/vocal_over_beat_db`. Width, a hook that jumps too far and harshness
+  are named but have no automatic fix (the render's own tone rules already
+  own the top end). The vocal is never EQ'd for any of it.
+* The profiles are calibrated on the mix the person approved (song2) and on
+  genre conventions, not on commercial reference files (none are bundled).
 
 ## Patching
 

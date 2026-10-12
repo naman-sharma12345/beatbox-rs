@@ -70,8 +70,10 @@ pub struct Targets {
     /// ffmpeg. Calibrated on the hand remix the person approved (song2:
     /// -22.4); under -23.0 the beat starts to read dull.
     pub presence_rel_lufs_db: [f32; 2],
-    /// The same for 5-10 kHz, at most (song2: -24.3).
-    pub air_rel_lufs_max_db: f32,
+    /// The same for 5-10 kHz, [darkest, brightest] (song2: -24.2). Under
+    /// the floor the top reads dull: hats and cymbals lost their sparkle
+    /// (B21's song came out -27.9 with the hats 10.7 dB down).
+    pub air_rel_lufs_db: [f32; 2],
     /// Quiet sections (intro, outro, breakdown) sit at most this far under
     /// the verses (mix RMS, pre-delivery); further down they read as a gap.
     pub quiet_section_floor_db: f32,
@@ -93,7 +95,7 @@ impl Default for Targets {
             air_tilt_max_db: -18.5,
             beat_under_vocal_presence_db: 6.0,
             presence_rel_lufs_db: [-23.0, -22.4],
-            air_rel_lufs_max_db: -24.3,
+            air_rel_lufs_db: [-26.0, -24.3],
             quiet_section_floor_db: 9.0,
         }
     }
@@ -169,6 +171,11 @@ pub const UNDER_SNARE_DB: &[(&str, f32)] = &[
     ("perc", 12.0),
     ("shaker", 12.0),
 ];
+/// An instrumental (no vocal) keeps its bright parts this much nearer the
+/// snare than a vocal song does: no words need the room, but the same
+/// voicing keeps the beat bus from a deep 3 kHz cut (beat-only songs took
+/// -12 dB at 3k on the bus before the source rules ran for them).
+pub const INSTRUMENTAL_UNDER_SNARE_RELIEF_DB: f32 = 2.0;
 /// The drum bus's grit (distortion mix) at most, in a vocal song: drive on
 /// the drum bus adds ~1 dB of 5-10 kHz the parts never had.
 pub const DRUM_GRIT_MAX_MIX: f32 = 0.15;
@@ -198,15 +205,16 @@ fn source_role(t: &crate::project::Track) -> Option<&'static str> {
 
 /// Voice the beat's bright parts softer at the source and set the hat /
 /// cymbal / shaker levels under the snare (SOURCE_TONE, UNDER_SNARE_DB,
-/// DRUM_GRIT_MAX_MIX). Only when a vocal exists (the words need the room);
+/// DRUM_GRIT_MAX_MIX). With a vocal or without one (an instrumental keeps
+/// its bright parts INSTRUMENTAL_UNDER_SNARE_RELIEF_DB nearer the snare);
 /// idempotent: a second pass changes nothing. Costs one render (it fills the
-/// track cache the next steps reuse).
+/// track cache the next steps reuse). `levels[].down_db` is what the level
+/// rule took, so the delivery loop can give some back if the delivered top
+/// end reads dull (Targets::air_rel_lufs_db[0]).
 pub fn soften_beat_source(e: &mut Engine, voice: Option<&str>) -> Result<Value> {
     use crate::instruments::Instrument;
-    let Some(v) = voice else {
-        return Ok(json!({"changed": false, "why": "no vocal: the beat keeps its own voicing"}));
-    };
-    let is_v = |n: &str| n.eq_ignore_ascii_case(v) || is_voice_name(n);
+    let relief = if voice.is_some() { 0.0 } else { INSTRUMENTAL_UNDER_SNARE_RELIEF_DB };
+    let is_v = |n: &str| voice.map(|v| n.eq_ignore_ascii_case(v)).unwrap_or(false) || is_voice_name(n);
     let mut done = Vec::new();
     // 1. voicing: tone caps and source shelves (before the render, so the
     //    cache holds the softer parts)
@@ -275,7 +283,7 @@ pub fn soften_beat_source(e: &mut Engine, voice: Option<&str>) -> Result<Value> 
             let Some(role) = source_role(t) else { continue };
             let Some(&(_, under)) = UNDER_SNARE_DB.iter().find(|r| r.0 == role) else { continue };
             let Some(l) = lvl(&t.name) else { continue };
-            let over = l - (snare - under);
+            let over = l - (snare - (under - relief));
             if snare > -90.0 && l > -90.0 && over > 0.3 {
                 let name = t.name.clone();
                 e.project.tracks[ti].volume_db -= over;
@@ -284,7 +292,39 @@ pub fn soften_beat_source(e: &mut Engine, voice: Option<&str>) -> Result<Value> 
         }
     }
     let changed = !done.is_empty() || !grit.is_empty() || !levels.is_empty();
-    Ok(json!({"changed": changed, "voicing": done, "grit": grit, "levels": levels}))
+    let mode = if voice.is_some() { "vocal song" } else { "instrumental" };
+    Ok(json!({"changed": changed, "mode": mode, "voicing": done, "grit": grit, "levels": levels}))
+}
+
+/// Most the delivery loop gives back to a part the level rule turned down,
+/// per round (dB); never more than the rule took.
+pub const AIR_GIVE_BACK_STEP_MAX_DB: f32 = 4.0;
+
+/// The top end read dull on the delivered file (5-10 kHz under
+/// `Targets::air_rel_lufs_db[0]`): give the bright parts back part of what
+/// `soften_beat_source` took from them (`taken`: part -> dB still owed),
+/// all by the same amount (1.5x the shortfall: the parts carry most of
+/// 5-10k, not all of it); aims at the middle of the air window. Returns
+/// what moved (empty when nothing is owed).
+pub fn give_back_air(e: &mut Engine, taken: &mut Vec<(String, f32)>, air_rel: f32, t: &Targets) -> Result<Vec<Value>> {
+    let aim = 0.5 * (t.air_rel_lufs_db[0] + t.air_rel_lufs_db[1]);
+    let need = (aim - air_rel).max(0.0);
+    let mut moved = Vec::new();
+    if need < 0.2 {
+        return Ok(moved);
+    }
+    for (name, owed) in taken.iter_mut() {
+        // the part carries most but not all of the band: a little more than the need
+        let up = (need * 1.5).min(*owed).min(AIR_GIVE_BACK_STEP_MAX_DB);
+        if up < 0.1 {
+            continue;
+        }
+        let Ok(i) = e.project.track_index(name) else { continue };
+        e.project.tracks[i].volume_db += up;
+        *owed -= up;
+        moved.push(json!({"part": name, "up_db": r1(up), "still_owed_db": r1(*owed)}));
+    }
+    Ok(moved)
 }
 
 /// The vocal chain for a raw spoken/sung take: what the person approved for
@@ -748,6 +788,13 @@ pub fn band_rel_lufs(l: &[f32], r: &[f32], lufs: f32, lo: f32, hi: f32) -> f32 {
     (10.0 * (0.5 * (p(l) + p(r))).max(1e-12).log10()) as f32 - lufs
 }
 
+/// In an instrumental the hook carrier owns 2-5 kHz the way a vocal does:
+/// where it plays, every other part sits at least this far under it there
+/// (a 3 kHz bell per part, at most MAX_TOP_CUT_DB). Gentler than the vocal's
+/// 6 dB: a lead needs to read, not to be understood.
+pub const INSTRUMENTAL_UNDER_LEAD_PRESENCE_DB: f32 = 3.0;
+/// The tracks that carry an instrumental's hook (the producer's names).
+pub const INSTRUMENTAL_FOCAL_TRACKS: &[&str] = &["lead", "hook", "melody"];
 /// Most any top-end rule cuts one part in one render (dB).
 pub const MAX_TOP_CUT_DB: f32 = 7.0;
 /// Most a group bus (drums) peaks over its own loudness after the peak rule.
@@ -849,6 +896,52 @@ pub fn tame_top(e: &mut Engine, voice: Option<&str>, t: &Targets, shift_db: f32)
             }
         }
     }
+    // 1b. an instrumental: where the hook carrier (the lead) plays, the
+    // other parts sit under it at 2-5 kHz (per-part 3 kHz bells, so the
+    // beat bus is not left to make one deep boxy cut; first pass only)
+    let mut focal = Value::Null;
+    if voice.is_none() && shift_db == 0.0 {
+        focal = json!({"skipped": "no lead/hook/melody track"});
+        if let Some(lead) = mix.stems.iter().find(|st| INSTRUMENTAL_FOCAL_TRACKS.iter().any(|f| st.name.eq_ignore_ascii_case(f))) {
+            let lm = mono(&lead.left, &lead.right);
+            let blk = 2048usize;
+            let en: Vec<f32> = lm.chunks(blk).map(|c| c.iter().map(|v| v * v).sum::<f32>() / c.len().max(1) as f32).collect();
+            let top = en.iter().cloned().fold(0.0f32, f32::max);
+            let active: Vec<usize> = en.iter().enumerate().filter(|(_, x)| top > 0.0 && **x > top * 1e-3).map(|(i, _)| i).collect();
+            // stems can differ in length (tails): a block past a stem's end
+            // is silence for it
+            let gather = |x: &[f32]| -> Vec<f32> {
+                active.iter().flat_map(|&i| (i * blk..(i + 1) * blk).map(move |k| x.get(k).copied().unwrap_or(0.0))).collect()
+            };
+            focal = json!({"lead": lead.name, "plays_s": r1(active.len() as f32 * blk as f32 / SR), "skipped": "the lead plays under 4 s"});
+            if active.len() * blk >= (SR * 4.0) as usize {
+                let lp = band_energy_db(&gather(&lm), 2000.0, 5000.0);
+                focal = json!({"lead": lead.name, "plays_s": r1(active.len() as f32 * blk as f32 / SR), "lead_2_5k_db": r1(lp), "others_under_db": INSTRUMENTAL_UNDER_LEAD_PRESENCE_DB});
+                let ceiling = lp - INSTRUMENTAL_UNDER_LEAD_PRESENCE_DB;
+                let lead_name = lead.name.clone();
+                let mut cuts = Vec::new();
+                let mut seen = Vec::new();
+                for st in mix.stems.iter() {
+                    if st.name == lead_name {
+                        continue;
+                    }
+                    let x = mono(&st.left, &st.right);
+                    let p = band_energy_db(&gather(&x), 2000.0, 5000.0);
+                    let over = p - ceiling;
+                    seen.push(json!([st.name, r1(p - lp)]));
+                    if p > -90.0 && over > 0.5 {
+                        cuts.push((st.name.clone(), over));
+                    }
+                }
+                focal["others_vs_lead_2_5k_db"] = json!(seen);
+                for (name, over) in cuts {
+                    let cut = over.min(MAX_TOP_CUT_DB);
+                    eq_cut(e, &name, "bell", 3000.0, cut)?;
+                    done.push(json!({"part": name, "over_lead_presence_db": r1(over - INSTRUMENTAL_UNDER_LEAD_PRESENCE_DB), "cut_3k_db": r1(cut), "lead": lead_name}));
+                }
+            }
+        }
+    }
     drop(mix);
     // the shares are judged on the mix as it is after step 1
     let (pres_share, air_share, parts) = if done.is_empty() {
@@ -901,7 +994,7 @@ pub fn tame_top(e: &mut Engine, voice: Option<&str>, t: &Targets, shift_db: f32)
             done.push(json!({"part": "drums (bus)", "band": band, "cut_db": r1((over * 0.5).min(3.0))}));
         }
     }
-    Ok(json!({"mix_2_5k_share_db": r1(pres_share), "mix_5_10k_share_db": r1(air_share), "vocal_2_5k_db": vocal_p.map(r1), "changes": done}))
+    Ok(json!({"mix_2_5k_share_db": r1(pres_share), "mix_5_10k_share_db": r1(air_share), "vocal_2_5k_db": vocal_p.map(r1), "instrumental_lead": focal, "changes": done}))
 }
 
 /// (2-5 kHz, 5-10 kHz) against 250 Hz-2 kHz, dB.
@@ -966,6 +1059,11 @@ pub fn route_beat_bus(e: &mut Engine, voice: Option<&str>) -> Vec<String> {
         p.ensure_fx_ids();
     }
     moved
+}
+
+/// The beat bus's 7.5 kHz shelf as it stands (dB; 0 when there is none).
+pub fn beat_shelf_db(p: &Project) -> f32 {
+    beat_tone_gains(p).map(|g| g.2).unwrap_or(0.0)
 }
 
 fn beat_tone_gains(p: &Project) -> Option<(usize, f32, f32)> {
@@ -1300,11 +1398,12 @@ pub fn check(file: &std::path::Path, sections_pre: &[SectionLevel], spans: &[Spa
     let rel = |lo: f32, hi: f32| band_rel_lufs(&l, &r, ld.integrated_lufs, lo, hi);
     let (body, pres, air) = (rel(250.0, 2000.0), rel(2000.0, 5000.0), rel(5000.0, 10000.0));
     let [p_lo, p_hi] = t.presence_rel_lufs_db;
+    let [a_lo, a_hi] = t.air_rel_lufs_db;
     checks.push(chk(
         "not_harsh",
-        format!("2-5 kHz between {p_lo} and {p_hi} dB and 5-10 kHz at most {} dB, each band minus integrated LUFS (bright enough to read, never harsher than the reference master)", t.air_rel_lufs_max_db),
+        format!("2-5 kHz between {p_lo} and {p_hi} dB and 5-10 kHz between {a_lo} and {a_hi} dB, each band minus integrated LUFS (bright enough to read, never harsher than the reference master, never dull)"),
         json!({"presence_rel_lufs_db": r1(pres), "air_rel_lufs_db": r1(air), "body_rel_lufs_db": r1(body), "tilt_2_5k_db": r1(pt), "tilt_5_10k_db": r1(at)}),
-        pres <= p_hi + 0.15 && pres >= p_lo - 0.15 && air <= t.air_rel_lufs_max_db + 0.15,
+        pres <= p_hi + 0.15 && pres >= p_lo - 0.15 && air <= a_hi + 0.15 && air >= a_lo - 0.15,
         "every render shapes the top on its own: the bright beat parts darken first, then the beat bus; a darker preset in /instruments helps more",
     ));
     checks.push(chk(
@@ -1412,15 +1511,16 @@ mod tests {
     }
 
     #[test]
-    fn beat_source_softens_bright_parts_once_and_only_with_a_vocal() {
+    fn beat_source_softens_bright_parts_once_with_or_without_a_vocal() {
         let mut e = Engine::new(std::env::temp_dir().join("bb_mixrules_source_tone"));
         e.call("add_track", &json!({"name": "hat", "preset": "hat_crisp"})).unwrap();
         e.call("add_track", &json!({"name": "snare", "preset": "snare_tight"})).unwrap();
         e.call("add_track", &json!({"name": "kick", "preset": "kick"})).unwrap();
-        let before = serde_json::to_string(&e.project).unwrap();
-        let r = soften_beat_source(&mut e, None).unwrap();
-        assert_eq!(r["changed"], false, "no vocal: nothing changes");
-        assert_eq!(serde_json::to_string(&e.project).unwrap(), before);
+        let mut inst = Engine::new(std::env::temp_dir().join("bb_mixrules_source_tone_inst"));
+        inst.project = e.project.clone();
+        let r = soften_beat_source(&mut inst, None).unwrap();
+        assert_eq!(r["changed"], true, "an instrumental is voiced too: {r}");
+        assert_eq!(r["mode"], "instrumental");
         let r = soften_beat_source(&mut e, Some("vocal")).unwrap();
         assert_eq!(r["changed"], true, "{r}");
         let hi = e.project.track_index("hat").unwrap();
