@@ -96,6 +96,13 @@ pub struct SectionSpec {
     /// Default: kind + its count ("verse1", "hook2").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The section's beat energy in dB (-9..6, default 0): the arrangement
+    /// layers (everything but the vocal, kick, bass and sub) play this much
+    /// softer/louder in this section only. Thinner verses (-2..-4) make the
+    /// hook lift without master automation, so a loud master keeps its
+    /// lift. song_improve turns it for a flat hook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub energy: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -172,12 +179,18 @@ pub struct MixSpec {
     /// what the level rule took until the floor is met.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub air_floor_db: Option<f32>,
+    /// The 2-5 kHz ceiling on the delivered file (dB minus LUFS; default
+    /// the genre window's top): lower it toward a reference's presence so
+    /// the delivery's beat-bus tone aims darker there (song_improve sets it
+    /// when a take comes out harsh).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence_ceiling_db: Option<f32>,
 }
 
 impl Default for MixSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None }
+        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None }
     }
 }
 
@@ -224,6 +237,10 @@ impl SongSpec {
             lufs_tolerance: d.lufs_tolerance,
             true_peak_max_db: self.master.true_peak,
             air_rel_lufs_db: [self.mix.air_floor_db.unwrap_or(d.air_rel_lufs_db[0]), d.air_rel_lufs_db[1]],
+            presence_rel_lufs_db: match self.mix.presence_ceiling_db {
+                Some(hi) => [d.presence_rel_lufs_db[0].min(hi - 1.5), hi],
+                None => d.presence_rel_lufs_db,
+            },
             ..d
         }
     }
@@ -316,8 +333,8 @@ const TOP_KEYS: &[&str] = &["title", "prompt", "genre", "bpm", "key", "scale", "
 const TOP_ALIAS: &[(&str, &str)] = &[("tempo", "bpm"), ("sections", "structure"), ("form", "structure"), ("arrangement", "structure"), ("vocals", "vocal"), ("voice", "vocal"), ("instrumentation", "instruments"), ("palette", "instruments"), ("style", "genre"), ("lufs", "master.lufs"), ("name", "title"), ("brief", "prompt")];
 const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain"];
 const PHRASE_KEYS: &[&str] = &["src_s", "src", "len_s", "len", "end_s", "section", "bar", "beat", "start_beat", "at_s", "start_s", "gain_db", "name", "fade_in_ms", "fade_out_ms"];
-const SECTION_KEYS: &[&str] = &["kind", "bars", "name"];
-const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db"];
+const SECTION_KEYS: &[&str] = &["kind", "bars", "name", "energy"];
+const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db"];
 const MASTER_KEYS: &[&str] = &["lufs", "true_peak", "preserve_dynamics"];
 const EXPORT_KEYS: &[&str] = &["path", "format", "bitrate_kbps"];
 const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db"];
@@ -601,6 +618,8 @@ pub fn scope_of(path: &str) -> Scope {
         "mix" | "master" | "export" | "title" => Scope::Mix,
         "vocal" if p == "vocal/gain_db" => Scope::Mix,
         "vocal" => Scope::Vocal,
+        // section energy is section automation, set at the mix
+        "structure" if p.ends_with("/energy") => Scope::Mix,
         _ => Scope::Full,
     }
 }
@@ -712,6 +731,79 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
 }
 
 /// The spec's role level offsets (/mix/levels), after the genre balance.
+/// Pre-delivery lift from the arrangement: verses short of the lift thin
+/// their layers (into `spec`'s energy, which every delivery round re-applies),
+/// down to -6 dB. Nothing is asked of the master's volume.
+fn arrangement_lift(e: &mut Engine, spec: &mut SongSpec, voice: Option<&str>, t: &Targets) -> Result<Value> {
+    let r1 = |x: f32| (x * 10.0).round() / 10.0;
+    let m = mix_rules::measure_sections(e, voice)?;
+    let Some(l) = mix_rules::lift_db(&m) else {
+        return Ok(json!({"skipped": "no hook/drop or no verse in the structure"}));
+    };
+    // a bit over the floor: delivery limiting takes some back
+    let want = t.drop_lift_db[0] + 1.0;
+    if l >= want {
+        return Ok(json!({"lift_db": r1(l), "changed": false}));
+    }
+    // layers only (vocal, kick and bass stay), so a dB of thinning lifts less
+    let need = ((want - l) * 1.5).min(4.0);
+    let mut moved = Vec::new();
+    for s in spec.structure.iter_mut().filter(|s| canon_kind(&s.kind) == "verse") {
+        let cur = s.energy.unwrap_or(0.0);
+        let next = (cur - need).max(-6.0);
+        if next < cur - 0.05 {
+            s.energy = Some(next);
+            moved.push(r1(next));
+        }
+    }
+    if moved.is_empty() {
+        return Ok(json!({"lift_db": r1(l), "changed": false, "why": "the verses are as thin as allowed (-6 dB)"}));
+    }
+    apply_section_energy(e, spec, voice)?;
+    let m2 = mix_rules::measure_sections(e, voice)?;
+    Ok(json!({"lift_db_before": r1(l), "verse_energy_db": moved, "lift_db": mix_rules::lift_db(&m2).map(r1), "changed": true}))
+}
+
+/// Tracks the section energy leaves alone: the floor of the groove.
+fn energy_floor_layer(name: &str) -> bool {
+    let n = name.to_lowercase();
+    ["kick", "bass", "808", "sub"].iter().any(|k| n.contains(k))
+}
+
+/// /structure/N/energy: the arrangement layers play `energy` dB softer or
+/// louder in that section (stepped volume lanes built from each track's
+/// current fader, so re-running it after fader moves is exact).
+pub(crate) fn apply_section_energy(e: &mut Engine, spec: &SongSpec, voice: Option<&str>) -> Result<Value> {
+    let want: Vec<(usize, f32)> = spec.structure.iter().enumerate().filter_map(|(i, s)| s.energy.map(|x| (i, x.clamp(-9.0, 6.0)))).filter(|(_, x)| x.abs() >= 0.05).collect();
+    if want.is_empty() {
+        return Ok(json!([]));
+    }
+    let names = spec.section_names();
+    let spans = mix_rules::section_spans(&e.project);
+    let layers: Vec<(String, f32)> = e
+        .project
+        .tracks
+        .iter()
+        .filter(|t| Some(t.name.as_str()) != voice && !energy_floor_layer(&t.name))
+        .map(|t| (t.name.clone(), t.volume_db))
+        .collect();
+    // rebuilt from scratch each time: no lane of ours left over
+    e.project.automation.retain(|l| !(l.param == "volume" && layers.iter().any(|(n, _)| *n == l.target)));
+    let mut done = Vec::new();
+    for (i, en) in want {
+        let sec = match spans.iter().find(|x| x.name == names[i]) {
+            Some(x) => x.name.clone(),
+            None if spans.len() == spec.structure.len() => spans[i].name.clone(),
+            None => continue,
+        };
+        for (t, base) in &layers {
+            e.call_nested("set_section_mix", &json!({"section": sec, "track": t, "volume_db": base + en, "all_occurrences": false}), "song")?;
+        }
+        done.push(json!({"section": sec, "energy_db": (en * 10.0).round() / 10.0, "layers": layers.len()}));
+    }
+    Ok(json!(done))
+}
+
 fn apply_role_levels(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<()> {
     for (role, db) in &spec.mix.levels {
         let track = crate::producer::track_name(role);
@@ -909,7 +1001,12 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     let m0 = mix_rules::TOP_DELIVERY_MARGIN_DB;
     mix.insert("top_tone".into(), mix_rules::shape_top_with(e, voice.as_deref(), &t, m0, m0)?);
     lap(log, &mut tl, "beat tone");
-    let lift = mix_rules::ensure_drop_lift(e, &t)?;
+    // the energy the arrangement plays at: the spec's, plus what the lift rule thins
+    let mut spec_e = spec.clone();
+    mix.insert("section_energy".into(), apply_section_energy(e, &spec_e, voice.as_deref())?);
+    // the hook's lift comes from the arrangement (verses thin their layers),
+    // never the master's volume, which the limiter would give back
+    let lift = arrangement_lift(e, &mut spec_e, voice.as_deref(), &t)?;
     mix.insert("drop_lift".into(), lift);
     mix.insert("quiet_sections".into(), mix_rules::lift_quiet_sections(e, &t)?);
     let pre = mix_rules::measure_sections(e, voice.as_deref())?;
@@ -937,7 +1034,6 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     let mut d = Value::Null;
     let mut checks = Value::Null;
     let mut lift_log = Vec::new();
-    let mut last_try: Option<(f32, f32)> = None;
     let mut tone_rounds = 0usize;
     // what the level rule took from each bright part (the air floor may
     // give some of it back)
@@ -946,6 +1042,8 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
         .map(|a| a.iter().filter_map(|x| Some((x["part"].as_str()?.to_string(), x["down_db"].as_f64()? as f32))).collect())
         .unwrap_or_default();
     for round in 0..DELIVERY_ROUNDS {
+        // faders may have moved since: the energy lanes follow them
+        apply_section_energy(e, &spec_e, voice.as_deref())?;
         let full = e.mix()?;
         d = crate::tools_delivery::deliver(&full.left, &full.right, &path, &o)?;
         checks = mix_rules::check(&path, &pre, &spans, e.project.bpm, &t)?;
@@ -958,19 +1056,15 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
             break;
         }
         let mut changed = false;
-        if let (Some(l), Some((prev_l, prev_need))) = (lift, last_try) {
-            if l < prev_l + 0.3 {
-                mix_rules::deepen_verses(e, -prev_need)?;
-                lift_log.push(json!({"undone": true, "why": "the limiter took the extra contrast back"}));
-                last_try = None;
+        // a flat hook on the delivered file: the limiter took the contrast,
+        // so the delivery keeps more of the song's own (gentler limiting)
+        if let Some(l) = lift.filter(|l| *l < t.drop_lift_db[0]) {
+            if o.preserve_dynamics < 0.89 {
+                let step = ((t.drop_lift_db[0] + 0.3 - l) * 0.2).clamp(0.1, 0.3);
+                o.preserve_dynamics = (o.preserve_dynamics + step).min(0.9);
+                lift_log.push(json!({"delivered_lift_db": (l * 10.0).round() / 10.0, "preserve_dynamics": (o.preserve_dynamics * 100.0).round() / 100.0, "why": "the limiter flattened the hook"}));
                 changed = true;
             }
-        } else if let Some(l) = lift.filter(|l| *l < t.drop_lift_db[0]) {
-            let need = (t.drop_lift_db[0] + 0.5 - l).clamp(0.3, 3.0);
-            mix_rules::deepen_verses(e, need)?;
-            last_try = Some((l, need));
-            lift_log.push(json!({"delivered_lift_db": (l * 10.0).round() / 10.0, "verses_down_db": (need * 10.0).round() / 10.0}));
-            changed = true;
         }
         if let Some(lu) = lufs {
             let room = lift.map(|l| l >= t.drop_lift_db[0] + 0.3).unwrap_or(true);
@@ -1448,6 +1542,9 @@ mod tests {
     fn patch_paths_pick_the_smallest_redo() {
         assert_eq!(scope_of("/mix/vocal_over_beat_db"), Scope::Mix);
         assert_eq!(scope_of("/vocal/gain_db"), Scope::Mix);
+        assert_eq!(scope_of("/structure/1/energy"), Scope::Mix);
+        assert_eq!(scope_of("/structure/1/bars"), Scope::Full);
+        assert_eq!(scope_of("/mix/presence_ceiling_db"), Scope::Mix);
         assert_eq!(scope_of("/mix/levels/bass"), Scope::Full);
         assert_eq!(scope_of("/mix/levels"), Scope::Full);
         assert_eq!(scope_of("/vocal/phrases/3/beat"), Scope::Vocal);

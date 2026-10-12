@@ -36,7 +36,7 @@ what that path touches.
 | check | target | how it is reached |
 |---|---|---|
 | vocal_over_beat | ≥ +6 dB, ≤ +12 dB in every section with vocal | vocal TRACK fader automation + a gain stage after the compressor (never clip gain, which the 3:1 compressor eats) |
-| drop_lift | hooks ≥ +2 dB over verses, on the delivered file | master section automation; deliver → measure → deepen verses → deliver |
+| drop_lift | hooks ≥ +2 dB over verses, on the delivered file | the arrangement: verses thin their layers (`/structure/N/energy`, to -6 dB; vocal, kick and bass stay); on the delivered file a flat hook makes the delivery keep more of the song's own contrast (gentler limiting, `preserve_dynamics` up to 0.9). No master volume automation. |
 | not_harsh | on the delivered file, each band (4th-order HP + LP) minus integrated LUFS: 2-5 kHz between −23.0 and −22.4 dB (the reference master the person approved reads −22.4; under −23.0 the beat turns dull), 5-10 kHz between −26.0 and −24.3 dB (under −26 the hats have lost their sparkle) | 1) at the source, in every song (an instrumental keeps its bright parts 2 dB nearer the snare): hats/cymbals voiced darker (`SOURCE_TONE`), a 7.5 kHz shelf on the snare (−6) and clap (−4), hats/cymbals 13 dB and shakers 12 dB under the snare (`UNDER_SNARE_DB`, faders, only ever down), drum-bus grit at most 0.15; 2) every beat part ≥ 6 dB under the vocal at 2-5 kHz (a 3 kHz bell, up to 7 dB); 3) the `beat` bus takes what is left (aim ≤ 5 dB, at most 12); 4) the master tone (≤ 2 dB) only when the bus is at its limit. The delivery loop aims 2-5 kHz at the middle of its window from both sides; if 5-10 kHz reads dull it gives the bright parts back part of what step 1 took (≤ 4 dB a round, never more than was taken) |
 | quiet sections | intro / outro / breakdown at most 9 dB under the verses (mix RMS) | master section automation (beat and vocal together, so the vocal over beat holds) |
 | loudness | −10 LUFS ± 1 | delivery stage (soft clip + true-peak limiter, section contrast kept) |
@@ -92,6 +92,14 @@ A song judges itself; no ear in the loop is needed.
   (`/mix/air_floor_db`, which every delivery then enforces), 40-120 Hz no
   more than 0.5 dB heavier (`/mix/levels/bass`, `/mix/levels/kick`), loudness
   within 0.6 LU (`/master/lufs`, `/master/preserve_dynamics`).
+* Arrangement energy: `/structure/N/energy` (dB, -9..6) plays the arrangement
+  layers (all but the vocal, kick, bass, sub) softer or louder in that one
+  section. A flat hook is fixed here first (verses thin out by 1-3 dB a round,
+  down to -6) so the hook lifts without master automation and a loud master
+  keeps its lift; the master's verse step (`/mix/drop_lift_db`) only after.
+* 2-5 kHz is a strict ceiling: over it is `harsh`, and the fix lowers
+  `/mix/presence_ceiling_db` (dB minus LUFS), which the delivery's beat-bus
+  tone then aims under on every render.
 * The knobs it turns: `/mix/levels/<role>` (fader offsets, -12..12 dB, applied
   when the beat is composed: a change recomposes with the same seed),
   `/mix/drop_lift_db`, `/density`, `/master/preserve_dynamics`,

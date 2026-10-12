@@ -225,6 +225,14 @@ fn density_step(cur: Option<&str>, up: bool) -> Option<&'static str> {
 pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Value) -> Vec<Weakness> {
     let mut out = Vec::new();
     let level = |role: &str| spec.mix.levels.get(role).copied().unwrap_or(0.0);
+    // the verses: where a flat hook gets its lift (thinner arrangement)
+    let verses: Vec<(String, f32)> = spec
+        .structure
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.kind.to_lowercase().starts_with("verse"))
+        .map(|(i, s)| (format!("/structure/{i}/energy"), s.energy.unwrap_or(0.0)))
+        .collect();
     let mut w = |id: &str, says: String, measured: Value, target: Value, severity: f32, fix: Vec<(&str, Value)>| {
         out.push(Weakness { id: id.into(), says, measured, target, severity: r2(severity), fix: fix.into_iter().map(|(k, v)| (k.to_string(), clean(v))).collect() });
     };
@@ -243,7 +251,13 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
             // a little over the floor: the song's own lift check holds the delivered
             // file to this value less its tolerance, and the limiter takes some back
             let want = (r[0] + 0.3).max(spec.mix.drop_lift_db + 0.3).min(5.0);
-            w("hook_flat", format!("the hook barely lifts over the verse ({l} dB, wants {}..{})", r[0], r[1]), json!(l), json!(r), sev(l, r), vec![("/mix/drop_lift_db", json!(r1(want)))]);
+            // the arrangement first: thinner verses lift the hook without
+            // master automation, so a loud master keeps the lift; the
+            // master's verse step only once the verses are as thin as allowed
+            let step = (r[0] + 0.5 - l).clamp(1.0, 3.0);
+            let thin: Vec<(&str, Value)> = verses.iter().filter(|(_, e)| *e > -6.0 + 0.05).map(|(p, e)| (p.as_str(), json!(r1((e - step).max(-6.0))))).collect();
+            let fix = if thin.is_empty() { vec![("/mix/drop_lift_db", json!(r1(want)))] } else { thin };
+            w("hook_flat", format!("the hook barely lifts over the verse ({l} dB, wants {}..{}): the verses thin out", r[0], r[1]), json!(l), json!(r), sev(l, r), fix);
         } else if l > r[1] {
             w("hook_jumps", format!("the hook jumps {l} dB over the verse (wants at most {}): the verses may read thin", r[1]), json!(l), json!(r), sev(l, r), vec![]);
         }
@@ -294,8 +308,12 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
         w("top_dull", format!("the top end is dull ({} dB in 5-10 kHz under the loudness, wants {}..{}): the hats have lost their sparkle", m.air_rel_lufs_db, alo, ahi), json!(m.air_rel_lufs_db), json!([alo, ahi]), sev(m.air_rel_lufs_db, [alo, ahi]), fix);
     }
     let [plo, phi] = t.presence_rel_lufs_db;
-    if m.presence_rel_lufs_db > phi + 0.15 {
-        w("harsh", format!("harsh in 2-5 kHz ({} dB, wants at most {})", m.presence_rel_lufs_db, phi), json!(m.presence_rel_lufs_db), json!([plo, phi]), sev(m.presence_rel_lufs_db, [plo, phi]), vec![]);
+    // strict: a reference's 2-5 kHz is a ceiling, not a neighbourhood
+    if m.presence_rel_lufs_db > phi {
+        // the delivery's beat-bus tone aims under the ceiling by the overshoot
+        let cur = spec.mix.presence_ceiling_db.unwrap_or(phi).min(phi);
+        let aim = (cur - (m.presence_rel_lufs_db - phi).max(0.0) - 0.3).max(-30.0);
+        w("harsh", format!("harsh in 2-5 kHz ({} dB, wants at most {}): the beat bus aims darker there", m.presence_rel_lufs_db, phi), json!(m.presence_rel_lufs_db), json!([plo, phi]), sev(m.presence_rel_lufs_db, [plo, phi]), vec![("/mix/presence_ceiling_db", json!(r1(aim)))]);
     }
     if let Some(c) = checks["checks"].as_array().and_then(|c| c.iter().find(|x| x["check"] == "vocal_over_beat")) {
         if c["pass"] == false {
@@ -629,7 +647,8 @@ mod tests {
         }
         let get = |id: &str| ws.iter().find(|w| w.id == id).unwrap();
         assert!(get("low_end_light").fix["/mix/levels/bass"].as_f64().unwrap() >= 1.0);
-        assert!(get("hook_flat").fix["/mix/drop_lift_db"].as_f64().unwrap() > spec.mix.drop_lift_db as f64);
+        let hf = &get("hook_flat").fix;
+        assert!(hf.iter().any(|(k, v)| k.ends_with("/energy") && v.as_f64().unwrap() < 0.0) || hf["/mix/drop_lift_db"].as_f64().unwrap() > spec.mix.drop_lift_db as f64);
         assert_eq!(get("groove_sparse").fix["/density"], "balanced");
         assert!(ws.windows(2).all(|x| x[0].severity >= x[1].severity), "biggest first");
         assert!(score(&ws) > 0.0);
