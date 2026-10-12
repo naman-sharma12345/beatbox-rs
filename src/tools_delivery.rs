@@ -262,6 +262,12 @@ pub fn section_lift_db(l: &[f32], r: &[f32]) -> f32 {
 /// Codec-aware delivery: loudness-normalise to a target, true-peak limit,
 /// encode, re-measure the decoded file and trim gain until the decoded true
 /// peak meets the ceiling.
+/// The limiter's ceiling under the delivery ceiling (dB). The encode's own
+/// overshoot is caught by the codec trim after it, so only a small margin
+/// is kept here: at 0.5 a 128k mp3 decoded 0.8 dB under the ceiling (B24:
+/// -2.06 dBTP against -1.2), loudness left on the table.
+pub const LIMITER_UNDER_CEILING_DB: f32 = 0.25;
+
 pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Value> {
     let before = analysis::loudness(l, r);
     let lift_before = section_lift_db(l, r);
@@ -272,7 +278,7 @@ pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Val
         triggers: &trig,
     };
     let limiter = Effect::Limiter(LimiterFx {
-        ceiling_db: o.ceiling_dbtp - 0.5,
+        ceiling_db: o.ceiling_dbtp - LIMITER_UNDER_CEILING_DB,
         release_ms: 80.0,
         true_peak: true,
         ..Default::default()
@@ -295,7 +301,7 @@ pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Val
         if limited {
             // soft clip the top (up to soft_clip_db) first, then the limiter
             // catches the rest and the inter-sample peaks
-            let over = peak - (o.ceiling_dbtp - 0.5);
+            let over = peak - (o.ceiling_dbtp - LIMITER_UNDER_CEILING_DB);
             let take = over.min(o.soft_clip_db.max(0.0));
             if take > 0.05 {
                 soft_clip(&mut wl, &mut wr, crate::dsp::db_to_gain(peak - take));

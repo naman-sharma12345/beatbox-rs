@@ -212,6 +212,10 @@ pub struct Loudness {
     pub short_term_max_lufs: f32,
     /// Loudness range estimate (LU): spread of short-term loudness (10th..95th pct).
     pub loudness_range_lu: f32,
+    /// How loud the loud parts are: the 90th percentile of the 3 s windows
+    /// (LUFS). A song with a hook lift is compared with a reference here:
+    /// its verses sit under on purpose, so its integrated reads lower.
+    pub short_term_p90_lufs: f32,
     /// Inter-sample peak via 4x oversampling (dBTP).
     pub true_peak_dbtp: f32,
     /// Mean sample value per channel (DC offset, linear).
@@ -330,6 +334,7 @@ pub fn loudness_at(l: &[f32], r: &[f32], sr: f32) -> Loudness {
         return Loudness {
             integrated_lufs: -70.0,
             short_term_max_lufs: -70.0,
+            short_term_p90_lufs: -70.0,
             true_peak_dbtp: -120.0,
             ..Default::default()
         };
@@ -383,6 +388,7 @@ pub fn loudness_at(l: &[f32], r: &[f32], sr: f32) -> Loudness {
         .collect();
     st.sort_by(|a, b| a.total_cmp(b));
     let st_max = st.last().copied().unwrap_or(-70.0);
+    let st_p90 = if st.is_empty() { -70.0 } else { st[((st.len() - 1) as f64 * 0.9).round() as usize] };
     let lra = if st.len() >= 2 {
         let at = |q: f64| st[((st.len() - 1) as f64 * q).round() as usize];
         at(0.95) - at(0.10)
@@ -434,6 +440,7 @@ pub fn loudness_at(l: &[f32], r: &[f32], sr: f32) -> Loudness {
     Loudness {
         integrated_lufs: r2(integrated.max(-70.0)),
         short_term_max_lufs: r2(st_max),
+        short_term_p90_lufs: r2(st_p90),
         loudness_range_lu: r2(lra),
         true_peak_dbtp: r2(gain_to_db(tp) as f64),
         dc_offset: [

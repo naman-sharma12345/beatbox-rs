@@ -100,6 +100,9 @@ pub struct Metrics {
     pub width_db: f32,
     pub onsets_per_s: f32,
     pub hook_lift_db: Option<f32>,
+    /// The loud parts' loudness: 90th percentile of the 3 s windows (LUFS).
+    #[serde(default)]
+    pub loud_lufs: Option<f32>,
     pub hook_vs_verse_onsets: Option<f32>,
     /// name, kind, RMS dB, onsets per second
     pub sections: Vec<(String, String, f32, f32)>,
@@ -182,6 +185,7 @@ pub fn measure(path: &std::path::Path, spans: &[mix_rules::Span], bpm: f32) -> R
         width_db: r1(width),
         onsets_per_s: r2(on.len() as f32 / secs),
         hook_lift_db: lift,
+        loud_lufs: Some(r1(ld.short_term_p90_lufs)),
         hook_vs_verse_onsets: build,
         sections,
         seconds: r1(secs),
@@ -359,17 +363,31 @@ pub fn judge_reference(m: &Metrics, r: &Metrics, t: &mut Targets, spec: &SongSpe
             fix: [("/mix/levels/bass".to_string(), clean(json!(r1((level("bass") - down).max(-12.0))))), ("/mix/levels/kick".to_string(), clean(json!(r1((level("kick") - down * 0.5).max(-12.0)))))].into_iter().collect(),
         });
     }
-    let quiet = r.lufs - m.lufs - REF_LUFS_TOL;
+    // loudness: a song with a hook lift is held to the reference's loud
+    // parts (its verses sit under by design, so its integrated reads lower
+    // than a flat reference's), and its integrated may sit at most
+    // REF_LIFT_LUFS_ALLOW under on top of the tolerance. A flat song, or a
+    // reference without loud-part data, is held to the integrated alone.
+    let lifted = m.hook_lift_db.is_some_and(|l| l >= 1.0);
+    let quiet = match (lifted, m.loud_lufs, r.loud_lufs) {
+        (true, Some(ml), Some(rl)) => (rl - ml - REF_LUFS_TOL).max(r.lufs - m.lufs - REF_LIFT_LUFS_ALLOW - REF_LUFS_TOL),
+        _ => r.lufs - m.lufs - REF_LUFS_TOL,
+    };
     if quiet > 0.0 {
         let mut fix: BTreeMap<String, Value> = BTreeMap::new();
-        fix.insert("/master/lufs".into(), clean(json!(r1(r.lufs))));
+        // the target rises by what is missing (never past the reference's)
+        let want = (m.lufs + quiet + REF_LUFS_TOL).min(r.lufs.max(m.lufs));
+        fix.insert("/master/lufs".into(), clean(json!(r1(want.max(spec.master.lufs)))));
         let pd = (spec.master.preserve_dynamics - 0.15).max(0.3);
         if pd < spec.master.preserve_dynamics - 0.01 {
             fix.insert("/master/preserve_dynamics".into(), clean(json!(r2(pd))));
         }
         out.push(Weakness {
             id: "quieter_than_reference".into(),
-            says: format!("quieter than the reference ({} LUFS, the reference {})", m.lufs, r.lufs),
+            says: match (lifted, m.loud_lufs, r.loud_lufs) {
+                (true, Some(ml), Some(rl)) => format!("quieter than the reference ({} LUFS, loud parts {}; the reference {} LUFS, loud parts {})", m.lufs, ml, r.lufs, rl),
+                _ => format!("quieter than the reference ({} LUFS, the reference {})", m.lufs, r.lufs),
+            },
             measured: json!(m.lufs),
             target: json!(r.lufs),
             severity: r2((quiet / 1.0).min(3.0)),
@@ -385,6 +403,10 @@ pub const REF_AIR_BELOW_DB: f32 = 1.0;
 pub const REF_LOW_OVER_DB: f32 = 0.5;
 /// Loudness may sit this far under a reference's before it counts (LU).
 pub const REF_LUFS_TOL: f32 = 0.6;
+/// A song with a hook lift may sit this much further under a reference's
+/// integrated loudness (LU), once its loud parts match the reference's:
+/// 2.5 dB of lift over a flat reference costs about 1.2 LU of integrated.
+pub const REF_LIFT_LUFS_ALLOW: f32 = 1.2;
 
 /// How far the song is from its profile: the sum of the severities (0 =
 /// meets every range).
@@ -620,13 +642,13 @@ mod tests {
     }
 
     fn metrics_ok() -> Metrics {
-        Metrics { lufs: -10.0, lra_lu: 5.0, true_peak_db: -1.5, sub_rel_lufs_db: -12.0, low_rel_lufs_db: -12.0, presence_rel_lufs_db: -22.7, air_rel_lufs_db: -25.0, width_db: -14.0, onsets_per_s: 6.0, hook_lift_db: Some(3.0), hook_vs_verse_onsets: Some(1.1), sections: vec![], seconds: 120.0 }
+        Metrics { lufs: -10.0, lra_lu: 5.0, true_peak_db: -1.5, sub_rel_lufs_db: -12.0, low_rel_lufs_db: -12.0, presence_rel_lufs_db: -22.7, air_rel_lufs_db: -25.0, width_db: -14.0, onsets_per_s: 6.0, hook_lift_db: Some(3.0), loud_lufs: None, hook_vs_verse_onsets: Some(1.1), sections: vec![], seconds: 120.0 }
     }
 
     #[test]
     fn the_approved_mix_meets_its_own_genre_profile() {
         // naman_freestyle_song2.mp3 as `song_critique {file}` measures it
-        let m = Metrics { lufs: -9.7, lra_lu: 2.2, true_peak_db: -1.8, sub_rel_lufs_db: -19.4, low_rel_lufs_db: -15.4, presence_rel_lufs_db: -22.4, air_rel_lufs_db: -24.2, width_db: -18.2, onsets_per_s: 8.08, hook_lift_db: None, hook_vs_verse_onsets: None, sections: vec![], seconds: 135.9 };
+        let m = Metrics { lufs: -9.7, lra_lu: 2.2, true_peak_db: -1.8, sub_rel_lufs_db: -19.4, low_rel_lufs_db: -15.4, presence_rel_lufs_db: -22.4, air_rel_lufs_db: -24.2, width_db: -18.2, onsets_per_s: 8.08, hook_lift_db: None, loud_lufs: Some(-8.9), hook_vs_verse_onsets: None, sections: vec![], seconds: 135.9 };
         let (_, p) = profile_for(Some("desi_hiphop")).unwrap();
         let ws = judge(&m, &p, &Targets::default(), &SongSpec::default(), &Value::Null);
         assert!(ws.is_empty(), "the mix the person approved must pass: {ws:?}");
@@ -664,6 +686,40 @@ mod tests {
         }
         let (ok, probs) = song::validate(&sv);
         assert!(ok.is_some(), "{probs:?}");
+    }
+
+    #[test]
+    fn a_lifted_song_is_held_to_the_references_loud_parts() {
+        // B24's take: hooks as loud as song2's loudest, verses 2.7 dB under,
+        // so the integrated reads 1.2 LU under a flat reference
+        let spec = SongSpec::default();
+        let mut song2 = metrics_ok();
+        song2.lufs = -9.7;
+        song2.hook_lift_db = None;
+        song2.loud_lufs = Some(-8.9);
+        let mut m = metrics_ok();
+        m.lufs = -10.9;
+        m.hook_lift_db = Some(2.7);
+        m.loud_lufs = Some(-8.5);
+        let mut t = Targets::default();
+        let ids = |ws: &[Weakness]| ws.iter().map(|w| w.id.clone()).collect::<Vec<_>>();
+        let ws = judge_reference(&m, &song2, &mut t, &spec);
+        assert!(!ids(&ws).contains(&"quieter_than_reference".to_string()), "{:?}", ids(&ws));
+        // loud parts 1.0 LU under the reference's: named, target raised by what is missing
+        m.loud_lufs = Some(-9.9);
+        let ws = judge_reference(&m, &song2, &mut t, &spec);
+        let q = ws.iter().find(|w| w.id == "quieter_than_reference").expect("quiet loud parts are named");
+        assert_eq!(q.fix["/master/lufs"], json!(-9.9), "{:?}", q.fix);
+        // integrated far under (a lift cannot excuse 3 LU): named even with loud parts matched
+        m.loud_lufs = Some(-8.9);
+        m.lufs = -12.7;
+        let ws = judge_reference(&m, &song2, &mut t, &spec);
+        assert!(ids(&ws).contains(&"quieter_than_reference".to_string()));
+        // a flat song is held to the integrated, as before
+        m.hook_lift_db = None;
+        m.lufs = -10.9;
+        let ws = judge_reference(&m, &song2, &mut t, &spec);
+        assert!(ids(&ws).contains(&"quieter_than_reference".to_string()));
     }
 
     #[test]
