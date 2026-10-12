@@ -640,32 +640,65 @@ pub fn add_voice_faded(
 /// cache the tracks are synthesised once and the output stays bit-identical.
 #[derive(Default)]
 pub struct TrackCache {
-    key: u64,
-    tracks: HashMap<usize, std::sync::Arc<(Vec<f32>, Vec<f32>)>>,
+    /// Per track index: the key it was synthesised under, and its buffer.
+    tracks: HashMap<usize, (u64, std::sync::Arc<(Vec<f32>, Vec<f32>)>)>,
+}
+
+fn fnv(h: &mut u64, s: &str) {
+    for b in s.bytes() {
+        *h ^= b as u64;
+        *h = h.wrapping_mul(0x100000001b3);
+    }
+    *h ^= 0xff;
+    *h = h.wrapping_mul(0x100000001b3);
 }
 
 impl TrackCache {
-    /// Everything that shapes a track before its fader: the project with
-    /// track faders, master gain and master chain set aside, plus the options.
-    fn key_of(p: &Project, opts: &RenderOptions) -> u64 {
+    /// What every track's sound shares: the composition (patterns,
+    /// arrangement, tempo, clips, samples) and the audio-shaping options.
+    /// Mixer state is set aside: faders, sends, routing, mute/solo, every
+    /// bus, the master, and fader/bus/master automation all act AFTER the
+    /// cached buffer (a track's own chain output, pre-fader), so moving
+    /// them never re-synthesises a track. Each track's own instrument,
+    /// pan, effects and non-fader lanes go into its own key.
+    fn global_key(p: &Project, opts: &RenderOptions) -> u64 {
         let mut q = p.clone();
         for t in q.tracks.iter_mut() {
             t.volume_db = 0.0;
+            t.sends.clear();
+            t.output = None;
+            t.mute = false;
+            t.solo = false;
+            t.effects.clear();
         }
+        q.buses.clear();
         q.master_volume_db = 0.0;
         q.master_effects.clear();
-        let s = format!(
-            "{}|{:?}",
-            serde_json::to_string(&q).unwrap_or_default(),
-            opts
-        );
+        q.automation.clear();
+        q.song = None;
         let mut h: u64 = 0xcbf29ce484222325;
-        for b in s.bytes() {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x100000001b3);
+        fnv(&mut h, &serde_json::to_string(&q).unwrap_or_default());
+        fnv(&mut h, &format!("{}|{}|{:?}|{}", opts.loops, opts.tail, opts.step_range, opts.allow_missing_clips));
+        h
+    }
+
+    fn track_key(global: u64, p: &Project, ti: usize) -> u64 {
+        let mut t = p.tracks[ti].clone();
+        t.volume_db = 0.0;
+        t.sends.clear();
+        t.output = None;
+        t.mute = false;
+        t.solo = false;
+        let mut h = global;
+        fnv(&mut h, &serde_json::to_string(&t).unwrap_or_default());
+        for l in p.automation.iter() {
+            if l.target.eq_ignore_ascii_case(&p.tracks[ti].name) && parse_target(&l.param) != Some(Target::Volume) {
+                fnv(&mut h, &serde_json::to_string(l).unwrap_or_default());
+            }
         }
         h
     }
+
     pub fn len(&self) -> usize {
         self.tracks.len()
     }
@@ -713,7 +746,7 @@ pub fn render_cached(
     p: &Project,
     bank: &SampleBank,
     opts: &RenderOptions,
-    mut cache: Option<&mut TrackCache>,
+    cache: Option<&mut TrackCache>,
 ) -> Result<Mix> {
     if !opts.allow_missing_clips {
         let missing = missing_clip_samples(p, bank);
@@ -725,15 +758,21 @@ pub fn render_cached(
             );
         }
     }
-    if let Some(c) = cache.as_deref_mut() {
-        let k = TrackCache::key_of(p, opts);
-        if c.key != k {
-            c.key = k;
-            c.tracks.clear();
-        }
-    }
+    let track_keys: Vec<u64> = if cache.is_some() {
+        let g = TrackCache::global_key(p, opts);
+        (0..p.tracks.len()).map(|ti| TrackCache::track_key(g, p, ti)).collect()
+    } else {
+        Vec::new()
+    };
     let empty = HashMap::new();
-    let cached = cache.as_deref().map(|c| &c.tracks).unwrap_or(&empty);
+    let cached: HashMap<usize, std::sync::Arc<(Vec<f32>, Vec<f32>)>> = cache
+        .as_deref()
+        .map(|c| &c.tracks)
+        .unwrap_or(&empty)
+        .iter()
+        .filter(|(ti, (k, _))| track_keys.get(**ti) == Some(k))
+        .map(|(ti, (_, b))| (*ti, b.clone()))
+        .collect();
     let keep = cache.is_some();
     let (events, body_len) = schedule(p, opts);
     let total = body_len + (opts.tail.max(0.0) * SR) as usize;
@@ -1195,7 +1234,10 @@ pub fn render_cached(
     }
 
     if let Some(c) = cache {
-        c.tracks.extend(fresh_tracks);
+        c.tracks.retain(|ti, _| *ti < track_keys.len());
+        for (ti, b) in fresh_tracks {
+            c.tracks.insert(ti, (track_keys[ti], b));
+        }
     }
     crate::producer::prof("render.tracks", t_tracks);
     let t_bus = std::time::Instant::now();
@@ -1367,6 +1409,45 @@ mod tests {
         }
         let n = render_cached(&c, &e.bank, &o, Some(&mut cache)).unwrap();
         assert_eq!(n.left, render(&c, &e.bank, &o).unwrap().left);
+    }
+
+    #[test]
+    fn bus_routing_and_fader_lanes_re_sum_without_resynthesis() {
+        let d = std::env::temp_dir().join("beatbox_render_cache_bus_tests");
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = crate::engine::Engine::new(d);
+        e.call("generate_beat", &serde_json::json!({"style": "trap", "seed": 3, "bars": 2})).unwrap();
+        e.bank.sync(&e.project.samples);
+        let o = RenderOptions { keep_stems: true, ..Default::default() };
+        let mut cache = TrackCache::default();
+        render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
+        let before: Vec<(usize, *const (Vec<f32>, Vec<f32>))> = cache.tracks.iter().map(|(k, (_, b))| (*k, std::sync::Arc::as_ptr(b))).collect();
+        // a new bus with an EQ, every track routed into it, a fader lane
+        let mut q = e.project.clone();
+        let mut b = crate::project::Bus::new("beat");
+        b.effects.push(serde_json::from_value(serde_json::json!({"type": "parametric_eq", "bands": [{"kind": "high_shelf", "freq": 7500.0, "gain_db": -6.0, "q": 0.7}]})).unwrap());
+        q.buses.push(b);
+        for t in q.tracks.iter_mut() {
+            t.output = Some("beat".into());
+        }
+        let name = q.tracks[0].name.clone();
+        q.automation.push(serde_json::from_value(serde_json::json!({"target": name, "param": "volume", "points": [{"beat": 0.0, "value": -3.0}, {"beat": 4.0, "value": 0.0}]})).unwrap());
+        let cached = render_cached(&q, &e.bank, &o, Some(&mut cache)).unwrap();
+        let fresh = render(&q, &e.bank, &o).unwrap();
+        assert_eq!(cached.left, fresh.left);
+        assert_eq!(cached.right, fresh.right);
+        for (k, p) in before {
+            assert!(std::ptr::eq(std::sync::Arc::as_ptr(&cache.tracks[&k].1), p), "track {k} was re-synthesised by a mixer-only change");
+        }
+        // a track's own chain change re-synthesises that track only
+        let mut c = q.clone();
+        c.tracks[0].effects.push(serde_json::from_value(serde_json::json!({"type": "parametric_eq", "bands": [{"kind": "bell", "freq": 1000.0, "gain_db": -3.0, "q": 1.0}]})).unwrap());
+        let ptr1 = cache.tracks.get(&1).map(|x| std::sync::Arc::as_ptr(&x.1));
+        let n = render_cached(&c, &e.bank, &o, Some(&mut cache)).unwrap();
+        assert_eq!(n.left, render(&c, &e.bank, &o).unwrap().left);
+        if let Some(p1) = ptr1 {
+            assert!(std::ptr::eq(std::sync::Arc::as_ptr(&cache.tracks[&1].1), p1));
+        }
     }
 
     #[test]

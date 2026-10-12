@@ -37,7 +37,7 @@ what that path touches.
 |---|---|---|
 | vocal_over_beat | ≥ +6 dB, ≤ +12 dB in every section with vocal | vocal TRACK fader automation + a gain stage after the compressor (never clip gain, which the 3:1 compressor eats) |
 | drop_lift | hooks ≥ +2 dB over verses, on the delivered file | master section automation; deliver → measure → deepen verses → deliver |
-| not_harsh | 2-5 kHz ≤ −16 dB, 5-10 kHz ≤ −17 dB of the mix; every beat part ≥ 6 dB under the vocal at 2-5 kHz | 3 kHz bells / 6 kHz shelves on the parts that carry it |
+| not_harsh | 2-5 kHz ≤ −17 dB, 5-10 kHz ≤ −18.5 dB against the 250 Hz-2 kHz body; every beat part ≥ 6 dB under the vocal at 2-5 kHz | the beat's own tone on the `beat` bus (3.15 kHz bell + 7.5 kHz shelf, up to 12 dB); the master tone (≤ 2 dB) only when the beat tone is at its limit, so the vocal keeps its top |
 | loudness | −10 LUFS ± 1 | delivery stage (soft clip + true-peak limiter, section contrast kept) |
 | true_peak | ≤ −1 dBTP, decoded file | delivery ceiling with margin for lossy encoding |
 

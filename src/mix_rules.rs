@@ -55,7 +55,9 @@ pub struct Targets {
     pub presence_min_share_db: f32,
     /// Tilt: 2-5 kHz energy against 250 Hz-2 kHz (the voice's body) on the
     /// delivered file, at most (dB). Independent of how much sub there is.
-    /// Calibrated on the hand remix the person approved (-16.5 / -18.3).
+    /// Calibrated on the hand remix the person approved (-16.5 / -18.3),
+    /// set a little darker now that only the beat is darkened (the vocal
+    /// keeps its own top): -17 / -18.5.
     pub presence_tilt_max_db: f32,
     /// Tilt: 5-10 kHz against 250 Hz-2 kHz, at most (dB).
     pub air_tilt_max_db: f32,
@@ -76,8 +78,8 @@ impl Default for Targets {
             presence_max_share_db: -19.0,
             air_max_share_db: -20.5,
             presence_min_share_db: -24.0,
-            presence_tilt_max_db: -16.0,
-            air_tilt_max_db: -17.5,
+            presence_tilt_max_db: -17.0,
+            air_tilt_max_db: -18.5,
             beat_under_vocal_presence_db: 6.0,
         }
     }
@@ -581,7 +583,7 @@ pub fn tame_peaks(e: &mut Engine) -> Result<Value> {
     let mut pre = e.project.clone();
     pre.master_effects.clear();
     e.bank.sync(&pre.samples);
-    let mix = crate::render::render(&pre, &e.bank, &crate::render::RenderOptions { keep_stems: true, ..Default::default() })?;
+    let mix = e.render_stems(&pre)?;
     let mut done = Vec::new();
     for st in &mix.bus_stems {
         let is_group = e.project.tracks.iter().any(|t| t.output.as_deref() == Some(st.name.as_str()));
@@ -634,7 +636,7 @@ pub fn tame_top(e: &mut Engine, voice: Option<&str>, t: &Targets, shift_db: f32)
     let mut pre = e.project.clone();
     pre.master_effects.clear();
     e.bank.sync(&pre.samples);
-    let mix = crate::render::render(&pre, &e.bank, &crate::render::RenderOptions { keep_stems: true, ..Default::default() })?;
+    let mix = e.render_stems(&pre)?;
     let m = mono(&mix.left, &mix.right);
     let total = band_energy_db(&m, 20.0, 20000.0);
     let pres_share = band_energy_db(&m, 2000.0, 5000.0) - total;
@@ -673,7 +675,7 @@ pub fn tame_top(e: &mut Engine, voice: Option<&str>, t: &Targets, shift_db: f32)
     } else {
         let mut pre = e.project.clone();
         pre.master_effects.clear();
-        let mix = crate::render::render(&pre, &e.bank, &crate::render::RenderOptions { keep_stems: true, ..Default::default() })?;
+        let mix = e.render_stems(&pre)?;
         let m = mono(&mix.left, &mix.right);
         let total = band_energy_db(&m, 20.0, 20000.0);
         let parts: Vec<(String, f32, f32, f32)> = mix
@@ -743,16 +745,217 @@ fn tone_gains(p: &Project) -> Option<(usize, f32, f32)> {
     })
 }
 
-/// Master tone: one bell at 3.15 kHz and one shelf at 7.5 kHz on the master,
-/// set so the mix's tilt meets the targets with `margin_db` to spare (the
-/// delivery limiter adds ~1-2 dB of top). Cuts only, at most 8 dB each.
+/// The bus the whole beat sums into (every part but the vocal and the send
+/// returns); the beat's own tone lives on it, so the vocal keeps its top.
+pub const BEAT_BUS: &str = "beat";
+/// Deepest cut the beat tone stage makes at 3.15 kHz / with the 7.5 kHz shelf.
+pub const BEAT_TONE_MAX_CUT_DB: f32 = 12.0;
+/// Deepest cut the master tone stage may make (it EQs the vocal too).
+pub const MASTER_TONE_MAX_CUT_DB: f32 = 2.0;
+
+/// Route the beat into BEAT_BUS: every master-bound bus that is not a send
+/// return and carries no vocal (the drum bus), and every master-bound part
+/// that is not a vocal. Returns what was moved. Idempotent.
+pub fn route_beat_bus(e: &mut Engine, voice: Option<&str>) -> Vec<String> {
+    let p = &mut e.project;
+    let is_voice = |n: &str| voice.map(|v| v.eq_ignore_ascii_case(n)).unwrap_or(false) || is_voice_name(n);
+    if !p.tracks.iter().any(|t| !is_voice(&t.name)) {
+        return Vec::new();
+    }
+    let returns: Vec<String> = p.tracks.iter().flat_map(|t| t.sends.iter().map(|s| s.bus.to_lowercase())).collect();
+    let vocal_buses: Vec<String> = p.tracks.iter().filter(|t| is_voice(&t.name)).filter_map(|t| t.output.as_ref().map(|o| o.to_lowercase())).collect();
+    if p.bus_index(BEAT_BUS).is_err() {
+        p.buses.push(crate::project::Bus::new(BEAT_BUS));
+    }
+    let mut moved = Vec::new();
+    for b in p.buses.iter_mut() {
+        let n = b.name.to_lowercase();
+        if n != BEAT_BUS && b.output.is_none() && !returns.contains(&n) && !vocal_buses.contains(&n) {
+            b.output = Some(BEAT_BUS.to_string());
+            moved.push(format!("bus {}", b.name));
+        }
+    }
+    for t in p.tracks.iter_mut() {
+        if t.output.is_none() && !is_voice(&t.name) {
+            t.output = Some(BEAT_BUS.to_string());
+            moved.push(t.name.clone());
+        }
+    }
+    if !moved.is_empty() {
+        p.ensure_fx_ids();
+    }
+    moved
+}
+
+fn beat_tone_gains(p: &Project) -> Option<(usize, f32, f32)> {
+    let b = &p.buses[p.bus_index(BEAT_BUS).ok()?];
+    b.effects.iter().enumerate().find_map(|(i, f)| {
+        let v = serde_json::to_value(f).ok()?;
+        let bands = v["bands"].as_array()?;
+        if v["type"] == "parametric_eq" && bands.len() == 2 && (bands[0]["freq"].as_f64()? as f32 - TONE_PRES_HZ).abs() < 1.0 {
+            Some((i, bands[0]["gain_db"].as_f64()? as f32, bands[1]["gain_db"].as_f64()? as f32))
+        } else {
+            None
+        }
+    })
+}
+
+/// Up to `n` evenly spaced windows of `win` samples (the whole signal when
+/// it is shorter): the tone search reads ~40 s instead of the whole song.
+fn excerpt(x: &[f32], n: usize, win: usize) -> Vec<f32> {
+    if x.len() <= n * win * 2 {
+        return x.to_vec();
+    }
+    let step = (x.len() - win) / n;
+    (0..n).flat_map(|k| x[k * step..k * step + win].iter().copied()).collect()
+}
+
+fn tone_filter(x: &[f32], pres_db: f32, air_db: f32) -> Vec<f32> {
+    use crate::dsp::{Biquad, BiquadKind};
+    let mut a = Biquad::new(BiquadKind::Bell, TONE_PRES_HZ, 0.8, pres_db);
+    let mut b = Biquad::new(BiquadKind::HighShelf, TONE_AIR_HZ, 0.7, air_db);
+    x.iter().map(|v| b.process(a.process(*v))).collect()
+}
+
+/// The beat's tone: one bell at 3.15 kHz and one shelf at 7.5 kHz on
+/// BEAT_BUS, the least cut that brings the WHOLE mix's tilt (vocal
+/// included, as it sits) to the targets with `margin_db` to spare. The vocal
+/// is never EQ'd here: only the beat darkens. Solved on the stems (the beat
+/// bus filtered in memory and re-summed with the rest), so it costs one
+/// render, which the track cache makes a re-sum. Cuts only, at most
+/// BEAT_TONE_MAX_CUT_DB each; what is left over is for `tone_stage`.
+pub fn beat_tone(e: &mut Engine, voice: Option<&str>, t: &Targets, margin_db: f32) -> Result<Value> {
+    beat_tone_with(e, voice, t, margin_db, margin_db)
+}
+
+/// `beat_tone` with its own margin per band (2-5 kHz, 5-10 kHz).
+pub fn beat_tone_with(e: &mut Engine, voice: Option<&str>, t: &Targets, margin_p: f32, margin_a: f32) -> Result<Value> {
+    let moved = route_beat_bus(e, voice);
+    let mut pre = e.project.clone();
+    pre.master_effects.clear();
+    pre.master_volume_db = 0.0;
+    pre.automation.retain(|l| !l.target.eq_ignore_ascii_case("master"));
+    let mix = e.render_stems(&pre)?;
+    let Some(bst) = mix.bus_stems.iter().find(|s| s.name.eq_ignore_ascii_case(BEAT_BUS)) else {
+        return Ok(json!({"changed": false, "why": "no beat to shape"}));
+    };
+    let (n, win) = (28usize, (1.5 * SR) as usize);
+    let m = excerpt(&mono(&mix.left, &mix.right), n, win);
+    let b = excerpt(&mono(&bst.left, &bst.right), n, win);
+    let rest: Vec<f32> = m.iter().zip(b.iter()).map(|(x, y)| x - y).collect();
+    let vocal_top = voice.and_then(|v| mix.stems.iter().find(|s| s.name.eq_ignore_ascii_case(v))).map(|s| {
+        let x = excerpt(&mono(&s.left, &s.right), n, win);
+        tilt_db(&x)
+    });
+    let (idx, gp, ga) = beat_tone_gains(&e.project).map(|(i, a, b)| (Some(i), a, b)).unwrap_or((None, 0.0, 0.0));
+    let tilt_with = |np: f32, na: f32| -> (f32, f32) {
+        let fb = tone_filter(&b, np - gp, na - ga);
+        let s: Vec<f32> = rest.iter().zip(fb.iter()).map(|(x, y)| x + y).collect();
+        tilt_db(&s)
+    };
+    let before = tilt_db(&m);
+    let (tp, ta) = (t.presence_tilt_max_db - margin_p, t.air_tilt_max_db - margin_a);
+    // the least cut per band that meets its target (bisection; the other
+    // band held), twice round since the shelf also moves 2-5 kHz a little
+    let (mut np, mut na) = (0.0f32, 0.0f32);
+    for _ in 0..2 {
+        for band in 0..2 {
+            let ok = |g: f32| {
+                let r = if band == 0 { tilt_with(g, na) } else { tilt_with(np, g) };
+                if band == 0 { r.0 <= tp } else { r.1 <= ta }
+            };
+            let g = if ok(0.0) {
+                0.0
+            } else if !ok(-BEAT_TONE_MAX_CUT_DB) {
+                -BEAT_TONE_MAX_CUT_DB
+            } else {
+                let (mut lo, mut hi) = (-BEAT_TONE_MAX_CUT_DB, 0.0f32);
+                for _ in 0..9 {
+                    let mid = 0.5 * (lo + hi);
+                    if ok(mid) { lo = mid } else { hi = mid }
+                }
+                lo
+            };
+            if band == 0 { np = g } else { na = g }
+        }
+    }
+    let after = tilt_with(np, na);
+    let changed = (np - gp).abs() >= 0.1 || (na - ga).abs() >= 0.1 || !moved.is_empty();
+    if (np - gp).abs() >= 0.1 || (na - ga).abs() >= 0.1 {
+        let eq: crate::fx::Effect = serde_json::from_value(json!({"type": "parametric_eq", "bands": [
+            {"kind": "bell", "freq": TONE_PRES_HZ, "gain_db": np, "q": 0.8},
+            {"kind": "high_shelf", "freq": TONE_AIR_HZ, "gain_db": na, "q": 0.7}
+        ]}))?;
+        let bi = e.project.bus_index(BEAT_BUS)?;
+        match idx {
+            Some(i) => e.project.buses[bi].effects[i] = eq,
+            None => e.project.buses[bi].effects.push(eq),
+        }
+        e.project.ensure_fx_ids();
+    }
+    Ok(json!({
+        "bus": BEAT_BUS,
+        "routed": moved,
+        "mix_tilt_before": {"2_5k_db": r1(before.0), "5_10k_db": r1(before.1)},
+        "mix_tilt_after": {"2_5k_db": r1(after.0), "5_10k_db": r1(after.1)},
+        "targets": {"2_5k_db": r1(tp), "5_10k_db": r1(ta)},
+        "beat_bell_3k_db": r1(np), "beat_shelf_7k5_db": r1(na),
+        "at_limit": np <= -BEAT_TONE_MAX_CUT_DB + 0.05 || na <= -BEAT_TONE_MAX_CUT_DB + 0.05,
+        "vocal_own_tilt": vocal_top.map(|v| json!({"2_5k_db": r1(v.0), "5_10k_db": r1(v.1)})),
+        "changed": changed,
+    }))
+}
+
+/// The whole top-end rule, in order: the beat darkens on its own bus
+/// (`beat_tone`), the vocal is re-balanced over the darker beat, and the full
+/// mix (master chain included) is measured; what the stem model missed is
+/// fed back per band (up to 3 rounds). The master tone (`tone_stage`, capped
+/// at MASTER_TONE_MAX_CUT_DB) only engages when the beat tone is at its
+/// limit; otherwise it is taken off, so the vocal is never EQ'd for the beat.
+pub fn shape_top(e: &mut Engine, voice: Option<&str>, t: &Targets, margin_db: f32) -> Result<Value> {
+    let (mut xp, mut xa) = (0.0f32, 0.0f32);
+    let mut rounds = Vec::new();
+    let mut at_limit = false;
+    for _ in 0..3 {
+        let r = beat_tone_with(e, voice, t, margin_db + xp, margin_db + xa)?;
+        at_limit = r["at_limit"] == true;
+        if let Some(v) = voice {
+            balance_vocal(e, v, t, 1)?;
+        }
+        let full = e.mix()?;
+        let (pt, at) = tilt_db(&mono(&full.left, &full.right));
+        let (op, oa) = (pt - (t.presence_tilt_max_db - margin_db), at - (t.air_tilt_max_db - margin_db));
+        rounds.push(json!({"beat_bell_3k_db": r["beat_bell_3k_db"], "beat_shelf_7k5_db": r["beat_shelf_7k5_db"], "mix_tilt_2_5k_db": r1(pt), "mix_tilt_5_10k_db": r1(at), "routed": r["routed"]}));
+        if (op <= 0.15 && oa <= 0.15) || at_limit {
+            break;
+        }
+        xp += op.max(0.0);
+        xa += oa.max(0.0);
+    }
+    let master = if at_limit {
+        tone_stage(e, t, margin_db)?
+    } else {
+        let had = tone_gains(&e.project);
+        if let Some((i, _, _)) = had {
+            e.project.master_effects.remove(i);
+        }
+        json!({"changed": had.is_some(), "why": "the beat tone met the targets; the master (and the vocal) are not EQ'd"})
+    };
+    Ok(json!({"rounds": rounds, "beat_at_limit": at_limit, "master_tone": master}))
+}
+
+/// Master tone, the last resort after `beat_tone`: one bell at 3.15 kHz and
+/// one shelf at 7.5 kHz on the master, set so the mix's tilt meets the
+/// targets with `margin_db` to spare. It touches the vocal too, so it may cut
+/// at most MASTER_TONE_MAX_CUT_DB each; the beat's own tone does the rest.
 pub fn tone_stage(e: &mut Engine, t: &Targets, margin_db: f32) -> Result<Value> {
     let full = e.mix()?;
     let m = mono(&full.left, &full.right);
     let (pt, at) = tilt_db(&m);
     let (idx, gp, ga) = tone_gains(&e.project).map(|(i, a, b)| (Some(i), a, b)).unwrap_or((None, 0.0, 0.0));
-    let np = (gp - (pt - (t.presence_tilt_max_db - margin_db)).max(0.0)).clamp(-8.0, 0.0);
-    let na = (ga - (at - (t.air_tilt_max_db - margin_db)).max(0.0)).clamp(-8.0, 0.0);
+    let cap = -MASTER_TONE_MAX_CUT_DB;
+    let np = (gp - (pt - (t.presence_tilt_max_db - margin_db)).max(0.0)).clamp(cap, 0.0);
+    let na = (ga - (at - (t.air_tilt_max_db - margin_db)).max(0.0)).clamp(cap, 0.0);
     if (np - gp).abs() < 0.1 && (na - ga).abs() < 0.1 {
         return Ok(json!({"tilt_2_5k_db": r1(pt), "tilt_5_10k_db": r1(at), "changed": false}));
     }
@@ -867,7 +1070,7 @@ pub fn check(file: &std::path::Path, sections_pre: &[SectionLevel], spans: &[Spa
         format!("2-5 kHz <= {} dB and 5-10 kHz <= {} dB against 250 Hz-2 kHz; 2-5 kHz >= {} dB of the mix (not muffled)", t.presence_tilt_max_db, t.air_tilt_max_db, t.presence_min_share_db),
         json!({"tilt_2_5k_db": r1(pt), "tilt_5_10k_db": r1(at), "share_2_5k_db": r1(pres)}),
         pt <= t.presence_tilt_max_db + 0.3 && at <= t.air_tilt_max_db + 0.3 && pres >= t.presence_min_share_db,
-        "the master tone stage takes the top down on every render; a darker preset in /instruments helps more",
+        "the beat's own tone (beat bus) takes the top down on every render, then a small master tone; a darker preset in /instruments helps more",
     ));
     checks.push(chk(
         "loudness",
@@ -920,6 +1123,57 @@ mod tests {
         let m2 = e.mix().unwrap();
         let (p2, _) = tilt_db(&mono(&m2.left, &m2.right));
         assert!(p2 < p0 - 1.0, "tone stage did not darken the next render: {p0} -> {p2}");
+    }
+
+    #[test]
+    fn beat_tone_darkens_the_beat_bus_and_leaves_the_vocal_and_master_alone() {
+        let mut e = Engine::new(std::env::temp_dir().join("beatbox_beat_tone_tests"));
+        e.call("generate_beat", &serde_json::json!({"style": "boom_bap", "bars": 2, "seed": 7})).unwrap();
+        // a stand-in "vocal": a copy of a melodic part under a voice name
+        let src = e.project.tracks.last().unwrap().clone();
+        let mut v = src.clone();
+        v.name = "vocal".into();
+        v.id = String::new();
+        v.output = None;
+        for pt in e.project.patterns.iter_mut() {
+            if let Some(n) = pt.clips.get(&src.name).cloned() {
+                pt.clips.insert("vocal".into(), n);
+            }
+        }
+        e.project.tracks.push(v);
+        e.project.ensure_fx_ids();
+        let vocal_fx = serde_json::to_string(&e.project.tracks.last().unwrap().effects).unwrap();
+        let master_fx = serde_json::to_string(&e.project.master_effects).unwrap();
+        e.track_cache = Some(Default::default());
+        let m0 = e.mix().unwrap();
+        let (p0, a0) = tilt_db(&mono(&m0.left, &m0.right));
+        let mut t = Targets::default();
+        t.presence_tilt_max_db = p0 - 2.0;
+        t.air_tilt_max_db = a0 - 2.0;
+        let r = beat_tone(&mut e, Some("vocal"), &t, 0.0).unwrap();
+        assert_eq!(r["changed"], true, "{r}");
+        // the beat is routed into the beat bus, the vocal is not
+        let vi = e.project.track_index("vocal").unwrap();
+        assert_eq!(e.project.tracks[vi].output, None);
+        assert!(e.project.tracks.iter().filter(|t| t.name != "vocal").all(|t| t.output.is_some()));
+        assert!(beat_tone_gains(&e.project).map(|g| g.1 < -0.5).unwrap_or(false), "{r}");
+        assert_eq!(serde_json::to_string(&e.project.tracks[vi].effects).unwrap(), vocal_fx);
+        assert_eq!(serde_json::to_string(&e.project.master_effects).unwrap(), master_fx);
+        let m1 = e.mix().unwrap();
+        let (p1, _) = tilt_db(&mono(&m1.left, &m1.right));
+        assert!(p1 < p0 - 1.0 || r["at_limit"] == true, "beat tone did not darken the mix: {p0} -> {p1} ({r})");
+        // the solve on stems predicts the render
+        let predicted = r["mix_tilt_after"]["2_5k_db"].as_f64().unwrap() as f32;
+        assert!((predicted - p1).abs() < 1.0, "predicted {predicted}, rendered {p1}");
+        // a second pass at the same targets changes nothing
+        let r2 = beat_tone(&mut e, Some("vocal"), &t, 0.0).unwrap();
+        assert!(r2["routed"].as_array().map(|a| a.is_empty()).unwrap_or(false));
+        // the master tone never cuts more than its cap
+        t.presence_tilt_max_db = p0 - 20.0;
+        t.air_tilt_max_db = a0 - 20.0;
+        tone_stage(&mut e, &t, 0.0).unwrap();
+        let (_, gp, ga) = tone_gains(&e.project).unwrap();
+        assert!(gp >= -MASTER_TONE_MAX_CUT_DB - 1e-3 && ga >= -MASTER_TONE_MAX_CUT_DB - 1e-3, "{gp} {ga}");
     }
 
     #[test]

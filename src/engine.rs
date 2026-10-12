@@ -497,6 +497,20 @@ impl Engine {
         Ok(m)
     }
 
+    /// Render any project version keeping every track and bus stem, through
+    /// the pre-fader track cache when one is active (a song build turns it
+    /// on), so mix rules that move faders, buses or the master re-sum
+    /// instead of re-synthesising.
+    pub fn render_stems(&mut self, p: &Project) -> Result<Mix> {
+        self.bank.sync(&p.samples);
+        render::render_cached(
+            p,
+            &self.bank,
+            &RenderOptions { keep_stems: true, ..Default::default() },
+            self.track_cache.as_mut(),
+        )
+    }
+
     /// The project reduced to one pass of a pattern: what performance mode
     /// loops. Timeline audio and clip automation are left out (they belong
     /// to song positions, not to the pattern).

@@ -819,7 +819,25 @@ fn out_path(e: &Engine, spec: &SongSpec) -> PathBuf {
 /// Mix to the targets, deliver, check. The vocal (if any) is balanced
 /// section by section; hooks are lifted over verses.
 fn mix_deliver(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<(Value, PathBuf, Value)> {
+    // every mix rule and delivery round after this moves faders, buses,
+    // fader lanes or the master only: synthesise each track once and re-sum
+    // (dropped when we return)
+    let prev = e.track_cache.replace(Default::default());
+    let t0 = std::time::Instant::now();
+    let r = mix_deliver_inner(e, spec, log);
+    e.track_cache = prev;
+    log.push(format!("mix + delivery: {:.0} s", t0.elapsed().as_secs_f32()));
+    r
+}
+
+fn lap(log: &mut Vec<String>, t: &mut std::time::Instant, what: &str) {
+    log.push(format!("{what}: {:.1} s", t.elapsed().as_secs_f32()));
+    *t = std::time::Instant::now();
+}
+
+fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<(Value, PathBuf, Value)> {
     let t = spec.targets();
+    let mut tl = std::time::Instant::now();
     let voice = spec.vocal.as_ref().map(|v| v.track.clone()).filter(|v| e.project.track_index(v).is_ok());
     let mut mix = Map::new();
     mix.insert("peaks".into(), mix_rules::tame_peaks(e)?);
@@ -837,7 +855,12 @@ fn mix_deliver(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result
         mix.insert("vocal_balance".into(), b);
     }
     mix.insert("glue".into(), mix_rules::set_glue(e)?);
-    mix.insert("tone".into(), mix_rules::tone_stage(e, &t, 1.5)?);
+    // the top end: the beat darkens on its own bus first (the vocal keeps
+    // its top), the vocal is re-balanced over the darker beat, and the
+    // master tone only takes what the beat could not (small, capped)
+    lap(log, &mut tl, "peaks, vocal balance, top end, glue");
+    mix.insert("top_tone".into(), mix_rules::shape_top(e, voice.as_deref(), &t, 1.5)?);
+    lap(log, &mut tl, "beat tone");
     let lift = mix_rules::ensure_drop_lift(e, &t)?;
     mix.insert("drop_lift".into(), lift);
     let pre = mix_rules::measure_sections(e, voice.as_deref())?;
@@ -867,15 +890,16 @@ fn mix_deliver(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result
     let mut lift_log = Vec::new();
     let mut last_try: Option<(f32, f32)> = None;
     let mut top_shift = 0.0f32;
-    for round in 0..3 {
+    for round in 0..4 {
         let full = e.mix()?;
         d = crate::tools_delivery::deliver(&full.left, &full.right, &path, &o)?;
         checks = mix_rules::check(&path, &pre, &spans, e.project.bpm, &t)?;
+        lap(log, &mut tl, &format!("delivery round {}", round + 1));
         let get = |name: &str| checks["checks"].as_array().and_then(|c| c.iter().find(|x| x["check"] == name)).cloned().unwrap_or(Value::Null);
         let lift = get("drop_lift")["measured"].as_f64().map(|x| x as f32);
         let lufs = get("loudness")["measured"].as_f64().map(|x| x as f32);
         let harsh = get("not_harsh");
-        if round == 2 {
+        if round == 3 {
             break;
         }
         let mut changed = false;
@@ -907,8 +931,8 @@ fn mix_deliver(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result
             let over = (pt - t.presence_tilt_max_db).max(at - t.air_tilt_max_db);
             if over > 0.0 && top_shift < 6.0 {
                 top_shift += over + 0.3;
-                let r = mix_rules::tone_stage(e, &t, 0.5 + top_shift)?;
-                lift_log.push(json!({"delivered_too_bright_db": (over * 10.0).round() / 10.0, "tone": r}));
+                let r = mix_rules::shape_top(e, voice.as_deref(), &t, 1.5 + top_shift)?;
+                lift_log.push(json!({"delivered_too_bright_db": (over * 10.0).round() / 10.0, "top_tone": r}));
                 changed = true;
             }
         }
