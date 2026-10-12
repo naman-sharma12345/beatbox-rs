@@ -51,6 +51,24 @@ Calling an action on the wrong tool (for example `export {"action":"render"}`)
 runs it in the tool it belongs to and adds a `note` naming that tool: the
 call never fails just because the category guess was off.
 
+## Genres in one word
+
+`genre` picks a playbook (src/playbooks.json): tempo range, scales,
+progressions, drum grammar, instruments, arrangement and the genre's own
+level offsets (`mix.offsets`). Aliases and artist names resolve too.
+
+| genre | say it as | what you get |
+|---|---|---|
+| `punjabi_party` | `honey_singh`, `badshah`, `bhangra`, `punjabi`, `desi_party`; in a prompt "yo yo honey singh type beat", "badshah party song" | 96-104 BPM natural minor, a dhol chaal on the tabla/bayan roles (dholak voices; give real dhol one-shots with `{"samples": [...]}`), 808 kick and bass, claps on 2 and 4, a `tumbi` hook riff, brass/string stabs; the dhol sits forward |
+| `desi_hiphop` | `desi`, `punjabi_rap`, `bollywood_rap`, "bohemia type beat" | 88-96 BPM, tabla bols, sitar/bansuri lead in a raag-flavoured scale, tanpura drone, 808 |
+| `drill` | `punjabi_drill`, "sidhu type beat" | 138-146 BPM sliding 808s |
+
+The smallest Punjabi party song is one call:
+
+```json
+{"action": "song_create", "params": {"genre": "punjabi_party", "vocal": {"file": "/path/take.wav"}}}
+```
+
 ## Patching
 
 `song_patch {"set": {"/mix/vocal_over_beat_db": 8}}` → re-mix only.

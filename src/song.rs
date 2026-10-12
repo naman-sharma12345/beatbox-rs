@@ -373,11 +373,11 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
     if let Some(g) = &spec.genre {
         if crate::producer::playbook(g).is_err() {
             let names: Vec<&str> = crate::producer::playbooks().iter().map(|b| b.name.as_str()).collect();
-            out.push(p("/genre", format!("'{g}' is not a genre this engine knows"), did_you_mean(g, &names, &[("desi", "desi_hiphop"), ("punjabi", "desi_hiphop"), ("hiphop", "boom_bap"), ("hip_hop", "boom_bap")])));
+            out.push(p("/genre", format!("'{g}' is not a genre this engine knows"), did_you_mean(g, &names, &[("desi", "desi_hiphop"), ("punjabi", "punjabi_party"), ("bhangra", "punjabi_party"), ("honey", "punjabi_party"), ("party", "punjabi_party"), ("hiphop", "boom_bap"), ("hip_hop", "boom_bap")])));
         }
     }
     if spec.genre.is_none() && spec.prompt.trim().is_empty() {
-        out.push(p("/genre", "no genre and no prompt", "give \"genre\" (e.g. desi_hiphop, trap, boom_bap, lofi, drill, rnb, afrobeats) or a \"prompt\""));
+        out.push(p("/genre", "no genre and no prompt", "give \"genre\" (e.g. punjabi_party, desi_hiphop, trap, boom_bap, lofi, drill, rnb, afrobeats) or a \"prompt\""));
     }
     if let Some(b) = spec.bpm {
         if !(50.0..=200.0).contains(&b) {
@@ -1093,12 +1093,26 @@ fn spec_arg(a: &Value) -> Value {
     }
 }
 
+/// The genres this engine knows, from the playbooks (never a hand list that
+/// drifts): "trap, ..., punjabi_party (honey_singh, badshah, bhangra), ...".
+fn genre_help() -> String {
+    let names: Vec<String> = crate::producer::playbooks()
+        .iter()
+        .map(|b| match b.name.as_str() {
+            "punjabi_party" => "punjabi_party (Honey Singh / Badshah party rap: dhol, tumbi, 808; also 'bhangra', 'badshah', 'honey_singh')".to_string(),
+            "desi_hiphop" => "desi_hiphop (tabla, sitar, tanpura, 808)".to_string(),
+            n => n.to_string(),
+        })
+        .collect();
+    names.join(", ")
+}
+
 fn spec_props() -> Value {
     json!({
         "spec": {"type": "object", "description": "The whole SongSpec (or give its fields flat next to action)."},
         "title": {"type": "string"},
         "prompt": {"type": "string", "description": "Free words about the sound (optional)."},
-        "genre": {"type": "string", "description": "trap, melodic_rap, drill, boom_bap, desi_hiphop, lofi, rnb, phonk, afrobeats"},
+        "genre": {"type": "string", "description": genre_help()},
         "bpm": {"type": "number"},
         "key": {"type": "string", "description": "\"D\", \"D minor\", \"F#m\""},
         "scale": {"type": "string"},
@@ -1180,12 +1194,38 @@ fn get_tool(e: &mut Engine, _a: &Value) -> Result<Value> {
 fn validate_tool(_e: &mut Engine, a: &Value) -> Result<Value> {
     let spec = spec_arg(a);
     let (s, probs) = validate(&spec);
-    Ok(json!({
+    let mut out = json!({
         "valid": probs.is_empty(),
         "problems": probs,
         "sections": s.as_ref().map(|s| s.section_names()),
         "targets": s.as_ref().map(|s| s.targets()),
-    }))
+    });
+    // say what a genre word resolved to ("honey_singh" -> punjabi_party), and
+    // without a structure, the sections the genre's own form names, so
+    // phrases can be placed before anything is built
+    if let Some(pb) = s.as_ref().and_then(|s| s.genre.as_deref()).and_then(|g| crate::producer::playbook(g).ok()) {
+        out["genre"] = json!({"asked": s.as_ref().and_then(|s| s.genre.clone()), "resolved": pb.name, "bpm_range": pb.bpm, "about": pb.description});
+        if s.as_ref().is_some_and(|s| s.structure.is_empty()) {
+            let mut count: BTreeMap<String, usize> = BTreeMap::new();
+            let names: Vec<String> = pb
+                .arrangement
+                .iter()
+                .map(|t| {
+                    let k = canon_kind(&t.kind);
+                    let c = count.entry(k.clone()).or_insert(0);
+                    *c += 1;
+                    format!("{k}{c}")
+                })
+                .collect();
+            out["sections"] = json!(names);
+            out["sections_from"] = json!(format!(
+                "the {} template form ({} bars); a fresh seed may vary it, so give \"structure\" when phrases must land in named sections",
+                pb.name,
+                pb.arrangement.iter().map(|t| t.bars).sum::<u32>()
+            ));
+        }
+    }
+    Ok(out)
 }
 
 fn schema_tool(_e: &mut Engine, _a: &Value) -> Result<Value> {
@@ -1319,6 +1359,22 @@ mod tests {
         assert_eq!(split_key("D minor"), ("D".into(), Some("minor".into())));
         assert_eq!(split_key("F#m"), ("F#".into(), Some("minor".into())));
         assert_eq!(split_key("Bb"), ("Bb".into(), None));
+    }
+
+    #[test]
+    fn validate_names_the_genre_a_word_resolved_to_and_its_sections() {
+        let mut e = Engine::new(std::env::temp_dir().join("bb_song_validate_test"));
+        let v = validate_tool(&mut e, &json!({"genre": "honey_singh"})).unwrap();
+        assert_eq!(v["valid"], true);
+        assert_eq!(v["genre"]["resolved"], "punjabi_party");
+        let secs: Vec<String> = serde_json::from_value(v["sections"].clone()).unwrap();
+        assert_eq!(secs.first().map(String::as_str), Some("intro1"));
+        assert!(secs.iter().any(|s| s == "hook2"));
+        assert!(v["sections_from"].as_str().unwrap().contains("structure"));
+        // a given structure is the contract: its names, no template note
+        let w = validate_tool(&mut e, &json!({"genre": "badshah", "structure": [{"kind": "verse", "bars": 8}]})).unwrap();
+        assert_eq!(w["sections"], json!(["verse1"]));
+        assert!(w.get("sections_from").is_none());
     }
 
     #[test]

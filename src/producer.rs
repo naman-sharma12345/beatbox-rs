@@ -81,6 +81,11 @@ pub struct MixRule {
     pub sidechain_bass: f32,
     pub master_style: String,
     pub crush: bool,
+    /// Per-track level offsets (dB) on top of the balance genre's targets:
+    /// the genre's own voice in data (a Punjabi party beat carries its dhol
+    /// forward; a desi hip-hop tabla sits under the perc target).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub offsets: BTreeMap<String, f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -159,6 +164,9 @@ pub fn guess_genre(brief: &str) -> Option<&'static Playbook> {
     }
     if best.is_none() {
         for (kw, g) in [
+            ("tumbi", "punjabi_party"),
+            ("dhol", "punjabi_party"),
+            ("bhangra", "punjabi_party"),
             ("sitar", "desi_hiphop"),
             ("tabla", "desi_hiphop"),
             ("bansuri", "desi_hiphop"),
@@ -548,6 +556,7 @@ fn layer_part_presets(pb: &Playbook, rng: &mut Rng, brief: &str) -> BTreeMap<Str
         ("bell", "fm_bell"),
         ("guitar", "guitar_pluck"),
         ("santoor", "santoor"),
+        ("tumbi", "tumbi"),
     ] {
         if b.contains(word) && pal.get("lead").map(|l| l != preset).unwrap_or(true) {
             pal.insert("lead".into(), preset.into());
@@ -3016,6 +3025,11 @@ pub fn balance_beat(e: &mut Engine, plan: &Plan) -> Result<Value> {
             .any(|w| p.contains(w))
     };
     let have = |t: &str| e.project.track_index(t).is_ok();
+    for (t, v) in &pb.mix.offsets {
+        if have(t) {
+            offsets.entry(t.clone()).or_insert(json!(v));
+        }
+    }
     if have("chords") && plan.palette.get("harmony").is_some_and(|h| padlike(h)) {
         offsets.entry("chords").or_insert(json!(-4.0));
     }
@@ -4146,6 +4160,28 @@ mod tests {
             .map(|p| p.notes("tabla").len())
             .sum();
         assert!(tabla > 20);
+    }
+
+    #[test]
+    fn punjabi_party_is_one_word_away_and_plays_dhol_and_tumbi() {
+        for w in ["punjabi_party", "honey_singh", "badshah", "bhangra", "punjabi"] {
+            assert_eq!(playbook(w).unwrap().name, "punjabi_party", "{w}");
+        }
+        assert_eq!(guess_genre("yo yo honey singh type beat").unwrap().name, "punjabi_party");
+        assert_eq!(guess_genre("badshah party song").unwrap().name, "punjabi_party");
+        assert_eq!(guess_genre("punjabi drill beat").unwrap().name, "drill");
+        assert_eq!(guess_genre("punjabi rap like bohemia").unwrap().name, "desi_hiphop");
+        let mut e = engine();
+        let plan = plan_track(&args("punjabi party", Some("punjabi_party"), 7)).unwrap();
+        assert_eq!(plan.genre, "punjabi_party");
+        assert!((96.0..=104.0).contains(&plan.bpm), "bpm {}", plan.bpm);
+        assert_eq!(plan.palette.get("tabla").map(String::as_str), Some("dholak"));
+        assert_eq!(plan.palette.get("bayan").map(String::as_str), Some("dholak_bass"));
+        assert_eq!(plan.palette.get("lead").map(String::as_str), Some("tumbi"));
+        compose(&mut e, &plan).unwrap();
+        let count = |r: &str| -> usize { e.project.patterns.iter().map(|p| p.notes(r).len()).sum() };
+        assert!(count("tabla") > 20 && count("bayan") > 10, "dhol {} / {}", count("tabla"), count("bayan"));
+        assert!(count("lead") > 8);
     }
 
     #[test]

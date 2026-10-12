@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 fn plan_props() -> Value {
     json!({
         "brief": {"type": "string", "description": "What you want, in words: 'dark desi hip-hop with sitar and tabla, 92 bpm, for a hard verse'"},
-        "genre": {"type": "string", "description": "A playbook (list_genres): trap, melodic_rap, drill, boom_bap, desi_hiphop, lofi, rnb, phonk, afrobeats. Default: guessed from the brief"},
+        "genre": {"type": "string", "description": "A playbook (list_genres): trap, melodic_rap, drill, boom_bap, desi_hiphop, punjabi_party (honey_singh / badshah / bhangra), lofi, rnb, phonk, afrobeats. Default: guessed from the brief"},
         "bpm": {"type": "number"},
         "key": {"type": "string", "description": "Tonic, e.g. 'F#'"},
         "scale": {"type": "string", "description": "e.g. minor, harmonic_minor, bhairav, phrygian_dominant"},

@@ -21,6 +21,7 @@ pub struct ArtistRef {
 
 pub const ARTISTS: &[ArtistRef] = &[
     ArtistRef { names: &["bohemia", "raja hip hop", "desi hip hop", "punjabi rap"], genre: "desi_hiphop", bpm: 90.0, scale: "asavari", mood: "dark", palette: &[("lead", "bansuri"), ("counter", "sitar"), ("bass", "808")], feel: &["backbeat"], why: "Bohemia: Punjabi desi hip-hop, ~90 BPM, dark Asavari/minor, flute and sitar melodies over a heavy 808 and boom-bap backbeat" },
+    ArtistRef { names: &["honey singh", "yo yo", "yoyo", "badshah", "punjabi party", "bhangra hip hop", "bhangra rap"], genre: "punjabi_party", bpm: 100.0, scale: "minor", mood: "hype", palette: &[("lead", "tumbi"), ("bass", "808")], feel: &["bounce"], why: "Yo Yo Honey Singh / Badshah: Punjabi party rap, ~100 BPM, a dhol chaal under an 808 kick and bass, claps on 2 and 4, a short tumbi riff as the hook and brass stabs, natural minor" },
     ArtistRef { names: &["sidhu", "moose wala", "moosewala", "punjabi drill"], genre: "drill", bpm: 142.0, scale: "minor", mood: "dark", palette: &[("lead", "sitar"), ("counter", "strings")], feel: &["half_time"], why: "Sidhu Moose Wala: Punjabi drill, sliding 808s, half-time drill hats, a sitar/tumbi-style hook" },
     ArtistRef { names: &["divine", "naezy", "gully"], genre: "boom_bap", bpm: 92.0, scale: "minor", mood: "dark", palette: &[("lead", "sitar")], feel: &["backbeat"], why: "Divine / gully rap: Mumbai boom-bap, punchy drums, gritty minor loops" },
     ArtistRef { names: &["seedhe maut", "krsna", "kr$na", "raftaar", "emiway"], genre: "trap", bpm: 140.0, scale: "minor", mood: "hype", palette: &[], feel: &["half_time"], why: "Indian rap (Seedhe Maut / KR$NA / Raftaar): hard trap, half-time snares, rolling hats" },
@@ -39,7 +40,7 @@ pub const ARTISTS: &[ArtistRef] = &[
 const GENRE_WORDS: &[(&str, &str)] = &[
     ("uk drill", "drill"), ("drill", "drill"), ("boom bap", "boom_bap"), ("boombap", "boom_bap"), ("boom-bap", "boom_bap"),
     ("lo-fi", "lofi"), ("lofi", "lofi"), ("r&b", "rnb"), ("rnb", "rnb"), ("phonk", "phonk"), ("afro", "afrobeats"),
-    ("desi", "desi_hiphop"), ("punjabi", "desi_hiphop"), ("bhangra", "desi_hiphop"), ("indian", "desi_hiphop"), ("bollywood", "desi_hiphop"),
+    ("punjabi party", "punjabi_party"), ("desi party", "punjabi_party"), ("bhangra", "punjabi_party"), ("dhol", "punjabi_party"), ("punjabi", "punjabi_party"), ("desi", "desi_hiphop"), ("indian", "desi_hiphop"), ("bollywood", "desi_hiphop"),
     ("melodic", "melodic_rap"), ("emo", "melodic_rap"), ("trap", "trap"), ("rap", "trap"), ("hip hop", "boom_bap"), ("hip-hop", "boom_bap"),
 ];
 
@@ -68,7 +69,8 @@ const MOOD_WORDS: &[(&[&str], &str)] = &[
 
 const INSTRUMENTS: &[(&[&str], &str, &str)] = &[
     (&["flute", "bansuri"], "lead", "bansuri"),
-    (&["sitar", "tumbi"], "lead", "sitar"),
+    (&["tumbi", "toombi"], "lead", "tumbi"),
+    (&["sitar"], "lead", "sitar"),
     (&["santoor"], "lead", "santoor"),
     (&["sarangi", "strings", "violin"], "counter", "strings"),
     (&["piano"], "harmony", "felt_piano"),
@@ -559,6 +561,18 @@ mod tests {
         assert!(parse_prompt("i am a rapper, 140 bpm").key.is_none());
         assert_eq!(parse_duration(" sliding 808s and 90s soul "), None);
         assert_eq!(q.palette.get("harmony").and_then(|v| v.as_str()), Some("felt_piano"));
+    }
+
+    #[test]
+    fn reads_a_honey_singh_badshah_brief() {
+        let p = parse_prompt("Make a yo yo honey singh or badshah type beat");
+        assert_eq!(p.genre.as_deref(), Some("punjabi_party"));
+        assert_eq!(p.bpm, Some(100.0));
+        assert_eq!(p.palette.get("lead"), Some(&json!("tumbi")));
+        let q = parse_prompt("bhangra beat with tumbi and dhol");
+        assert_eq!(q.genre.as_deref(), Some("punjabi_party"));
+        let r = parse_prompt("punjabi drill like sidhu");
+        assert_eq!(r.genre.as_deref(), Some("drill"));
     }
 
     #[test]

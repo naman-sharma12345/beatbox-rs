@@ -676,6 +676,7 @@ pub const PRESETS: &[(&str, &str)] = &[
     ("marimba", "Woody FM mallet"),
     ("guitar_pluck", "Karplus-Strong plucked string"),
     ("koto", "Bright short plucked string"),
+    ("tumbi", "Punjabi tumbi: one high steel string, short and twangy (the bhangra hook riff); sitar body, little buzz, quick decay"),
     (
         "wt_lead",
         "Wavetable lead morphing saw -> square with a position envelope",
@@ -813,6 +814,15 @@ pub fn preset(name: &str) -> Option<Instrument> {
             brightness: 0.6,
             gain: 0.6,
             buzz: 0.4,
+            kind: "sitar".into(),
+        }),
+        // the tumbi is a single high steel string on a gourd: a sitar-like
+        // body, but short notes, more snap and far less jawari buzz
+        "tumbi" | "toombi" | "tumba" => Instrument::Pluck(PluckParams {
+            damping: 0.55,
+            brightness: 0.72,
+            gain: 0.6,
+            buzz: 0.12,
             kind: "sitar".into(),
         }),
         "santoor" => Instrument::Pluck(PluckParams {
