@@ -277,6 +277,7 @@ pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Val
         step_secs: 0.125,
         triggers: &trig,
         offset: 0,
+        levels: None,
     };
     let limiter = Effect::Limiter(LimiterFx {
         ceiling_db: o.ceiling_dbtp - LIMITER_UNDER_CEILING_DB,
@@ -512,7 +513,7 @@ pub fn tools() -> Vec<Tool> {
                 let pre_resid = resid(&pre.left, &pre.right, &sl, &sr);
                 let master_fx = |l: &mut Vec<f32>, r: &mut Vec<f32>| {
                     let trig = HashMap::new();
-                    let ctx = FxContext { step_secs: p.step_secs(), triggers: &trig, offset: 0 };
+                    let ctx = FxContext { step_secs: p.step_secs(), triggers: &trig, offset: 0, levels: None };
                     let g = db_to_gain(p.master_volume_db);
                     for v in l.iter_mut().chain(r.iter_mut()) { *v *= g; }
                     for fx in &p.master_effects { fx.process(l, r, &ctx); }

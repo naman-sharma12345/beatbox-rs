@@ -211,6 +211,7 @@ pub(crate) fn eq_curve(effects: &[Effect], step_secs: f32, points: usize) -> Vec
         step_secs,
         triggers: &trig,
         offset: 0,
+        levels: None,
     };
     for fx in effects {
         if matches!(

@@ -227,6 +227,52 @@ pub fn keyed_dynamic_eq(p: &DynamicEqFx, trig: &[usize], l: &mut [f32], r: &mut 
     }
 }
 
+/// Where a level-keyed band starts and finishes dipping: the source's
+/// level (a 5 ms power follower) from -45 dBFS (no dip, the same floor
+/// `render::audio_onsets` uses) to -35 dBFS (the full `range_db`).
+pub const LEVEL_KEY_FLOOR_DB: f32 = -45.0;
+pub const LEVEL_KEY_KNEE_DB: f32 = 10.0;
+
+/// The dip amount (0 = flat, 1 = the full `range_db`) of a level-keyed band
+/// at each of `n` samples: the source's level through a 5 ms power follower,
+/// mapped over the -45..-35 dBFS knee, then smoothed per sample with the
+/// band's attack (rising) and release (falling) time constants, so the gain
+/// glides and never steps.
+pub fn level_duck_curve(p: &DynamicEqFx, key: &[f32], n: usize) -> Vec<f32> {
+    let pc = coef(5.0);
+    let (att, rel) = (coef(p.attack_ms.max(1.0)), coef(p.release_ms.max(5.0)));
+    let (mut pw, mut env) = (0.0f32, 0.0f32);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let x = key.get(i).copied().unwrap_or(0.0);
+        pw = pc * pw + (1.0 - pc) * x * x;
+        let db = 10.0 * (pw + 1e-12).log10();
+        let target = ((db - LEVEL_KEY_FLOOR_DB) / LEVEL_KEY_KNEE_DB).clamp(0.0, 1.0);
+        let c = if target > env { att } else { rel };
+        env = c * env + (1.0 - c) * target;
+        out.push(env);
+    }
+    out
+}
+
+/// Level-keyed dynamic EQ: the band dips by up to `range_db` while `key`
+/// (the source's mono audio, aligned with this buffer) sounds, following its
+/// level (see `level_duck_curve`), so a held vowel keeps the dip down.
+pub fn level_keyed_dynamic_eq(p: &DynamicEqFx, key: &[f32], l: &mut [f32], r: &mut [f32]) {
+    let n = l.len();
+    let mut bp = [
+        Biquad::new(BiquadKind::Bandpass, p.freq, p.q, 0.0),
+        Biquad::new(BiquadKind::Bandpass, p.freq, p.q, 0.0),
+    ];
+    let range = p.range_db.clamp(-24.0, 12.0);
+    for (i, env) in level_duck_curve(p, key, n).into_iter().enumerate() {
+        let g = db_to_gain(range * env) - 1.0;
+        let (bl, br) = (bp[0].process(l[i]), bp[1].process(r[i]));
+        l[i] += bl * g;
+        r[i] += br * g;
+    }
+}
+
 pub fn deesser(p: &DeesserFx, l: &mut [f32], r: &mut [f32]) {
     let n = l.len();
     let q = std::f32::consts::FRAC_1_SQRT_2;
@@ -875,5 +921,35 @@ mod tests {
         let mut r = l.clone();
         parametric_eq(&p, &mut l, &mut r);
         assert!(rms(&l[5000..]) < 0.1);
+    }
+
+    #[test]
+    fn level_keyed_duck_holds_through_a_held_vowel_and_glides_without_steps() {
+        let p = DynamicEqFx { freq: 500.0, q: 2.0, range_db: -4.0, attack_ms: 12.0, release_ms: 100.0, source: "vocal".into(), key: "level".into(), ..Default::default() };
+        let sec = SR as usize;
+        // a 1 s held vowel (no new onsets), 1 s of silence, then a hard entry
+        let mut key = sine(220.0, sec, 0.3);
+        key.extend(vec![0.0; sec]);
+        key.extend(sine(220.0, sec, 0.3));
+        let env = level_duck_curve(&p, &key, key.len());
+        let held = &env[(0.1 * SR) as usize..sec];
+        assert!(held.iter().all(|&e| e > 0.95), "the dip sags inside a held vowel: min {}", held.iter().cloned().fold(1.0, f32::min));
+        assert!(env[sec + (0.7 * SR) as usize..2 * sec].iter().all(|&e| e < 0.01), "the dip lingers in the silence");
+        // the gain curve glides: no per-sample step over 1e-3 (a -4 dB dip is a 0.37 swing)
+        let g: Vec<f32> = env.iter().map(|&e| db_to_gain(-4.0 * e)).collect();
+        let step = g.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        assert!(step < 1e-3, "gain step {step}");
+        // silent key: the band is untouched, sample for sample
+        let mut l = sine(500.0, sec, 0.5);
+        let mut r = l.clone();
+        let dry = l.clone();
+        level_keyed_dynamic_eq(&p, &vec![0.0; sec], &mut l, &mut r);
+        assert!(l == dry && r == dry);
+        // sounding key: the band comes down by about the range
+        let mut l2 = sine(500.0, sec, 0.5);
+        let mut r2 = l2.clone();
+        level_keyed_dynamic_eq(&p, &sine(220.0, sec, 0.3), &mut l2, &mut r2);
+        let drop = 20.0 * (rms(&l2[sec / 2..]) / rms(&dry[sec / 2..])).log10();
+        assert!(drop < -3.0 && drop > -4.5, "drop {drop}");
     }
 }

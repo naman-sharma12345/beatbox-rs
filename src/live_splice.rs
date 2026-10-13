@@ -409,7 +409,7 @@ pub(crate) mod bench {
             eprintln!("  window sweep (bars, ms): {pts:?}");
             // effects alone on window-length and full-length buffers
             let ctx_tr = std::collections::HashMap::new();
-            let ctx = crate::fx::FxContext { step_secs: p1.step_secs(), triggers: &ctx_tr, offset: 0 };
+            let ctx = crate::fx::FxContext { step_secs: p1.step_secs(), triggers: &ctx_tr, offset: 0, levels: None };
             let wlen = (((w1 - w0) as f32 * p1.step_secs() + opts.tail) * crate::dsp::SR) as usize;
             let flen = ((p1.song_steps() as f32 * p1.step_secs() + opts.tail) * crate::dsp::SR) as usize;
             let mut fx_line = String::new();
@@ -730,11 +730,11 @@ mod tests {
         let x: Vec<f32> = (0..n).map(|i| if i >= off + 1000 && i < off + 3000 { ((i as f32) * 0.03).sin() * 0.5 } else { 0.0 }).collect();
         let tr = std::collections::HashMap::new();
         let (mut fl, mut fr) = (x.clone(), x.clone());
-        fx.process(&mut fl, &mut fr, &crate::fx::FxContext { step_secs: 0.125, triggers: &tr, offset: 0 });
+        fx.process(&mut fl, &mut fr, &crate::fx::FxContext { step_secs: 0.125, triggers: &tr, offset: 0, levels: None });
         let (mut wl, mut wr) = (x[off..].to_vec(), x[off..].to_vec());
-        fx.process(&mut wl, &mut wr, &crate::fx::FxContext { step_secs: 0.125, triggers: &tr, offset: off });
+        fx.process(&mut wl, &mut wr, &crate::fx::FxContext { step_secs: 0.125, triggers: &tr, offset: off, levels: None });
         let (mut zl, mut zr) = (x[off..].to_vec(), x[off..].to_vec());
-        fx.process(&mut zl, &mut zr, &crate::fx::FxContext { step_secs: 0.125, triggers: &tr, offset: 0 });
+        fx.process(&mut zl, &mut zr, &crate::fx::FxContext { step_secs: 0.125, triggers: &tr, offset: 0, levels: None });
         let m = (0..wl.len()).map(|k| (fl[off + k] - wl[k]).abs()).fold(0f32, f32::max);
         let mz = (0..zl.len()).map(|k| (fl[off + k] - zl[k]).abs()).fold(0f32, f32::max);
         let tail = fl[n - 1000..].iter().fold(0f32, |a, v| a.max(v.abs()));

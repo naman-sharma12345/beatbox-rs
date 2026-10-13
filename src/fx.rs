@@ -14,6 +14,10 @@ pub struct FxContext<'a> {
     pub step_secs: f32,
     /// Note-on sample positions for each track (lowercase name).
     pub triggers: &'a HashMap<String, Vec<usize>>,
+    /// Mono audio of each track a level-keyed dynamic EQ follows (lowercase
+    /// name), aligned with this buffer's first sample; None outside a song
+    /// render (a level-keyed band then falls back to the triggers).
+    pub levels: Option<&'a HashMap<String, Vec<f32>>>,
     /// Where this buffer's first sample sits in the song, in samples (0
     /// for a whole-song render; the window start for a live-splice window).
     /// LFOs take their phase from it, so a window modulates exactly as the
@@ -26,11 +30,11 @@ fn is_false(b: &bool) -> bool {
 }
 
 macro_rules! fx_struct {
-    ($name:ident { $($field:ident : $ty:ty = $def:expr),* $(,)? }) => {
+    ($name:ident { $($(#[$m:meta])* $field:ident : $ty:ty = $def:expr),* $(,)? }) => {
         #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
         #[serde(default)]
         pub struct $name {
-            $(pub $field: $ty,)*
+            $($(#[$m])* pub $field: $ty,)*
             /// Stable id within its chain (e.g. "reverb1"); assigned by the
             /// engine, survives reordering, usable wherever an index is.
             #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -202,7 +206,14 @@ fx_struct!(DynamicEqFx {
     range_db: f32 = -8.0,
     attack_ms: f32 = 3.0,
     release_ms: f32 = 90.0,
-    source: String = String::new()
+    source: String = String::new(),
+    /// How a keyed band (one with a `source`) follows its source: empty =
+    /// the source's note starts and word onsets; "level" = the source's own
+    /// audio level through an envelope follower (attack_ms in, release_ms
+    /// out), so the dip holds for as long as the source sounds. Left out of
+    /// the project file when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    key: String = String::new()
 });
 fx_struct!(DeesserFx {
     freq: f32 = 6000.0,
@@ -624,6 +635,8 @@ impl Effect {
             Effect::DynamicEq(p) => {
                 if p.source.is_empty() {
                     x::dynamic_eq(p, l, r)
+                } else if let Some(key) = ctx.levels.filter(|_| p.key == "level").and_then(|m| m.get(&p.source.to_lowercase())) {
+                    x::level_keyed_dynamic_eq(p, key, l, r)
                 } else if let Some(trig) = ctx.triggers.get(&p.source.to_lowercase()) {
                     x::keyed_dynamic_eq(p, trig, l, r)
                 }
@@ -1215,6 +1228,7 @@ mod tests {
             step_secs: 0.125,
             triggers: t,
             offset: 0,
+            levels: None,
         }
     }
 

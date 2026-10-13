@@ -291,6 +291,56 @@ pub fn plan_part(part: &str, cands: &[Cand], user: Option<&PartEq>) -> (Vec<EqBe
     (out, log)
 }
 
+/// Most a sidechain duck (/mix/vocal_duck, /mix/kick_duck) dips its band, dB.
+pub const DUCK_DB: f32 = 4.0;
+/// A duck's attack, ms.
+pub const DUCK_ATTACK_MS: f32 = 10.0;
+/// A duck's release (how long each trigger holds the dip), ms.
+pub const DUCK_RELEASE_MS: f32 = 120.0;
+/// The vocal duck's envelope follower (it follows the vocal's level, not
+/// its onsets): attack and release time constants, ms.
+pub const VOCAL_DUCK_ATTACK_MS: f32 = 12.0;
+pub const VOCAL_DUCK_RELEASE_MS: f32 = 100.0;
+/// The kick duck's release is cut to this share of the kick's median hit
+/// spacing when 120 ms would hold the dip across most of the gap between
+/// hits (kicks closer than about 250 ms).
+pub const KICK_RELEASE_SHARE: f32 = 0.5;
+
+/// The band a sidechain duck goes in for one pair: the band (centre inside
+/// `cut_range`, of a pair that clashes) where a -`DUCK_DB` dip of Q `q`
+/// removes the most overlap. None when the pair does not clash.
+pub fn duck_band(st: &PairStat, pair: &str, q: f32, cut_range: (f32, f32)) -> Option<Cand> {
+    if st.overlap < MIN_PAIR_OVERLAP {
+        return None;
+    }
+    let c = centres();
+    (0..c.len())
+        .filter(|&k| st.band_share[k] > 0.0 && c[k] >= cut_range.0 && c[k] <= cut_range.1)
+        .map(|k| Cand { hz: c[k], db: -DUCK_DB, score: st.reduction(c[k], -DUCK_DB, q), q, pair: pair.to_string() })
+        .filter(|c| c.score > 1e-5)
+        .max_by(|a, b| a.score.total_cmp(&b.score))
+}
+
+/// The user band (bell centre or shelf corner) within about a third of an
+/// octave of `hz`, if any: an auto band backs off from it.
+pub fn user_band_near(user: Option<&PartEq>, hz: f32) -> Option<f32> {
+    let u = user?;
+    u.bells.iter().filter(|b| !b.auto).map(|b| b.hz).chain(u.low_shelf.iter().chain(u.high_shelf.iter()).map(|s| s.hz)).find(|x| near(*x, hz))
+}
+
+/// The kick duck's release for kick hits at these sample positions:
+/// `DUCK_RELEASE_MS`, or `KICK_RELEASE_SHARE` of the median spacing when
+/// that is shorter (never under 40 ms).
+pub fn kick_release_ms(hits: &[usize]) -> f32 {
+    let mut gaps: Vec<f32> = hits.windows(2).map(|w| (w[1].saturating_sub(w[0])) as f32 / SR * 1000.0).filter(|g| *g > 20.0).collect();
+    if gaps.is_empty() {
+        return DUCK_RELEASE_MS;
+    }
+    gaps.sort_by(|a, b| a.total_cmp(b));
+    let med = gaps[gaps.len() / 2];
+    DUCK_RELEASE_MS.min((KICK_RELEASE_SHARE * med).max(40.0))
+}
+
 /// Mono of a stereo stem.
 pub fn mono(l: &[f32], r: &[f32]) -> Vec<f32> {
     l.iter().zip(r).map(|(a, b)| 0.5 * (a + b)).collect()
@@ -393,11 +443,34 @@ mod tests {
     }
 
     #[test]
+    fn a_duck_band_is_where_a_4_db_dip_clears_the_most_and_the_kick_release_follows_the_hits() {
+        let len = (SR * 3.0) as usize;
+        let vocal = noise_band(1, len, 300.0, 3000.0, 0.3);
+        let pad = noise_band(2, len, 500.0, 1200.0, 0.2);
+        let st = pair_stat(&band_frames(&vocal), &band_frames(&pad), VOCAL_RANGE);
+        let d = duck_band(&st, "vocal/pad", AUTO_Q, VOCAL_CUT_RANGE).expect("a clash");
+        assert!((500.0..=1000.0).contains(&d.hz) && d.db == -DUCK_DB && d.score > 0.0, "{d:?}");
+        let quiet = pair_stat(&band_frames(&vocal), &band_frames(&noise_band(3, len, 35.0, 70.0, 0.8)), VOCAL_RANGE);
+        assert!(duck_band(&quiet, "vocal/sub", AUTO_Q, VOCAL_CUT_RANGE).is_none());
+        // hits every 480 ms keep 120 ms; every 200 ms -> 100 ms; every 60 ms -> the 40 ms floor
+        let hits = |ms: f32| (0..20).map(|i| (i as f32 * ms * SR / 1000.0) as usize).collect::<Vec<_>>();
+        assert_eq!(kick_release_ms(&hits(480.0)), DUCK_RELEASE_MS);
+        assert!((kick_release_ms(&hits(200.0)) - 100.0).abs() < 0.5);
+        assert_eq!(kick_release_ms(&hits(60.0)), 40.0);
+        // user bands win here too
+        let user = PartEq { bells: vec![EqBell { hz: 800.0, db: 1.0, q: 1.0, auto: false }], ..Default::default() };
+        assert_eq!(user_band_near(Some(&user), 1000.0), Some(800.0));
+        assert_eq!(user_band_near(Some(&user), 1414.0), None);
+        assert_eq!(user_band_near(None, 800.0), None);
+    }
+
+    #[test]
     fn user_bands_win_over_auto_cuts() {
         let user = PartEq {
             low_shelf: Some(crate::song::EqShelf { hz: 180.0, db: -2.0 }),
             high_shelf: None,
             bells: vec![EqBell { hz: 800.0, db: 2.0, q: 1.0, auto: false }],
+            ducks: vec![],
         };
         let cs = vec![cand(800.0, -3.0, 0.4), cand(200.0, -3.0, 0.3), cand(2500.0, -2.0, 0.2), cand(5000.0, -1.5, 0.1)];
         let (b, log) = plan_part("keys", &cs, Some(&user));

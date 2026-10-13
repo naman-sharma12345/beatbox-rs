@@ -913,6 +913,18 @@ fn render_impl(
         .zip(events.iter())
         .map(|(t, ev)| (t.name.to_lowercase(), ev.iter().map(|e| e.start).collect()))
         .collect();
+    // tracks a level-keyed dynamic EQ follows get their clips' mono audio laid
+    // out on this buffer's timeline (the key the band's envelope follower reads)
+    let level_srcs: std::collections::HashSet<String> = p
+        .tracks
+        .iter()
+        .flat_map(|t| t.effects.iter())
+        .filter_map(|f| match f {
+            crate::fx::Effect::DynamicEq(d) if d.key == "level" && !d.source.is_empty() && !d.bypass => Some(d.source.to_lowercase()),
+            _ => None,
+        })
+        .collect();
+    let mut levels: HashMap<String, Vec<f32>> = HashMap::new();
     // an audio clip (a vocal take) triggers a sidechain at every onset in it,
     // so "duck the pads under the vocal" follows the words, not just the
     // clip's first sample
@@ -938,6 +950,15 @@ fn render_impl(
                     tr.push(at as usize);
                 }
             }
+            if level_srcs.contains(&c.track.to_lowercase()) {
+                let buf = levels.entry(c.track.to_lowercase()).or_insert_with(|| vec![0.0; total]);
+                for (k, &v) in data[off..off + len].iter().enumerate() {
+                    let at = start + k as i64;
+                    if at >= 0 && (at as usize) < total {
+                        buf[at as usize] += v;
+                    }
+                }
+            }
         }
         tr.sort_unstable();
         tr.dedup();
@@ -958,6 +979,7 @@ fn render_impl(
         step_secs: p.step_secs(),
         triggers: &triggers,
         offset,
+        levels: Some(&levels),
     };
 
     let mut ml = vec![0.0f32; total];

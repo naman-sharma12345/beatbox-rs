@@ -236,6 +236,22 @@ pub struct MixSpec {
     /// mix.auto_eq. Off (false) by default: nothing is measured or added.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub auto_eq: bool,
+    /// Vocal-keyed band ducks (see `apply_auto_duck`): every instrument whose
+    /// overlap with the vocal is 5% or more gets one keyed dynamic EQ band at
+    /// its best clash band (150 Hz-1 kHz, from the auto-EQ measure) that
+    /// dips up to 4 dB while the vocal sounds (its level through an envelope
+    /// follower: attack 12 ms, release 100 ms) and stays flat when the vocal
+    /// is silent. Written into the stored spec's /mix/part_eq/<part>/ducks
+    /// marked "auto": true (each build drops and places them again). Never on the vocal; not
+    /// within a third of an octave of a user part EQ band. Off by default.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub vocal_duck: bool,
+    /// Kick-keyed duck on the bass: one keyed dynamic EQ band at the
+    /// kick/bass clash band (30-250 Hz) that dips up to 4 dB on each kick
+    /// hit and takes nothing between hits (written into /mix/part_eq like
+    /// the vocal ducks). Off by default.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub kick_duck: bool,
 }
 
 /// A shelf of a part EQ: corner (Hz) and gain (dB).
@@ -281,6 +297,29 @@ pub struct PartEq {
     pub high_shelf: Option<EqShelf>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bells: Vec<EqBell>,
+    /// Sidechain band ducks the build placed on this part (/mix/vocal_duck,
+    /// /mix/kick_duck), all marked "auto": true: a record of what the build
+    /// did, dropped and placed again by every build (a duck a person writes
+    /// here is refused; turn the mode on instead).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ducks: Vec<EqDuck>,
+}
+
+/// One auto duck of a part (see `PartEq::ducks`): a keyed dynamic EQ band at
+/// `hz` (Q `q`) that dips up to `max_db` while `source` sounds; `key` says
+/// how it follows the source ("level": its level through an envelope
+/// follower; "hits": its note starts).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct EqDuck {
+    pub hz: f32,
+    pub max_db: f32,
+    pub q: f32,
+    pub source: String,
+    pub key: String,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+    pub auto: bool,
 }
 
 impl PartEq {
@@ -306,6 +345,9 @@ impl PartEq {
 
     /// Problems with this part EQ, each with the fix.
     fn problems(&self, base: &str, out: &mut Vec<Problem>) {
+        for (i, d) in self.ducks.iter().enumerate().filter(|(_, d)| !d.auto) {
+            out.push(p(format!("{base}/ducks/{i}"), format!("a duck at {} Hz", d.hz), "no duck here: ducks are placed by the build (set /mix/vocal_duck or /mix/kick_duck to true)"));
+        }
         let hz_ok = |hz: f32| hz.is_finite() && (20.0..=20000.0).contains(&hz);
         let db_ok = |db: f32| db.is_finite() && (-12.0..=12.0).contains(&db);
         for (k, sh) in [("low_shelf", self.low_shelf), ("high_shelf", self.high_shelf)] {
@@ -338,7 +380,7 @@ impl PartEq {
 impl Default for MixSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None, builds: false, section_gain_db: BTreeMap::new(), part_eq: BTreeMap::new(), auto_eq: false }
+        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None, builds: false, section_gain_db: BTreeMap::new(), part_eq: BTreeMap::new(), auto_eq: false, vocal_duck: false, kick_duck: false }
     }
 }
 
@@ -482,7 +524,7 @@ const TOP_ALIAS: &[(&str, &str)] = &[("tempo", "bpm"), ("sections", "structure")
 const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain", "lock", "flex"];
 const PHRASE_KEYS: &[&str] = &["src_s", "src", "len_s", "len", "end_s", "section", "bar", "beat", "start_beat", "at_s", "start_s", "gain_db", "name", "fade_in_ms", "fade_out_ms"];
 const SECTION_KEYS: &[&str] = &["kind", "bars", "name", "energy"];
-const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds", "section_gain_db", "part_eq", "auto_eq"];
+const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds", "section_gain_db", "part_eq", "auto_eq", "vocal_duck", "kick_duck"];
 const MASTER_KEYS: &[&str] = &["lufs", "true_peak", "preserve_dynamics"];
 const EXPORT_KEYS: &[&str] = &["path", "format", "bitrate_kbps"];
 const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db", "brighten", "presence_db", "presence_hz"];
@@ -1227,12 +1269,14 @@ fn strip_auto_bells(v: &mut Value) -> usize {
     };
     let mut n = 0;
     for entry in pe.values_mut() {
-        if let Some(bells) = entry.get_mut("bells").and_then(|b| b.as_array_mut()) {
-            let before = bells.len();
-            bells.retain(|b| b.get("auto") != Some(&Value::Bool(true)));
-            n += before - bells.len();
-            if bells.is_empty() && before > 0 {
-                entry.as_object_mut().map(|o| o.remove("bells"));
+        for k in ["bells", "ducks"] {
+            if let Some(bells) = entry.get_mut(k).and_then(|b| b.as_array_mut()) {
+                let before = bells.len();
+                bells.retain(|b| b.get("auto") != Some(&Value::Bool(true)));
+                n += before - bells.len();
+                if bells.is_empty() && before > 0 {
+                    entry.as_object_mut().map(|o| o.remove(k));
+                }
             }
         }
     }
@@ -1401,6 +1445,159 @@ fn apply_auto_eq(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &mut
     if let (Some(a0), Some(a1)) = (&agg0, &agg1) {
         log.push(format!("auto EQ: vocal/beat (every other track summed) overlap {:.1}% -> {:.1}%", pct(a0.overlap), pct(a1.overlap)));
         out["aggregate"] = json!({"pair": "vocal/beat", "what": "the vocal against every other track summed", "overlap_before_pct": pct(a0.overlap), "overlap_after_pct": pct(a1.overlap)});
+    }
+    Ok(out)
+}
+
+/// The ids the sidechain ducks carry in a track's chain (one of each per
+/// track at most): how a rebuild finds and takes them out.
+const AUTO_DUCK_VOCAL_ID: &str = "auto_duck_vocal";
+const AUTO_DUCK_KICK_ID: &str = "auto_duck_kick";
+
+/// Ducks (/mix/vocal_duck, /mix/kick_duck) an earlier build left come out:
+/// each build measures again, and off leaves none. Returns how many.
+fn strip_auto_ducks(e: &mut Engine) -> usize {
+    let is = |f: &crate::fx::Effect| f.id() == AUTO_DUCK_VOCAL_ID || f.id() == AUTO_DUCK_KICK_ID;
+    let mut n = 0;
+    for t in e.project.tracks.iter_mut().filter(|t| t.effects.iter().any(is)) {
+        let before = t.effects.len();
+        t.effects.retain(|f| !is(f));
+        n += before - t.effects.len();
+    }
+    n
+}
+
+/// How much of the vocal's active time a vocal duck holds its dip: the
+/// share of 10 ms frames of the vocal stem within `ACTIVE_RANGE_DB` of its
+/// loudest frame (the auto-EQ's activity rule) where the duck's envelope
+/// (`fx_extra::level_duck_curve` over the vocal's clips, as the render keys
+/// it) is past half its dip. None without a vocal stem.
+fn vocal_duck_coverage(e: &mut Engine, voice: &str) -> Result<Option<f32>> {
+    use crate::dsp::SR;
+    let p = e.project.clone();
+    let m = e.render_stems_all(&p)?;
+    let Some(v) = m.stems.iter().find(|s| s.name == voice && !s.left.is_empty()) else { return Ok(None) };
+    let x = crate::auto_eq::mono(&v.left, &v.right);
+    let step = p.step_secs();
+    let mut key = vec![0.0f32; x.len()];
+    for c in p.audio_clips.iter().filter(|c| c.track.eq_ignore_ascii_case(voice)) {
+        let Some(data) = e.bank.get(&c.sample) else { continue };
+        let off = ((c.offset_s.max(0.0) * SR) as usize).min(data.len());
+        let avail = data.len() - off;
+        let len = c.length_s.map(|l| ((l.max(0.0) * SR) as usize).min(avail)).unwrap_or(avail);
+        let start = (c.start_beat * 4.0 * step * SR).round() as i64;
+        for (k, &s) in data[off..off + len].iter().enumerate() {
+            if let Some(slot) = usize::try_from(start + k as i64).ok().and_then(|i| key.get_mut(i)) {
+                *slot += s;
+            }
+        }
+    }
+    let duck = crate::fx::DynamicEqFx { attack_ms: crate::auto_eq::VOCAL_DUCK_ATTACK_MS, release_ms: crate::auto_eq::VOCAL_DUCK_RELEASE_MS, ..Default::default() };
+    let env = crate::fx_extra::level_duck_curve(&duck, &key, x.len());
+    let hop = (0.01 * SR) as usize;
+    let db: Vec<f32> = x.chunks(hop).map(|s| 10.0 * (s.iter().map(|a| a * a).sum::<f32>() / s.len() as f32).max(1e-12).log10()).collect();
+    let top = db.iter().cloned().fold(f32::MIN, f32::max);
+    let (mut active, mut held) = (0usize, 0usize);
+    for (i, d) in db.iter().enumerate() {
+        if *d >= top - crate::auto_eq::ACTIVE_RANGE_DB {
+            active += 1;
+            let w = &env[i * hop..((i + 1) * hop).min(env.len())];
+            if w.iter().sum::<f32>() / w.len().max(1) as f32 > 0.5 {
+                held += 1;
+            }
+        }
+    }
+    Ok((active > 0).then(|| held as f32 / active as f32))
+}
+
+/// /mix/vocal_duck and /mix/kick_duck: keyed dynamic EQ bands (the
+/// project's `dynamic_eq` with a `source`), placed from the auto-EQ's
+/// measure and measured again after. A duck dips only while its source
+/// plays (the vocal's level through an envelope follower, attack 12 ms,
+/// release 100 ms; the kick's note starts), so instrument-only passages and
+/// the gaps between kick hits keep their level.
+fn apply_auto_duck(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &mut Vec<String>) -> Result<Value> {
+    use crate::auto_eq as ae;
+    use crate::fx::{DynamicEqFx, Effect};
+    let kick = crate::producer::track_name("kick");
+    let pairs: Vec<(String, String, (f32, f32))> = auto_eq_pairs(e, voice)
+        .into_iter()
+        .filter(|(a, _, r)| if *r == ae::LOW_RANGE { spec.mix.kick_duck && *a == kick } else { spec.mix.vocal_duck && Some(a.as_str()) == voice })
+        .collect();
+    if spec.mix.vocal_duck && voice.is_none() {
+        log.push("auto duck: no vocal here, so no vocal duck".into());
+    }
+    if pairs.is_empty() {
+        log.push("auto duck: nothing to duck".into());
+        return Ok(json!({"pairs": [], "ducks": []}));
+    }
+    let (before, agg0) = auto_eq_measure(e, &pairs, voice.filter(|_| spec.mix.vocal_duck))?;
+    let mut scratch = Vec::new();
+    let user_keys: BTreeMap<String, String> = resolve_part_eq_keys(e, spec, &mut scratch)?.into_iter().collect();
+    // the kick's hits (for the kick duck's release): onsets in its stem
+    let kick_release = if spec.mix.kick_duck && e.project.track_index(&kick).is_ok() {
+        let p = e.project.clone();
+        let m = e.render_stems_all(&p)?;
+        m.stems.iter().find(|s| s.name == kick && !s.left.is_empty()).map(|s| ae::kick_release_ms(&crate::render::audio_onsets(&ae::mono(&s.left, &s.right)))).unwrap_or(ae::DUCK_RELEASE_MS)
+    } else {
+        ae::DUCK_RELEASE_MS
+    };
+    let mut ducks = Vec::new();
+    for ((a, b, r), st) in pairs.iter().zip(&before) {
+        let Some(st) = st else { continue };
+        if Some(b.as_str()) == voice {
+            continue; // never the vocal
+        }
+        let low = *r == ae::LOW_RANGE;
+        let (q, cut) = if low { (ae::LOW_Q, ae::LOW_RANGE) } else { (ae::AUTO_Q, ae::VOCAL_CUT_RANGE) };
+        let pair = format!("{a}/{b}");
+        let Some(c) = ae::duck_band(st, &pair, q, cut) else { continue };
+        let user = user_keys.get(b).and_then(|k| spec.mix.part_eq.get(k));
+        if let Some(u) = ae::user_band_near(user, c.hz) {
+            log.push(format!("auto duck: skipped {b} {:.0} Hz ({pair}): a user band sits at {u:.0} Hz; the user's band wins", c.hz));
+            continue;
+        }
+        // the kick duck follows the kick's hits; the vocal duck follows the
+        // vocal's level (an envelope follower), so it holds through a vowel
+        let (key_mode, attack, release) = if low { ("hits", ae::DUCK_ATTACK_MS, kick_release) } else { ("level", ae::VOCAL_DUCK_ATTACK_MS, ae::VOCAL_DUCK_RELEASE_MS) };
+        let mut fx = Effect::DynamicEq(DynamicEqFx {
+            freq: c.hz,
+            q,
+            range_db: -ae::DUCK_DB,
+            attack_ms: attack,
+            release_ms: release,
+            source: a.clone(),
+            key: if low { String::new() } else { "level".into() },
+            ..Default::default()
+        });
+        fx.set_id(if low { AUTO_DUCK_KICK_ID } else { AUTO_DUCK_VOCAL_ID });
+        let i = e.project.track_index(b)?;
+        e.project.tracks[i].effects.push(fx);
+        log.push(format!("auto duck: {b} {:.0} Hz -{} dB Q{q} keyed by {a}'s {key_mode}, attack {attack} ms, release {release:.0} ms", c.hz, ae::DUCK_DB));
+        let key = user_keys.get(b).cloned().unwrap_or_else(|| b.clone());
+        ducks.push(json!({"part": b, "key": key, "source": a, "key_mode": key_mode, "pair": pair, "hz": c.hz.round(), "max_db": -ae::DUCK_DB, "q": q, "attack_ms": attack, "release_ms": (release * 10.0).round() / 10.0}));
+    }
+    let (after, agg1) = if ducks.is_empty() { (before.clone(), agg0.clone()) } else { auto_eq_measure(e, &pairs, voice.filter(|_| spec.mix.vocal_duck))? };
+    let pct = |x: f32| (x * 1000.0).round() / 10.0;
+    let mut rows = Vec::new();
+    for (((a, b, _), s0), s1) in pairs.iter().zip(&before).zip(&after) {
+        if let (Some(s0), Some(s1)) = (s0, s1) {
+            let row = json!({"pair": format!("{a}/{b}"), "overlap_before_pct": pct(s0.overlap), "overlap_after_pct": pct(s1.overlap)});
+            if ducks.iter().any(|d| d["pair"] == row["pair"]) {
+                log.push(format!("auto duck: {a}/{b} overlap {:.1}% -> {:.1}%", pct(s0.overlap), pct(s1.overlap)));
+            }
+            rows.push(row);
+        }
+    }
+    let mut out = json!({"pairs": rows, "ducks": ducks, "note": "a duck dips only while its source plays; the overlap is measured on the stems with the ducks working"});
+    if let Some(v) = voice.filter(|v| spec.mix.vocal_duck && ducks.iter().any(|d| d["source"].as_str() == Some(*v))) {
+        if let Some(c) = vocal_duck_coverage(e, v)? {
+            log.push(format!("auto duck: the vocal ducks hold over {:.1}% of the vocal's active time", c * 100.0));
+            out["vocal_active_time_covered_pct"] = json!((c as f64 * 1000.0).round() / 10.0);
+        }
+    }
+    if let (Some(a0), Some(a1)) = (&agg0, &agg1) {
+        out["aggregate"] = json!({"pair": "vocal/beat", "overlap_before_pct": pct(a0.overlap), "overlap_after_pct": pct(a1.overlap)});
     }
     Ok(out)
 }
@@ -1706,6 +1903,10 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     if stale > 0 {
         log.push(format!("auto EQ: took out {stale} auto band(s) from the last build"));
     }
+    let stale = strip_auto_ducks(e);
+    if stale > 0 {
+        log.push(format!("auto duck: took out {stale} duck(s) from the last build"));
+    }
     // the beat's bright parts are voiced softer before anything is measured
     mix.insert("source_tone".into(), mix_rules::soften_beat_source_with(e, voice.as_deref(), &spec.mix.levels)?);
     mix.insert("peaks".into(), mix_rules::tame_peaks(e)?);
@@ -1721,6 +1922,10 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     if spec.mix.auto_eq {
         mix.insert("auto_eq".into(), apply_auto_eq(e, spec, voice.as_deref(), log)?);
         lap(log, &mut tl, "auto EQ");
+    }
+    if spec.mix.vocal_duck || spec.mix.kick_duck {
+        mix.insert("duck".into(), apply_auto_duck(e, spec, voice.as_deref(), log)?);
+        lap(log, &mut tl, "auto duck");
     }
     mix.insert("top_end".into(), mix_rules::tame_top(e, voice.as_deref(), &t, 0.0)?);
     if let Some(v) = &voice {
@@ -2054,6 +2259,15 @@ fn write_auto_cuts(stored: &mut Value, mix: &Value) -> Result<()> {
             set_pointer(stored, &bells, json!([]))?;
         }
         set_pointer(stored, &format!("{bells}/-"), bell)?;
+    }
+    for d in mix["duck"]["ducks"].as_array().into_iter().flatten() {
+        let key = d["key"].as_str().unwrap_or_default().replace('~', "~0").replace('/', "~1");
+        let duck = json!({"hz": d["hz"], "max_db": d["max_db"], "q": d["q"], "source": d["source"], "key": d["key_mode"], "attack_ms": d["attack_ms"], "release_ms": d["release_ms"], "auto": true});
+        let ducks = format!("/mix/part_eq/{key}/ducks");
+        if !stored.pointer(&ducks).is_some_and(|b| b.is_array()) {
+            set_pointer(stored, &ducks, json!([]))?;
+        }
+        set_pointer(stored, &format!("{ducks}/-"), duck)?;
     }
     Ok(())
 }
@@ -2464,7 +2678,7 @@ mod tests {
         assert!(plain.mix.part_eq.is_empty());
         assert!(serde_json::to_value(&plain.mix).unwrap().get("part_eq").is_none());
         // a band at 0 dB adds nothing
-        assert!(PartEq { low_shelf: Some(EqShelf { hz: 100.0, db: 0.0 }), high_shelf: None, bells: vec![EqBell { hz: 1000.0, db: 0.0, q: 1.0, auto: false }] }.bands().is_empty());
+        assert!(PartEq { low_shelf: Some(EqShelf { hz: 100.0, db: 0.0 }), high_shelf: None, bells: vec![EqBell { hz: 1000.0, db: 0.0, q: 1.0, auto: false }], ducks: vec![] }.bands().is_empty());
         let bad = |pe: Value| validate(&json!({"genre": "trap", "mix": {"part_eq": pe}})).1.into_iter().map(|p| p.path).collect::<Vec<_>>();
         assert!(bad(json!({"": {"bells": [{"hz": 1000, "db": 1}]}})).contains(&"/mix/part_eq".to_string()));
         // which part a key names is checked when the beat exists (track names are known then)
@@ -2927,7 +3141,7 @@ mod tests {
         let mut e1 = Engine::new(a.clone());
         let r1 = e1.call("song_create", &auto_spec(&a, json!({}))).unwrap();
         let mut e2 = Engine::new(b.clone());
-        let r2 = e2.call("song_create", &auto_spec(&b, json!({"mix": {"auto_eq": false}}))).unwrap();
+        let r2 = e2.call("song_create", &auto_spec(&b, json!({"mix": {"auto_eq": false, "vocal_duck": false, "kick_duck": false}}))).unwrap();
         assert_eq!(std::fs::read(r1["audio"].as_str().unwrap()).unwrap(), std::fs::read(r2["audio"].as_str().unwrap()).unwrap(), "auto_eq false renders the same bytes");
         assert_eq!(serde_json::to_value(&e1.project.tracks).unwrap(), serde_json::to_value(&e2.project.tracks).unwrap());
         assert!(r2["mix"].get("auto_eq").is_none());
@@ -2935,6 +3149,9 @@ mod tests {
         assert!(!r2["log"].as_array().unwrap().iter().any(|l| l.as_str().unwrap_or("").contains("auto EQ")));
         let sp: SongSpec = serde_json::from_value(json!({"genre": "trap", "mix": {"auto_eq": false}})).unwrap();
         assert!(serde_json::to_value(&sp.mix).unwrap().get("auto_eq").is_none(), "false is not written back");
+        assert!(r2["mix"].get("duck").is_none());
+        let sp: SongSpec = serde_json::from_value(json!({"genre": "trap", "mix": {"vocal_duck": false, "kick_duck": false}})).unwrap();
+        assert_eq!(serde_json::to_value(&sp.mix).unwrap().as_object().unwrap().keys().filter(|k| k.contains("duck")).count(), 0);
         assert!(serde_json::to_value(crate::fx::EqBand::default()).unwrap().get("auto").is_none(), "a band not written by the auto-EQ is stored as before");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3014,6 +3231,94 @@ mod tests {
             assert_eq!((eq.bands[0].freq, eq.bands[0].gain_db, eq.bands[0].q, eq.bands[0].auto), (3000.0, 1.0, 1.0, false), "{eq:?}");
             assert!(eq.bands[1..].iter().all(|b| b.auto) && eq.bands.len() <= 7, "{eq:?}");
             assert!(cuts.iter().filter(|c| c["part"] == "bass").all(|c| c["merged_into_user_eq"] == true && c["key"] == "bass"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn duck_ids(e: &Engine) -> Vec<(String, String, String)> {
+        let mut out = Vec::new();
+        for t in &e.project.tracks {
+            for f in &t.effects {
+                if f.id().starts_with("auto_duck") {
+                    let v = serde_json::to_value(f).unwrap();
+                    out.push((t.name.clone(), f.id().to_string(), v["source"].as_str().unwrap_or("").to_string()));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_kick_duck_keys_the_bass_by_the_kick_and_rebuilds_clean() {
+        let dir = std::env::temp_dir().join(format!("bb_kickduck_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = Engine::new(dir.clone());
+        let r = e.call("song_create", &auto_spec(&dir, json!({"mix": {"kick_duck": true}}))).unwrap();
+        let d = &r["mix"]["duck"];
+        let ducks = d["ducks"].as_array().unwrap().clone();
+        assert_eq!(ducks.len(), 1, "{d}");
+        assert_eq!((ducks[0]["part"].as_str(), ducks[0]["source"].as_str()), (Some("bass"), Some("kick")), "{d}");
+        assert_eq!(ducks[0]["max_db"], -4.0);
+        assert!(ducks[0]["release_ms"].as_f64().unwrap() <= 120.0 && ducks[0]["attack_ms"] == 10.0, "{d}");
+        let row = d["pairs"].as_array().unwrap().iter().find(|p| p["pair"] == "kick/bass").unwrap().clone();
+        assert!(row["overlap_after_pct"].as_f64().unwrap() < row["overlap_before_pct"].as_f64().unwrap(), "{row}");
+        assert_eq!(duck_ids(&e), vec![("bass".to_string(), AUTO_DUCK_KICK_ID.to_string(), "kick".to_string())]);
+        assert!(auto_bands(&e).is_empty(), "the duck alone adds no static bells");
+        assert_eq!(ducks[0]["key_mode"], "hits");
+        let stored = |e: &Engine| e.project.song.as_ref().unwrap().spec.clone();
+        // visible in the stored spec, marked auto, and no pile-up on a rebuild
+        let sd = stored(&e)["mix"]["part_eq"]["bass"]["ducks"].clone();
+        assert_eq!(sd.as_array().map(|a| a.len()), Some(1), "{sd}");
+        assert_eq!((sd[0]["auto"].clone(), sd[0]["source"].clone(), sd[0]["max_db"].clone()), (json!(true), json!("kick"), json!(-4.0)), "{sd}");
+        e.call("song_patch", &json!({"set": {"/master/lufs": -12}})).unwrap();
+        assert_eq!(duck_ids(&e).len(), 1, "no pile-up");
+        assert_eq!(stored(&e)["mix"]["part_eq"]["bass"]["ducks"].as_array().map(|a| a.len()), Some(1));
+        e.call("song_patch", &json!({"set": {"/mix/kick_duck": false}})).unwrap();
+        assert!(duck_ids(&e).is_empty());
+        assert!(stored(&e).pointer("/mix/part_eq/bass/ducks").is_none(), "off: the stored ducks go too");
+        // a duck written by hand is refused with the fix
+        let mut hand = auto_spec(&dir, json!({}));
+        hand["mix"]["part_eq"] = json!({"bass": {"ducks": [{"hz": 60.0, "max_db": -3.0, "q": 2.0, "source": "kick"}]}});
+        let err = e.call("song_create", &hand).unwrap_err().to_string();
+        assert!(err.contains("ducks are placed by the build"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vocal_ducks_key_every_clashing_part_by_the_vocal_and_never_duck_it() {
+        let dir = std::env::temp_dir().join(format!("bb_vocalduck_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = Engine::new(dir.clone());
+        let spec_v = auto_spec(&dir, json!({}));
+        e.call("song_create", &spec_v).unwrap();
+        let voice = ["chords", "lead", "counter"].into_iter().find(|n| e.project.track_index(n).is_ok()).unwrap().to_string();
+        let vi = e.project.track_index(&voice).unwrap();
+        let voice_fx = serde_json::to_value(&e.project.tracks[vi].effects).unwrap();
+        let mut spec = validate(&spec_v).0.unwrap();
+        spec.mix.vocal_duck = true;
+        let mut log = Vec::new();
+        let r = apply_auto_duck(&mut e, &spec, Some(&voice), &mut log).unwrap();
+        let ducks = r["ducks"].as_array().unwrap();
+        assert!(!ducks.is_empty(), "{r}");
+        for d in ducks {
+            assert_ne!(d["part"], voice.as_str());
+            assert_eq!(d["source"], voice.as_str());
+            let hz = d["hz"].as_f64().unwrap();
+            assert!((150.0..=1000.0).contains(&hz) && d["max_db"] == -4.0 && d["release_ms"] == 100.0 && d["attack_ms"] == 12.0 && d["key_mode"] == "level", "{d}");
+            let row = r["pairs"].as_array().unwrap().iter().find(|p| p["pair"] == d["pair"]).unwrap();
+            assert!(row["overlap_after_pct"].as_f64().unwrap() <= row["overlap_before_pct"].as_f64().unwrap(), "{row}");
+        }
+        assert_eq!(serde_json::to_value(&e.project.tracks[vi].effects).unwrap(), voice_fx, "the protected part is untouched");
+        assert!(duck_ids(&e).iter().all(|(t, id, src)| *t != voice && id == AUTO_DUCK_VOCAL_ID && *src == voice));
+        // the vocal ducks follow the vocal's level (an envelope follower)
+        for t in &e.project.tracks {
+            for f in &t.effects {
+                if let crate::fx::Effect::DynamicEq(d) = f {
+                    if f.id() == AUTO_DUCK_VOCAL_ID {
+                        assert_eq!((d.key.as_str(), d.attack_ms, d.release_ms), ("level", 12.0, 100.0));
+                    }
+                }
+            }
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
