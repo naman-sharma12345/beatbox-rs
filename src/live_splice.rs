@@ -587,8 +587,11 @@ mod tests {
         assert_no_seam_click(&m1, &full, &[0, full.left.len()]);
     }
 
-    /// Thresholds: rms <= 4e-9, any sample <= 3e-8 (no ring-out padding
-    /// here; the context bar is what settles the envelope). Measured: rms
+    /// Thresholds (unpadded window): rms <= 4e-9, any sample <= 1e-8. The
+    /// per-sample allowance covers the compressor's nonlinear envelope
+    /// state, which starts fresh at the window and settles within the
+    /// context bar (not summation order: there is no ring-out padding
+    /// here). Unpadded tests use 1e-8, padded ones 3e-8. Measured: rms
     /// 8.4e-11, max 7.5e-9.
     #[test]
     fn a_compressor_envelope_crossing_the_window_start_settles_in_the_context_bar() {
@@ -600,7 +603,46 @@ mod tests {
             splice_vs_full(&mut e, &json!({"track": "keys", "pattern": "verse", "notes": [{"start": 100, "len": 4, "pitch": 67, "vel": 0.9}]}));
         eprintln!("compressor: window {w0}..{w1}, change rms {change:.3e}, splice-vs-full rms {rms_err:.3e}, max {max_err:.3e}");
         assert!(change > 1e-3);
-        assert!(rms_err <= 4e-9 && max_err <= 3e-8, "rms {rms_err:e} max {max_err:e}");
+        assert!(rms_err <= 4e-9 && max_err <= 1e-8, "rms {rms_err:e} max {max_err:e}");
+    }
+
+    /// Commit 4 acceptance (Naman 2026-10-13): rendering with subnormals
+    /// flushed (FTZ/DAZ) stays within SNR > 140 dB of the IEEE render, over
+    /// the whole song and over its decaying tail. Also reports (does not
+    /// assert) whether samples above the subnormal floor stay bit-identical,
+    /// and the two render times.
+    #[test]
+    fn flushing_subnormals_keeps_a_long_tail_render_above_140_db_snr() {
+        let fx = [
+            json!({"track": "keys", "type": "delay", "params": {"steps": 3.0, "feedback": 0.6, "mix": 0.4}}),
+            json!({"track": "keys", "type": "reverb", "params": {"size": 0.85, "mix": 0.35}}),
+        ];
+        let e = song(8, "ftz", &fx);
+        // a 60 s render tail: the echo and reverb ring-out decays into
+        // subnormals (about -760 dBFS) well before it ends
+        let opts = RenderOptions { tail: 60.0, ..Default::default() };
+        let t = std::time::Instant::now();
+        crate::dsp::set_flush_denormals(false);
+        let ieee = render::render(&e.project, &e.bank, &opts).unwrap();
+        let t_ieee = t.elapsed();
+        crate::dsp::set_flush_denormals(true);
+        let t = std::time::Instant::now();
+        let ftz = render::render(&e.project, &e.bank, &opts).unwrap();
+        let t_ftz = t.elapsed();
+        let snr = |a: &[f32], b: &[f32]| -> f64 {
+            let s: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum();
+            let n: f64 = a.iter().zip(b).map(|(x, y)| (*x as f64 - *y as f64).powi(2)).sum();
+            if n == 0.0 { f64::INFINITY } else { 10.0 * (s / n).log10() }
+        };
+        let body = (8.0 * 16.0 * e.project.step_secs() * crate::dsp::SR) as usize;
+        let sub = ieee.left.iter().filter(|v| **v != 0.0 && v.abs() < f32::MIN_POSITIVE).count();
+        let above_differ = ieee.left.iter().zip(&ftz.left).chain(ieee.right.iter().zip(&ftz.right))
+            .filter(|(a, b)| a.abs() >= f32::MIN_POSITIVE && a.to_bits() != b.to_bits()).count();
+        let maxd = ieee.left.iter().zip(&ftz.left).fold(0f32, |m, (a, b)| m.max((a - b).abs()));
+        let (s_all, s_tail) = (snr(&ieee.left, &ftz.left).min(snr(&ieee.right, &ftz.right)), snr(&ieee.left[body..], &ftz.left[body..]).min(snr(&ieee.right[body..], &ftz.right[body..])));
+        eprintln!("ftz: {sub} subnormal samples in the IEEE render; SNR all {s_all:.1} dB, tail {s_tail:.1} dB; max |diff| {maxd:e}; samples above 1.2e-38 that differ: {above_differ}; render {t_ieee:?} IEEE vs {t_ftz:?} FTZ");
+        assert!(sub > 1000, "the IEEE render does reach subnormals: {sub}");
+        assert!(s_all > 140.0 && s_tail > 140.0, "SNR all {s_all} tail {s_tail}");
     }
 
     /// Threshold: bit-identical. Rendering the two windows at the same time

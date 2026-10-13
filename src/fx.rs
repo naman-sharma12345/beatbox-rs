@@ -1211,7 +1211,7 @@ mod tests {
         // where the skip bound is tightest
         let mut rng = crate::dsp::Rng::new(11);
         let n = 4 * 44100;
-        let mut a: Vec<f32> = (0..n)
+        let a: Vec<f32> = (0..n)
             .map(|i| {
                 let t = i as f32 / 44100.0;
                 let env = if t < 2.0 { 1.0 } else { (-(t - 2.0) * 50.0).exp() };
@@ -1258,7 +1258,7 @@ mod tests {
             })
             .collect();
         // worst case for the skip: loud everywhere, nothing to skip
-        let loud: Vec<f32> = (0..n).map(|i| ((i as f32 * 0.05).sin() * 1.3)).collect();
+        let loud: Vec<f32> = (0..n).map(|i| (i as f32 * 0.05).sin() * 1.3).collect();
         let p = LimiterFx { ceiling_db: -1.0, release_ms: 80.0, ..Default::default() };
         for (name, x) in [("loud 16 s + subnormal tail", &song), ("loud throughout (no skip possible)", &loud)] {
             let mut row = Vec::new();
@@ -1272,7 +1272,16 @@ mod tests {
                 }
                 row.push(best);
             }
-            eprintln!("limiter pass, {name}, 20 s: without skip {:.1} ms, with skip {:.1} ms", row[0], row[1]);
+            let mut best = f64::MAX;
+            for _ in 0..3 {
+                let (mut l, mut r) = (x.clone(), x.clone());
+                let _ftz = crate::dsp::NoDenormals::new();
+                let t = std::time::Instant::now();
+                limiter_pass_impl(&p, -1.0, &mut l, &mut r, true);
+                best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            row.push(best);
+            eprintln!("limiter pass, {name}, 20 s: without skip {:.1} ms, with skip {:.1} ms, with skip + FTZ/DAZ {:.1} ms", row[0], row[1], row[2]);
         }
     }
 

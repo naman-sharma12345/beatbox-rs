@@ -833,6 +833,9 @@ fn render_impl(
     cache: Option<&mut TrackCache>,
     index_base: Option<&[usize]>,
 ) -> Result<Mix> {
+    // subnormals off for this render (rayon's workers set it per track below)
+    let ftz = crate::dsp::flush_denormals();
+    let _no_denormals = ftz.then(crate::dsp::NoDenormals::new);
     if !opts.allow_missing_clips {
         let missing = missing_clip_samples(p, bank);
         if !missing.is_empty() {
@@ -966,6 +969,8 @@ fn render_impl(
         fresh: Option<std::sync::Arc<(Vec<f32>, Vec<f32>)>>,
     }
     let render_track = |ti: usize| -> Option<TrackOut> {
+        // rayon's threads carry their own float mode
+        let _no_denormals = ftz.then(crate::dsp::NoDenormals::new);
         let track = &p.tracks[ti];
         let audible = !track.mute && (!any_solo || track.solo);
         if !audible && !opts.keep_stems && !opts.track_stats {

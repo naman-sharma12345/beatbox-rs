@@ -27,6 +27,73 @@ pub fn memtrace(label: &str) {
     }
 }
 
+thread_local! {
+    static FLUSH_DENORMALS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Whether renders started on this thread run with subnormals off
+/// (`NoDenormals`, on by default). Tests switch it off to compare.
+pub fn flush_denormals() -> bool {
+    FLUSH_DENORMALS.with(|f| f.get())
+}
+
+pub fn set_flush_denormals(on: bool) {
+    FLUSH_DENORMALS.with(|f| f.set(on));
+}
+
+/// Subnormal floats off (FTZ: results flush to zero; DAZ: subnormal inputs
+/// read as zero) on this thread until the guard drops, which restores the
+/// thread's previous mode. Decaying tails (reverbs, releases, the DC
+/// blocker) otherwise sink into subnormals, where each multiply is ~100x
+/// slower. Values below ~1.2e-38 (-758 dBFS) become 0. x86_64 (SSE MXCSR)
+/// and aarch64 (FPCR.FZ); elsewhere it does nothing.
+pub struct NoDenormals {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    prev: u64,
+}
+
+impl NoDenormals {
+    #[allow(deprecated, clippy::new_without_default)]
+    pub fn new() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        {
+            use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+            // SAFETY: MXCSR flag bits only; FTZ = 0x8000, DAZ = 0x0040
+            let prev = unsafe { _mm_getcsr() };
+            unsafe { _mm_setcsr(prev | 0x8040) };
+            NoDenormals { prev: prev as u64 }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            let prev: u64;
+            // SAFETY: FPCR.FZ (bit 24) only
+            unsafe {
+                std::arch::asm!("mrs {}, fpcr", out(reg) prev);
+                std::arch::asm!("msr fpcr, {}", in(reg) prev | (1 << 24));
+            }
+            NoDenormals { prev }
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            NoDenormals {}
+        }
+    }
+}
+
+impl Drop for NoDenormals {
+    #[allow(deprecated)]
+    fn drop(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            std::arch::x86_64::_mm_setcsr(self.prev as u32)
+        };
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            std::arch::asm!("msr fpcr, {}", in(reg) self.prev)
+        };
+    }
+}
+
 pub fn db_to_gain(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
