@@ -530,6 +530,9 @@ fn lyric_sync(take_x: &[f32], take_words: &[vocal::Word], rec_words: &[vocal::Wo
     Some((plan, info))
 }
 
+/// cover_song match_tuning: offsets smaller than this stay at A440.
+pub const MATCH_TUNING_MIN_CENTS: f32 = 15.0;
+
 pub fn make_plan(take_x: &[f32], take_fe: &Features, words: &[vocal::Word], rec: Option<(&SongAnalysis, &Features)>, rec_words: &[vocal::Word], style: &str, a: &Value) -> Result<(Plan, Value)> {
     let mut info = json!({});
     let comp_role = {
@@ -753,7 +756,15 @@ pub fn make_plan(take_x: &[f32], take_fe: &Features, words: &[vocal::Word], rec:
     let start_beat = (intro * 4) as f32 - first_bar_t / beat_s;
     let (vsb, voff) = if start_beat >= 0.0 { (start_beat, 0.0) } else { (0.0, -start_beat * beat_s) };
     info["take"] = json!({"bpm": an.tempo.bpm, "tempo_confidence": an.tempo.confidence, "key": format!("{} {}", an.key_root, an.scale), "notes": an.notes.len(), "range": [an.range.0, an.range.1]});
+    // match_tuning (default on with yin_gated): render the backing at the
+    // singer's measured tuning when it is at least 15 cents off A440 and the
+    // key was not given; 0 = strict A440
+    let tuning_applied = match &gated {
+        Some(g) if !g.unknown && b_or(a, "match_tuning", true) && s_opt(a, "key").is_none() && g.tuning_cents.abs() >= MATCH_TUNING_MIN_CENTS => g.tuning_cents,
+        _ => 0.0,
+    };
     if gated_on {
+        info["take"]["tuning_applied_cents"] = json!(tuning_applied);
         info["take"]["key_gated"] = match &gated {
             Some(g) => json!({"key": format!("{} {}", g.key_root, g.scale), "used": !g.unknown, "confidence": g.confidence, "margin": g.margin, "runner_up": g.runner_up, "unknown": g.unknown, "frames_used": g.frames_used, "tuning_cents": g.tuning_cents, "histogram": g.histogram}),
             None => json!({"used": false, "note": "too few gated pitch frames; the note-based key is used"}),
@@ -1938,6 +1949,10 @@ fn cover_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let name = s_opt(a, "name").unwrap_or_else(|| format!("{} (song)", take.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()));
     let genre = s_opt(a, "genre");
     let mut built = build(e, &plan, &take, &name, b_or(a, "allow_download", false), genre.as_deref())?;
+    // the backing at the singer's tuning (make_plan decides; absent/0 = A440)
+    if let Some(tc) = pinfo["take"]["tuning_applied_cents"].as_f64().filter(|t| *t != 0.0) {
+        e.project.tuning_cents = tc as f32;
+    }
     if b_or(a, "ride_vocal", true) && plan.vocal_clips.is_empty() {
         built["vocal_ride"] = ride_vocal(e, &plan, &take_x)?;
     }
@@ -2008,6 +2023,7 @@ fn cover_schema() -> Value {
         "identify": {"type": "boolean", "description": "find the record from the lyrics when no reference is given (default true)"},
         "language": {"type": "string", "description": "lyrics language for the transcriber (e.g. hi, en); default auto"},
         "bpm": {"type": "number"}, "key": {"type": "string"}, "scale": {"type": "string"},
+        "match_tuning": {"type": "boolean", "description": "with key_detect yin_gated and no key given: render every pitched backing instrument at the singer's measured tuning when it is 15+ cents off A440 (drums and the vocal untouched; default true). false = strict A440"},
         "key_detect": {"type": "string", "enum": ["yin_gated", "legacy", "notes"], "description": "free mode: how the singer's key is heard when key/scale are not given. yin_gated (default): pitch frames gated on YIN aperiodicity < 0.15 and -55 dBFS, 120 ms smoothing, octave folding and tuning-offset removal (steadier on noisy, rubato or flat takes); an unknown read (margin < 0.05) falls back to the notes. legacy (= notes): the segmented sung notes only, as before; reproduces earlier renders byte-for-byte"},
         "intro_bars": {"type": "integer"}, "outro_bars": {"type": "integer"}, "section_bars": {"type": "integer"},
         "target_lufs": {"type": "number", "description": "default -10"},

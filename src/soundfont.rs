@@ -299,6 +299,78 @@ mod tests {
 
     /// Plays a real note when the GM font is installed (skipped otherwise, so
     /// CI without network stays green).
+    /// A SoundFont voice follows a fractional (tuning-offset) pitch through
+    /// the pitch bend: A3 at -44.3 c lands within 2 cents.
+    #[test]
+    fn soundfont_voice_follows_a_tuning_offset() {
+        let e = font_entry("generaluser_gs").unwrap();
+        if !installed_path(e).is_file() {
+            eprintln!("generaluser_gs not installed; skipping");
+            return;
+        }
+        // relative to the same voice at A440 (a preset's own transpose/fine
+        // tune is the preset's business; the offset is what is tested)
+        let p = alias("grand_piano").unwrap();
+        let hz = |pitch: f32| {
+            let y = render_note(&p, pitch, 0.8, 1.2);
+            let mut v: Vec<f32> = (0..12)
+                .filter_map(|k| {
+                    let at = (0.15 * SR) as usize + k * 2048;
+                    crate::sc_dsp::yin_aperiodicity(&y[at..at + 4096], SR, 40.0, 2000.0, 0.3).map(|r| r.0)
+                })
+                .collect();
+            v.sort_by(|a, b| a.total_cmp(b));
+            v[v.len() / 2]
+        };
+        let (h0, h1) = (hz(57.0), hz(57.0 - 0.443));
+        let c = 1200.0 * (h1 / h0).log2() + 44.3;
+        assert!(c.abs() < 2.0, "grand_piano A3 at -44.3 c: {c:.2} c off ({h0} -> {h1} Hz)");
+    }
+
+    /// The SoundFont path at -44 c: offset, THD+N against tc=0 (harmonic fit
+    /// in 0.2 s frames, median) and the largest sample step over 4 s of
+    /// sustain (the presets' loop points included).
+    #[test]
+    fn soundfont_tuning_offset_resampling_is_clean() {
+        let e = font_entry("generaluser_gs").unwrap();
+        if !installed_path(e).is_file() {
+            eprintln!("generaluser_gs not installed; skipping");
+            return;
+        }
+        for name in ["grand_piano", "electric_bass", "clean_electric_guitar"] {
+            let p = alias(name).unwrap();
+            let note = if name == "electric_bass" { 40.0 } else { 57.0 };
+            let a = render_note(&p, note, 0.8, 4.0);
+            let b = render_note(&p, note - 0.44, 0.8, 4.0);
+            let frames = |y: &[f32], f: f32| -> (f32, f32) {
+                let mut fs = Vec::new();
+                let mut ts = Vec::new();
+                for k in 0..8 {
+                    let s = (0.3 * SR) as usize + k * (0.4 * SR) as usize;
+                    let (ff, t) = crate::render::tests::harmonic_fit(&y[s..s + (0.2 * SR) as usize], SR, f, 8);
+                    fs.push(ff);
+                    ts.push(t);
+                }
+                fs.sort_by(|x, y| x.total_cmp(y));
+                ts.sort_by(|x, y| x.total_cmp(y));
+                (fs[4], ts[4])
+            };
+            let y0 = {
+                let at = (0.4 * SR) as usize;
+                crate::sc_dsp::yin_aperiodicity(&a[at..at + 4096], SR, 30.0, 2000.0, 0.3).expect("voiced").0
+            };
+            let (fa, ta) = frames(&a, y0);
+            let (fb, tb) = frames(&b, y0 * 2f32.powf(-44.0 / 1200.0));
+            let off = 1200.0 * (fb / fa).log2();
+            let n4 = (4.0 * SR) as usize;
+            let (ja, jb) = (crate::render::tests::max_jump(&a[..n4.min(a.len())]), crate::render::tests::max_jump(&b[..n4.min(b.len())]));
+            eprintln!("sf2 {name}: f0 {fa:.3} -> {fb:.3} Hz = {off:.2} c (want -44); THD+N {ta:.1} -> {tb:.1} dB; max step {ja:.4} -> {jb:.4}");
+            assert!((off + 44.0).abs() < 1.0, "{name}: offset {off} c");
+            assert!(tb <= ta + 1.0, "{name}: THD+N {ta} -> {tb} dB");
+            assert!(jb <= ja * 1.25 + 1e-3, "{name}: max step {ja} -> {jb}");
+        }
+    }
+
     #[test]
     fn soundfont_notes_render_when_the_font_is_installed() {
         let e = font_entry("generaluser_gs").unwrap();

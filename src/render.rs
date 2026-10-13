@@ -272,6 +272,13 @@ pub fn schedule(p: &Project, opts: &RenderOptions) -> (Vec<Vec<Event>>, usize) {
     let tsec = |abs: f32| song_secs_at_step(&curve, song_steps, abs as f64);
     let swing_steps = p.swing.clamp(0.0, 1.0) * 0.5;
     let mut events: Vec<Vec<Event>> = vec![Vec::new(); p.tracks.len()];
+    // concert-pitch offset (semitones) per track: Project::tuning_cents on
+    // pitched instruments, 0 on drums/kits and whenever tuning_cents is 0
+    let tunes: Vec<f32> = p
+        .tracks
+        .iter()
+        .map(|t| if p.tuning_cents != 0.0 && t.instrument.follows_tuning() { p.tuning_cents / 100.0 } else { 0.0 })
+        .collect();
     let mut offset: u32 = 0;
     let (r0, r1) = opts.step_range.unwrap_or((0, u32::MAX));
     for _ in 0..opts.loops.max(1) {
@@ -282,6 +289,7 @@ pub fn schedule(p: &Project, opts: &RenderOptions) -> (Vec<Vec<Event>>, usize) {
             let pat = &p.patterns[pi];
             for _ in 0..sec.repeats.max(1) {
                 for (ti, track) in p.tracks.iter().enumerate() {
+                    let tune = tunes[ti];
                     for (ni, n) in pat.notes(&track.name).iter().enumerate() {
                         if n.prob < 1.0 && !chance_hit(ti, ni, offset, n.prob) {
                             continue;
@@ -302,13 +310,12 @@ pub fn schedule(p: &Project, opts: &RenderOptions) -> (Vec<Vec<Event>>, usize) {
                             let t = tsec(abs);
                             (((t - tsec(r0 as f32)) * SR as f64) as usize, ((tsec(abs + n.len) - t) as f32).max(0.01))
                         };
-                        events[ti].push(Event {
-                            start,
-                            gate,
-                            pitch: n.pitch as f32,
-                            vel: n.vel,
-                            slide_to: n.slide_to.map(|x| x as f32),
-                        });
+                        let (pitch, slide_to) = if tune != 0.0 {
+                            (n.pitch as f32 + tune, n.slide_to.map(|x| x as f32 + tune))
+                        } else {
+                            (n.pitch as f32, n.slide_to.map(|x| x as f32))
+                        };
+                        events[ti].push(Event { start, gate, pitch, vel: n.vel, slide_to });
                     }
                 }
                 offset += pat.steps();
@@ -1541,7 +1548,7 @@ pub fn write_wav(path: &Path, l: &[f32], r: &[f32]) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::project::{Note, Track};
 
@@ -1592,6 +1599,199 @@ mod tests {
         }
         let n = render_cached(&c, &e.bank, &o, Some(&mut cache)).unwrap();
         assert_eq!(n.left, render(&c, &e.bank, &o).unwrap().left);
+    }
+
+    /// Fundamental of a rendered note (YIN on a 4096-sample frame 0.25 s in).
+    fn note_hz(y: &[f32]) -> f32 {
+        let at = (0.25 * SR) as usize;
+        crate::sc_dsp::yin_aperiodicity(&y[at..at + 4096], SR, 40.0, 2000.0, 0.2).expect("voiced").0
+    }
+
+    fn cents(hz: f32, want: f32) -> f32 {
+        1200.0 * (hz / want).log2()
+    }
+
+    #[test]
+    fn tuning_offset_shifts_pitched_tracks_only_and_zero_is_a_no_op() {
+        let d = std::env::temp_dir().join("beatbox_render_tuning_tests");
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = crate::engine::Engine::new(d);
+        e.call("generate_beat", &serde_json::json!({"style": "trap", "seed": 9})).unwrap();
+        let p0 = e.project.clone();
+        // 0 is not written and schedules exactly as before
+        assert!(!serde_json::to_string(&p0).unwrap().contains("tuning_cents"));
+        let mut z = p0.clone();
+        z.tuning_cents = 0.0;
+        let bits = |ev: &Vec<Vec<Event>>| -> Vec<Vec<(usize, u32, u32, u32, Option<u32>)>> {
+            ev.iter().map(|t| t.iter().map(|x| (x.start, x.gate.to_bits(), x.pitch.to_bits(), x.vel.to_bits(), x.slide_to.map(f32::to_bits))).collect()).collect()
+        };
+        let (a, _) = schedule(&p0, &RenderOptions::default());
+        let (b, _) = schedule(&z, &RenderOptions::default());
+        assert_eq!(bits(&a), bits(&b));
+        // -44.3 c moves every pitched note by exactly that; drums stay put
+        let mut t = p0.clone();
+        t.tuning_cents = -44.3;
+        assert!(serde_json::to_string(&t).unwrap().contains("\"tuning_cents\":-44.3"));
+        let (c, _) = schedule(&t, &RenderOptions::default());
+        let (mut moved, mut kept) = (0, 0);
+        for (ti, tr) in p0.tracks.iter().enumerate() {
+            for (x, y) in a[ti].iter().zip(c[ti].iter()) {
+                assert_eq!((x.start, x.gate.to_bits(), x.vel.to_bits()), (y.start, y.gate.to_bits(), y.vel.to_bits()));
+                if tr.instrument.follows_tuning() {
+                    assert!((y.pitch - (x.pitch - 0.443)).abs() < 1e-4, "{}: {} -> {}", tr.name, x.pitch, y.pitch);
+                    moved += 1;
+                } else {
+                    assert_eq!(x.pitch.to_bits(), y.pitch.to_bits(), "{} moved", tr.name);
+                    kept += 1;
+                }
+            }
+        }
+        assert!(moved > 0 && kept > 0, "moved {moved} kept {kept}");
+    }
+
+    /// Least-squares fit of `nh` harmonics of f0 (searched over +/-3 cents
+    /// around `f0`) to y; returns (best f0, residual/total in dB = THD+N).
+    pub(crate) fn harmonic_fit(y: &[f32], sr: f32, f0: f32, nh: usize) -> (f32, f32) {
+        let solve = |f: f64| -> f64 {
+            let m = 2 * nh;
+            let mut ata = vec![0.0f64; m * m];
+            let mut aty = vec![0.0f64; m];
+            let mut row = vec![0.0f64; m];
+            for (i, &v) in y.iter().enumerate() {
+                let t = i as f64 / sr as f64;
+                for k in 0..nh {
+                    let w = std::f64::consts::TAU * f * (k + 1) as f64 * t;
+                    row[2 * k] = w.cos();
+                    row[2 * k + 1] = w.sin();
+                }
+                for a in 0..m {
+                    aty[a] += row[a] * v as f64;
+                    for b in a..m {
+                        ata[a * m + b] += row[a] * row[b];
+                    }
+                }
+            }
+            for a in 0..m {
+                for b in 0..a {
+                    ata[a * m + b] = ata[b * m + a];
+                }
+            }
+            // Gaussian elimination
+            let mut x = aty.clone();
+            let mut g = ata.clone();
+            for c in 0..m {
+                let p = (c..m).max_by(|&i, &j| g[i * m + c].abs().total_cmp(&g[j * m + c].abs())).unwrap();
+                if p != c {
+                    for k in 0..m {
+                        g.swap(c * m + k, p * m + k);
+                    }
+                    x.swap(c, p);
+                }
+                let d = g[c * m + c];
+                if d.abs() < 1e-12 {
+                    continue;
+                }
+                for r in 0..m {
+                    if r != c {
+                        let f = g[r * m + c] / d;
+                        if f != 0.0 {
+                            for k in c..m {
+                                g[r * m + k] -= f * g[c * m + k];
+                            }
+                            x[r] -= f * x[c];
+                        }
+                    }
+                }
+            }
+            let coef: Vec<f64> = (0..m).map(|c| x[c] / g[c * m + c]).collect();
+            let (mut res, mut tot) = (0.0f64, 0.0f64);
+            for (i, &v) in y.iter().enumerate() {
+                let t = i as f64 / sr as f64;
+                let mut s = 0.0;
+                for k in 0..nh {
+                    let w = std::f64::consts::TAU * f * (k + 1) as f64 * t;
+                    s += coef[2 * k] * w.cos() + coef[2 * k + 1] * w.sin();
+                }
+                res += (v as f64 - s).powi(2);
+                tot += (v as f64).powi(2);
+            }
+            res / tot.max(1e-30)
+        };
+        let mut best = (f0 as f64, f64::INFINITY);
+        for step in -30..=30 {
+            let f = f0 as f64 * 2f64.powf(step as f64 * 0.1 / 1200.0);
+            let r = solve(f);
+            if r < best.1 {
+                best = (f, r);
+            }
+        }
+        (best.0 as f32, (10.0 * best.1.max(1e-30).log10()) as f32)
+    }
+
+    /// Largest sample-to-sample step relative to the signal's peak.
+    pub(crate) fn max_jump(y: &[f32]) -> f32 {
+        let pk = y.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-12);
+        y.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max) / pk
+    }
+
+    #[test]
+    fn tuning_offset_resampling_is_clean_on_zones() {
+        // a sustained harmonic A3 sample (root 57), 4 s, through a pitched
+        // zone at tc=0 and tc=-44: f0, THD+N and the largest step
+        let n = (5.0 * SR) as usize;
+        let src: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                (1..=6).map(|k| (std::f32::consts::TAU * 220.0 * k as f32 * t).sin() * 0.4 / k as f32).sum::<f32>()
+            })
+            .collect();
+        let mut bank = SampleBank::default();
+        bank.insert("harm_a3", src);
+        let zone = crate::multisample::Zone { sample: "harm_a3".into(), root: 57, lo_note: 0, hi_note: 127, vel_lo: 0.0, vel_hi: 1.0, tune_cents: 0.0, gain_db: 0.0, rr: 0 };
+        let ms = Instrument::Multisample(crate::multisample::MultisampleParams { zones: vec![zone], ..Default::default() });
+        for (note, label) in [(57.0f32, "A3 (rate 1 vs resampled)"), (60.0, "C4 (both resampled)")] {
+            let a = crate::instruments::render_note(&ms, note, 0.8, 4.0, &bank, 1);
+            let b = crate::instruments::render_note(&ms, note - 0.44, 0.8, 4.0, &bank, 1);
+            let (s0, s1) = ((0.5 * SR) as usize, (1.5 * SR) as usize);
+            let f_nom = 440.0 * 2f32.powf((note - 69.0) / 12.0);
+            let (fa, ta) = harmonic_fit(&a[s0..s1], SR, f_nom, 6);
+            let (fb, tb) = harmonic_fit(&b[s0..s1], SR, f_nom * 2f32.powf(-44.0 / 1200.0), 6);
+            let off = 1200.0 * (fb / fa).log2();
+            let (ja, jb) = (max_jump(&a[..(4.0 * SR) as usize]), max_jump(&b[..(4.0 * SR) as usize]));
+            eprintln!("zone {label}: f0 {fa:.3} -> {fb:.3} Hz = {off:.3} c (want -44); THD+N {ta:.1} -> {tb:.1} dB; max step {ja:.4} -> {jb:.4}");
+            assert!((off + 44.0).abs() < 0.5, "{label}: offset {off} c");
+            // within 1 dB of tc=0, or under -70 dB outright (at A3 tc=0 is
+            // rate 1, a pass-through, so its floor is the fit's own)
+            assert!(tb <= ta + 1.0 || tb < -70.0, "{label}: THD+N {ta} -> {tb} dB");
+            assert!(jb <= ja * 1.1 + 1e-3, "{label}: max step {ja} -> {jb}");
+        }
+    }
+
+    #[test]
+    fn tuning_offset_lands_synth_and_pitched_samples_on_the_offset() {
+        let want = 440.0 * 2f32.powf(-44.3 / 1200.0); // 428.98 Hz
+        let bank_empty = SampleBank::default();
+        let synth = Instrument::Synth(crate::instruments::SynthParams { osc2_cents: 0.0, osc_mix: 0.0, ..Default::default() });
+        let y = crate::instruments::render_note(&synth, 69.0 - 0.443, 0.8, 1.0, &bank_empty, 1);
+        let c = cents(note_hz(&y), want);
+        assert!(c.abs() < 2.0, "synth A4 at -44.3 c: {c:.2} c off");
+        // a pitched multisample (one zone stretched over the keyboard)
+        let mut bank = SampleBank::default();
+        bank.insert("sine_a3", (0..(2.0 * SR) as usize).map(|i| (std::f32::consts::TAU * 220.0 * i as f32 / SR).sin() * 0.5).collect());
+        let zone = crate::multisample::Zone { sample: "sine_a3".into(), root: 57, lo_note: 0, hi_note: 127, vel_lo: 0.0, vel_hi: 1.0, tune_cents: 0.0, gain_db: 0.0, rr: 0 };
+        let ms = Instrument::Multisample(crate::multisample::MultisampleParams { zones: vec![zone.clone()], ..Default::default() });
+        assert!(ms.follows_tuning());
+        let y = crate::instruments::render_note(&ms, 64.0 - 0.443, 0.8, 1.0, &bank, 1);
+        let c = cents(note_hz(&y), 440.0 * 2f32.powf((64.0 - 69.0 - 0.443) / 12.0));
+        assert!(c.abs() < 2.0, "multisample E4 at -44.3 c: {c:.2} c off");
+        // a kit (each zone one key at its own root) and drums never follow
+        let kit = Instrument::Multisample(crate::multisample::MultisampleParams {
+            zones: vec![crate::multisample::Zone { lo_note: 36, hi_note: 36, root: 36, ..zone.clone() }, crate::multisample::Zone { lo_note: 38, hi_note: 38, root: 38, ..zone }],
+            ..Default::default()
+        });
+        assert!(!kit.follows_tuning());
+        assert!(!Instrument::Drum(Default::default()).follows_tuning());
+        assert!(synth.follows_tuning());
     }
 
     #[test]

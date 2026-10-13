@@ -401,6 +401,16 @@ pub struct Project {
     /// so any arrangement can be rebuilt on demand: rerun `tool` with `args`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seed_log: Vec<SeedEntry>,
+    /// Concert-pitch offset in cents for every pitched instrument (A4 =
+    /// 440 * 2^(cents/1200) Hz), e.g. to sit the backing on a singer's own
+    /// tuning (cover_song match_tuning). Drum kits and audio clips are not
+    /// moved. 0 (the default, not written) is strict A440.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub tuning_cents: f32,
+}
+
+fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
 }
 
 /// One generation: the tool, the seed it ran with, where the seed came
@@ -587,6 +597,7 @@ impl Project {
             fx_chains: Default::default(),
             markers: Vec::new(),
             tempo_points: Vec::new(),
+            tuning_cents: 0.0,
             schema_version: crate::ids::SCHEMA_VERSION,
             id_seq: 0,
             midi: None,

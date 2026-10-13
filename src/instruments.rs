@@ -591,6 +591,19 @@ impl Instrument {
         }
     }
 
+    /// Whether a project's tuning offset (Project::tuning_cents) moves this
+    /// instrument: everything pitched does; drums, multisample kits (every
+    /// zone a single key at its own root: one hit per key, never pitched) and
+    /// slice kits do not.
+    pub fn follows_tuning(&self) -> bool {
+        match self {
+            Instrument::Multisample(p) => !p.zones.iter().all(|z| z.lo_note == z.root && z.hi_note == z.root),
+            Instrument::Sampler(p) => p.slices.is_empty() || p.reverse,
+            Instrument::Layer(l) => l.layers.first().map_or(true, |x| x.instrument.follows_tuning()),
+            _ => !self.is_drum(),
+        }
+    }
+
     pub fn is_drum(&self) -> bool {
         match self {
             Instrument::Drum(_) => true,

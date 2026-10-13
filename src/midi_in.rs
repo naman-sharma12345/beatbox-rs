@@ -190,7 +190,8 @@ fn sound_note(e: &mut Engine, pitch: u8, vel: f32) -> Option<String> {
     let t = e.project.tracks.get(ti)?.clone();
     let samples = e.project.samples.clone();
     e.bank.sync(&samples);
-    let mono = crate::instruments::render_note(&t.instrument, pitch as f32, vel, e.midi.gate_s.clamp(0.05, 8.0), &e.bank, pitch as u64);
+    let tune = if e.project.tuning_cents != 0.0 && t.instrument.follows_tuning() { e.project.tuning_cents / 100.0 } else { 0.0 };
+    let mono = crate::instruments::render_note(&t.instrument, pitch as f32 + tune, vel, e.midi.gate_s.clamp(0.05, 8.0), &e.bank, pitch as u64);
     let g = 10f32.powf(t.volume_db.clamp(-60.0, 12.0) / 20.0);
     let pan = t.pan.clamp(-1.0, 1.0);
     let (gl, gr) = (g * (1.0 - pan.max(0.0)), g * (1.0 + pan.min(0.0)));
