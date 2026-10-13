@@ -1109,13 +1109,46 @@ pub struct Stems {
     mix: (Vec<f32>, Vec<f32>),
 }
 
+thread_local! {
+    /// Pre-fader track cache for one cover_song run: the mix passes, the air
+    /// fix and the master move faders, sends and buses, which never change a
+    /// track's own buffer, so those renders reuse it (render_cached is
+    /// bit-identical to a fresh render). None outside a run.
+    static STEM_CACHE: std::cell::RefCell<Option<render::TrackCache>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Holds STEM_CACHE for the length of a cover_song run (cleared on drop,
+/// errors included).
+struct StemCacheRun;
+
+impl StemCacheRun {
+    fn start() -> Self {
+        STEM_CACHE.with(|c| *c.borrow_mut() = Some(render::TrackCache::default()));
+        StemCacheRun
+    }
+}
+
+impl Drop for StemCacheRun {
+    fn drop(&mut self) {
+        STEM_CACHE.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+/// render::render, through the run's track cache when one is held.
+fn render_run(p: &crate::project::Project, e: &Engine, opts: &RenderOptions) -> Result<render::Mix> {
+    STEM_CACHE.with(|c| match c.borrow_mut().as_mut() {
+        Some(tc) => render::render_cached(p, &e.bank, opts, Some(tc)),
+        None => render::render(p, &e.bank, opts),
+    })
+}
+
 fn render_stems(e: &mut Engine, master: bool) -> Result<Stems> {
     e.bank.sync(&e.project.samples);
     let mut p = e.project.clone();
     if !master {
         p.master_effects.clear();
     }
-    let m = render::render(&p, &e.bank, &RenderOptions { keep_stems: true, tail: 2.0, ..Default::default() })?;
+    let m = render_run(&p, e, &RenderOptions { keep_stems: true, tail: 2.0, ..Default::default() })?;
     let n = m.left.len();
     let mut vocal = (vec![0.0f32; n], vec![0.0f32; n]);
     let mut music = (vec![0.0f32; n], vec![0.0f32; n]);
@@ -1684,7 +1717,7 @@ fn air_fix(e: &mut Engine) -> Result<Value> {
     e.bank.sync(&e.project.samples);
     let mut p = e.project.clone();
     p.master_effects.clear();
-    let m = render::render(&p, &e.bank, &RenderOptions { keep_stems: true, tail: 2.0, ..Default::default() })?;
+    let m = render_run(&p, e, &RenderOptions { keep_stems: true, tail: 2.0, ..Default::default() })?;
     let Some(bus) = m.bus_stems.iter().find(|s| s.name == AIR_BUS) else {
         e.project = before;
         return Ok(json!({"applied": false, "note": "the air bus rendered nothing"}));
@@ -2018,6 +2051,7 @@ fn rss_mb() -> f32 {
 /// The whole pipeline.
 fn cover_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let mut clk = Clock::new();
+    let _cache = StemCacheRun::start();
     let take = e.resolve(&s_opt(a, "vocal").or_else(|| s_opt(a, "path")).ok_or_else(|| anyhow!("give vocal (the sung take: wav/mp3)"))?);
     if !take.is_file() {
         bail!("no file at {}", take.display());
