@@ -3011,6 +3011,16 @@ pub fn prof(label: &str, t0: std::time::Instant) {
     }
 }
 
+/// Switch step timing on or off (benchmarks and profiling harnesses).
+pub fn set_profiling(on: bool) {
+    PROFILING.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Take the timings recorded so far, summed per label (ms).
+pub fn prof_take() -> Value {
+    prof_drain()
+}
+
 fn prof_drain() -> Value {
     let mut m = serde_json::Map::new();
     if let Ok(mut v) = prof_store().lock() {
