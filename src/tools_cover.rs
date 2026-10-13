@@ -1642,6 +1642,150 @@ fn silences(l: &[f32], r: &[f32]) -> Vec<(f32, f32)> {
     out
 }
 
+/// cover_song air fix: the judge's air floor (5-11 kHz share >= -22 dB) is
+/// aimed at this, a margin over the floor for the master's limiter.
+pub const AIR_TARGET_DB: f32 = -21.5;
+/// The parallel exciter bus.
+pub const AIR_BUS: &str = "air";
+/// Its corner: the bus hears and returns only what lies above this.
+pub const AIR_CORNER_HZ: f32 = 5000.0;
+/// Most gain the air bus fader gets, dB.
+pub const AIR_MAX_SEND_DB: f32 = 6.0;
+
+/// cover_song air fix. Measures the mix's air share (no master, as `mix`
+/// left it); when it sits under `AIR_TARGET_DB`, adds a parallel exciter bus
+/// fed by the vocal and the bright parts (comps, lead, drums for the hats):
+/// a 48 dB/oct high-pass at 5 kHz, an exciter generating harmonics from that
+/// band, a second 48 dB/oct high-pass so nothing under 5 kHz returns. The
+/// parts' own chains are not touched, so presence (1-4 kHz) and the harsh
+/// band keep what they had; an in-line exciter (v3's way) cancels part of
+/// the vocal's 1-4 kHz and cost 0.9 dB of presence. The sends stay at 0 dB
+/// and the bus fader is solved from one render (mix minus bus stem plus the
+/// bus scaled: every band share is a quadratic in the gain) to land on the
+/// target, capped at +6 dB. A mix that already has its air is left exactly
+/// as it was.
+fn air_fix(e: &mut Engine) -> Result<Value> {
+    let before = e.project.clone();
+    let parts: Vec<String> = ["vox", "comp", "comp2", "lead", "drums"]
+        .iter()
+        .filter(|n| e.project.track_index(n).is_ok())
+        .map(|n| n.to_string())
+        .collect();
+    if parts.is_empty() || e.project.buses.iter().any(|b| b.name == AIR_BUS) {
+        return Ok(json!({"applied": false, "note": "no vocal/bright parts, or an air bus already there"}));
+    }
+    call(e, "add_bus", json!({"name": AIR_BUS, "preset": "none"}))?;
+    for (kind, params) in air_bus_chain() {
+        call(e, "add_effect", json!({"track": AIR_BUS, "type": kind, "params": params}))?;
+    }
+    for p in &parts {
+        call(e, "set_send", json!({"track": p, "bus": AIR_BUS, "db": 0.0}))?;
+    }
+    e.bank.sync(&e.project.samples);
+    let mut p = e.project.clone();
+    p.master_effects.clear();
+    let m = render::render(&p, &e.bank, &RenderOptions { keep_stems: true, tail: 2.0, ..Default::default() })?;
+    let Some(bus) = m.bus_stems.iter().find(|s| s.name == AIR_BUS) else {
+        e.project = before;
+        return Ok(json!({"applied": false, "note": "the air bus rendered nothing"}));
+    };
+    let n = m.left.len().min(bus.left.len());
+    // the judge's shares are energies of the mono mix through linear band
+    // filters, so with the bus at gain g every band's energy is the
+    // quadratic a + 2gb + g^2c of the dry mix (mix minus bus) and the bus:
+    // one pass per band, then the send is solved without rendering again
+    let dry: Vec<f32> = (0..n).map(|i| 0.5 * ((m.left[i] - bus.left[i]) + (m.right[i] - bus.right[i]))).collect();
+    let wet: Vec<f32> = (0..n).map(|i| 0.5 * (bus.left[i] + bus.right[i])).collect();
+    let quad = |x: &[f32], y: &[f32]| -> [f64; 3] {
+        let (mut a, mut b, mut c) = (0.0f64, 0.0f64, 0.0f64);
+        for (u, v) in x.iter().zip(y) {
+            a += (*u as f64) * (*u as f64);
+            b += (*u as f64) * (*v as f64);
+            c += (*v as f64) * (*v as f64);
+        }
+        [a, b, c]
+    };
+    let band = |lo: f32, hi: f32| -> [f64; 3] { quad(&band_pass_judge(&dry, lo, hi), &band_pass_judge(&wet, lo, hi)) };
+    let (q_all, q_air, q_pres, q_harsh, q_mud) = (quad(&dry, &wet), band(5000.0, 11000.0), band(1000.0, 4000.0), band(2000.0, 5000.0), band(250.0, 500.0));
+    let at = |q: &[f64; 3], g_db: f32| -> f64 {
+        let g = crate::dsp::db_to_gain(g_db) as f64;
+        q[0] + 2.0 * g * q[1] + g * g * q[2]
+    };
+    // share in dB at send g (None = the bus off)
+    let share = |q: &[f64; 3], g_db: Option<f32>| -> f32 {
+        let (e, t) = match g_db { Some(g) => (at(q, g), at(&q_all, g)), None => (q[0], q_all[0]) };
+        (10.0 * (e.max(1e-30) / t.max(1e-30)).log10()) as f32
+    };
+    let shares = |g: Option<f32>| json!({"air_db": r1(share(&q_air, g)), "presence_db": r1(share(&q_pres, g)), "harsh_db": r1(share(&q_harsh, g)), "mud_db": r1(share(&q_mud, g))});
+    let air0 = share(&q_air, None);
+    if air0 >= AIR_TARGET_DB {
+        e.project = before;
+        return Ok(json!({"applied": false, "air_db": r1(air0), "target_db": AIR_TARGET_DB}));
+    }
+    // the send that lands the air share on the target (air rises with it)
+    let send = if share(&q_air, Some(AIR_MAX_SEND_DB)) <= AIR_TARGET_DB {
+        AIR_MAX_SEND_DB
+    } else {
+        let (mut lo, mut hi) = (-40.0f32, AIR_MAX_SEND_DB);
+        for _ in 0..30 {
+            let mid = 0.5 * (lo + hi);
+            if share(&q_air, Some(mid)) < AIR_TARGET_DB {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        (hi * 10.0).ceil() / 10.0
+    };
+    let (before_sh, after_sh) = (shares(None), shares(Some(send)));
+    // the sends stay at 0 dB (the exciter's drive is level-dependent); the
+    // bus fader, after the exciter, is the linear gain the solve assumed
+    if let Some(b) = e.project.buses.iter_mut().find(|b| b.name == AIR_BUS) {
+        b.volume_db = send;
+    }
+    Ok(json!({
+        "applied": true,
+        "bus": AIR_BUS,
+        "sources": parts,
+        "bus_db": send,
+        "target_db": AIR_TARGET_DB,
+        "before": before_sh,
+        "expected": after_sh,
+    }))
+}
+
+/// The air bus's chain: a 48 dB/oct low cut at the corner, the exciter, the
+/// same low cut again.
+fn air_bus_chain() -> [(&'static str, Value); 3] {
+    let hp = json!({"bands": [{"kind": "low_cut", "freq": AIR_CORNER_HZ, "q": 0.707, "stages": 4}]});
+    [
+        ("parametric_eq", hp.clone()),
+        ("saturator", json!({"mode": "exciter", "drive_db": 12.0, "tone_hz": AIR_CORNER_HZ, "mix": 1.0, "oversample": true})),
+        ("parametric_eq", hp),
+    ]
+}
+
+/// The judge's band filter (mix_rules::band_energy_db): two 12 dB/oct low
+/// cuts at `lo`, two high cuts at `hi`.
+fn band_pass_judge(x: &[f32], lo: f32, hi: f32) -> Vec<f32> {
+    use crate::dsp::{Biquad, BiquadKind};
+    let mut f = [
+        Biquad::new(BiquadKind::LowCut, lo, 0.707, 0.0),
+        Biquad::new(BiquadKind::LowCut, lo, 0.707, 0.0),
+        Biquad::new(BiquadKind::HighCut, hi, 0.707, 0.0),
+        Biquad::new(BiquadKind::HighCut, hi, 0.707, 0.0),
+    ];
+    x.iter()
+        .map(|v| {
+            let mut y = *v;
+            for b in f.iter_mut() {
+                y = b.process(y);
+            }
+            y
+        })
+        .collect()
+}
+
 /// Render, master to the target and write the file; then the QA report.
 pub fn master_and_qa(e: &mut Engine, plan: &Plan, out: &Path, target_lufs: f32, take_text: Option<(&str, Option<&str>)>, asr: bool) -> Result<(Value, Stems)> {
     let st = render_stems(e, true)?;
@@ -1959,8 +2103,20 @@ fn cover_song(e: &mut Engine, a: &Value) -> Result<Value> {
     clk.mark("build");
     // 5. mix
     let target_presence = f_opt(a, "presence_db").unwrap_or(12.0);
-    let mixed = mix(e, &plan, rec.as_ref().map(|(r, _, _)| r), rec.as_ref().map(|(_, f, _)| f), target_presence)?;
+    let mut mixed = mix(e, &plan, rec.as_ref().map(|(r, _, _)| r), rec.as_ref().map(|(_, f, _)| f), target_presence)?;
     clk.mark("mix");
+    // 5b. air: a parallel exciter bus when the mix is short of the judge's air
+    // floor. On by default only on the free-mode default path (key heard by
+    // yin_gated, no key/scale given); legacy and explicit-key runs take it
+    // only when asked (air_fix:true)
+    let air_default = plan.mode == "free"
+        && s_opt(a, "key_detect").map_or(true, |k| k == "yin_gated")
+        && s_opt(a, "key").is_none()
+        && s_opt(a, "scale").is_none();
+    if b_or(a, "air_fix", air_default) {
+        mixed["air_fix"] = air_fix(e)?;
+        clk.mark("air_fix");
+    }
     // 6. master + QA
     let target = f_opt(a, "target_lufs").unwrap_or(-10.0);
     let take_text = lyr.as_ref().map(|l| l.text.clone());
@@ -2023,6 +2179,7 @@ fn cover_schema() -> Value {
         "identify": {"type": "boolean", "description": "find the record from the lyrics when no reference is given (default true)"},
         "language": {"type": "string", "description": "lyrics language for the transcriber (e.g. hi, en); default auto"},
         "bpm": {"type": "number"}, "key": {"type": "string"}, "scale": {"type": "string"},
+        "air_fix": {"type": "boolean", "description": "when the mix's 5-11 kHz air share is under -21.5 dB (the judge's floor is -22), add a parallel exciter bus (48 dB/oct high-pass at 5 kHz, exciter, high-pass again) fed by the vocal, comps/lead and drums at 0 dB sends, its fader solved to land on -21.5 (max +6 dB); the parts' own chains are untouched. Default: on for free mode with the key heard by yin_gated (no key/scale given), off for legacy and explicit-key runs; false = the mix as it was"},
         "match_tuning": {"type": "boolean", "description": "with key_detect yin_gated and no key given: render every pitched backing instrument at the singer's measured tuning when it is 15+ cents off A440 (drums and the vocal untouched; default true). false = strict A440"},
         "key_detect": {"type": "string", "enum": ["yin_gated", "legacy", "notes"], "description": "free mode: how the singer's key is heard when key/scale are not given. yin_gated (default): pitch frames gated on YIN aperiodicity < 0.15 and -55 dBFS, 120 ms smoothing, octave folding and tuning-offset removal (steadier on noisy, rubato or flat takes); an unknown read (margin < 0.05) falls back to the notes. legacy (= notes): the segmented sung notes only, as before; reproduces earlier renders byte-for-byte"},
         "intro_bars": {"type": "integer"}, "outro_bars": {"type": "integer"}, "section_bars": {"type": "integer"},
@@ -2173,4 +2330,178 @@ pub fn tools() -> Vec<Tool> {
             },
         },
     ]
+}
+
+#[cfg(test)]
+mod air_fix_tests {
+    use super::*;
+
+    /// A short beat whose first two tracks carry cover_song part names, so
+    /// the air fix feeds its bus from them.
+    fn beat(tag: &str) -> Engine {
+        let d = std::env::temp_dir().join(format!("beatbox_air_fix_{tag}"));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        e.call("generate_beat", &json!({"style": "lofi", "seed": 7})).unwrap();
+        e.project.tracks[0].name = "drums".into();
+        e.project.tracks[1].name = "comp".into();
+        e.bank.sync(&e.project.samples);
+        e
+    }
+
+    /// The share of `lo..hi` in the mono mix, as the solve measures it.
+    fn share_db(m: &render::Mix, lo: f32, hi: f32) -> f32 {
+        let x: Vec<f32> = m.left.iter().zip(&m.right).map(|(l, r)| 0.5 * (l + r)).collect();
+        let tot: f64 = x.iter().map(|v| (*v as f64) * (*v as f64)).sum();
+        let b: f64 = band_pass_judge(&x, lo, hi).iter().map(|v| (*v as f64) * (*v as f64)).sum();
+        (10.0 * (b / tot).log10()) as f32
+    }
+
+    fn dry_render(e: &Engine) -> render::Mix {
+        let mut p = e.project.clone();
+        p.master_effects.clear();
+        render::render(&p, &e.bank, &RenderOptions { tail: 2.0, ..Default::default() }).unwrap()
+    }
+
+    /// The closed-form bus gain lands a real render where it said it would,
+    /// and the bus is only an addition: the parts' own chains are untouched.
+    #[test]
+    fn air_fix_closed_form_matches_a_real_render() {
+        let mut e = beat("solve");
+        // darken every part so the mix starts under the target
+        for t in 0..e.project.tracks.len() {
+            let name = e.project.tracks[t].name.clone();
+            call(&mut e, "add_effect", json!({"track": name, "type": "parametric_eq", "params": {"bands": [{"kind": "high_shelf", "freq": 5000.0, "gain_db": -6.0, "q": 0.7}]}})).unwrap();
+        }
+        let before = e.project.clone();
+        let air0 = share_db(&dry_render(&e), 5000.0, 11000.0);
+        assert!(air0 < AIR_TARGET_DB, "the test beat should be dark ({air0})");
+        let r = air_fix(&mut e).unwrap();
+        assert_eq!(r["applied"], json!(true), "{r}");
+        assert!((r["before"]["air_db"].as_f64().unwrap() as f32 - air0).abs() <= 0.06, "{r} vs {air0}");
+        let m = dry_render(&e);
+        let air1 = share_db(&m, 5000.0, 11000.0);
+        let want = r["expected"]["air_db"].as_f64().unwrap() as f32;
+        assert!((air1 - want).abs() <= 0.1, "rendered {air1} vs solved {want}");
+        let g = r["bus_db"].as_f64().unwrap() as f32;
+        if g < AIR_MAX_SEND_DB {
+            assert!(air1 >= AIR_TARGET_DB - 0.1, "{air1}");
+        }
+        assert_eq!(e.project.tracks.len(), before.tracks.len());
+        for (a, b) in e.project.tracks.iter().zip(&before.tracks) {
+            assert_eq!(serde_json::to_value(&a.effects).unwrap(), serde_json::to_value(&b.effects).unwrap());
+            assert_eq!(a.volume_db, b.volume_db);
+        }
+        let bus = e.project.buses.iter().find(|b| b.name == AIR_BUS).unwrap();
+        assert_eq!(bus.volume_db, g);
+        // a second pass finds the bus and changes nothing
+        let p1 = serde_json::to_string(&e.project).unwrap();
+        assert_eq!(air_fix(&mut e).unwrap()["applied"], json!(false));
+        assert_eq!(serde_json::to_string(&e.project).unwrap(), p1);
+    }
+
+    /// A mix that already has its air is left exactly as it was: no bus, no
+    /// sends, the same project bytes (and so the same render).
+    #[test]
+    fn air_fix_leaves_a_bright_mix_alone() {
+        let mut e = beat("bright");
+        for t in 0..2 {
+            let name = e.project.tracks[t].name.clone();
+            call(&mut e, "add_effect", json!({"track": name, "type": "parametric_eq", "params": {"bands": [{"kind": "high_shelf", "freq": 4000.0, "gain_db": 24.0, "q": 0.7}]}})).unwrap();
+        }
+        let air0 = share_db(&dry_render(&e), 5000.0, 11000.0);
+        assert!(air0 >= AIR_TARGET_DB, "the shelved beat should be bright ({air0})");
+        let p0 = serde_json::to_string(&e.project).unwrap();
+        let r = air_fix(&mut e).unwrap();
+        assert_eq!(r["applied"], json!(false), "{r}");
+        assert_eq!(serde_json::to_string(&e.project).unwrap(), p0);
+    }
+
+    /// No cover_song part names, no bus.
+    #[test]
+    fn air_fix_without_parts_does_nothing() {
+        let d = std::env::temp_dir().join("beatbox_air_fix_none");
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        e.call("generate_beat", &json!({"style": "lofi", "seed": 7})).unwrap();
+        for (i, t) in e.project.tracks.iter_mut().enumerate() {
+            t.name = format!("t{i}");
+        }
+        let p0 = serde_json::to_string(&e.project).unwrap();
+        assert_eq!(air_fix(&mut e).unwrap()["applied"], json!(false));
+        assert_eq!(serde_json::to_string(&e.project).unwrap(), p0);
+    }
+
+    /// The bus chain as effects, the way the renderer builds them.
+    fn chain_fx(oversample: bool) -> Vec<crate::fx::Effect> {
+        air_bus_chain()
+            .into_iter()
+            .map(|(kind, params)| {
+                let mut v = params;
+                v["type"] = json!(kind);
+                if kind == "saturator" {
+                    v["oversample"] = json!(oversample);
+                }
+                serde_json::from_value(v).unwrap()
+            })
+            .collect()
+    }
+
+    fn run_chain(fx: &[crate::fx::Effect], x: &[f32]) -> Vec<f32> {
+        let tr = std::collections::HashMap::new();
+        let ctx = crate::fx::FxContext { step_secs: 0.125, triggers: &tr, offset: 0, levels: None };
+        let (mut l, mut r) = (x.to_vec(), x.to_vec());
+        for f in fx {
+            f.process(&mut l, &mut r, &ctx);
+        }
+        l
+    }
+
+    /// Power spectrum of the last half second (Hann), bin width SR/n.
+    fn spectrum(y: &[f32]) -> (Vec<f64>, f32) {
+        let n = 16384usize;
+        let s = &y[y.len() - n..];
+        let w: Vec<f32> = s.iter().enumerate().map(|(i, v)| v * (0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / n as f32).cos())).collect();
+        let fft = Fft::new(n);
+        let (mut re, mut im) = (w, vec![0.0f32; n]);
+        fft.forward(&mut re, &mut im);
+        ((0..n / 2).map(|k| (re[k] as f64).powi(2) + (im[k] as f64).powi(2)).collect(), SR / n as f32)
+    }
+
+    /// Exciter aliasing on the air bus: a 7 kHz tone's harmonics sit at 14
+    /// and 21 kHz; what folds back from above Nyquist (16.1, 9.1, 2.1 kHz)
+    /// and every other inharmonic product is measured against them. And a
+    /// 1 kHz tone (the vocal's band) barely comes back at all.
+    #[test]
+    fn air_bus_chain_aliasing_and_vocal_band() {
+        let n = SR as usize;
+        let tone = |f: f32, a: f32| -> Vec<f32> { (0..n).map(|i| a * (2.0 * std::f32::consts::PI * f * i as f32 / SR).sin()).collect() };
+        let mut ratios = Vec::new();
+        for os in [true, false] {
+            let y = run_chain(&chain_fx(os), &tone(7000.0, 0.3));
+            let (p, bw) = spectrum(&y);
+            let (mut harm, mut other) = (0.0f64, 0.0f64);
+            for (k, e) in p.iter().enumerate() {
+                let f = k as f32 * bw;
+                if f < 1000.0 {
+                    continue;
+                }
+                if [7000.0f32, 14000.0, 21000.0].iter().any(|h| (f - h).abs() <= 60.0) {
+                    harm += e;
+                } else {
+                    other += e;
+                }
+            }
+            let ratio = 10.0 * (other / harm).log10();
+            println!("air bus 7 kHz tone, oversample {os}: inharmonic/aliased products {ratio:.1} dB under the harmonics");
+            ratios.push(ratio);
+        }
+        assert!(ratios[0] < -30.0, "{ratios:?}");
+        let x = tone(1000.0, 0.5);
+        let y = run_chain(&chain_fx(true), &x);
+        let rms = |v: &[f32]| (v[n / 2..].iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / (n / 2) as f64).sqrt();
+        let back = 20.0 * (rms(&y) / rms(&x)).log10();
+        println!("air bus 1 kHz tone at -6 dBFS: comes back {back:.1} dB under the input");
+        assert!(back < -60.0, "{back}");
+    }
 }
