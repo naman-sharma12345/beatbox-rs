@@ -1826,6 +1826,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_d11_baseline_preset_is_a_valid_spec_with_its_locked_values() {
+        let v: Value = serde_json::from_str(include_str!("../presets/d11_baseline.json")).unwrap();
+        let (spec, probs) = validate(&v);
+        // the vocal take and export folder are local paths on the render box
+        let other: Vec<&Problem> = probs.iter().filter(|p| p.path != "/vocal/file" && p.path != "/export/path").collect();
+        assert!(other.is_empty(), "{other:?}");
+        if probs.is_empty() {
+            assert!(spec.is_some());
+        }
+        assert_eq!(v["seed"], json!(6625524094895247u64));
+        assert_eq!(v["vocal"]["chain"]["presence_db"], json!(1.2));
+        let ml = &v["mix"]["master_lift"];
+        assert_eq!((ml["air_db"].clone(), ml["extra_db"].clone(), ml["presence_db"].clone()), (json!(5.0), json!(0.0), json!(5.5)));
+        assert_eq!(v["mix"]["section_gain_db"], json!({"verse": -1.2, "hook": 1.5}));
+    }
+
+    #[test]
     fn a_role_the_beat_does_not_play_is_skipped_not_fatal() {
         // the known bug: perc samples on a beat with no perc part failed the song
         let (spec, probs) = validate(&json!({"genre": "trap", "instruments": {"perc": {"samples": ["/nonexistent/perc.wav"]}, "counter": "catalog:vcsl_pipe_organ_soft"}, "mix": {"levels": {"perc": 2.0}}}));

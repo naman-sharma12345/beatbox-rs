@@ -119,13 +119,34 @@ fn r1(x: f32) -> f32 {
     (x * 10.0).round() / 10.0
 }
 
+/// How far past a gate a reading may sit and still pass, dB (the meters
+/// read to 0.1 dB). Every gate uses this except air.
+pub const GATE_TOLERANCE_DB: f32 = 0.05;
+
+/// The air gate's pass tolerance, dB. Widened from 0.05 to 0.1 on
+/// 2026-10-13 when Naman locked D11 as the baseline mix: D11's air share
+/// read -22.05 against the -22.0 floor (D10's -22.04 passed), a 0.01 dB
+/// move across the old edge. This LOOSENS the air gate by 0.05 dB; the
+/// air_min floor itself (-22) is unchanged, and harshness, presence, mud,
+/// loudness and true peak keep GATE_TOLERANCE_DB. Air -22.15 still fails.
+pub const AIR_TOLERANCE_DB: f32 = 0.1;
+
+/// The pass tolerance for one gate, by the name judge_audio
+/// (`air_5_11k`) or the auto judge (`air_min`) gives it.
+pub fn gate_tolerance_db(name: &str) -> f32 {
+    match name {
+        "air_min" | "air_5_11k" => AIR_TOLERANCE_DB,
+        _ => GATE_TOLERANCE_DB,
+    }
+}
+
 /// The checks, each with pass/fail and the fix; and a score (dB outside
 /// the targets, summed: 0 = every target met).
 pub fn verdict(x: &Reading, t: &JudgeTargets) -> (Vec<Value>, f32) {
     let mut checks = Vec::new();
     let mut score = 0.0f32;
     let mut add = |name: &str, value: f32, over: f32, target: String, fix: &str| {
-        let pass = over <= 0.05;
+        let pass = over <= gate_tolerance_db(name);
         score += over.max(0.0);
         checks.push(json!({"check": name, "value": r1(value), "target": target, "pass": pass, "off_by_db": r1(over.max(0.0)), "fix": if pass { Value::Null } else { json!(fix) }}));
     };
@@ -701,8 +722,8 @@ pub fn build_verdict(file: &str, x: &Reading, crest_db: f32, g: &AutoJudge) -> J
         .iter()
         .map(|(name, value, limit, is_max)| {
             let delta = if *is_max { value - limit } else { limit - value };
-            // the same tolerance judge_audio uses (meters read to 0.1 dB)
-            GateCheck { name: name.to_string(), value: r2(*value), limit: *limit, pass: delta <= 0.05, delta_db: r2(delta) }
+            // the same tolerance judge_audio uses (see gate_tolerance_db)
+            GateCheck { name: name.to_string(), value: r2(*value), limit: *limit, pass: delta <= gate_tolerance_db(name), delta_db: r2(delta) }
         })
         .collect();
     let failed: Vec<String> = checks.iter().filter(|c| !c.pass).map(|c| c.name.clone()).collect();
@@ -931,6 +952,37 @@ mod tests {
         assert!(f.air_db > 0.0 && f.air_db <= 5.0);
     }
 
+    #[test]
+    fn the_air_gate_tolerance_is_0_1_db_and_only_air_got_it() {
+        let g = AutoJudge { enabled: true, ..AutoJudge::profile(GateProfile::Balanced) };
+        let at = |air: f32, harsh: f32, presence: f32| {
+            let x = Reading { lufs: -10.2, true_peak: -1.95, mud: -8.17, presence, harsh, air, clipped_runs: 0, dropouts: vec![], seconds: 90.0 };
+            build_verdict("t.wav", &x, 11.1, &g)
+        };
+        // D11's delivered numbers: passes now (failed on air at 0.05 tolerance)
+        let d11 = at(-22.05, -20.06, -14.58);
+        assert!(d11.pass && d11.failed.is_empty(), "{:?}", d11.failed);
+        assert!(at(-22.09, -20.06, -14.58).pass);
+        // still a gate: 0.15 under fails, and so does D4-style -22.2
+        for air in [-22.15, -22.2] {
+            let v = at(air, -20.06, -14.58);
+            assert_eq!(v.failed, vec!["air_min".to_string()], "air {air}");
+        }
+        // harshness and presence keep the 0.05 tolerance
+        assert_eq!(at(-21.0, -19.93, -14.58).failed, vec!["harshness_max".to_string()]);
+        assert!(at(-21.0, -19.96, -14.58).pass);
+        assert_eq!(at(-21.0, -20.5, -15.07).failed, vec!["presence_min".to_string()]);
+        // judge_audio's check reads the same tolerance
+        let t = g.targets();
+        let air_check = |air: f32| {
+            let x = Reading { lufs: -10.2, true_peak: -1.95, mud: -8.17, presence: -14.58, harsh: -20.06, air, clipped_runs: 0, dropouts: vec![], seconds: 90.0 };
+            let (checks, _) = verdict(&x, &t);
+            checks.into_iter().find(|c| c["check"] == "air_5_11k").unwrap()["pass"].clone()
+        };
+        assert_eq!((air_check(-22.05), air_check(-22.15)), (json!(true), json!(false)));
+        assert_eq!((AIR_TOLERANCE_DB, GATE_TOLERANCE_DB, g.air_min), (0.1, 0.05, -22.0));
+    }
+
     fn d4_reading() -> Reading {
         Reading { lufs: -10.2, true_peak: -1.9, mud: -8.3, presence: -14.7, harsh: -20.2, air: -22.1, clipped_runs: 0, dropouts: vec![], seconds: 92.0 }
     }
@@ -942,7 +994,8 @@ mod tests {
         assert_eq!((g.tp_max, g.harsh_max, g.presence_min, g.air_min, g.mud_max, g.lufs_min, g.lufs_max), (-1.9, -20.0, -15.0, -22.0, -8.0, -11.0, -8.5));
         let v = build_verdict("d4.mp3", &x, 9.25, &g);
         assert_eq!(v.profile, GateProfile::Balanced);
-        // D4's real numbers under B34's gates: only air fails (0.1 under -22)
+        // D4's real numbers under B34's gates: only air fails (0.1 under
+        // -22; in f32 the delta is 0.1000004, just past AIR_TOLERANCE_DB)
         assert!(!v.pass);
         assert_eq!(v.failed, vec!["air_min".to_string()]);
         let air = v.checks.iter().find(|c| c.name == "air_min").unwrap();
