@@ -817,6 +817,16 @@ fn arrangement_lift(e: &mut Engine, spec: &mut SongSpec, voice: Option<&str>, t:
     }
     // layers only (vocal, kick and bass stay), so a dB of thinning lifts less
     let need = ((want - l) * 1.5).min(4.0);
+    // a song whose form came from the producer plan has no spec structure:
+    // its sections are the arrangement's (the energy lanes need them)
+    let derived = spec.structure.is_empty();
+    if derived {
+        spec.structure = structure_from_arrangement(&e.project);
+    }
+    let from = if derived { "arrangement" } else { "spec" };
+    if !spec.structure.iter().any(|s| canon_kind(&s.kind) == "verse") {
+        return Ok(json!({"lift_db": r1(l), "changed": false, "why": "no verse section to thin", "sections_from": from}));
+    }
     let mut moved = Vec::new();
     for s in spec.structure.iter_mut().filter(|s| canon_kind(&s.kind) == "verse") {
         let cur = s.energy.unwrap_or(0.0);
@@ -827,11 +837,61 @@ fn arrangement_lift(e: &mut Engine, spec: &mut SongSpec, voice: Option<&str>, t:
         }
     }
     if moved.is_empty() {
-        return Ok(json!({"lift_db": r1(l), "changed": false, "why": "the verses are as thin as allowed (-6 dB)"}));
+        return Ok(json!({"lift_db": r1(l), "changed": false, "why": "the verses are as thin as allowed (-6 dB)", "sections_from": from}));
     }
-    apply_section_energy(e, spec, voice)?;
+    let applied = apply_section_energy(e, spec, voice)?;
+    let thinned = applied.as_array().map_or(0, |a| a.len());
     let m2 = mix_rules::measure_sections(e, voice)?;
-    Ok(json!({"lift_db_before": r1(l), "verse_energy_db": moved, "lift_db": mix_rules::lift_db(&m2).map(r1), "changed": true}))
+    Ok(json!({"lift_db_before": r1(l), "verse_energy_db": moved, "sections_thinned": thinned, "sections_from": from, "lift_db": mix_rules::lift_db(&m2).map(r1), "changed": thinned > 0}))
+}
+
+/// The song's form as the arrangement plays it (one section per entry,
+/// named as the arrangement names it), for songs whose spec gave none.
+fn structure_from_arrangement(p: &crate::project::Project) -> Vec<SectionSpec> {
+    mix_rules::section_spans(p)
+        .into_iter()
+        .map(|sp| SectionSpec { kind: sp.kind.clone(), bars: ((sp.end_beat - sp.start_beat) / 4.0).round().max(1.0) as u32, name: Some(sp.name), energy: None })
+        .collect()
+}
+
+/// The vocal's share of `mix.section_gain_db`: added to its ride (the
+/// per-section fader lane the balance wrote) as an offset, so the ride keeps
+/// its shape and each listed section sits that many dB over or under it.
+/// `state` holds (ride, ride + offset) across calls: a lane still equal to
+/// what we wrote is not offset twice, and a lane the balance re-wrote from
+/// ours has the offset taken out first.
+fn apply_vocal_section_offset(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, state: &mut Option<(Vec<crate::automation::AutoPoint>, Vec<crate::automation::AutoPoint>)>) -> Result<Value> {
+    use crate::automation::{AutoPoint, AutomationLane, Curve};
+    let Some(v) = voice else { return Ok(json!([])) };
+    if spec.mix.section_gain_db.is_empty() {
+        return Ok(json!([]));
+    }
+    let ti = e.project.track_index(v)?;
+    let spans = mix_rules::section_spans(&e.project);
+    let gain_for = |name: &str, kind: &str| -> f32 {
+        spec.mix.section_gain_db.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).or_else(|| spec.mix.section_gain_db.iter().find(|(k, _)| canon_kind(k) == kind)).map(|(_, g)| g.clamp(-6.0, 6.0)).unwrap_or(0.0)
+    };
+    // a ride point is stepped one beat before its section
+    let off_at = |beat: f32| -> f32 { spans.iter().filter(|s| s.start_beat <= beat + 1.0 + 1e-3).last().map(|s| gain_for(&s.name, &s.kind)).unwrap_or(0.0) };
+    let cur = e.project.automation.iter().find(|l| l.target == v && l.param == "volume").map(|l| l.points.clone());
+    let ride: Vec<AutoPoint> = match (cur, state.as_ref()) {
+        (Some(c), Some((base, wrote))) if &c == wrote => base.clone(),
+        (Some(c), Some(_)) => c.iter().map(|p| AutoPoint { value: p.value - off_at(p.beat), ..p.clone() }).collect(),
+        (Some(c), None) => c,
+        // no ride (a flat vocal): the fader at every section start
+        (None, _) => {
+            let f = e.project.tracks[ti].volume_db;
+            spans.iter().enumerate().map(|(i, s)| AutoPoint { beat: if i == 0 { 0.0 } else { (s.start_beat - 1.0).max(0.0) }, value: f, curve: Curve::Step }).collect()
+        }
+    };
+    let wrote: Vec<AutoPoint> = ride.iter().map(|p| AutoPoint { value: (p.value + off_at(p.beat)).clamp(-60.0, 24.0), ..p.clone() }).collect();
+    e.project.automation.retain(|l| !(l.target == v && l.param == "volume"));
+    let mut lane = AutomationLane::new(v, "volume");
+    lane.points = wrote.clone();
+    e.project.automation.push(lane);
+    *state = Some((ride, wrote));
+    let done: Vec<Value> = spans.iter().map(|s| (s, gain_for(&s.name, &s.kind))).filter(|(_, g)| g.abs() >= 0.05).map(|(s, g)| json!({"section": s.name, "offset_db": (g * 10.0).round() / 10.0})).collect();
+    Ok(json!({"track": v, "how": "offset on the vocal's ride lane", "sections": done}))
 }
 
 /// `mix.section_gain_db`: each listed section (by name, e.g. "hook2", or
@@ -1239,6 +1299,8 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     let mut spec_e = spec.clone();
     mix.insert("section_energy".into(), apply_section_energy(e, &spec_e, voice.as_deref())?);
     mix.insert("section_gain".into(), apply_section_gain(e, &spec_e)?);
+    let mut vocal_ride = None;
+    mix.insert("vocal_section_offset".into(), apply_vocal_section_offset(e, &spec_e, voice.as_deref(), &mut vocal_ride)?);
     // the hook's lift comes from the arrangement (verses thin their layers),
     // never the master's volume, which the limiter would give back
     let lift = arrangement_lift(e, &mut spec_e, voice.as_deref(), &t)?;
@@ -1292,6 +1354,7 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
         // faders may have moved since: the energy lanes follow them
         apply_section_energy(e, &spec_e, voice.as_deref())?;
         apply_section_gain(e, &spec_e)?;
+        apply_vocal_section_offset(e, &spec_e, voice.as_deref(), &mut vocal_ride)?;
         let full = e.mix()?;
         d = crate::tools_delivery::deliver(&full.left, &full.right, &path, &o)?;
         checks = mix_rules::check(&path, &pre, &spans, e.project.bpm, &t)?;
@@ -1915,6 +1978,63 @@ mod tests {
         compose_beat(&mut e2, &plain, 7, &mut Vec::new()).unwrap();
         assert_eq!(apply_section_gain(&mut e2, &plain).unwrap(), json!([]));
         assert!(e2.project.automation.iter().all(|l| !(l.target == "beat" && l.param == "volume")));
+    }
+
+    #[test]
+    fn section_gain_offsets_the_vocal_ride_without_flattening_it() {
+        use crate::automation::{AutoPoint, AutomationLane, Curve};
+        let v = json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}], "mix": {"section_gain_db": {"verse": -1.2, "hook": 1.5}}});
+        let spec = validate(&v).0.unwrap();
+        let mut e = Engine::new(std::env::temp_dir().join(format!("song_vocoff_{}", std::process::id())));
+        compose_beat(&mut e, &spec, 7, &mut Vec::new()).unwrap();
+        // "lead" stands in for the vocal: a ride the balance wrote (verse -3, hook -1)
+        let mut lane = AutomationLane::new("lead", "volume");
+        lane.points = vec![AutoPoint { beat: 0.0, value: -3.0, curve: Curve::Step }, AutoPoint { beat: 15.0, value: -1.0, curve: Curve::Step }];
+        e.project.automation.push(lane);
+        let vals = |e: &Engine| e.project.automation.iter().find(|l| l.target == "lead" && l.param == "volume").unwrap().points.iter().map(|p| p.value).collect::<Vec<_>>();
+        let close = |a: &[f32], b: &[f32]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+        let mut st = None;
+        let out = apply_vocal_section_offset(&mut e, &spec, Some("lead"), &mut st).unwrap();
+        // the ride's shape (hook 2 dB over verse) stays; verse -1.2, hook +1.5 on top
+        assert!(close(&vals(&e), &[-4.2, 0.5]), "{:?} {out}", vals(&e));
+        // every delivery round calls it again: not stacked
+        apply_vocal_section_offset(&mut e, &spec, Some("lead"), &mut st).unwrap();
+        assert!(close(&vals(&e), &[-4.2, 0.5]), "{:?}", vals(&e));
+        // the balance re-writes the lane from ours (+0.5 in the hook): that move is kept, the offset not doubled
+        e.project.automation.iter_mut().find(|l| l.target == "lead" && l.param == "volume").unwrap().points[1].value += 0.5;
+        apply_vocal_section_offset(&mut e, &spec, Some("lead"), &mut st).unwrap();
+        assert!(close(&vals(&e), &[-4.2, 1.0]), "{:?}", vals(&e));
+        assert!(close(&st.as_ref().unwrap().0.iter().map(|p| p.value).collect::<Vec<_>>(), &[-3.0, -0.5]));
+        // off by default: the ride is left alone
+        let plain = validate(&json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]})).0.unwrap();
+        let mut st2 = None;
+        assert_eq!(apply_vocal_section_offset(&mut e, &plain, Some("lead"), &mut st2).unwrap(), json!([]));
+        assert!(close(&vals(&e), &[-4.2, 1.0]));
+    }
+
+    #[test]
+    fn verse_thinning_works_when_the_form_comes_from_the_arrangement() {
+        let v = json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]});
+        let spec = validate(&v).0.unwrap();
+        let mut e = Engine::new(std::env::temp_dir().join(format!("song_thin_{}", std::process::id())));
+        compose_beat(&mut e, &spec, 7, &mut Vec::new()).unwrap();
+        // the producer plan's form: no spec structure (as in a song built without one)
+        let mut spec_e = spec.clone();
+        spec_e.structure.clear();
+        let mut t = spec.targets();
+        t.drop_lift_db = [20.0, 21.0];
+        let out = arrangement_lift(&mut e, &mut spec_e, None, &t).unwrap();
+        assert_eq!(out["changed"], true, "{out}");
+        assert_eq!(out["sections_from"], "arrangement", "{out}");
+        assert!(out["sections_thinned"].as_u64().unwrap() >= 1, "{out}");
+        let verse = spec_e.structure.iter().find(|s| canon_kind(&s.kind) == "verse").unwrap();
+        assert!(verse.energy.unwrap() <= -3.9, "{out}");
+        // a layer actually plays softer in the verse than in the hook
+        let thin = e.project.automation.iter().filter(|l| l.param == "volume" && !energy_floor_layer(&l.target) && e.project.tracks.iter().any(|t| t.name == l.target)).any(|l| l.value_at(8.0).unwrap() < l.value_at(24.0).unwrap() - 3.0);
+        assert!(thin, "{out}");
+        assert!(out["lift_db"].as_f64().unwrap() > out["lift_db_before"].as_f64().unwrap(), "{out}");
+        // kick and bass are never thinned
+        assert!(e.project.automation.iter().all(|l| !(l.param == "volume" && energy_floor_layer(&l.target))));
     }
 
     #[test]
