@@ -226,6 +226,16 @@ pub struct MixSpec {
     /// added, so earlier renders stay bit-identical.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub part_eq: BTreeMap<String, PartEq>,
+    /// Masking-aware auto-EQ (see `crate::auto_eq`): after the first vocal
+    /// balance, measure where the vocal collides with each instrument (and
+    /// the kick with the bass) and cut the other part there: at most 2 bells
+    /// per part, -1..-3 dB, never the vocal, only into free slots of the
+    /// part's EQ and never near a band the user set. The cuts are written
+    /// into the stored spec's /mix/part_eq as bells marked "auto": true
+    /// (each build drops and re-measures them) and listed in the result's
+    /// mix.auto_eq. Off (false) by default: nothing is measured or added.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub auto_eq: bool,
 }
 
 /// A shelf of a part EQ: corner (Hz) and gain (dB).
@@ -244,6 +254,11 @@ pub struct EqBell {
     pub db: f32,
     #[serde(default = "default_bell_q")]
     pub q: f32,
+    /// Written by the auto-EQ (/mix/auto_eq) into the delivered spec, not by
+    /// a person: every build drops these and measures again (with auto_eq
+    /// off they are dropped and nothing replaces them).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto: bool,
 }
 
 fn default_bell_q() -> f32 {
@@ -280,7 +295,11 @@ impl PartEq {
             }
         }
         for b in self.bells.iter().filter(|b| b.db.abs() > 1e-3) {
-            out.push(json!({"kind": "bell", "freq": b.hz, "gain_db": b.db, "q": b.q}));
+            if b.auto {
+                out.push(json!({"kind": "bell", "freq": b.hz, "gain_db": b.db, "q": b.q, "auto": true}));
+            } else {
+                out.push(json!({"kind": "bell", "freq": b.hz, "gain_db": b.db, "q": b.q}));
+            }
         }
         out
     }
@@ -319,7 +338,7 @@ impl PartEq {
 impl Default for MixSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None, builds: false, section_gain_db: BTreeMap::new(), part_eq: BTreeMap::new() }
+        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None, builds: false, section_gain_db: BTreeMap::new(), part_eq: BTreeMap::new(), auto_eq: false }
     }
 }
 
@@ -463,7 +482,7 @@ const TOP_ALIAS: &[(&str, &str)] = &[("tempo", "bpm"), ("sections", "structure")
 const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain", "lock", "flex"];
 const PHRASE_KEYS: &[&str] = &["src_s", "src", "len_s", "len", "end_s", "section", "bar", "beat", "start_beat", "at_s", "start_s", "gain_db", "name", "fade_in_ms", "fade_out_ms"];
 const SECTION_KEYS: &[&str] = &["kind", "bars", "name", "energy"];
-const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds", "section_gain_db", "part_eq"];
+const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds", "section_gain_db", "part_eq", "auto_eq"];
 const MASTER_KEYS: &[&str] = &["lufs", "true_peak", "preserve_dynamics"];
 const EXPORT_KEYS: &[&str] = &["path", "format", "bitrate_kbps"];
 const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db", "brighten", "presence_db", "presence_hz"];
@@ -1177,6 +1196,215 @@ fn add_part_eq(e: &mut Engine, track: &str, pe: &PartEq, log: &mut Vec<String>) 
     Ok(Some(json!({"track": track, "bands": bands})))
 }
 
+/// Auto bands (/mix/auto_eq) an earlier build left in the project come
+/// out: each build measures again, and with auto_eq off none stay. A
+/// parametric EQ that held only auto bands goes with them. A project
+/// without auto bands is not touched. Returns how many came out.
+fn strip_auto_bands(e: &mut Engine) -> usize {
+    use crate::fx::Effect;
+    let has = |f: &Effect| matches!(f, Effect::ParametricEq(p) if p.bands.iter().any(|b| b.auto));
+    let mut n = 0;
+    for t in e.project.tracks.iter_mut().filter(|t| t.effects.iter().any(has)) {
+        t.effects.retain_mut(|f| match f {
+            Effect::ParametricEq(p) if p.bands.iter().any(|b| b.auto) => {
+                let all = p.bands.iter().all(|b| b.auto);
+                let before = p.bands.len();
+                p.bands.retain(|b| !b.auto);
+                n += before - p.bands.len();
+                !all
+            }
+            _ => true,
+        });
+    }
+    n
+}
+
+/// Bells marked "auto" in a spec's /mix/part_eq (written by an earlier
+/// build's auto-EQ) come out; part EQs left empty go too. Returns how many.
+fn strip_auto_bells(v: &mut Value) -> usize {
+    let Some(pe) = v.pointer_mut("/mix/part_eq").and_then(|x| x.as_object_mut()) else {
+        return 0;
+    };
+    let mut n = 0;
+    for entry in pe.values_mut() {
+        if let Some(bells) = entry.get_mut("bells").and_then(|b| b.as_array_mut()) {
+            let before = bells.len();
+            bells.retain(|b| b.get("auto") != Some(&Value::Bool(true)));
+            n += before - bells.len();
+            if bells.is_empty() && before > 0 {
+                entry.as_object_mut().map(|o| o.remove("bells"));
+            }
+        }
+    }
+    if n > 0 {
+        pe.retain(|_, x| x.as_object().map_or(true, |o| !o.is_empty()));
+        if pe.is_empty() {
+            v.pointer_mut("/mix").and_then(|m| m.as_object_mut()).map(|m| m.remove("part_eq"));
+        }
+    }
+    n
+}
+
+/// The pairs the auto-EQ measures: (protected part, part that takes the
+/// cut, band range). The vocal against every other track; the kick against
+/// the bass, cutting the bass (see `KICK_BASS_WHY`).
+fn auto_eq_pairs(e: &Engine, voice: Option<&str>) -> Vec<(String, String, (f32, f32))> {
+    use crate::auto_eq as ae;
+    let mut out = Vec::new();
+    if let Some(v) = voice {
+        for t in e.project.tracks.iter().filter(|t| t.name != v) {
+            out.push((v.to_string(), t.name.clone(), ae::VOCAL_RANGE));
+        }
+    }
+    let (k, b) = (crate::producer::track_name("kick"), crate::producer::track_name("bass"));
+    if e.project.track_index(&k).is_ok() && e.project.track_index(&b).is_ok() && Some(b.as_str()) != voice {
+        out.push((k, b, ae::LOW_RANGE));
+    }
+    out
+}
+
+/// Why the bass, not the kick, takes the kick/bass cut.
+const KICK_BASS_WHY: &str = "the bass is cut, the kick kept: the kick is the short transient that carries the hook's punch (drop_lift); the bass is sustained and already ducked by the kick, so a bell on the bass at the kick's band clears the kick without thinning it";
+
+/// Each pair's collision on the stems as the project renders now, and
+/// (with a vocal) the vocal's against the whole beat (every other track
+/// summed): the aggregate.
+fn auto_eq_measure(e: &mut Engine, pairs: &[(String, String, (f32, f32))], voice: Option<&str>) -> Result<(Vec<Option<crate::auto_eq::PairStat>>, Option<crate::auto_eq::PairStat>)> {
+    use crate::auto_eq as ae;
+    use rayon::prelude::*;
+    let p = e.project.clone();
+    let m = e.render_stems_all(&p)?;
+    let want: std::collections::BTreeSet<&str> = pairs.iter().flat_map(|(a, b, _)| [a.as_str(), b.as_str()]).collect();
+    let frames: BTreeMap<String, Vec<Vec<f32>>> = m
+        .stems
+        .par_iter()
+        .filter(|s| want.contains(s.name.as_str()) && !s.left.is_empty())
+        .map(|s| (s.name.clone(), ae::band_frames(&ae::mono(&s.left, &s.right))))
+        .collect();
+    let beat = voice.and_then(|v| {
+        let parts: Vec<_> = m.stems.iter().filter(|s| s.name != v && !s.left.is_empty()).collect();
+        let n = parts.iter().map(|s| s.left.len()).max()?;
+        let mut sum = vec![0f32; n];
+        for s in parts {
+            for (i, (l, r)) in s.left.iter().zip(&s.right).enumerate() {
+                sum[i] += 0.5 * (l + r);
+            }
+        }
+        Some(ae::band_frames(&sum))
+    });
+    drop(m);
+    let stats = pairs
+        .iter()
+        .map(|(a, b, r)| match (frames.get(a), frames.get(b)) {
+            (Some(fa), Some(fb)) => Some(ae::pair_stat(fa, fb, *r)),
+            _ => None,
+        })
+        .collect();
+    let agg = match (voice.and_then(|v| frames.get(v)), beat) {
+        (Some(fv), Some(fb)) => Some(ae::pair_stat(fv, &fb, ae::VOCAL_RANGE)),
+        _ => None,
+    };
+    Ok((stats, agg))
+}
+
+/// /mix/auto_eq: measure, cut, measure again (see `crate::auto_eq`). The
+/// vocal is never cut; a user's part EQ bands are never moved (auto bells
+/// join that EQ after them, in its free slots).
+fn apply_auto_eq(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &mut Vec<String>) -> Result<Value> {
+    use crate::auto_eq as ae;
+    use crate::fx::{Effect, EqBand, EqBandKind};
+    let pairs = auto_eq_pairs(e, voice);
+    if pairs.is_empty() {
+        log.push("auto EQ: nothing to measure (no vocal, and no kick and bass)".into());
+        return Ok(json!({"enabled": true, "pairs": [], "cuts": []}));
+    }
+    let (before, agg0) = auto_eq_measure(e, &pairs, voice)?;
+    // candidates per part that takes a cut (never the vocal)
+    let mut cands: BTreeMap<String, Vec<ae::Cand>> = BTreeMap::new();
+    for ((a, b, r), st) in pairs.iter().zip(&before) {
+        if Some(b.as_str()) == voice {
+            continue;
+        }
+        if let Some(st) = st {
+            let (q, cut) = if *r == ae::LOW_RANGE { (ae::LOW_Q, ae::LOW_RANGE) } else { (ae::AUTO_Q, ae::VOCAL_CUT_RANGE) };
+            cands.entry(b.clone()).or_default().extend(ae::candidates(st, &format!("{a}/{b}"), q, cut));
+        }
+    }
+    let mut scratch = Vec::new();
+    let user_keys: BTreeMap<String, String> = resolve_part_eq_keys(e, spec, &mut scratch)?.into_iter().collect();
+    let mut cuts = Vec::new();
+    for (track, cs) in &cands {
+        if cs.is_empty() || Some(track.as_str()) == voice {
+            continue;
+        }
+        let key = user_keys.get(track).cloned();
+        let user = key.as_ref().and_then(|k| spec.mix.part_eq.get(k));
+        let (bells, skipped) = ae::plan_part(track, cs, user);
+        log.extend(skipped);
+        if bells.is_empty() {
+            continue;
+        }
+        let bands: Vec<EqBand> = bells.iter().map(|b| EqBand { kind: EqBandKind::Bell, freq: b.hz, gain_db: b.db, q: b.q, auto: true, ..Default::default() }).collect();
+        // the user's own EQ on this part (as `add_part_eq` put it), if any
+        let i = e.project.track_index(track)?;
+        let mine = user.map(|u| u.bands()).filter(|b| !b.is_empty()).and_then(|want| {
+            e.project.tracks[i].effects.iter().rposition(|f| match f {
+                Effect::ParametricEq(p) => {
+                    p.bands.len() == want.len()
+                        && p.bands.iter().zip(&want).all(|(b, w)| {
+                            serde_json::to_value(b.kind).ok().as_ref() == w.get("kind")
+                                && Some(b.freq as f64) == w["freq"].as_f64()
+                                && Some(b.gain_db as f64) == w["gain_db"].as_f64()
+                                && Some(b.q as f64) == w["q"].as_f64()
+                        })
+                }
+                _ => false,
+            })
+        });
+        let merged = match mine {
+            Some(j) => {
+                if let Effect::ParametricEq(p) = &mut e.project.tracks[i].effects[j] {
+                    p.bands.extend(bands);
+                }
+                true
+            }
+            None => {
+                e.call_nested("add_effect", &json!({"track": track, "type": "parametric_eq", "params": {"bands": bands}}), "song")?;
+                false
+            }
+        };
+        for b in &bells {
+            let pair = cs.iter().find(|c| c.hz.round() == b.hz).map(|c| c.pair.clone()).unwrap_or_default();
+            log.push(format!("auto EQ: {track} {:.0} Hz {:+.1} dB Q{} ({pair}){}", b.hz, b.db, b.q, if merged { ", in the user's part EQ after its bands" } else { "" }));
+            let r1 = |x: f32| (x as f64 * 10.0).round() / 10.0;
+            cuts.push(json!({"part": track, "key": key.clone().unwrap_or_else(|| track.clone()), "hz": r1(b.hz), "db": r1(b.db), "q": r1(b.q), "pair": pair, "merged_into_user_eq": merged}));
+        }
+    }
+    let (after, agg1) = if cuts.is_empty() { (before.clone(), agg0.clone()) } else { auto_eq_measure(e, &pairs, voice)? };
+    let pct = |x: f32| (x * 1000.0).round() / 10.0;
+    let mut rows = Vec::new();
+    for (((a, b, r), st0), st1) in pairs.iter().zip(&before).zip(&after) {
+        let (Some(st0), Some(st1)) = (st0, st1) else {
+            continue;
+        };
+        let mut row = json!({"pair": format!("{a}/{b}"), "cut_part": b, "range_hz": [r.0, r.1], "overlap_before_pct": pct(st0.overlap), "overlap_after_pct": pct(st1.overlap), "frames_both_active": st0.frames});
+        if a == &crate::producer::track_name("kick") {
+            row["why"] = json!(KICK_BASS_WHY);
+        }
+        if st0.overlap > 0.0 && cuts.iter().any(|c| c["pair"] == row["pair"]) {
+            log.push(format!("auto EQ: {a}/{b} overlap {:.1}% -> {:.1}%", pct(st0.overlap), pct(st1.overlap)));
+        }
+        rows.push(row);
+    }
+    log.push(format!("auto EQ: {} cut(s) on {} part(s)", cuts.len(), cuts.iter().map(|c| c["part"].as_str().unwrap_or("")).collect::<std::collections::BTreeSet<_>>().len()));
+    let mut out = json!({"enabled": true, "metric": "overlap = sum(min(La, Lb)) / sum(La): 1/3-octave band loudness (power^0.3) over frames where both parts play; a = the protected part", "min_pair_overlap_pct": pct(ae::MIN_PAIR_OVERLAP), "pairs": rows, "cuts": cuts});
+    if let (Some(a0), Some(a1)) = (&agg0, &agg1) {
+        log.push(format!("auto EQ: vocal/beat (every other track summed) overlap {:.1}% -> {:.1}%", pct(a0.overlap), pct(a1.overlap)));
+        out["aggregate"] = json!({"pair": "vocal/beat", "what": "the vocal against every other track summed", "overlap_before_pct": pct(a0.overlap), "overlap_after_pct": pct(a1.overlap)});
+    }
+    Ok(out)
+}
+
 /// Recorded instruments for the roles that asked for them (after compose,
 /// before the level balance, so the balance hears the real sound).
 fn swap_instruments(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<()> {
@@ -1473,6 +1701,11 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     let mut tl = std::time::Instant::now();
     let voice = spec.vocal.as_ref().map(|v| v.track.clone()).filter(|v| e.project.track_index(v).is_ok());
     let mut mix = Map::new();
+    // auto bands an earlier build left are re-measured (or, off, dropped)
+    let stale = strip_auto_bands(e);
+    if stale > 0 {
+        log.push(format!("auto EQ: took out {stale} auto band(s) from the last build"));
+    }
     // the beat's bright parts are voiced softer before anything is measured
     mix.insert("source_tone".into(), mix_rules::soften_beat_source_with(e, voice.as_deref(), &spec.mix.levels)?);
     mix.insert("peaks".into(), mix_rules::tame_peaks(e)?);
@@ -1482,6 +1715,12 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
         // level first (the top-end rule compares the beat to the vocal as
         // it will sit), then the top end, then the level again
         mix_rules::balance_vocal(e, v, &t, 2)?;
+    }
+    // masking cuts with the faders set, before the tone rules and the
+    // delivery loop (which then hear them)
+    if spec.mix.auto_eq {
+        mix.insert("auto_eq".into(), apply_auto_eq(e, spec, voice.as_deref(), log)?);
+        lap(log, &mut tl, "auto EQ");
     }
     mix.insert("top_end".into(), mix_rules::tame_top(e, voice.as_deref(), &t, 0.0)?);
     if let Some(v) = &voice {
@@ -1730,6 +1969,11 @@ pub fn resolve_vocal_take(spec_v: &Value, workdir: Option<&Path>) -> (Value, Opt
 
 pub fn build(e: &mut Engine, spec_v: &Value, scope: Scope) -> Result<Value> {
     let t0 = std::time::Instant::now();
+    // auto bells from an earlier build are measured again (or, with
+    // /mix/auto_eq off, dropped): the build starts from the user's bands
+    let mut cleaned = spec_v.clone();
+    let stale_bells = strip_auto_bells(&mut cleaned);
+    let spec_v = &cleaned;
     let (resolved, vocal_warning) = resolve_vocal_take(spec_v, Some(&e.workdir));
     if let Some(w) = &vocal_warning {
         eprintln!("warning: {w}");
@@ -1749,6 +1993,9 @@ pub fn build(e: &mut Engine, spec_v: &Value, scope: Scope) -> Result<Value> {
         _ => seed_for(&spec),
     };
     let mut log = Vec::new();
+    if stale_bells > 0 {
+        log.push(format!("auto EQ: dropped {stale_bells} auto bell(s) the last build wrote into /mix/part_eq"));
+    }
     if scope == Scope::Full {
         compose_beat(e, &spec, seed, &mut log)?;
     }
@@ -1772,6 +2019,8 @@ pub fn build(e: &mut Engine, spec_v: &Value, scope: Scope) -> Result<Value> {
     if let Value::Object(m) = &mut stored {
         m.remove("seed");
     }
+    // the auto cuts go into the stored spec, marked auto
+    write_auto_cuts(&mut stored, &mix)?;
     e.project.song = Some(SongState { spec: stored, seed, sections: spans.clone(), audio: Some(path.to_string_lossy().to_string()), checks: checks.clone() });
     if !spec.title.is_empty() {
         e.project.name = spec.title.clone();
@@ -1792,6 +2041,21 @@ pub fn build(e: &mut Engine, spec_v: &Value, scope: Scope) -> Result<Value> {
         "wall_seconds": (t0.elapsed().as_secs_f32() * 10.0).round() / 10.0,
         "next": ["song_patch {set: {\"/mix/vocal_over_beat_db\": 8}} re-mixes only", "song_patch {set: {\"/vocal/phrases/0/beat\": 2}} rebuilds only the vocal", "song_get shows the spec; undo restores the song before this call"],
     }))
+}
+
+/// The auto-EQ's cuts (a build result's mix.auto_eq.cuts) into a stored
+/// spec's /mix/part_eq, each bell marked "auto": true.
+fn write_auto_cuts(stored: &mut Value, mix: &Value) -> Result<()> {
+    for c in mix["auto_eq"]["cuts"].as_array().into_iter().flatten() {
+        let key = c["key"].as_str().unwrap_or_default().replace('~', "~0").replace('/', "~1");
+        let bell = json!({"hz": c["hz"], "db": c["db"], "q": c["q"], "auto": true});
+        let bells = format!("/mix/part_eq/{key}/bells");
+        if !stored.pointer(&bells).is_some_and(|b| b.is_array()) {
+            set_pointer(stored, &bells, json!([]))?;
+        }
+        set_pointer(stored, &format!("{bells}/-"), bell)?;
+    }
+    Ok(())
 }
 
 /// Set (or remove with null) one value by JSON pointer, creating objects on
@@ -1959,6 +2223,9 @@ pub fn patch_song(e: &mut Engine, set: &Map<String, Value>, remove: &[String]) -
     }
     let mut r = build(e, &spec_with_seed, scope)?;
     if let Some(s) = e.project.song.as_mut() {
+        // as `build` stores it: the last auto cuts out, this build's in
+        strip_auto_bells(&mut spec);
+        write_auto_cuts(&mut spec, &r["mix"])?;
         s.spec = spec;
     }
     r["changed_paths"] = json!(set.keys().chain(remove.iter()).collect::<Vec<_>>());
@@ -2197,7 +2464,7 @@ mod tests {
         assert!(plain.mix.part_eq.is_empty());
         assert!(serde_json::to_value(&plain.mix).unwrap().get("part_eq").is_none());
         // a band at 0 dB adds nothing
-        assert!(PartEq { low_shelf: Some(EqShelf { hz: 100.0, db: 0.0 }), high_shelf: None, bells: vec![EqBell { hz: 1000.0, db: 0.0, q: 1.0 }] }.bands().is_empty());
+        assert!(PartEq { low_shelf: Some(EqShelf { hz: 100.0, db: 0.0 }), high_shelf: None, bells: vec![EqBell { hz: 1000.0, db: 0.0, q: 1.0, auto: false }] }.bands().is_empty());
         let bad = |pe: Value| validate(&json!({"genre": "trap", "mix": {"part_eq": pe}})).1.into_iter().map(|p| p.path).collect::<Vec<_>>();
         assert!(bad(json!({"": {"bells": [{"hz": 1000, "db": 1}]}})).contains(&"/mix/part_eq".to_string()));
         // which part a key names is checked when the beat exists (track names are known then)
@@ -2625,6 +2892,130 @@ mod tests {
         let w = validate_tool(&mut e, &json!({"genre": "badshah", "structure": [{"kind": "verse", "bars": 8}]})).unwrap();
         assert_eq!(w["sections"], json!(["verse1"]));
         assert!(w.get("sections_from").is_none());
+    }
+
+    fn auto_spec(dir: &Path, extra: Value) -> Value {
+        let mut v = json!({"genre": "boom_bap", "bpm": 90, "seed": 3,
+            "structure": [{"kind": "intro", "bars": 2}, {"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}],
+            "export": {"path": dir.join("t.wav").to_string_lossy(), "format": "wav"}});
+        if let Value::Object(m) = extra {
+            for (k, x) in m {
+                v[k] = x;
+            }
+        }
+        v
+    }
+
+    fn auto_bands(e: &Engine) -> Vec<(String, f32, f32, f32)> {
+        let mut out = Vec::new();
+        for t in &e.project.tracks {
+            for f in &t.effects {
+                if let crate::fx::Effect::ParametricEq(p) = f {
+                    out.extend(p.bands.iter().filter(|b| b.auto).map(|b| (t.name.clone(), b.freq, b.gain_db, b.q)));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn auto_eq_off_is_the_same_song_as_no_auto_eq_key() {
+        let dir = std::env::temp_dir().join(format!("bb_autoeq_off_{}", std::process::id()));
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let mut e1 = Engine::new(a.clone());
+        let r1 = e1.call("song_create", &auto_spec(&a, json!({}))).unwrap();
+        let mut e2 = Engine::new(b.clone());
+        let r2 = e2.call("song_create", &auto_spec(&b, json!({"mix": {"auto_eq": false}}))).unwrap();
+        assert_eq!(std::fs::read(r1["audio"].as_str().unwrap()).unwrap(), std::fs::read(r2["audio"].as_str().unwrap()).unwrap(), "auto_eq false renders the same bytes");
+        assert_eq!(serde_json::to_value(&e1.project.tracks).unwrap(), serde_json::to_value(&e2.project.tracks).unwrap());
+        assert!(r2["mix"].get("auto_eq").is_none());
+        assert!(auto_bands(&e2).is_empty());
+        assert!(!r2["log"].as_array().unwrap().iter().any(|l| l.as_str().unwrap_or("").contains("auto EQ")));
+        let sp: SongSpec = serde_json::from_value(json!({"genre": "trap", "mix": {"auto_eq": false}})).unwrap();
+        assert!(serde_json::to_value(&sp.mix).unwrap().get("auto_eq").is_none(), "false is not written back");
+        assert!(serde_json::to_value(crate::fx::EqBand::default()).unwrap().get("auto").is_none(), "a band not written by the auto-EQ is stored as before");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_eq_cuts_the_bass_not_the_kick_writes_auto_bells_and_rebuilds_clean() {
+        let dir = std::env::temp_dir().join(format!("bb_autoeq_on_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = Engine::new(dir.clone());
+        let r = e.call("song_create", &auto_spec(&dir, json!({"mix": {"auto_eq": true}}))).unwrap();
+        let ae = &r["mix"]["auto_eq"];
+        let pair = ae["pairs"].as_array().unwrap().iter().find(|p| p["pair"] == "kick/bass").cloned().expect("kick/bass measured");
+        assert!(pair["why"].as_str().unwrap().contains("the bass is cut"), "{pair}");
+        let cuts = ae["cuts"].as_array().unwrap().clone();
+        assert!(!cuts.is_empty(), "the kick and bass collide here: {ae}");
+        assert!(cuts.len() <= crate::auto_eq::MAX_AUTO_BELLS, "{ae}");
+        for c in &cuts {
+            assert_eq!(c["part"], "bass", "{c}");
+            let db = c["db"].as_f64().unwrap();
+            assert!((-3.0..=-1.0).contains(&db), "{c}");
+        }
+        assert!(pair["overlap_after_pct"].as_f64().unwrap() < pair["overlap_before_pct"].as_f64().unwrap(), "{pair}");
+        let bands = auto_bands(&e);
+        assert_eq!(bands.len(), cuts.len());
+        assert!(bands.iter().all(|b| b.0 == "bass" && b.2 <= -1.0 && b.2 >= -3.0), "{bands:?}");
+        // the delivered spec carries them, marked auto
+        let stored = |e: &Engine| e.project.song.as_ref().unwrap().spec.clone();
+        let bells = stored(&e)["mix"]["part_eq"]["bass"]["bells"].as_array().unwrap().clone();
+        assert_eq!(bells.len(), cuts.len());
+        assert!(bells.iter().all(|b| b["auto"] == true), "{bells:?}");
+        assert!(r["log"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().starts_with("auto EQ: bass ")), "listed in the log");
+        // a mix-only rebuild measures again: no pile-up
+        e.call("song_patch", &json!({"set": {"/master/lufs": -12}})).unwrap();
+        assert_eq!(auto_bands(&e).len(), cuts.len());
+        assert_eq!(stored(&e)["mix"]["part_eq"]["bass"]["bells"].as_array().unwrap().len(), cuts.len());
+        // switched off: the auto bands and bells go
+        let r3 = e.call("song_patch", &json!({"set": {"/mix/auto_eq": false}})).unwrap();
+        assert!(auto_bands(&e).is_empty(), "{:?}", auto_bands(&e));
+        assert!(stored(&e).pointer("/mix/part_eq").is_none(), "{}", stored(&e));
+        assert!(r3["mix"].get("auto_eq").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_eq_never_cuts_the_protected_part_and_keeps_user_bands_first() {
+        let dir = std::env::temp_dir().join(format!("bb_autoeq_user_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = Engine::new(dir.clone());
+        let spec_v = auto_spec(&dir, json!({"mix": {"part_eq": {"bass": {"bells": [{"hz": 3000, "db": 1.0, "q": 1.0}]}}}}));
+        e.call("song_create", &spec_v).unwrap();
+        let voice = ["chords", "lead", "counter"].into_iter().find(|n| e.project.track_index(n).is_ok()).expect("a melodic part").to_string();
+        let vi = e.project.track_index(&voice).unwrap();
+        let voice_fx = serde_json::to_value(&e.project.tracks[vi].effects).unwrap();
+        let mut spec = validate(&spec_v).0.unwrap();
+        spec.mix.auto_eq = true;
+        let mut log = Vec::new();
+        // a melodic part plays the vocal: measured against every part, never cut
+        let r = apply_auto_eq(&mut e, &spec, Some(&voice), &mut log).unwrap();
+        assert!(r["pairs"].as_array().unwrap().iter().any(|p| p["pair"].as_str().unwrap().starts_with(&format!("{voice}/"))), "{r}");
+        let cuts = r["cuts"].as_array().unwrap();
+        assert!(!cuts.is_empty(), "{r}");
+        assert!(cuts.iter().all(|c| c["part"] != voice.as_str()), "{r}");
+        assert_eq!(serde_json::to_value(&e.project.tracks[vi].effects).unwrap(), voice_fx, "the protected part is untouched");
+        let mut per: BTreeMap<String, usize> = BTreeMap::new();
+        for c in cuts {
+            *per.entry(c["part"].as_str().unwrap().to_string()).or_default() += 1;
+            assert!((-3.0..=-1.0).contains(&c["db"].as_f64().unwrap()), "{c}");
+        }
+        assert!(per.values().all(|n| *n <= 2), "{per:?}");
+        // the user's bass bell keeps its place and values; auto bells follow it in the same EQ
+        if cuts.iter().any(|c| c["part"] == "bass") {
+            let bi = e.project.track_index("bass").unwrap();
+            let eq = e.project.tracks[bi].effects.iter().rev().find_map(|f| match f {
+                crate::fx::Effect::ParametricEq(p) if p.bands.iter().any(|b| b.auto) => Some(p.clone()),
+                _ => None,
+            }).unwrap();
+            assert_eq!((eq.bands[0].freq, eq.bands[0].gain_db, eq.bands[0].q, eq.bands[0].auto), (3000.0, 1.0, 1.0, false), "{eq:?}");
+            assert!(eq.bands[1..].iter().all(|b| b.auto) && eq.bands.len() <= 7, "{eq:?}");
+            assert!(cuts.iter().filter(|c| c["part"] == "bass").all(|c| c["merged_into_user_eq"] == true && c["key"] == "bass"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

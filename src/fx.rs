@@ -153,6 +153,11 @@ pub struct EqBand {
     /// Cut filters only: 1 = 12 dB/oct, 2 = 24, 4 = 48.
     pub stages: u32,
     pub enabled: bool,
+    /// Written by the song's auto-EQ (/mix/auto_eq), not by a person: the
+    /// next song build takes it out and measures again. Left out of the
+    /// project file when false (projects without auto bands are unchanged).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub auto: bool,
 }
 
 impl Default for EqBand {
@@ -164,6 +169,7 @@ impl Default for EqBand {
             q: 0.707,
             stages: 1,
             enabled: true,
+            auto: false,
         }
     }
 }
