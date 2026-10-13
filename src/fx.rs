@@ -1011,6 +1011,16 @@ fn limiter(p: &LimiterFx, l: &mut [f32], r: &mut [f32]) {
 }
 
 fn limiter_pass(p: &LimiterFx, ceiling_db: f32, l: &mut [f32], r: &mut [f32]) {
+    limiter_pass_impl(p, ceiling_db, l, r, true)
+}
+
+/// Samples per block of the detector's quiet-skip bound.
+const SKIP_BLOCK: usize = 16;
+
+/// One limiter pass. `skip` lets the inter-sample-peak detector skip
+/// samples that provably cannot reach the ceiling (the output is the same
+/// bit for bit either way; tests compare the two).
+fn limiter_pass_impl(p: &LimiterFx, ceiling_db: f32, l: &mut [f32], r: &mut [f32], skip: bool) {
     let ceiling = db_to_gain(ceiling_db);
     let look = (0.002 * SR) as usize;
     let rel = (-1.0 / (p.release_ms.max(1.0) * 0.001 * SR)).exp();
@@ -1055,11 +1065,48 @@ fn limiter_pass(p: &LimiterFx, ceiling_db: f32, l: &mut [f32], r: &mut [f32]) {
         }
         m * 1.06
     };
+    // Quiet skip (exact): the estimate above is at most
+    // 1.06 * kabs * max|x| over the taps around i (kabs = the largest
+    // kernel's sum of |taps|, >= 1 so it also covers |x[i]|). Where that
+    // bound, with a 1e-4 margin for f32 rounding, stays under the ceiling,
+    // the full estimate would also say "under" and need is 1.0 either way.
+    // max|x| comes from per-block maxima (the 16 taps span at most two
+    // 16-sample blocks). Besides quiet passages this skips decaying tails,
+    // where subnormal floats made every tap ~100x slower (B40 profile: 209 of
+    // a window render's 237 ms master time).
+    let kabs = kernels.iter().map(|h| h.iter().map(|c| c.abs()).sum::<f32>()).fold(1.0f32, f32::max);
+    let skip_under = ceiling / (1.06 * kabs * (1.0 + 1e-4));
+    let block_max: Vec<f32> = if p.true_peak && skip {
+        (0..n.div_ceil(SKIP_BLOCK))
+            .map(|b| {
+                let (s, e) = (b * SKIP_BLOCK, ((b + 1) * SKIP_BLOCK).min(n));
+                let mut m = 0f32;
+                for i in s..e {
+                    m = m.max(l[i].abs()).max(r[i].abs());
+                }
+                m
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let quiet = |i: usize| -> bool {
+        if block_max.is_empty() {
+            return false;
+        }
+        let b0 = (i as isize - HALF + 1).max(0) as usize / SKIP_BLOCK;
+        let b1 = (i + HALF as usize).min(n - 1) / SKIP_BLOCK;
+        block_max[b0..=b1].iter().all(|m| *m <= skip_under)
+    };
     // required gain per sample, then look-ahead min + smoothing
     let mut need: Vec<f32> = (0..n)
         .map(|i| {
             let x = if p.true_peak {
-                isp(l, i).max(isp(r, i))
+                if quiet(i) {
+                    0.0
+                } else {
+                    isp(l, i).max(isp(r, i))
+                }
             } else {
                 l[i].abs().max(r[i].abs())
             };
@@ -1153,6 +1200,79 @@ mod tests {
         FxContext {
             step_secs: 0.125,
             triggers: t,
+        }
+    }
+
+    #[test]
+    fn the_limiter_detector_skip_is_bit_identical() {
+        // (a) D11-style: dense loud material, a decaying tail that runs
+        // into subnormals, silence; (b) near-ceiling transients: isolated
+        // clicks just under, at and just over the ceiling after silence,
+        // where the skip bound is tightest
+        let mut rng = crate::dsp::Rng::new(11);
+        let n = 4 * 44100;
+        let mut a: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / 44100.0;
+                let env = if t < 2.0 { 1.0 } else { (-(t - 2.0) * 50.0).exp() };
+                ((t * 55.0 * 6.283).sin() * 0.8 + 0.4 * rng.bipolar()) * 1.4 * env
+            })
+            .collect();
+        assert!(a.iter().any(|v| *v != 0.0 && v.abs() < f32::MIN_POSITIVE), "the tail reaches subnormals");
+        let ceiling = db_to_gain(-1.0);
+        let mut b = vec![0.0f32; 44100];
+        for (k, g) in [0.80f32, 0.88, 0.89, 0.8913, 0.9, 0.95, 1.2].iter().enumerate() {
+            let at = 2000 + k * 5000;
+            b[at] = *g;
+            b[at + 1] = -*g * 0.97;
+            b[at + 2] = *g * 0.5;
+        }
+        // a click right at the bound's level
+        b[40000] = ceiling / 1.06;
+        let p = LimiterFx { ceiling_db: -1.0, release_ms: 80.0, ..Default::default() };
+        assert!(p.true_peak, "the default limiter is true-peak");
+        for (name, x) in [("d11_style", &a), ("near_ceiling", &b)] {
+            for ceil_db in [-1.0f32, -1.6, -3.0] {
+                let (mut l0, mut r0) = (x.clone(), x.iter().map(|v| v * 0.9).collect::<Vec<f32>>());
+                let (mut l1, mut r1) = (l0.clone(), r0.clone());
+                limiter_pass_impl(&p, ceil_db, &mut l0, &mut r0, false);
+                limiter_pass_impl(&p, ceil_db, &mut l1, &mut r1, true);
+                let same = l0.iter().zip(&l1).chain(r0.iter().zip(&r1)).all(|(u, v)| u.to_bits() == v.to_bits());
+                assert!(same, "{name} at {ceil_db} dB: skip changed the output");
+            }
+        }
+    }
+
+    /// Timing of the detector skip (run with `--ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn bench_limiter_detector_skip() {
+        let mut rng = crate::dsp::Rng::new(5);
+        let n = 20 * 44100;
+        // a 16 s loud passage then a 4 s tail decaying into subnormals
+        let song: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / 44100.0;
+                let env = if t < 16.0 { 1.0 } else { (-(t - 16.0) * 30.0).exp() };
+                ((t * 55.0 * 6.283).sin() * 0.7 + 0.3 * rng.bipolar()) * 1.3 * env
+            })
+            .collect();
+        // worst case for the skip: loud everywhere, nothing to skip
+        let loud: Vec<f32> = (0..n).map(|i| ((i as f32 * 0.05).sin() * 1.3)).collect();
+        let p = LimiterFx { ceiling_db: -1.0, release_ms: 80.0, ..Default::default() };
+        for (name, x) in [("loud 16 s + subnormal tail", &song), ("loud throughout (no skip possible)", &loud)] {
+            let mut row = Vec::new();
+            for skip in [false, true] {
+                let mut best = f64::MAX;
+                for _ in 0..3 {
+                    let (mut l, mut r) = (x.clone(), x.clone());
+                    let t = std::time::Instant::now();
+                    limiter_pass_impl(&p, -1.0, &mut l, &mut r, skip);
+                    best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+                }
+                row.push(best);
+            }
+            eprintln!("limiter pass, {name}, 20 s: without skip {:.1} ms, with skip {:.1} ms", row[0], row[1]);
         }
     }
 
