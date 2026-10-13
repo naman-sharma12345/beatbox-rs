@@ -1556,6 +1556,64 @@ pub fn lift_db(levels: &[SectionLevel]) -> Option<f32> {
     Some(mean(&|k| is_lift_kind(k))? - mean(&|k| k == "verse")?)
 }
 
+/// The delivered file's hook lift as the drop_lift check counts it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HookLift {
+    /// mean of the counted hooks minus mean of the verses
+    pub lift_db: f32,
+    /// the plain mean over every hook (what the check counted before)
+    pub all_hooks_lift_db: f32,
+    pub counted: Vec<String>,
+    /// hooks left out because the vocal does not sing in them
+    pub excluded: Vec<String>,
+    /// true when no hook carries the vocal (instrumental song, or the vocal
+    /// sits out of every hook): then every hook counts
+    pub fell_back_to_all: bool,
+}
+
+impl HookLift {
+    pub fn note(&self) -> String {
+        if self.fell_back_to_all {
+            format!("{} hook(s) counted, none carries the vocal, so all count", self.counted.len())
+        } else if self.excluded.is_empty() {
+            format!("{} hook(s) counted, all carry the vocal", self.counted.len())
+        } else {
+            format!(
+                "{} of {} hooks counted (the ones with vocal); excluded without vocal: {}; all hooks would read {:.1} dB",
+                self.counted.len(),
+                self.counted.len() + self.excluded.len(),
+                self.excluded.join(", "),
+                self.all_hooks_lift_db
+            )
+        }
+    }
+}
+
+/// Hooks over verses on a delivered file, counting only hooks that carry
+/// the vocal (`sections_pre` says where it sings: `vocal_over_beat_db` is
+/// Some). An instrumental hook is quieter by design (the vocal is 11-14 dB
+/// over the beat), so averaging it in hid the lift the sung hooks have.
+/// Falls back to every hook when none carries the vocal.
+pub fn hook_lift(sec: &[SectionLevel], sections_pre: &[SectionLevel]) -> Option<HookLift> {
+    let sung = |n: &str| sections_pre.iter().any(|p| p.name == n && p.vocal_over_beat_db.is_some());
+    let mean = |v: &[f32]| (!v.is_empty()).then(|| v.iter().sum::<f32>() / v.len() as f32);
+    let verses: Vec<f32> = sec.iter().filter(|x| x.kind == "verse").map(|x| x.mix_rms_db).collect();
+    let verse = mean(&verses)?;
+    let hooks: Vec<&SectionLevel> = sec.iter().filter(|x| is_lift_kind(&x.kind)).collect();
+    let all = mean(&hooks.iter().map(|x| x.mix_rms_db).collect::<Vec<_>>())?;
+    let (with, without): (Vec<&SectionLevel>, Vec<&SectionLevel>) = hooks.iter().partition(|x| sung(&x.name));
+    let fell_back_to_all = with.is_empty();
+    let use_ = if fell_back_to_all { &hooks } else { &with };
+    let counted_mean = mean(&use_.iter().map(|x| x.mix_rms_db).collect::<Vec<_>>())?;
+    Some(HookLift {
+        lift_db: counted_mean - verse,
+        all_hooks_lift_db: all - verse,
+        counted: use_.iter().map(|x| x.name.clone()).collect(),
+        excluded: if fell_back_to_all { vec![] } else { without.iter().map(|x| x.name.clone()).collect() },
+        fell_back_to_all,
+    })
+}
+
 /// Make hooks lift over verses by at least the target on the pre-delivery
 /// mix (delivery keeps ~80% of it): verses step down on the master's
 /// section automation. Returns what it did.
@@ -1649,7 +1707,7 @@ pub fn check(file: &std::path::Path, sections_pre: &[SectionLevel], spans: &[Spa
             sec.push(SectionLevel { name: s.name.clone(), kind: s.kind.clone(), start_s: s.start_beat * bs, mix_rms_db: rms_db(&m[a..b]), vocal_over_beat_db: None, presence_over_beat_db: None });
         }
     }
-    let lift = lift_db(&sec);
+    let hl = hook_lift(&sec, sections_pre);
     let mut checks = Vec::new();
     let vob: Vec<(String, f32)> = sections_pre.iter().filter_map(|x| x.vocal_over_beat_db.map(|v| (x.name.clone(), v))).collect();
     if !vob.is_empty() {
@@ -1674,14 +1732,20 @@ pub fn check(file: &std::path::Path, sections_pre: &[SectionLevel], spans: &[Spa
             "the beat masks the words: song_patch /mix/vocal_over_beat_db higher, or a darker/sparser part in /instruments",
         ));
     }
-    if let Some(lv) = lift {
-        checks.push(chk(
+    if let Some(h) = hl {
+        let lv = h.lift_db;
+        let mut c = chk(
             "drop_lift",
-            format!("hooks {}..{} dB over verses (RMS, delivered file)", t.drop_lift_db[0], t.drop_lift_db[1]),
+            format!("hooks {}..{} dB over verses (RMS, delivered file; only hooks that carry the vocal count when any do)", t.drop_lift_db[0], t.drop_lift_db[1]),
             json!(r1(lv)),
             lv >= t.drop_lift_db[0] - 0.25,
             "song_patch /mix/drop_lift_db higher, or give the hook more instruments in /instruments",
-        ));
+        );
+        c["hooks_counted"] = json!(h.counted);
+        c["hooks_excluded"] = json!(h.excluded);
+        c["all_hooks_lift_db"] = json!(r1(h.all_hooks_lift_db));
+        c["note"] = json!(h.note());
+        checks.push(c);
     }
     let (pt, at) = tilt_db(&m);
     // measured the way a person checks a master: each band through a
@@ -1725,6 +1789,36 @@ pub fn check(file: &std::path::Path, sections_pre: &[SectionLevel], spans: &[Spa
 
 #[cfg(test)]
 mod tests {
+    fn sl(name: &str, kind: &str, rms: f32, vocal: bool) -> SectionLevel {
+        SectionLevel { name: name.into(), kind: kind.into(), start_s: 0.0, mix_rms_db: rms, vocal_over_beat_db: vocal.then_some(12.0), presence_over_beat_db: None }
+    }
+
+    #[test]
+    fn drop_lift_counts_only_hooks_that_carry_the_vocal() {
+        // the D9 shape: hook1 instrumental and 7 dB down, hooks 2-3 sung
+        let pre = vec![sl("hook1", "hook", -20.0, false), sl("verse1", "verse", -12.0, true), sl("hook2", "hook", -9.0, true), sl("verse2", "verse", -12.0, true), sl("hook3", "hook", -8.8, true), sl("outro1", "outro", -20.0, true)];
+        let sec = vec![sl("hook1", "hook", -18.5, false), sl("verse1", "verse", -14.2, false), sl("hook2", "hook", -11.1, false), sl("verse2", "verse", -14.0, false), sl("hook3", "hook", -10.8, false)];
+        let h = hook_lift(&sec, &pre).unwrap();
+        assert_eq!(h.counted, vec!["hook2".to_string(), "hook3".to_string()]);
+        assert_eq!(h.excluded, vec!["hook1".to_string()]);
+        assert!(!h.fell_back_to_all);
+        assert!((h.lift_db - 3.15).abs() < 1e-3, "{}", h.lift_db);
+        // the plain average the check used to report
+        assert!((h.all_hooks_lift_db - ((-18.5 - 11.1 - 10.8) / 3.0 + 14.1)).abs() < 1e-3);
+        assert_eq!(Some(h.all_hooks_lift_db), lift_db(&sec));
+        assert!(h.note().contains("2 of 3 hooks counted") && h.note().contains("hook1"), "{}", h.note());
+        // an instrumental song (no vocal anywhere): every hook counts
+        let none: Vec<SectionLevel> = pre.iter().map(|x| SectionLevel { vocal_over_beat_db: None, ..x.clone() }).collect();
+        let h2 = hook_lift(&sec, &none).unwrap();
+        assert!(h2.fell_back_to_all && h2.excluded.is_empty() && h2.counted.len() == 3);
+        assert_eq!(h2.lift_db, h2.all_hooks_lift_db);
+        assert!(h2.note().contains("none carries the vocal"));
+        // no pre-delivery levels at all: same fallback
+        assert_eq!(hook_lift(&sec, &[]).unwrap().lift_db, h2.lift_db);
+        // no verse: no check
+        assert!(hook_lift(&sec[2..3], &pre).is_none());
+    }
+
     use super::*;
 
     #[test]

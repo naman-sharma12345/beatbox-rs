@@ -1439,6 +1439,9 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     }
     let pre = mix_rules::measure_sections(e, voice.as_deref())?;
     checks = mix_rules::check(&path, &pre, &spans, e.project.bpm, &t)?;
+    if let Some(c) = checks["checks"].as_array().and_then(|c| c.iter().find(|x| x["check"] == "drop_lift")) {
+        log.push(format!("drop_lift {} dB (delivered): {}", c["measured"], c["note"].as_str().unwrap_or("")));
+    }
     if !lift_log.is_empty() {
         log.push(format!("delivery loop: {} fix(es) after checking the delivered file", lift_log.len()));
         mix.insert("delivery_fixes".into(), json!(lift_log));
