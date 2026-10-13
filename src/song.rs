@@ -214,12 +214,112 @@ pub struct MixSpec {
     /// (off) by default, so earlier renders stay comparable.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub section_gain_db: BTreeMap<String, f32>,
+    /// Per-part EQ keyed by exact track name (e.g. "chords") or by role (as
+    /// /mix/levels, e.g. "harmony"), or "vocal"; when a track name and a
+    /// role both name one track, the track name's EQ is used. E.g.
+    /// {"bass": {"low_shelf": {"hz": 150, "db": -2}, "bells": [{"hz": 3000,
+    /// "db": -1.5, "q": 1.2}]}}: one parametric EQ (low shelf, high shelf,
+    /// up to 6 bells) at the end of the part's own chain, before any mix
+    /// rule measures, so the level and tone rules hear the EQ'd part. The
+    /// vocal's goes after its vocal chain (/vocal/chain/presence_db stays
+    /// the vocal's own presence bell). Empty (off) by default: nothing is
+    /// added, so earlier renders stay bit-identical.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub part_eq: BTreeMap<String, PartEq>,
+}
+
+/// A shelf of a part EQ: corner (Hz) and gain (dB).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EqShelf {
+    pub hz: f32,
+    pub db: f32,
+}
+
+/// A bell of a part EQ: centre (Hz), gain (dB) and Q (default 1).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EqBell {
+    pub hz: f32,
+    pub db: f32,
+    #[serde(default = "default_bell_q")]
+    pub q: f32,
+}
+
+fn default_bell_q() -> f32 {
+    1.0
+}
+
+/// Most bells one part EQ takes (the parametric EQ has 8 bands; two are
+/// the shelves).
+pub const PART_EQ_MAX_BELLS: usize = 6;
+/// The slope of a part EQ's shelves (the parametric EQ's shelf Q).
+const PART_EQ_SHELF_Q: f32 = 0.707;
+
+/// One part's EQ (/mix/part_eq/<part>).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartEq {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub low_shelf: Option<EqShelf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub high_shelf: Option<EqShelf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bells: Vec<EqBell>,
+}
+
+impl PartEq {
+    /// The parametric EQ bands this part EQ adds, in order (low shelf, high
+    /// shelf, bells); bands at 0 dB are left out, so an all-zero part EQ
+    /// adds nothing.
+    pub fn bands(&self) -> Vec<Value> {
+        let mut out = Vec::new();
+        for (kind, sh) in [("low_shelf", self.low_shelf), ("high_shelf", self.high_shelf)] {
+            if let Some(sh) = sh.filter(|x| x.db.abs() > 1e-3) {
+                out.push(json!({"kind": kind, "freq": sh.hz, "gain_db": sh.db, "q": PART_EQ_SHELF_Q}));
+            }
+        }
+        for b in self.bells.iter().filter(|b| b.db.abs() > 1e-3) {
+            out.push(json!({"kind": "bell", "freq": b.hz, "gain_db": b.db, "q": b.q}));
+        }
+        out
+    }
+
+    /// Problems with this part EQ, each with the fix.
+    fn problems(&self, base: &str, out: &mut Vec<Problem>) {
+        let hz_ok = |hz: f32| hz.is_finite() && (20.0..=20000.0).contains(&hz);
+        let db_ok = |db: f32| db.is_finite() && (-12.0..=12.0).contains(&db);
+        for (k, sh) in [("low_shelf", self.low_shelf), ("high_shelf", self.high_shelf)] {
+            if let Some(sh) = sh {
+                if !hz_ok(sh.hz) {
+                    out.push(p(format!("{base}/{k}/hz"), format!("{} Hz", sh.hz), "a corner in 20..20000 Hz"));
+                }
+                if !db_ok(sh.db) {
+                    out.push(p(format!("{base}/{k}/db"), format!("{} dB", sh.db), "a gain in -12..12 dB"));
+                }
+            }
+        }
+        if self.bells.len() > PART_EQ_MAX_BELLS {
+            out.push(p(format!("{base}/bells"), format!("{} bells", self.bells.len()), format!("at most {PART_EQ_MAX_BELLS} bells per part")));
+        }
+        for (i, b) in self.bells.iter().enumerate() {
+            if !hz_ok(b.hz) {
+                out.push(p(format!("{base}/bells/{i}/hz"), format!("{} Hz", b.hz), "a centre in 20..20000 Hz"));
+            }
+            if !db_ok(b.db) {
+                out.push(p(format!("{base}/bells/{i}/db"), format!("{} dB", b.db), "a gain in -12..12 dB"));
+            }
+            if !(b.q.is_finite() && (0.1..=10.0).contains(&b.q)) {
+                out.push(p(format!("{base}/bells/{i}/q"), format!("Q {}", b.q), "a Q in 0.1..10"));
+            }
+        }
+    }
 }
 
 impl Default for MixSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None, builds: false, section_gain_db: BTreeMap::new() }
+        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None, builds: false, section_gain_db: BTreeMap::new(), part_eq: BTreeMap::new() }
     }
 }
 
@@ -363,7 +463,7 @@ const TOP_ALIAS: &[(&str, &str)] = &[("tempo", "bpm"), ("sections", "structure")
 const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain", "lock", "flex"];
 const PHRASE_KEYS: &[&str] = &["src_s", "src", "len_s", "len", "end_s", "section", "bar", "beat", "start_beat", "at_s", "start_s", "gain_db", "name", "fade_in_ms", "fade_out_ms"];
 const SECTION_KEYS: &[&str] = &["kind", "bars", "name", "energy"];
-const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds", "section_gain_db"];
+const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds", "section_gain_db", "part_eq"];
 const MASTER_KEYS: &[&str] = &["lufs", "true_peak", "preserve_dynamics"];
 const EXPORT_KEYS: &[&str] = &["path", "format", "bitrate_kbps"];
 const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db", "brighten", "presence_db", "presence_hz"];
@@ -571,6 +671,15 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
             out.push(p(format!("/mix/levels/{role}"), format!("{db} dB"), "a fader offset in -12..12 dB"));
         }
     }
+    // which parts a key names (a track name or a role) is known only once
+    // the beat is composed: `apply_part_eq` checks it there
+    for (part, pe) in &spec.mix.part_eq {
+        if part.trim().is_empty() {
+            out.push(p("/mix/part_eq", "an empty part name", "a track name (e.g. chords) or a role (e.g. harmony), or vocal"));
+        } else {
+            pe.problems(&format!("/mix/part_eq/{part}"), &mut out);
+        }
+    }
     for (sec, db) in &spec.mix.section_gain_db {
         if sec.trim().is_empty() {
             out.push(p("/mix/section_gain_db", "an empty section name", "a section kind (verse, hook, ...) or name (hook2)"));
@@ -656,6 +765,8 @@ pub fn scope_of(path: &str) -> Scope {
     match head {
         // role levels are set when the beat is composed
         "mix" if p == "mix/levels" || p.starts_with("mix/levels/") || p == "mix/builds" => Scope::Full,
+        // part EQs go on the parts when they are built (the vocal's after its chain)
+        "mix" if p == "mix/part_eq" || p.starts_with("mix/part_eq/") => Scope::Full,
         "mix" | "master" | "export" | "title" => Scope::Mix,
         "vocal" if p == "vocal/gain_db" => Scope::Mix,
         "vocal" => Scope::Vocal,
@@ -783,6 +894,7 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
     swap_instruments(e, spec, log)?;
     crate::producer::balance_beat(e, &plan)?;
     apply_role_levels(e, spec, log)?;
+    apply_part_eq(e, spec, log)?;
     if spec.mix.builds {
         let b = apply_builds(e)?;
         log.push(format!("builds: {b}"));
@@ -974,6 +1086,95 @@ fn apply_role_levels(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
         log.push(format!("level: {role} {db:+.1} dB (/mix/levels)"));
     }
     Ok(())
+}
+
+/// The vocal track's name in this spec (default "vocal").
+fn vocal_track_name(spec: &SongSpec) -> Option<&str> {
+    spec.vocal.as_ref().map(|v| v.track.as_str())
+}
+
+/// Which beat track each /mix/part_eq key names: an exact track name
+/// first, else a role (its track). Vocal keys ("vocal" and the vocal
+/// track's name) are left to `place_vocal`. When a track name and a role
+/// both land on one track, the track name's EQ is used and the role's is
+/// dropped with a log line. A role this arrangement does not play is
+/// skipped with a log line (as /mix/levels does); a key that is neither a
+/// track nor a role is an error with a did-you-mean.
+fn resolve_part_eq_keys(e: &Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<Vec<(String, String)>> {
+    let vocal = vocal_track_name(spec);
+    let mut by_track: Vec<(String, String, bool)> = Vec::new(); // (track, key, by name)
+    for key in spec.mix.part_eq.keys() {
+        if key == "vocal" || Some(key.as_str()) == vocal {
+            continue;
+        }
+        let (track, by_name) = if e.project.track_index(key).is_ok() && e.project.tracks.iter().any(|t| t.name == *key) {
+            (key.clone(), true)
+        } else if crate::creative::ROLES.contains(&key.as_str()) {
+            let t = crate::producer::track_name(key);
+            if e.project.track_index(&t).is_err() {
+                log.push(format!("{}; its part EQ was not applied", no_part(e, key)));
+                continue;
+            }
+            (t, false)
+        } else {
+            let mut known: Vec<&str> = crate::creative::ROLES.to_vec();
+            known.extend(e.project.tracks.iter().map(|t| t.name.as_str()));
+            known.push(vocal.unwrap_or("vocal"));
+            return Err(anyhow!(
+                "/mix/part_eq/{key}: '{key}' is neither a track nor a role here ({}); tracks: {}",
+                did_you_mean(key, &known, &[("melody", "lead"), ("808", "bass"), ("hats", "hat"), ("dhol", "bayan"), ("vox", "vocal")]),
+                e.project.tracks.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+        };
+        match by_track.iter_mut().find(|(t, _, _)| *t == track) {
+            Some(slot) if by_name && !slot.2 => {
+                log.push(format!("part EQ: /mix/part_eq/{} (role) and /mix/part_eq/{key} (track) both name {track}; the track name's is used", slot.1));
+                *slot = (track, key.clone(), true);
+            }
+            Some(slot) if slot.2 && !by_name => {
+                log.push(format!("part EQ: /mix/part_eq/{key} (role) and /mix/part_eq/{} (track) both name {track}; the track name's is used", slot.1));
+            }
+            Some(slot) => {
+                log.push(format!("part EQ: /mix/part_eq/{key} and /mix/part_eq/{} both name {track}; /mix/part_eq/{} is used", slot.1, slot.1));
+            }
+            None => by_track.push((track, key.clone(), by_name)),
+        }
+    }
+    Ok(by_track.into_iter().map(|(t, k, _)| (t, k)).collect())
+}
+
+/// The spec's part EQs (/mix/part_eq) on the beat's parts: one parametric
+/// EQ at the end of each named part's chain (the vocal's is added in
+/// `place_vocal`). Keys resolve as `resolve_part_eq_keys` says.
+fn apply_part_eq(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<()> {
+    if spec.mix.part_eq.is_empty() {
+        return Ok(());
+    }
+    for (track, key) in resolve_part_eq_keys(e, spec, log)? {
+        add_part_eq(e, &track, &spec.mix.part_eq[&key], log)?;
+    }
+    Ok(())
+}
+
+/// The vocal's part EQ onto the vocal track, after its vocal chain (so
+/// after /vocal/chain/presence_db's bell): /mix/part_eq/<vocal track name>
+/// if given (the exact track name wins), else /mix/part_eq/vocal.
+fn apply_vocal_part_eq(e: &mut Engine, spec: &SongSpec, track: &str, log: &mut Vec<String>) -> Result<Option<Value>> {
+    match spec.mix.part_eq.get(track).or_else(|| spec.mix.part_eq.get("vocal")) {
+        Some(pe) => add_part_eq(e, track, pe, log),
+        None => Ok(None),
+    }
+}
+
+/// One part EQ onto `track` (nothing when every band is 0 dB).
+fn add_part_eq(e: &mut Engine, track: &str, pe: &PartEq, log: &mut Vec<String>) -> Result<Option<Value>> {
+    let bands = pe.bands();
+    if bands.is_empty() {
+        return Ok(None);
+    }
+    e.call_nested("add_effect", &json!({"track": track, "type": "parametric_eq", "params": {"bands": bands}}), "song")?;
+    log.push(format!("part EQ: {track} {} band(s) (/mix/part_eq)", bands.len()));
+    Ok(Some(json!({"track": track, "bands": bands})))
 }
 
 /// Recorded instruments for the roles that asked for them (after compose,
@@ -1225,7 +1426,12 @@ fn place_vocal(e: &mut Engine, spec: &SongSpec, vs: &VocalSpec, log: &mut Vec<St
         log.push(format!("vocal: {placed} phrases placed whole (no time-stretch)"));
     }
     let chain = mix_rules::apply_vocal_chain(e, &vs.track, &vs.chain, "song")?;
-    Ok(json!({"track": vs.track, "phrases": placed, "take_s": (take_s * 10.0).round() / 10.0, "chain": chain, "lock": lock}))
+    let part_eq = apply_vocal_part_eq(e, spec, &vs.track, log)?;
+    let mut out = json!({"track": vs.track, "phrases": placed, "take_s": (take_s * 10.0).round() / 10.0, "chain": chain, "lock": lock});
+    if let Some(x) = part_eq {
+        out["part_eq"] = x;
+    }
+    Ok(out)
 }
 
 fn out_path(e: &Engine, spec: &SongSpec) -> PathBuf {
@@ -1971,6 +2177,169 @@ mod tests {
         apply_role_levels(&mut e, &spec, &mut log).unwrap();
         assert!(log.iter().any(|l| l.contains("no perc part") && l.contains("not used")), "{log:?}");
         assert!(log.iter().any(|l| l.contains("level offset was not applied")), "{log:?}");
+    }
+
+    #[test]
+    fn part_eq_specs_round_trip_and_bad_ones_name_the_field() {
+        let v = json!({"genre": "trap", "seed": 7, "mix": {"part_eq": {
+            "harmony": {"low_shelf": {"hz": 150, "db": -2}, "high_shelf": {"hz": 9000, "db": 1.5}, "bells": [{"hz": 3000, "db": -1.5, "q": 1.25}, {"hz": 500, "db": 1}]},
+            "vocal": {"bells": [{"hz": 4000, "db": 1}]}}}});
+        let (spec, probs) = validate(&v);
+        let spec = spec.unwrap_or_else(|| panic!("{probs:?}"));
+        let h = &spec.mix.part_eq["harmony"];
+        assert_eq!(h.low_shelf, Some(EqShelf { hz: 150.0, db: -2.0 }));
+        assert_eq!(h.bells[1].q, 1.0, "a bell's Q defaults to 1");
+        assert_eq!(h.bands().len(), 4);
+        let back = serde_json::to_value(&spec.mix).unwrap();
+        assert_eq!(back["part_eq"]["harmony"]["bells"][0], json!({"hz": 3000.0, "db": -1.5, "q": 1.25}));
+        // off by default and not written when empty
+        let plain = validate(&json!({"genre": "trap", "seed": 7})).0.unwrap();
+        assert!(plain.mix.part_eq.is_empty());
+        assert!(serde_json::to_value(&plain.mix).unwrap().get("part_eq").is_none());
+        // a band at 0 dB adds nothing
+        assert!(PartEq { low_shelf: Some(EqShelf { hz: 100.0, db: 0.0 }), high_shelf: None, bells: vec![EqBell { hz: 1000.0, db: 0.0, q: 1.0 }] }.bands().is_empty());
+        let bad = |pe: Value| validate(&json!({"genre": "trap", "mix": {"part_eq": pe}})).1.into_iter().map(|p| p.path).collect::<Vec<_>>();
+        assert!(bad(json!({"": {"bells": [{"hz": 1000, "db": 1}]}})).contains(&"/mix/part_eq".to_string()));
+        // which part a key names is checked when the beat exists (track names are known then)
+        assert!(bad(json!({"chords": {"bells": [{"hz": 1000, "db": 1}]}})).is_empty());
+        assert!(bad(json!({"bass": {"low_shelf": {"hz": 100, "db": 15}}})).contains(&"/mix/part_eq/bass/low_shelf/db".to_string()));
+        assert!(bad(json!({"bass": {"high_shelf": {"hz": 30000, "db": 1}}})).contains(&"/mix/part_eq/bass/high_shelf/hz".to_string()));
+        assert!(bad(json!({"lead": {"bells": [{"hz": 1000, "db": 1, "q": 0}]}})).contains(&"/mix/part_eq/lead/bells/0/q".to_string()));
+        let seven: Vec<Value> = (0..7).map(|i| json!({"hz": 200 * (i + 1), "db": 1})).collect();
+        assert!(bad(json!({"lead": {"bells": seven}})).contains(&"/mix/part_eq/lead/bells".to_string()));
+        assert!(!validate(&json!({"genre": "trap", "mix": {"part_eq": {"bass": {"shelf": {"hz": 100, "db": 1}}}}})).1.is_empty(), "unknown keys are refused");
+        assert_eq!(scope_of("/mix/part_eq/bass"), Scope::Full);
+        assert_eq!(scope_of("/mix/part_eq"), Scope::Full);
+    }
+
+    /// Keys name a part by exact track name or by role; when both land on
+    /// one track the track name's EQ is used; a role the beat does not play
+    /// is skipped; a key that is neither is an error with a did-you-mean.
+    #[test]
+    fn part_eq_keys_are_track_names_or_roles_and_the_track_name_wins() {
+        let base = json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]});
+        let compose = |pe: Value, tag: &str| {
+            let mut v = base.clone();
+            v["mix"] = json!({"part_eq": pe});
+            let spec = validate(&v).0.unwrap();
+            let mut e = Engine::new(std::env::temp_dir().join(format!("song_parteq_keys_{tag}_{}", std::process::id())));
+            let mut log = Vec::new();
+            let r = compose_beat(&mut e, &spec, 7, &mut log);
+            (r, e, log)
+        };
+        let eqs = |e: &Engine, t: &str| -> Vec<Value> {
+            let i = e.project.track_index(t).unwrap();
+            serde_json::to_value(&e.project.tracks[i].effects).unwrap().as_array().unwrap().iter().filter(|f| f["type"] == "parametric_eq" && f["bands"].as_array().is_some_and(|b| b.iter().any(|x| (x["freq"].as_f64().unwrap_or(0.0) - 1234.0).abs() < 1.0 || (x["freq"].as_f64().unwrap_or(0.0) - 4321.0).abs() < 1.0))).cloned().collect()
+        };
+        let by_role = json!({"bells": [{"hz": 1234, "db": 2}]});
+        let by_name = json!({"bells": [{"hz": 4321, "db": -2}]});
+        // the role "harmony" plays on the track "chords"
+        let (r, e, _) = compose(json!({"harmony": by_role}), "role");
+        r.unwrap();
+        assert_eq!(eqs(&e, "chords").len(), 1);
+        assert_eq!(eqs(&e, "chords")[0]["bands"][0]["freq"], 1234.0);
+        let (r, e, _) = compose(json!({"chords": by_name}), "name");
+        r.unwrap();
+        assert_eq!(eqs(&e, "chords")[0]["bands"][0]["freq"], 4321.0);
+        // both: one EQ, the track name's
+        let (r, e, log) = compose(json!({"harmony": by_role, "chords": by_name}), "both");
+        r.unwrap();
+        let got = eqs(&e, "chords");
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0]["bands"][0]["freq"], 4321.0);
+        assert!(log.iter().any(|l| l.contains("the track name's is used")), "{log:?}");
+        // a role this beat does not play: skipped, not fatal
+        let (r, _, log) = compose(json!({"tabla": by_role}), "noplay");
+        r.unwrap();
+        assert!(log.iter().any(|l| l.contains("its part EQ was not applied")), "{log:?}");
+        // neither a track nor a role: an error that names the nearest and the tracks
+        let (r, _, _) = compose(json!({"chordz": by_role}), "typo");
+        let err = r.unwrap_err().to_string();
+        assert!(err.contains("/mix/part_eq/chordz") && err.contains("chords"), "{err}");
+    }
+
+    /// Commit 6: a part EQ is one parametric EQ at the end of that part's
+    /// chain; the other parts' chains are untouched, and in the render its
+    /// low shelf and bell move that part's bands while every other stem is
+    /// sample-identical.
+    #[test]
+    fn a_part_eq_shapes_its_part_and_nothing_else() {
+        let base = json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]});
+        let mut with = base.clone();
+        with["mix"] = json!({"part_eq": {"bass": {"low_shelf": {"hz": 200, "db": -6}, "bells": [{"hz": 1000, "db": 6, "q": 1}]}}});
+        let mut zero = base.clone();
+        zero["mix"] = json!({"part_eq": {"bass": {"low_shelf": {"hz": 200, "db": 0}}}});
+        let build = |v: &Value, tag: &str| {
+            let spec = validate(v).0.unwrap();
+            let mut e = Engine::new(std::env::temp_dir().join(format!("song_parteq_{tag}_{}", std::process::id())));
+            let mut log = Vec::new();
+            compose_beat(&mut e, &spec, 7, &mut log).unwrap();
+            (e, log)
+        };
+        let (e0, _) = build(&base, "plain");
+        let (e1, log1) = build(&with, "eq");
+        let (ez, _) = build(&zero, "zero");
+        let fx = |e: &Engine| e.project.tracks.iter().map(|t| (t.name.clone(), serde_json::to_value(&t.effects).unwrap())).collect::<Vec<_>>();
+        assert_eq!(fx(&e0), fx(&ez), "an all-zero part EQ adds nothing");
+        assert!(log1.iter().any(|l| l.contains("part EQ: bass 2 band(s)")), "{log1:?}");
+        for ((n0, f0), (n1, f1)) in fx(&e0).into_iter().zip(fx(&e1)) {
+            assert_eq!(n0, n1);
+            if n0 == "bass" {
+                let (a, b) = (f0.as_array().unwrap(), f1.as_array().unwrap());
+                assert_eq!(b.len(), a.len() + 1);
+                assert_eq!(&b[..a.len()], &a[..], "the part's own chain is kept, the EQ goes at its end");
+                let last = &b[a.len()];
+                assert_eq!(last["type"], "parametric_eq");
+                assert_eq!(last["bands"][0]["kind"], "low_shelf");
+                assert_eq!(last["bands"][1]["kind"], "bell");
+            } else {
+                assert_eq!(f0, f1, "{n0}: untouched");
+            }
+        }
+        let stems = |e: &Engine| crate::render::render(&e.project, &e.bank, &crate::render::RenderOptions { keep_stems: true, ..Default::default() }).unwrap();
+        let (r0, r1) = (stems(&e0), stems(&e1));
+        fn stem<'a>(r: &'a crate::render::Mix, n: &str) -> &'a crate::render::Stem {
+            r.stems.iter().find(|s| s.name == n).unwrap_or_else(|| panic!("no {n} stem"))
+        }
+        let (b0, b1) = (stem(&r0, "bass"), stem(&r1, "bass"));
+        let low = b1.band_db(30.0, 100.0) - b0.band_db(30.0, 100.0);
+        let mid = b1.band_db(800.0, 1250.0) - b0.band_db(800.0, 1250.0);
+        eprintln!("part eq on bass: 30-100 Hz {low:+.2} dB, 800-1250 Hz {mid:+.2} dB");
+        assert!(low < -4.0 && low > -8.0, "low shelf -6 dB: {low}");
+        assert!(mid > 3.0 && mid < 7.0, "bell +6 dB at 1 kHz: {mid}");
+        for s in &r0.stems {
+            if s.name != "bass" {
+                let o = stem(&r1, &s.name);
+                assert!(s.left == o.left && s.right == o.right, "{}: sample-identical", s.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_vocal_part_eq_goes_after_the_vocal_chain_and_presence_db_stays_its_own_bell() {
+        let v = json!({"genre": "trap", "vocal": {"file": "/tmp/x.wav", "chain": {"presence_db": 1.2, "brighten": false}}, "mix": {"part_eq": {"vocal": {"high_shelf": {"hz": 8000, "db": 2}}}}});
+        let spec = validate(&v).0.unwrap();
+        let d = std::env::temp_dir().join(format!("song_vox_parteq_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        e.call("add_track", &json!({"name": "vocal", "preset": "epiano"})).unwrap();
+        let chain = spec.vocal.as_ref().unwrap().chain.clone();
+        mix_rules::apply_vocal_chain(&mut e, "vocal", &chain, "test").unwrap();
+        let before = serde_json::to_value(&e.project.tracks[e.project.track_index("vocal").unwrap()].effects).unwrap();
+        let mut log = Vec::new();
+        let out = apply_vocal_part_eq(&mut e, &spec, "vocal", &mut log).unwrap().expect("applied");
+        let after = serde_json::to_value(&e.project.tracks[e.project.track_index("vocal").unwrap()].effects).unwrap();
+        let (a, b) = (before.as_array().unwrap(), after.as_array().unwrap());
+        assert_eq!(&b[..a.len()], &a[..], "the vocal chain, presence bell included, is unchanged: {out}");
+        assert_eq!(b.len(), a.len() + 1);
+        let sh = &b[a.len()]["bands"][0];
+        assert_eq!((sh["kind"].as_str(), sh["freq"].as_f64(), sh["gain_db"].as_f64()), (Some("high_shelf"), Some(8000.0), Some(2.0)), "{sh}");
+        let bell = a.iter().any(|f| f["bands"].as_array().is_some_and(|bs| bs.iter().any(|x| x["kind"] == "bell" && (x["freq"].as_f64().unwrap() - 2500.0).abs() < 1.0 && (x["gain_db"].as_f64().unwrap() - 1.2).abs() < 1e-3)));
+        assert!(bell, "presence_db is still its own Q1 bell at 2.5 kHz");
+        // no vocal part EQ: nothing added
+        let plain = validate(&json!({"genre": "trap", "vocal": {"file": "/tmp/x.wav"}})).0.unwrap();
+        assert!(apply_vocal_part_eq(&mut e, &plain, "vocal", &mut log).unwrap().is_none());
     }
 
     #[test]
