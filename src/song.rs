@@ -1451,8 +1451,85 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
 }
 
 /// Build (or rebuild from `scope`) the whole song from a valid spec.
+/// Where a spec's vocal take is on this machine. In order: the path as
+/// given; `BEATBOX_VOCAL_PATH` (the take itself, or a folder holding a file
+/// of the take's name); then the path as given (when relative) or the
+/// take's file name, under the working folder, the current folder, the repo
+/// and the repo's `presets/` (so a preset's take travels with a clone).
+/// None = not found anywhere.
+pub fn find_vocal_take(file: &str, workdir: Option<&Path>) -> Option<std::path::PathBuf> {
+    let given = Path::new(file);
+    if given.is_file() {
+        return Some(given.to_path_buf());
+    }
+    let name = given.file_name().map(std::path::PathBuf::from);
+    if let Some(env) = std::env::var_os("BEATBOX_VOCAL_PATH").filter(|v| !v.is_empty()) {
+        let env = std::path::PathBuf::from(env);
+        if env.is_file() {
+            return Some(env);
+        }
+        if let Some(n) = &name {
+            if env.join(n).is_file() {
+                return Some(env.join(n));
+            }
+        }
+    }
+    let repo = option_env!("CARGO_MANIFEST_DIR").map(std::path::PathBuf::from);
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    roots.extend(workdir.map(Path::to_path_buf));
+    roots.extend(std::env::current_dir().ok());
+    if let Some(r) = repo {
+        roots.push(r.join("presets"));
+        roots.push(r);
+    }
+    for root in &roots {
+        if given.is_relative() && root.join(given).is_file() {
+            return Some(root.join(given));
+        }
+        if let Some(n) = &name {
+            if root.join(n).is_file() {
+                return Some(root.join(n));
+            }
+        }
+    }
+    None
+}
+
+/// The spec with its vocal take found on this machine (`find_vocal_take`),
+/// and a warning when it moved or is missing. A missing take does not stop
+/// the song: the vocal is left out (the beat renders with the vocal muted)
+/// and the warning says so.
+pub fn resolve_vocal_take(spec_v: &Value, workdir: Option<&Path>) -> (Value, Option<String>) {
+    let Some(file) = spec_v.pointer("/vocal/file").and_then(|f| f.as_str()) else {
+        return (spec_v.clone(), None);
+    };
+    if Path::new(file).is_file() {
+        return (spec_v.clone(), None);
+    }
+    let mut v = spec_v.clone();
+    match find_vocal_take(file, workdir) {
+        Some(found) => {
+            let found = found.to_string_lossy().to_string();
+            v["vocal"]["file"] = json!(found);
+            (v, Some(format!("vocal take '{file}' is not on this machine; using '{found}'")))
+        }
+        None => {
+            if let Value::Object(m) = &mut v {
+                m.remove("vocal");
+            }
+            (v, Some(format!("vocal take '{file}' is not on this machine (also looked in BEATBOX_VOCAL_PATH, the working folder, the current folder and the repo's presets/): rendering with the vocal muted. Set BEATBOX_VOCAL_PATH to the take (or its folder) to bring it back")))
+        }
+    }
+}
+
 pub fn build(e: &mut Engine, spec_v: &Value, scope: Scope) -> Result<Value> {
     let t0 = std::time::Instant::now();
+    let (resolved, vocal_warning) = resolve_vocal_take(spec_v, Some(&e.workdir));
+    if let Some(w) = &vocal_warning {
+        eprintln!("warning: {w}");
+    }
+    let stored_spec = spec_v;
+    let spec_v = &resolved;
     let (spec, probs) = validate(spec_v);
     if !probs.is_empty() {
         return Err(problems_err(&probs));
@@ -1483,7 +1560,9 @@ pub fn build(e: &mut Engine, spec_v: &Value, scope: Scope) -> Result<Value> {
     let (mix, path, checks) = mix_deliver(e, &spec, &mut log)?;
     let spans = mix_rules::section_spans(&e.project);
     let bs = 60.0 / e.project.bpm;
-    let mut stored = spec_v.clone();
+    // the spec as given is kept (a take found elsewhere, or missing now,
+    // is looked for again on the next build)
+    let mut stored = stored_spec.clone();
     if let Value::Object(m) = &mut stored {
         m.remove("seed");
     }
@@ -1493,6 +1572,7 @@ pub fn build(e: &mut Engine, spec_v: &Value, scope: Scope) -> Result<Value> {
     }
     Ok(json!({
         "audio": path.to_string_lossy(),
+        "warnings": vocal_warning.iter().collect::<Vec<_>>(),
         "scope": format!("{scope:?}").to_lowercase(),
         "seed": seed,
         "bpm": e.project.bpm,
@@ -1695,12 +1775,13 @@ fn get_tool(e: &mut Engine, _a: &Value) -> Result<Value> {
     }
 }
 
-fn validate_tool(_e: &mut Engine, a: &Value) -> Result<Value> {
-    let spec = spec_arg(a);
+fn validate_tool(e: &mut Engine, a: &Value) -> Result<Value> {
+    let (spec, vocal_warning) = resolve_vocal_take(&spec_arg(a), Some(&e.workdir));
     let (s, probs) = validate(&spec);
     let mut out = json!({
         "valid": probs.is_empty(),
         "problems": probs,
+        "warnings": vocal_warning.iter().collect::<Vec<_>>(),
         "sections": s.as_ref().map(|s| s.section_names()),
         "targets": s.as_ref().map(|s| s.targets()),
     });
@@ -1824,6 +1905,41 @@ pub fn tools() -> Vec<Tool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_vocal_take_is_found_by_env_or_relative_path_else_muted_with_a_warning() {
+        let d = std::env::temp_dir().join(format!("song_vox_find_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("takes")).unwrap();
+        std::fs::write(d.join("takes").join("b40_take.wav"), b"x").unwrap();
+        std::fs::write(d.join("rel_take.wav"), b"x").unwrap();
+        // BEATBOX_VOCAL_PATH: a folder holding the take's file name
+        std::env::set_var("BEATBOX_VOCAL_PATH", d.join("takes"));
+        assert_eq!(find_vocal_take("/gone/box/b40_take.wav", None), Some(d.join("takes").join("b40_take.wav")));
+        std::env::remove_var("BEATBOX_VOCAL_PATH");
+        // relative to the working folder, by file name
+        assert_eq!(find_vocal_take("/gone/box/rel_take.wav", Some(&d)), Some(d.join("rel_take.wav")));
+        assert_eq!(find_vocal_take("/gone/box/never_b40.wav", Some(&d)), None);
+        // the d11 preset's take path resolves or is muted, never an error
+        let preset: Value = serde_json::from_str(include_str!("../presets/d11_baseline.json")).unwrap();
+        let (v, w) = resolve_vocal_take(&preset, Some(&d));
+        assert!(v.get("vocal").is_none() == w.as_deref().is_some_and(|w| w.contains("muted")), "{w:?}");
+        // a song whose take is missing renders, without its vocal, and warns
+        let mut e = Engine::new(d.clone());
+        let spec = json!({"genre": "boom_bap", "bpm": 90, "seed": 3,
+            "structure": [{"kind": "verse", "bars": 2}, {"kind": "hook", "bars": 2}],
+            "vocal": {"file": "/gone/box/never_b40.wav"},
+            "export": {"path": d.join("t.wav").to_string_lossy(), "format": "wav"}});
+        let r = e.call("song_create", &spec).unwrap();
+        assert!(Path::new(r["audio"].as_str().unwrap()).is_file());
+        let w = r["warnings"][0].as_str().unwrap();
+        assert!(w.contains("never_b40.wav") && w.contains("vocal muted"), "{w}");
+        assert!(e.project.track_index("vocal").is_err(), "no vocal track");
+        // the spec as given is kept, so the take is looked for again next time
+        assert_eq!(e.project.song.as_ref().unwrap().spec["vocal"]["file"], "/gone/box/never_b40.wav");
+        let v = validate_tool(&mut e, &spec).unwrap();
+        assert!(v["valid"] == true && v["warnings"][0].as_str().unwrap().contains("muted"), "{v}");
+    }
 
     #[test]
     fn the_d11_baseline_preset_is_a_valid_spec_with_its_locked_values() {
