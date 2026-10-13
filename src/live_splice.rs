@@ -409,7 +409,7 @@ pub(crate) mod bench {
             eprintln!("  window sweep (bars, ms): {pts:?}");
             // effects alone on window-length and full-length buffers
             let ctx_tr = std::collections::HashMap::new();
-            let ctx = crate::fx::FxContext { step_secs: p1.step_secs(), triggers: &ctx_tr };
+            let ctx = crate::fx::FxContext { step_secs: p1.step_secs(), triggers: &ctx_tr, offset: 0 };
             let wlen = (((w1 - w0) as f32 * p1.step_secs() + opts.tail) * crate::dsp::SR) as usize;
             let flen = ((p1.song_steps() as f32 * p1.step_secs() + opts.tail) * crate::dsp::SR) as usize;
             let mut fx_line = String::new();
@@ -460,6 +460,28 @@ mod tests {
 
     /// Splice the edit and compare with a full render over the whole song
     /// from the window start on: (rms err, max abs err, hit rms, window).
+    /// The per-sample rule for splice exactness (Naman, 2026-10-13, as
+    /// refined by B40): a spliced sample may differ from the full render's
+    /// by max(1e-8, one f32 ulp of max(|full|, |playing|)). The splice
+    /// computes playing + (new - old), and that add rounds at its larger
+    /// operand's ulp: for |x| >= 0.5 that is 5.96e-8, above any absolute
+    /// 1e-8 or 3e-8 cap, and when a loud playing sample is pulled down by
+    /// the edit the result's own ulp is smaller than the rounding that made it.
+    fn sample_cap(full: f32, playing: f32) -> f32 {
+        let a = full.abs().max(playing.abs());
+        let ulp = f32::from_bits(a.to_bits() + 1) - a;
+        ulp.max(1e-8)
+    }
+
+    /// Samples (both channels, from `from` on) where the splice breaks the
+    /// per-sample rule.
+    fn over_sample_cap(m0: &Mix, m1: &Mix, full: &Mix, from: usize) -> usize {
+        (from..full.left.len().min(m1.left.len()))
+            .flat_map(|i| [(m1.left[i], full.left[i], m0.left[i]), (m1.right[i], full.right[i], m0.right[i])])
+            .filter(|(s, f, p)| (s - f).abs() > sample_cap(*f, *p))
+            .count()
+    }
+
     fn splice_vs_full(e: &mut Engine, edit: &serde_json::Value) -> (f32, f32, f32, (u32, u32), Mix, Mix, Mix) {
         let opts = RenderOptions::default();
         let p0 = e.project.clone();
@@ -645,8 +667,82 @@ mod tests {
         assert!(s_all > 140.0 && s_tail > 140.0, "SNR all {s_all} tail {s_tail}");
     }
 
-    /// Threshold: bit-identical. Rendering the two windows at the same time
-    /// changes no arithmetic.
+    /// Commit 5: effects with LFOs take their phase from the song position
+    /// (FxContext::offset), so a window modulates as the same samples of a
+    /// full render do. One case per LFO effect, each on the keys of a
+    /// 16-bar song, edit = a stab in bar 9. Thresholds (Naman, 2026-10-13):
+    /// rms <= 4e-9 and every sample within max(1e-8, 1 ulp of max(|full|,
+    /// |playing|)) (`sample_cap`; an absolute 3e-8 is below the f32 ulp for
+    /// |x| >= 0.5). Measured max: 2.98e-8 or 5.96e-8, 0 samples over the
+    /// rule. The FDN hall has its own bound (Naman, 2026-10-13): rms <= 2e-6
+    /// and per sample <= 3e-5, labelled "unexplained residual, not phase,
+    /// not pre-roll". Its modulation phase is proven bit-exact
+    /// (the_fdn_reverb_modulation_follows_the_song_position), but a song
+    /// splice still differs (measured rms 1.73e-6, max 1.90e-5 here; one
+    /// other window position measured max 2.07e-5, hence 3e-5 rather than
+    /// 2e-5). Starting the window 1 to 15 bars earlier gives the same
+    /// 1.9e-6..2.6e-6 rms, so it is not delay-line history either.
+    // TODO(follow-up, FDN splice residual): find why an fdn_hall splice is
+    // ~2e-6 rms off a full render when its modulation phase is exact and
+    // pre-roll doesn't change it; then tighten this bound toward the
+    // 4e-9 rms / 1-ulp rule the other LFO effects meet.
+    #[test]
+    fn lfo_effects_splice_like_a_full_render() {
+        let cases = [
+            ("chorus", json!({"type": "chorus", "params": {"rate_hz": 0.7, "depth_ms": 4.0, "mix": 0.5}})),
+            ("phaser", json!({"type": "phaser", "params": {"rate_hz": 0.37, "depth": 0.8, "feedback": 0.5, "stages": 6, "mix": 0.6}})),
+            ("flanger", json!({"type": "flanger", "params": {"rate_hz": 0.23, "feedback": 0.6, "mix": 0.6}})),
+            ("autopan", json!({"type": "autopan", "params": {"steps": 6.0, "depth": 0.9}})),
+            ("tremolo", json!({"type": "autopan", "params": {"steps": 5.0, "depth": 0.8, "tremolo": true}})),
+            ("fdn_hall", json!({"type": "reverb", "params": {"mode": "fdn_hall", "size": 0.6, "mix": 0.35}})),
+            ("mod_delay", json!({"type": "mod_delay", "params": {"time_ms": 180.0, "feedback": 0.4, "mix": 0.3, "mod_rate_hz": 0.6, "mod_depth": 0.8}})),
+        ];
+        let mut bad = Vec::new();
+        for (name, fx) in cases {
+            let mut fx = fx;
+            fx["track"] = json!("keys");
+            let mut e = song(16, &format!("lfo_{name}"), &[fx]);
+            let (rms_err, max_err, change, (w0, w1), _m0, m1, full) =
+                splice_vs_full(&mut e, &json!({"track": "keys", "pattern": "verse", "notes": [{"start": 132, "len": 4, "pitch": 67, "vel": 0.9}]}));
+            let ws = (w0 as f32 * e.project.step_secs() * crate::dsp::SR) as usize;
+            let over = over_sample_cap(&_m0, &m1, &full, ws);
+            eprintln!("lfo {name}: window {w0}..{w1}, change rms {change:.3e}, splice-vs-full rms {rms_err:.3e}, max {max_err:.3e}, samples over the per-sample rule: {over}");
+            assert!(w0 > 0, "{name}: a window, not the whole song");
+            assert!(change > 1e-3, "{name}: the edit is audible");
+            let ok = if name == "fdn_hall" { rms_err <= 2e-6 && max_err <= 3e-5 } else { rms_err <= 4e-9 && over == 0 };
+            if !ok {
+                bad.push(format!("{name}: rms {rms_err:e} max {max_err:e} over-ulp {over}"));
+            }
+        }
+        assert!(bad.is_empty(), "{bad:?}");
+    }
+
+    /// The FDN reverb's delay-line modulation takes its phase from the song
+    /// position: a buffer that starts at `offset` (silent before it) comes
+    /// out bit-identical to the same samples of a whole-buffer pass, and
+    /// differs without the offset.
+    #[test]
+    fn the_fdn_reverb_modulation_follows_the_song_position() {
+        use crate::fx::{Effect, ReverbFx, ReverbMode};
+        let fx = Effect::Reverb(ReverbFx { mode: ReverbMode::FdnHall, size: 0.6, mix: 0.35, ..Default::default() });
+        let n = 400_000;
+        let off = 88_200;
+        let x: Vec<f32> = (0..n).map(|i| if i >= off + 1000 && i < off + 3000 { ((i as f32) * 0.03).sin() * 0.5 } else { 0.0 }).collect();
+        let tr = std::collections::HashMap::new();
+        let (mut fl, mut fr) = (x.clone(), x.clone());
+        fx.process(&mut fl, &mut fr, &crate::fx::FxContext { step_secs: 0.125, triggers: &tr, offset: 0 });
+        let (mut wl, mut wr) = (x[off..].to_vec(), x[off..].to_vec());
+        fx.process(&mut wl, &mut wr, &crate::fx::FxContext { step_secs: 0.125, triggers: &tr, offset: off });
+        let (mut zl, mut zr) = (x[off..].to_vec(), x[off..].to_vec());
+        fx.process(&mut zl, &mut zr, &crate::fx::FxContext { step_secs: 0.125, triggers: &tr, offset: 0 });
+        let m = (0..wl.len()).map(|k| (fl[off + k] - wl[k]).abs()).fold(0f32, f32::max);
+        let mz = (0..zl.len()).map(|k| (fl[off + k] - zl[k]).abs()).fold(0f32, f32::max);
+        let tail = fl[n - 1000..].iter().fold(0f32, |a, v| a.max(v.abs()));
+        eprintln!("fdn unit: max diff with offset {m:e}, without offset {mz:e}; |out| 7 s after the burst {tail:e}");
+        assert_eq!(m, 0.0, "with the song offset: bit-identical");
+        assert!(mz > 1e-3, "without it the modulation is out of phase: {mz}");
+    }
+
     #[test]
     fn the_two_windows_render_in_parallel_exactly_as_in_series() {
         let mut e = song(8, "par", &[]);

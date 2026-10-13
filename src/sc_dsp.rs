@@ -174,7 +174,9 @@ fn hadamard8(v: &mut [f32; LINES]) {
 /// 8-line feedback-delay-network reverb over a whole stereo buffer:
 /// pre-delay, 4 allpass diffusers per side, Hadamard mixing, per-line RT60
 /// gains, in-loop HF damping, slow delay modulation, low cut and width.
-pub fn fdn_reverb(cfg: &FdnConfig, p: &FdnParams, l: &mut [f32], r: &mut [f32]) {
+/// `offset`: the buffer's first sample's place in the song; the delay-line
+/// modulation LFO starts where a whole-song render's would be there.
+pub fn fdn_reverb(cfg: &FdnConfig, p: &FdnParams, l: &mut [f32], r: &mut [f32], offset: usize) {
     let n = l.len().min(r.len());
     let size = SIZE_MIN + (SIZE_MAX - SIZE_MIN) * p.size.clamp(0.0, 1.0);
     let rt60 = p.decay_s.clamp(0.05, 30.0);
@@ -212,6 +214,13 @@ pub fn fdn_reverb(cfg: &FdnConfig, p: &FdnParams, l: &mut [f32], r: &mut [f32]) 
     let mut lp = [0.0f32; LINES];
     let mut lfo = 0.0f32;
     let lfo_inc = cfg.mod_hz / SR;
+    // the same f32 accumulation a whole-song render runs up to `offset`
+    for _ in 0..offset {
+        lfo += lfo_inc;
+        if lfo >= 1.0 {
+            lfo -= 1.0;
+        }
+    }
     let (mix, width) = (p.mix.clamp(0.0, 1.0), p.width.clamp(0.0, 2.0));
     for i in 0..n {
         let mut ins = [
@@ -639,7 +648,7 @@ mod tests {
                 low_cut_hz: 20.0,
                 mix: 1.0,
             };
-            fdn_reverb(&ROOM, &p, &mut l, &mut r);
+            fdn_reverb(&ROOM, &p, &mut l, &mut r, 0);
             let drop = level_db(&l, 0.2) - level_db(&l, 0.2 + decay / 2.0);
             assert!(
                 (drop - 30.0).abs() < 8.0,

@@ -210,6 +210,7 @@ pub(crate) fn eq_curve(effects: &[Effect], step_secs: f32, points: usize) -> Vec
     let ctx = FxContext {
         step_secs,
         triggers: &trig,
+        offset: 0,
     };
     for fx in effects {
         if matches!(

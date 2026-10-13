@@ -332,7 +332,9 @@ fn lfo_rate(rate_hz: f32, sync_steps: f32, step_secs: f32) -> f32 {
     }
 }
 
-pub fn phaser(p: &PhaserFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
+/// `offset`: the buffer's first sample's place in the song (samples), so
+/// a window's LFO is where a whole-song render's is.
+pub fn phaser(p: &PhaserFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
     let rate = lfo_rate(p.rate_hz, p.sync_steps, step_secs);
     let stages = p.stages.clamp(2, 12) as usize;
     let mix = p.mix.clamp(0.0, 1.0);
@@ -344,8 +346,13 @@ pub fn phaser(p: &PhaserFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
         let mut a = 0.0f32;
         let phase0 = ci as f32 * 0.25;
         for (i, s) in ch.iter_mut().enumerate() {
-            if i % 16 == 0 {
-                let lfo = 0.5 + 0.5 * (2.0 * PI * (rate * i as f32 / SR + phase0)).sin();
+            // coefficients update on the song's 16-sample grid; a window
+            // that starts between grid points computes its first set at the
+            // grid point before it, as a whole-song render did
+            let k = i + offset;
+            if k % 16 == 0 || i == 0 {
+                let k16 = k - k % 16;
+                let lfo = 0.5 + 0.5 * (2.0 * PI * (rate * k16 as f32 / SR + phase0)).sin();
                 let f = (p.center_hz * 2f32.powf((lfo - 0.5) * 4.0 * p.depth.clamp(0.0, 1.0)))
                     .clamp(40.0, 16000.0);
                 let t = (PI * f / SR).tan();
@@ -367,7 +374,8 @@ pub fn phaser(p: &PhaserFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
     }
 }
 
-pub fn flanger(p: &FlangerFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
+/// `offset`: the buffer's place in the song (samples), see `phaser`.
+pub fn flanger(p: &FlangerFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
     let rate = lfo_rate(p.rate_hz, p.sync_steps, step_secs);
     let max = ((p.delay_ms + p.depth_ms).max(0.1) * 0.001 * SR) as usize + 8;
     let mix = p.mix.clamp(0.0, 1.0);
@@ -376,9 +384,10 @@ pub fn flanger(p: &FlangerFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
         let mut buf = vec![0.0f32; max];
         let phase0 = ci as f32 * 0.25;
         for (i, s) in ch.iter_mut().enumerate() {
-            let lfo = 0.5 + 0.5 * (2.0 * PI * (rate * i as f32 / SR + phase0)).sin();
+            let k = i + offset;
+            let lfo = 0.5 + 0.5 * (2.0 * PI * (rate * k as f32 / SR + phase0)).sin();
             let d = ((p.delay_ms.max(0.05) + p.depth_ms.max(0.0) * lfo) * 0.001 * SR).max(1.0);
-            let w = i % max;
+            let w = k % max;
             let pos = (w as f32 - d).rem_euclid(max as f32);
             let i0 = pos as usize % max;
             let i1 = (i0 + 1) % max;
@@ -696,11 +705,12 @@ pub fn convolution(p: &ConvolutionFx, l: &mut [f32], r: &mut [f32]) {
 
 // ---------------- auto-pan / tremolo ----------------
 
-pub fn autopan(p: &AutopanFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
+/// `offset`: the buffer's place in the song (samples), see `phaser`.
+pub fn autopan(p: &AutopanFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
     let period = (p.steps.max(0.25) * step_secs * SR).max(1.0);
     let depth = p.depth.clamp(0.0, 1.0);
     for i in 0..l.len() {
-        let ph = (i as f32 / period).fract();
+        let ph = ((i + offset) as f32 / period).fract();
         let lfo = (2.0 * PI * ph).sin();
         if p.tremolo {
             let g = 1.0 - depth * (0.5 - 0.5 * lfo);

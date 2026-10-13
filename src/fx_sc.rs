@@ -91,7 +91,9 @@ const MOD_DEPTH_MS: f32 = 5.0;
 /// Feedback delay in milliseconds with LFO modulation of the delay time
 /// (right channel a quarter cycle ahead) and a one-pole low-pass inside
 /// the feedback loop, so repeats darken.
-pub fn mod_delay(p: &ModDelayFx, l: &mut [f32], r: &mut [f32]) {
+/// `offset`: the buffer's place in the song (samples); the modulation LFO
+/// starts where a whole-song render's would be there.
+pub fn mod_delay(p: &ModDelayFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     let time = p.time_ms.clamp(1.0, MAX_DELAY_MS);
     let fb = p.feedback.clamp(-0.99, 0.99);
     let mix = p.mix.clamp(0.0, 1.0);
@@ -102,6 +104,13 @@ pub fn mod_delay(p: &ModDelayFx, l: &mut [f32], r: &mut [f32]) {
     let mut lines = [Line::new(max), Line::new(max)];
     let mut lp = [0.0f32; 2];
     let mut phase = 0.0f32;
+    // the same f32 accumulation a whole-song render runs up to `offset`
+    for _ in 0..offset {
+        phase += inc;
+        if phase >= 1.0 {
+            phase -= 1.0;
+        }
+    }
     let n = l.len().min(r.len());
     for i in 0..n {
         phase += inc;
@@ -272,7 +281,7 @@ mod tests {
         l[0] = 1.0;
         let mut r = l.clone();
         let p = ModDelayFx { time_ms: 100.0, feedback: 0.5, mix: 1.0, mod_depth: 0.0, ..Default::default() };
-        mod_delay(&p, &mut l, &mut r);
+        mod_delay(&p, &mut l, &mut r, 0);
         let d = ms_to_samples(100.0) as usize;
         let e1: f32 = l[d - 5..d + 20].iter().map(|v| v.abs()).sum();
         let e2: f32 = l[2 * d - 5..2 * d + 40].iter().map(|v| v.abs()).sum();

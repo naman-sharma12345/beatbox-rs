@@ -942,9 +942,22 @@ fn render_impl(
         tr.sort_unstable();
         tr.dedup();
     }
+    // the buffer's place in the song, for LFO phase (the same arithmetic
+    // as live_splice's splice offset)
+    let offset = match opts.step_range {
+        Some((r0, _)) if r0 > 0 => {
+            if tcurve.is_constant() {
+                (r0 as f64 * p.step_secs() as f64 * SR as f64) as usize
+            } else {
+                (song_secs_at_step(&tcurve, p.song_steps() as f64, r0 as f64) * SR as f64) as usize
+            }
+        }
+        _ => 0,
+    };
     let ctx = FxContext {
         step_secs: p.step_secs(),
         triggers: &triggers,
+        offset,
     };
 
     let mut ml = vec![0.0f32; total];

@@ -14,6 +14,11 @@ pub struct FxContext<'a> {
     pub step_secs: f32,
     /// Note-on sample positions for each track (lowercase name).
     pub triggers: &'a HashMap<String, Vec<usize>>,
+    /// Where this buffer's first sample sits in the song, in samples (0
+    /// for a whole-song render; the window start for a live-splice window).
+    /// LFOs take their phase from it, so a window modulates exactly as the
+    /// same samples of a full render do.
+    pub offset: usize,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -620,12 +625,12 @@ impl Effect {
             Effect::Deesser(p) => x::deesser(p, l, r),
             Effect::SoftClipper(p) => x::soft_clipper(p, l, r),
             Effect::Gate(p) => x::gate(p, l, r),
-            Effect::Phaser(p) => x::phaser(p, l, r, ctx.step_secs),
-            Effect::Flanger(p) => x::flanger(p, l, r, ctx.step_secs),
+            Effect::Phaser(p) => x::phaser(p, l, r, ctx.step_secs, ctx.offset),
+            Effect::Flanger(p) => x::flanger(p, l, r, ctx.step_secs, ctx.offset),
             Effect::Stutter(p) => x::stutter(p, l, r, ctx.step_secs),
             Effect::PitchShift(p) => x::pitch_shift(p, l, r),
             Effect::Convolution(p) => x::convolution(p, l, r),
-            Effect::Autopan(p) => x::autopan(p, l, r, ctx.step_secs),
+            Effect::Autopan(p) => x::autopan(p, l, r, ctx.step_secs, ctx.offset),
             Effect::Saturator(p) => crate::fx_sat::saturator(p, l, r),
             Effect::Haas(p) => crate::fx_sat::haas(p, l, r),
             Effect::GrossBeat(p) => crate::fx_time::gross_beat(p, l, r, ctx.step_secs),
@@ -637,7 +642,7 @@ impl Effect {
             Effect::Waveshaper(p) => crate::fx_char::waveshaper(p, l, r),
             Effect::AmpSim(p) => crate::fx_amp::amp_sim(p, l, r),
             Effect::CabIr(p) => crate::fx_amp::cab_ir(p, l, r),
-            Effect::ModDelay(p) => crate::fx_sc::mod_delay(p, l, r),
+            Effect::ModDelay(p) => crate::fx_sc::mod_delay(p, l, r, ctx.offset),
             Effect::Maximizer(p) => {
                 crate::fx_sc::maximizer(p, l, r);
             }
@@ -709,16 +714,19 @@ impl Effect {
                     r[i] = inr + dr * p.mix;
                 }
             }
-            Effect::Reverb(p) => reverb(p, l, r),
+            Effect::Reverb(p) => reverb(p, l, r, ctx.offset),
             Effect::Chorus(p) => {
                 let max = ((p.depth_ms + 20.0) * 0.001 * SR) as usize + 4;
                 let mut bl = vec![0.0f32; max];
                 let mut br = vec![0.0f32; max];
                 for i in 0..l.len() {
-                    let w = i % max;
+                    // song position: the phase and the ring index match a
+                    // full render's at the same sample
+                    let k = i + ctx.offset;
+                    let w = k % max;
                     bl[w] = l[i];
                     br[w] = r[i];
-                    let t = i as f32 / SR;
+                    let t = k as f32 / SR;
                     let base = 12.0;
                     let dl = (base + p.depth_ms * (0.5 + 0.5 * (2.0 * PI * p.rate_hz * t).sin()))
                         * 0.001
@@ -910,7 +918,7 @@ impl Allpass {
     }
 }
 
-fn reverb(p: &ReverbFx, l: &mut [f32], r: &mut [f32]) {
+fn reverb(p: &ReverbFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     if p.mode != ReverbMode::Freeverb {
         use crate::sc_dsp::{fdn_reverb, FdnParams, HALL, PLATE, ROOM};
         let (cfg, default_decay) = match p.mode {
@@ -933,7 +941,7 @@ fn reverb(p: &ReverbFx, l: &mut [f32], r: &mut [f32]) {
             low_cut_hz: p.low_cut_hz,
             mix: p.mix,
         };
-        fdn_reverb(cfg, &fp, l, r);
+        fdn_reverb(cfg, &fp, l, r, offset);
         return;
     }
     const COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
@@ -1200,6 +1208,7 @@ mod tests {
         FxContext {
             step_secs: 0.125,
             triggers: t,
+            offset: 0,
         }
     }
 
