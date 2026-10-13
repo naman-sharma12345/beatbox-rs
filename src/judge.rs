@@ -18,6 +18,7 @@ use crate::groove_feel::role_of;
 use crate::tools::{f_opt, obj, s_opt, u_or, Tool};
 use crate::tools_delivery::{deliver, DecodedOutput, DeliverOpts};
 use anyhow::{bail, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// Targets for a modern trap/pop master (dB shares are band energy minus
@@ -381,7 +382,7 @@ fn master_lift_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     use crate::mix_rules::{current_master_lift, set_master_lift, MixProfile};
     let mut p = match s_opt(a, "preset").as_deref() {
         Some("default") => MixProfile::default(),
-        Some("off") => MixProfile { presence_db: 0.0, air_db: 0.0, ..MixProfile::default() },
+        Some("off") => MixProfile::off(),
         Some(n) => {
             if !lift_name_ok(n) {
                 bail!("preset names are letters, digits, _ and - (got '{n}')");
@@ -392,7 +393,7 @@ fn master_lift_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         }
         None => current_master_lift(&e.project).unwrap_or_default(),
     };
-    for (k, slot) in [("presence_hz", &mut p.presence_hz), ("presence_db", &mut p.presence_db), ("presence_q", &mut p.presence_q), ("air_hz", &mut p.air_hz), ("air_db", &mut p.air_db)] {
+    for (k, slot) in [("presence_hz", &mut p.presence_hz), ("presence_db", &mut p.presence_db), ("presence_q", &mut p.presence_q), ("air_hz", &mut p.air_hz), ("air_db", &mut p.air_db), ("extra_hz", &mut p.extra_hz), ("extra_db", &mut p.extra_db), ("extra_q", &mut p.extra_q)] {
         if let Some(x) = f_opt(a, k) {
             *slot = x;
         }
@@ -424,8 +425,385 @@ fn master_lift_tool(e: &mut Engine, a: &Value) -> Result<Value> {
             }
         }
     }
-    let on = p.presence_db.abs() >= 0.05 || p.air_db.abs() >= 0.05;
+    let on = p.is_on();
     Ok(json!({"profile": p, "on": on, "applied": apply, "saved_as": saved, "presets": lift_names(e), "built_in": ["default", "off"]}))
+}
+
+// ---------- the auto judge: every render judged against the gates ----------
+
+/// Tools whose result names a rendered file (`audio`, `path` or `file`)
+/// that the auto judge listens to when it is on.
+pub const AUTO_JUDGE_TOOLS: &[&str] = &["render", "export_audio", "song_create", "song_render", "song_patch"];
+
+/// A gate profile (Naman, 2026-10-13 8:22). `streaming` is the default;
+/// `balanced` holds B34's gates (the ones D1-D4 were judged by); `custom`
+/// is what the profile becomes once a gate is set by hand.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GateProfile {
+    #[default]
+    Streaming,
+    ClubTrap,
+    Dnb,
+    Balanced,
+    Custom,
+}
+
+/// The profiles a request can name.
+pub const GATE_PROFILES: &[&str] = &["streaming", "club_trap", "dnb", "balanced"];
+
+impl GateProfile {
+    pub fn parse(s: &str) -> Option<GateProfile> {
+        serde_json::from_value(json!(s)).ok().filter(|p| *p != GateProfile::Custom)
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            GateProfile::Streaming => "streaming",
+            GateProfile::ClubTrap => "club_trap",
+            GateProfile::Dnb => "dnb",
+            GateProfile::Balanced => "balanced",
+            GateProfile::Custom => "custom",
+        }
+    }
+}
+
+/// The auto judge's switch and gates (kept in `<workdir>/auto_judge.json`,
+/// so it holds across CLI calls, MCP sessions and projects in that
+/// workdir). Off by default, gates from the streaming profile.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AutoJudge {
+    pub enabled: bool,
+    pub profile: GateProfile,
+    pub lufs_min: f32,
+    pub lufs_max: f32,
+    pub tp_max: f32,
+    pub mud_max: f32,
+    pub presence_min: f32,
+    pub harsh_max: f32,
+    pub air_min: f32,
+}
+
+impl Default for AutoJudge {
+    fn default() -> Self {
+        AutoJudge::profile(GateProfile::Streaming)
+    }
+}
+
+impl AutoJudge {
+    /// A profile's gates (off; switch it on with enabled). Band gates are
+    /// judge_audio's (mud <= -8, presence >= -15, harshness <= -12,
+    /// air >= -22 dB shares) unless the profile says otherwise:
+    /// - streaming: -15..-13 LUFS (aim -14), true peak <= -1.0 dBTP
+    /// - club_trap: -9..-8 LUFS, true peak <= -0.1 dBTP
+    /// - dnb: -9..-7 LUFS, true peak <= -0.3 dBTP
+    /// - balanced: B34's gates: -11..-8.5 LUFS, true peak <= -1.9 dBTP,
+    ///   harshness <= -20
+    pub fn profile(p: GateProfile) -> AutoJudge {
+        let t = JudgeTargets::default();
+        let base = AutoJudge { enabled: false, profile: p, lufs_min: t.lufs.0, lufs_max: t.lufs.1, tp_max: t.tp_max, mud_max: t.mud_max, presence_min: t.pres_min, harsh_max: t.harsh_max, air_min: t.air_min };
+        match p {
+            GateProfile::Streaming => AutoJudge { lufs_min: -15.0, lufs_max: -13.0, tp_max: -1.0, ..base },
+            GateProfile::ClubTrap => AutoJudge { lufs_min: -9.0, lufs_max: -8.0, tp_max: -0.1, ..base },
+            GateProfile::Dnb => AutoJudge { lufs_min: -9.0, lufs_max: -7.0, tp_max: -0.3, ..base },
+            GateProfile::Balanced => AutoJudge { tp_max: -1.9, harsh_max: -20.0, ..base },
+            GateProfile::Custom => AutoJudge { profile: GateProfile::Custom, ..base },
+        }
+    }
+    pub fn targets(&self) -> JudgeTargets {
+        JudgeTargets { lufs: (self.lufs_min, self.lufs_max), tp_max: self.tp_max, mud_max: self.mud_max, pres_min: self.presence_min, harsh_max: self.harsh_max, air_min: self.air_min }
+    }
+    /// What is wrong with the gates; empty = fine.
+    pub fn problems(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        for (k, x) in [("lufs_min", self.lufs_min), ("lufs_max", self.lufs_max), ("tp_max", self.tp_max), ("mud_max", self.mud_max), ("presence_min", self.presence_min), ("harsh_max", self.harsh_max), ("air_min", self.air_min)] {
+            if !x.is_finite() || !(-60.0..=6.0).contains(&x) {
+                v.push(format!("{k}: {x} is outside -60..6"));
+            }
+        }
+        if self.lufs_min >= self.lufs_max {
+            v.push(format!("lufs_min {} must be below lufs_max {}", self.lufs_min, self.lufs_max));
+        }
+        v
+    }
+}
+
+/// A stable error payload: a caller branches on `error_code`; `message`
+/// is for people. Codes: unknown_profile, invalid_gates, unreadable_file,
+/// write_failed.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct JudgeError {
+    pub error_code: String,
+    pub message: String,
+}
+
+fn jerr(code: &str, message: impl Into<String>) -> JudgeError {
+    JudgeError { error_code: code.to_string(), message: message.into() }
+}
+
+fn auto_judge_path(e: &Engine) -> std::path::PathBuf {
+    e.workdir.join("auto_judge.json")
+}
+
+/// The auto judge's settings in this workdir (default: off, streaming).
+pub fn auto_judge_config(e: &Engine) -> AutoJudge {
+    std::fs::read_to_string(auto_judge_path(e)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+/// The rendered file a tool result names, if any.
+pub fn rendered_file(v: &Value) -> Option<String> {
+    ["audio", "path", "file"].iter().find_map(|k| {
+        let s = v.get(*k)?.as_str()?;
+        let l = s.to_lowercase();
+        (l.ends_with(".wav") || l.ends_with(".mp3") || l.ends_with(".flac")).then(|| s.to_string())
+    })
+}
+
+/// One gate's verdict. `delta_db` is how far past its limit the value is
+/// (positive = over the limit, i.e. failing; negative = headroom), in the
+/// gate's unit (dB, LUFS, dBTP, or a count for clipped_runs / dropouts).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GateCheck {
+    pub name: String,
+    pub value: f32,
+    pub limit: f32,
+    pub pass: bool,
+    pub delta_db: f32,
+}
+
+/// One band's share of the whole (band energy minus total energy, dB) and
+/// the gain to apply to that band to pass its gate (+ boost, - cut; 0 when
+/// it passes), sized so the share moves past the limit (a band is part of
+/// the total, so a gain of g moves its share by about g x (1 - its
+/// fraction of the energy)).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BandReading {
+    pub share_db: f32,
+    pub target_band_gain_db: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BandReadings {
+    /// 250-500 Hz
+    pub mud: BandReading,
+    /// 1-4 kHz
+    pub presence: BandReading,
+    /// 2-5 kHz
+    pub harshness: BandReading,
+    /// 5-11 kHz
+    pub air: BandReading,
+}
+
+/// The auto judge's strict, structured verdict on one file (the
+/// `auto_judge` field of a render's result, and `judged` of the tool):
+/// a caller acts on `pass`, `checks` and the corrective gains without
+/// parsing any text.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct JudgeVerdict {
+    pub file: String,
+    pub profile: GateProfile,
+    pub pass: bool,
+    pub integrated_lufs: f32,
+    pub true_peak_dbtp: f32,
+    /// master gain to apply (+ = louder): brings loudness into the window
+    /// without pushing true peak past its gate; negative when true peak
+    /// fails; 0 when both pass
+    pub corrective_gain_db: f32,
+    pub crest_factor_db: f32,
+    pub bands: BandReadings,
+    /// one entry per gate, in a fixed order
+    pub checks: Vec<GateCheck>,
+    /// the names of the failed gates (empty when pass)
+    pub failed: Vec<String>,
+    /// sum of the failing deltas (dB off target, as judge_audio's score)
+    pub score_db_off: f32,
+    pub seconds: f32,
+}
+
+fn r2(x: f32) -> f32 {
+    (x * 100.0).round() / 100.0
+}
+
+/// Round a correction away from zero to 0.1 dB (so applying it clears the
+/// gate), ignoring float dust.
+fn up1(x: f32) -> f32 {
+    let m = ((x.abs() - 1e-3).max(0.0) * 10.0).ceil() / 10.0;
+    m.copysign(x)
+}
+
+/// Peak-to-RMS ratio of a stereo signal, dB (both channels together).
+pub fn crest_factor_db(l: &[f32], r: &[f32]) -> f32 {
+    let n = l.len().min(r.len());
+    if n == 0 {
+        return 0.0;
+    }
+    let (mut peak, mut sum) = (0.0f32, 0.0f64);
+    for i in 0..n {
+        for x in [l[i], r[i]] {
+            peak = peak.max(x.abs());
+            sum += (x as f64) * (x as f64);
+        }
+    }
+    let rms = (sum / (2 * n) as f64).sqrt() as f32;
+    if rms <= 1e-9 || peak <= 1e-9 {
+        return 0.0;
+    }
+    20.0 * (peak / rms).log10()
+}
+
+/// The master gain that fixes loudness / true peak (0 when both pass).
+pub fn corrective_gain_db(x: &Reading, g: &AutoJudge) -> f32 {
+    let tp_room = g.tp_max - x.true_peak; // + = headroom
+    if tp_room < -0.05 {
+        return up1(tp_room);
+    }
+    if x.lufs < g.lufs_min - 0.05 || x.lufs > g.lufs_max + 0.05 {
+        let want = 0.5 * (g.lufs_min + g.lufs_max) - x.lufs;
+        let gain = if want > 0.0 { want.min(tp_room.max(0.0)) } else { want };
+        return (gain * 10.0).round() / 10.0;
+    }
+    0.0
+}
+
+/// A band's reading and its corrective gain against a min or max gate.
+pub fn band_reading(share: f32, limit: f32, is_max: bool) -> BandReading {
+    let over = if is_max { share - limit } else { limit - share };
+    let gain = if over > 0.05 {
+        let frac = 10f32.powf(share / 10.0).clamp(0.0, 0.9);
+        let trim = over / (1.0 - frac);
+        up1(if is_max { -trim } else { trim })
+    } else {
+        0.0
+    };
+    BandReading { share_db: r2(share), target_band_gain_db: gain }
+}
+
+/// The verdict on a reading against the gates.
+pub fn build_verdict(file: &str, x: &Reading, crest_db: f32, g: &AutoJudge) -> JudgeVerdict {
+    // (name, value, limit, is a maximum)
+    let gates = [
+        ("loudness_min", x.lufs, g.lufs_min, false),
+        ("loudness_max", x.lufs, g.lufs_max, true),
+        ("true_peak_max", x.true_peak, g.tp_max, true),
+        ("mud_max", x.mud, g.mud_max, true),
+        ("presence_min", x.presence, g.presence_min, false),
+        ("harshness_max", x.harsh, g.harsh_max, true),
+        ("air_min", x.air, g.air_min, false),
+        ("clipped_runs_max", x.clipped_runs as f32, 0.0, true),
+        ("dropouts_max", x.dropouts.len() as f32, 0.0, true),
+    ];
+    let checks: Vec<GateCheck> = gates
+        .iter()
+        .map(|(name, value, limit, is_max)| {
+            let delta = if *is_max { value - limit } else { limit - value };
+            // the same tolerance judge_audio uses (meters read to 0.1 dB)
+            GateCheck { name: name.to_string(), value: r2(*value), limit: *limit, pass: delta <= 0.05, delta_db: r2(delta) }
+        })
+        .collect();
+    let failed: Vec<String> = checks.iter().filter(|c| !c.pass).map(|c| c.name.clone()).collect();
+    let score: f32 = checks.iter().filter(|c| !c.pass).map(|c| c.delta_db.max(0.0)).sum();
+    JudgeVerdict {
+        file: file.to_string(),
+        profile: g.profile,
+        pass: failed.is_empty(),
+        integrated_lufs: r2(x.lufs),
+        true_peak_dbtp: r2(x.true_peak),
+        corrective_gain_db: corrective_gain_db(x, g),
+        crest_factor_db: r2(crest_db),
+        bands: BandReadings {
+            mud: band_reading(x.mud, g.mud_max, true),
+            presence: band_reading(x.presence, g.presence_min, false),
+            harshness: band_reading(x.harsh, g.harsh_max, true),
+            air: band_reading(x.air, g.air_min, false),
+        },
+        checks,
+        failed,
+        score_db_off: r2(score),
+        seconds: r2(x.seconds),
+    }
+}
+
+/// Judge one file against the gates.
+pub fn judge_file(e: &Engine, path: &str, g: &AutoJudge) -> std::result::Result<JudgeVerdict, JudgeError> {
+    let d = DecodedOutput::read(&e.resolve(path)).map_err(|err| jerr("unreadable_file", format!("{path}: {err}")))?;
+    let x = read(&d.left, &d.right, d.sample_rate as f32);
+    Ok(build_verdict(path, &x, crest_factor_db(&d.left, &d.right), g))
+}
+
+/// Called by the engine after a top-level tool call succeeds: when the
+/// auto judge is on and `tool` rendered a file, judge it and put the
+/// verdict on the result as `auto_judge` (a `JudgeVerdict`; a judge error
+/// goes to `auto_judge_error` as a `JudgeError` instead, and the render
+/// itself still stands).
+pub fn auto_judge_after(e: &Engine, tool: &str, v: &mut Value) {
+    if !AUTO_JUDGE_TOOLS.contains(&tool) {
+        return;
+    }
+    let cfg = auto_judge_config(e);
+    if !cfg.enabled {
+        return;
+    }
+    let Some(f) = rendered_file(v) else {
+        return;
+    };
+    let (key, out) = match judge_file(e, &f, &cfg) {
+        Ok(j) => ("auto_judge", serde_json::to_value(j)),
+        Err(err) => ("auto_judge_error", serde_json::to_value(err)),
+    };
+    if let (Value::Object(m), Ok(out)) = (v, out) {
+        m.insert(key.into(), out);
+    }
+}
+
+/// The tool's answer: {config, profiles, judges_after, judged?} or, on any
+/// failure, {error: {error_code, message}} (nothing is changed then).
+fn auto_judge_tool(e: &mut Engine, a: &Value) -> Result<Value> {
+    Ok(match auto_judge_apply(e, a) {
+        Ok(v) => v,
+        Err(err) => json!({"error": err}),
+    })
+}
+
+fn auto_judge_apply(e: &mut Engine, a: &Value) -> std::result::Result<Value, JudgeError> {
+    let mut c = if crate::tools::b_or(a, "reset", false) { AutoJudge { enabled: auto_judge_config(e).enabled, ..AutoJudge::default() } } else { auto_judge_config(e) };
+    if let Some(name) = s_opt(a, "profile") {
+        let p = GateProfile::parse(&name).ok_or_else(|| jerr("unknown_profile", format!("unknown profile '{name}' (profiles: {})", GATE_PROFILES.join(", "))))?;
+        c = AutoJudge { enabled: c.enabled, ..AutoJudge::profile(p) };
+    }
+    if let Some(b) = a.get("enabled").and_then(|v| v.as_bool()) {
+        c.enabled = b;
+    }
+    let mut custom = false;
+    for (k, slot) in [("lufs_min", &mut c.lufs_min), ("lufs_max", &mut c.lufs_max), ("tp_max", &mut c.tp_max), ("mud_max", &mut c.mud_max), ("presence_min", &mut c.presence_min), ("harsh_max", &mut c.harsh_max), ("air_min", &mut c.air_min)] {
+        if let Some(x) = f_opt(a, k) {
+            *slot = x;
+            custom = true;
+        }
+    }
+    if custom {
+        c.profile = GateProfile::Custom;
+    }
+    let bad = c.problems();
+    if !bad.is_empty() {
+        return Err(jerr("invalid_gates", bad.join("; ")));
+    }
+    // judge first (read-only), then save: a bad path changes nothing
+    let judged = match s_opt(a, "path") {
+        Some(p) => Some(judge_file(e, &p, &c)?),
+        None => None,
+    };
+    let text = serde_json::to_string_pretty(&c).map_err(|err| jerr("write_failed", err.to_string()))?;
+    std::fs::create_dir_all(&e.workdir).and_then(|_| std::fs::write(auto_judge_path(e), text)).map_err(|err| jerr("write_failed", err.to_string()))?;
+    let mut out = json!({"config": c, "profiles": GATE_PROFILES, "judges_after": AUTO_JUDGE_TOOLS});
+    if let Some(j) = judged {
+        out["judged"] = serde_json::to_value(j).unwrap_or(Value::Null);
+    }
+    Ok(out)
 }
 
 pub fn tools() -> Vec<Tool> {
@@ -455,16 +833,37 @@ pub fn tools() -> Vec<Tool> {
             run: auto_fix_tool,
         },
         Tool {
+            name: "auto_judge",
+            description: "Autonomous judging: switch it on and every top-level render (render, export_audio, song_create, song_render, song_patch) comes back with an auto_judge field, strict JSON: {file, profile, pass, integrated_lufs, true_peak_dbtp, corrective_gain_db (master gain to apply, + louder), crest_factor_db, bands {mud, presence, harshness, air: {share_db, target_band_gain_db (+ boost / - cut to pass, 0 when it passes)}}, checks [{name, value, limit, pass, delta_db (>0 = past the limit)}], failed [gate names], score_db_off, seconds} (auto_judge_error {error_code, message} instead if the file can't be read). Pick a gate profile: streaming (default), club_trap, dnb, balanced (B34's gates), or set gates by hand (profile becomes custom). Settings persist in the workdir. Give path to judge one file now. Errors come back as {error: {error_code, message}}.",
+            mutates: false,
+            schema: || obj(json!({
+                "enabled": {"type": "boolean", "description": "judge every render automatically"},
+                "profile": {"type": "string", "enum": ["streaming", "club_trap", "dnb", "balanced"], "description": "gate profile, overriding every limit: streaming (-15..-13 LUFS, TP <= -1.0; the default), club_trap (-9..-8 LUFS, TP <= -0.1), dnb (-9..-7 LUFS, TP <= -0.3), balanced (-11..-8.5 LUFS, TP <= -1.9, harshness <= -20: B34's gates). Gates given in the same call override it (profile becomes custom)"},
+                "lufs_min": {"type": "number"}, "lufs_max": {"type": "number"},
+                "tp_max": {"type": "number", "description": "true-peak ceiling, dBTP"},
+                "mud_max": {"type": "number", "description": "250-500 Hz share max, dB (default -8)"},
+                "presence_min": {"type": "number", "description": "1-4 kHz share min, dB (default -15)"},
+                "harsh_max": {"type": "number", "description": "2-5 kHz share max, dB (default -12; balanced -20)"},
+                "air_min": {"type": "number", "description": "5-11 kHz share min, dB (default -22)"},
+                "reset": {"type": "boolean", "description": "gates back to the streaming default (the switch is kept)"},
+                "path": {"type": "string", "description": "also judge this file now against the gates"}
+            }), &[]),
+            run: auto_judge_tool,
+        },
+        Tool {
             name: "master_lift",
-            description: "The master's tone lift (a MixProfile: presence bell presence_hz/presence_db/presence_q + air shelf air_hz/air_db, last on the master chain; every song render puts the default on). Read it, change any field, apply a preset (built in: default, off; or one saved with save_as), save the current one as a named preset. A song keeps it on re-mix (/mix/master_lift). One undo step.",
+            description: "The master's tone lift (a MixProfile: presence bell presence_hz/presence_db/presence_q + air shelf air_hz/air_db + an optional extra bell nudge extra_hz/extra_db/extra_q, last on the master chain; every song render puts the default on). Read it, change any field, apply a preset (built in: default, off; or one saved with save_as), save the current one as a named preset. A song keeps it on re-mix (/mix/master_lift). One undo step.",
             mutates: true,
             schema: || obj(json!({
                 "preset": {"type": "string", "description": "start from: default | off | a saved name (omit = the lift on the project now)"},
                 "presence_hz": {"type": "number", "description": "500..5000 (default 2500)"},
-                "presence_db": {"type": "number", "description": "-6..6 (default 3.5)"},
+                "presence_db": {"type": "number", "description": "-6..6 (default 5.5)"},
                 "presence_q": {"type": "number", "description": "0.3..3 (default 0.6)"},
                 "air_hz": {"type": "number", "description": "high shelf corner, 4000..16000 (default 8000)"},
-                "air_db": {"type": "number", "description": "-6..6 (default 3)"},
+                "air_db": {"type": "number", "description": "-6..6 (default 3.5)"},
+                "extra_hz": {"type": "number", "description": "extra bell nudge centre, 500..8000 (default 3500)"},
+                "extra_db": {"type": "number", "description": "extra bell nudge gain, -3..3 (default 0 = off; e.g. +1 dB at 3.5 kHz for more presence)"},
+                "extra_q": {"type": "number", "description": "extra bell width, 0.3..4 (default 1)"},
                 "save_as": {"type": "string", "description": "also save the result as a preset (letters, digits, _ -)"},
                 "apply": {"type": "boolean", "description": "put it on the master (default true; false = only save/read)"}
             }), &[]),
@@ -532,6 +931,203 @@ mod tests {
         assert!(f.air_db > 0.0 && f.air_db <= 5.0);
     }
 
+    fn d4_reading() -> Reading {
+        Reading { lufs: -10.2, true_peak: -1.9, mud: -8.3, presence: -14.7, harsh: -20.2, air: -22.1, clipped_runs: 0, dropouts: vec![], seconds: 92.0 }
+    }
+
+    #[test]
+    fn the_verdict_schema_is_strict_and_round_trips() {
+        let x = d4_reading();
+        let g = AutoJudge { enabled: true, ..AutoJudge::profile(GateProfile::Balanced) };
+        assert_eq!((g.tp_max, g.harsh_max, g.presence_min, g.air_min, g.mud_max, g.lufs_min, g.lufs_max), (-1.9, -20.0, -15.0, -22.0, -8.0, -11.0, -8.5));
+        let v = build_verdict("d4.mp3", &x, 9.25, &g);
+        assert_eq!(v.profile, GateProfile::Balanced);
+        // D4's real numbers under B34's gates: only air fails (0.1 under -22)
+        assert!(!v.pass);
+        assert_eq!(v.failed, vec!["air_min".to_string()]);
+        let air = v.checks.iter().find(|c| c.name == "air_min").unwrap();
+        assert_eq!((air.value, air.limit, air.pass, air.delta_db), (-22.1, -22.0, false, 0.1));
+        let tp = v.checks.iter().find(|c| c.name == "true_peak_max").unwrap();
+        assert!(tp.pass && tp.delta_db == 0.0);
+        let harsh = v.checks.iter().find(|c| c.name == "harshness_max").unwrap();
+        assert!(harsh.pass && harsh.delta_db < 0.0, "headroom is negative: {harsh:?}");
+        // corrections sit next to their readings
+        assert_eq!(v.corrective_gain_db, 0.0);
+        assert_eq!(v.bands.air, BandReading { share_db: -22.1, target_band_gain_db: 0.1 });
+        assert_eq!(v.bands.mud.target_band_gain_db, 0.0);
+        assert_eq!(v.bands.presence.target_band_gain_db, 0.0);
+        // the exact JSON shape a caller reads
+        let j = serde_json::to_value(&v).unwrap();
+        let keys = |o: &Value| {
+            let mut k: Vec<String> = o.as_object().unwrap().keys().cloned().collect();
+            k.sort();
+            k
+        };
+        assert_eq!(keys(&j), ["bands", "checks", "corrective_gain_db", "crest_factor_db", "failed", "file", "integrated_lufs", "pass", "profile", "score_db_off", "seconds", "true_peak_dbtp"]);
+        assert_eq!(keys(&j["bands"]), ["air", "harshness", "mud", "presence"]);
+        for b in ["air", "harshness", "mud", "presence"] {
+            assert_eq!(keys(&j["bands"][b]), ["share_db", "target_band_gain_db"]);
+        }
+        for c in j["checks"].as_array().unwrap() {
+            assert_eq!(keys(c), ["delta_db", "limit", "name", "pass", "value"]);
+            assert!(c["pass"].is_boolean() && c["delta_db"].is_number());
+        }
+        assert_eq!(j["profile"], json!("balanced"));
+        assert!(j["pass"].is_boolean());
+        // round trip: JSON -> struct -> JSON is lossless; unknown or missing fields are refused
+        let back: JudgeVerdict = serde_json::from_value(j.clone()).unwrap();
+        assert_eq!(back, v);
+        assert_eq!(serde_json::to_value(&back).unwrap(), j);
+        let s = serde_json::to_string(&v).unwrap();
+        assert_eq!(serde_json::from_str::<JudgeVerdict>(&s).unwrap(), v);
+        let mut extra = j.clone();
+        extra["verdict_text"] = json!("nope");
+        assert!(serde_json::from_value::<JudgeVerdict>(extra).is_err());
+        let mut band_extra = j.clone();
+        band_extra["bands"]["air"]["note"] = json!("x");
+        assert!(serde_json::from_value::<JudgeVerdict>(band_extra).is_err());
+        let mut missing = j.clone();
+        missing.as_object_mut().unwrap().remove("checks");
+        assert!(serde_json::from_value::<JudgeVerdict>(missing).is_err());
+        let mut bad_profile = j;
+        bad_profile["profile"] = json!("loudest");
+        assert!(serde_json::from_value::<JudgeVerdict>(bad_profile).is_err());
+        // the error payload: exactly {error_code, message}
+        let e = serde_json::to_value(jerr("unknown_profile", "x")).unwrap();
+        assert_eq!(keys(&e), ["error_code", "message"]);
+        assert_eq!(serde_json::from_value::<JudgeError>(e).unwrap(), jerr("unknown_profile", "x"));
+        // crest factor: a full-scale square wave is 0 dB, a sine ~3 dB
+        let sq: Vec<f32> = (0..1000).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        assert!(crest_factor_db(&sq, &sq).abs() < 1e-3);
+        let sine: Vec<f32> = (0..48000).map(|i| (i as f32 * 0.05).sin()).collect();
+        assert!((crest_factor_db(&sine, &sine) - 3.01).abs() < 0.05);
+    }
+
+    #[test]
+    fn gate_profiles_override_limits_and_corrections_are_signed() {
+        let x = d4_reading();
+        // the default (no profile named) is streaming
+        assert_eq!(AutoJudge::default().profile, GateProfile::Streaming);
+        assert_eq!(GateProfile::parse("club_trap"), Some(GateProfile::ClubTrap));
+        assert_eq!(GateProfile::parse("custom"), None);
+        assert_eq!(GateProfile::parse("loudest"), None);
+        for n in GATE_PROFILES {
+            let p = GateProfile::parse(n).unwrap();
+            assert_eq!(p.name(), *n);
+            assert!(AutoJudge::profile(p).problems().is_empty(), "{n}");
+        }
+        // streaming: too loud for -15..-13 -> turn down to the middle (-14)
+        let v = build_verdict("f", &x, 9.0, &AutoJudge::profile(GateProfile::Streaming));
+        assert!(v.failed.contains(&"loudness_max".to_string()), "{:?}", v.failed);
+        assert_eq!(v.corrective_gain_db, -3.8);
+        // club_trap: too quiet for -9..-8 -> up toward -8.5, inside the true-peak room (1.8 dB)
+        let ct = AutoJudge::profile(GateProfile::ClubTrap);
+        let v = build_verdict("f", &x, 9.0, &ct);
+        assert!(v.failed.contains(&"loudness_min".to_string()));
+        assert_eq!(v.corrective_gain_db, 1.7);
+        assert_eq!(corrective_gain_db(&Reading { true_peak: -0.6, ..x.clone() }, &ct), 0.5, "capped by the true-peak room");
+        // dnb: -9..-7, aim -8
+        assert_eq!(build_verdict("f", &x, 9.0, &AutoJudge::profile(GateProfile::Dnb)).corrective_gain_db, 1.6);
+        // a true-peak failure turns it down, whatever the loudness
+        let bal = AutoJudge::profile(GateProfile::Balanced);
+        assert_eq!(corrective_gain_db(&Reading { true_peak: -0.4, ..x.clone() }, &bal), -1.5);
+        // band gains: signed to apply (cut mud/harshness, boost presence/air), sized past the limit
+        let bad = Reading { mud: -6.0, presence: -16.0, harsh: -18.0, air: -23.0, ..x.clone() };
+        let v = build_verdict("f", &bad, 9.0, &bal);
+        let b = &v.bands;
+        assert!(b.mud.target_band_gain_db < -2.0 && b.mud.target_band_gain_db > -3.0, "{b:?}");
+        assert!(b.presence.target_band_gain_db >= 1.0 && b.presence.target_band_gain_db < 1.2, "{b:?}");
+        assert!(b.harshness.target_band_gain_db <= -2.0 && b.harshness.target_band_gain_db > -2.2, "{b:?}");
+        assert!(b.air.target_band_gain_db >= 1.0 && b.air.target_band_gain_db < 1.2, "{b:?}");
+        // a pass carries no corrections
+        let v = build_verdict("f", &Reading { air: -21.5, ..x.clone() }, 9.0, &bal);
+        assert!(v.pass, "{:?}", v.failed);
+        assert_eq!(v.corrective_gain_db, 0.0);
+        assert!([&v.bands.mud, &v.bands.presence, &v.bands.harshness, &v.bands.air].iter().all(|r| r.target_band_gain_db == 0.0));
+        // through the tool: a profile overrides the limits; a hand gate makes it custom
+        let d = std::env::temp_dir().join(format!("auto_judge_prof_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        let r = e.call("auto_judge", &json!({})).unwrap();
+        assert_eq!(r["config"]["profile"], json!("streaming"));
+        let r = e.call("auto_judge", &json!({"profile": "dnb"})).unwrap();
+        assert_eq!((r["config"]["profile"].clone(), r["config"]["lufs_min"].clone(), r["config"]["lufs_max"].clone(), r["config"]["tp_max"].clone()), (json!("dnb"), json!(-9.0), json!(-7.0), json!(-0.3)));
+        let r = e.call("auto_judge", &json!({"air_min": -23.0})).unwrap();
+        assert_eq!(r["config"]["profile"], json!("custom"));
+        assert_eq!(r["config"]["lufs_min"], json!(-9.0));
+        let r = e.call("auto_judge", &json!({"profile": "balanced"})).unwrap();
+        assert_eq!((r["config"]["air_min"].clone(), r["config"]["harsh_max"].clone()), (json!(-22.0), json!(-20.0)));
+        // errors: a stable {error_code, message}, and nothing changes
+        let r = e.call("auto_judge", &json!({"profile": "loudest"})).unwrap();
+        assert_eq!(r["error"]["error_code"], json!("unknown_profile"));
+        assert!(r["error"]["message"].as_str().unwrap().contains("club_trap"));
+        let r = e.call("auto_judge", &json!({"lufs_min": -5.0, "lufs_max": -9.0})).unwrap();
+        assert_eq!(r["error"]["error_code"], json!("invalid_gates"));
+        let r = e.call("auto_judge", &json!({"path": "nope/missing.wav", "profile": "streaming"})).unwrap();
+        assert_eq!(r["error"]["error_code"], json!("unreadable_file"));
+        assert_eq!(auto_judge_config(&e).profile, GateProfile::Balanced, "a failed call changes nothing");
+        let r = e.call("auto_judge", &json!({"reset": true})).unwrap();
+        assert_eq!(r["config"]["profile"], json!("streaming"));
+    }
+
+    #[test]
+    fn the_auto_judge_judges_every_render_against_the_gates() {
+        let d = std::env::temp_dir().join(format!("auto_judge_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d.clone());
+        e.call("generate_beat", &json!({"style": "lofi", "seed": 11})).unwrap();
+        let ex = json!({"format": "wav", "bits": 16, "target_lufs": -10, "path": "out/a.wav", "section": 0});
+        // off by default: no verdict on the result
+        let w = e.call("export_audio", &ex).unwrap();
+        assert!(w.get("auto_judge").is_none(), "{w}");
+        assert_eq!(rendered_file(&w).as_deref(), w["path"].as_str());
+        // on, with gates nothing can fail on loudness/peak/bands
+        let r = e.call("auto_judge", &json!({"enabled": true, "lufs_min": -20.0, "lufs_max": -2.0, "tp_max": 0.0, "mud_max": 0.0, "presence_min": -60.0, "harsh_max": 0.0, "air_min": -60.0})).unwrap();
+        assert_eq!(r["config"]["enabled"], json!(true), "{r}");
+        let w = e.call("export_audio", &ex).unwrap();
+        let v = &w["auto_judge"];
+        let typed: JudgeVerdict = serde_json::from_value(v.clone()).expect("auto_judge is a strict JudgeVerdict");
+        assert_eq!(typed.checks.len(), 9);
+        assert_eq!(typed.profile, GateProfile::Custom);
+        assert!(typed.crest_factor_db > 0.0, "{w}");
+        assert_eq!(typed.pass, typed.failed.is_empty());
+        for k in ["loudness_min", "loudness_max", "true_peak_max", "mud_max", "presence_min", "harshness_max", "air_min"] {
+            assert!(!typed.failed.contains(&k.to_string()), "{k} failed under open gates: {w}");
+        }
+        assert_eq!(typed.corrective_gain_db, 0.0);
+        // a gate it can't meet: fail, named, with a boost on that band
+        e.call("auto_judge", &json!({"presence_min": 0.0})).unwrap();
+        let w = e.call("export_audio", &ex).unwrap();
+        let typed: JudgeVerdict = serde_json::from_value(w["auto_judge"].clone()).unwrap();
+        assert!(!typed.pass && typed.failed.contains(&"presence_min".to_string()), "{w}");
+        let pc = typed.checks.iter().find(|c| c.name == "presence_min").unwrap();
+        assert!(!pc.pass && pc.limit == 0.0 && pc.delta_db > 0.0, "{pc:?}");
+        assert!(typed.bands.presence.target_band_gain_db > 0.0);
+        // the setting lives in the workdir: a fresh engine there sees it
+        let e2 = Engine::new(d.clone());
+        assert!(auto_judge_config(&e2).enabled);
+        assert_eq!(auto_judge_config(&e2).presence_min, 0.0);
+        // judge one file now
+        let r = e.call("auto_judge", &json!({"path": "out/a.wav"})).unwrap();
+        assert_eq!(r["judged"]["pass"], json!(false));
+        // a render whose file can't be read: a structured error field, the render result kept
+        let mut fake = json!({"path": "out/missing.wav"});
+        auto_judge_after(&e, "export_audio", &mut fake);
+        assert_eq!(fake["auto_judge_error"]["error_code"], json!("unreadable_file"), "{fake}");
+        assert!(fake.get("auto_judge").is_none());
+        // tools that render nothing get no verdict
+        let mut plain = json!({"ok": true});
+        auto_judge_after(&e, "set_mixer", &mut plain);
+        auto_judge_after(&e, "export_audio", &mut plain);
+        assert!(plain.get("auto_judge").is_none() && plain.get("auto_judge_error").is_none());
+        let r = e.call("auto_judge", &json!({"enabled": false})).unwrap();
+        assert_eq!(r["config"]["enabled"], json!(false));
+        let w = e.call("export_audio", &ex).unwrap();
+        assert!(w.get("auto_judge").is_none());
+    }
+
     #[test]
     fn master_lift_reads_sets_saves_and_applies_presets() {
         use crate::mix_rules::{current_master_lift, MixProfile};
@@ -554,5 +1150,19 @@ mod tests {
         let r = e.call("master_lift", &json!({"apply": false})).unwrap();
         assert_eq!(r["presets"], json!(["soft"]));
         assert_eq!(e.project.master_effects.iter().filter(|f| f.id() == crate::mix_rules::MASTER_LIFT_ID).count(), 1);
+        // the extra bell nudge (+1 dB at 3.5 kHz) set through the tool, saved
+        // as a preset, survives off -> preset, and is range-checked
+        let r = e.call("master_lift", &json!({"preset": "default", "presence_db": 3.5, "extra_hz": 3500.0, "extra_db": 1.0, "save_as": "nudge35"})).unwrap();
+        assert_eq!(r["profile"]["extra_db"], json!(1.0));
+        let want = MixProfile { presence_db: 3.5, extra_hz: 3500.0, extra_db: 1.0, ..MixProfile::default() };
+        assert_eq!(current_master_lift(&e.project).unwrap(), want);
+        e.call("master_lift", &json!({"preset": "off"})).unwrap();
+        assert!(current_master_lift(&e.project).is_none());
+        e.call("master_lift", &json!({"preset": "nudge35"})).unwrap();
+        assert_eq!(current_master_lift(&e.project).unwrap(), want);
+        assert!(e.call("master_lift", &json!({"extra_db": 5.0})).is_err());
+        let r = e.call("master_lift", &json!({"extra_db": 0.0})).unwrap();
+        assert_eq!(r["on"], json!(true));
+        assert_eq!(current_master_lift(&e.project).unwrap().extra_db, 0.0);
     }
 }

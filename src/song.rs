@@ -194,8 +194,9 @@ pub struct MixSpec {
     /// when a take comes out harsh).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presence_ceiling_db: Option<f32>,
-    /// The master's tone lift (presence bell + air shelf) for this song;
-    /// unset = `MixProfile::default()`, `{"presence_db": 0, "air_db": 0}` = none.
+    /// The master's tone lift (presence bell + air shelf + optional extra
+    /// bell nudge) for this song; unset = `MixProfile::default()`,
+    /// `{"presence_db": 0, "air_db": 0}` = none (the extra bell is 0 by default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub master_lift: Option<mix_rules::MixProfile>,
 }
@@ -563,7 +564,7 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
     }
     if let Some(ml) = &spec.mix.master_lift {
         for (k, why) in ml.problems() {
-            out.push(p(format!("/mix/master_lift/{k}"), why, "the master lift: presence_hz 500..5000, presence_db/air_db -6..6, presence_q 0.3..3, air_hz 4000..16000"));
+            out.push(p(format!("/mix/master_lift/{k}"), why, "the master lift: presence_hz 500..5000, presence_db/air_db -6..6, presence_q 0.3..3, air_hz 4000..16000, extra_hz 500..8000, extra_db -3..3, extra_q 0.3..4"));
         }
     }
     if !(1..=6).contains(&spec.mix.balance_passes) {

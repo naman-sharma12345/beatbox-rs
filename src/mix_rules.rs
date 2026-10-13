@@ -1156,7 +1156,9 @@ pub const MASTER_LIFT_ID: &str = "master_lift";
 /// The master's default tone lift as a named, configurable profile (a song
 /// overrides it at `/mix/master_lift`; a genre can carry its own later):
 /// a presence bell (`presence_hz`, `presence_db`, `presence_q`) and an air
-/// high shelf (`air_hz`, `air_db`). Both gains 0 = no lift.
+/// high shelf (`air_hz`, `air_db`), plus an optional extra parametric bell
+/// nudge (`extra_hz`, `extra_db`, `extra_q`; off at 0 dB) for a second
+/// presence push without moving the main bell. All gains 0 = no lift.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct MixProfile {
@@ -1165,6 +1167,11 @@ pub struct MixProfile {
     pub presence_q: f32,
     pub air_hz: f32,
     pub air_db: f32,
+    /// the extra bell nudge (Naman 2026-10-13: "+1 dB around 3.5 kHz");
+    /// 0 dB = not on the EQ
+    pub extra_hz: f32,
+    pub extra_db: f32,
+    pub extra_q: f32,
 }
 
 impl Default for MixProfile {
@@ -1172,9 +1179,14 @@ impl Default for MixProfile {
         // Naman's spec (2026-10-13): presence in 2.5-3.5 kHz, air shelf in
         // 8-12 kHz. The bell sits at the low end of that range and wide
         // (Q 0.6 reaches down to ~1.2 kHz), because the judge's 1-4 kHz
-        // band carries most of its energy at 1-1.4 kHz; the shelf is the
-        // +3 dB at 8 kHz that auto_fix_mix needed on C4
-        MixProfile { presence_hz: 2500.0, presence_db: 3.5, presence_q: 0.6, air_hz: 8000.0, air_db: 3.0 }
+        // band carries most of its energy at 1-1.4 kHz. Measured on plain
+        // same-seed renders (B34, 2026-10-13; Naman accepted D4 as the
+        // default): +3.5/+3 (D1) left presence at -15.8 (floor -15); +5.5
+        // (D2) passes presence at -14.7 but the bigger total drops air to
+        // -22.2, so the shelf went +3 -> +3.5 (D4: presence -14.7, air
+        // -22.1, harsh -20.2, mud -8.3, TP -1.9). The extra bell is off: +1
+        // dB at 3.5 kHz on top of +3.5 at 2.5k (D3) moved presence 0.3 dB.
+        MixProfile { presence_hz: 2500.0, presence_db: 5.5, presence_q: 0.6, air_hz: 8000.0, air_db: 3.5, extra_hz: 3500.0, extra_db: 0.0, extra_q: 1.0 }
     }
 }
 
@@ -1192,7 +1204,20 @@ impl MixProfile {
         chk("presence_q", self.presence_q, 0.3, 3.0);
         chk("air_hz", self.air_hz, 4000.0, 16000.0);
         chk("air_db", self.air_db, -6.0, 6.0);
+        chk("extra_hz", self.extra_hz, 500.0, 8000.0);
+        chk("extra_db", self.extra_db, -3.0, 3.0);
+        chk("extra_q", self.extra_q, 0.3, 4.0);
         v
+    }
+
+    /// Whether anything is on (any gain off 0).
+    pub fn is_on(&self) -> bool {
+        self.presence_db.abs() >= 0.05 || self.air_db.abs() >= 0.05 || self.extra_db.abs() >= 0.05
+    }
+
+    /// The same profile with every gain at 0.
+    pub fn off() -> Self {
+        MixProfile { presence_db: 0.0, air_db: 0.0, extra_db: 0.0, ..MixProfile::default() }
     }
 }
 
@@ -1204,16 +1229,22 @@ pub fn set_master_lift(e: &mut Engine, p: &MixProfile) -> Result<Value> {
     if let Some(i) = fxs.iter().position(|f| f.id() == MASTER_LIFT_ID) {
         fxs.remove(i);
     }
-    if p.presence_db.abs() < 0.05 && p.air_db.abs() < 0.05 {
+    if !p.is_on() {
         return Ok(json!({"off": true}));
     }
-    let mut fx: crate::fx::Effect = serde_json::from_value(json!({"type": "parametric_eq", "bands": [
-        {"kind": "bell", "freq": p.presence_hz, "gain_db": p.presence_db, "q": p.presence_q},
-        {"kind": "high_shelf", "freq": p.air_hz, "gain_db": p.air_db, "q": 0.7}
-    ]}))?;
+    let mut bands = vec![
+        json!({"kind": "bell", "freq": p.presence_hz, "gain_db": p.presence_db, "q": p.presence_q}),
+        json!({"kind": "high_shelf", "freq": p.air_hz, "gain_db": p.air_db, "q": 0.7}),
+    ];
+    let extra = p.extra_db.abs() >= 0.05;
+    if extra {
+        bands.push(json!({"kind": "bell", "freq": p.extra_hz, "gain_db": p.extra_db, "q": p.extra_q}));
+    }
+    let mut fx: crate::fx::Effect = serde_json::from_value(json!({"type": "parametric_eq", "bands": bands}))?;
     fx.set_id(MASTER_LIFT_ID);
     fxs.push(fx);
-    Ok(json!({"presence_bell": [p.presence_hz, p.presence_db, p.presence_q], "air_shelf": [p.air_hz, p.air_db]}))
+    Ok(json!({"presence_bell": [p.presence_hz, p.presence_db, p.presence_q], "air_shelf": [p.air_hz, p.air_db],
+        "extra_bell": if extra { json!([p.extra_hz, p.extra_db, p.extra_q]) } else { Value::Null }}))
 }
 
 /// The master lift on the project now, as a profile (None = no lift).
@@ -1222,7 +1253,18 @@ pub fn current_master_lift(p: &Project) -> Option<MixProfile> {
     let v = serde_json::to_value(f).ok()?;
     let b = v["bands"].as_array()?;
     let g = |i: usize, k: &str| b.get(i).and_then(|x| x[k].as_f64()).map(|x| x as f32);
-    Some(MixProfile { presence_hz: g(0, "freq")?, presence_db: g(0, "gain_db")?, presence_q: g(0, "q")?, air_hz: g(1, "freq")?, air_db: g(1, "gain_db")? })
+    let d = MixProfile::default();
+    Some(MixProfile {
+        presence_hz: g(0, "freq")?,
+        presence_db: g(0, "gain_db")?,
+        presence_q: g(0, "q")?,
+        air_hz: g(1, "freq")?,
+        air_db: g(1, "gain_db")?,
+        // the extra bell is band 2 only when it is on
+        extra_hz: g(2, "freq").unwrap_or(d.extra_hz),
+        extra_db: g(2, "gain_db").unwrap_or(0.0),
+        extra_q: g(2, "q").unwrap_or(d.extra_q),
+    })
 }
 
 /// The master tone stage's marker frequencies (one EQ this module owns).
@@ -1914,6 +1956,23 @@ mod tests {
         assert_eq!((q.presence_db, q.air_db, q.presence_hz), (2.0, p.air_db, p.presence_hz));
         assert!(serde_json::from_value::<MixProfile>(json!({"presense_db": 2.0})).is_err());
         assert_eq!(MixProfile { presence_db: 9.0, ..p.clone() }.problems()[0].0, "presence_db");
+        // the default carries no extra bell: two bands only
+        assert_eq!(v["bands"].as_array().unwrap().len(), 2);
+        assert_eq!(current_master_lift(&e.project).unwrap(), p);
+        // the extra bell nudge: a third band, read back, validated, and on its own keeps the lift on
+        let x = MixProfile { presence_db: 3.5, extra_hz: 3500.0, extra_db: 1.0, ..p.clone() };
+        set_master_lift(&mut e, &x).unwrap();
+        let v = serde_json::to_value(e.project.master_effects.last().unwrap()).unwrap();
+        assert_eq!(v["bands"][2]["kind"], json!("bell"));
+        assert_eq!(v["bands"][2]["freq"].as_f64().unwrap() as f32, 3500.0);
+        assert_eq!(v["bands"][2]["gain_db"].as_f64().unwrap() as f32, 1.0);
+        assert_eq!(current_master_lift(&e.project).unwrap(), x);
+        assert!(tone_gains(&e.project).is_none());
+        assert_eq!(MixProfile { extra_db: 4.0, ..p.clone() }.problems()[0].0, "extra_db");
+        let only = MixProfile { extra_db: 1.0, ..MixProfile::off() };
+        assert!(only.is_on());
+        set_master_lift(&mut e, &only).unwrap();
+        assert_eq!(current_master_lift(&e.project).unwrap().extra_db, 1.0);
         set_master_lift(&mut e, &MixProfile { presence_db: 0.0, air_db: 0.0, ..p }).unwrap();
         assert!(e.project.master_effects.iter().all(|f| f.id() != MASTER_LIFT_ID));
     }

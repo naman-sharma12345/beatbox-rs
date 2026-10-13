@@ -189,12 +189,18 @@ impl Engine {
         };
         // an omitted seed is fresh only on a top-level call (see dispatch_validated)
         let depth = tools::CallDepth::enter();
-        let (result, args) = self.dispatch_validated(tool, name, args, depth.top());
+        let top = depth.top();
+        let (result, args) = self.dispatch_validated(tool, name, args, top);
         drop(depth);
         let args = &args;
         let mut result = result;
         match &mut result {
             Ok(v) => {
+                // the auto judge (judge.rs auto_judge): a top-level render
+                // comes back with its verdict against the gates when it is on
+                if top {
+                    crate::judge::auto_judge_after(self, name, v);
+                }
                 // mix rule: the vocal pocket follows a voice that arrives
                 // after the beat (an AI or script adding a take); the manual
                 // GUI is left exactly as the person sets it
