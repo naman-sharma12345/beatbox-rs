@@ -625,7 +625,13 @@ pub fn make_plan(take_x: &[f32], take_fe: &Features, words: &[vocal::Word], rec:
     let bs = 4.0 * beat_s;
     // key_detect "yin_gated": the key from gated YIN frames (vocal::gated_key)
     // instead of the segmented notes; an "unknown" read falls back to the notes
-    let gated = if s_opt(a, "key_detect").as_deref() == Some("yin_gated") { vocal::gated_key(take_x, SR) } else { None };
+    // default since commit 3: yin_gated; "legacy" (or "notes") is the old note-based read, byte-identical
+    let key_detect = s_opt(a, "key_detect").unwrap_or_else(|| "yin_gated".into());
+    if !matches!(key_detect.as_str(), "yin_gated" | "legacy" | "notes") {
+        bail!("key_detect must be yin_gated (default), legacy or notes, not {key_detect:?}");
+    }
+    let gated_on = key_detect == "yin_gated" && (s_opt(a, "key").is_none() || s_opt(a, "scale").is_none());
+    let gated = if gated_on { vocal::gated_key(take_x, SR) } else { None };
     let (heard_root, heard_scale) = match &gated {
         Some(g) if !g.unknown => (g.key_root.clone(), g.scale.clone()),
         _ => (an.key_root.clone(), an.scale.clone()),
@@ -747,7 +753,7 @@ pub fn make_plan(take_x: &[f32], take_fe: &Features, words: &[vocal::Word], rec:
     let start_beat = (intro * 4) as f32 - first_bar_t / beat_s;
     let (vsb, voff) = if start_beat >= 0.0 { (start_beat, 0.0) } else { (0.0, -start_beat * beat_s) };
     info["take"] = json!({"bpm": an.tempo.bpm, "tempo_confidence": an.tempo.confidence, "key": format!("{} {}", an.key_root, an.scale), "notes": an.notes.len(), "range": [an.range.0, an.range.1]});
-    if s_opt(a, "key_detect").as_deref() == Some("yin_gated") {
+    if gated_on {
         info["take"]["key_gated"] = match &gated {
             Some(g) => json!({"key": format!("{} {}", g.key_root, g.scale), "used": !g.unknown, "confidence": g.confidence, "margin": g.margin, "runner_up": g.runner_up, "unknown": g.unknown, "frames_used": g.frames_used, "tuning_cents": g.tuning_cents, "histogram": g.histogram}),
             None => json!({"used": false, "note": "too few gated pitch frames; the note-based key is used"}),
@@ -2002,7 +2008,7 @@ fn cover_schema() -> Value {
         "identify": {"type": "boolean", "description": "find the record from the lyrics when no reference is given (default true)"},
         "language": {"type": "string", "description": "lyrics language for the transcriber (e.g. hi, en); default auto"},
         "bpm": {"type": "number"}, "key": {"type": "string"}, "scale": {"type": "string"},
-        "key_detect": {"type": "string", "enum": ["notes", "yin_gated"], "description": "free mode: how the singer's key is heard when key/scale are not given. notes (default): segmented sung notes. yin_gated: pitch frames gated on YIN aperiodicity < 0.15 and -55 dBFS, 120 ms smoothing, octave folding and tuning-offset removal (steadier on noisy, rubato or flat takes); an unknown read (margin < 0.05) falls back to notes"},
+        "key_detect": {"type": "string", "enum": ["yin_gated", "legacy", "notes"], "description": "free mode: how the singer's key is heard when key/scale are not given. yin_gated (default): pitch frames gated on YIN aperiodicity < 0.15 and -55 dBFS, 120 ms smoothing, octave folding and tuning-offset removal (steadier on noisy, rubato or flat takes); an unknown read (margin < 0.05) falls back to the notes. legacy (= notes): the segmented sung notes only, as before; reproduces earlier renders byte-for-byte"},
         "intro_bars": {"type": "integer"}, "outro_bars": {"type": "integer"}, "section_bars": {"type": "integer"},
         "target_lufs": {"type": "number", "description": "default -10"},
         "presence_db": {"type": "number", "description": "voice over music at 1-4 kHz inside phrases, worst section (default 10; the QA gate is 8)"},
