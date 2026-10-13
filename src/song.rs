@@ -194,12 +194,16 @@ pub struct MixSpec {
     /// when a take comes out harsh).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presence_ceiling_db: Option<f32>,
+    /// The master's tone lift (presence bell + air shelf) for this song;
+    /// unset = `MixProfile::default()`, `{"presence_db": 0, "air_db": 0}` = none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub master_lift: Option<mix_rules::MixProfile>,
 }
 
 impl Default for MixSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None }
+        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None }
     }
 }
 
@@ -343,7 +347,7 @@ const TOP_ALIAS: &[(&str, &str)] = &[("tempo", "bpm"), ("sections", "structure")
 const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain", "lock", "flex"];
 const PHRASE_KEYS: &[&str] = &["src_s", "src", "len_s", "len", "end_s", "section", "bar", "beat", "start_beat", "at_s", "start_s", "gain_db", "name", "fade_in_ms", "fade_out_ms"];
 const SECTION_KEYS: &[&str] = &["kind", "bars", "name", "energy"];
-const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db"];
+const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift"];
 const MASTER_KEYS: &[&str] = &["lufs", "true_peak", "preserve_dynamics"];
 const EXPORT_KEYS: &[&str] = &["path", "format", "bitrate_kbps"];
 const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db"];
@@ -555,6 +559,11 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
         let ceil = Targets::default().air_rel_lufs_db[1];
         if !(-32.0..=ceil - 0.4).contains(&f) {
             out.push(p("/mix/air_floor_db", format!("{f} dB"), format!("a 5-10 kHz floor in -32..{} dB (minus LUFS; the ceiling is {ceil})", ceil - 0.4)));
+        }
+    }
+    if let Some(ml) = &spec.mix.master_lift {
+        for (k, why) in ml.problems() {
+            out.push(p(format!("/mix/master_lift/{k}"), why, "the master lift: presence_hz 500..5000, presence_db/air_db -6..6, presence_q 0.3..3, air_hz 4000..16000"));
         }
     }
     if !(1..=6).contains(&spec.mix.balance_passes) {
@@ -1050,6 +1059,9 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
         mix.insert("vocal_balance".into(), b);
     }
     mix.insert("glue".into(), mix_rules::set_glue(e)?);
+    // the default lift (presence bell + air shelf) after the glue: every
+    // tone rule after it only cuts, so a dark song had no way up
+    mix.insert("master_lift".into(), mix_rules::set_master_lift(e, &spec.mix.master_lift.clone().unwrap_or_default())?);
     // the top end: the beat darkens on its own bus first (the vocal keeps
     // its top), the vocal is re-balanced over the darker beat, and the
     // master tone only takes what the beat could not (small, capped)

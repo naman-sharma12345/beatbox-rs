@@ -1139,6 +1139,83 @@ pub fn tilt_db(m: &[f32]) -> (f32, f32) {
     (band_energy_db(m, 2000.0, 5000.0) - body, band_energy_db(m, 5000.0, 10000.0) - body)
 }
 
+/// The master's default lift, on every song render: a broad presence bell
+/// and a gentle air shelf at the end of the master chain (after the glue).
+/// Measured on the same-seed freestyle song (C3, 2026-10-13): judge_audio
+/// read presence (1-4 kHz share) -17.6 dB against its -15 floor and air
+/// (5-11 kHz) -23.4 against -22, and the song's own not_harsh check read
+/// 2-5 kHz at -27.4 dB under LUFS against a -23..-22.4 window: too dark on
+/// both meters, while every tone rule here only cuts. Most of the 1-4 kHz
+/// energy sits at 1-1.4 kHz and the vocal is only part of the whole file's
+/// 2-3 kHz, so auto_fix_mix's +4.2 dB vocal bell at 2.5 kHz (Q 0.8) moved
+/// presence by 0.4 dB; a wide bell on the whole mix moves the whole band. The beat
+/// tone rule still holds the tilt (it darkens the beat bus if this makes a
+/// bright beat too bright), so the lift mostly lands on the voice.
+pub const MASTER_LIFT_ID: &str = "master_lift";
+
+/// The master's default tone lift as a named, configurable profile (a song
+/// overrides it at `/mix/master_lift`; a genre can carry its own later):
+/// a presence bell (`presence_hz`, `presence_db`, `presence_q`) and an air
+/// high shelf (`air_hz`, `air_db`). Both gains 0 = no lift.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct MixProfile {
+    pub presence_hz: f32,
+    pub presence_db: f32,
+    pub presence_q: f32,
+    pub air_hz: f32,
+    pub air_db: f32,
+}
+
+impl Default for MixProfile {
+    fn default() -> Self {
+        // Naman's spec (2026-10-13): presence in 2.5-3.5 kHz, air shelf in
+        // 8-12 kHz. The bell sits at the low end of that range and wide
+        // (Q 0.6 reaches down to ~1.2 kHz), because the judge's 1-4 kHz
+        // band carries most of its energy at 1-1.4 kHz; the shelf is the
+        // +3 dB at 8 kHz that auto_fix_mix needed on C4
+        MixProfile { presence_hz: 2500.0, presence_db: 3.5, presence_q: 0.6, air_hz: 8000.0, air_db: 3.0 }
+    }
+}
+
+impl MixProfile {
+    /// What is out of range, as (field, why); empty = fine.
+    pub fn problems(&self) -> Vec<(&'static str, String)> {
+        let mut v = Vec::new();
+        let mut chk = |k: &'static str, x: f32, lo: f32, hi: f32| {
+            if !x.is_finite() || x < lo || x > hi {
+                v.push((k, format!("{x} is outside {lo}..{hi}")));
+            }
+        };
+        chk("presence_hz", self.presence_hz, 500.0, 5000.0);
+        chk("presence_db", self.presence_db, -6.0, 6.0);
+        chk("presence_q", self.presence_q, 0.3, 3.0);
+        chk("air_hz", self.air_hz, 4000.0, 16000.0);
+        chk("air_db", self.air_db, -6.0, 6.0);
+        v
+    }
+}
+
+/// Put the master lift (`MixProfile`) last on the master chain, once: a
+/// second call replaces it in place, never stacks; a profile with both
+/// gains at 0 takes it off.
+pub fn set_master_lift(e: &mut Engine, p: &MixProfile) -> Result<Value> {
+    let fxs = &mut e.project.master_effects;
+    if let Some(i) = fxs.iter().position(|f| f.id() == MASTER_LIFT_ID) {
+        fxs.remove(i);
+    }
+    if p.presence_db.abs() < 0.05 && p.air_db.abs() < 0.05 {
+        return Ok(json!({"off": true}));
+    }
+    let mut fx: crate::fx::Effect = serde_json::from_value(json!({"type": "parametric_eq", "bands": [
+        {"kind": "bell", "freq": p.presence_hz, "gain_db": p.presence_db, "q": p.presence_q},
+        {"kind": "high_shelf", "freq": p.air_hz, "gain_db": p.air_db, "q": 0.7}
+    ]}))?;
+    fx.set_id(MASTER_LIFT_ID);
+    fxs.push(fx);
+    Ok(json!({"presence_bell": [p.presence_hz, p.presence_db, p.presence_q], "air_shelf": [p.air_hz, p.air_db]}))
+}
+
 /// The master tone stage's marker frequencies (one EQ this module owns).
 const TONE_PRES_HZ: f32 = 3150.0;
 const TONE_AIR_HZ: f32 = 7500.0;
@@ -1800,5 +1877,35 @@ mod tests {
         e.call("add_track", &json!({"name": "vocal", "instrument": {"type": "sampler", "sample": "", "one_shot": true}})).unwrap();
         assert!(has_pocket(&e.project, "chords"), "adding a vocal track brings the pocket");
         assert!(ensure_vocal_pocket(&mut e, "test").unwrap().is_empty(), "idempotent");
+    }
+
+    #[test]
+    fn the_master_lift_goes_last_once_and_is_not_the_tone_stage() {
+        let d = std::env::temp_dir().join(format!("mr_lift_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        e.project.master_effects.push(crate::fx::Effect::from_type("compressor").unwrap());
+        let p = MixProfile::default();
+        assert!(p.problems().is_empty());
+        set_master_lift(&mut e, &p).unwrap();
+        set_master_lift(&mut e, &p).unwrap();
+        let fx = &e.project.master_effects;
+        assert_eq!(fx.iter().filter(|f| f.id() == MASTER_LIFT_ID).count(), 1);
+        assert_eq!(fx.last().unwrap().id(), MASTER_LIFT_ID);
+        let v = serde_json::to_value(fx.last().unwrap()).unwrap();
+        assert_eq!(v["bands"][0]["kind"], json!("bell"));
+        assert_eq!(v["bands"][0]["freq"].as_f64().unwrap() as f32, p.presence_hz);
+        assert_eq!(v["bands"][1]["kind"], json!("high_shelf"));
+        assert_eq!(v["bands"][1]["gain_db"].as_f64().unwrap() as f32, p.air_db);
+        // the tone stage (which shape_top removes when the beat met its
+        // targets) must not mistake the lift for its own EQ
+        assert!(tone_gains(&e.project).is_none());
+        // a profile from a song spec: named fields, unknown ones refused, 0/0 = off
+        let q: MixProfile = serde_json::from_value(json!({"presence_db": 2.0})).unwrap();
+        assert_eq!((q.presence_db, q.air_db, q.presence_hz), (2.0, p.air_db, p.presence_hz));
+        assert!(serde_json::from_value::<MixProfile>(json!({"presense_db": 2.0})).is_err());
+        assert_eq!(MixProfile { presence_db: 9.0, ..p.clone() }.problems()[0].0, "presence_db");
+        set_master_lift(&mut e, &MixProfile { presence_db: 0.0, air_db: 0.0, ..p }).unwrap();
+        assert!(e.project.master_effects.iter().all(|f| f.id() != MASTER_LIFT_ID));
     }
 }
