@@ -1216,6 +1216,15 @@ pub fn set_master_lift(e: &mut Engine, p: &MixProfile) -> Result<Value> {
     Ok(json!({"presence_bell": [p.presence_hz, p.presence_db, p.presence_q], "air_shelf": [p.air_hz, p.air_db]}))
 }
 
+/// The master lift on the project now, as a profile (None = no lift).
+pub fn current_master_lift(p: &Project) -> Option<MixProfile> {
+    let f = p.master_effects.iter().find(|f| f.id() == MASTER_LIFT_ID)?;
+    let v = serde_json::to_value(f).ok()?;
+    let b = v["bands"].as_array()?;
+    let g = |i: usize, k: &str| b.get(i).and_then(|x| x[k].as_f64()).map(|x| x as f32);
+    Some(MixProfile { presence_hz: g(0, "freq")?, presence_db: g(0, "gain_db")?, presence_q: g(0, "q")?, air_hz: g(1, "freq")?, air_db: g(1, "gain_db")? })
+}
+
 /// The master tone stage's marker frequencies (one EQ this module owns).
 const TONE_PRES_HZ: f32 = 3150.0;
 const TONE_AIR_HZ: f32 = 7500.0;

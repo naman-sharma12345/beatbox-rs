@@ -360,6 +360,74 @@ fn judge_props() -> Value {
     })
 }
 
+/// Saved master-lift presets live here, one JSON profile per name.
+fn lift_dir(e: &Engine) -> std::path::PathBuf {
+    e.workdir.join("mix_profiles")
+}
+
+fn lift_names(e: &Engine) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(lift_dir(e))
+        .map(|d| d.filter_map(|x| x.ok()).filter_map(|x| x.file_name().to_str().and_then(|n| n.strip_suffix(".json")).map(String::from)).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+fn lift_name_ok(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 40 && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn master_lift_tool(e: &mut Engine, a: &Value) -> Result<Value> {
+    use crate::mix_rules::{current_master_lift, set_master_lift, MixProfile};
+    let mut p = match s_opt(a, "preset").as_deref() {
+        Some("default") => MixProfile::default(),
+        Some("off") => MixProfile { presence_db: 0.0, air_db: 0.0, ..MixProfile::default() },
+        Some(n) => {
+            if !lift_name_ok(n) {
+                bail!("preset names are letters, digits, _ and - (got '{n}')");
+            }
+            let f = lift_dir(e).join(format!("{n}.json"));
+            let txt = std::fs::read_to_string(&f).map_err(|_| anyhow::anyhow!("no preset '{n}' (saved: {:?}; built in: default, off)", lift_names(e)))?;
+            serde_json::from_str(&txt)?
+        }
+        None => current_master_lift(&e.project).unwrap_or_default(),
+    };
+    for (k, slot) in [("presence_hz", &mut p.presence_hz), ("presence_db", &mut p.presence_db), ("presence_q", &mut p.presence_q), ("air_hz", &mut p.air_hz), ("air_db", &mut p.air_db)] {
+        if let Some(x) = f_opt(a, k) {
+            *slot = x;
+        }
+    }
+    let bad = p.problems();
+    if !bad.is_empty() {
+        bail!("{}", bad.iter().map(|(k, w)| format!("{k}: {w}")).collect::<Vec<_>>().join("; "));
+    }
+    let mut saved = Value::Null;
+    if let Some(n) = s_opt(a, "save_as") {
+        if !lift_name_ok(&n) || n == "default" || n == "off" {
+            bail!("save_as: letters, digits, _ and -, and not 'default' or 'off' (got '{n}')");
+        }
+        std::fs::create_dir_all(lift_dir(e))?;
+        std::fs::write(lift_dir(e).join(format!("{n}.json")), serde_json::to_string_pretty(&p)?)?;
+        saved = json!(n);
+    }
+    let apply = a.get("apply").and_then(|v| v.as_bool()).unwrap_or(true);
+    if apply {
+        set_master_lift(e, &p)?;
+        e.project.ensure_fx_ids();
+        // a song keeps it on every re-mix (song_patch reads /mix/master_lift)
+        if let Some(s) = e.project.song.as_mut() {
+            if s.spec.is_object() {
+                if !s.spec["mix"].is_object() {
+                    s.spec["mix"] = json!({});
+                }
+                s.spec["mix"]["master_lift"] = serde_json::to_value(&p)?;
+            }
+        }
+    }
+    let on = p.presence_db.abs() >= 0.05 || p.air_db.abs() >= 0.05;
+    Ok(json!({"profile": p, "on": on, "applied": apply, "saved_as": saved, "presets": lift_names(e), "built_in": ["default", "off"]}))
+}
+
 pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
@@ -385,6 +453,22 @@ pub fn tools() -> Vec<Tool> {
                 obj(p, &[])
             },
             run: auto_fix_tool,
+        },
+        Tool {
+            name: "master_lift",
+            description: "The master's tone lift (a MixProfile: presence bell presence_hz/presence_db/presence_q + air shelf air_hz/air_db, last on the master chain; every song render puts the default on). Read it, change any field, apply a preset (built in: default, off; or one saved with save_as), save the current one as a named preset. A song keeps it on re-mix (/mix/master_lift). One undo step.",
+            mutates: true,
+            schema: || obj(json!({
+                "preset": {"type": "string", "description": "start from: default | off | a saved name (omit = the lift on the project now)"},
+                "presence_hz": {"type": "number", "description": "500..5000 (default 2500)"},
+                "presence_db": {"type": "number", "description": "-6..6 (default 3.5)"},
+                "presence_q": {"type": "number", "description": "0.3..3 (default 0.6)"},
+                "air_hz": {"type": "number", "description": "high shelf corner, 4000..16000 (default 8000)"},
+                "air_db": {"type": "number", "description": "-6..6 (default 3)"},
+                "save_as": {"type": "string", "description": "also save the result as a preset (letters, digits, _ -)"},
+                "apply": {"type": "boolean", "description": "put it on the master (default true; false = only save/read)"}
+            }), &[]),
+            run: master_lift_tool,
         },
     ]
 }
@@ -446,5 +530,29 @@ mod tests {
         assert!(f.pres_db >= 2.0 && f.pres_db <= 6.0, "{f:?}");
         assert_eq!(f.harsh_db, 0.0, "not harsh: no cut");
         assert!(f.air_db > 0.0 && f.air_db <= 5.0);
+    }
+
+    #[test]
+    fn master_lift_reads_sets_saves_and_applies_presets() {
+        use crate::mix_rules::{current_master_lift, MixProfile};
+        let d = std::env::temp_dir().join(format!("lift_tool_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        assert!(current_master_lift(&e.project).is_none());
+        let r = e.call("master_lift", &json!({"presence_db": 2.0, "save_as": "soft"})).unwrap();
+        assert_eq!(r["saved_as"], json!("soft"));
+        let cur = current_master_lift(&e.project).unwrap();
+        assert_eq!(cur, MixProfile { presence_db: 2.0, ..MixProfile::default() });
+        e.call("master_lift", &json!({"preset": "off"})).unwrap();
+        assert!(current_master_lift(&e.project).is_none());
+        e.call("master_lift", &json!({"preset": "soft", "air_db": 1.0})).unwrap();
+        assert_eq!(current_master_lift(&e.project).unwrap(), MixProfile { presence_db: 2.0, air_db: 1.0, ..MixProfile::default() });
+        assert!(e.call("master_lift", &json!({"presence_db": 12.0})).is_err());
+        assert!(e.call("master_lift", &json!({"preset": "nope"})).is_err());
+        assert!(e.call("master_lift", &json!({"save_as": "../x"})).is_err());
+        let r = e.call("master_lift", &json!({"apply": false})).unwrap();
+        assert_eq!(r["presets"], json!(["soft"]));
+        assert_eq!(e.project.master_effects.iter().filter(|f| f.id() == crate::mix_rules::MASTER_LIFT_ID).count(), 1);
     }
 }
