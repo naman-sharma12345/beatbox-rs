@@ -209,6 +209,15 @@ impl Engine {
                         let _ = crate::mix_rules::ensure_vocal_pocket(self, "mix_rules");
                     }
                 }
+                // the playlist plays compiled copies of its patterns: when a
+                // source pattern changes under a compiled playlist (a step
+                // toggled in the channel rack, notes edited), recompile so
+                // the render hears the edit
+                if let Some(s) = &snapshot {
+                    if playlist_sources_changed(s, &self.project) {
+                        let _ = crate::tools_fl::compile_playlist(&mut self.project);
+                    }
+                }
                 if let Some(s) = snapshot {
                     if s != self.project {
                         // every mutation reports its state version and an exact change list
@@ -808,4 +817,19 @@ fn with_note(v: Value, note: String) -> Value {
         }
         other => serde_json::json!({"result": other, "note": note}),
     }
+}
+
+/// True when `now` has a compiled playlist (an arrangement made only of the
+/// playlist compiler's patterns) and a pattern the playlist plays changed
+/// since `before`.
+fn playlist_sources_changed(before: &Project, now: &Project) -> bool {
+    use crate::tools_fl::PL;
+    if now.playlist.is_empty() || now.arrangement.is_empty() || !now.arrangement.iter().all(|s| s.pattern.starts_with(PL)) {
+        return false;
+    }
+    now.playlist.iter().any(|c| {
+        let a = before.patterns.iter().find(|p| p.name.eq_ignore_ascii_case(&c.pattern));
+        let b = now.patterns.iter().find(|p| p.name.eq_ignore_ascii_case(&c.pattern));
+        a != b
+    })
 }

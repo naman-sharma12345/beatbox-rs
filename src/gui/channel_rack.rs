@@ -374,6 +374,47 @@ mod tests {
         f
     }
 
+    /// End to end: steps clicked in the rack are what the engine renders.
+    /// The pattern sits on the playlist; a kick step toggled on beat 2
+    /// puts a hit there, and the rack's mute silences it again.
+    #[test]
+    fn steps_toggled_in_the_rack_are_heard_in_the_render() {
+        let mut e = engine();
+        e.call("place_pattern", &json!({"pattern": "verse", "start_bar": 0, "lane": 0})).unwrap();
+        let kick = e.project.track_index("kick").unwrap();
+        let rms_at = |m: &crate::render::Mix, beat0: f32, beat1: f32, bpm: f32| {
+            let sr = crate::dsp::SR as f32;
+            let (a, b) = ((beat0 * 60.0 / bpm * sr) as usize, (beat1 * 60.0 / bpm * sr) as usize);
+            let b = b.min(m.left.len());
+            let s: f32 = m.left[a..b].iter().map(|v| v * v).sum();
+            (s / (b - a).max(1) as f32).sqrt()
+        };
+        let bpm = e.project.bpm;
+        let before = e.mix().unwrap();
+        let quiet = rms_at(&*before, 1.0, 1.5, bpm);
+        // click kick step 4 (beat 2 of the bar) in the rack
+        let p = e.project.clone();
+        let (calls, _) = drive(&p, 1.0, &|rows| click(rows[kick].step_rect(4).center()));
+        assert_eq!(calls, vec![("toggle_step", json!({"track": "kick", "step": 4, "pattern": "verse"}))]);
+        for (t, a) in &calls {
+            e.call(t, a).unwrap();
+        }
+        let after = e.mix().unwrap();
+        let hit = rms_at(&*after, 1.0, 1.5, bpm);
+        assert!(hit > 1e-3 && hit > quiet * 10.0 + 1e-4, "the toggled step is audible: before {quiet}, after {hit}");
+        // nothing else moved: the bar's first beat is as quiet as before
+        assert!(rms_at(&*after, 0.0, 0.9, bpm) < hit * 0.1);
+        // the rack's mute LED silences the channel in the render
+        let p = e.project.clone();
+        let (calls, _) = drive(&p, 1.0, &|rows| click(rows[kick].mute.center()));
+        assert_eq!(calls, vec![("set_mixer", json!({"track": "kick", "mute": true}))]);
+        for (t, a) in &calls {
+            e.call(t, a).unwrap();
+        }
+        let muted = e.mix().unwrap();
+        assert!(rms_at(&*muted, 1.0, 1.5, bpm) < hit * 0.01, "muted in the rack, silent in the render");
+    }
+
     #[test]
     fn the_layout_reads_left_to_right_like_fl() {
         let r = RackRow::layout(Rect::from_min_size(pos2(10.0, 50.0), vec2(900.0, DRUM_ROW_H)), 20.0, 16);
