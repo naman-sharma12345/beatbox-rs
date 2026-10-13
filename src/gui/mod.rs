@@ -41,6 +41,8 @@ struct Rendered {
     report: Report,
     loop_secs: f32,
     strips: Vec<views::StripMeter>,
+    /// The project this render is of (the base a live edit splices into).
+    project: Arc<Project>,
 }
 
 #[derive(Clone)]
@@ -64,6 +66,9 @@ pub struct Studio {
     // render pipeline
     rendered: Option<Rendered>,
     rendering: Option<(u64, Receiver<Rendered>)>,
+    /// Live edit while playing: the affected bars' splice, ahead of the
+    /// full render (crate::live_splice).
+    live: Option<Receiver<Arc<Mix>>>,
     inspector: Option<InspectorCache>,
     dragging: bool,
     toast: Option<(String, f64, bool)>,
@@ -130,6 +135,7 @@ pub fn run(
                 selected: 0,
                 rendered: None,
                 rendering: None,
+                live: None,
                 inspector: None,
                 dragging: false,
                 toast: None,
@@ -339,9 +345,22 @@ impl Studio {
     }
 
     fn pump_render(&mut self, project: &Project, rev: u64, ctx: &egui::Context) {
+        // an edit made while playing: its bars are heard as soon as they are
+        // spliced in (the player swaps at its next block, crossfaded)
+        if let Some(rx) = &self.live {
+            if let Ok(m) = rx.try_recv() {
+                if self.perf.is_none() && self.perf_next.is_none() {
+                    if let Some(r) = &self.rendered {
+                        self.player.set_mix(m, r.loop_secs);
+                    }
+                }
+                self.live = None;
+            }
+        }
         if let Some((want, rx)) = &self.rendering {
             if let Ok(r) = rx.try_recv() {
                 let _ = want;
+                self.live = None;
                 // performance mode keeps looping its pattern; the song comes
                 // back on exit
                 if self.perf.is_none() && self.perf_next.is_none() {
@@ -364,7 +383,24 @@ impl Studio {
             p.arrangement = project.arrangement.clone();
             let (tx, rx) = channel();
             let ctx = ctx.clone();
+            // while the song plays, splice the edited bars into the playing
+            // buffer first; the full render below still follows
+            let prev = (self.player.is_playing() && self.perf.is_none() && self.perf_next.is_none())
+                .then(|| self.rendered.as_ref().map(|r| (r.project.clone(), r.mix.clone())))
+                .flatten();
+            let (ltx, lrx) = channel();
+            self.live = prev.is_some().then_some(lrx);
             std::thread::spawn(move || {
+                if let Some((op, om)) = prev {
+                    if let crate::live_splice::Dirty::Steps(a, b) = crate::live_splice::dirty_steps(&op, &p) {
+                        if !crate::live_splice::worth_splicing(&op, &p, a, b) {
+                            // the full render below is as quick
+                        } else if let Ok((m, _)) = crate::live_splice::splice(&op, &p, &bank, &om, a, b) {
+                            let _ = ltx.send(Arc::new(m));
+                            ctx.request_repaint();
+                        }
+                    }
+                }
                 if let Ok(mix) = render::render(
                     &p,
                     &bank,
@@ -398,6 +434,7 @@ impl Studio {
                         spectrum,
                         report,
                         loop_secs,
+                        project: Arc::new(p.clone()),
                     });
                     ctx.request_repaint();
                 }

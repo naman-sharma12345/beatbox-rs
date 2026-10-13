@@ -22,21 +22,64 @@ struct Shared {
     /// waits for, in source samples (0 = switch on the next frame).
     queued: Option<(Arc<Mix>, usize)>,
     quantum: usize,
+    /// Live update (an edit while playing): the new buffer, its loop length
+    /// and the block the head was in when it arrived. It takes over when the
+    /// head enters the next `SWAP_BLOCK`, crossfading over `XFADE` samples.
+    pending: Option<(Arc<Mix>, usize, usize)>,
+    /// The buffer being faded out and how many crossfade samples are done.
+    fade: Option<(Arc<Mix>, u32)>,
 }
 
+/// Live updates swap in on a boundary of this many source samples.
+pub const SWAP_BLOCK: usize = 256;
+/// Crossfade length of a live swap (10 ms at 44.1 kHz): no click, no restart.
+pub const XFADE: u32 = 441;
+
 impl Shared {
+    /// New song buffer. `live` (a device is pulling frames) and playing:
+    /// queue it for the next block boundary; otherwise swap at once.
+    fn update(&mut self, mix: Arc<Mix>, len: usize, live: bool) {
+        if live && self.playing && self.mix.is_some() {
+            self.pending = Some((mix, len, self.pos as usize / SWAP_BLOCK));
+            return;
+        }
+        self.pending = None;
+        self.fade = None;
+        self.loop_len = len;
+        if self.pos as usize >= self.loop_len {
+            self.pos = 0.0;
+        }
+        self.mix = Some(mix);
+    }
+
     /// The song's next stereo frame; advances the play head and swaps in a
     /// queued loop when the head crosses a quantum boundary or wraps.
     fn song_frame(&mut self) -> (f32, f32) {
         if !self.playing {
             return (0.0, 0.0);
         }
-        let Some(m) = &self.mix else { return (0.0, 0.0) };
         let i = self.pos as usize;
-        let v = (
-            m.left.get(i).copied().unwrap_or(0.0),
-            m.right.get(i).copied().unwrap_or(0.0),
-        );
+        // a live update takes over once the head is in a new block
+        if matches!(&self.pending, Some((_, _, b)) if i / SWAP_BLOCK != *b) {
+            let (mix, len, _) = self.pending.take().unwrap();
+            if let Some(old) = self.mix.take() {
+                self.fade = Some((old, 0));
+            }
+            self.mix = Some(mix);
+            self.loop_len = len.max(1);
+        }
+        let Some(m) = &self.mix else { return (0.0, 0.0) };
+        let at = |m: &Mix| (m.left.get(i).copied().unwrap_or(0.0), m.right.get(i).copied().unwrap_or(0.0));
+        let mut v = at(m);
+        if let Some((old, done)) = self.fade.as_mut() {
+            let g = (*done + 1) as f32 / (XFADE + 1) as f32;
+            let o = at(old);
+            v = (o.0 + (v.0 - o.0) * g, o.1 + (v.1 - o.1) * g);
+            *done += 1;
+            if *done >= XFADE {
+                self.fade = None;
+            }
+        }
         let old = self.pos;
         self.pos += self.step;
         let wrapped = self.pos as usize >= self.loop_len;
@@ -78,6 +121,8 @@ impl Player {
             one: None,
             queued: None,
             quantum: 0,
+            pending: None,
+            fade: None,
         }));
         let (stream, device_name) = match open_stream(shared.clone()) {
             Ok((s, n)) => (Some(s), n),
@@ -104,6 +149,8 @@ impl Player {
             {
                 let mut s = self.shared.lock().unwrap();
                 s.queued = None;
+                s.pending = None;
+                s.fade = None;
                 s.mix = Some(mix);
                 s.loop_len = len;
                 s.pos = 0.0;
@@ -119,6 +166,7 @@ impl Player {
         }
         if self.has_audio() {
             let mut s = self.shared.lock().unwrap();
+            s.pending = None;
             s.queued = Some((mix, len));
             s.quantum = ((quantum_secs * crate::dsp::SR) as usize).max(1);
         } else {
@@ -163,13 +211,13 @@ impl Player {
         self._stream.is_some()
     }
 
+    /// Replace the song buffer. While it plays on a real device the swap
+    /// waits for the next block boundary and crossfades (`Shared::update`),
+    /// so an edit during playback never clicks or restarts the song.
     pub fn set_mix(&self, mix: Arc<Mix>, loop_secs: f32) {
-        let mut s = self.shared.lock().unwrap();
-        s.loop_len = ((loop_secs * crate::dsp::SR) as usize).max(1);
-        if s.pos as usize >= s.loop_len {
-            s.pos = 0.0;
-        }
-        s.mix = Some(mix);
+        let len = ((loop_secs * crate::dsp::SR) as usize).max(1);
+        let live = self.has_audio();
+        self.shared.lock().unwrap().update(mix, len, live);
     }
 
     pub fn play(&mut self) {
@@ -186,6 +234,11 @@ impl Player {
         s.playing = false;
         s.pos = 0.0;
         s.queued = None;
+        s.fade = None;
+        if let Some((mix, len, _)) = s.pending.take() {
+            s.mix = Some(mix);
+            s.loop_len = len.max(1);
+        }
         self.virtual_clock = None;
         self.virtual_start = 0.0;
     }
@@ -336,7 +389,7 @@ mod tests {
     }
 
     fn shared(m: Arc<Mix>, len: usize) -> Shared {
-        Shared { mix: Some(m), pos: 0.0, loop_len: len, playing: true, step: 1.0, one: None, queued: None, quantum: 0 }
+        Shared { mix: Some(m), pos: 0.0, loop_len: len, playing: true, step: 1.0, one: None, queued: None, quantum: 0, pending: None, fade: None }
     }
 
     #[test]
@@ -367,5 +420,117 @@ mod tests {
             if l == 2.0 && first_new.is_none() { first_new = Some(n); }
         }
         assert_eq!(first_new, Some(150));
+    }
+    #[test]
+    fn a_live_update_waits_for_the_next_block_then_crossfades() {
+        // old buffer +0.5, new -0.5: a hard swap would step by 1.0
+        let mut s = shared(mix(0.5, 10_000), 10_000);
+        for _ in 0..1000 { s.song_frame(); }
+        s.update(mix(-0.5, 10_000), 10_000, true);
+        let out: Vec<f32> = (0..2000).map(|_| s.song_frame().0).collect();
+        // the head was at 1000 (block 3): untouched until 1024
+        assert!(out[..24].iter().all(|v| *v == 0.5), "old buffer plays to the block boundary");
+        assert!(out[24] < 0.5, "the swap starts at the boundary");
+        assert!(out[24 + XFADE as usize..].iter().all(|v| *v == -0.5), "the new buffer after the crossfade");
+        let steps = out.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0f32, f32::max);
+        assert!(steps <= 1.0 / XFADE as f32 + 1e-4, "no click: max step {steps}");
+        // no restart: the head kept going
+        assert_eq!(s.pos as usize, 3000);
+        assert!(s.pending.is_none() && s.fade.is_none());
+    }
+
+    #[test]
+    fn without_a_device_or_when_stopped_the_update_is_immediate() {
+        let mut s = shared(mix(0.5, 1000), 1000);
+        s.update(mix(0.25, 1000), 1000, false);
+        assert_eq!(s.song_frame().0, 0.25);
+        s.playing = false;
+        s.update(mix(0.75, 1000), 1000, true);
+        s.playing = true;
+        assert_eq!(s.song_frame().0, 0.75);
+    }
+
+    #[test]
+    fn a_step_edited_while_playing_rerenders_its_bars_and_swaps_without_a_click() {
+        use crate::engine::Engine;
+        use crate::live_splice::{self, Dirty};
+        use crate::render::{render, RenderOptions};
+        use serde_json::json;
+        let d = std::env::temp_dir().join(format!("live_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        e.call("add_track", &json!({"name": "kick", "preset": "kick"})).unwrap();
+        e.call("add_track", &json!({"name": "keys", "preset": "epiano"})).unwrap();
+        e.call("add_pattern", &json!({"name": "verse", "bars": 16})).unwrap();
+        for st in (0..16).map(|b| b * 16) {
+            e.call("toggle_step", &json!({"track": "kick", "step": st, "pattern": "verse"})).unwrap();
+        }
+        let chords: Vec<serde_json::Value> = (0..16).map(|b| json!({"start": b * 16, "len": 12, "pitch": 60, "vel": 0.6})).collect();
+        e.call("add_notes", &json!({"track": "keys", "pattern": "verse", "notes": chords})).unwrap();
+        // the song plays the pattern from the playlist (as the rack does)
+        e.call("place_pattern", &json!({"pattern": "verse", "start_bar": 0, "lane": 0})).unwrap();
+        let opts = RenderOptions::default();
+        let p0 = e.project.clone();
+        assert_eq!(live_splice::dirty_steps(&p0, &p0), Dirty::Nothing);
+        let m0 = render(&p0, &e.bank, &opts).unwrap();
+        // the edit: one kick step in bar 3 (step 36), "during playback"
+        e.call("toggle_step", &json!({"track": "kick", "step": 36, "pattern": "verse"})).unwrap();
+        let p1 = e.project.clone();
+        let Dirty::Steps(a, b) = live_splice::dirty_steps(&p0, &p1) else { panic!("a step edit is a partial update: {:?}", live_splice::dirty_steps(&p0, &p1)) };
+        assert!(a >= 32 && a <= 36 && b <= 48, "only bar 3 is dirty: {a}..{b}");
+        let t = std::time::Instant::now();
+        let (m1, changed) = live_splice::splice(&p0, &p1, &e.bank, &m0, a, b).unwrap();
+        let t_splice = t.elapsed();
+        let t = std::time::Instant::now();
+        let full = render(&p1, &e.bank, &opts).unwrap();
+        let t_full = t.elapsed();
+        let sps = p0.step_secs() * crate::dsp::SR;
+        let (w0, w1) = live_splice::window(&p0, &p1, a, b);
+        assert!(live_splice::worth_splicing(&p0, &p1, a, b));
+        assert!(w0 > 0 && w1 < p0.song_steps(), "the window is part of the song: {w0}..{w1}");
+        // outside the window the playing mix is kept bit for bit
+        let ws = (w0 as f32 * sps) as usize;
+        assert!(changed.0 >= ws, "nothing before the window changed");
+        assert_eq!(&m1.left[..ws], &m0.left[..ws]);
+        let we = ((w1 as f32 * sps) as usize + (opts.tail * crate::dsp::SR) as usize + 1).min(m0.left.len());
+        assert_eq!(&m1.left[we..], &m0.left[we..]);
+        // inside, it is what a full render of the edit sounds like
+        let (h0, h1) = ((36.0 * sps) as usize, (40.0 * sps) as usize);
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt();
+        let hit = rms(&full.left[h0..h1]);
+        let before = rms(&m0.left[h0..h1]);
+        let err: Vec<f32> = (h0..h1).map(|i| m1.left[i] - full.left[i]).collect();
+        let err = rms(&err);
+        eprintln!("live splice: dirty {a}..{b}, window {w0}..{w1}, splice {t_splice:?} vs full {t_full:?}; hit rms {hit}, before {before}, splice-vs-full err {err}");
+        assert!(hit > before * 2.0 + 1e-4, "the new kick is audible");
+        assert!(err < hit * 0.1, "the splice matches a full render: err {err} vs {hit}");
+        // playback: the head is mid-bar just before the hit, off any boundary
+        let start = h0 - 300;
+        let mut s = shared(Arc::new(m0), full.left.len());
+        s.pos = start as f64 + 0.0;
+        let old = s.mix.clone().unwrap();
+        s.update(Arc::new(m1), full.left.len(), true);
+        let new = s.pending.as_ref().unwrap().0.clone();
+        let n = 4000;
+        let out: Vec<(f32, f32)> = (0..n).map(|_| s.song_frame()).collect();
+        let boundary = (start / SWAP_BLOCK + 1) * SWAP_BLOCK;
+        for k in 0..(boundary - start) {
+            assert_eq!(out[k].0, old.left[start + k], "old buffer until the boundary");
+        }
+        let fade_end = boundary + XFADE as usize;
+        for k in (fade_end - start)..n {
+            assert_eq!(out[k].0, new.left[start + k], "new buffer after the crossfade");
+        }
+        let l: Vec<f32> = out.iter().map(|v| v.0).collect();
+        let r: Vec<f32> = out.iter().map(|v| v.1).collect();
+        let played = live_splice::max_step(&l, &r, 0, n);
+        let stat = live_splice::max_step(&old.left, &old.right, start, start + n).max(live_splice::max_step(&new.left, &new.right, start, start + n));
+        eprintln!("live swap: max step {played} vs static {stat}");
+        assert!(played <= stat * 2.5 + 1e-6, "no discontinuity at the swap: {played} vs static {stat}");
+        assert_eq!(s.pos as usize, start + n, "no restart");
+        // a mixer move is global: the whole song re-renders
+        e.call("set_mixer", &json!({"track": "kick", "volume_db": -12.0})).unwrap();
+        assert_eq!(live_splice::dirty_steps(&p1, &e.project), Dirty::Everything);
     }
 }

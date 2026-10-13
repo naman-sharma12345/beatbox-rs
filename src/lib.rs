@@ -41,6 +41,7 @@ pub mod ids;
 pub mod gui;
 pub mod instruments;
 pub mod listen;
+pub mod live_splice;
 pub mod mcp;
 pub mod media;
 pub mod midi_ops;

@@ -815,6 +815,24 @@ pub fn render_cached(
     opts: &RenderOptions,
     cache: Option<&mut TrackCache>,
 ) -> Result<Mix> {
+    render_impl(p, bank, opts, cache, None)
+}
+
+/// A `step_range` render whose notes keep the round-robin / variation
+/// index they have in the whole song: `index_base[track]` is how many of
+/// that track's notes sound before the range. A window rendered this way
+/// matches the same bars of a full render (crate::live_splice).
+pub fn render_window(p: &Project, bank: &SampleBank, opts: &RenderOptions, index_base: &[usize]) -> Result<Mix> {
+    render_impl(p, bank, opts, None, Some(index_base))
+}
+
+fn render_impl(
+    p: &Project,
+    bank: &SampleBank,
+    opts: &RenderOptions,
+    cache: Option<&mut TrackCache>,
+    index_base: Option<&[usize]>,
+) -> Result<Mix> {
     if !opts.allow_missing_clips {
         let missing = missing_clip_samples(p, bank);
         if !missing.is_empty() {
@@ -1071,18 +1089,21 @@ pub fn render_cached(
                         .iter()
                         .map(|(l, _)| l.value_at_in(beat, automation::is_log_param(&l.param)).unwrap_or(0.0))
                         .collect();
+                    // the note's index in the whole song (a window render
+                    // starts later in the track's notes)
+                    let kr = k + index_base.and_then(|b| b.get(ti).copied()).unwrap_or(0);
                     let key = (
                         (e.pitch * 10.0) as i32,
                         (e.vel * 127.0) as u8,
                         (e.gate * 1000.0) as u32,
                         vals.iter().map(|v| (v * 1000.0).round() as i64).collect(),
                         e.slide_to.map(|x| (x * 10.0) as i32).unwrap_or(-1),
-                        if round_robin { (k % 4) as u8 } else { 0 },
+                        if round_robin { (kr % 4) as u8 } else { 0 },
                     );
                     let seed = if round_robin {
-                        (ti as u64) << 32 | (k as u64 % 4)
+                        (ti as u64) << 32 | (kr as u64 % 4)
                     } else {
-                        (ti as u64) << 32 | (k as u64 % 7)
+                        (ti as u64) << 32 | (kr as u64 % 7)
                     };
                     let legato = if mono_voice { legato_of(k) } else { None };
                     let legato_buf;
