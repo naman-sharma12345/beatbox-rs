@@ -502,6 +502,7 @@ pub fn pattern_clip_menu(c: &crate::project::PlaylistClip, playhead_bar: f32) ->
     }
     v.push(("Extend end a bar", "playlist_clip", json!({"action": "trim", "id": id, "end_bar": s1 + 1})));
     v.push(("Duplicate after", "playlist_clip", json!({"action": "duplicate", "id": id})));
+    v.push(("Make unique", "playlist_clip", json!({"action": "make_unique", "id": id})));
     v.push(("Lane down", "playlist_clip", json!({"action": "move", "id": id, "lane": c.lane + 1})));
     if c.lane > 0 {
         v.push(("Lane up", "playlist_clip", json!({"action": "move", "id": id, "lane": c.lane - 1})));
