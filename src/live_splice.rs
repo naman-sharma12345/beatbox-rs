@@ -674,19 +674,12 @@ mod tests {
     /// rms <= 4e-9 and every sample within max(1e-8, 1 ulp of max(|full|,
     /// |playing|)) (`sample_cap`; an absolute 3e-8 is below the f32 ulp for
     /// |x| >= 0.5). Measured max: 2.98e-8 or 5.96e-8, 0 samples over the
-    /// rule. The FDN hall has its own bound (Naman, 2026-10-13): rms <= 2e-6
-    /// and per sample <= 3e-5, labelled "unexplained residual, not phase,
-    /// not pre-roll". Its modulation phase is proven bit-exact
-    /// (the_fdn_reverb_modulation_follows_the_song_position), but a song
-    /// splice still differs (measured rms 1.73e-6, max 1.90e-5 here; one
-    /// other window position measured max 2.07e-5, hence 3e-5 rather than
-    /// 2e-5). Starting the window 1 to 15 bars earlier gives the same
-    /// 1.9e-6..2.6e-6 rms, so it is not delay-line history either.
-    // TODO(follow-up, FDN splice residual): find why an fdn_hall splice is
-    // ~2e-6 rms off a full render when its modulation phase is exact and
-    // pre-roll doesn't change it; then tighten this bound toward the
-    // 4e-9 rms / 1-ulp rule the other LFO effects meet.
-    #[test]
+    /// rule. The FDN hall meets the same rule since issue #1's fix: its
+    /// old ~2e-6 rms residual was f32 rounding in the feedback loop (a
+    /// render of history + edit minus a render of the edit alone did not
+    /// cancel the history exactly); with the FDN's state in f64 it measures
+    /// rms 2.8e-10, max 2.98e-8, 0 samples over the rule.
+#[test]
     fn lfo_effects_splice_like_a_full_render() {
         let cases = [
             ("chorus", json!({"type": "chorus", "params": {"rate_hz": 0.7, "depth_ms": 4.0, "mix": 0.5}})),
@@ -709,7 +702,7 @@ mod tests {
             eprintln!("lfo {name}: window {w0}..{w1}, change rms {change:.3e}, splice-vs-full rms {rms_err:.3e}, max {max_err:.3e}, samples over the per-sample rule: {over}");
             assert!(w0 > 0, "{name}: a window, not the whole song");
             assert!(change > 1e-3, "{name}: the edit is audible");
-            let ok = if name == "fdn_hall" { rms_err <= 2e-6 && max_err <= 3e-5 } else { rms_err <= 4e-9 && over == 0 };
+            let ok = rms_err <= 4e-9 && over == 0;
             if !ok {
                 bad.push(format!("{name}: rms {rms_err:e} max {max_err:e} over-ulp {over}"));
             }

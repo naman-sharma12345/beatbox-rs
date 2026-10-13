@@ -10,21 +10,13 @@
 //! (`detect_transients`, `non_silent_ranges`).
 //! Copyright (c) 2026 ArtCraft Team and the SoundCraft contributors,
 //! MIT OR Apache-2.0 (used here under MIT). Changes: edition 2024 -> 2021,
-//! stateful block plugins rewritten as whole-buffer stereo functions,
+//! stateful block plugins rewritten as whole-buffer stereo functions (the
+//! FDN is a stateful block processor again, with f64 state: `Fdn`),
 //! parameter smoothing dropped (parameters are static per render), rustfft
 //! replaced by `analysis::fft`. See THIRD_PARTY_NOTICES.md.
 
 use crate::dsp::{db_to_gain, gain_to_db, Biquad, BiquadKind, SR};
 use std::f32::consts::{FRAC_1_SQRT_2, TAU};
-
-#[inline]
-fn flush(x: f32) -> f32 {
-    if x.is_finite() && x.abs() > 1.0e-25 {
-        x
-    } else {
-        0.0
-    }
-}
 
 fn ms(ms: f32) -> f32 {
     ms * 0.001 * SR
@@ -34,7 +26,7 @@ fn ms(ms: f32) -> f32 {
 
 #[derive(Default, Clone)]
 struct DelayLine {
-    buf: Vec<f32>,
+    buf: Vec<f64>,
     mask: usize,
     pos: usize,
 }
@@ -52,24 +44,24 @@ impl DelayLine {
         }
     }
     #[inline]
-    fn push(&mut self, x: f32) {
+    fn push(&mut self, x: f64) {
         self.buf[self.pos] = x;
         self.pos = (self.pos + 1) & self.mask;
     }
     #[inline]
-    fn tap(&self, d: usize) -> f32 {
+    fn tap(&self, d: usize) -> f64 {
         self.buf[self.pos.wrapping_sub(d) & self.mask]
     }
     #[inline]
-    fn read(&self, d: f32) -> f32 {
-        let max = (self.buf.len() - 3) as f32;
+    fn read(&self, d: f64) -> f64 {
+        let max = (self.buf.len() - 3) as f64;
         let d = if d.is_finite() {
             d.clamp(1.0, max)
         } else {
             1.0
         };
         let i = d as usize;
-        let f = d - i as f32;
+        let f = d - i as f64;
         let a = self.tap(i);
         let b = self.tap(i + 1);
         a + (b - a) * f
@@ -128,7 +120,7 @@ pub struct FdnParams {
 }
 
 struct Allpass {
-    buf: Vec<f32>,
+    buf: Vec<f64>,
     pos: usize,
 }
 
@@ -140,10 +132,10 @@ impl Allpass {
         }
     }
     #[inline]
-    fn process(&mut self, x: f32, g: f32) -> f32 {
+    fn process(&mut self, x: f64, g: f64) -> f64 {
         let d = self.buf[self.pos];
         let v = x + g * d;
-        self.buf[self.pos] = flush(v);
+        self.buf[self.pos] = flush64(v);
         self.pos += 1;
         if self.pos >= self.buf.len() {
             self.pos = 0;
@@ -153,7 +145,63 @@ impl Allpass {
 }
 
 #[inline]
-fn hadamard8(v: &mut [f32; LINES]) {
+fn flush64(x: f64) -> f64 {
+    if x.is_finite() && x.abs() > 1.0e-25 {
+        x
+    } else {
+        0.0
+    }
+}
+
+#[inline]
+fn ms64(ms: f64) -> f64 {
+    ms * 0.001 * SR as f64
+}
+
+/// RBJ low cut (Q 1/sqrt 2) in f64, transposed direct form II.
+#[derive(Clone, Copy, Debug)]
+struct LowCut64 {
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a1: f64,
+    a2: f64,
+    z1: f64,
+    z2: f64,
+}
+
+impl LowCut64 {
+    fn new(freq: f64) -> Self {
+        let f = freq.clamp(10.0, SR as f64 * 0.49);
+        let w = std::f64::consts::TAU * f / SR as f64;
+        let (sw, cw) = (w.sin(), w.cos());
+        let alpha = sw / (2.0 * std::f64::consts::FRAC_1_SQRT_2);
+        let a0 = 1.0 + alpha;
+        LowCut64 {
+            b0: (1.0 + cw) / 2.0 / a0,
+            b1: -(1.0 + cw) / a0,
+            b2: (1.0 + cw) / 2.0 / a0,
+            a1: -2.0 * cw / a0,
+            a2: (1.0 - alpha) / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+    #[inline]
+    fn process(&mut self, x: f64) -> f64 {
+        let y = self.b0 * x + self.z1;
+        self.z1 = self.b1 * x - self.a1 * y + self.z2;
+        self.z2 = self.b2 * x - self.a2 * y;
+        if !self.z1.is_finite() || !self.z2.is_finite() {
+            self.z1 = 0.0;
+            self.z2 = 0.0;
+        }
+        y
+    }
+}
+
+#[inline]
+fn hadamard8(v: &mut [f64; LINES]) {
     let mut h = 1;
     while h < LINES {
         let mut i = 0;
@@ -167,104 +215,148 @@ fn hadamard8(v: &mut [f32; LINES]) {
         }
         h *= 2;
     }
-    let s = 1.0 / (LINES as f32).sqrt();
+    let s = 1.0 / (LINES as f64).sqrt();
     v.iter_mut().for_each(|x| *x *= s);
 }
 
-/// 8-line feedback-delay-network reverb over a whole stereo buffer:
+/// 8-line feedback-delay-network reverb as a stateful stereo processor:
 /// pre-delay, 4 allpass diffusers per side, Hadamard mixing, per-line RT60
 /// gains, in-loop HF damping, slow delay modulation, low cut and width.
-/// `offset`: the buffer's first sample's place in the song; the delay-line
-/// modulation LFO starts where a whole-song render's would be there.
-pub fn fdn_reverb(cfg: &FdnConfig, p: &FdnParams, l: &mut [f32], r: &mut [f32], offset: usize) {
-    let n = l.len().min(r.len());
-    let size = SIZE_MIN + (SIZE_MAX - SIZE_MIN) * p.size.clamp(0.0, 1.0);
-    let rt60 = p.decay_s.clamp(0.05, 30.0);
-    let pre_n = ms(p.predelay_ms.clamp(0.0, 250.0));
-    let mut pre = [
-        DelayLine::with_max(ms(250.0) as usize + 4),
-        DelayLine::with_max(ms(250.0) as usize + 4),
-    ];
-    let mut diff: Vec<Vec<Allpass>> = (0..2)
-        .map(|side| {
+///
+/// State and arithmetic are f64 (input and output stay f32). In f32 the
+/// loop's rounding depends on everything it has ever heard, so a render of
+/// (history + edit) minus a render of the edit alone did not cancel the
+/// history exactly: issue #1, the ~2e-6 rms live-splice residual. In f64
+/// that residual sits below one f32 ulp of the output.
+///
+/// `process` carries every piece of state between calls, so a buffer
+/// processed in blocks of any size is bit-identical to one call.
+pub struct Fdn {
+    pre: [DelayLine; 2],
+    pre_n: f64,
+    diff: [Vec<Allpass>; 2],
+    g_diff: f64,
+    lines: Vec<DelayLine>,
+    base: [f64; LINES],
+    gains: [f64; LINES],
+    mod_depth: f64,
+    damp: f64,
+    lp: [f64; LINES],
+    lfo: f64,
+    lfo_inc: f64,
+    lowcut: [LowCut64; 2],
+    mix: f64,
+    width: f64,
+}
+
+impl Fdn {
+    /// `offset`: the first processed sample's place in the song; the
+    /// delay-line modulation LFO starts where a whole-song render's would be.
+    pub fn new(cfg: &FdnConfig, p: &FdnParams, offset: usize) -> Self {
+        let size = (SIZE_MIN + (SIZE_MAX - SIZE_MIN) * p.size.clamp(0.0, 1.0)) as f64;
+        let rt60 = p.decay_s.clamp(0.05, 30.0) as f64;
+        let mk_pre = || DelayLine::with_max(ms(250.0) as usize + 4);
+        let diff = [0usize, 1].map(|side| {
             let spread = if side == 0 { 1.0 } else { 1.071 };
             cfg.diffusers_ms
                 .iter()
-                .map(|m| Allpass::new(ms(m * spread) as usize))
-                .collect()
-        })
-        .collect();
-    let mod_depth = ms(cfg.mod_ms);
-    let mut lines: Vec<DelayLine> = cfg
-        .delays_ms
-        .iter()
-        .map(|m| DelayLine::with_max((ms(m * SIZE_MAX) + mod_depth + 4.0) as usize))
-        .collect();
-    let base: [f32; LINES] = cfg.delays_ms.map(|m| ms(m * size));
-    let gains: [f32; LINES] = cfg
-        .delays_ms
-        .map(|m| 10f32.powf(-3.0 * (m * size * 0.001) / rt60).min(0.9999));
-    let damp = (-TAU * p.damping_hz.clamp(500.0, 20000.0) / SR).exp();
-    let g_diff = 0.7 * p.diffusion.clamp(0.0, 1.0);
-    let lc = p.low_cut_hz.clamp(10.0, 2000.0);
-    let mut lowcut = [
-        Biquad::new(BiquadKind::LowCut, lc, FRAC_1_SQRT_2, 0.0),
-        Biquad::new(BiquadKind::LowCut, lc, FRAC_1_SQRT_2, 0.0),
-    ];
-    let mut lp = [0.0f32; LINES];
-    let mut lfo = 0.0f32;
-    let lfo_inc = cfg.mod_hz / SR;
-    // the same f32 accumulation a whole-song render runs up to `offset`
-    for _ in 0..offset {
-        lfo += lfo_inc;
-        if lfo >= 1.0 {
-            lfo -= 1.0;
-        }
-    }
-    let (mix, width) = (p.mix.clamp(0.0, 1.0), p.width.clamp(0.0, 2.0));
-    for i in 0..n {
-        let mut ins = [
-            if l[i].is_finite() { l[i] } else { 0.0 },
-            if r[i].is_finite() { r[i] } else { 0.0 },
-        ];
-        for (side, x) in ins.iter_mut().enumerate() {
-            pre[side].push(*x);
-            let mut v = if pre_n < 1.0 {
-                *x
-            } else {
-                pre[side].read(pre_n)
-            };
-            for ap in diff[side].iter_mut() {
-                v = ap.process(v, g_diff);
+                .map(|m| Allpass::new(ms64(*m as f64 * spread) as usize))
+                .collect::<Vec<_>>()
+        });
+        let mod_depth = ms64(cfg.mod_ms as f64);
+        let lines = cfg
+            .delays_ms
+            .iter()
+            .map(|m| DelayLine::with_max((ms64(*m as f64 * SIZE_MAX as f64) + mod_depth + 4.0) as usize))
+            .collect();
+        let base = cfg.delays_ms.map(|m| ms64(m as f64 * size));
+        let gains = cfg
+            .delays_ms
+            .map(|m| 10f64.powf(-3.0 * (m as f64 * size * 0.001) / rt60).min(0.9999));
+        let lfo_inc = cfg.mod_hz as f64 / SR as f64;
+        // the same f64 accumulation a whole-song render runs up to `offset`
+        let mut lfo = 0.0f64;
+        for _ in 0..offset {
+            lfo += lfo_inc;
+            if lfo >= 1.0 {
+                lfo -= 1.0;
             }
-            *x = v;
         }
-        lfo += lfo_inc;
-        if lfo >= 1.0 {
-            lfo -= 1.0;
+        let lc = p.low_cut_hz.clamp(10.0, 2000.0) as f64;
+        Fdn {
+            pre: [mk_pre(), mk_pre()],
+            pre_n: ms64(p.predelay_ms.clamp(0.0, 250.0) as f64),
+            diff,
+            g_diff: 0.7 * p.diffusion.clamp(0.0, 1.0) as f64,
+            lines,
+            base,
+            gains,
+            mod_depth,
+            damp: (-std::f64::consts::TAU * p.damping_hz.clamp(500.0, 20000.0) as f64 / SR as f64).exp(),
+            lp: [0.0; LINES],
+            lfo,
+            lfo_inc,
+            lowcut: [LowCut64::new(lc), LowCut64::new(lc)],
+            mix: p.mix.clamp(0.0, 1.0) as f64,
+            width: p.width.clamp(0.0, 2.0) as f64,
         }
-        let (s, c) = (lfo * TAU).sin_cos();
-        let mods = [0.0, s, 0.0, c, 0.0, -s, 0.0, -c];
-        let mut o = [0.0f32; LINES];
-        for k in 0..LINES {
-            let raw = lines[k].read(base[k] + mod_depth * (1.0 + mods[k]));
-            lp[k] = flush(raw + (lp[k] - raw) * damp);
-            o[k] = raw;
-        }
-        let mut fb: [f32; LINES] = std::array::from_fn(|k| lp[k] * gains[k]);
-        hadamard8(&mut fb);
-        for (k, (line, f)) in lines.iter_mut().zip(fb).enumerate() {
-            let inj = if k % 2 == 0 { ins[0] } else { ins[1] };
-            line.push(flush(f + inj * 0.5));
-        }
-        let wl = lowcut[0].process(0.4 * (o[0] - o[2] + o[4] - o[6]));
-        let wr = lowcut[1].process(0.4 * (o[1] - o[3] + o[5] - o[7]));
-        let mid = 0.5 * (wl + wr);
-        let side = 0.5 * (wl - wr) * width;
-        let (wl, wr) = (mid + side, mid - side);
-        l[i] = l[i] * (1.0 - mix) + wl * mix;
-        r[i] = r[i] * (1.0 - mix) + wr * mix;
     }
+
+    /// Process one block in place (any length; blocks may differ in size).
+    pub fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let n = l.len().min(r.len());
+        let (mix, width) = (self.mix, self.width);
+        for i in 0..n {
+            let mut ins = [
+                if l[i].is_finite() { l[i] as f64 } else { 0.0 },
+                if r[i].is_finite() { r[i] as f64 } else { 0.0 },
+            ];
+            for (side, x) in ins.iter_mut().enumerate() {
+                self.pre[side].push(*x);
+                let mut v = if self.pre_n < 1.0 {
+                    *x
+                } else {
+                    self.pre[side].read(self.pre_n)
+                };
+                for ap in self.diff[side].iter_mut() {
+                    v = ap.process(v, self.g_diff);
+                }
+                *x = v;
+            }
+            self.lfo += self.lfo_inc;
+            if self.lfo >= 1.0 {
+                self.lfo -= 1.0;
+            }
+            let (s, c) = (self.lfo * std::f64::consts::TAU).sin_cos();
+            let mods = [0.0, s, 0.0, c, 0.0, -s, 0.0, -c];
+            let mut o = [0.0f64; LINES];
+            for k in 0..LINES {
+                let raw = self.lines[k].read(self.base[k] + self.mod_depth * (1.0 + mods[k]));
+                self.lp[k] = flush64(raw + (self.lp[k] - raw) * self.damp);
+                o[k] = raw;
+            }
+            let mut fb: [f64; LINES] = std::array::from_fn(|k| self.lp[k] * self.gains[k]);
+            hadamard8(&mut fb);
+            for (k, (line, f)) in self.lines.iter_mut().zip(fb).enumerate() {
+                let inj = if k % 2 == 0 { ins[0] } else { ins[1] };
+                line.push(flush64(f + inj * 0.5));
+            }
+            let wl = self.lowcut[0].process(0.4 * (o[0] - o[2] + o[4] - o[6]));
+            let wr = self.lowcut[1].process(0.4 * (o[1] - o[3] + o[5] - o[7]));
+            let mid = 0.5 * (wl + wr);
+            let side = 0.5 * (wl - wr) * width;
+            let (wl, wr) = (mid + side, mid - side);
+            let (dl, dr) = (if l[i].is_finite() { l[i] as f64 } else { 0.0 }, if r[i].is_finite() { r[i] as f64 } else { 0.0 });
+            l[i] = (dl * (1.0 - mix) + wl * mix) as f32;
+            r[i] = (dr * (1.0 - mix) + wr * mix) as f32;
+        }
+    }
+}
+
+/// The FDN over a whole stereo buffer: one `Fdn::process` call.
+/// `offset`: the buffer's first sample's place in the song.
+pub fn fdn_reverb(cfg: &FdnConfig, p: &FdnParams, l: &mut [f32], r: &mut [f32], offset: usize) {
+    Fdn::new(cfg, p, offset).process(l, r);
 }
 
 // ---------------------------------------------------------------- compressor
@@ -629,6 +721,34 @@ mod tests {
         let w = (0.05 * SR) as usize;
         let e: f32 = x[s..s + w].iter().map(|v| v * v).sum::<f32>() / w as f32;
         10.0 * e.max(1e-20).log10()
+    }
+
+    #[test]
+    fn fdn_blocks_of_any_size_match_one_call() {
+        // a burst, a tone and silence, through the hall with pre-delay, from a song offset
+        let n = 3 * SR as usize;
+        let src: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                if i < 2000 { ((i * 7919) % 101) as f32 / 50.0 - 1.0 } else if t < 1.5 { 0.3 * (TAU * 330.0 * t).sin() } else { 0.0 }
+            })
+            .collect();
+        let p = FdnParams { decay_s: 3.0, size: 0.6, damping_hz: 9000.0, diffusion: 0.7, predelay_ms: 30.0, width: 1.2, low_cut_hz: 120.0, mix: 0.35 };
+        let off = 123_457;
+        let (mut wl, mut wr) = (src.clone(), src.iter().map(|x| -0.8 * x).collect::<Vec<f32>>());
+        let (sl, sr) = (wl.clone(), wr.clone());
+        fdn_reverb(&HALL, &p, &mut wl, &mut wr, off);
+        for bs in [1usize, 7, 64, 127, 512] {
+            let (mut l, mut r) = (sl.clone(), sr.clone());
+            let mut f = Fdn::new(&HALL, &p, off);
+            let mut i = 0;
+            while i < n {
+                let j = (i + bs).min(n);
+                f.process(&mut l[i..j], &mut r[i..j]);
+                i = j;
+            }
+            assert!(l == wl && r == wr, "block size {bs}: not bit-identical to one call");
+        }
     }
 
     #[test]
