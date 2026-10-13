@@ -81,6 +81,79 @@ All screenshots are the real studio rendering a real project (`screenshot` tool,
 - **LFO tool** — `lfo_tool` (and the piano roll's LFO button) shapes note velocity, gate, timing or chance with a tempo-synced sine, triangle, saw, square or random wave.
 - **Studio** — native egui desktop app: arrangement strip, step sequencer, piano roll, **mixer** (channel strips with live meters from stems, faders, pan, sends, bus and master strips with LUFS / true peak), **automation editor** (lane list, curve view over the song with sections, click to add points, one-click shapes), inspector with knobs, live waveform / spectrum and the activity feed. The GUI is fully manual, a hand-operated DAW: the one-call production tools (`make_beat`, `produce_song`, `critique_mix`, ...) live in MCP only. Every click is a tool call, so an MCP client and you share one undo history.
 
+## Install and run from the `tab/frontier` branch
+
+Everything below works on this branch as-is (no merge into `main` needed). Every command was checked against this branch's `beatbox --help`; the build, `beat`, `song_create`, `auto_judge`, `judge_audio`, `render`, `tools` and the MCP stdio handshake were run on it.
+
+**Prerequisites** (Debian/Ubuntu; the same packages CI installs):
+
+```bash
+# Rust: rustup reads rust-toolchain.toml and installs the pinned 1.99.0 on the first build
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# build tools, ALSA (audio out), the GUI's window-system libs, and ffmpeg (MP3 export/decoding)
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config libasound2-dev libxkbcommon-dev libwayland-dev libx11-dev ffmpeg
+```
+
+Python is optional: only `score_voice_quality` (needs numpy + onnxruntime, point `BEATBOX_PYTHON` at it), stem separation and speech-to-song use it. Rendering, mixing and the judge don't.
+
+**Get it and build:**
+
+```bash
+git clone -b tab/frontier https://github.com/naman-sharma12345/beatbox-rs.git
+cd beatbox-rs
+cargo build --release --locked          # -> ./target/release/beatbox
+cargo install --path . --locked         # or put `beatbox` on your PATH (~/.cargo/bin)
+# headless box (CLI + MCP, no GUI libs needed):
+cargo build --release --locked --no-default-features
+```
+
+A release build takes several minutes (LTO). On low-RAM machines add `CARGO_PROFILE_RELEASE_LTO=false` and `-j2`.
+
+**Desktop studio (GUI):**
+
+```bash
+beatbox studio                 # empty project
+beatbox studio song.json       # open a project
+```
+
+The studio also listens on `127.0.0.1:7878` (`--listen` to change it), so an AI can drive the open window live (below).
+
+**MCP server** (stdio): `beatbox mcp`. It advertises 19 category tools (`--tools legacy` lists every engine tool by name). Client config (Claude Desktop: `claude_desktop_config.json`; Cursor: `~/.cursor/mcp.json`). Use the absolute path if `beatbox` isn't on the client's PATH:
+
+```json
+{
+  "mcpServers": {
+    "beatbox": {
+      "command": "/home/you/.cargo/bin/beatbox",
+      "args": ["mcp", "--workdir", "/home/you/beatbox-work"]
+    }
+  }
+}
+```
+
+To have the AI work inside the open studio window instead, use `"args": ["mcp", "--connect", "http://127.0.0.1:7878"]` with `beatbox studio` running.
+
+**Render a track from the shell.** Relative paths resolve against `--workdir` (default: the current directory), and the auto judge's setting is stored there too:
+
+```bash
+# a full beat in one shot (about 5 s): WAV + project JSON + a mix score
+beatbox beat trap --key A --seed 1 -o trap.wav --save trap.json
+
+# turn on the auto judge: every render is checked against a gate profile
+# (streaming | club_trap | dnb | balanced) and the verdict rides on the result
+beatbox call auto_judge '{"enabled": true, "profile": "balanced"}'
+
+# a whole song from a spec: structure, optional vocal, mix/master, export
+beatbox call song_create '{"genre":"trap","seed":1,"structure":[{"kind":"verse","bars":4},{"kind":"hook","bars":4}],"mix":{"builds":true},"export":{"path":"song.wav"}}' --project song.json
+
+beatbox call judge_audio '{"path":"song.wav"}'     # judge any file
+beatbox render song.json -o again.wav              # re-render a saved project
+beatbox tools                                      # what an AI sees
+```
+
+`song_create` with a vocal: add `"vocal": {"file": "/path/take.wav"}`. The take is beat-locked and mixed. `beatbox call song_schema '{}'` prints the full spec.
+
 ## Quick start
 
 The toolchain is pinned in `rust-toolchain.toml` (the version CI builds with); rustup picks it up automatically. Build against the committed lockfile:
