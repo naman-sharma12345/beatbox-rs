@@ -4,8 +4,10 @@
 //! studio and MCP clients always see the same project. A local control server
 //! lets `beatbox mcp --connect` drive this window live.
 
+mod channel_rack;
 mod console;
 mod piano;
+mod fl_automation;
 mod fl_playlist;
 mod player;
 mod playlist;
@@ -763,130 +765,31 @@ impl Studio {
 
     // ---------------- sequencer ----------------
     fn sequencer(&mut self, ui: &mut egui::Ui, p: &Project) {
-        let Some(pat) = p.patterns.get(self.pattern) else {
+        // the pattern picker: select / add a pattern, send it to the playlist
+        let mut pat = self.pattern;
+        let mut pgeo = channel_rack::PatternBarGeo::default();
+        // drop target: the selected playlist clip's track and bar (a collision
+        // there routes the new clip to the next free track)
+        let target = self.clip_sel.as_ref().and_then(|id| p.playlist.iter().find(|c| &c.id == id)).map(|c| (c.lane, c.start_bar));
+        let picks = channel_rack::pattern_bar(ui, p, &mut pat, target, &mut pgeo);
+        self.pattern = pat;
+        for (tool, args) in picks {
+            self.call(tool, args);
+        }
+        if p.patterns.get(self.pattern).is_none() {
             return;
-        };
-        let steps = pat.steps() as usize;
-        // channel rack header: name | pan | volume | piano roll | M S
-        let header_w = 286.0;
+        }
         let playing_here = locate(p, self.player.position_secs())
             .filter(|(pi, _)| *pi == self.pattern)
             .map(|(_, s)| s);
         egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("seq").show(ui, |ui| {
-            // ruler
-            let (ruler, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 18.0), Sense::hover());
-            let grid_left = ruler.left() + header_w;
-            let cell = ((ruler.width() - header_w - 6.0) / steps as f32).max(4.0);
-            for b in 0..pat.bars {
-                let x = grid_left + (b * pat.steps_per_bar()) as f32 * cell;
-                ui.painter().text(Pos2::new(x + 3.0, ruler.center().y), Align2::LEFT_CENTER, format!("{}", b + 1), FontId::monospace(11.0), DIM);
-            }
-            for (ti, t) in p.tracks.iter().enumerate() {
-                let kind = t.instrument.kind_name();
-                let color = track_color(&t.name, kind);
-                let is_drum = t.instrument.is_drum() || matches!(&t.instrument, instruments::Instrument::Sampler(s) if s.one_shot);
-                let row_h = if is_drum { 30.0 } else { 46.0 };
-                let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::hover());
-                let painter = ui.painter_at(row);
-                let selected = ti == self.selected;
-                // header
-                let head = Rect::from_min_size(row.min, Vec2::new(header_w - 8.0, row_h - 4.0));
-                painter.rect_filled(head, 7.0, if selected { Color32::from_rgb(54, 58, 64) } else { PANEL2 });
-                painter.rect_filled(Rect::from_min_size(head.min, Vec2::new(4.0, head.height())), 2.0, color);
-                painter.text(head.left_center() + Vec2::new(14.0, -6.0), Align2::LEFT_CENTER, &t.name, FontId::proportional(13.0), if t.mute { DIM } else { TEXT });
-                painter.text(head.left_center() + Vec2::new(14.0, 8.0), Align2::LEFT_CENTER, kind, FontId::proportional(10.0), DIM);
-                let head_resp = ui.interact(head, ui.id().with(("head", ti)), Sense::click());
-                if head_resp.clicked() {
-                    self.selected = ti;
-                }
-                // rack controls, FL-style: pan and volume knobs, then the
-                // piano-roll button; each gesture is one set_mixer call
-                let ky = head.center().y;
-                let ms_left = head.right() - 58.0;
-                let pr = Rect::from_center_size(Pos2::new(ms_left - 16.0, ky), Vec2::new(22.0, 16.0));
-                let vk = Rect::from_center_size(Pos2::new(pr.left() - 16.0, ky), Vec2::splat(22.0));
-                let pk = Rect::from_center_size(Pos2::new(vk.left() - 14.0, ky), Vec2::splat(22.0));
-                let (pan_id, vol_id, pr_id) = (ui.id().with(("pan", ti)), ui.id().with(("vol", ti)), ui.id().with(("pr", ti)));
-                if let Some(pn) = mini_knob(ui, pk, pan_id, t.pan, -1.0, 1.0, 0.0, true, color, "pan") {
-                    self.call("set_mixer", json!({"track": t.name, "pan": pn}));
-                }
-                if let Some(v) = mini_knob(ui, vk, vol_id, t.volume_db, -40.0, 12.0, 0.0, false, color, "volume dB") {
-                    self.call("set_mixer", json!({"track": t.name, "volume_db": v}));
-                }
-                if keys_button(ui, pr, pr_id, selected, color).clicked() {
-                    self.selected = ti;
-                }
-                // M / S pills
-                let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(Pos2::new(head.right() - 54.0, head.center().y - 9.0), Vec2::new(54.0, 18.0))));
-                cui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    if pill(ui, "M", t.mute, WARN).clicked() {
-                        self.call("set_mixer", json!({"track": t.name, "mute": !t.mute}));
-                    }
-                    if pill(ui, "S", t.solo, SOLO).clicked() {
-                        self.call("set_mixer", json!({"track": t.name, "solo": !t.solo}));
-                    }
-                });
-                // grid
-                let grid = Rect::from_min_max(Pos2::new(row.left() + header_w, row.top()), Pos2::new(row.left() + header_w + cell * steps as f32, row.bottom() - 4.0));
-                painter.rect_filled(grid, 6.0, BG);
-                let notes = pat.notes(&t.name);
-                if is_drum {
-                    for s in 0..steps {
-                        let r = Rect::from_min_size(Pos2::new(grid.left() + s as f32 * cell + 1.5, grid.top() + 3.0), Vec2::new(cell - 3.0, grid.height() - 6.0));
-                        let hit = notes.iter().find(|n| n.start >= s as f32 && n.start < s as f32 + 1.0);
-                        let beat = (s / 4) % 2 == 0;
-                        let base = if beat { Color32::from_rgb(54, 54, 57) } else { Color32::from_rgb(46, 46, 48) };
-                        let fill = match hit {
-                            Some(n) => color.gamma_multiply(0.35 + 0.65 * n.vel),
-                            None => base,
-                        };
-                        painter.rect_filled(r, 3.5, fill);
-                        if playing_here.map(|ps| ps as usize == s).unwrap_or(false) {
-                            painter.rect_stroke(r, 3.5, Stroke::new(1.5_f32, Color32::WHITE));
-                        }
-                        let resp = ui.interact(r, ui.id().with(("pad", ti, s)), Sense::click());
-                        if resp.clicked() {
-                            self.selected = ti;
-                            self.call("toggle_step", json!({"track": t.name, "step": s, "pattern": pat.name}));
-                        }
-                        // velocity: a lit step shows its level as a bar; the
-                        // wheel over it turns it up or down
-                        if let Some(n) = hit {
-                            let h = (r.height() - 4.0) * n.vel.clamp(0.0, 1.0);
-                            painter.rect_filled(Rect::from_min_size(Pos2::new(r.left() + 2.0, r.bottom() - 2.0 - h), Vec2::new(2.0, h)), 1.0, Color32::from_white_alpha(150));
-                            if resp.hovered() {
-                                let dy = ui.input(|i| i.raw_scroll_delta.y);
-                                if dy.abs() > 0.5 {
-                                    let add = if dy > 0.0 { 0.05 } else { -0.05 };
-                                    self.call("edit_notes", json!({"track": t.name, "pattern": pat.name, "from": s, "to": s + 1, "vel_add": add}));
-                                }
-                                resp.on_hover_text(format!("velocity {:.0}% (scroll to change)", n.vel * 100.0));
-                            }
-                        }
-                    }
-                } else {
-                    // mini piano roll lane
-                    for b in 0..=pat.bars {
-                        let x = grid.left() + (b * pat.steps_per_bar()) as f32 * cell;
-                        painter.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.0_f32, LINE));
-                    }
-                    let (lo, hi) = notes.iter().fold((127u8, 0u8), |(l, h), n| (l.min(n.pitch), h.max(n.pitch)));
-                    let span = (hi.saturating_sub(lo)).max(12) as f32;
-                    for n in notes {
-                        let y = grid.bottom() - 5.0 - (n.pitch.saturating_sub(lo)) as f32 / span * (grid.height() - 12.0);
-                        let r = Rect::from_min_size(Pos2::new(grid.left() + n.start * cell, y - 2.5), Vec2::new((n.len * cell - 1.0).max(2.0), 5.0));
-                        painter.rect_filled(r, 2.0, color.gamma_multiply(0.5 + 0.5 * n.vel));
-                    }
-                    let lane = ui.interact(grid, ui.id().with(("lane", ti)), Sense::click());
-                    if lane.clicked() {
-                        self.selected = ti;
-                    }
-                }
-                if let Some(ps) = playing_here {
-                    let x = grid.left() + ps * cell;
-                    painter.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.5_f32, Color32::WHITE.gamma_multiply(0.8)));
-                }
+            // the FL-style channel rack (channel_rack.rs): every gesture
+            // comes back as one tool call
+            let mut sel = channel_rack::RackSel { selected: self.selected, rows: Vec::new() };
+            let actions = channel_rack::channel_rack(ui, p, self.pattern, &mut sel, playing_here);
+            self.selected = sel.selected;
+            for (tool, args) in actions {
+                self.call(tool, args);
             }
             if p.tracks.is_empty() {
                 ui.add_space(40.0);

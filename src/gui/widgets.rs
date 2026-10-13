@@ -204,28 +204,6 @@ fn short(label: &str) -> String {
     }
 }
 
-/// Square console toggle (M / S style), drawn like SoundCraft's `text_toggle`.
-pub fn pill(ui: &mut Ui, text: &str, on: bool, color: Color32) -> Response {
-    let t = Tokens::DARK;
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(22.0, 18.0), Sense::click());
-    let fill = if on {
-        color
-    } else if resp.hovered() {
-        t.button_hi
-    } else {
-        t.button
-    };
-    ui.painter()
-        .rect(rect, 2.0, fill, Stroke::new(1.0_f32, t.button_border));
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        text,
-        FontId::proportional(11.0),
-        if on { t.text_dark } else { t.text },
-    );
-    resp
-}
 
 /// Big round transport button with a play / stop glyph.
 pub fn transport_button(ui: &mut Ui, playing: bool) -> Response {

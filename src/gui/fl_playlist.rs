@@ -11,7 +11,7 @@ use crate::project::Project;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke};
 use serde_json::{json, Value};
 
-const HEAD_W: f32 = 96.0;
+pub(crate) const HEAD_W: f32 = 96.0;
 const LANE_H: f32 = 28.0;
 const RULER_H: f32 = 16.0;
 const EDGE_PX: f32 = 7.0;
@@ -169,7 +169,11 @@ impl Studio {
         let vid = egui::Id::new("flpl_view");
         let view = ui.data(|d| d.get_temp::<PlaylistView>(vid)).unwrap_or_default();
         let mut sel = GridSel { pattern: self.pattern, clip_sel: self.clip_sel.clone(), toast: None, view, geo: None };
-        let actions = playlist_grid(ui, p, &mut sel, bar_now);
+        let mut actions = playlist_grid(ui, p, &mut sel, bar_now);
+        // the track automation lanes, on the grid's bar axis (scroll + zoom)
+        if let Some(geo) = sel.geo {
+            actions.extend(super::fl_automation::automation_lanes(ui, p, &geo));
+        }
         ui.data_mut(|d| d.insert_temp(vid, sel.view));
         self.pattern = sel.pattern;
         self.clip_sel = sel.clip_sel;
