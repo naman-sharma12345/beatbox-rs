@@ -207,12 +207,19 @@ pub struct MixSpec {
     /// composed.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub builds: bool,
+    /// Section gain staging (dB, -6..6) by section kind or name, e.g.
+    /// {"verse": -1.2, "hook": 1.5}: stepped volume on every bus that feeds
+    /// the master (the beat bus and the effect returns), so hooks sit over
+    /// verses before the master chain. The vocal keeps its own ride. Empty
+    /// (off) by default, so earlier renders stay comparable.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub section_gain_db: BTreeMap<String, f32>,
 }
 
 impl Default for MixSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None, builds: false }
+        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None, builds: false, section_gain_db: BTreeMap::new() }
     }
 }
 
@@ -356,7 +363,7 @@ const TOP_ALIAS: &[(&str, &str)] = &[("tempo", "bpm"), ("sections", "structure")
 const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain", "lock", "flex"];
 const PHRASE_KEYS: &[&str] = &["src_s", "src", "len_s", "len", "end_s", "section", "bar", "beat", "start_beat", "at_s", "start_s", "gain_db", "name", "fade_in_ms", "fade_out_ms"];
 const SECTION_KEYS: &[&str] = &["kind", "bars", "name", "energy"];
-const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds"];
+const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds", "section_gain_db"];
 const MASTER_KEYS: &[&str] = &["lufs", "true_peak", "preserve_dynamics"];
 const EXPORT_KEYS: &[&str] = &["path", "format", "bitrate_kbps"];
 const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db", "brighten", "presence_db", "presence_hz"];
@@ -562,6 +569,13 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
             out.push(p(format!("/mix/levels/{role}"), format!("'{role}' is not a role"), did_you_mean(role, crate::creative::ROLES, &[("melody", "lead"), ("chords", "harmony"), ("808", "bass"), ("hats", "hat"), ("dhol", "bayan")])));
         } else if !(-12.0..=12.0).contains(db) || !db.is_finite() {
             out.push(p(format!("/mix/levels/{role}"), format!("{db} dB"), "a fader offset in -12..12 dB"));
+        }
+    }
+    for (sec, db) in &spec.mix.section_gain_db {
+        if sec.trim().is_empty() {
+            out.push(p("/mix/section_gain_db", "an empty section name", "a section kind (verse, hook, ...) or name (hook2)"));
+        } else if !(-6.0..=6.0).contains(db) || !db.is_finite() {
+            out.push(p(format!("/mix/section_gain_db/{sec}"), format!("{db} dB"), "a section gain in -6..6 dB"));
         }
     }
     if let Some(f) = spec.mix.air_floor_db {
@@ -818,6 +832,35 @@ fn arrangement_lift(e: &mut Engine, spec: &mut SongSpec, voice: Option<&str>, t:
     apply_section_energy(e, spec, voice)?;
     let m2 = mix_rules::measure_sections(e, voice)?;
     Ok(json!({"lift_db_before": r1(l), "verse_energy_db": moved, "lift_db": mix_rules::lift_db(&m2).map(r1), "changed": true}))
+}
+
+/// `mix.section_gain_db`: each listed section (by name, e.g. "hook2", or
+/// kind, e.g. "hook") plays that many dB louder or softer on every bus
+/// that feeds the master: stepped volume lanes on those buses, rebuilt from
+/// scratch on each call (the section energy only rebuilds track lanes, so
+/// these survive it). Tracks, the vocal's ride included, are untouched.
+fn apply_section_gain(e: &mut Engine, spec: &SongSpec) -> Result<Value> {
+    if spec.mix.section_gain_db.is_empty() {
+        return Ok(json!([]));
+    }
+    let buses: Vec<String> = e.project.buses.iter().filter(|b| b.output.as_deref().map_or(true, |o| o.is_empty() || o.eq_ignore_ascii_case("master"))).map(|b| b.name.clone()).collect();
+    if buses.is_empty() {
+        return Ok(json!({"skipped": "no bus feeds the master"}));
+    }
+    e.project.automation.retain(|l| !(l.param == "volume" && buses.iter().any(|b| b.eq_ignore_ascii_case(&l.target))));
+    let base: Vec<f32> = buses.iter().map(|n| e.project.buses.iter().find(|b| &b.name == n).map(|b| b.volume_db).unwrap_or(0.0)).collect();
+    let gain_for = |name: &str, kind: &str| -> Option<f32> {
+        spec.mix.section_gain_db.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).or_else(|| spec.mix.section_gain_db.iter().find(|(k, _)| canon_kind(k) == kind)).map(|(_, g)| g.clamp(-6.0, 6.0))
+    };
+    let mut done = Vec::new();
+    for sp in mix_rules::section_spans(&e.project) {
+        let Some(g) = gain_for(&sp.name, &sp.kind).filter(|g| g.abs() >= 0.05) else { continue };
+        for (b, v) in buses.iter().zip(base.iter()) {
+            e.call_nested("set_section_mix", &json!({"section": sp.name, "track": b, "volume_db": v + g, "all_occurrences": false}), "song")?;
+        }
+        done.push(json!({"section": sp.name, "gain_db": (g * 10.0).round() / 10.0}));
+    }
+    Ok(json!({"buses": buses, "sections": done}))
 }
 
 /// Tracks the section energy leaves alone: the floor of the groove.
@@ -1195,6 +1238,7 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     // the energy the arrangement plays at: the spec's, plus what the lift rule thins
     let mut spec_e = spec.clone();
     mix.insert("section_energy".into(), apply_section_energy(e, &spec_e, voice.as_deref())?);
+    mix.insert("section_gain".into(), apply_section_gain(e, &spec_e)?);
     // the hook's lift comes from the arrangement (verses thin their layers),
     // never the master's volume, which the limiter would give back
     let lift = arrangement_lift(e, &mut spec_e, voice.as_deref(), &t)?;
@@ -1247,6 +1291,7 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     for round in 0..DELIVERY_ROUNDS {
         // faders may have moved since: the energy lanes follow them
         apply_section_energy(e, &spec_e, voice.as_deref())?;
+        apply_section_gain(e, &spec_e)?;
         let full = e.mix()?;
         d = crate::tools_delivery::deliver(&full.left, &full.right, &path, &o)?;
         checks = mix_rules::check(&path, &pre, &spans, e.project.bpm, &t)?;
@@ -1822,6 +1867,54 @@ mod tests {
         let mut e2 = Engine::new(std::env::temp_dir().join(format!("song_nobuilds_{}", std::process::id())));
         compose_beat(&mut e2, &plain.unwrap(), 7, &mut Vec::new()).unwrap();
         assert!(e2.project.automation.iter().all(|l| l.target != "drums" && !l.param.starts_with("send.")));
+    }
+
+    #[test]
+    fn section_gain_stages_hooks_over_verses_on_the_master_buses() {
+        let v = json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}], "mix": {"section_gain_db": {"verse": -1.2, "hook": 1.5}}});
+        let (spec, probs) = validate(&v);
+        let spec = spec.unwrap_or_else(|| panic!("{probs:?}"));
+        assert_eq!(spec.mix.section_gain_db.get("hook"), Some(&1.5));
+        let (_, bad) = validate(&json!({"genre": "trap", "seed": 7, "structure": [{"kind": "hook", "bars": 4}], "mix": {"section_gain_db": {"hook": 9}}}));
+        assert!(bad.iter().any(|p| p.path == "/mix/section_gain_db/hook"), "{bad:?}");
+        let d = std::env::temp_dir().join(format!("song_secgain_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        compose_beat(&mut e, &spec, 7, &mut Vec::new()).unwrap();
+        // the mix stage routes the beat into its bus before section gain runs
+        mix_rules::route_beat_bus(&mut e, None);
+        let rms_db = |m: &crate::render::Mix, b0: f32, b1: f32, bpm: f32| {
+            let sr = crate::dsp::SR;
+            let (a, b) = ((b0 * 60.0 / bpm * sr) as usize, ((b1 * 60.0 / bpm * sr) as usize).min(m.left.len()));
+            let s: f32 = m.left[a..b].iter().chain(m.right[a..b].iter()).map(|x| x * x).sum();
+            10.0 * (s / (2 * (b - a)).max(1) as f32 + 1e-12).log10()
+        };
+        let bpm = e.project.bpm;
+        let before = e.mix().unwrap();
+        let lift0 = rms_db(&before, 17.0, 31.0, bpm) - rms_db(&before, 1.0, 15.0, bpm);
+        let out = apply_section_gain(&mut e, &spec).unwrap();
+        // the buses that feed the master carry it; tracks and the drum sub-bus do not
+        let beat = e.project.automation.iter().find(|l| l.target == "beat" && l.param == "volume").unwrap_or_else(|| panic!("{out}"));
+        let base = e.project.buses.iter().find(|b| b.name == "beat").unwrap().volume_db;
+        assert!((beat.value_at(8.0).unwrap() - (base - 1.2)).abs() < 0.01, "{out}");
+        assert!((beat.value_at(24.0).unwrap() - (base + 1.5)).abs() < 0.01, "{out}");
+        assert!(e.project.automation.iter().all(|l| !(l.target == "drums" && l.param == "volume")), "{out}");
+        let after = e.mix().unwrap();
+        let lift1 = rms_db(&after, 17.0, 31.0, bpm) - rms_db(&after, 1.0, 15.0, bpm);
+        eprintln!("section gain: hook over verse {lift0:.2} -> {lift1:.2} dB (through the master chain)");
+        assert!(lift1 - lift0 > 1.0 && lift1 - lift0 < 3.2, "hook over verse moved {lift0} -> {lift1}");
+        // rebuilt, not stacked, on a second call
+        let n = e.project.automation.len();
+        apply_section_gain(&mut e, &spec).unwrap();
+        assert_eq!(e.project.automation.len(), n);
+        // off by default: no bus lane
+        let (plain, _) = validate(&json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]}));
+        let mut e2 = Engine::new(std::env::temp_dir().join(format!("song_nosecgain_{}", std::process::id())));
+        let plain = plain.unwrap();
+        compose_beat(&mut e2, &plain, 7, &mut Vec::new()).unwrap();
+        assert_eq!(apply_section_gain(&mut e2, &plain).unwrap(), json!([]));
+        assert!(e2.project.automation.iter().all(|l| !(l.target == "beat" && l.param == "volume")));
     }
 
     #[test]
