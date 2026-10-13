@@ -99,7 +99,7 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "analyze",
         description: "Listen and measure: mix analysis, loudness, spectrum, masking, stereo, punch, hooks, structure, artifacts, render diffs, blind A/B tests with a listener.",
-        actions: &["analyze_mix", "analyze_track", "analyze_audio", "judge_audio", "auto_fix_mix", "analyze_sections", "ears_report", "loudness_report", "spectrum", "eq_curve", "render_spectrogram", "waveform_peaks", "masking_matrix", "stereo_image", "punch", "groove_analysis", "hook_analysis", "structure", "vocal_pocket", "detect_transients", "detect_artifacts", "diff_renders", "reference_match", "ab_listen", "novelty_report", "blind_ab_create", "blind_ab_rate", "blind_ab_judge", "blind_ab_reveal", "blind_ab_preferences"],
+        actions: &["analyze_mix", "analyze_track", "analyze_audio", "judge_audio", "auto_judge", "auto_fix_mix", "analyze_sections", "ears_report", "loudness_report", "spectrum", "eq_curve", "render_spectrogram", "waveform_peaks", "masking_matrix", "stereo_image", "punch", "groove_analysis", "hook_analysis", "structure", "vocal_pocket", "detect_transients", "detect_artifacts", "diff_renders", "reference_match", "ab_listen", "novelty_report", "blind_ab_create", "blind_ab_rate", "blind_ab_judge", "blind_ab_reveal", "blind_ab_preferences"],
     },
     Category {
         name: "transcribe",
