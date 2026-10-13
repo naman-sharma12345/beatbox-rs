@@ -422,6 +422,12 @@ pub struct VocalChain {
     /// bell (3.5 kHz) and air shelf (7 kHz) go on the vocal before the
     /// de-esser. false keeps the take's own tone.
     pub brighten: bool,
+    /// A presence bell on the vocal alone, after the compressors (dB, -6..6;
+    /// 0 = none): lifts the voice's 2-3 kHz without touching the beat, the
+    /// way a master bell would.
+    pub presence_db: f32,
+    /// Where that bell sits (Hz, 1000..6000; default 2500).
+    pub presence_hz: f32,
 }
 
 impl Default for VocalChain {
@@ -436,6 +442,8 @@ impl Default for VocalChain {
             reverb_send_db: Some(-20.0),
             delay_send_db: Some(-28.0),
             brighten: true,
+            presence_db: 0.0,
+            presence_hz: 2500.0,
         }
     }
 }
@@ -452,6 +460,12 @@ impl VocalChain {
         }
         if !(-12.0..=0.0).contains(&self.deess_range_db) {
             out.push((format!("{path}/deess_range_db"), format!("{} dB is not a light de-ess", self.deess_range_db), "use -3 to -6".into()));
+        }
+        if !(-6.0..=6.0).contains(&self.presence_db) {
+            out.push((format!("{path}/presence_db"), format!("{} dB is outside -6..6", self.presence_db), "use +0.5 to +2 for a clearer voice".into()));
+        }
+        if !(1000.0..=6000.0).contains(&self.presence_hz) {
+            out.push((format!("{path}/presence_hz"), format!("{} Hz is outside 1000..6000", self.presence_hz), "use 2500".into()));
         }
         out
     }
@@ -555,6 +569,10 @@ pub fn apply_vocal_chain(e: &mut Engine, track: &str, c: &VocalChain, source: &s
     // total rose 0.5 dB), so the body is also trimmed after them, wide
     e.call_nested("add_effect", &json!({"track": track, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": VOCAL_MUD_HZ, "gain_db": VOCAL_POST_MUD_DB, "q": VOCAL_POST_MUD_Q}]}}), source)?;
     steps.push(format!("post-comp mud bell {VOCAL_POST_MUD_DB} dB at {VOCAL_MUD_HZ} Hz (Q {VOCAL_POST_MUD_Q})"));
+    if c.presence_db.abs() > 1e-3 {
+        e.call_nested("add_effect", &json!({"track": track, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": c.presence_hz, "gain_db": c.presence_db, "q": 1.0}]}}), source)?;
+        steps.push(format!("vocal presence bell {:+} dB at {} Hz (Q 1)", c.presence_db, c.presence_hz));
+    }
     for (bus, db) in [("verb", c.reverb_send_db), ("echo", c.delay_send_db)] {
         if let Some(db) = db {
             if e.project.buses.iter().any(|b| b.name == bus) {

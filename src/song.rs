@@ -359,7 +359,7 @@ const SECTION_KEYS: &[&str] = &["kind", "bars", "name", "energy"];
 const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds"];
 const MASTER_KEYS: &[&str] = &["lufs", "true_peak", "preserve_dynamics"];
 const EXPORT_KEYS: &[&str] = &["path", "format", "bitrate_kbps"];
-const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db"];
+const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db", "brighten", "presence_db", "presence_hz"];
 
 fn unknown_keys(v: &Value, path: &str, known: &[&str], alias: &[(&str, &str)], out: &mut Vec<Problem>) {
     if let Some(m) = v.as_object() {
@@ -934,18 +934,25 @@ pub const BUILD_FROM_HZ: f32 = 500.0;
 pub const BUILD_THROW_DB: f32 = 12.0;
 
 /// `mix.builds`: deepen the build into every hook that follows a non-hook
-/// section of at least 12 beats. Rewrites the producer's hook-lift cutoff
+/// section of at least 6 beats (a one-bar riser when it is under 12). Rewrites the producer's hook-lift cutoff
 /// lanes on chords/counter/texture over the two bars before the hook,
 /// adds a gain stage on the drum bus with a one-beat pre-drop gap, and a
 /// `send.<reverb bus>` throw on lead and chords over that beat.
 fn apply_builds(e: &mut Engine) -> Result<Value> {
     use crate::automation::{AutoPoint, Curve};
     let spans = mix_rules::section_spans(&e.project);
-    let hooks: Vec<f32> = spans
+    // (hook start, riser length): two bars out when the section before is
+    // at least 12 beats, one bar when it is 6..12 (a short intro), none below
+    let built: Vec<(f32, f32)> = spans
         .windows(2)
-        .filter(|w| w[1].kind == "hook" && w[0].kind != "hook" && w[0].end_beat - w[0].start_beat >= 12.0)
-        .map(|w| w[1].start_beat)
+        .filter(|w| w[1].kind == "hook" && w[0].kind != "hook")
+        .filter_map(|w| {
+            let len = w[0].end_beat - w[0].start_beat;
+            let riser = if len >= 12.0 { BUILD_BARS_BEATS } else if len >= 6.0 { 4.0 } else { return None };
+            Some((w[1].start_beat, riser))
+        })
         .collect();
+    let hooks: Vec<f32> = built.iter().map(|b| b.0).collect();
     if hooks.is_empty() {
         return Ok(json!({"hooks": 0}));
     }
@@ -967,8 +974,8 @@ fn apply_builds(e: &mut Engine) -> Result<Value> {
         }) else {
             continue;
         };
-        for &s in &hooks {
-            let a = s - BUILD_BARS_BEATS;
+        for &(s, riser) in &built {
+            let a = s - riser;
             let before = lane.value_at(a - 1.0).unwrap_or(18000.0);
             lane.points.retain(|p| p.beat < a - 1.0 || p.beat >= s);
             lane.points.push(pt(a - 1.0, before, Curve::Linear));
@@ -1025,7 +1032,7 @@ fn apply_builds(e: &mut Engine) -> Result<Value> {
         e.project.automation.push(lane);
         throws.push(json!({"track": tn, "bus": s.bus, "from_db": s.db, "to_db": up}));
     }
-    Ok(json!({"hooks": hooks, "risers": risers, "gap": gap, "throws": throws}))
+    Ok(json!({"hooks": hooks, "riser_beats": built.iter().map(|b| b.1).collect::<Vec<_>>(), "risers": risers, "gap": gap, "throws": throws}))
 }
 
 fn no_part(e: &Engine, role: &str) -> anyhow::Error {
@@ -1723,6 +1730,54 @@ mod tests {
     }
 
     #[test]
+    fn the_vocal_chain_takes_a_presence_bell_on_the_vocal_alone() {
+        let (spec, probs) = validate(&json!({"genre": "trap", "vocal": {"file": "/tmp/x.wav", "chain": {"presence_db": 0.7, "brighten": false}}}));
+        assert!(probs.iter().all(|p| !p.path.starts_with("/vocal/chain")), "{probs:?}");
+        let chain = spec.unwrap().vocal.unwrap().chain;
+        assert_eq!((chain.presence_db, chain.presence_hz), (0.7, 2500.0));
+        let (_, probs) = validate(&json!({"genre": "trap", "vocal": {"file": "/tmp/x.wav", "chain": {"presence_db": 9.0}}}));
+        assert!(probs.iter().any(|p| p.path == "/vocal/chain/presence_db"), "{probs:?}");
+        let d = std::env::temp_dir().join(format!("song_vox_bell_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        e.call("add_track", &json!({"name": "vocal", "preset": "epiano"})).unwrap();
+        e.call("add_track", &json!({"name": "keys", "preset": "epiano"})).unwrap();
+        let out = mix_rules::apply_vocal_chain(&mut e, "vocal", &chain, "test").unwrap();
+        let has_bell = |e: &Engine, t: &str| {
+            let i = e.project.track_index(t).unwrap();
+            serde_json::to_value(&e.project.tracks[i].effects).unwrap().as_array().unwrap().iter().any(|f| {
+                f["bands"].as_array().is_some_and(|b| b.iter().any(|x| x["kind"] == "bell" && (x["freq"].as_f64().unwrap_or(0.0) - 2500.0).abs() < 1.0 && (x["gain_db"].as_f64().unwrap_or(0.0) - 0.7).abs() < 1e-3))
+            })
+        };
+        assert!(has_bell(&e, "vocal"), "{out}");
+        assert!(!has_bell(&e, "keys"), "the beat is untouched");
+        // in the render: the vocal stem changes, every other stem is identical
+        let notes: Vec<_> = (0..4).map(|i| json!({"start": i * 16, "len": 16, "pitch": "C5"})).collect();
+        e.call("add_notes", &json!({"track": "vocal", "notes": notes})).unwrap();
+        let notes: Vec<_> = (0..4).map(|i| json!({"start": i * 16, "len": 16, "pitch": "C4"})).collect();
+        e.call("add_notes", &json!({"track": "keys", "notes": notes})).unwrap();
+        let stems = |e: &Engine| crate::render::render(&e.project, &e.bank, &crate::render::RenderOptions { keep_stems: true, ..Default::default() }).unwrap();
+        let with_bell = stems(&e);
+        let mut flat = chain.clone();
+        flat.presence_db = 0.0;
+        mix_rules::apply_vocal_chain(&mut e, "vocal", &flat, "test").unwrap();
+        let without = stems(&e);
+        let stem = |m: &crate::render::Mix, t: &str| m.stems.iter().find(|s| s.name == t).map(|s| s.left.clone()).unwrap();
+        let (kv, kn) = (stem(&with_bell, "keys"), stem(&without, "keys"));
+        assert!(kv.iter().zip(&kn).all(|(a, b)| (a - b).abs() < 1e-7), "keys stem must be untouched");
+        let (vv, vn) = (stem(&with_bell, "vocal"), stem(&without, "vocal"));
+        let d: f32 = vv.iter().zip(&vn).map(|(a, b)| (a - b).powi(2)).sum::<f32>().sqrt();
+        let base: f32 = vn.iter().map(|a| a * a).sum::<f32>().sqrt();
+        assert!(d > base * 1e-3 && d < base * 0.2, "the vocal stem moves a little: diff {d} of {base}");
+        // 0 dB (the default) adds no bell
+        let mut plain = chain.clone();
+        plain.presence_db = 0.0;
+        mix_rules::apply_vocal_chain(&mut e, "vocal", &plain, "test").unwrap();
+        assert!(!has_bell(&e, "vocal"));
+    }
+
+    #[test]
     fn mix_builds_write_a_riser_a_pre_drop_gap_and_a_reverb_throw() {
         let v = json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}], "mix": {"builds": true}});
         let (spec, probs) = validate(&v);
@@ -1752,6 +1807,16 @@ mod tests {
         let throw = e.project.automation.iter().find(|l| l.param.starts_with("send.")).unwrap_or_else(|| panic!("{built}"));
         assert!(throw.value_at(s - 0.5).unwrap() > throw.value_at(s - 2.0).unwrap() + 6.0, "{built}");
         assert!(crate::validate::structural(&e.project, &e.bank).iter().all(|x| !(x.check == "automation" && x.status == crate::validate::Status::Fail)));
+        // a short (2-bar) intro before a hook gets a one-bar riser
+        let (short, _) = validate(&json!({"genre": "trap", "seed": 7, "structure": [{"kind": "intro", "bars": 2}, {"kind": "hook", "bars": 4}], "mix": {"builds": true}}));
+        let mut e3 = Engine::new(std::env::temp_dir().join(format!("song_builds_short_{}", std::process::id())));
+        let mut log3 = Vec::new();
+        compose_beat(&mut e3, &short.unwrap(), 7, &mut log3).unwrap();
+        let r3 = e3.project.automation.iter().find(|l| l.target == "chords" && l.param.ends_with(".cutoff"));
+        if let Some(r3) = r3 {
+            assert!((r3.value_at(4.0).unwrap() - 500.0).abs() < 1.0, "{log3:?}");
+        }
+        assert!(e3.project.automation.iter().any(|l| l.target == "drums" && l.value_at(7.5) == Some(-60.0)), "{log3:?}");
         // off by default: the same song without builds has none of it
         let (plain, _) = validate(&json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]}));
         let mut e2 = Engine::new(std::env::temp_dir().join(format!("song_nobuilds_{}", std::process::id())));
