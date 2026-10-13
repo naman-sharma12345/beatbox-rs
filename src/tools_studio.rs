@@ -57,7 +57,7 @@ pub(crate) fn chain_of<'a>(p: &'a Project, owner: &str) -> &'a [Effect] {
 /// The current static value of an automation target (validates it too).
 pub(crate) fn static_value(p: &Project, owner: &str, param: &str) -> Result<f32> {
     let t = parse_target(param).ok_or_else(|| {
-        anyhow!("unknown parameter '{param}'. Use volume, pan, instrument.<param> (e.g. instrument.cutoff) or fx.<index>.<param> (e.g. fx.0.cutoff). list_automation shows every option.")
+        anyhow!("unknown parameter '{param}'. Use volume, pan, instrument.<param> (e.g. instrument.cutoff), fx.<index>.<param> (e.g. fx.0.cutoff) or send.<bus> (a send's level in dB, e.g. send.reverb). list_automation shows every option.")
     })?;
     let is_master = owner.eq_ignore_ascii_case("master");
     let track = p.track_index(owner).ok();
@@ -119,7 +119,37 @@ pub(crate) fn static_value(p: &Project, owner: &str, param: &str) -> Result<f32>
                     )
                 })
         }
+        Target::Send(bus) => {
+            let i = track.ok_or_else(|| {
+                anyhow!("only tracks have sends ('{owner}' is not a track)")
+            })?;
+            let t = &p.tracks[i];
+            find_send(t, &bus).map(|s| s.db).ok_or_else(|| {
+                anyhow!(
+                    "'{owner}' has no send to '{bus}'. Sends: [{}]. add_send first.",
+                    t.sends.iter().map(|s| format!("send.{}", s.bus)).collect::<Vec<_>>().join(", ")
+                )
+            })
+        }
     }
+}
+
+/// Remove `send.<bus>` automation lanes (of one track, or of every track)
+/// once that send is gone.
+pub(crate) fn drop_send_lanes(p: &mut Project, track: Option<&str>, bus: &str) {
+    p.automation.retain(|l| {
+        let owner_ok = track.is_none_or(|t| l.target.eq_ignore_ascii_case(t));
+        let is_it = matches!(parse_target(&l.param), Some(Target::Send(b)) if b.eq_ignore_ascii_case(bus));
+        !(owner_ok && is_it)
+    });
+}
+
+/// The track's send a `send.<bus>` lane drives: by bus name or send id,
+/// case-insensitively.
+pub(crate) fn find_send<'a>(t: &'a crate::project::Track, bus: &str) -> Option<&'a crate::project::Send> {
+    t.sends
+        .iter()
+        .find(|s| s.bus.eq_ignore_ascii_case(bus) || (!s.id.is_empty() && s.id.eq_ignore_ascii_case(bus)))
 }
 
 /// Every numeric leaf under `v` as `prefix.path`.
@@ -147,6 +177,7 @@ pub fn automatable(p: &Project, owner: &str) -> Vec<String> {
         if let Ok(iv) = serde_json::to_value(&p.tracks[i].instrument) {
             v.extend(numeric_paths(&iv, "instrument"));
         }
+        v.extend(p.tracks[i].sends.iter().map(|s| format!("send.{}", s.bus.to_lowercase())));
     }
     for (i, fx) in chain_of(p, owner).iter().enumerate() {
         if let Ok(fv) = serde_json::to_value(fx) {
@@ -200,6 +231,7 @@ pub(crate) fn clamp_value(param: &str, v: f32) -> f32 {
     match parse_target(param) {
         Some(Target::Volume) => v.clamp(-100.0, 12.0),
         Some(Target::Pan) => v.clamp(-1.0, 1.0),
+        Some(Target::Send(_)) => v.clamp(-120.0, 12.0),
         _ => {
             let leaf = param.rsplit('.').next().unwrap_or("");
             if automation::is_log_param(param) {
@@ -461,7 +493,7 @@ pub fn tools() -> Vec<Tool> {
             run: |e, a| {
                 let owner = owner_of(&e.project, &s_req(a, "track")?)?;
                 let raw = s_req(a, "param")?;
-                let param = canonical(&raw).ok_or_else(|| anyhow!("unknown parameter '{raw}'. Use volume, pan, instrument.<param> or fx.<index>.<param>."))?;
+                let param = canonical(&raw).ok_or_else(|| anyhow!("unknown parameter '{raw}'. Use volume, pan, instrument.<param>, fx.<index>.<param> or send.<bus>."))?;
                 let current = static_value(&e.project, &owner, &param)?;
                 let curve = s_opt(a, "curve").and_then(|c| Curve::parse(&c)).unwrap_or_default();
                 let mut pts = points_from(a, curve)?;
@@ -696,6 +728,7 @@ pub fn tools() -> Vec<Tool> {
                     t.sends.retain(|s| !s.bus.eq_ignore_ascii_case(&b.name));
                 }
                 e.project.automation.retain(|l| !l.target.eq_ignore_ascii_case(&b.name));
+                drop_send_lanes(&mut e.project, None, &b.name);
                 Ok(json!({"removed": b.name, "rerouted_to_master": rerouted}))
             },
         },
@@ -730,6 +763,10 @@ pub fn tools() -> Vec<Tool> {
                         t.sends.push(Send { bus: bus.clone(), db, pre_fader: b_or(a, "pre_fader", false), id: String::new() });
                     }
                     out.push(json!({"track": t.name, "sends": t.sends.iter().map(|s| format!("{} {:+.1} dB{}", s.bus, s.db, if s.pre_fader { " pre" } else { "" })).collect::<Vec<_>>()}));
+                    if b_or(a, "remove", false) {
+                        let tn = e.project.tracks[ti].name.clone();
+                        drop_send_lanes(&mut e.project, Some(&tn), &bus);
+                    }
                 }
                 Ok(json!({"updated": out}))
             },
@@ -754,7 +791,11 @@ pub fn tools() -> Vec<Tool> {
                         t.sends.retain(|s| !s.bus.eq_ignore_ascii_case(d));
                     }
                     t.output = dest.clone();
-                    routed.push(t.name.clone());
+                    let tn = t.name.clone();
+                    if let Some(d) = &dest {
+                        drop_send_lanes(&mut e.project, Some(&tn), d);
+                    }
+                    routed.push(tn);
                 }
                 Ok(json!({"routed": routed, "to": dest.unwrap_or_else(|| "master".into())}))
             },
@@ -960,6 +1001,130 @@ mod tests {
         let head = rms(&mix.left[..body / 4]);
         let tail = rms(&mix.left[body * 3 / 4..body.min(n)]);
         assert!(tail < head * 0.5, "fade out: head {head} tail {tail}");
+    }
+
+    /// A sustained pad sent to a reverb bus at -60 dB, `send.verb` lane
+    /// optional: (engine, track name).
+    fn send_rig(dir: &str) -> (Engine, String) {
+        let d = std::env::temp_dir().join(dir);
+        let _ = std::fs::remove_dir_all(&d);
+        let mut e = Engine::new(d);
+        let t = "sendpad".to_string();
+        e.call("add_track", &json!({"name": t, "preset": "supersaw"})).unwrap();
+        // add_notes counts in 16th steps: one held note per bar of the
+        // default 4-bar pattern
+        let notes: Vec<_> = (0..4).map(|i| json!({"start": i * 16, "len": 16, "pitch": "C4"})).collect();
+        e.call("add_notes", &json!({"track": t, "notes": notes})).unwrap();
+        e.call("add_bus", &json!({"name": "verb", "preset": "reverb"})).unwrap();
+        e.call("set_send", &json!({"track": t, "bus": "verb", "db": -60})).unwrap();
+        (e, t)
+    }
+
+    #[test]
+    fn send_automation_rides_the_send_level_in_the_render() {
+        // the same rig without and with a send.verb lane ramping -60 -> 0 dB
+        // over the song: the difference is the reverb bus fading in
+        let (mut flat, t) = send_rig("beatbox_send_auto_flat");
+        let (mut ramp, _) = send_rig("beatbox_send_auto_ramp");
+        assert!(super::automatable(&ramp.project, &t).contains(&"send.verb".to_string()));
+        let end = ramp.project.song_beats() as f32;
+        ramp.call("add_automation", &json!({"track": t, "param": "send.verb", "points": [[0, -60], [end, 0]]})).unwrap();
+        assert_eq!(ramp.project.automation[0].param, "send.verb");
+        let a = flat.mix().unwrap();
+        let b = ramp.mix().unwrap();
+        let body = ((ramp.project.song_seconds() * crate::dsp::SR) as usize).min(a.left.len()).min(b.left.len());
+        let diff: Vec<f32> = (0..body).map(|i| b.left[i] - a.left[i]).collect();
+        let head = rms(&diff[..body / 4]);
+        let tail = rms(&diff[body * 3 / 4..body]);
+        assert!(tail > 1e-3, "the ramped send must add the bus: tail diff {tail}");
+        assert!(tail > head * 4.0, "send ramps up: head diff {head}, tail diff {tail}");
+        // a step lane at -60 everywhere renders like the static -60 send
+        ramp.call("set_automation_points", &json!({"track": t, "param": "send.verb", "points": [[0, -60], [end, -60]], "mode": "replace"})).unwrap();
+        let c = ramp.mix().unwrap();
+        let d2: Vec<f32> = (0..body).map(|i| c.left[i] - a.left[i]).collect();
+        assert!(rms(&d2) < 1e-4, "flat -60 lane == static -60 send: {}", rms(&d2));
+    }
+
+    fn max_step(x: &[f32]) -> f32 {
+        x.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max)
+    }
+
+    /// A held pure sine (sub preset) through a wide-open filter: smooth
+    /// enough that a zipper or a click shows up as a sample step far above
+    /// the sine's own (2*pi*f/SR of its peak).
+    fn sweep_rig(dir: &str) -> (Engine, String) {
+        let d = std::env::temp_dir().join(dir);
+        let _ = std::fs::remove_dir_all(&d);
+        let mut e = Engine::new(d);
+        let t = "sweep".to_string();
+        e.call("add_track", &json!({"name": t, "preset": "sub"})).unwrap();
+        let notes: Vec<_> = (0..4).map(|i| json!({"start": i * 16, "len": 16, "pitch": "C3"})).collect();
+        e.call("add_notes", &json!({"track": t, "notes": notes})).unwrap();
+        e.call("add_effect", &json!({"track": t, "type": "filter", "params": {"cutoff": 18000}})).unwrap();
+        (e, t)
+    }
+
+    #[test]
+    fn fast_volume_and_cutoff_sweeps_do_not_zipper() {
+        // static reference: filter wide open, fader at 0 dB
+        let (mut st, t) = sweep_rig("beatbox_nozip_static");
+        let reference = st.mix().unwrap();
+        let ref_step = max_step(&reference.left).max(max_step(&reference.right));
+        assert!(ref_step > 1e-4, "the rig must make sound");
+        // automated: a volume lane slamming -60 -> 0 -> -60 dB every beat
+        // (step corners included), and a cutoff lane 200 Hz <-> 18 kHz every
+        // half beat
+        let (mut au, _) = sweep_rig("beatbox_nozip_auto");
+        let end = au.project.song_beats() as f32;
+        // volume lanes are absolute: ride from the track's own fader down
+        let v0 = au.project.tracks[au.project.track_index(&t).unwrap()].volume_db;
+        let mut vol = Vec::new();
+        let mut cut = Vec::new();
+        let mut b = 0.0f32;
+        while b <= end {
+            vol.push(json!([b, if (b as i32) % 2 == 0 { v0 - 60.0 } else { v0 }, if (b as i32) % 4 == 3 { "step" } else { "linear" }]));
+            cut.push(json!([b, 60.0, "linear"]));
+            cut.push(json!([b + 0.5, 18000.0, "linear"]));
+            b += 1.0;
+        }
+        au.call("add_automation", &json!({"track": t, "param": "volume", "points": vol})).unwrap();
+        au.call("add_automation", &json!({"track": t, "param": "fx.0.cutoff", "points": cut})).unwrap();
+        let swept = au.mix().unwrap();
+        let n = swept.left.len().min(reference.left.len());
+        assert!(rms(&swept.left[..n]) > 1e-4, "the swept render must make sound");
+        // a click is a sample step large for the signal's own level: the
+        // worst step / local peak over 512-sample windows (quiet windows
+        // skipped), compared with the static render's (whose worst windows
+        // are the note onsets). A pure 131 Hz sine is ~0.017; an unsmoothed
+        // -60 -> 0 dB jump would be ~1, a 64-sample crossfade corner ~0.045
+        let rel = |x: &[f32]| {
+            let g = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            x.chunks(512)
+                .filter_map(|w| {
+                    let p = w.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+                    (p >= 0.02 * g).then(|| max_step(w) / p)
+                })
+                .fold(0.0f32, f32::max)
+        };
+        let (rs, ra) = (rel(&reference.left[..n]), rel(&swept.left[..n]));
+        assert!(ra <= rs * 1.6 + 0.005, "zipper/click: swept worst step/peak {ra} vs static {rs}");
+        let diff: Vec<f32> = (0..n).map(|i| swept.left[i] - reference.left[i]).collect();
+        assert!(rms(&diff) > 1e-3, "the lanes must change the render");
+    }
+
+    #[test]
+    fn send_lanes_validate_and_go_with_their_send() {
+        let (mut e, t) = send_rig("beatbox_send_auto_valid");
+        let err = e.call("add_automation", &json!({"track": t, "param": "send.nope", "points": [[0, -12]]})).unwrap_err().to_string();
+        assert!(err.contains("no send to 'nope'") && err.contains("send.verb"), "{err}");
+        e.call("add_automation", &json!({"track": t, "param": "send.VERB", "points": [[0, -30], [8, -6]]})).unwrap();
+        assert_eq!(e.project.automation.len(), 1);
+        assert_eq!(e.project.automation[0].param, "send.verb");
+        let checks = crate::validate::structural(&e.project, &e.bank);
+        assert!(checks.iter().all(|x| !(x.check == "automation" && x.status == crate::validate::Status::Fail)), "{checks:?}");
+        // removing the send takes its lane with it
+        e.call("set_send", &json!({"track": t, "bus": "verb", "remove": true})).unwrap();
+        assert!(e.project.automation.is_empty(), "{:?}", e.project.automation);
     }
 
     #[test]

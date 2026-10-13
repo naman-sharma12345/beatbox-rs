@@ -359,6 +359,50 @@ mod tests {
         }
     }
 
+    /// End to end: a send lane drawn with the strip (a real pointer drag)
+    /// changes what the engine renders.
+    #[test]
+    fn a_send_lane_dragged_in_the_strip_changes_the_render() {
+        let d = std::env::temp_dir().join(format!("flauto_send_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        e.call("add_track", &json!({"name": "pad", "preset": "supersaw"})).unwrap();
+        e.call("add_pattern", &json!({"name": "verse", "bars": 4})).unwrap();
+        // steps: one held note per bar
+        let notes: Vec<_> = (0..4).map(|i| json!({"start": i * 16, "len": 16, "pitch": "C4"})).collect();
+        e.call("add_notes", &json!({"track": "pad", "pattern": "verse", "notes": notes})).unwrap();
+        e.call("place_pattern", &json!({"pattern": "verse", "start_bar": 0, "lane": 0})).unwrap();
+        e.call("add_bus", &json!({"name": "verb", "preset": "reverb"})).unwrap();
+        e.call("set_send", &json!({"track": "pad", "bus": "verb", "db": -60})).unwrap();
+        e.call("add_automation", &json!({"track": "pad", "param": "send.verb", "points": [[0, -60], [16, -60]]})).unwrap();
+        assert_eq!(display_range(&e.project.automation[0]), (-60.0, 0.0));
+        let before = e.mix().unwrap();
+        // drag the end point (beat 16, -60 dB) up to 0 dB: a -60 -> 0 ramp
+        let p = e.project.clone();
+        let calls = drive(&p, 1.0, PlaylistView::default(), &|at| drag(at(0, 16.0, -60.0), at(0, 16.0, 0.0)));
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].1["param"], json!("send.verb"));
+        apply(&mut e, &calls);
+        let got = pts(&e);
+        assert_eq!(got[0], (0.0, -60.0));
+        assert_eq!(got[1].0, 16.0);
+        assert!(got[1].1 > -2.0, "{got:?}");
+        let after = e.mix().unwrap();
+        let sr = crate::dsp::SR as f32;
+        let beat_s = 60.0 / e.project.bpm;
+        let seg = |a: f32, b: f32| ((a * beat_s * sr) as usize, (b * beat_s * sr) as usize);
+        let n = before.left.len().min(after.left.len());
+        let rms_diff = |(i0, i1): (usize, usize)| {
+            let i1 = i1.min(n);
+            let s: f32 = (i0..i1).map(|i| (after.left[i] - before.left[i]).powi(2)).sum();
+            (s / (i1 - i0).max(1) as f32).sqrt()
+        };
+        let head = rms_diff(seg(0.0, 4.0));
+        let tail = rms_diff(seg(12.0, 16.0));
+        assert!(tail > 1e-3 && tail > head * 4.0, "the drawn ramp brings the reverb in: head {head}, tail {tail}");
+    }
+
     #[test]
     fn a_project_without_lanes_shows_a_hint_and_asks_for_nothing() {
         let d = std::env::temp_dir().join(format!("flauto_empty_{}", std::process::id()));

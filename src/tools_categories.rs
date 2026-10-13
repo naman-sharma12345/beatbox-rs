@@ -119,7 +119,7 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "export",
         description: "Master and export: wav/flac/mp3, stems, bounce a track, mastering assistant, check the master, compare to a reference.",
-        actions: &["export_audio", "export_stems", "bounce_track", "master_assistant", "check_master", "analyze_reference", "compare_to_reference"],
+        actions: &["export_audio", "export_stems", "bounce_track", "master_assistant", "master_lift", "check_master", "analyze_reference", "compare_to_reference"],
     },
     Category {
         name: "help",

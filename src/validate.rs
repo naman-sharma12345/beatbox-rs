@@ -540,6 +540,27 @@ pub fn structural(p: &Project, bank: &SampleBank) -> Vec<Check> {
                     }
                 }
             },
+            Some(Target::Send(bus)) => {
+                let ok = p
+                    .track_index(&lane.target)
+                    .ok()
+                    .is_some_and(|i| crate::tools_studio::find_send(&p.tracks[i], &bus).is_some());
+                if !ok {
+                    out.push(item(
+                        "automation",
+                        Status::Fail,
+                        format!("{who}: no send to '{bus}'"),
+                        Some("clear_automation"),
+                    ));
+                } else if hi > 12.0 {
+                    out.push(item(
+                        "automation",
+                        Status::Warn,
+                        format!("{who}: send reaches +{hi} dB"),
+                        Some("set_automation_points"),
+                    ));
+                }
+            }
             _ => {}
         }
         let song = p.song_beats();

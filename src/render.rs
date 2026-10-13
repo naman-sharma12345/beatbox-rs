@@ -399,17 +399,33 @@ fn lane_curve(
     tl: &Timeline,
     map: impl Fn(f32) -> f32,
 ) -> Vec<f32> {
+    // frequencies sweep geometrically (equal time per octave); the whole
+    // curve is flattened here, once, before any sample loop runs
+    let log = automation::is_log_param(&lane.param);
     let blocks: Vec<f32> = (0..=n / AUTO_BLOCK + 1)
-        .map(|k| map(lane.value_at(tl.beat_at(k * AUTO_BLOCK)).unwrap_or(0.0)))
+        .map(|k| map(lane.value_at_in(tl.beat_at(k * AUTO_BLOCK), log).unwrap_or(0.0)))
         .collect();
-    (0..n)
+    let mut out: Vec<f32> = (0..n)
         .map(|i| {
             let k = i / AUTO_BLOCK;
             let f = (i % AUTO_BLOCK) as f32 / AUTO_BLOCK as f32;
             blocks[k] + (blocks[k + 1] - blocks[k]) * f
         })
-        .collect()
+        .collect();
+    // a one-pole smoother on top of the per-block ramps: a step point (or a
+    // jump faster than a block) lands over a few ms instead of 64 samples,
+    // so step corners do not click; sweeps lag by ~AUTO_SMOOTH_MS at most
+    let a = 1.0 - (-1.0 / (AUTO_SMOOTH_MS * 0.001 * SR)).exp();
+    let mut y = out.first().copied().unwrap_or(0.0);
+    for v in out.iter_mut() {
+        y += a * (*v - y);
+        *v = y;
+    }
+    out
 }
+
+/// Time constant of the automation smoother (ms).
+pub const AUTO_SMOOTH_MS: f32 = 3.0;
 
 /// Run an effect chain, honouring `fx.<i>.<param>` automation lanes.
 ///
@@ -1053,7 +1069,7 @@ pub fn render_cached(
                     let beat = tl.beat_at(e.start);
                     let vals: Vec<f32> = inst_lanes
                         .iter()
-                        .map(|(l, _)| l.value_at(beat).unwrap_or(0.0))
+                        .map(|(l, _)| l.value_at_in(beat, automation::is_log_param(&l.param)).unwrap_or(0.0))
                         .collect();
                     let key = (
                         (e.pitch * 10.0) as i32,
@@ -1284,19 +1300,36 @@ pub fn render_cached(
             }
             let track = &p.tracks[ti];
             if audible {
+                let send_lanes = owner_lanes(p, &track.name);
                 for s in &track.sends {
                     let Ok(bi) = p.bus_index(&s.bus) else {
                         continue;
                     };
-                    let g = db_to_gain(s.db.clamp(-120.0, 12.0));
                     let (sl, sr) = match (&pre, s.pre_fader) {
                         (Some((pl, pr)), true) => (pl, pr),
                         _ => (&l, &r),
                     };
+                    // a `send.<bus>` lane drives the level per sample
+                    let lane = send_lanes.iter().find(|x| match parse_target(&x.param) {
+                        Some(Target::Send(b)) => s.bus.eq_ignore_ascii_case(&b) || (!s.id.is_empty() && s.id.eq_ignore_ascii_case(&b)),
+                        _ => false,
+                    });
                     let (bl, br) = &mut bus_in[bi];
-                    for i in 0..total {
-                        bl[i] += sl[i] * g;
-                        br[i] += sr[i] * g;
+                    match lane {
+                        Some(lane) => {
+                            let g = lane_curve(lane, total, &tl, |db| db_to_gain(db.clamp(-120.0, 12.0)));
+                            for i in 0..total {
+                                bl[i] += sl[i] * g[i];
+                                br[i] += sr[i] * g[i];
+                            }
+                        }
+                        None => {
+                            let g = db_to_gain(s.db.clamp(-120.0, 12.0));
+                            for i in 0..total {
+                                bl[i] += sl[i] * g;
+                                br[i] += sr[i] * g;
+                            }
+                        }
                     }
                 }
                 let dest = track.output.as_deref().and_then(|b| p.bus_index(b).ok());

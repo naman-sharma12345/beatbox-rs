@@ -199,12 +199,20 @@ pub struct MixSpec {
     /// `{"presence_db": 0, "air_db": 0}` = none (the extra bell is 0 by default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub master_lift: Option<mix_rules::MixProfile>,
+    /// Deeper builds into each hook (off by default so earlier renders stay
+    /// comparable): the melodic beds' filter closes to ~500 Hz two bars out
+    /// and sweeps open into the hook, the drum bus drops out for the last
+    /// beat (a pre-drop gap), and lead/chords throw their reverb send up
+    /// over that beat so the tail fills the gap. Applied when the beat is
+    /// composed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub builds: bool,
 }
 
 impl Default for MixSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None }
+        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None, builds: false }
     }
 }
 
@@ -348,7 +356,7 @@ const TOP_ALIAS: &[(&str, &str)] = &[("tempo", "bpm"), ("sections", "structure")
 const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain", "lock", "flex"];
 const PHRASE_KEYS: &[&str] = &["src_s", "src", "len_s", "len", "end_s", "section", "bar", "beat", "start_beat", "at_s", "start_s", "gain_db", "name", "fade_in_ms", "fade_out_ms"];
 const SECTION_KEYS: &[&str] = &["kind", "bars", "name", "energy"];
-const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift"];
+const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds"];
 const MASTER_KEYS: &[&str] = &["lufs", "true_peak", "preserve_dynamics"];
 const EXPORT_KEYS: &[&str] = &["path", "format", "bitrate_kbps"];
 const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db"];
@@ -633,7 +641,7 @@ pub fn scope_of(path: &str) -> Scope {
     let head = p.split('/').next().unwrap_or("");
     match head {
         // role levels are set when the beat is composed
-        "mix" if p == "mix/levels" || p.starts_with("mix/levels/") => Scope::Full,
+        "mix" if p == "mix/levels" || p.starts_with("mix/levels/") || p == "mix/builds" => Scope::Full,
         "mix" | "master" | "export" | "title" => Scope::Mix,
         "vocal" if p == "vocal/gain_db" => Scope::Mix,
         "vocal" => Scope::Vocal,
@@ -761,6 +769,10 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
     swap_instruments(e, spec, log)?;
     crate::producer::balance_beat(e, &plan)?;
     apply_role_levels(e, spec, log)?;
+    if spec.mix.builds {
+        let b = apply_builds(e)?;
+        log.push(format!("builds: {b}"));
+    }
     // loudness and peaks belong to delivery: a limiter in the project would
     // flatten the drops before the mix rules see them
     e.project.master_effects.retain(|f| {
@@ -912,6 +924,108 @@ fn swap_instruments(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> R
         log.push(format!("{role}: recorded instrument {id}"));
     }
     Ok(())
+}
+
+/// Beats before a hook the build starts closing the filter (two bars).
+pub const BUILD_BARS_BEATS: f32 = 8.0;
+/// Where the build's filter starts (Hz).
+pub const BUILD_FROM_HZ: f32 = 500.0;
+/// The reverb throw's lift over the send's level (dB, capped at -2 dB).
+pub const BUILD_THROW_DB: f32 = 12.0;
+
+/// `mix.builds`: deepen the build into every hook that follows a non-hook
+/// section of at least 12 beats. Rewrites the producer's hook-lift cutoff
+/// lanes on chords/counter/texture over the two bars before the hook,
+/// adds a gain stage on the drum bus with a one-beat pre-drop gap, and a
+/// `send.<reverb bus>` throw on lead and chords over that beat.
+fn apply_builds(e: &mut Engine) -> Result<Value> {
+    use crate::automation::{AutoPoint, Curve};
+    let spans = mix_rules::section_spans(&e.project);
+    let hooks: Vec<f32> = spans
+        .windows(2)
+        .filter(|w| w[1].kind == "hook" && w[0].kind != "hook" && w[0].end_beat - w[0].start_beat >= 12.0)
+        .map(|w| w[1].start_beat)
+        .collect();
+    if hooks.is_empty() {
+        return Ok(json!({"hooks": 0}));
+    }
+    let pt = |beat: f32, value: f32, curve: Curve| AutoPoint { beat, value, curve };
+    // 1) risers: the existing cutoff lanes, rewritten over the two bars out
+    let mut risers = Vec::new();
+    for t in ["chords", "counter", "texture"] {
+        let Ok(ti) = e.project.track_index(t) else { continue };
+        let filt: Vec<usize> = e.project.tracks[ti]
+            .effects
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.type_name() == "filter")
+            .map(|(i, _)| i)
+            .collect();
+        let Some(lane) = e.project.automation.iter_mut().find(|l| {
+            l.target.eq_ignore_ascii_case(t)
+                && filt.iter().any(|i| l.param == format!("fx.{i}.cutoff"))
+        }) else {
+            continue;
+        };
+        for &s in &hooks {
+            let a = s - BUILD_BARS_BEATS;
+            let before = lane.value_at(a - 1.0).unwrap_or(18000.0);
+            lane.points.retain(|p| p.beat < a - 1.0 || p.beat >= s);
+            lane.points.push(pt(a - 1.0, before, Curve::Linear));
+            lane.points.push(pt(a, BUILD_FROM_HZ, Curve::Smooth));
+            lane.points.push(pt(s - 0.01, 16000.0, Curve::Step));
+            if !lane.points.iter().any(|p| (p.beat - s).abs() < 1e-3) {
+                lane.points.push(pt(s, 18000.0, Curve::Step));
+            }
+        }
+        lane.sort();
+        risers.push(t);
+    }
+    // 2) pre-drop gap: a gain stage on the drum bus, -60 dB for the last beat
+    let mut gap = Value::Null;
+    if let Ok(bi) = e.project.bus_index("drums") {
+        let idx = e.project.buses[bi].effects.len();
+        e.project.buses[bi].effects.push(crate::fx::Effect::Gain(crate::fx::GainFx::default()));
+        let mut points = vec![pt(0.0, 0.0, Curve::Step)];
+        for &s in &hooks {
+            points.push(pt(s - 1.05, 0.0, Curve::Linear));
+            points.push(pt(s - 1.0, -60.0, Curve::Step));
+            points.push(pt(s - 0.02, -60.0, Curve::Linear));
+            points.push(pt(s, 0.0, Curve::Step));
+        }
+        let name = e.project.buses[bi].name.clone();
+        let mut lane = crate::automation::AutomationLane::new(&name, &format!("fx.{idx}.db"));
+        lane.points = points;
+        lane.sort();
+        e.project.automation.push(lane);
+        gap = json!({"bus": name, "fx": idx});
+    }
+    // 3) reverb throws on lead/chords: their send to a reverb bus, lifted
+    // over the gap beat and back at the downbeat
+    let mut throws = Vec::new();
+    for t in ["lead", "chords"] {
+        let Ok(ti) = e.project.track_index(t) else { continue };
+        let send = e.project.tracks[ti].sends.iter().find(|s| {
+            e.project.bus_index(&s.bus).ok().is_some_and(|bi| e.project.buses[bi].effects.iter().any(|f| f.type_name() == "reverb"))
+        });
+        let Some(s) = send.cloned() else { continue };
+        let up = (s.db + BUILD_THROW_DB).min(-2.0).max(s.db);
+        let mut points = vec![pt(0.0, s.db, Curve::Step)];
+        for &h in &hooks {
+            points.push(pt(h - 1.25, s.db, Curve::Linear));
+            points.push(pt(h - 1.0, up, Curve::Step));
+            points.push(pt(h - 0.05, up, Curve::Linear));
+            points.push(pt(h, s.db, Curve::Step));
+        }
+        let tn = e.project.tracks[ti].name.clone();
+        e.project.automation.retain(|l| !(l.target.eq_ignore_ascii_case(&tn) && l.param == format!("send.{}", s.bus.to_lowercase())));
+        let mut lane = crate::automation::AutomationLane::new(&tn, &format!("send.{}", s.bus.to_lowercase()));
+        lane.points = points;
+        lane.sort();
+        e.project.automation.push(lane);
+        throws.push(json!({"track": tn, "bus": s.bus, "from_db": s.db, "to_db": up}));
+    }
+    Ok(json!({"hooks": hooks, "risers": risers, "gap": gap, "throws": throws}))
 }
 
 fn no_part(e: &Engine, role: &str) -> anyhow::Error {
@@ -1606,6 +1720,43 @@ mod tests {
         apply_role_levels(&mut e, &spec, &mut log).unwrap();
         assert!(log.iter().any(|l| l.contains("no perc part") && l.contains("not used")), "{log:?}");
         assert!(log.iter().any(|l| l.contains("level offset was not applied")), "{log:?}");
+    }
+
+    #[test]
+    fn mix_builds_write_a_riser_a_pre_drop_gap_and_a_reverb_throw() {
+        let v = json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}], "mix": {"builds": true}});
+        let (spec, probs) = validate(&v);
+        let spec = spec.unwrap_or_else(|| panic!("{probs:?}"));
+        assert!(spec.mix.builds);
+        assert_eq!(scope_of("/mix/builds"), Scope::Full);
+        let d = std::env::temp_dir().join(format!("song_builds_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        let mut log = Vec::new();
+        compose_beat(&mut e, &spec, 7, &mut log).unwrap();
+        let built = log.iter().find(|l| l.starts_with("builds:")).unwrap_or_else(|| panic!("{log:?}"));
+        let s = mix_rules::section_spans(&e.project).iter().find(|x| x.kind == "hook").map(|x| x.start_beat).unwrap();
+        assert_eq!(s, 16.0, "{built}");
+        // the drum bus: silent through the last beat, back on the downbeat
+        let gap = e.project.automation.iter().find(|l| l.target == "drums" && l.param.ends_with(".db")).unwrap_or_else(|| panic!("{built}"));
+        assert_eq!(gap.value_at(s - 2.0), Some(0.0));
+        assert_eq!(gap.value_at(s - 0.5), Some(-60.0));
+        assert_eq!(gap.value_at(s + 0.5), Some(0.0));
+        // the riser: ~500 Hz two bars out, open by the hook
+        let riser = e.project.automation.iter().find(|l| l.target == "chords" && l.param.ends_with(".cutoff")).unwrap_or_else(|| panic!("{built}"));
+        assert!((riser.value_at(s - 8.0).unwrap() - 500.0).abs() < 1.0, "{built}");
+        assert!(riser.value_at(s - 0.01).unwrap() >= 16000.0);
+        assert!(riser.value_at_in(s - 4.0, true).unwrap() > 1000.0);
+        // the throw: a send lane on lead or chords, up over the gap
+        let throw = e.project.automation.iter().find(|l| l.param.starts_with("send.")).unwrap_or_else(|| panic!("{built}"));
+        assert!(throw.value_at(s - 0.5).unwrap() > throw.value_at(s - 2.0).unwrap() + 6.0, "{built}");
+        assert!(crate::validate::structural(&e.project, &e.bank).iter().all(|x| !(x.check == "automation" && x.status == crate::validate::Status::Fail)));
+        // off by default: the same song without builds has none of it
+        let (plain, _) = validate(&json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]}));
+        let mut e2 = Engine::new(std::env::temp_dir().join(format!("song_nobuilds_{}", std::process::id())));
+        compose_beat(&mut e2, &plain.unwrap(), 7, &mut Vec::new()).unwrap();
+        assert!(e2.project.automation.iter().all(|l| l.target != "drums" && !l.param.starts_with("send.")));
     }
 
     #[test]
