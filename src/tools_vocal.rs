@@ -533,7 +533,7 @@ pub fn tools() -> Vec<Tool> {
             name: "analyze_vocal",
             description: "Listen to a sung vocal: pitch-tracked notes, key, tempo + first downbeat, timing tightness, range, tuning, phrases (and lyrics when lyrics=true). The first step of building a song around a singer.",
             mutates: false,
-            schema: || obj(json!({"path": {"type": "string"}, "bpm": {"type": "number", "description": "tempo hint if you know it"}, "lyrics": {"type": "boolean", "description": "also transcribe lyrics (default false here)"}, "model": {"type": "string"}, "notes": {"type": "integer", "description": "how many notes to list (default 48)"}}), &["path"]),
+            schema: || obj(json!({"path": {"type": "string"}, "bpm": {"type": "number", "description": "tempo hint if you know it"}, "lyrics": {"type": "boolean", "description": "also transcribe lyrics (default false here)"}, "model": {"type": "string"}, "notes": {"type": "integer", "description": "how many notes to list (default 48)"}, "key_detect": {"type": "string", "enum": ["notes", "yin_gated"], "description": "yin_gated also reports key_gated: the key from YIN-gated pitch frames (aperiodicity < 0.15, -55 dBFS, 120 ms smoothing, octave folding, tuning offset removed)"}}), &["path"]),
             run: |e, a| {
                 let path = e.resolve(&s_req(a, "path")?);
                 let x = samples::decode_file(&path)?;
@@ -545,6 +545,12 @@ pub fn tools() -> Vec<Tool> {
                 let words = lyrics.as_ref().map(|l| l.words()).unwrap_or_default();
                 let an = vocal::analyze(&x, SR, &words, f_opt(a, "bpm"));
                 let mut v = analysis_json(&an, u_or(a, "notes", 48) as usize);
+                if s_opt(a, "key_detect").as_deref() == Some("yin_gated") {
+                    v["key_gated"] = match vocal::gated_key(&x, SR) {
+                        Some(g) => serde_json::to_value(&g)?,
+                        None => json!({"unknown": true, "note": "too few gated pitch frames"}),
+                    };
+                }
                 if let Some(l) = lyrics {
                     v["lyrics"] = json!(l.segments.iter().map(|s| json!({"start": s.start, "end": s.end, "text": s.text})).collect::<Vec<_>>());
                 }

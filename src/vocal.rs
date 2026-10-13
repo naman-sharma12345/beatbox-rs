@@ -336,6 +336,130 @@ pub fn vocal_key(notes: &[VNote]) -> Vec<(u8, &'static str, f32)> {
     crate::midi_ops::key_from_chroma(&c)
 }
 
+/// A key read from YIN-gated pitch frames (`gated_key`).
+#[derive(Clone, Debug, Serialize)]
+pub struct GatedKey {
+    pub key_root: String,
+    pub scale: String,
+    /// Krumhansl correlation of the winner.
+    pub confidence: f32,
+    /// Winner minus runner-up correlation; below `GATED_KEY_MIN_MARGIN` the
+    /// read is reported as unknown.
+    pub margin: f32,
+    pub runner_up: String,
+    pub unknown: bool,
+    /// Frames that passed every gate (10 ms each).
+    pub frames_used: usize,
+    /// The take's tuning offset removed before rounding to pitch classes.
+    pub tuning_cents: f32,
+    /// Pitch-class weights C..B, summing to 1.
+    pub histogram: [f32; 12],
+}
+
+/// YIN aperiodicity a frame must stay under to count as sung pitch.
+pub const GATED_KEY_MAX_APERIODICITY: f32 = 0.15;
+/// Absolute level floor for a frame, dBFS.
+pub const GATED_KEY_FLOOR_DB: f32 = -55.0;
+/// Voiced runs shorter than this are dropped; the median smoother spans it.
+pub const GATED_KEY_SMOOTH_S: f32 = 0.12;
+/// Below this winner-minus-runner-up margin the key is "unknown".
+pub const GATED_KEY_MIN_MARGIN: f32 = 0.05;
+
+/// Key of a sung take from gated YIN frames rather than segmented notes.
+/// Each 10 ms frame needs YIN aperiodicity < 0.15 and a level above
+/// -55 dBFS. Voiced runs shorter than 120 ms are dropped. Each run is folded
+/// into its own octave register (octave slips) and median-smoothed over
+/// 120 ms, and a frame counts only within 50 cents of its smoothed pitch
+/// (scoops, vibrato peaks and consonants fall out). The take's tuning offset
+/// (circular mean, weighted) is removed before rounding to pitch classes, so
+/// a singer a third of a semitone flat lands on the right notes. The
+/// histogram is weighted by level x (1 - aperiodicity), then Krumhansl.
+/// None when fewer than 50 frames pass.
+pub fn gated_key(x: &[f32], sr: f32) -> Option<GatedKey> {
+    let y = if (sr - PSR).abs() > 1.0 { crate::samples::resample(x, sr, PSR) } else { x.to_vec() };
+    let win = (PSR * 0.04) as usize;
+    let hop = (PSR * HOP_S) as usize;
+    let floor = 10f32.powf(GATED_KEY_FLOOR_DB / 20.0);
+    // (midi, weight) per frame, midi 0 = gated out
+    let mut fr: Vec<(f32, f32)> = Vec::new();
+    let mut pos = 0usize;
+    while pos + win <= y.len() {
+        let f = &y[pos..pos + win];
+        let rms = (f.iter().map(|s| s * s).sum::<f32>() / win as f32).sqrt();
+        let v = if rms > floor {
+            crate::sc_dsp::yin_aperiodicity(f, PSR, 65.0, 1100.0, GATED_KEY_MAX_APERIODICITY)
+                .filter(|(hz, ap)| *hz > 0.0 && *ap < GATED_KEY_MAX_APERIODICITY)
+                .map(|(hz, ap)| (hz_to_midi(hz), rms * (1.0 - ap)))
+        } else {
+            None
+        };
+        fr.push(v.unwrap_or((0.0, 0.0)));
+        pos += hop;
+    }
+    let l = ((GATED_KEY_SMOOTH_S / HOP_S).round() as usize).max(1);
+    let half = l / 2;
+    // (smoothed midi, weight) of the frames that pass
+    let mut kept: Vec<(f32, f32)> = Vec::new();
+    let mut i = 0usize;
+    while i < fr.len() {
+        if fr[i].0 <= 0.0 {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < fr.len() && fr[j].0 > 0.0 {
+            j += 1;
+        }
+        if j - i >= l {
+            let mut seg: Vec<f32> = fr[i..j].iter().map(|f| f.0).collect();
+            let med = median(&mut seg.clone());
+            for m in seg.iter_mut() {
+                *m -= 12.0 * ((*m - med) / 12.0).round();
+            }
+            for k in 0..seg.len() {
+                let a = k.saturating_sub(half);
+                let b = (k + half + 1).min(seg.len());
+                let s = median(&mut seg[a..b].to_vec());
+                if (seg[k] - s).abs() < 0.5 {
+                    kept.push((s, fr[i + k].1));
+                }
+            }
+        }
+        i = j;
+    }
+    if kept.len() < 50 {
+        return None;
+    }
+    let (mut ss, mut cs) = (0.0f64, 0.0f64);
+    for &(m, w) in &kept {
+        let a = ((m - m.round()) as f64) * std::f64::consts::TAU;
+        ss += a.sin() * w as f64;
+        cs += a.cos() * w as f64;
+    }
+    let off = (ss.atan2(cs) / std::f64::consts::TAU) as f32;
+    let mut h = [0.0f32; 12];
+    for &(m, w) in &kept {
+        h[((m - off).round() as i32).rem_euclid(12) as usize] += w;
+    }
+    let tot: f32 = h.iter().sum::<f32>().max(1e-12);
+    h.iter_mut().for_each(|v| *v /= tot);
+    let keys = crate::midi_ops::key_from_chroma(&h);
+    let name = |k: &(u8, &str, f32)| format!("{} {}", theory::note_name(k.0 + 60).trim_end_matches(char::is_numeric), k.1);
+    let (best, second) = (keys[0], keys[1]);
+    let margin = best.2 - second.2;
+    Some(GatedKey {
+        key_root: theory::note_name(best.0 + 60).trim_end_matches(char::is_numeric).to_string(),
+        scale: best.1.to_string(),
+        confidence: (best.2 * 1000.0).round() / 1000.0,
+        margin: (margin * 1000.0).round() / 1000.0,
+        runner_up: name(&second),
+        unknown: margin < GATED_KEY_MIN_MARGIN,
+        frames_used: kept.len(),
+        tuning_cents: (off * 1000.0).round() / 10.0,
+        histogram: h.map(|v| (v * 1000.0).round() / 1000.0),
+    })
+}
+
 fn onset_envelope(onsets: &[(f32, f32)], len_s: f32) -> Vec<f32> {
     let n = ((len_s / HOP_S) as usize).max(1) + 8;
     let mut env = vec![0.0f32; n];
@@ -1144,6 +1268,52 @@ pub fn harmonize(notes_beats: &[(f32, f32, u8)], n_slots: usize, slot_beats: f32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gated_key_hears_a_flat_noisy_e_minor_line() {
+        // E minor line sung 40 cents flat with vibrato, harmonics, a noise floor
+        // and octave slips: E G F# E B D E | G A B A G F# E
+        let sr = crate::dsp::SR;
+        let line: [(f32, f32); 14] = [(52.0, 0.8), (55.0, 0.4), (54.0, 0.4), (52.0, 0.8), (47.0, 0.4), (50.0, 0.4), (52.0, 1.2),
+            (55.0, 0.4), (57.0, 0.4), (59.0, 0.8), (57.0, 0.4), (55.0, 0.4), (54.0, 0.4), (52.0, 1.2)];
+        let mut x: Vec<f32> = Vec::new();
+        let mut seed = 12345u32;
+        let mut noise = move || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); (seed >> 8) as f32 / 8388608.0 - 1.0 };
+        let mut phase = 0.0f32;
+        for rep in 0..2 {
+            for (k, &(m, d)) in line.iter().enumerate() {
+                let n = (d * sr) as usize;
+                for i in 0..n {
+                    let t = i as f32 / sr;
+                    let slip = rep == 1 && k % 3 == 0 && i < (0.03 * sr) as usize;
+                    let midi = m - 0.4 + 0.2 * (std::f32::consts::TAU * 5.0 * t).sin() + if slip { 12.0 } else { 0.0 };
+                    let hz = 440.0 * 2f32.powf((midi - 69.0) / 12.0);
+                    phase += std::f32::consts::TAU * hz / sr;
+                    let env = (t / 0.03).min(1.0) * ((d - t) / 0.03).min(1.0);
+                    x.push(0.3 * env * (phase.sin() + 0.5 * (2.0 * phase).sin() + 0.25 * (3.0 * phase).sin()));
+                }
+                x.extend(std::iter::repeat(0.0).take((0.12 * sr) as usize));
+            }
+            x.extend(std::iter::repeat(0.0).take((0.5 * sr) as usize));
+        }
+        for v in x.iter_mut() {
+            *v += 0.003 * noise();
+        }
+        let g = gated_key(&x, sr).expect("enough voiced frames");
+        assert_eq!((g.key_root.as_str(), g.scale.as_str()), ("E", "minor"), "{g:?}");
+        assert!(!g.unknown && g.margin >= GATED_KEY_MIN_MARGIN, "{g:?}");
+        assert!((g.tuning_cents + 40.0).abs() < 10.0, "tuning offset found: {g:?}");
+    }
+
+    #[test]
+    fn gated_key_stays_silent_on_noise() {
+        let mut seed = 7u32;
+        let x: Vec<f32> = (0..(3.0 * crate::dsp::SR) as usize)
+            .map(|_| { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); 0.2 * ((seed >> 8) as f32 / 8388608.0 - 1.0) })
+            .collect();
+        assert!(gated_key(&x, crate::dsp::SR).map_or(true, |g| g.unknown), "white noise has no key");
+    }
+
     use crate::dsp::SR;
 
     /// A synthetic sung line: sine notes with vibrato and syllable gaps.
