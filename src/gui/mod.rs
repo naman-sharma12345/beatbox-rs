@@ -11,6 +11,7 @@ mod fl_automation;
 mod fl_playlist;
 mod player;
 mod playlist;
+mod rack_view;
 mod shortcuts;
 mod theme;
 mod views;
@@ -97,7 +98,7 @@ pub struct Studio {
 /// The studio is a hand-operated DAW: one view per manual workspace. The
 /// one-call production tools (make_beat, produce_song, critique_mix, ...)
 /// are MCP tools only and have no place in the GUI.
-pub const VIEWS: [&str; 6] = ["SEQUENCER", "MIXER", "AUTOMATION", "PLAYLIST", "VOCAL", "BROWSER"];
+pub const VIEWS: [&str; 7] = ["SEQUENCER", "MIXER", "AUTOMATION", "PLAYLIST", "VOCAL", "BROWSER", "RACK"];
 
 pub fn run(
     engine: Engine,
@@ -1220,8 +1221,8 @@ impl eframe::App for Studio {
             )
             .show(ctx, |ui| self.top_bar(ui, &p, undo));
 
-        // the mixer takes the browser's space: strips need the width
-        if self.view != 1 {
+        // the mixer and the rack take the browser's space: strips need the width
+        if self.view != 1 && self.view != 6 {
             egui::SidePanel::left("browser")
                 .exact_width(232.0)
                 .resizable(false)
@@ -1296,6 +1297,11 @@ impl eframe::App for Studio {
                             None => "no vocal take in this project".to_string(),
                         },
                         5 => format!("{} samples \u{00B7} presets, effects, palettes", p.samples.len()),
+                        6 => format!(
+                            "{} strips \u{00B7} {} devices \u{00B7} every control by id",
+                            p.tracks.len() + p.buses.len() + 1,
+                            p.tracks.len() + p.tracks.iter().map(|t| t.effects.len()).sum::<usize>() + p.buses.iter().map(|b| b.effects.len()).sum::<usize>() + p.master_effects.len()
+                        ),
                         2 => format!(
                             "{} lanes · {:.0} beats · {:.0} BPM",
                             p.automation.len(),
@@ -1322,6 +1328,7 @@ impl eframe::App for Studio {
                     2 => self.automation_view(ui, &p),
                     4 => self.vocal_view(ui, &p),
                     5 => self.browser_view(ui, &p),
+                    6 => self.rack_view(ui, &p, rev),
                     _ => self.sequencer(ui, &p),
                 }
             });
