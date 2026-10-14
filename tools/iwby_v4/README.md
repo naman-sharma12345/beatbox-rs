@@ -32,3 +32,20 @@ Checked byte-identical against the existing renders, on stems exported by 9c1488
 the legacy-pitch IWBY v4b project (proj4) gives sha256 4cb0889a...e4280, the same as iwby_v4_post.py + params_v4b.json;
 the v5 project (yin_gated plan) gives 4c42f368...90441, the same as the hand-adapted v5 render.
 `iwby_v4_post.py` and its params stay as the record of the v4 and v4b renders on 11d587c.
+
+## iwby_v5_build.py: IWBY v5 end to end, stem gains pinned (B53, 2026-10-14)
+
+    python3 iwby_v5_build.py BEATBOX_BIN take_dn2.wav WORKDIR v5.wav                      # canonical v5, sha256 4c42f368...90441
+    python3 iwby_v5_build.py BEATBOX_BIN take_dn2.wav WORKDIR v5_7k.wav --sibilance-band  # opt-in 7 kHz band, threshold -27 dB
+
+The whole v5 recipe in one place: cover_song with `params_v5_build.json` (the v1 args, key E minor), the v3/cc4 project edits
+and v4b's later values (applied by role, not by effect index), export_stems, then `iwby_post.py`. The take is not in the repo.
+
+Stem gains are pinned (`params_v5_stems.json`). export_stems' default trims each stem until its own decoded true peak meets
+0 dBTP, so a stem's level follows its own peak: v5's vocal (+12 dB fader) was turned down 7.05 dB in 4 trim steps, and a
+de-essed vocal (lower peaks) came out 2.35 dB louder and split into 12 phrases instead of 20. The pins are the exact steps
+the trim took for v5 (`stem_gain_db_pin` in export_stems' report, as text), so v5 rebuilds bit for bit and a variant keeps v5's
+stem levels whatever its peaks do. Only vox was trimmed; the other stems' pins are empty (no gain).
+`--sibilance-band [DB]` asks cover_song for its opt-in `sibilance_band` (7 kHz dynamic bell, Q2, ratio 4, at most -4 dB,
+attack 1 ms, release 60 ms, default threshold -27 dB) and moves it LAST on the vocal chain, after this recipe's shelves and
+exciter. `IWBY_KEEP_STEMS=1` keeps WORKDIR/stems for measuring.

@@ -1,0 +1,19 @@
+{
+ "_note": "export_stems stem_gain_db for IWBY v5: the exact gain steps export_stems' default 0 dBTP trim applied to v5's stems (its report's stem_gain_db_pin, B53 2026-10-14, binary 94027cb2 + the stem_gain_db commit). Only vox was trimmed: 4 steps, -7.05 dB in all. Pinned, v5 rebuilds bit for bit and a variant keeps v5's stem levels.",
+ "stem_gain_db": {
+  "bass": [],
+  "comp": [],
+  "comp2": [],
+  "drums": [],
+  "hall": [],
+  "organ": [],
+  "plate": [],
+  "vdelay": [],
+  "vox": [
+   "-2.780315",
+   "-2.070115",
+   "-1.1151463",
+   "-1.0847137"
+  ]
+ }
+}
