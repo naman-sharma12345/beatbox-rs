@@ -766,6 +766,244 @@ mod tests {
         assert!(l.iter().zip(&m1.left).all(|(x, y)| x.to_bits() == y.to_bits()), "parallel == serial, bit for bit");
     }
 
+    /// Every effect type, one at a time on the keys (plus the reverb modes
+    /// and a few audible variants), under the same contract as the LFO test:
+    /// a note edit spliced into the playing mix equals a full render (rms
+    /// <= 4e-9 from the window start, 0 samples over the per-sample rule).
+    /// Effects are whole-buffer processors (render and splice call each one
+    /// once per buffer, with the song offset in FxContext), so the dimension
+    /// a live edit varies is where the buffer starts, not a block size; the
+    /// one block processor, the FDN, is held to 1/7/64/127/512 in
+    /// sc_dsp::fdn_blocks_of_any_size_match_one_call.
+    /// `inert` = the effect left the full render bit-identical (the edit is
+    /// still checked; it says the case proves less).
+    pub(super) fn effect_cases() -> Vec<(&'static str, serde_json::Value)> {
+        vec![
+            ("filter", json!({"type": "filter", "params": {"cutoff": 900.0, "resonance": 0.5}})),
+            ("eq", json!({"type": "eq", "params": {"low_db": 4.0, "mid_db": -3.0, "high_db": -5.0}})),
+            ("distortion", json!({"type": "distortion", "params": {}})),
+            ("bitcrush", json!({"type": "bitcrush", "params": {}})),
+            ("delay", json!({"type": "delay", "params": {}})),
+            ("reverb_freeverb", json!({"type": "reverb", "params": {"mode": "freeverb"}})),
+            ("reverb_fdn_room", json!({"type": "reverb", "params": {"mode": "fdn_room", "mix": 0.3}})),
+            ("reverb_fdn_plate", json!({"type": "reverb", "params": {"mode": "fdn_plate", "mix": 0.3}})),
+            ("reverb_fdn_hall", json!({"type": "reverb", "params": {"mode": "fdn_hall", "mix": 0.3}})),
+            ("chorus", json!({"type": "chorus", "params": {}})),
+            ("compressor", json!({"type": "compressor", "params": {}})),
+            ("sidechain", json!({"type": "sidechain", "params": {"source": "kick"}})),
+            ("width", json!({"type": "width", "params": {}})),
+            ("gain", json!({"type": "gain", "params": {"db": -3.0}})),
+            ("limiter", json!({"type": "limiter", "params": {"ceiling_db": -12.0}})),
+            ("transient", json!({"type": "transient", "params": {"attack": 0.6, "sustain": -0.4}})),
+            ("parametric_eq", json!({"type": "parametric_eq", "params": {"bands": [{"kind": "high_shelf", "freq": 3000.0, "gain_db": -6.0, "q": 0.7}]}})),
+            ("multiband", json!({"type": "multiband", "params": {"low_threshold_db": -35.0, "mid_threshold_db": -35.0, "high_threshold_db": -35.0}})),
+            ("dynamic_eq", json!({"type": "dynamic_eq", "params": {"freq": 1200.0, "threshold_db": -40.0}})),
+            ("deesser", json!({"type": "deesser", "params": {"freq": 3000.0, "threshold_db": -45.0}})),
+            ("soft_clipper", json!({"type": "soft_clipper", "params": {}})),
+            ("gate", json!({"type": "gate", "params": {"threshold_db": -30.0}})),
+            ("phaser", json!({"type": "phaser", "params": {}})),
+            ("flanger", json!({"type": "flanger", "params": {}})),
+            ("stutter", json!({"type": "stutter", "params": {}})),
+            ("pitch_shift", json!({"type": "pitch_shift", "params": {"mix": 0.5}})),
+            ("convolution", json!({"type": "convolution", "params": {}})),
+            ("autopan", json!({"type": "autopan", "params": {}})),
+            ("saturator", json!({"type": "saturator", "params": {}})),
+            ("haas", json!({"type": "haas", "params": {}})),
+            ("gross_beat", json!({"type": "gross_beat", "params": {"volume": "pump"}})),
+            // a cycle that is not a whole bar: windows start on bars
+            ("gross_beat_cycle12", json!({"type": "gross_beat", "params": {"volume": "pump", "cycle_steps": 12.0}})),
+            ("stutter_cycle6", json!({"type": "stutter", "params": {"cycle_steps": 6.0}})),
+            ("vocoder", json!({"type": "vocoder", "params": {}})),
+            ("freq_shift", json!({"type": "freq_shift", "params": {}})),
+            ("ring_mod", json!({"type": "ring_mod", "params": {"mix": 0.5, "lfo_hz": 0.3, "lfo_depth": 0.5}})),
+            ("stereo_shaper", json!({"type": "stereo_shaper", "params": {"left_from_right": 0.4, "delay_ms": 3.0}})),
+            ("vinyl", json!({"type": "vinyl", "params": {}})),
+            ("waveshaper", json!({"type": "waveshaper", "params": {}})),
+            ("amp_sim", json!({"type": "amp_sim", "params": {}})),
+            ("cab_ir", json!({"type": "cab_ir", "params": {}})),
+            ("mod_delay", json!({"type": "mod_delay", "params": {}})),
+            ("maximizer", json!({"type": "maximizer", "params": {"threshold_db": -10.0}})),
+            ("lofi", json!({"type": "lofi", "params": {}})),
+            ("rectifier", json!({"type": "rectifier", "params": {}})),
+        ]
+    }
+
+    /// Known failures (B47, 2026-10-14), marked and explained, not fixed yet:
+    /// each fix is its own commit. Measured on this song, edit at step 132,
+    /// window 112..160 (bars 7-10) unless a tail widens it.
+    pub(super) const KNOWN_SPLICE_FAILURES: &[(&str, &str)] = &[
+        // clocks counted from the buffer's first sample, not ctx.offset (see
+        // every_effect_type_against_the_song_offset): the window's oscillator,
+        // grain or cycle phase is not the song's
+        ("pitch_shift", "grain clock starts at the buffer start: rms 8.0e-3, max 0.30"),
+        ("vocoder", "carrier oscillators start at the buffer start: rms 4.6e-2, max 1.18"),
+        ("ring_mod", "carrier and LFO phase start at the buffer start: rms 1.1e-2, max 0.36"),
+        ("freq_shift", "oscillator starts at the buffer start (14 s = 70 whole cycles of 5 Hz here, so only rounding drift shows): max 2.7e-5"),
+        ("vinyl", "wow/flutter LFOs and crackle start at the buffer start: max 3.9e-5"),
+        ("gross_beat_cycle12", "cycle counted from the buffer start; a 12-step cycle is off by 4 steps at bar 7: max 2.1e-7 here, more with other material"),
+        // a whole-buffer statistic: a window has other music than the song
+        ("amp_sim", "auto-gain = input RMS / output RMS over the whole buffer: rms 1.7e-3, max 1.8e-2"),
+        // f32 recursive state with poles near 1: after the context bar the two
+        // runs agree only to rounding x the loop's gain, never bit for bit
+        ("saturator", "12 Hz DC low-cut biquad in f32: rms 1.8e-5, max 1.1e-4"),
+        ("waveshaper", "12 Hz DC low-cut biquads in f32: rms 1.9e-5, max 1.7e-4"),
+        ("maximizer", "f32 release smoother and a lookahead sum re-summed every lookahead length from the buffer start: rms 6.1e-6, max 2.5e-5"),
+        // ring-out tails summed in another order: rms is inside 4e-9 except
+        // convolution, but some samples sit over the per-sample ulp rule
+        ("delay", "feedback tail rounding: rms 9.9e-10, max 1.2e-7, 1,741 samples over the rule"),
+        ("reverb_fdn_plate", "tail rounding: rms 3.6e-10, max 3.0e-8, 137 samples over the rule"),
+        ("reverb_fdn_hall", "tail rounding: rms 3.4e-10, max 3.0e-8, 19 samples over the rule"),
+        ("convolution", "FFT partitions aligned to the buffer start: rms 1.05e-8, max 4.2e-7"),
+    ];
+
+    /// One case: (name, rms err, max err, samples over the rule, window, inert).
+    fn effect_case(name: &str, fx: &serde_json::Value, base: &Mix) -> (String, f32, f32, usize, (u32, u32), bool) {
+        let mut fx = fx.clone();
+        fx["track"] = json!("keys");
+        let mut e = song(16, &format!("every_{name}"), &[fx]);
+        let (rms_err, max_err, _change, w, m0, m1, full) =
+            splice_vs_full(&mut e, &json!({"track": "keys", "pattern": "verse", "notes": [{"start": 132, "len": 4, "pitch": 67, "vel": 0.9}]}));
+        let ws = (w.0 as f32 * e.project.step_secs() * crate::dsp::SR) as usize;
+        let over = over_sample_cap(&m0, &m1, &full, ws);
+        let inert = m0.left == base.left && m0.right == base.right;
+        (name.to_string(), rms_err, max_err, over, w, inert)
+    }
+
+    #[test]
+    fn every_effect_type_splices_like_a_full_render() {
+        // every Effect variant appears at least once (a new variant must be added here)
+        let cases = effect_cases();
+        let kinds: std::collections::BTreeSet<String> = cases.iter().map(|(_, v)| v["type"].as_str().unwrap().to_string()).collect();
+        for (_, v) in &cases {
+            let fx: crate::fx::Effect = serde_json::from_value(v.clone()).unwrap_or_else(|err| panic!("{v}: {err}"));
+            let _ = fx;
+        }
+        assert_eq!(kinds.len(), 40, "one case per Effect variant: {kinds:?}");
+        let eb = song(16, "every_base", &[]);
+        let base = render::render(&eb.project, &eb.bank, &RenderOptions::default()).unwrap();
+        let results: Vec<_> = std::thread::scope(|sc| {
+            let chunks: Vec<_> = cases.chunks(cases.len().div_ceil(4)).collect();
+            let hs: Vec<_> = chunks.into_iter().map(|ch| { let base = &base; sc.spawn(move || ch.iter().map(|(n, v)| effect_case(n, v, base)).collect::<Vec<_>>()) }).collect();
+            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        let mut bad = Vec::new();
+        let mut known_now_pass = Vec::new();
+        for (name, rms_err, max_err, over, w, inert) in &results {
+            let ok = *rms_err <= 4e-9 && *over == 0;
+            let known = KNOWN_SPLICE_FAILURES.iter().find(|(k, _)| k == name);
+            eprintln!("every fx {name}: window {}..{}, rms {rms_err:.3e}, max {max_err:.3e}, over-rule {over}{}{}", w.0, w.1, if *inert { ", INERT" } else { "" }, match known { Some((_, why)) => format!(", KNOWN: {why}"), None => String::new() });
+            match (ok, known) {
+                (false, None) => bad.push(format!("{name}: rms {rms_err:e} max {max_err:e} over {over}")),
+                (true, Some(_)) => known_now_pass.push(name.clone()),
+                _ => {}
+            }
+        }
+        assert!(bad.is_empty(), "new splice failures: {bad:?}");
+        // a fix takes its effect off the list in the same commit
+        assert!(known_now_pass.is_empty(), "listed as known failures but splice exactly now: {known_now_pass:?}");
+    }
+
+    /// Each effect alone, on a buffer that is silent before `off`: the
+    /// whole buffer (song offset 0) against the buffer cut at `off` (song
+    /// offset `off`). An effect that keeps time by the song position gives
+    /// the same samples; one that counts from its buffer's first sample
+    /// (an oscillator, a grain clock, a cycle) or reads the whole buffer
+    /// (an auto-gain) does not. `off` is no whole number of steps, bars or
+    /// oscillator periods, so no phase lines up by chance.
+    #[test]
+    fn every_effect_type_against_the_song_offset() {
+        let n = 300_000;
+        let off = 123_457;
+        let x: Vec<f32> = (0..n)
+            .map(|i| {
+                if i < off + 500 { return 0.0; }
+                let t = (i - off - 500) as f32 / crate::dsp::SR;
+                let env = (-(t % 0.5) * 6.0).exp() * if t % 0.5 < 0.4 { 1.0 } else { 0.0 };
+                env * 0.3 * ((std::f32::consts::TAU * 261.6 * t).sin() + 0.5 * (std::f32::consts::TAU * 392.0 * t).sin())
+            })
+            .collect();
+        let xr: Vec<f32> = x.iter().map(|v| v * -0.7).collect();
+        let tr = std::collections::HashMap::new();
+        let mut rows = Vec::new();
+        for (name, v) in effect_cases() {
+            let mut flat = v["params"].as_object().cloned().unwrap_or_default();
+            flat.insert("type".into(), v["type"].clone());
+            let fx: crate::fx::Effect = serde_json::from_value(serde_json::Value::Object(flat)).unwrap();
+            let (mut fl, mut fr) = (x.clone(), xr.clone());
+            fx.process(&mut fl, &mut fr, &crate::fx::FxContext { step_secs: 0.125, triggers: &tr, offset: 0, levels: None });
+            let (mut wl, mut wr) = (x[off..].to_vec(), xr[off..].to_vec());
+            fx.process(&mut wl, &mut wr, &crate::fx::FxContext { step_secs: 0.125, triggers: &tr, offset: off, levels: None });
+            let m = (0..wl.len()).map(|k| (fl[off + k] - wl[k]).abs().max((fr[off + k] - wr[k]).abs())).fold(0f32, f32::max);
+            let peak = fl[off..].iter().fold(0f32, |a, v| a.max(v.abs()));
+            eprintln!("offset fx {name}: max diff {m:.3e} (output peak {peak:.3})");
+            rows.push((name, m));
+        }
+        // effects whose clock counts from the buffer's first sample (known,
+        // not fixed yet; each fix takes its name off the list). bitcrush,
+        // stutter, lofi and the bar-long gross_beat splice exactly in
+        // every_effect_type_splices_like_a_full_render only because windows
+        // start on whole bars
+        const COUNTS_FROM_BUFFER_START: &[&str] =
+            &["bitcrush", "stutter", "pitch_shift", "gross_beat", "gross_beat_cycle12", "stutter_cycle6", "vocoder", "freq_shift", "ring_mod", "vinyl", "lofi"];
+        // 1e-7: convolution's FFT partitions (2.98e-8) and amp_sim (5.96e-8) round differently, a few ulp
+        let off_clock: Vec<&str> = rows.iter().filter(|(_, m)| *m > 1e-7).map(|(n, _)| *n).collect();
+        assert_eq!(off_clock, COUNTS_FROM_BUFFER_START, "effects that do not follow the song offset");
+    }
+
+    /// Automation is evaluated on a 64-sample grid and smoothed by a
+    /// one-pole (render::lane_curve); a window starts on a bar, which is not
+    /// a multiple of 64 samples at this tempo (88,200 samples/bar). A note
+    /// edit on a track with a swept filter cutoff (a log parameter), a pan
+    /// lane and a volume lane must still splice like a full render.
+    /// KNOWN FAILURE (B47, 2026-10-14), not fixed yet: lane_curve's grid and
+    /// smoother start at the buffer's first sample, so a window that starts
+    /// 56 samples into a 64-sample block reads its lanes on another grid:
+    /// rms 3.8e-8, max 3.0e-6, 66,293 samples over the rule.
+    #[test]
+    #[ignore = "known: automation grid anchored to the buffer start (B47 2026-10-14); fix is its own commit"]
+    fn automated_tracks_splice_like_a_full_render() {
+        let mut e = song(16, "auto", &[json!({"track": "keys", "type": "filter", "params": {"cutoff": 2000.0, "resonance": 0.4}})]);
+        let pts = |a: f32, b: f32| json!([{"beat": 0.0, "value": a}, {"beat": 28.0, "value": b}, {"beat": 36.5, "value": a}, {"beat": 64.0, "value": b}]);
+        e.call("add_automation", &json!({"track": "keys", "param": "fx.0.cutoff", "points": pts(300.0, 6000.0)})).unwrap();
+        e.call("add_automation", &json!({"track": "keys", "param": "pan", "points": pts(-0.8, 0.8)})).unwrap();
+        e.call("add_automation", &json!({"track": "keys", "param": "volume", "points": pts(-12.0, 0.0)})).unwrap();
+        let (rms_err, max_err, change, (w0, w1), m0, m1, full) =
+            splice_vs_full(&mut e, &json!({"track": "keys", "pattern": "verse", "notes": [{"start": 132, "len": 4, "pitch": 67, "vel": 0.9}]}));
+        let ws = (w0 as f32 * e.project.step_secs() * crate::dsp::SR) as usize;
+        let over = over_sample_cap(&m0, &m1, &full, ws);
+        eprintln!("automation: window {w0}..{w1} (starts at sample {ws}, {} mod 64), change rms {change:.3e}, rms {rms_err:.3e}, max {max_err:.3e}, over-rule {over}", ws % 64);
+        assert!(w0 > 0 && ws % 64 != 0, "a window that starts off the 64-sample grid");
+        assert!(change > 1e-3, "the edit is audible");
+        assert!(rms_err <= 4e-9 && over == 0, "rms {rms_err:e} max {max_err:e} over {over}");
+    }
+
+    /// Edits at both ends of the loop: the first step (the window starts at
+    /// sample 0) and the last bar (the window is clamped to the song end and
+    /// the edit's tail runs into the render tail), with a hall and an echo
+    /// on the keys, so tails cross the end of the song.
+    #[test]
+    fn edits_at_the_loop_start_and_end_splice_like_a_full_render() {
+        let fx = [
+            json!({"track": "keys", "type": "delay", "params": {"steps": 3.0, "feedback": 0.4, "mix": 0.3}}),
+            json!({"track": "keys", "type": "reverb", "params": {"mode": "fdn_hall", "mix": 0.3}}),
+        ];
+        let mut bad = Vec::new();
+        for (tag, start) in [("first_step", 0u32), ("last_bar", 15 * 16 + 12)] {
+            let mut e = song(16, &format!("edge_{tag}"), &fx);
+            let (rms_err, max_err, change, (w0, w1), m0, m1, full) =
+                splice_vs_full(&mut e, &json!({"track": "keys", "pattern": "verse", "notes": [{"start": start, "len": 4, "pitch": 67, "vel": 0.9}]}));
+            let ws = (w0 as f32 * e.project.step_secs() * crate::dsp::SR) as usize;
+            let over = over_sample_cap(&m0, &m1, &full, ws);
+            eprintln!("edge {tag}: window {w0}..{w1} of {} steps, change rms {change:.3e}, rms {rms_err:.3e}, max {max_err:.3e}, over-rule {over}", e.project.song_steps());
+            assert!(change > 1e-3, "{tag}: the edit is audible");
+            assert_eq!(m1.left.len(), full.left.len(), "{tag}: same length as a full render");
+            if !(rms_err <= 4e-9 && over == 0) {
+                bad.push(format!("{tag}: rms {rms_err:e} max {max_err:e} over {over}"));
+            }
+        }
+        assert!(bad.is_empty(), "{bad:?}");
+    }
+
     #[test]
     fn tails_are_estimated_from_the_effects_that_ring() {
         use crate::fx::{DelayFx, Effect, ReverbFx, ReverbMode};

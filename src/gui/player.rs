@@ -439,6 +439,106 @@ mod tests {
         assert!(s.pending.is_none() && s.fade.is_none());
     }
 
+    /// A ramp buffer (sample i = i * k) shows exactly which source sample
+    /// each output frame read.
+    fn ramp(k: f32, n: usize) -> Arc<Mix> {
+        let v: Vec<f32> = (0..n).map(|i| i as f32 * k).collect();
+        Arc::new(Mix { left: v.clone(), right: v, stems: vec![], track_info: vec![], bus_stems: vec![], seconds: n as f32 / crate::dsp::SR })
+    }
+
+    /// The expected frame while a crossfade is `done` samples in.
+    fn blend(old: f32, new: f32, done: u32) -> f32 {
+        let g = (done + 1) as f32 / (XFADE + 1) as f32;
+        old + (new - old) * g
+    }
+
+    /// An update that arrives on the last sample of a block, and one on the
+    /// first sample of a block: either way the old buffer plays to the end
+    /// of the block the head is in, the swap starts on the next SWAP_BLOCK
+    /// boundary, and the head never moves.
+    #[test]
+    fn a_live_update_on_either_side_of_a_block_boundary_swaps_on_the_next_one() {
+        for head in [3 * SWAP_BLOCK - 1, 3 * SWAP_BLOCK] {
+            let mut s = shared(ramp(1e-4, 10_000), 10_000);
+            for _ in 0..head { s.song_frame(); }
+            s.update(ramp(-1e-4, 10_000), 10_000, true);
+            let swap_at = (head / SWAP_BLOCK + 1) * SWAP_BLOCK;
+            for i in head..swap_at + XFADE as usize + 10 {
+                let (l, _) = s.song_frame();
+                let (o, n) = (i as f32 * 1e-4, i as f32 * -1e-4);
+                let want = if i < swap_at { o } else if i < swap_at + XFADE as usize { blend(o, n, (i - swap_at) as u32) } else { n };
+                assert_eq!(l, want, "head {head}: frame at source sample {i}");
+            }
+        }
+    }
+
+    /// An update queued in the last block before the loop wraps: the head
+    /// wraps to 0 (a new block), the swap starts there, and the crossfade
+    /// reads both buffers at the wrapped position.
+    #[test]
+    fn a_live_update_just_before_the_loop_wraps_swaps_at_the_top() {
+        let len = 5 * SWAP_BLOCK + 100; // the loop ends 100 samples into block 5
+        let mut s = shared(ramp(1e-4, len + 2000), len);
+        for _ in 0..len - 20 { s.song_frame(); }
+        s.update(ramp(-1e-4, len + 2000), len, true);
+        for k in 0..20 {
+            let (l, _) = s.song_frame();
+            assert_eq!(l, (len - 20 + k) as f32 * 1e-4, "old buffer to the end of the loop");
+        }
+        for i in 0..XFADE as usize + 10 {
+            let (l, _) = s.song_frame();
+            let (o, n) = (i as f32 * 1e-4, i as f32 * -1e-4);
+            let want = if i < XFADE as usize { blend(o, n, i as u32) } else { n };
+            assert_eq!(l, want, "after the wrap, source sample {i}");
+        }
+        assert!(s.pending.is_none() && s.fade.is_none());
+    }
+
+    /// A crossfade that starts in the last samples of the loop carries on
+    /// across the wrap, reading both buffers at the wrapped position.
+    #[test]
+    fn a_crossfade_running_across_the_loop_wrap_continues_at_the_top() {
+        let len = 4 * SWAP_BLOCK;
+        let mut s = shared(ramp(1e-4, len + 2000), len);
+        for _ in 0..len - SWAP_BLOCK - 1 { s.song_frame(); } // head in block 2, last sample
+        s.update(ramp(-1e-4, len + 2000), len, true);
+        s.song_frame(); // last sample of block 2
+        // the swap starts at block 3 = the loop's last 256 samples, so the fade wraps
+        for d in 0..XFADE as usize + 10 {
+            let i = (len - SWAP_BLOCK + d) % len;
+            let (l, _) = s.song_frame();
+            let (o, n) = (i as f32 * 1e-4, i as f32 * -1e-4);
+            let want = if d < XFADE as usize { blend(o, n, d as u32) } else { n };
+            assert_eq!(l, want, "fade sample {d} (source {i})");
+        }
+    }
+
+    /// A second live update that lands while the first one's crossfade is
+    /// still running. Constant buffers +0.5 -> -0.5 -> +0.25, the second
+    /// update queued 100 samples into the first fade. Measured, not fixed:
+    /// the largest frame-to-frame step is reported against a single fade's
+    /// own step (1/XFADE of the jump).
+    /// KNOWN FAILURE (B47, 2026-10-14), not fixed yet: the second swap starts
+    /// a new fade from the current buffer and drops the half-done blend, so
+    /// the output jumps 0.419 in one frame (a single fade steps 0.0023): a
+    /// click when two updates land within one crossfade + block (~16 ms).
+    #[test]
+    #[ignore = "known: a second live update mid-crossfade restarts the fade (B47 2026-10-14); fix is its own commit"]
+    fn a_second_live_update_during_a_crossfade() {
+        let mut s = shared(mix(0.5, 10_000), 10_000);
+        for _ in 0..1000 { s.song_frame(); }
+        s.update(mix(-0.5, 10_000), 10_000, true);
+        let mut out: Vec<f32> = (0..124).map(|_| s.song_frame().0).collect(); // to 1124: 100 into the fade
+        s.update(mix(0.25, 10_000), 10_000, true);
+        out.extend((0..2000).map(|_| s.song_frame().0));
+        let steps: Vec<f32> = out.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+        let (at, max) = steps.iter().enumerate().fold((0, 0f32), |m, (i, v)| if *v > m.1 { (i, *v) } else { m });
+        let single = 1.0 / XFADE as f32;
+        eprintln!("second update during a fade: max step {max:.5} at frame {} (head {}), a single fade's step {single:.5}", at + 1, 1000 + at + 1);
+        assert!(out.last().copied() == Some(0.25), "ends on the newest buffer");
+        assert!(max <= single * 1.5, "a step of {max} where a single fade steps {single}: a click when two edits land within one crossfade");
+    }
+
     #[test]
     fn without_a_device_or_when_stopped_the_update_is_immediate() {
         let mut s = shared(mix(0.5, 1000), 1000);
