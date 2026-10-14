@@ -935,7 +935,8 @@ fn raw_vocal_chain(e: &mut Engine, track: &str) -> Result<()> {
     // every cover golden, and as a 6.5 kHz high split it would cut the 10 kHz+ air
     // along with the sibilance (v5's air gate fails). The fix needs a band-limited
     // dynamic bell in its place AND a coordinated golden migration. The same line
-    // is in arrange_tx.rs (the arrange vocal chain).
+    // is in arrange_tx.rs (the arrange vocal chain). Opt-in alternative today:
+    // cover_song's `sibilance_band` (a 7 kHz dynamic bell, off by default).
     call(e, "add_effect", json!({"track": track, "type": "deesser", "params": {"freq": 6500.0, "threshold_db": -30.0, "range_db": 4.0, "release_ms": 60.0}}))?;
     call(e, "add_effect", json!({"track": track, "type": "compressor", "params": {"threshold_db": -20.0, "ratio": 2.5, "attack_ms": 10.0, "release_ms": 100.0, "makeup_db": 3.0, "knee_db": 6.0}}))?;
     call(e, "add_bus", json!({"name": "plate", "preset": "none"}))?;
@@ -2070,6 +2071,37 @@ fn rss_mb() -> f32 {
         .unwrap_or(0.0)
 }
 
+/// cover_song's `sibilance_band` (opt-in, default off; Naman, Oct 14 2026):
+/// one self-keyed dynamic EQ bell on "vox" at 7 kHz, Q2, ratio 4, at most
+/// -4 dB, attack 1 ms, release 60 ms, threshold -27 dB (B52's IWBY v5 pick,
+/// `sibilance_band_threshold_db` moves it), added LAST in vox's chain. It
+/// cuts the 6-8 kHz "s" region only while it rises over the threshold and
+/// leaves the 2-4.5 kHz consonant core and the 10 kHz+ air alone, which the
+/// chain's de-esser (a 6.5 kHz high split, and a no-op today: see the
+/// TECH DEBT note in raw_vocal_chain) cannot. Off = the chain as before.
+pub const SIBILANCE_BAND_THRESHOLD_DB: f32 = -27.0;
+
+/// The band's effect parameters (dynamic_eq; `source` empty = keyed by vox itself).
+pub fn sibilance_band_params(threshold_db: f32) -> Value {
+    json!({"freq": 7000.0, "q": 2.0, "threshold_db": threshold_db, "ratio": 4.0, "range_db": -4.0, "attack_ms": 1.0, "release_ms": 60.0})
+}
+
+/// The threshold when cover_song's args ask for the band, None when they do not.
+fn sibilance_band_asked(a: &Value) -> Option<f32> {
+    if !b_or(a, "sibilance_band", false) {
+        return None;
+    }
+    Some(f_opt(a, "sibilance_band_threshold_db").unwrap_or(SIBILANCE_BAND_THRESHOLD_DB).clamp(-60.0, 0.0))
+}
+
+fn sibilance_band(e: &mut Engine, threshold_db: f32) -> Result<Value> {
+    if e.project.track_index("vox").is_err() {
+        return Ok(json!({"added": false, "note": "no vox track"}));
+    }
+    call(e, "add_effect", json!({"track": "vox", "type": "dynamic_eq", "params": sibilance_band_params(threshold_db)}))?;
+    Ok(json!({"added": true, "track": "vox", "position": "last in vox's chain", "freq_hz": 7000.0, "q": 2.0, "ratio": 4.0, "max_cut_db": -4.0, "threshold_db": threshold_db, "attack_ms": 1.0, "release_ms": 60.0}))
+}
+
 /// The whole pipeline.
 /// cover_song's `vocal_resonance` (opt-in): the resonance tamer
 /// (`resonance::tame_track`: at most 4 self-keyed dynamic EQ cuts, Q5, at
@@ -2204,12 +2236,25 @@ fn cover_song(e: &mut Engine, a: &Value) -> Result<Value> {
     } else {
         None
     };
+    // 4c. the 7 kHz sibilance band (only when asked, sibilance_band:true):
+    // last in vox's chain, before the mix, so the mix sets his level with it in
+    let sib_band = match sibilance_band_asked(a) {
+        Some(thr) => {
+            let v = sibilance_band(e, thr)?;
+            clk.mark("sibilance_band");
+            Some(v)
+        }
+        None => None,
+    };
     // 5. mix
     let target_presence = f_opt(a, "presence_db").unwrap_or(12.0);
     let mut mixed = mix(e, &plan, rec.as_ref().map(|(r, _, _)| r), rec.as_ref().map(|(_, f, _)| f), target_presence)?;
     clk.mark("mix");
     if let Some(v) = resonance {
         mixed["vocal_resonance"] = v;
+    }
+    if let Some(v) = sib_band {
+        mixed["sibilance_band"] = v;
     }
     // 5b. air: a parallel exciter bus when the mix is short of the judge's air
     // floor. On by default only on the free-mode default path (key heard by
@@ -2285,6 +2330,8 @@ fn cover_schema() -> Value {
         "identify": {"type": "boolean", "description": "find the record from the lyrics when no reference is given (default true)"},
         "language": {"type": "string", "description": "lyrics language for the transcriber (e.g. hi, en); default auto"},
         "bpm": {"type": "number"}, "key": {"type": "string"}, "scale": {"type": "string"},
+        "sibilance_band": {"type": "boolean", "description": "a 7 kHz sibilance band LAST on the vocal's chain: one self-keyed dynamic EQ bell (Q2, ratio 4, at most -4 dB, attack 1 ms, release 60 ms, threshold sibilance_band_threshold_db, default -27 dB) that cuts the 6-8 kHz 's' region only while it rises, leaving the 2-4.5 kHz consonants and the 10 kHz+ air alone. Default false (off = the song as before)"},
+        "sibilance_band_threshold_db": {"type": "number", "description": "the sibilance band's threshold (dB, default -27); only with sibilance_band:true"},
         "vocal_resonance": {"type": "boolean", "description": "tame the take's lasting resonances (a room's or a phone's ring, a harsh formant): up to 4 narrow self-keyed dynamic EQ cuts on the vocal (Q5, at most -4 dB, ratio 3, attack 5 ms, release 80 ms) where its long-term spectrum (1/12-octave bands, 700 Hz-8 kHz) pokes 3 dB over its surroundings in at least 25% of the singing; each cuts only when its ring rises 2 dB over its usual level. Never near the de-esser or the chain's own EQ bands. Default false (off = the song as before)"},
         "air_fix": {"type": "boolean", "description": "when the mix's 5-11 kHz air share is under -21.5 dB (the judge's floor is -22), add a parallel exciter bus (48 dB/oct high-pass at 5 kHz, exciter, high-pass again) fed by the vocal, comps/lead and drums at 0 dB sends, its fader solved to land on -21.5 (max +6 dB); the parts' own chains are untouched. Default: on for free mode with the key heard by yin_gated (no key/scale given), off for legacy and explicit-key runs; false = the mix as it was"},
         "match_tuning": {"type": "boolean", "description": "with key_detect yin_gated and no key given: render every pitched backing instrument at the singer's measured tuning when it is 15+ cents off A440 (drums and the vocal untouched; default true). false = strict A440"},
@@ -2526,6 +2573,57 @@ mod air_fix_tests {
     }
 
     /// No cover_song part names, no bus.
+    /// sibilance_band is opt-in: off unless asked; asked, its threshold is
+    /// -27 dB unless moved.
+    #[test]
+    fn sibilance_band_is_opt_in() {
+        assert_eq!(sibilance_band_asked(&json!({})), None);
+        assert_eq!(sibilance_band_asked(&json!({"sibilance_band": false, "sibilance_band_threshold_db": -20})), None);
+        assert_eq!(sibilance_band_asked(&json!({"sibilance_band": true})), Some(-27.0));
+        assert_eq!(sibilance_band_asked(&json!({"sibilance_band": true, "sibilance_band_threshold_db": -24})), Some(-24.0));
+    }
+
+    /// The band goes LAST on vox's chain with B52's settings, cuts a loud
+    /// 7 kHz tone by up to 4 dB, and leaves a 1 kHz tone and a quiet 7 kHz
+    /// tone (under the threshold) alone.
+    #[test]
+    fn sibilance_band_cuts_only_loud_7k() {
+        let mut e = beat("sib_band");
+        e.project.tracks[2].name = "vox".into();
+        let n_before = e.project.tracks[2].effects.len();
+        let v = sibilance_band(&mut e, SIBILANCE_BAND_THRESHOLD_DB).unwrap();
+        assert_eq!(v["added"], true, "{v}");
+        let fx = &e.project.tracks[2].effects;
+        assert_eq!(fx.len(), n_before + 1);
+        let last = serde_json::to_value(fx.last().unwrap()).unwrap();
+        assert_eq!(last["type"], "dynamic_eq", "{last}");
+        for (k, want) in [("freq", 7000.0), ("q", 2.0), ("threshold_db", -27.0), ("ratio", 4.0), ("range_db", -4.0), ("attack_ms", 1.0), ("release_ms", 60.0)] {
+            assert!((last[k].as_f64().unwrap() - want).abs() < 1e-6, "{k}: {last}");
+        }
+        assert_eq!(last["source"], "", "self-keyed: {last}");
+        // no vox track: nothing added
+        let mut e2 = beat("sib_band_novox");
+        assert_eq!(sibilance_band(&mut e2, -27.0).unwrap()["added"], false);
+        // the DSP: tones in, level change out (steady part, after 0.5 s)
+        let band = fx.last().unwrap().clone();
+        let n = SR as usize * 2;
+        let tone = |f: f32, db: f32| -> Vec<f32> { let a = crate::dsp::db_to_gain(db); (0..n).map(|i| a * (2.0 * std::f32::consts::PI * f * i as f32 / SR).sin()).collect() };
+        let level = |x: &[f32]| -> f32 { let s = &x[n / 4..]; 10.0 * (s.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>() / s.len() as f64).log10() as f32 };
+        let run = |x: Vec<f32>| -> f32 {
+            let (mut l, mut r) = (x.clone(), x.clone());
+            let trig = std::collections::HashMap::new();
+            let ctx = crate::fx::FxContext { step_secs: 0.125, triggers: &trig, offset: 0, levels: None };
+            band.process(&mut l, &mut r, &ctx);
+            level(&l) - level(&x)
+        };
+        let loud7 = run(tone(7000.0, -6.0));
+        assert!(loud7 < -3.0 && loud7 >= -4.2, "loud 7 kHz cut {loud7:.2} dB");
+        assert!(run(tone(7000.0, -45.0)).abs() < 0.1, "quiet 7 kHz untouched");
+        assert!(run(tone(1000.0, -6.0)).abs() < 0.3, "1 kHz untouched");
+        let air = run(tone(12000.0, -6.0));
+        assert!(air > -1.5, "12 kHz air: {air:.2} dB (7 kHz: {loud7:.2})");
+    }
+
     #[test]
     fn air_fix_without_parts_does_nothing() {
         let d = std::env::temp_dir().join("beatbox_air_fix_none");
