@@ -511,9 +511,31 @@ pub fn tools() -> Vec<Tool> {
 mod tests {
     use super::*;
 
+    /// A per-test directory, removed when the test ends (std only).
+    struct TestDir(std::path::PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// 2 s of a ramp so positions in the take are measurable; 120 BPM => 1 beat = 0.5 s.
-    fn eng() -> (Engine, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("beatbox_timeline_{}", std::process::id()));
+    ///
+    /// Each call gets its own directory (pid + test name + counter): the tests
+    /// run in parallel inside one process, and a shared per-pid directory let
+    /// them overwrite each other's take.wav and consolidated clips.
+    fn eng() -> (Engine, TestDir) {
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let test: String = std::thread::current()
+            .name()
+            .unwrap_or("test")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let dir = std::env::temp_dir().join(format!("beatbox_timeline_{}_{}_{}", std::process::id(), test, n));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir.clone());
         e.call("new_project", &json!({"name": "tl", "bpm": 120})).unwrap();
@@ -523,12 +545,12 @@ mod tests {
         e.call("import_sample", &json!({"path": wav.to_string_lossy(), "name": "take"})).unwrap();
         e.call("add_track", &json!({"name": "vox", "preset": "pad"})).unwrap();
         e.call("add_audio_clip", &json!({"track": "vox", "sample": "take", "start_beat": 0.0})).unwrap();
-        (e, dir)
+        (e, TestDir(dir))
     }
 
     #[test]
     fn split_trim_move_duplicate_slip_fade_keep_ids() {
-        let (mut e, _) = eng();
+        let (mut e, _dir) = eng(); // keep the directory until the test ends
         let id = e.project.audio_clips[0].id.clone();
         assert!(id.starts_with("clip"), "{id}");
         // split at beat 2 (1.0 s)
@@ -573,7 +595,7 @@ mod tests {
 
     #[test]
     fn crossfade_consolidate_and_ripple() {
-        let (mut e, _) = eng();
+        let (mut e, _dir) = eng(); // keep the directory until the test ends
         let id = e.project.audio_clips[0].id.clone();
         let v = e.call("split_clip", &json!({"id": id, "at_beat": 2.0})).unwrap();
         let right = v["right_id"].as_str().unwrap().to_string();
