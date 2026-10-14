@@ -58,6 +58,7 @@ pub mod prompt_beat;
 pub mod speech_song;
 pub mod render;
 pub mod resample;
+pub mod interp;
 pub mod sample_lib;
 pub mod samples;
 pub mod sc_dsp;
