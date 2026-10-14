@@ -12,12 +12,13 @@
 //! `cargo run --release --example adaa_oversampled_bench`):
 //!
 //! - aliases below 20 kHz: second-order ADAA at 2x is 43 to 64 dB better
-//!   (hard clip 44.0 / 43.0 / 43.8 dB at +6 / +12 / +24 dB drive), and 4x
-//!   better again;
+//!   (hard clip 43.7 / 43.0 / 43.9 dB at +6 / +12 / +24 dB drive), and 4x
+//!   better again (hard clip ADAA-2: 70 to 75 dB);
 //! - total alias power up to Nyquist: 2x and 4x both stop at about 22 to
 //!   27 dB better for the hard clip, because of the transition floor
 //!   described on the [`OversampleHook`] impl below. 4x does not lift that
-//!   floor; it shares the 2x stage that sets it.
+//!   floor (it comes out 1.4 to 1.6 dB worse than 2x there); it shares the
+//!   2x stage that sets it.
 //!
 //! Real-time safe: [`OversampledShaper::process_block`] never allocates.
 //! Every buffer is reserved at construction (for [`DEFAULT_MAX_BLOCK`]
@@ -43,11 +44,11 @@ use crate::oversample::Oversampler;
 /// 44.1 kHz). For heavily driven low notes they, not the shaper, set the
 /// total alias power at 2x and at 4x: on a 1 kHz sine at 44.1 kHz, ADAA-2
 /// at 2x is 23.7 to 27.5 dB below the naive 1x shaper (hard clip, +24 /
-/// +12 / +6 dB drive) and 4x lands within about 1.5 dB of 2x. Counting
+/// +12 / +6 dB drive) and 4x is no better (1.4 to 1.6 dB worse). Counting
 /// only aliases below 20 kHz, the same 2x path is 43 to 64 dB below naive
 /// 1x across the four curves. 4x is for strict alias requirements on
-/// high-frequency material (a 5 kHz sine at +20 dB: ADAA-2 at 4x is about
-/// 77 dB below naive 1x, hard clip) and for the in-band figure; it does not
+/// high-frequency material (see the 5 kHz table in the bench docs) and for
+/// the in-band figure; it does not
 /// fix the near-Nyquist floor. The half-band taps are deliberately not
 /// steepened (latency and cost).
 impl OversampleHook for Oversampler {
