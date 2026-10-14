@@ -2348,6 +2348,90 @@ pub(crate) mod tests {
         }
     }
 
+    /// C9: the vocal resonance tamer's bands sit in the vocal's own chain,
+    /// so in the C7 DAG turning it on, or moving a band setting,
+    /// re-synthesises the vocal alone and re-mixes only the buses it feeds;
+    /// rendering again with unchanged settings re-renders nothing; turning
+    /// it off gives back the untamed render byte for byte. Counted from the
+    /// cache; cached == fresh on every step.
+    #[test]
+    fn vocal_resonance_tamer_re_renders_only_the_vocal_and_its_buses() {
+        use crate::resonance::{band_effect, strip};
+        let d = std::env::temp_dir().join("beatbox_render_cache_c9_tests");
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = crate::engine::Engine::new(d);
+        e.call("generate_beat", &serde_json::json!({"style": "trap", "seed": 5, "bars": 2})).unwrap();
+        for b in ["drums", "vbus", "verb"] {
+            e.call("add_bus", &serde_json::json!({"name": b, "preset": "none"})).unwrap();
+        }
+        e.call("add_effect", &serde_json::json!({"track": "verb", "type": "reverb", "params": {"mix": 1.0}})).unwrap();
+        for t in ["kick", "snare", "hat", "open_hat"] {
+            e.call("route_track", &serde_json::json!({"track": t, "bus": "drums"})).unwrap();
+        }
+        // "lead" stands in for the vocal: its own bus plus a reverb send
+        e.call("route_track", &serde_json::json!({"track": "lead", "bus": "vbus"})).unwrap();
+        e.call("set_send", &serde_json::json!({"track": "lead", "bus": "verb", "db": -10.0})).unwrap();
+        e.call("set_send", &serde_json::json!({"track": "chords", "bus": "verb", "db": -8.0})).unwrap();
+        e.bank.sync(&e.project.samples);
+        let o = RenderOptions { keep_stems: true, ..Default::default() };
+        let mut cache = TrackCache::default();
+        let base = render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
+        let mut last = (base.left.clone(), base.right.clone());
+        let (n, nb) = (e.project.tracks.len(), e.project.buses.len());
+        let lead = e.project.track_index("lead").unwrap();
+        let (vbus, verb) = (e.project.bus_index("vbus").unwrap(), e.project.bus_index("verb").unwrap());
+        let mut tamed = vec![vbus, verb];
+        tamed.sort();
+        fn dyn_eq(e: &mut crate::engine::Engine, lead: usize, k: usize) -> &mut crate::fx::DynamicEqFx {
+            match e.project.tracks[lead].effects.iter_mut().filter(|f| f.id().starts_with(crate::resonance::AUTO_RESONANCE_ID)).nth(k) {
+                Some(crate::fx::Effect::DynamicEq(x)) => x,
+                _ => panic!("no tamer band {k}"),
+            }
+        }
+        let steps: Vec<(&str, u8, bool)> = vec![
+            ("tamer on: 2 bands on the vocal", 0, true),
+            ("tamer unchanged: render again", 1, false),
+            ("tamer threshold moved", 2, true),
+            ("tamer range moved", 3, true),
+            ("tamer band centre moved", 4, true),
+            ("tamer unchanged again", 1, false),
+            ("tamer off", 5, true),
+        ];
+        for (what, edit, changes) in steps {
+            let t0: Vec<_> = (0..n).map(|i| cache.tracks[&i].1.clone()).collect();
+            let b0: Vec<_> = (0..nb).map(|i| cache.buses[&i].1.clone()).collect();
+            match edit {
+                0 => {
+                    e.project.tracks[lead].effects.push(band_effect(2500.0, -60.0, 1));
+                    e.project.tracks[lead].effects.push(band_effect(5000.0, -60.0, 2));
+                }
+                2 => dyn_eq(&mut e, lead, 0).threshold_db = -50.0,
+                3 => dyn_eq(&mut e, lead, 1).range_db = -3.0,
+                4 => dyn_eq(&mut e, lead, 1).freq = 4800.0,
+                5 => assert_eq!(strip(&mut e.project.tracks[lead].effects), 2),
+                _ => {}
+            }
+            let cached = render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
+            let fresh = render(&e.project, &e.bank, &o).unwrap();
+            assert!(cached.left == fresh.left && cached.right == fresh.right, "{what}: cached render differs from a fresh one");
+            assert_eq!(cached.left != last.0 || cached.right != last.1, changes, "{what}: did the render change");
+            let rt: Vec<usize> = (0..n).filter(|&i| !std::sync::Arc::ptr_eq(&t0[i], &cache.tracks[&i].1)).collect();
+            let rb: Vec<usize> = (0..nb).filter(|&i| !std::sync::Arc::ptr_eq(&b0[i], &cache.buses[&i].1)).collect();
+            let want: (Vec<usize>, Vec<usize>) = if changes { (vec![lead], tamed.clone()) } else { (vec![], vec![]) };
+            assert_eq!((rt.clone(), rb.clone()), want, "{what}: (tracks, buses) re-rendered");
+            println!(
+                "C9 cache: {what} -> re-rendered tracks {:?} ({} of {n}), buses {:?} ({} of {nb}), cached == fresh",
+                rt.iter().map(|&i| e.project.tracks[i].name.as_str()).collect::<Vec<_>>(),
+                rt.len(),
+                rb.iter().map(|&i| e.project.buses[i].name.as_str()).collect::<Vec<_>>(),
+                rb.len()
+            );
+            last = (cached.left, cached.right);
+        }
+        let bits = |l: &[f32], r: &[f32]| l.iter().chain(r.iter()).map(|x| x.to_bits()).collect::<Vec<u32>>();
+        assert_eq!(bits(&last.0, &last.1), bits(&base.left, &base.right), "off == the untamed render, bit for bit");
+    }
+
     #[test]
     fn bus_routing_and_fader_lanes_re_sum_without_resynthesis() {
         let d = std::env::temp_dir().join("beatbox_render_cache_bus_tests");

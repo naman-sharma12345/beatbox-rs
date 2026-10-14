@@ -16,6 +16,7 @@ pub mod gui_words;
 pub mod history;
 pub mod audio_edit;
 pub mod auto_eq;
+pub mod resonance;
 pub mod automation;
 pub mod blind_ab;
 pub mod carve;

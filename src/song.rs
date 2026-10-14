@@ -252,6 +252,15 @@ pub struct MixSpec {
     /// the vocal ducks). Off by default.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub kick_duck: bool,
+    /// Vocal resonance tamer (see `apply_vocal_resonance`): up to 4 narrow
+    /// self-keyed dynamic EQ bands (Q5, at most -4 dB, attack 5 ms, release
+    /// 80 ms) on the vocal's lasting resonances (700 Hz-8 kHz, found in its
+    /// long-term spectrum), each acting only when its peak pokes out over
+    /// its usual level. Never boosts, never on the beat; not within a third
+    /// of an octave of the de-esser or a user's vocal EQ band. Written into
+    /// /mix/part_eq/vocal/ducks marked "auto" (key "self"). Off by default.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub vocal_resonance: bool,
 }
 
 /// A shelf of a part EQ: corner (Hz) and gain (dB).
@@ -380,7 +389,7 @@ impl PartEq {
 impl Default for MixSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None, builds: false, section_gain_db: BTreeMap::new(), part_eq: BTreeMap::new(), auto_eq: false, vocal_duck: false, kick_duck: false }
+        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None, builds: false, section_gain_db: BTreeMap::new(), part_eq: BTreeMap::new(), auto_eq: false, vocal_duck: false, kick_duck: false, vocal_resonance: false }
     }
 }
 
@@ -524,7 +533,7 @@ const TOP_ALIAS: &[(&str, &str)] = &[("tempo", "bpm"), ("sections", "structure")
 const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain", "lock", "flex"];
 const PHRASE_KEYS: &[&str] = &["src_s", "src", "len_s", "len", "end_s", "section", "bar", "beat", "start_beat", "at_s", "start_s", "gain_db", "name", "fade_in_ms", "fade_out_ms"];
 const SECTION_KEYS: &[&str] = &["kind", "bars", "name", "energy"];
-const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds", "section_gain_db", "part_eq", "auto_eq", "vocal_duck", "kick_duck"];
+const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds", "section_gain_db", "part_eq", "auto_eq", "vocal_duck", "kick_duck", "vocal_resonance"];
 const MASTER_KEYS: &[&str] = &["lufs", "true_peak", "preserve_dynamics"];
 const EXPORT_KEYS: &[&str] = &["path", "format", "bitrate_kbps"];
 const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db", "brighten", "presence_db", "presence_hz"];
@@ -1453,11 +1462,16 @@ fn apply_auto_eq(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &mut
 /// track at most): how a rebuild finds and takes them out.
 const AUTO_DUCK_VOCAL_ID: &str = "auto_duck_vocal";
 const AUTO_DUCK_KICK_ID: &str = "auto_duck_kick";
+/// The resonance tamer's bands on the vocal ("auto_resonance1".."4").
+const AUTO_RESONANCE_ID: &str = crate::resonance::AUTO_RESONANCE_ID;
 
 /// Ducks (/mix/vocal_duck, /mix/kick_duck) an earlier build left come out:
 /// each build measures again, and off leaves none. Returns how many.
 fn strip_auto_ducks(e: &mut Engine) -> usize {
-    let is = |f: &crate::fx::Effect| f.id() == AUTO_DUCK_VOCAL_ID || f.id() == AUTO_DUCK_KICK_ID;
+    let is = |f: &crate::fx::Effect| {
+        let id = f.id();
+        id == AUTO_DUCK_VOCAL_ID || id == AUTO_DUCK_KICK_ID || id.starts_with(AUTO_RESONANCE_ID)
+    };
     let mut n = 0;
     for t in e.project.tracks.iter_mut().filter(|t| t.effects.iter().any(is)) {
         let before = t.effects.len();
@@ -1508,6 +1522,31 @@ fn vocal_duck_coverage(e: &mut Engine, voice: &str) -> Result<Option<f32>> {
         }
     }
     Ok((active > 0).then(|| held as f32 / active as f32))
+}
+
+/// /mix/vocal_resonance: the vocal's lasting resonances (see
+/// `resonance::find`, on the vocal stem as its chain leaves it) each get a
+/// self-keyed dynamic EQ band at the end of the vocal's chain: Q5, at most
+/// -4 dB, ratio 3, attack 5 ms, release 80 ms, threshold at the band's
+/// median active level + 2 dB, so it only dips when the ring pokes out.
+/// Bands within a third of an octave of the de-esser or of a non-auto EQ
+/// band on the vocal (the user's) are skipped.
+fn apply_vocal_resonance(e: &mut Engine, voice: Option<&str>, log: &mut Vec<String>) -> Result<Value> {
+    let Some(v) = voice else {
+        log.push("vocal resonance: no vocal here".into());
+        return Ok(json!({"bands": []}));
+    };
+    let p = e.project.clone();
+    let m = e.render_stems_all(&p)?;
+    let Some(st) = m.stems.iter().find(|s| s.name == v && !s.left.is_empty()) else {
+        log.push("vocal resonance: the vocal stem is silent".into());
+        return Ok(json!({"bands": []}));
+    };
+    let x = crate::auto_eq::mono(&st.left, &st.right);
+    drop(m);
+    let vi = e.project.track_index(v)?;
+    let exclude = crate::resonance::exclusions(&e.project.tracks[vi].effects);
+    Ok(crate::resonance::tame_track(&mut e.project.tracks[vi], &x, &exclude, log))
 }
 
 /// /mix/vocal_duck and /mix/kick_duck: keyed dynamic EQ bands (the
@@ -1919,6 +1958,11 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     }
     // masking cuts with the faders set, before the tone rules and the
     // delivery loop (which then hear them)
+    // the vocal's own rings first, so the masking measure hears it tamed
+    if spec.mix.vocal_resonance {
+        mix.insert("vocal_resonance".into(), apply_vocal_resonance(e, voice.as_deref(), log)?);
+        lap(log, &mut tl, "vocal resonance");
+    }
     if spec.mix.auto_eq {
         mix.insert("auto_eq".into(), apply_auto_eq(e, spec, voice.as_deref(), log)?);
         lap(log, &mut tl, "auto EQ");
@@ -2268,6 +2312,17 @@ fn write_auto_cuts(stored: &mut Value, mix: &Value) -> Result<()> {
             set_pointer(stored, &ducks, json!([]))?;
         }
         set_pointer(stored, &format!("{ducks}/-"), duck)?;
+    }
+    let bands = mix["vocal_resonance"]["bands"].as_array().cloned().unwrap_or_default();
+    if !bands.is_empty() {
+        let ducks = "/mix/part_eq/vocal/ducks";
+        if !stored.pointer(ducks).is_some_and(|b| b.is_array()) {
+            set_pointer(stored, ducks, json!([]))?;
+        }
+        for b in bands {
+            let d = json!({"hz": b["hz"], "max_db": b["max_db"], "q": b["q"], "source": b["track"], "key": "self", "attack_ms": b["attack_ms"], "release_ms": b["release_ms"], "auto": true});
+            set_pointer(stored, &format!("{ducks}/-"), d)?;
+        }
     }
     Ok(())
 }
@@ -3141,7 +3196,7 @@ mod tests {
         let mut e1 = Engine::new(a.clone());
         let r1 = e1.call("song_create", &auto_spec(&a, json!({}))).unwrap();
         let mut e2 = Engine::new(b.clone());
-        let r2 = e2.call("song_create", &auto_spec(&b, json!({"mix": {"auto_eq": false, "vocal_duck": false, "kick_duck": false}}))).unwrap();
+        let r2 = e2.call("song_create", &auto_spec(&b, json!({"mix": {"auto_eq": false, "vocal_duck": false, "kick_duck": false, "vocal_resonance": false}}))).unwrap();
         assert_eq!(std::fs::read(r1["audio"].as_str().unwrap()).unwrap(), std::fs::read(r2["audio"].as_str().unwrap()).unwrap(), "auto_eq false renders the same bytes");
         assert_eq!(serde_json::to_value(&e1.project.tracks).unwrap(), serde_json::to_value(&e2.project.tracks).unwrap());
         assert!(r2["mix"].get("auto_eq").is_none());
@@ -3150,6 +3205,9 @@ mod tests {
         let sp: SongSpec = serde_json::from_value(json!({"genre": "trap", "mix": {"auto_eq": false}})).unwrap();
         assert!(serde_json::to_value(&sp.mix).unwrap().get("auto_eq").is_none(), "false is not written back");
         assert!(r2["mix"].get("duck").is_none());
+        assert!(r2["mix"].get("vocal_resonance").is_none(), "off: no resonance bands");
+        let sp: SongSpec = serde_json::from_value(json!({"genre": "trap", "mix": {"vocal_resonance": false}})).unwrap();
+        assert!(serde_json::to_value(&sp.mix).unwrap().get("vocal_resonance").is_none());
         let sp: SongSpec = serde_json::from_value(json!({"genre": "trap", "mix": {"vocal_duck": false, "kick_duck": false}})).unwrap();
         assert_eq!(serde_json::to_value(&sp.mix).unwrap().as_object().unwrap().keys().filter(|k| k.contains("duck")).count(), 0);
         assert!(serde_json::to_value(crate::fx::EqBand::default()).unwrap().get("auto").is_none(), "a band not written by the auto-EQ is stored as before");
@@ -3320,6 +3378,33 @@ mod tests {
                 }
             }
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resonance_bands_stay_on_the_vocal_and_cut_only() {
+        let dir = std::env::temp_dir().join(format!("bb_resonance_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = Engine::new(dir.clone());
+        e.call("song_create", &auto_spec(&dir, json!({}))).unwrap();
+        let voice = ["chords", "lead", "counter"].into_iter().find(|n| e.project.track_index(n).is_ok()).unwrap().to_string();
+        let others: Vec<Value> = e.project.tracks.iter().filter(|t| t.name != voice).map(|t| serde_json::to_value(&t.effects).unwrap()).collect();
+        let mut log = Vec::new();
+        let r = apply_vocal_resonance(&mut e, Some(&voice), &mut log).unwrap();
+        let bands = r["bands"].as_array().unwrap();
+        assert!(bands.len() <= crate::resonance::MAX_BANDS, "{r}");
+        for b in bands {
+            assert!(b["max_db"].as_f64().unwrap() < 0.0 && b["max_db"].as_f64().unwrap() >= -4.0, "cuts only, at most 4 dB: {b}");
+            assert_eq!(b["track"], voice.as_str());
+        }
+        let vi = e.project.track_index(&voice).unwrap();
+        let n = e.project.tracks[vi].effects.iter().filter(|f| f.id().starts_with(AUTO_RESONANCE_ID)).count();
+        assert_eq!(n, bands.len());
+        let now: Vec<Value> = e.project.tracks.iter().filter(|t| t.name != voice).map(|t| serde_json::to_value(&t.effects).unwrap()).collect();
+        assert_eq!(now, others, "the beat is untouched by the resonance tamer");
+        // a rebuild takes every auto band out again
+        strip_auto_ducks(&mut e);
+        assert!(e.project.tracks.iter().all(|t| t.effects.iter().all(|f| !f.id().starts_with(AUTO_RESONANCE_ID))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

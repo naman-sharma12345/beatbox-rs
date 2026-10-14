@@ -2049,6 +2049,44 @@ fn rss_mb() -> f32 {
 }
 
 /// The whole pipeline.
+/// cover_song's `vocal_resonance` (opt-in): the resonance tamer
+/// (`resonance::tame_track`: at most 4 self-keyed dynamic EQ cuts, Q5, at
+/// most -4 dB, ratio 3, on the take's lasting rings at 700 Hz-8 kHz) at the
+/// end of "vox"'s chain, measured on vox's pre-fader audio as its chain
+/// leaves it. The bands are ordinary chain effects, so they are part of
+/// vox's own render-cache key (exact canonical JSON; see
+/// `render::TrackKey`): turning the tamer on, or any band setting moving,
+/// re-renders vox alone. Nothing found = the chain is untouched. Only the
+/// de-esser's band is kept clear: vox's EQ is cover_song's fixed recipe
+/// (a broad Q0.8 +3 dB lift at 3 kHz), not a person's targeted move, and
+/// keeping a third of an octave clear around it would hide the 2.4-3.8 kHz
+/// rings the tamer is for (take_dn2's lasting 3.7 kHz one).
+fn vocal_resonance(e: &mut Engine) -> Result<Value> {
+    let Ok(vi) = e.project.track_index("vox") else {
+        return Ok(json!({"bands": [], "note": "no vox track"}));
+    };
+    e.bank.sync(&e.project.samples);
+    // pre-fader: the measuring copy has vox at 0 dB with no volume lane
+    // (neither is in vox's cache key, so its cached buffer is reused)
+    let mut p = e.project.clone();
+    p.master_effects.clear();
+    p.tracks[vi].volume_db = 0.0;
+    p.tracks[vi].mute = false;
+    let vname = p.tracks[vi].name.clone();
+    p.automation.retain(|l| !(l.target.eq_ignore_ascii_case(&vname) && crate::automation::parse_target(&l.param) == Some(crate::automation::Target::Volume)));
+    let m = render_run(&p, e, &RenderOptions { keep_stems: true, tail: 2.0, ..Default::default() })?;
+    let Some(st) = m.stems.iter().find(|s| s.name == vname && !s.left.is_empty()) else {
+        return Ok(json!({"bands": [], "note": "the vox stem is silent"}));
+    };
+    let x = crate::auto_eq::mono(&st.left, &st.right);
+    drop(m);
+    let mut log = Vec::new();
+    let exclude = crate::resonance::deesser_bands(&e.project.tracks[vi].effects);
+    let mut v = crate::resonance::tame_track(&mut e.project.tracks[vi], &x, &exclude, &mut log);
+    v["log"] = json!(log);
+    Ok(v)
+}
+
 fn cover_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let mut clk = Clock::new();
     let _cache = StemCacheRun::start();
@@ -2135,10 +2173,22 @@ fn cover_song(e: &mut Engine, a: &Value) -> Result<Value> {
         built["vocal_ride"] = ride_vocal(e, &plan, &take_x)?;
     }
     clk.mark("build");
+    // 4b. the vocal resonance tamer (only when asked, vocal_resonance:true):
+    // before the mix, so the mix sets his level with his rings tamed
+    let resonance = if b_or(a, "vocal_resonance", false) {
+        let v = vocal_resonance(e)?;
+        clk.mark("vocal_resonance");
+        Some(v)
+    } else {
+        None
+    };
     // 5. mix
     let target_presence = f_opt(a, "presence_db").unwrap_or(12.0);
     let mut mixed = mix(e, &plan, rec.as_ref().map(|(r, _, _)| r), rec.as_ref().map(|(_, f, _)| f), target_presence)?;
     clk.mark("mix");
+    if let Some(v) = resonance {
+        mixed["vocal_resonance"] = v;
+    }
     // 5b. air: a parallel exciter bus when the mix is short of the judge's air
     // floor. On by default only on the free-mode default path (key heard by
     // yin_gated, no key/scale given); legacy and explicit-key runs take it
@@ -2213,6 +2263,7 @@ fn cover_schema() -> Value {
         "identify": {"type": "boolean", "description": "find the record from the lyrics when no reference is given (default true)"},
         "language": {"type": "string", "description": "lyrics language for the transcriber (e.g. hi, en); default auto"},
         "bpm": {"type": "number"}, "key": {"type": "string"}, "scale": {"type": "string"},
+        "vocal_resonance": {"type": "boolean", "description": "tame the take's lasting resonances (a room's or a phone's ring, a harsh formant): up to 4 narrow self-keyed dynamic EQ cuts on the vocal (Q5, at most -4 dB, ratio 3, attack 5 ms, release 80 ms) where its long-term spectrum (1/12-octave bands, 700 Hz-8 kHz) pokes 3 dB over its surroundings in at least 25% of the singing; each cuts only when its ring rises 2 dB over its usual level. Never near the de-esser or the chain's own EQ bands. Default false (off = the song as before)"},
         "air_fix": {"type": "boolean", "description": "when the mix's 5-11 kHz air share is under -21.5 dB (the judge's floor is -22), add a parallel exciter bus (48 dB/oct high-pass at 5 kHz, exciter, high-pass again) fed by the vocal, comps/lead and drums at 0 dB sends, its fader solved to land on -21.5 (max +6 dB); the parts' own chains are untouched. Default: on for free mode with the key heard by yin_gated (no key/scale given), off for legacy and explicit-key runs; false = the mix as it was"},
         "match_tuning": {"type": "boolean", "description": "with key_detect yin_gated and no key given: render every pitched backing instrument at the singer's measured tuning when it is 15+ cents off A440 (drums and the vocal untouched; default true). false = strict A440"},
         "key_detect": {"type": "string", "enum": ["yin_gated", "legacy", "notes"], "description": "free mode: how the singer's key is heard when key/scale are not given. yin_gated (default): pitch frames gated on YIN aperiodicity < 0.15 and -55 dBFS, 120 ms smoothing, octave folding and tuning-offset removal (steadier on noisy, rubato or flat takes); an unknown read (margin < 0.05) falls back to the notes. legacy (= notes): the segmented sung notes only, as before; reproduces earlier renders byte-for-byte"},
