@@ -78,6 +78,13 @@ pub fn check_freq_shift(p: &FreqShiftFx) -> Result<(), String> {
 }
 
 pub fn freq_shift(p: &FreqShiftFx, l: &mut [f32], r: &mut [f32]) {
+    freq_shift_at(p, l, r, 0)
+}
+
+/// `freq_shift` for a buffer that starts `offset` samples into the song: the
+/// oscillator is stepped through the first `offset` samples (renormalised on
+/// the same song positions), so its phase is the whole-song pass's.
+pub fn freq_shift_at(p: &FreqShiftFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     let mix = p.mix.clamp(0.0, 1.0);
     let fb = p.feedback.clamp(0.0, 0.9);
     // the right side shifts by shift + stereo_hz: the two sides drift apart
@@ -88,7 +95,22 @@ pub fn freq_shift(p: &FreqShiftFx, l: &mut [f32], r: &mut [f32]) {
         let mut last = 0.0f32;
         let (mut c, mut s) = (1.0f32, 0.0f32);
         let (cw, sw) = (w.cos(), w.sin());
+        // the rotation each sample does after its output, for the samples before the buffer
+        let rotate = |i: usize, c: &mut f32, s: &mut f32| {
+            let nc = *c * cw - *s * sw;
+            *s = *s * cw + *c * sw;
+            *c = nc;
+            if i % 4096 == 0 {
+                let m = (*c * *c + *s * *s).sqrt().max(1e-9);
+                *c /= m;
+                *s /= m;
+            }
+        };
+        for i in 0..offset {
+            rotate(i, &mut c, &mut s);
+        }
         for (i, x) in ch.iter_mut().enumerate() {
+            let i = i + offset;
             let (re, im) = h.process(*x + last * fb);
             // upper sideband for a positive shift (sign checked by the test)
             let y = re * c + im * s;
@@ -131,20 +153,36 @@ fn carrier(shape: &str, ph: f32) -> f32 {
 }
 
 pub fn ring_mod(p: &RingModFx, l: &mut [f32], r: &mut [f32]) {
+    ring_mod_at(p, l, r, 0)
+}
+
+/// `ring_mod` for a buffer that starts `offset` samples into the song: the
+/// LFO reads the song position and the carrier phase is stepped through the
+/// first `offset` samples, so both match the whole-song pass.
+pub fn ring_mod_at(p: &RingModFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     let mix = p.mix.clamp(0.0, 1.0);
     let inc = p.freq_hz / SR;
+    // a slow LFO on the carrier frequency (lfo_hz, lfo_depth in semitones)
+    let step_at = |i: usize| {
+        let semis = if p.lfo_hz > 0.0 { p.lfo_depth * (2.0 * PI * p.lfo_hz * i as f32 / SR).sin() } else { 0.0 };
+        inc * 2f32.powf(semis / 12.0)
+    };
+    let advance = |ph: &mut f32, step: f32| {
+        *ph += step;
+        if *ph >= 1.0 {
+            *ph -= ph.floor();
+        }
+    };
     for (ci, ch) in [&mut *l, &mut *r].into_iter().enumerate() {
         let mut ph = if ci == 1 { p.stereo_phase.rem_euclid(1.0) } else { 0.0 };
-        // a slow LFO on the carrier frequency (lfo_hz, lfo_depth in semitones)
+        for i in 0..offset {
+            advance(&mut ph, step_at(i));
+        }
         for (i, x) in ch.iter_mut().enumerate() {
-            let semis = if p.lfo_hz > 0.0 { p.lfo_depth * (2.0 * PI * p.lfo_hz * i as f32 / SR).sin() } else { 0.0 };
-            let step = inc * 2f32.powf(semis / 12.0);
+            let step = step_at(i + offset);
             let c = carrier(&p.shape, ph);
             *x = *x * (1.0 - mix) + *x * c * mix;
-            ph += step;
-            if ph >= 1.0 {
-                ph -= ph.floor();
-            }
+            advance(&mut ph, step);
         }
     }
 }

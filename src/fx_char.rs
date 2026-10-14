@@ -38,6 +38,15 @@ fn depth_samples(cents: f32, rate: f32) -> f32 {
 }
 
 pub fn vinyl(p: &VinylFx, l: &mut [f32], r: &mut [f32]) {
+    vinyl_at(p, l, r, 0)
+}
+
+/// `vinyl` for a buffer that starts `offset` samples into the song: wow and
+/// flutter read the song position, the delay line's slot counts from the
+/// song's start, and the record's noise (crackle and hiss, which do not
+/// depend on the audio) is run through the first `offset` samples, so a
+/// window matches the same samples of a whole-song pass.
+pub fn vinyl_at(p: &VinylFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     let n = l.len().min(r.len());
     if n == 0 {
         return;
@@ -50,7 +59,7 @@ pub fn vinyl(p: &VinylFx, l: &mut [f32], r: &mut [f32]) {
     let base = dw + df + 4.0;
     let size = (2.0 * base) as usize + 8;
     let (mut bl, mut br) = (vec![0.0f32; size], vec![0.0f32; size]);
-    let mut w = 0usize;
+    let mut w = offset % size;
     let age = p.age.clamp(0.0, 1.0);
     // a worn record: the band closes in from both ends
     let lo = 20.0 + 160.0 * age;
@@ -75,36 +84,8 @@ pub fn vinyl(p: &VinylFx, l: &mut [f32], r: &mut [f32]) {
     let mut hiss_r = Biquad::new(BiquadKind::HighCut, 9000.0, 0.707, 0.0);
     let mono = p.mono.clamp(0.0, 1.0);
     let ph0 = rng.f32();
-    for i in 0..n {
-        let t = i as f32 / SR;
-        let d = base
-            + dw * (2.0 * PI * wow_rate * t + ph0 * 2.0 * PI).sin()
-            + df * (2.0 * PI * flut_rate * t).sin();
-        bl[w] = l[i];
-        br[w] = r[i];
-        // fractional read d samples back
-        let pos = w as f32 - d + size as f32 * 2.0;
-        let i0 = pos.floor() as usize % size;
-        let i1 = (i0 + 1) % size;
-        let fr = pos - pos.floor();
-        let (mut xl, mut xr) = if i >= base as usize + 2 {
-            (bl[i0] + (bl[i1] - bl[i0]) * fr, br[i0] + (br[i1] - br[i0]) * fr)
-        } else {
-            (l[i], r[i])
-        };
-        w = (w + 1) % size;
-        if age > 0.0 {
-            let a = f[0].process(xl);
-            xl = f[1].process(a);
-            let b = f[2].process(xr);
-            xr = f[3].process(b);
-        }
-        if mono > 0.0 {
-            let m = 0.5 * (xl + xr);
-            xl += (m - xl) * mono;
-            xr += (m - xr) * mono;
-        }
-        // noise floor of the record
+    // the noise floor of the record for one sample: (pop, hiss l, hiss r)
+    let mut noise = |rng: &mut Rng| -> (f32, f32, f32, f32) {
         if pop_p > 0.0 && rng.f32() < pop_p {
             pop_env = 1.0;
             pop_amp = pop_gain * (0.3 + 0.7 * rng.f32() * rng.f32());
@@ -120,10 +101,48 @@ pub fn vinyl(p: &VinylFx, l: &mut [f32], r: &mut [f32]) {
         } else {
             (0.0, 0.0)
         };
-        let wl = xl + pop * (1.0 - pop_side) + hl;
-        let wr = xr + pop * (1.0 + pop_side) + hr;
-        l[i] = l[i] * (1.0 - mix) + wl * mix;
-        r[i] = r[i] * (1.0 - mix) + wr * mix;
+        (pop * (1.0 - pop_side), pop * (1.0 + pop_side), hl, hr)
+    };
+    for _ in 0..offset {
+        noise(&mut rng);
+    }
+    for i in 0..n {
+        let i_buf = i;
+        let i = i + offset;
+        let t = i as f32 / SR;
+        let d = base
+            + dw * (2.0 * PI * wow_rate * t + ph0 * 2.0 * PI).sin()
+            + df * (2.0 * PI * flut_rate * t).sin();
+        bl[w] = l[i_buf];
+        br[w] = r[i_buf];
+        // fractional read d samples back
+        let pos = w as f32 - d + size as f32 * 2.0;
+        let i0 = pos.floor() as usize % size;
+        let i1 = (i0 + 1) % size;
+        let fr = pos - pos.floor();
+        let (mut xl, mut xr) = if i >= base as usize + 2 {
+            (bl[i0] + (bl[i1] - bl[i0]) * fr, br[i0] + (br[i1] - br[i0]) * fr)
+        } else {
+            (l[i_buf], r[i_buf])
+        };
+        w = (w + 1) % size;
+        if age > 0.0 {
+            let a = f[0].process(xl);
+            xl = f[1].process(a);
+            let b = f[2].process(xr);
+            xr = f[3].process(b);
+        }
+        if mono > 0.0 {
+            let m = 0.5 * (xl + xr);
+            xl += (m - xl) * mono;
+            xr += (m - xr) * mono;
+        }
+        // noise floor of the record
+        let (pl, pr, hl, hr) = noise(&mut rng);
+        let wl = xl + pl + hl;
+        let wr = xr + pr + hr;
+        l[i_buf] = l[i_buf] * (1.0 - mix) + wl * mix;
+        r[i_buf] = r[i_buf] * (1.0 - mix) + wr * mix;
     }
 }
 

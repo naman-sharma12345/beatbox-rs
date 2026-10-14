@@ -197,6 +197,13 @@ impl Rng {
 
 /// Bit crusher and sample-and-hold decimator with optional hiss.
 pub fn lofi(p: &LoFiFx, l: &mut [f32], r: &mut [f32]) {
+    lofi_at(p, l, r, 0)
+}
+
+/// `lofi` for a buffer that starts `offset` samples into the song: the
+/// sample-and-hold clock (and the noise draws it makes) is stepped through the
+/// first `offset` samples, so grabs land on the whole-song pass's samples.
+pub fn lofi_at(p: &LoFiFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     let step = 2f32.powf(1.0 - p.bits.clamp(1.0, 24.0));
     let inc = (p.sample_rate_hz.clamp(500.0, 48000.0) / SR).min(1.0);
     let nz = {
@@ -207,6 +214,17 @@ pub fn lofi(p: &LoFiFx, l: &mut [f32], r: &mut [f32]) {
     let mut rng = Rng(77);
     let mut phase = 1.0f32;
     let mut held = [0.0f32; 2];
+    for _ in 0..offset {
+        phase += inc;
+        if phase >= 1.0 {
+            phase -= 1.0;
+            if nz > 0.0 {
+                // one draw per channel per grab, as below
+                rng.bipolar();
+                rng.bipolar();
+            }
+        }
+    }
     let n = l.len().min(r.len());
     for i in 0..n {
         phase += inc;

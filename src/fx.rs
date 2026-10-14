@@ -646,18 +646,18 @@ impl Effect {
             Effect::Gate(p) => x::gate(p, l, r),
             Effect::Phaser(p) => x::phaser(p, l, r, ctx.step_secs, ctx.offset),
             Effect::Flanger(p) => x::flanger(p, l, r, ctx.step_secs, ctx.offset),
-            Effect::Stutter(p) => x::stutter(p, l, r, ctx.step_secs),
-            Effect::PitchShift(p) => x::pitch_shift(p, l, r),
+            Effect::Stutter(p) => x::stutter_at(p, l, r, ctx.step_secs, ctx.offset),
+            Effect::PitchShift(p) => x::pitch_shift_at(p, l, r, ctx.offset),
             Effect::Convolution(p) => x::convolution(p, l, r),
             Effect::Autopan(p) => x::autopan(p, l, r, ctx.step_secs, ctx.offset),
             Effect::Saturator(p) => crate::fx_sat::saturator(p, l, r),
             Effect::Haas(p) => crate::fx_sat::haas(p, l, r),
-            Effect::GrossBeat(p) => crate::fx_time::gross_beat(p, l, r, ctx.step_secs),
-            Effect::Vocoder(p) => crate::fx_vocoder::vocoder(p, l, r),
-            Effect::FreqShift(p) => crate::fx_mod::freq_shift(p, l, r),
-            Effect::RingMod(p) => crate::fx_mod::ring_mod(p, l, r),
+            Effect::GrossBeat(p) => crate::fx_time::gross_beat_at(p, l, r, ctx.step_secs, ctx.offset),
+            Effect::Vocoder(p) => crate::fx_vocoder::vocoder_at(p, l, r, ctx.offset),
+            Effect::FreqShift(p) => crate::fx_mod::freq_shift_at(p, l, r, ctx.offset),
+            Effect::RingMod(p) => crate::fx_mod::ring_mod_at(p, l, r, ctx.offset),
             Effect::StereoShaper(p) => crate::fx_mod::stereo_shaper(p, l, r),
-            Effect::Vinyl(p) => crate::fx_char::vinyl(p, l, r),
+            Effect::Vinyl(p) => crate::fx_char::vinyl_at(p, l, r, ctx.offset),
             Effect::Waveshaper(p) => crate::fx_char::waveshaper(p, l, r),
             Effect::AmpSim(p) => crate::fx_amp::amp_sim(p, l, r),
             Effect::CabIr(p) => crate::fx_amp::cab_ir(p, l, r),
@@ -665,7 +665,7 @@ impl Effect {
             Effect::Maximizer(p) => {
                 crate::fx_sc::maximizer(p, l, r);
             }
-            Effect::Lofi(p) => crate::fx_sc::lofi(p, l, r),
+            Effect::Lofi(p) => crate::fx_sc::lofi_at(p, l, r, ctx.offset),
             Effect::Rectifier(p) => crate::fx_sc::rectifier(p, l, r),
             Effect::Filter(p) => {
                 let (mut fl, mut fr) = (Svf::default(), Svf::default());
@@ -704,7 +704,8 @@ impl Effect {
                 for ch in [&mut *l, &mut *r] {
                     let mut held = 0.0;
                     for (i, s) in ch.iter_mut().enumerate() {
-                        if i % ds == 0 {
+                        // grabs on the song's grid, not the buffer's
+                        if (i + ctx.offset) % ds == 0 {
                             held = (*s * levels).round() / levels;
                         }
                         *s = *s * (1.0 - p.mix) + held * p.mix;

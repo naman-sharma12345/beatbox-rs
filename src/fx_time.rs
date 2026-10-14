@@ -143,6 +143,13 @@ fn read(src: &[f32], pos: f32) -> f32 {
 }
 
 pub fn gross_beat(p: &GrossBeatFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
+    gross_beat_at(p, l, r, step_secs, 0)
+}
+
+/// `gross_beat` for a buffer that starts `offset` samples into the song:
+/// cycles count from the song's start, so a window matches the same samples
+/// of a whole-song pass (source audio from before the buffer reads as silence).
+pub fn gross_beat_at(p: &GrossBeatFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
     let mix = p.mix.clamp(0.0, 1.0);
     if mix <= 0.0 || check(p).is_err() {
         return;
@@ -168,23 +175,26 @@ pub fn gross_beat(p: &GrossBeatFx, l: &mut [f32], r: &mut [f32], step_secs: f32)
     let mut jump_from = 0.0f32;
     let mut smooth_g = 1.0f32;
     let a = (-1.0 / (fade as f32)).exp();
+    // source at song position `pos` (seconds of the song, in samples)
+    let rd = |src: &[f32], pos: f32| read(src, pos - offset as f32);
     for i in 0..n {
-        let pos = pos_of(i);
+        let j = i + offset;
+        let pos = pos_of(j);
         // a discontinuity (> 4 samples off the running position) starts a crossfade
         if prev_pos >= 0.0 && (pos - (prev_pos + 1.0)).abs() > 4.0 && (pos - prev_pos).abs() > 4.0 {
             jump_at = i;
             jump_from = prev_pos;
         }
-        let (mut wl, mut wr) = (read(&src_l, pos), read(&src_r, pos));
+        let (mut wl, mut wr) = (rd(&src_l, pos), rd(&src_r, pos));
         if jump_at != usize::MAX && i - jump_at < fade {
             let t = (i - jump_at) as f32 / fade as f32;
             let old = jump_from + (i - jump_at) as f32 + 1.0;
-            wl = wl * t + read(&src_l, old) * (1.0 - t);
-            wr = wr * t + read(&src_r, old) * (1.0 - t);
+            wl = wl * t + rd(&src_l, old) * (1.0 - t);
+            wr = wr * t + rd(&src_r, old) * (1.0 - t);
         }
         prev_pos = pos;
-        let c0 = (i / cycle) * cycle;
-        let u = (i - c0) as f32 / cycle as f32;
+        let c0 = (j / cycle) * cycle;
+        let u = (j - c0) as f32 / cycle as f32;
         let g = match &vp {
             Some(pts) => eval(pts, u).clamp(0.0, 1.5),
             None => volume_preset(&p.volume, u, p.cycle_steps).unwrap_or(1.0),

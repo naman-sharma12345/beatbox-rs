@@ -49,6 +49,14 @@ pub fn check(p: &VocoderFx) -> Result<(), String> {
 }
 
 pub fn vocoder(p: &VocoderFx, l: &mut [f32], r: &mut [f32]) {
+    vocoder_at(p, l, r, 0)
+}
+
+/// `vocoder` for a buffer that starts `offset` samples into the song: the
+/// carrier (saws, noise and the carrier band filters, none of which hear the
+/// audio) is run through the first `offset` samples, so it is the whole-song
+/// pass's carrier; the modulator side settles from the buffer's audio.
+pub fn vocoder_at(p: &VocoderFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     let Ok(notes) = parse_notes(&p.notes) else { return };
     let mix = p.mix.clamp(0.0, 1.0);
     if mix <= 0.0 || l.is_empty() {
@@ -79,9 +87,8 @@ pub fn vocoder(p: &VocoderFx, l: &mut [f32], r: &mut [f32]) {
     let mut sib_hp = Svf::default();
     let noise_amt = p.noise.clamp(0.0, 1.0);
     let norm = 1.0 / (notes.len() as f32).sqrt();
-    for i in 0..n {
-        let m = 0.5 * (l[i] + r[i]);
-        // carrier sample (L/R decorrelated by the detune pair)
+    // carrier sample (L/R decorrelated by the detune pair)
+    let mut carrier = || -> (f32, f32) {
         let (mut cl, mut cr) = (0.0f32, 0.0f32);
         for (ph, inc) in phases.iter_mut().zip(&incs) {
             for k in 0..2 {
@@ -99,6 +106,18 @@ pub fn vocoder(p: &VocoderFx, l: &mut [f32], r: &mut [f32]) {
         let nz = (seed as f32 / u32::MAX as f32) * 2.0 - 1.0;
         cl = cl * norm * (1.0 - noise_amt) + nz * noise_amt;
         cr = cr * norm * (1.0 - noise_amt) + nz * noise_amt;
+        (cl, cr)
+    };
+    for _ in 0..offset {
+        let (cl, cr) = carrier();
+        for b in 0..bands {
+            car_fl[b].process(cl, freqs[b], res, FilterMode::Bandpass);
+            car_fr[b].process(cr, freqs[b], res, FilterMode::Bandpass);
+        }
+    }
+    for i in 0..n {
+        let m = 0.5 * (l[i] + r[i]);
+        let (cl, cr) = carrier();
         let (mut ol, mut or) = (0.0f32, 0.0f32);
         for b in 0..bands {
             let x = mod_f[b].process(m, freqs[b], res, FilterMode::Bandpass).abs();

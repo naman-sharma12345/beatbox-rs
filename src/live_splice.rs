@@ -832,15 +832,6 @@ mod tests {
     /// each fix is its own commit. Measured on this song, edit at step 132,
     /// window 112..160 (bars 7-10) unless a tail widens it.
     pub(super) const KNOWN_SPLICE_FAILURES: &[(&str, &str)] = &[
-        // clocks counted from the buffer's first sample, not ctx.offset (see
-        // every_effect_type_against_the_song_offset): the window's oscillator,
-        // grain or cycle phase is not the song's
-        ("pitch_shift", "grain clock starts at the buffer start: rms 8.0e-3, max 0.30"),
-        ("vocoder", "carrier oscillators start at the buffer start: rms 4.6e-2, max 1.18"),
-        ("ring_mod", "carrier and LFO phase start at the buffer start: rms 1.1e-2, max 0.36"),
-        ("freq_shift", "oscillator starts at the buffer start (14 s = 70 whole cycles of 5 Hz here, so only rounding drift shows): max 2.7e-5"),
-        ("vinyl", "wow/flutter LFOs and crackle start at the buffer start: max 3.9e-5"),
-        ("gross_beat_cycle12", "cycle counted from the buffer start; a 12-step cycle is off by 4 steps at bar 7: max 2.1e-7 here, more with other material"),
         // a whole-buffer statistic: a window has other music than the song
         ("amp_sim", "auto-gain = input RMS / output RMS over the whole buffer: rms 1.7e-3, max 1.8e-2"),
         // f32 recursive state with poles near 1: after the context bar the two
@@ -909,15 +900,17 @@ mod tests {
     /// the same samples; one that counts from its buffer's first sample
     /// (an oscillator, a grain clock, a cycle) or reads the whole buffer
     /// (an auto-gain) does not. `off` is no whole number of steps, bars or
-    /// oscillator periods, so no phase lines up by chance.
+    /// oscillator periods, so no phase lines up by chance. The signal starts
+    /// 0.5 s after the cut, so state that settles (a gain smoother starting
+    /// at unity) has settled; a clock never does.
     #[test]
     fn every_effect_type_against_the_song_offset() {
         let n = 300_000;
         let off = 123_457;
         let x: Vec<f32> = (0..n)
             .map(|i| {
-                if i < off + 500 { return 0.0; }
-                let t = (i - off - 500) as f32 / crate::dsp::SR;
+                if i < off + 22_050 { return 0.0; }
+                let t = (i - off - 22_050) as f32 / crate::dsp::SR;
                 let env = (-(t % 0.5) * 6.0).exp() * if t % 0.5 < 0.4 { 1.0 } else { 0.0 };
                 env * 0.3 * ((std::f32::consts::TAU * 261.6 * t).sin() + 0.5 * (std::f32::consts::TAU * 392.0 * t).sin())
             })
@@ -938,13 +931,10 @@ mod tests {
             eprintln!("offset fx {name}: max diff {m:.3e} (output peak {peak:.3})");
             rows.push((name, m));
         }
-        // effects whose clock counts from the buffer's first sample (known,
-        // not fixed yet; each fix takes its name off the list). bitcrush,
-        // stutter, lofi and the bar-long gross_beat splice exactly in
-        // every_effect_type_splices_like_a_full_render only because windows
-        // start on whole bars
-        const COUNTS_FROM_BUFFER_START: &[&str] =
-            &["bitcrush", "stutter", "pitch_shift", "gross_beat", "gross_beat_cycle12", "stutter_cycle6", "vocoder", "freq_shift", "ring_mod", "vinyl", "lofi"];
+        // every effect keeps time by the song position (B47 fixed the 11 cases
+        // that counted from the buffer's first sample: bitcrush, stutter,
+        // pitch_shift, gross_beat, vocoder, freq_shift, ring_mod, vinyl, lofi)
+        const COUNTS_FROM_BUFFER_START: &[&str] = &[];
         // 1e-7: convolution's FFT partitions (2.98e-8) and amp_sim (5.96e-8) round differently, a few ulp
         let off_clock: Vec<&str> = rows.iter().filter(|(_, m)| *m > 1e-7).map(|(n, _)| *n).collect();
         assert_eq!(off_clock, COUNTS_FROM_BUFFER_START, "effects that do not follow the song offset");

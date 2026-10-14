@@ -466,6 +466,14 @@ pub fn gate_levels(pattern: &str) -> Vec<f32> {
 }
 
 pub fn stutter(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
+    stutter_at(p, l, r, step_secs, 0)
+}
+
+/// `stutter` for a buffer that starts `offset` samples into the song: the
+/// step grid and the cycles count from the song's start, so a window
+/// matches the same samples of a whole-song pass (source audio from before
+/// the buffer reads as silence).
+pub fn stutter_at(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
     let n = l.len();
     let step = (step_secs * SR).max(1.0);
     let mix = p.mix.clamp(0.0, 1.0);
@@ -484,12 +492,17 @@ pub fn stutter(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
         a.min(b)
     };
     let levels = gate_levels(&p.pattern);
+    // source sample at song position `a` (silence before the buffer)
+    let at = |src: &[f32], a: usize| if a >= offset { src.get(a - offset).copied().unwrap_or(0.0) } else { 0.0 };
+    let lerp_at = |src: &[f32], f: f32| lerp_read(src, f - offset as f32);
+    let end = offset + n;
     for i in 0..n {
+        let j = i + offset;
         let (wl, wr) = match p.mode {
             StutterMode::Gate => {
-                let k = (i as f32 / step) as usize;
+                let k = (j as f32 / step) as usize;
                 let lv = levels[k % levels.len()];
-                let pos = i - (k as f32 * step) as usize;
+                let pos = j - (k as f32 * step) as usize;
                 let seg = step as usize;
                 // smooth edges only where the level changes
                 let next = levels[(k + 1) % levels.len()];
@@ -506,37 +519,34 @@ pub fn stutter(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
                 (src_l[i] * g, src_r[i] * g)
             }
             StutterMode::Stutter => {
-                let c0 = (i / cycle) * cycle;
-                let pos = (i - c0) % slice;
+                let c0 = (j / cycle) * cycle;
+                let pos = (j - c0) % slice;
                 let src = c0 + pos;
                 let g = win(pos, slice);
-                (
-                    src_l.get(src).copied().unwrap_or(0.0) * g,
-                    src_r.get(src).copied().unwrap_or(0.0) * g,
-                )
+                (at(&src_l, src) * g, at(&src_r, src) * g)
             }
             StutterMode::HalfTime => {
-                let c0 = (i / cycle) * cycle;
-                let pos = i - c0;
+                let c0 = (j / cycle) * cycle;
+                let pos = j - c0;
                 let srcf = c0 as f32 + pos as f32 * 0.5;
                 let g = win(pos, cycle);
-                (lerp_read(&src_l, srcf) * g, lerp_read(&src_r, srcf) * g)
+                (lerp_at(&src_l, srcf) * g, lerp_at(&src_r, srcf) * g)
             }
             StutterMode::Reverse => {
-                let c0 = (i / cycle) * cycle;
-                let pos = i - c0;
-                let len = cycle.min(n - c0);
+                let c0 = (j / cycle) * cycle;
+                let pos = j - c0;
+                let len = cycle.min(end - c0);
                 let src = c0 + len - 1 - pos.min(len - 1);
                 let g = win(pos, len);
-                (src_l[src] * g, src_r[src] * g)
+                (at(&src_l, src) * g, at(&src_r, src) * g)
             }
             StutterMode::TapeStop => {
                 // speed falls 1 -> 0 over each cycle: position = c0 + T*(u - u^2/2)
-                let c0 = (i / cycle) * cycle;
-                let u = (i - c0) as f32 / cycle as f32;
+                let c0 = (j / cycle) * cycle;
+                let u = (j - c0) as f32 / cycle as f32;
                 let srcf = c0 as f32 + cycle as f32 * (u - 0.5 * u * u);
-                let g = (1.0 - u).powf(0.3) * win(i - c0, cycle).max(0.0);
-                (lerp_read(&src_l, srcf) * g, lerp_read(&src_r, srcf) * g)
+                let g = (1.0 - u).powf(0.3) * win(j - c0, cycle).max(0.0);
+                (lerp_at(&src_l, srcf) * g, lerp_at(&src_r, srcf) * g)
             }
         };
         l[i] = src_l[i] * (1.0 - mix) + wl * mix;
@@ -547,15 +557,28 @@ pub fn stutter(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
 // ---------------- pitch shifter ----------------
 
 pub fn pitch_shift(p: &PitchShiftFx, l: &mut [f32], r: &mut [f32]) {
+    pitch_shift_at(p, l, r, 0)
+}
+
+/// `pitch_shift` for a buffer that starts `offset` samples into the song:
+/// the ring-buffer slot and the grain clock run from the song's start (the
+/// clock is stepped through the first `offset` samples), so a window matches
+/// the same samples of a whole-song pass once its first window has filled.
+pub fn pitch_shift_at(p: &PitchShiftFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     let ratio = 2f32.powf((p.semitones.clamp(-24.0, 24.0) + p.cents / 100.0) / 12.0);
     let w = ((p.window_ms.clamp(10.0, 200.0) * 0.001 * SR) as usize).max(64) as f32;
     let mix = p.mix.clamp(0.0, 1.0);
     let size = w as usize * 2 + 4;
+    // the grain clock at the buffer's first sample
+    let mut d0 = 0.0f32;
+    for _ in 0..offset {
+        d0 = (d0 + (1.0 - ratio)).rem_euclid(w);
+    }
     for ch in [&mut *l, &mut *r] {
         let mut buf = vec![0.0f32; size];
-        let mut d = 0.0f32;
+        let mut d = d0;
         for (i, s) in ch.iter_mut().enumerate() {
-            let wi = i % size;
+            let wi = (i + offset) % size;
             buf[wi] = *s;
             d = (d + (1.0 - ratio)).rem_euclid(w);
             let tap = |delay: f32| {
