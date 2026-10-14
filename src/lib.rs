@@ -53,6 +53,7 @@ pub mod novelty;
 pub mod palette;
 pub mod producer;
 pub mod project;
+pub mod rack;
 pub mod prompt_beat;
 pub mod speech_song;
 pub mod render;

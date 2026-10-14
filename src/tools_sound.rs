@@ -227,7 +227,7 @@ fn range_of(field: &str) -> (f32, f32, &'static str, bool) {
     }
 }
 
-fn describe_value(kind: &str, prefix: &str, v: &Value, out: &mut Vec<Value>) {
+pub(crate) fn describe_value(kind: &str, prefix: &str, v: &Value, out: &mut Vec<Value>) {
     if let Value::Object(o) = v {
         for (k, x) in o {
             if k == "type" {

@@ -627,35 +627,9 @@ fn apply_fader(
 
 /// Bus processing order: a bus is processed after every bus that feeds
 /// it. Cycles (rejected by route_bus) fall back to declaration order.
+/// The order is the rack runtime's ([`crate::rack::compile::bus_order`]).
 pub fn bus_order(p: &Project) -> Vec<usize> {
-    let n = p.buses.len();
-    let out_of = |i: usize| {
-        p.buses[i]
-            .output
-            .as_deref()
-            .and_then(|o| p.bus_index(o).ok())
-    };
-    let mut indeg = vec![0usize; n];
-    for i in 0..n {
-        if let Some(d) = out_of(i) {
-            if d != i {
-                indeg[d] += 1;
-            }
-        }
-    }
-    let mut order = Vec::with_capacity(n);
-    let mut done = vec![false; n];
-    while let Some(i) = (0..n).find(|&i| !done[i] && indeg[i] == 0) {
-        done[i] = true;
-        order.push(i);
-        if let Some(d) = out_of(i) {
-            if d != i {
-                indeg[d] -= 1;
-            }
-        }
-    }
-    order.extend((0..n).filter(|&i| !done[i]));
-    order
+    crate::rack::compile::bus_order(p)
 }
 
 /// Fade applied where a voice is cut short (mono choke).
