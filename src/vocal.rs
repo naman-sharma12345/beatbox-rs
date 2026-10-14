@@ -152,6 +152,88 @@ pub fn pitch_track(x: &[f32], sr: f32) -> Vec<PitchFrame> {
             }
         })
         .collect();
+    finish_track(&mut frames);
+    frames
+}
+
+/// Which pitch track segments the notes (`analyze_with`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PitchDetect {
+    /// `pitch_track`: yin() above a level gate relative to the take's loud
+    /// parts (the original analysis; byte-identical).
+    Legacy,
+    /// `pitch_track_gated`: the frames `gated_key` trusts.
+    YinGated,
+}
+
+impl PitchDetect {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "legacy" => Some(PitchDetect::Legacy),
+            "yin_gated" => Some(PitchDetect::YinGated),
+            _ => None,
+        }
+    }
+}
+
+/// Shortest voiced run `pitch_track_gated` keeps (the gated key's 120 ms).
+pub const GATED_PITCH_MIN_RUN_S: f32 = GATED_KEY_SMOOTH_S;
+
+/// `pitch_track` with YIN-gated frames, the gates of `gated_key`: a frame is
+/// voiced when its level is above GATED_KEY_FLOOR_DB (-55 dBFS) and its YIN
+/// aperiodicity is below GATED_KEY_MAX_APERIODICITY (0.15), its period read
+/// by `yin_aperiodicity` (sub-sample on the raw difference function, no CMNDF
+/// bias); voiced runs shorter than GATED_PITCH_MIN_RUN_S (120 ms) are
+/// dropped. Same frames (40 ms at 10 ms hops, 11.025 kHz), then the same
+/// median, octave fix and isolated-frame drop as `pitch_track`.
+pub fn pitch_track_gated(x: &[f32], sr: f32) -> Vec<PitchFrame> {
+    let y = if (sr - PSR).abs() > 1.0 { crate::samples::resample(x, sr, PSR) } else { x.to_vec() };
+    let win = (PSR * 0.04) as usize;
+    let hop = (PSR * HOP_S) as usize;
+    let floor = 10f32.powf(GATED_KEY_FLOOR_DB / 20.0);
+    let mut frames: Vec<PitchFrame> = Vec::new();
+    let mut pos = 0usize;
+    while pos + win <= y.len() {
+        let f = &y[pos..pos + win];
+        let rms = (f.iter().map(|s| s * s).sum::<f32>() / win as f32).sqrt();
+        let hz = if rms > floor {
+            crate::sc_dsp::yin_aperiodicity(f, PSR, 65.0, 1100.0, GATED_KEY_MAX_APERIODICITY)
+                .filter(|(hz, ap)| *hz > 0.0 && *ap < GATED_KEY_MAX_APERIODICITY)
+                .map(|(hz, _)| hz)
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        frames.push(PitchFrame { t: pos as f32 / PSR + 0.02, hz, midi: if hz > 0.0 { hz_to_midi(hz) } else { 0.0 }, rms });
+        pos += hop;
+    }
+    // voiced runs shorter than the minimum are not sung notes
+    let min_run = ((GATED_PITCH_MIN_RUN_S / HOP_S).round() as usize).max(1);
+    let mut i = 0usize;
+    while i < frames.len() {
+        if frames[i].midi <= 0.0 {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < frames.len() && frames[j].midi > 0.0 {
+            j += 1;
+        }
+        if j - i < min_run {
+            for f in &mut frames[i..j] {
+                f.hz = 0.0;
+                f.midi = 0.0;
+            }
+        }
+        i = j;
+    }
+    finish_track(&mut frames);
+    frames
+}
+
+/// The 5-frame median (with the single-octave-jump fix) and the drop of
+/// isolated voiced frames, shared by both pitch tracks.
+fn finish_track(frames: &mut [PitchFrame]) {
     // median-smooth voiced runs (and fix single octave jumps)
     let m: Vec<f32> = frames.iter().map(|f| f.midi).collect();
     for i in 0..frames.len() {
@@ -184,7 +266,6 @@ pub fn pitch_track(x: &[f32], sr: f32) -> Vec<PitchFrame> {
             frames[i].hz = 0.0;
         }
     }
-    frames
 }
 
 /// Global tuning offset of the take in cents (circular mean of how far each
@@ -636,7 +717,16 @@ pub fn estimate_tempo(notes: &[VNote], words: &[Word], len_s: f32, bpm_hint: Opt
 }
 
 pub fn analyze(x: &[f32], sr: f32, words: &[Word], bpm_hint: Option<f32>) -> VocalAnalysis {
-    let frames = pitch_track(x, sr);
+    analyze_with(x, sr, words, bpm_hint, PitchDetect::Legacy)
+}
+
+/// `analyze` with a choice of pitch track for the notes (and so for the
+/// note-based key, tempo, range, phrases and voiced share).
+pub fn analyze_with(x: &[f32], sr: f32, words: &[Word], bpm_hint: Option<f32>, pd: PitchDetect) -> VocalAnalysis {
+    let frames = match pd {
+        PitchDetect::Legacy => pitch_track(x, sr),
+        PitchDetect::YinGated => pitch_track_gated(x, sr),
+    };
     let tuning = tuning_cents(&frames);
     let mut notes = segment_notes(&frames, tuning);
     retune_and_merge(&mut notes);
@@ -1268,6 +1358,69 @@ pub fn harmonize(notes_beats: &[(f32, f32, u8)], n_slots: usize, slot_beats: f32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The E minor line of the gated-key test (40 cents flat, vibrato,
+    /// harmonics, octave slips in the second pass, a noise floor), and its
+    /// sung pitches in order.
+    fn flat_noisy_line(sr: f32) -> (Vec<f32>, Vec<u8>) {
+        let line: [(f32, f32); 14] = [(52.0, 0.8), (55.0, 0.4), (54.0, 0.4), (52.0, 0.8), (47.0, 0.4), (50.0, 0.4), (52.0, 1.2),
+            (55.0, 0.4), (57.0, 0.4), (59.0, 0.8), (57.0, 0.4), (55.0, 0.4), (54.0, 0.4), (52.0, 1.2)];
+        let mut x: Vec<f32> = Vec::new();
+        let mut seed = 12345u32;
+        let mut noise = move || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); (seed >> 8) as f32 / 8388608.0 - 1.0 };
+        let mut phase = 0.0f32;
+        let mut want = Vec::new();
+        for rep in 0..2 {
+            for (k, &(m, d)) in line.iter().enumerate() {
+                want.push(m as u8);
+                let n = (d * sr) as usize;
+                for i in 0..n {
+                    let t = i as f32 / sr;
+                    let slip = rep == 1 && k % 3 == 0 && i < (0.03 * sr) as usize;
+                    let midi = m - 0.4 + 0.2 * (std::f32::consts::TAU * 5.0 * t).sin() + if slip { 12.0 } else { 0.0 };
+                    let hz = 440.0 * 2f32.powf((midi - 69.0) / 12.0);
+                    // wrapped: an f32 phase left to grow for 20 s loses the
+                    // precision to hold the pitch (it steps by ~1 semitone)
+                    phase = (phase + std::f32::consts::TAU * hz / sr) % std::f32::consts::TAU;
+                    let env = (t / 0.03).min(1.0) * ((d - t) / 0.03).min(1.0);
+                    x.push(0.3 * env * (phase.sin() + 0.5 * (2.0 * phase).sin() + 0.25 * (3.0 * phase).sin()));
+                }
+                x.extend(std::iter::repeat(0.0).take((0.12 * sr) as usize));
+            }
+            x.extend(std::iter::repeat(0.0).take((0.5 * sr) as usize));
+        }
+        for v in x.iter_mut() {
+            *v += 0.003 * noise();
+        }
+        (x, want)
+    }
+
+    #[test]
+    fn yin_gated_pitch_track_segments_the_sung_notes() {
+        let sr = crate::dsp::SR;
+        let (x, want) = flat_noisy_line(sr);
+        let g = analyze_with(&x, sr, &[], None, PitchDetect::YinGated);
+        let l = analyze_with(&x, sr, &[], None, PitchDetect::Legacy);
+        let got: Vec<u8> = g.notes.iter().map(|n| n.pitch).collect();
+        let legacy: Vec<u8> = l.notes.iter().map(|n| n.pitch).collect();
+        eprintln!("yin_gated: {} notes, key {} {}, tuning {:.1} c; legacy: {} notes, key {} {}, tuning {:.1} c", got.len(), g.key_root, g.scale, g.tuning_cents, legacy.len(), l.key_root, l.scale, l.tuning_cents);
+        assert_eq!(got, want, "one note per sung note, at its pitch (tuning removed)");
+        assert!((g.tuning_cents + 40.0).abs() < 10.0, "tuning {}", g.tuning_cents);
+        assert_eq!((g.key_root.as_str(), g.scale.as_str()), ("E", "minor"));
+    }
+
+
+    #[test]
+    fn yin_gated_pitch_track_hears_no_notes_in_noise() {
+        let sr = crate::dsp::SR;
+        let mut seed = 99u32;
+        let x: Vec<f32> = (0..(4.0 * sr) as usize)
+            .map(|_| { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); 0.2 * ((seed >> 8) as f32 / 8388608.0 - 1.0) })
+            .collect();
+        let fr = pitch_track_gated(&x, sr);
+        assert!(fr.iter().all(|f| f.midi == 0.0), "white noise has no voiced frames");
+        assert!(analyze_with(&x, sr, &[], None, PitchDetect::YinGated).notes.is_empty());
+    }
 
     #[test]
     fn gated_key_hears_a_flat_noisy_e_minor_line() {

@@ -614,7 +614,13 @@ pub fn make_plan(take_x: &[f32], take_fe: &Features, words: &[vocal::Word], rec:
     }
     // free: the grid is fitted to the singer
     let hint = rec.map(|(r, _)| r.bpm).or_else(|| f_opt(a, "bpm"));
-    let an = vocal::analyze(take_x, SR, words, hint);
+    // pitch_detect "yin_gated": the notes are segmented from YIN-gated frames
+    // (vocal::pitch_track_gated); "legacy" (default) is the original track, byte-identical
+    let pitch_detect = s_opt(a, "pitch_detect").unwrap_or_else(|| "legacy".into());
+    let Some(pd) = vocal::PitchDetect::parse(&pitch_detect) else {
+        bail!("pitch_detect must be legacy (default) or yin_gated, not {pitch_detect:?}");
+    };
+    let an = vocal::analyze_with(take_x, SR, words, hint, pd);
     if an.notes.len() < 4 {
         bail!("could not hear a sung melody in the take (only {} notes); is it a dry vocal?", an.notes.len());
     }
@@ -756,6 +762,9 @@ pub fn make_plan(take_x: &[f32], take_fe: &Features, words: &[vocal::Word], rec:
     let start_beat = (intro * 4) as f32 - first_bar_t / beat_s;
     let (vsb, voff) = if start_beat >= 0.0 { (start_beat, 0.0) } else { (0.0, -start_beat * beat_s) };
     info["take"] = json!({"bpm": an.tempo.bpm, "tempo_confidence": an.tempo.confidence, "key": format!("{} {}", an.key_root, an.scale), "notes": an.notes.len(), "range": [an.range.0, an.range.1]});
+    if pd == vocal::PitchDetect::YinGated {
+        info["take"]["pitch_detect"] = json!("yin_gated");
+    }
     // match_tuning (default on with yin_gated): render the backing at the
     // singer's measured tuning when it is at least 15 cents off A440 and the
     // key was not given; 0 = strict A440
@@ -2266,6 +2275,7 @@ fn cover_schema() -> Value {
         "vocal_resonance": {"type": "boolean", "description": "tame the take's lasting resonances (a room's or a phone's ring, a harsh formant): up to 4 narrow self-keyed dynamic EQ cuts on the vocal (Q5, at most -4 dB, ratio 3, attack 5 ms, release 80 ms) where its long-term spectrum (1/12-octave bands, 700 Hz-8 kHz) pokes 3 dB over its surroundings in at least 25% of the singing; each cuts only when its ring rises 2 dB over its usual level. Never near the de-esser or the chain's own EQ bands. Default false (off = the song as before)"},
         "air_fix": {"type": "boolean", "description": "when the mix's 5-11 kHz air share is under -21.5 dB (the judge's floor is -22), add a parallel exciter bus (48 dB/oct high-pass at 5 kHz, exciter, high-pass again) fed by the vocal, comps/lead and drums at 0 dB sends, its fader solved to land on -21.5 (max +6 dB); the parts' own chains are untouched. Default: on for free mode with the key heard by yin_gated (no key/scale given), off for legacy and explicit-key runs; false = the mix as it was"},
         "match_tuning": {"type": "boolean", "description": "with key_detect yin_gated and no key given: render every pitched backing instrument at the singer's measured tuning when it is 15+ cents off A440 (drums and the vocal untouched; default true). false = strict A440"},
+        "pitch_detect": {"type": "string", "enum": ["legacy", "yin_gated"], "description": "free mode: the pitch track the sung notes are segmented from (melody, note-based key, tempo, phrases). legacy (default): the original YIN track with a level gate relative to the take; byte-identical to earlier renders. yin_gated: only frames with YIN aperiodicity < 0.15 above -55 dBFS, in voiced runs of 120 ms or more, periods read without the CMNDF bias (the frames key_detect yin_gated trusts)"},
         "key_detect": {"type": "string", "enum": ["yin_gated", "legacy", "notes"], "description": "free mode: how the singer's key is heard when key/scale are not given. yin_gated (default): pitch frames gated on YIN aperiodicity < 0.15 and -55 dBFS, 120 ms smoothing, octave folding and tuning-offset removal (steadier on noisy, rubato or flat takes); an unknown read (margin < 0.05) falls back to the notes. legacy (= notes): the segmented sung notes only, as before; reproduces earlier renders byte-for-byte"},
         "intro_bars": {"type": "integer"}, "outro_bars": {"type": "integer"}, "section_bars": {"type": "integer"},
         "target_lufs": {"type": "number", "description": "default -10"},
