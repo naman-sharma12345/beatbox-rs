@@ -3,7 +3,7 @@
 the opt-in 7 kHz sibilance band ON (Naman approved it by ear, 2026-10-14 1:43 PM) and CLEAN STEMS: export_stems
 writes 32-bit float stems (stem_format "f32") at v5's pinned gains. Nothing else changes.
 
-    python3 iwby_v6_build.py BEATBOX_BIN TAKE.wav WORKDIR OUT.wav [--sibilance-band THRESHOLD_DB | --no-sibilance-band]
+    python3 iwby_v6_build.py BEATBOX_BIN TAKE.wav WORKDIR OUT.wav [--sibilance-band THRESHOLD_DB | --no-sibilance-band] [--int-exact]
 
 The band is cover_song's sibilance_band (7 kHz bell, Q2, 4:1, at most -4 dB, threshold -27 dB), kept LAST on the
 vocal chain, exactly as iwby_v5_build.py --sibilance-band builds it (B53's d4c45e57). --no-sibilance-band builds
@@ -16,8 +16,11 @@ rebuilt by iwby_v5_build.py). v6 keeps every v5 gain, so the vocal level and the
 writes the stems as float, so nothing over 0 dBFS is clipped: the clipped vocal peaks come back, nothing else
 moves (float stems also carry no dither). iwby_post.py reads stems with soundfile as float32, so values over
 1.0 pass through unchanged. The build fails if any stem reports clipped samples or a warning.
-The integer alternative (24-bit with exact_trim:true, the trim that reaches 0 dBTP) would take the vocal down
-9.09 dB instead of 7.05 (about 2 dB under v5's level), so v6 does not use it.
+--int-exact (opt-in alternative, not v6): 24-bit stems with export_stems' exact_trim (to 0.1 dB under 0 dBTP) and no pins.
+The vocal stem then meets -0.10 dBTP with nothing clipped, but the trim takes it down 9.09 dB instead of v5's 7.05, so it sits
+2.0 dB lower against an unchanged backing; measured (B54): dry vocal -2.0 dB in iwby_post, 20 phrases but 7 boundaries
+move more than 0.02 s (up to 0.35 s), the throw windows move up to 0.14 s, throw energy -2.0..+0.4 dB, total wet -0.6..-2.0 dB.
+sha256 a3fd9cca...a91126. v6 keeps float stems at v5's gains (Naman's call, 2026-10-14 2:12 PM).
 """
 import json, os, shutil, subprocess, sys
 
@@ -107,9 +110,13 @@ if SIB is not None:
     vx.append(vx.pop(band[0]))
 save(p)
 # 6. stems at v5's pinned gains, then the IWBY post-process
-r = json.loads(call('export_stems', {'dir': STEMS, 'format': 'wav', 'stem_format': 'f32', 'mode': 'pre_master', 'stem_gain_db': PINS}))
+INT_EXACT = '--int-exact' in sys.argv  # 24-bit stems, exact_trim to 0.1 dB under 0 dBTP, no pins (the vocal level moves)
+if INT_EXACT:
+    r = json.loads(call('export_stems', {'dir': STEMS, 'format': 'wav', 'mode': 'pre_master', 'exact_trim': True}))
+else:
+    r = json.loads(call('export_stems', {'dir': STEMS, 'format': 'wav', 'stem_format': 'f32', 'mode': 'pre_master', 'stem_gain_db': PINS}))
 json.dump(r, open(os.path.join(WD, 'stems.json'), 'w'), indent=1)
-if r.get('stem_format') != 'f32' or r.get('bits') != 32:
+if not INT_EXACT and (r.get('stem_format') != 'f32' or r.get('bits') != 32):
     sys.exit(f"export_stems did not write float stems: {r.get('stem_format')} {r.get('bits')}")
 bad = [(s['name'], s.get('clipped_samples'), s.get('warnings')) for s in r['stems'] if s.get('clipped_samples') or s.get('warnings')]
 if bad: sys.exit(f'stems not clean: {bad}')

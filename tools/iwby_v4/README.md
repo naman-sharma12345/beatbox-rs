@@ -65,5 +65,10 @@ The build refuses stems that report clipped samples or warnings.
 
 Measured against the band variant (iwby_v5_build.py --sibilance-band, d4c45e57), i.e. the clean stems alone: band shares
 5-9k / 2-4.5k / 10k+ unchanged (0.00 dB), 20 phrases with identical boundaries, dry vocal level +0.001 dB, throw and wet
-energy unchanged. The integer route (24-bit with `exact_trim: true`, the trim that reaches 0 dBTP unclipped) would take the
-vocal down 9.09 dB instead of 7.05, about 2 dB under v5's level (not rendered through iwby_post; its phrase split reads the vocal's absolute level); v6 keeps v5's gain.
+energy unchanged.
+
+`--int-exact` is the tested opt-in alternative (not v6): 24-bit stems with export_stems' `exact_trim: true` and no pins. The
+vocal stem meets -0.10 dBTP with 0 clipped samples, but the trim takes it down 9.09 dB instead of v5's 7.05, so the vocal sits
+2.0 dB lower against an unchanged backing. Measured against v5: dry vocal -2.0 dB inside iwby_post, 20 phrases but 7 boundaries
+moved more than 0.02 s (largest 0.35 s, phrase 15's end), throw windows moved up to 0.14 s, throw energy -2.0 to +0.4 dB and total wet -0.6 to -2.0 dB,
+master -10.41 LUFS / -1.15 dBTP, judge all pass (air_5_11k -22.0). sha256 a3fd9cca...a91126. v6 keeps float stems at v5's gains.
