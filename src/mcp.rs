@@ -121,7 +121,12 @@ pub fn handle(backend: &mut Backend, msg: &Value) -> Option<Value> {
                     r
                 }
                 Err(e) => {
-                    json!({ "content": [{ "type": "text", "text": format!("Error: {e}") }], "isError": true })
+                    let mut r = json!({ "content": [{ "type": "text", "text": format!("Error: {e}") }], "isError": true });
+                    // a rack_apply failure is machine-readable: code, path, message, expected
+                    if let Some(re) = crate::rack::cmd::parse_error(&e) {
+                        r["structuredContent"] = json!({ "rack_error": re });
+                    }
+                    r
                 }
             })
         }
