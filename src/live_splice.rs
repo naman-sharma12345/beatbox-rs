@@ -945,12 +945,11 @@ mod tests {
     /// a multiple of 64 samples at this tempo (88,200 samples/bar). A note
     /// edit on a track with a swept filter cutoff (a log parameter), a pan
     /// lane and a volume lane must still splice like a full render.
-    /// KNOWN FAILURE (B47, 2026-10-14), not fixed yet: lane_curve's grid and
-    /// smoother start at the buffer's first sample, so a window that starts
-    /// 56 samples into a 64-sample block reads its lanes on another grid:
-    /// rms 3.8e-8, max 3.0e-6, 66,293 samples over the rule.
+    /// Before B47's fix the grid started at the buffer's first sample and the
+    /// window's beats were window-relative: rms 3.8e-8, max 3.0e-6, 66,293
+    /// samples over the rule. Now blocks sit on multiples of 64 song samples
+    /// and beats are computed as a whole-song render computes them.
     #[test]
-    #[ignore = "known: automation grid anchored to the buffer start (B47 2026-10-14); fix is its own commit"]
     fn automated_tracks_splice_like_a_full_render() {
         let mut e = song(16, "auto", &[json!({"track": "keys", "type": "filter", "params": {"cutoff": 2000.0, "resonance": 0.4}})]);
         let pts = |a: f32, b: f32| json!([{"beat": 0.0, "value": a}, {"beat": 28.0, "value": b}, {"beat": 36.5, "value": a}, {"beat": 64.0, "value": b}]);

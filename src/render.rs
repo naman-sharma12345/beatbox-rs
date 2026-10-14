@@ -347,6 +347,9 @@ pub struct Timeline {
     pub loops: u32,
     /// Tempo automation: (curve, seconds at beat0, seconds per loop).
     pub tempo: Option<(std::sync::Arc<crate::tempo_curve::TempoCurve>, f64, f64)>,
+    /// Song sample at sample 0 of this render (a live-splice window's place
+    /// in the song; 0 for a whole-song render).
+    pub sample0: usize,
 }
 
 impl Timeline {
@@ -366,8 +369,28 @@ impl Timeline {
             song_beats: p.song_beats(),
             loops: opts.loops.max(1),
             tempo,
+            sample0: 0,
         }
     }
+
+    /// The song beat at song sample `abs`, computed as a whole-song render
+    /// computes it (beat 0 at sample 0), so a window reads automation on the
+    /// whole song's grid and gets the same values. With tempo automation
+    /// (which never splices) it is the window's own reading.
+    pub fn song_beat_at(&self, abs: usize) -> f32 {
+        if self.sample0 == 0 || self.tempo.is_some() {
+            return self.beat_at(abs.saturating_sub(self.sample0));
+        }
+        let b = 0.0 + abs as f32 * self.beats_per_sample;
+        if self.song_beats <= 0.0 || b < self.song_beats {
+            return b;
+        }
+        if b >= self.song_beats * self.loops as f32 {
+            return self.song_beats;
+        }
+        b % self.song_beats
+    }
+
     pub fn beat_at(&self, sample: usize) -> f32 {
         if let Some((curve, t0, loop_secs)) = &self.tempo {
             let t = t0 + sample as f64 / SR as f64;
@@ -409,13 +432,18 @@ fn lane_curve(
     // frequencies sweep geometrically (equal time per octave); the whole
     // curve is flattened here, once, before any sample loop runs
     let log = automation::is_log_param(&lane.param);
-    let blocks: Vec<f32> = (0..=n / AUTO_BLOCK + 1)
-        .map(|k| map(lane.value_at_in(tl.beat_at(k * AUTO_BLOCK), log).unwrap_or(0.0)))
+    // the grid is the song's: blocks start on multiples of AUTO_BLOCK song
+    // samples, so a window starting mid-block reads the whole song's values
+    let s0 = tl.sample0;
+    let k0 = s0 / AUTO_BLOCK;
+    let blocks: Vec<f32> = (k0..=(s0 + n) / AUTO_BLOCK + 1)
+        .map(|k| map(lane.value_at_in(tl.song_beat_at(k * AUTO_BLOCK), log).unwrap_or(0.0)))
         .collect();
     let mut out: Vec<f32> = (0..n)
         .map(|i| {
-            let k = i / AUTO_BLOCK;
-            let f = (i % AUTO_BLOCK) as f32 / AUTO_BLOCK as f32;
+            let a = i + s0;
+            let k = a / AUTO_BLOCK - k0;
+            let f = (a % AUTO_BLOCK) as f32 / AUTO_BLOCK as f32;
             blocks[k] + (blocks[k + 1] - blocks[k]) * f
         })
         .collect();
@@ -1235,7 +1263,7 @@ fn render_impl(
         }
     };
     let any_solo = p.tracks.iter().any(|t| t.solo);
-    let tl = Timeline::new(p, opts);
+    let mut tl = Timeline::new(p, opts);
     let tcurve = crate::tempo_curve::TempoCurve::new(p);
     crate::dsp::memtrace(&format!("render start: {} tracks, {} buses, {:.0} s, stems {}, cached {}", p.tracks.len(), p.buses.len(), total as f32 / SR, opts.keep_stems, cached.len()));
 
@@ -1251,6 +1279,7 @@ fn render_impl(
         }
         _ => 0,
     };
+    tl.sample0 = offset;
     let ctx = FxContext {
         step_secs: p.step_secs(),
         triggers: &triggers,
