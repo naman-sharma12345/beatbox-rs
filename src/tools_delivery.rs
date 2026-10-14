@@ -42,6 +42,15 @@ pub struct DeliverOpts {
     /// written with a fixed gain can sit over the ceiling; the report says so.
     /// Used by export_stems' stem_gain "common" and stem_gain_db (pinned).
     pub fixed_gain_db: Option<Vec<f32>>,
+    /// Opt-in exact codec trim. false (default, unchanged): each pass trims by
+    /// the DECODED true peak, at most 4 trims. An integer file that clips
+    /// hard decodes with its peaks cut off, so the decoded peak under-reads the
+    /// signal, each trim falls short and the loop can stop over the ceiling
+    /// (IWBY v5's vocal stem: +0.85 dBTP, 382 samples at full scale after 4).
+    /// true: each pass trims by the higher of the decoded true peak and the
+    /// true peak of the signal about to be encoded, for up to 12 passes, so
+    /// the file meets the ceiling unclipped (normally one trim).
+    pub exact_trim: bool,
 }
 
 impl Default for DeliverOpts {
@@ -59,6 +68,7 @@ impl Default for DeliverOpts {
             bitrate_kbps: 320,
             sample_rate: 44_100,
             fixed_gain_db: None,
+            exact_trim: false,
         }
     }
 }
@@ -274,6 +284,20 @@ pub fn section_lift_db(l: &[f32], r: &[f32]) -> f32 {
 /// is kept here: at 0.5 a 128k mp3 decoded 0.8 dB under the ceiling (B24:
 /// -2.06 dBTP against -1.2), loudness left on the table.
 pub const LIMITER_UNDER_CEILING_DB: f32 = 0.25;
+/// Most trims exact_trim takes before it gives up (and says so).
+pub const EXACT_TRIM_PASSES: usize = 12;
+
+/// Samples of an integer file at its full-scale code (hard clipped), per
+/// channel sample; None for float and lossy files, which do not clip there.
+fn clipped_samples(d: &DecodedOutput, o: &DeliverOpts) -> Option<u64> {
+    if o.format == "mp3" || o.format == "wav" && o.bits == 32 {
+        return None;
+    }
+    let bits = if o.format == "flac" { o.bits.min(24) } else { o.bits };
+    // the largest positive code is 1 LSB under 1.0; count both rails
+    let top = 1.0 - 1.5 / (1u64 << (bits - 1)) as f32;
+    Some(d.left.iter().chain(d.right.iter()).filter(|x| x.abs() >= top).count() as u64)
+}
 
 pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Value> {
     let before = analysis::loudness(l, r);
@@ -353,15 +377,19 @@ pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Val
     } else {
         // the file on disk is always the last encode: never trim without
         // re-encoding (the final pass only measures)
-        for pass in 0..5 {
+        let last = if o.exact_trim { EXACT_TRIM_PASSES } else { 4 };
+        for pass in 0..=last {
             let decoded_tp = encode_to(path, &l, &r, o)?.true_peak_db();
-            if decoded_tp <= o.ceiling_dbtp
+            // exact: the signal's own true peak as well, which a clipped
+            // integer decode under-reads (the default reads the decode only)
+            let level = if o.exact_trim { decoded_tp.max(tp_db(&l, &r)) } else { decoded_tp };
+            if level <= o.ceiling_dbtp
                 || o.format == "wav" && o.bits == 32 && pass > 0
-                || pass == 4
+                || pass == last
             {
                 break;
             }
-            let trim = -(decoded_tp - o.ceiling_dbtp + 0.1);
+            let trim = -(level - o.ceiling_dbtp + 0.1);
             scale(&mut l, &mut r, trim);
             trim_total += trim;
             gain_steps.push(trim);
@@ -372,7 +400,25 @@ pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Val
     // pre-encode buffer and never assuming the engine rate
     let dec = DecodedOutput::read(path)?;
     let decoded_tp = dec.true_peak_db();
+    let clipped = clipped_samples(&dec, o);
     let after = dec.loudness();
+    let over = decoded_tp > o.ceiling_dbtp + 0.05;
+    let trims = gain_steps.len();
+    let mut warnings: Vec<String> = Vec::new();
+    if over && o.fixed_gain_db.is_none() {
+        warnings.push(format!(
+            "codec trim gave up after {trims} trim(s): the file is at {decoded_tp:+.2} dBTP, over the {:+.1} dBTP ceiling{}",
+            o.ceiling_dbtp,
+            if o.exact_trim { "" } else { " (exact_trim:true trims by the signal's own peak until it meets it)" }
+        ));
+    }
+    if let Some(c) = clipped.filter(|c| *c > 0) {
+        warnings.push(format!(
+            "{c} samples sit at {}-bit full scale (hard clipped){}",
+            if o.format == "flac" { o.bits.min(24) } else { o.bits },
+            if o.fixed_gain_db.is_some() { ": the fixed gain is too hot for an integer file (32-bit float wav cannot clip)" } else { "" }
+        ));
+    }
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let lufs_ok = o
         .target_lufs
@@ -391,7 +437,10 @@ pub fn deliver(l: &[f32], r: &[f32], path: &Path, o: &DeliverOpts) -> Result<Val
         "gain_steps_db": gain_steps.iter().map(|g| *g as f64).collect::<Vec<f64>>(),
         // the same steps as exact f32 text (answers round numbers to 4 decimals)
         "gain_steps_exact": gain_steps.iter().map(|g| g.to_string()).collect::<Vec<String>>(),
-        "over_ceiling": decoded_tp > o.ceiling_dbtp + 0.05,
+        "over_ceiling": over,
+        "exact_trim": o.exact_trim,
+        "clipped_samples": clipped,
+        "warnings": warnings,
         "section_lift_db": {"before": lift_before, "after": if o.sample_rate == SR as u32 { section_lift_db(&l, &r) } else { lift_before }, "note": "loudest vs quietest quarter of 3 s windows"},
         "dynamics_note": match o.target_lufs {
             Some(t) if preserving && after.integrated_lufs < t - 0.5 => Value::from(format!(
@@ -427,6 +476,7 @@ fn opts_from(a: &Value, default_fmt: &str) -> Result<DeliverOpts> {
         bitrate_kbps: (u_or(a, "bitrate_kbps", 320) as u32).clamp(64, 320),
         sample_rate: sr,
         fixed_gain_db: None,
+        exact_trim: b_or(a, "exact_trim", false),
     })
 }
 
@@ -474,6 +524,7 @@ fn delivery_props() -> Value {
         "noise_shaping": {"type": "boolean", "description": "first-order noise-shaped dither (default false)"},
         "sample_rate": {"type": "integer", "description": "44100 (default) or e.g. 48000 (windowed-sinc SRC)"},
         "bitrate_kbps": {"type": "integer", "description": "mp3 bitrate (default 320)"},
+        "exact_trim": {"type": "boolean", "description": "Opt-in (default false, unchanged): trim by the higher of the decoded true peak and the signal's own true peak, up to 12 passes, so a hot signal written to an integer file meets the ceiling instead of clipping (the default trims by the decoded peak only, which a hard-clipped decode under-reads, and gives up after 4 trims). A trim that gives up is named in the report's warnings either way"},
     })
 }
 
@@ -528,6 +579,7 @@ pub fn tools() -> Vec<Tool> {
                 "include_buses": {"type": "boolean", "description": "Also export bus/return outputs (default true)"},
                 "tracks": {"type": "array", "items": {"type": "string"}, "description": "Only these tracks/buses"},
                 "stem_gain": {"type": "string", "enum": ["trim", "common"], "description": "trim (default, as before): each stem trimmed to 0 dBTP on its own, so its level follows its own true peak; common: one gain for all stems (the hottest stem's trim), balance exactly as mixed"},
+                "stem_format": {"type": "string", "enum": ["int", "f32"], "description": "int (default, unchanged): wav/flac at bits (default 24-bit, dithered); f32: 32-bit float wav, no dither, so a stem above 0 dBFS (a pinned gain, a hot bus) is carried exactly and never clipped. Each stem reports clipped_samples (integer files) and warnings"},
                 "stem_gain_db": {"type": "object", "description": "Pinned gain per stem name (track or bus name as in the project; dB as a number or numeric string, or a list of dB steps applied in order). A pinned stem is not trimmed: its level no longer depends on its own peak and the file may exceed 0 dBTP (reported as over_ceiling). Feed back a report's stem_gain_db_pin to rebuild the same files bit for bit. Overrides stem_gain for the stems it names"},
             })), &[]),
             run: |e, a| {
@@ -537,6 +589,19 @@ pub fn tools() -> Vec<Tool> {
                 o.ceiling_dbtp = 0.0;
                 let mode = s_opt(a, "mode").unwrap_or_else(|| "pre_master".into());
                 if mode != "pre_master" && mode != "post_master" { bail!("mode must be pre_master or post_master"); }
+                // stem_format f32: 32-bit float wav, so a stem over 0 dBFS (a pinned
+                // gain, or one the trim leaves hot) is carried, never clipped
+                let stem_format = s_opt(a, "stem_format").unwrap_or_else(|| "int".into()).to_lowercase();
+                match stem_format.as_str() {
+                    "int" => {}
+                    "f32" => {
+                        if o.format != "wav" { bail!("stem_format f32 writes 32-bit float wav; format {:?} cannot carry it", o.format); }
+                        if a.get("bits").and_then(|b| b.as_u64()).is_some_and(|b| b != 32) { bail!("stem_format f32 is 32-bit: drop bits or set it to 32"); }
+                        o.bits = 32;
+                        o.dither = false;
+                    }
+                    _ => bail!("stem_format must be int or f32"),
+                }
                 let stem_gain = s_opt(a, "stem_gain").unwrap_or_else(|| "trim".into()).to_lowercase();
                 if stem_gain != "trim" && stem_gain != "common" { bail!("stem_gain must be trim or common"); }
                 let pinned = stem_gain_pins(a.get("stem_gain_db"))?;
@@ -608,6 +673,7 @@ pub fn tools() -> Vec<Tool> {
                 };
                 let mut out = Vec::new();
                 let mut pin_map = serde_json::Map::new();
+                let mut warns: Vec<Value> = Vec::new();
                 let (mut ql, mut qr) = (vec![0.0f32; n], vec![0.0f32; n]);
                 for (kind, s, audible) in stems {
                     let (mut l, mut r) = (s.left.clone(), s.right.clone());
@@ -632,7 +698,11 @@ pub fn tools() -> Vec<Tool> {
                     out.push(json!({"name": s.name, "kind": kind, "path": path, "audible": audible, "in_sum": audible && direct,
                         "routed_to": if kind == "bus" { json!("master") } else { json!(p.tracks.iter().find(|t| t.name == s.name).and_then(|t| t.output.clone()).unwrap_or_else(|| "master".into())) },
                         "lufs": v["after"]["integrated_lufs"], "true_peak_dbtp": v["after"]["true_peak_dbtp"], "silent": v["after"]["integrated_lufs"].as_f64().unwrap_or(-70.0) <= -69.0,
-                        "gain_source": source, "gain_db": (gain * 1000.0).round() / 1000.0, "gain_steps_db": steps, "over_ceiling": v["over_ceiling"]}));
+                        "gain_source": source, "gain_db": (gain * 1000.0).round() / 1000.0, "gain_steps_db": steps, "over_ceiling": v["over_ceiling"],
+                        "clipped_samples": v["clipped_samples"], "warnings": v["warnings"]}));
+                    for w in v["warnings"].as_array().into_iter().flatten() {
+                        if let Some(w) = w.as_str() { warns.push(json!(format!("{}: {w}", s.name))); }
+                    }
                 }
                 let (sum_check, verdict) = if mode == "pre_master" {
                     (pre_resid, if pre_resid < -60.0 { "stems sum back to the pre-master mix (null within -60 dB)" } else { "stems do NOT fully null against the pre-master mix (check pre-fader sends / bus routing)" })
@@ -643,7 +713,8 @@ pub fn tools() -> Vec<Tool> {
                 Ok(json!({"dir": dir, "mode": mode, "format": o.format, "count": out.len(), "seconds": (mix.seconds * 100.0).round() / 100.0,
                     "sum_residual_db": sum_check, "sums_to": if mode == "pre_master" { "pre-master mix" } else { "master" }, "verdict": verdict,
                     "master_chain": p.master_effects.iter().map(|x| x.type_name()).collect::<Vec<_>>(),
-                    "stem_gain": stem_gain, "common_gain_db": common_db.map(|c| c as f64), "stem_gain_db_pin": pin_map, "stems": out}))
+                    "stem_gain": stem_gain, "common_gain_db": common_db.map(|c| c as f64), "stem_gain_db_pin": pin_map,
+                    "stem_format": stem_format, "bits": o.bits, "exact_trim": o.exact_trim, "warnings": warns, "stems": out}))
             },
         },
         Tool {
@@ -951,6 +1022,60 @@ mod tests {
         }
         let tp = stem(&c, &hot)["true_peak_dbtp"].as_f64().unwrap();
         assert!(tp <= 0.05 && tp > -0.5, "the hottest stem sits at the ceiling: {tp}");
+    }
+
+    /// stem_format f32: a stem pinned hot (over 0 dBFS) is written as float and
+    /// carried exactly; the same pin in a 24-bit file clips, and says so.
+    #[test]
+    fn export_stems_f32_carries_a_hot_stem_unclipped() {
+        let (mut e, hot) = hot_stems("beatbox_stems_f32");
+        e.project.tracks[0].volume_db += 12.0;
+        let pin = json!({hot.clone(): 0.0});
+        let i24 = e.call("export_stems", &json!({"dir": "out/i", "tracks": [hot.clone()], "stem_gain_db": pin})).unwrap();
+        let f32s = e.call("export_stems", &json!({"dir": "out/f", "tracks": [hot.clone()], "stem_gain_db": pin, "stem_format": "f32"})).unwrap();
+        let (a, b) = (stem(&i24, &hot), stem(&f32s, &hot));
+        assert!(a["clipped_samples"].as_u64().unwrap() > 0, "24-bit at the hot pin clips: {a}");
+        assert!(a["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("full scale")), "{a}");
+        assert!(!i24["warnings"].as_array().unwrap().is_empty(), "{i24}");
+        assert_eq!(f32s["stem_format"], "f32");
+        assert_eq!(f32s["bits"], 32);
+        assert!(b["clipped_samples"].is_null() && b["warnings"].as_array().unwrap().is_empty(), "{b}");
+        assert!(b["true_peak_dbtp"].as_f64().unwrap() > 3.0, "float keeps the peak over 0 dBTP: {b}");
+        let d = super::DecodedOutput::read(std::path::Path::new(b["path"].as_str().unwrap())).unwrap();
+        let top = d.left.iter().chain(d.right.iter()).fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(top > 1.4, "samples over full scale survive in the float file: {top}");
+        // float is wav only, and 32-bit only
+        assert!(e.call("export_stems", &json!({"dir": "out/x", "format": "flac", "stem_format": "f32"})).is_err());
+        assert!(e.call("export_stems", &json!({"dir": "out/x", "bits": 24, "stem_format": "f32"})).is_err());
+        assert!(e.call("export_stems", &json!({"dir": "out/x", "stem_format": "f64"})).is_err());
+    }
+
+    /// The default trim reads the decoded peak, which a hard-clipped integer
+    /// file under-reads, and gives up after 4 trims (with a warning);
+    /// exact_trim meets 0 dBTP with nothing clipped.
+    #[test]
+    fn export_stems_exact_trim_meets_the_ceiling_unclipped() {
+        let (mut e, hot) = hot_stems("beatbox_stems_exact_trim");
+        e.project.tracks[0].volume_db += 12.0;
+        let dflt = e.call("export_stems", &json!({"dir": "out/d", "tracks": [hot.clone()]})).unwrap();
+        let ex = e.call("export_stems", &json!({"dir": "out/e", "tracks": [hot.clone()], "exact_trim": true})).unwrap();
+        let (a, b) = (stem(&dflt, &hot), stem(&ex, &hot));
+        assert_eq!(a["over_ceiling"], true, "the default gives up over the ceiling here: {a}");
+        assert!(a["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("gave up")), "{a}");
+        assert_eq!(dflt["exact_trim"], false);
+        assert_eq!(ex["exact_trim"], true);
+        assert_eq!(b["over_ceiling"], false, "{b}");
+        assert!(b["true_peak_dbtp"].as_f64().unwrap() <= 0.0, "{b}");
+        assert_eq!(b["clipped_samples"], 0, "{b}");
+        assert!(b["warnings"].as_array().unwrap().is_empty(), "{b}");
+        assert!(b["gain_steps_db"].as_array().unwrap().len() <= 2, "one trim, two at most: {b}");
+        // the exact trim takes the whole excess; the default stops short
+        assert!(b["gain_db"].as_f64().unwrap() < a["gain_db"].as_f64().unwrap(), "{a} {b}");
+        // its pin map rebuilds the same file bit for bit
+        let pin = e.call("export_stems", &json!({"dir": "out/p", "tracks": [hot.clone()], "stem_gain_db": ex["stem_gain_db_pin"]})).unwrap();
+        let fx = std::fs::read(b["path"].as_str().unwrap()).unwrap();
+        let fy = std::fs::read(stem(&pin, &hot)["path"].as_str().unwrap()).unwrap();
+        assert!(fx == fy, "pinned rebuild of the exact-trimmed stem differs");
     }
 
     /// Independent check of a delivered file: decode at its own rate.
