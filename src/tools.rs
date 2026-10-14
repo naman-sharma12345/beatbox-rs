@@ -729,6 +729,7 @@ fn build() -> Vec<Tool> {
     v.extend(crate::timbre_match::tools());
     v.extend(crate::arrange_tx::tools());
     v.extend(crate::resynth::tools());
+    v.extend(crate::rack::cmd::tools());
     v.extend(crate::vocal_flex::tools());
     v.extend(crate::vocal_repair::tools());
     v.extend(crate::vocal_clarity::tools());

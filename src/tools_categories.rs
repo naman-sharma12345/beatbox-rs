@@ -83,8 +83,8 @@ pub const CATEGORIES: &[Category] = &[
     },
     Category {
         name: "mixer",
-        description: "Mixer: volume, pan, mute, buses, sends, routing, auto-balance, carve space, strip silence, drone notches.",
-        actions: &["set_mixer", "add_bus", "remove_bus", "set_send", "route_track", "route_bus", "list_routing", "balance_mix", "level_hints", "carve_mix", "critique_mix", "notch_drones", "strip_silence"],
+        description: "Mixer and rack: volume, pan, mute, buses, sends, routing, the device rack by id (rack_get / rack_apply), auto-balance, carve space, strip silence, drone notches.",
+        actions: &["rack_get", "rack_apply", "set_mixer", "add_bus", "remove_bus", "set_send", "route_track", "route_bus", "list_routing", "balance_mix", "level_hints", "carve_mix", "critique_mix", "notch_drones", "strip_silence"],
     },
     Category {
         name: "effects",

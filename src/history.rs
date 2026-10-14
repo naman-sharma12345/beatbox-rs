@@ -111,6 +111,7 @@ pub fn label(tool: &str, args: &Value) -> String {
         "add_notes" | "add_note" => "Added notes".into(),
         "remove_notes" | "clear_notes" => "Removed notes".into(),
         "add_effect" => "Added effect".into(),
+        "rack_apply" => "Rack edit".into(),
         "remove_effect" => "Removed effect".into(),
         "set_instrument" => "Changed sound".into(),
         "set_mixer" => "Mixer".into(),

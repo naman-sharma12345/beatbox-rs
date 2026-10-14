@@ -102,12 +102,56 @@ pub struct Param {
     pub lanes: Vec<String>,
 }
 
+/// Every way a rack edit can be refused. Serialized as the variant name
+/// ("ParamOutOfRange"); these strings are stable: a client may match on
+/// them, so a variant is never renamed or reused for another meaning.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RackErrorCode {
+    /// No strip (track, bus, master) by that id or name.
+    NodeNotFound,
+    /// No device by that id.
+    DeviceNotFound,
+    /// No parameter by that id (or device + name).
+    ParamNotFound,
+    /// No effect type by that name.
+    DeviceTypeNotFound,
+    /// The device is an instrument; only inserts move, go or bypass.
+    NotAnInsert,
+    /// A number outside the parameter's range.
+    ParamOutOfRange,
+    /// A value of the wrong JSON type for the parameter.
+    ParamWrongType,
+    /// A string that is not one of the parameter's options.
+    ParamNotAnOption,
+    /// A route the graph does not allow (into a track, out of the master).
+    InvalidRouting,
+    /// A route that would feed a bus back into itself.
+    RoutingCycle,
+    /// A send that does not go from a track to a bus.
+    InvalidSend,
+    /// A chain position past its end.
+    PositionOutOfRange,
+    /// A command that does not parse, or asks for something no strip has.
+    InvalidCommand,
+    /// The project changed since the revision the caller read.
+    StaleRevision,
+    /// The engine refused the edit; its words are in the message.
+    EngineRejected,
+}
+
+impl RackErrorCode {
+    /// The stable string ("ParamOutOfRange").
+    pub fn as_str(&self) -> String {
+        serde_json::to_value(self).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()
+    }
+}
+
 /// Why a value does not fit a parameter: a machine-readable code, a
 /// message, and what would have been accepted.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParamMismatch {
-    /// "out_of_range" | "wrong_type" | "not_an_option"
-    pub code: &'static str,
+    /// ParamOutOfRange | ParamWrongType | ParamNotAnOption
+    pub code: RackErrorCode,
     pub message: String,
     pub expected: Value,
 }
@@ -148,7 +192,7 @@ impl Param {
     /// Check a value against the parameter (type, range, options).
     pub fn check(&self, v: &Value) -> Result<(), ParamMismatch> {
         let wrong = |what: &str| ParamMismatch {
-            code: "wrong_type",
+            code: RackErrorCode::ParamWrongType,
             message: format!("{} takes {what}, got {v}", self.id),
             expected: self.json_schema(),
         };
@@ -159,7 +203,7 @@ impl Param {
                 let hi = self.max.unwrap_or(f32::INFINITY);
                 if !x.is_finite() || x < lo || x > hi {
                     return Err(ParamMismatch {
-                        code: "out_of_range",
+                        code: RackErrorCode::ParamOutOfRange,
                         message: format!("{} = {x} is outside {lo}..{hi}{}", self.id, self.unit.as_deref().map(|u| format!(" {u}")).unwrap_or_default()),
                         expected: serde_json::json!({"min": lo, "max": hi, "unit": self.unit}),
                     });
@@ -173,7 +217,7 @@ impl Param {
                 let opts = self.options.clone().unwrap_or_default();
                 if !opts.iter().any(|o| o.eq_ignore_ascii_case(x)) {
                     return Err(ParamMismatch {
-                        code: "not_an_option",
+                        code: RackErrorCode::ParamNotAnOption,
                         message: format!("{} has no option '{x}'", self.id),
                         expected: serde_json::json!({"options": opts}),
                     });

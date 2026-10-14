@@ -16,16 +16,25 @@
 //!   with each node's inputs and active devices. The renderer takes its bus
 //!   order from here.
 //!
+//! - **Commands** ([`cmd`]): `rack_get` reads the rack, `rack_apply` edits
+//!   it with a list of commands (add / remove / move device, set_param,
+//!   bypass, route, send, add / remove bus) as one transaction (validated
+//!   whole on a staged copy, then applied), answering failures with typed
+//!   errors: a stable code plus that code's own fields (ParamOutOfRange
+//!   {param_id, val, min, max}, StaleRevision {expected, actual}, ...). The
+//!   studio GUI and the MCP server use this same surface.
+//!
 //! Design notes are clean-room: the general idea of a modular device rack
 //! (devices on a chain, routing between strips, parameters as addressable
 //! objects with ranges and automation) is public, common DAW knowledge; no
 //! other project's code was read or copied.
 
+pub mod cmd;
 pub mod compile;
 pub mod model;
 
 pub use compile::{compile, ProcessPlan};
-pub use model::{Device, DeviceKind, Param, ParamMismatch, RackState, Route, Strip, StripKind};
+pub use model::{Device, DeviceKind, Param, ParamMismatch, RackErrorCode, RackState, Route, Strip, StripKind};
 
 #[cfg(test)]
 mod tests {
@@ -86,8 +95,9 @@ mod tests {
         assert_eq!(cut.value, json!(800.0));
         // the spec drives validation and widgets
         assert_eq!(cut.json_schema()["maximum"], json!(20000.0));
-        assert_eq!(cut.check(&json!(25000.0)).unwrap_err().code, "out_of_range");
-        assert_eq!(cut.check(&json!("loud")).unwrap_err().code, "wrong_type");
+        assert_eq!(cut.check(&json!(25000.0)).unwrap_err().code, RackErrorCode::ParamOutOfRange);
+        assert_eq!(cut.check(&json!("loud")).unwrap_err().code, RackErrorCode::ParamWrongType);
+        assert_eq!(RackErrorCode::ParamOutOfRange.as_str(), "ParamOutOfRange");
         assert!(cut.check(&json!(440.0)).is_ok());
         assert_eq!(cut.unit.as_deref(), Some("Hz"));
         assert_eq!(cut.lanes, vec![e.project.automation[0].id.clone()]);
@@ -96,7 +106,7 @@ mod tests {
         let (_, mode) = r.param(&format!("{}:fx.0.mode", bass.id)).unwrap();
         assert_eq!(mode.kind, "enum");
         assert!(mode.options.as_ref().unwrap().contains(&"highpass".to_string()));
-        assert_eq!(mode.check(&json!("wobble")).unwrap_err().code, "not_an_option");
+        assert_eq!(mode.check(&json!("wobble")).unwrap_err().code, RackErrorCode::ParamNotAnOption);
         assert_eq!(mode.json_schema()["type"], "string");
         assert!(mode.scale.is_none());
         // send level on the fader section
