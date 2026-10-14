@@ -533,7 +533,7 @@ pub fn tools() -> Vec<Tool> {
             name: "analyze_vocal",
             description: "Listen to a sung vocal: pitch-tracked notes, key, tempo + first downbeat, timing tightness, range, tuning, phrases (and lyrics when lyrics=true). The first step of building a song around a singer.",
             mutates: false,
-            schema: || obj(json!({"path": {"type": "string"}, "bpm": {"type": "number", "description": "tempo hint if you know it"}, "lyrics": {"type": "boolean", "description": "also transcribe lyrics (default false here)"}, "model": {"type": "string"}, "notes": {"type": "integer", "description": "how many notes to list (default 48)"}, "pitch_detect": {"type": "string", "enum": ["legacy", "yin_gated"], "description": "the pitch track the notes are segmented from. legacy (default): the original track. yin_gated: only frames with YIN aperiodicity < 0.15 above -55 dBFS in voiced runs of 120 ms or more"}, "key_detect": {"type": "string", "enum": ["notes", "yin_gated"], "description": "yin_gated also reports key_gated: the key from YIN-gated pitch frames (aperiodicity < 0.15, -55 dBFS, 120 ms smoothing, octave folding, tuning offset removed)"}}), &["path"]),
+            schema: || obj(json!({"path": {"type": "string"}, "bpm": {"type": "number", "description": "tempo hint if you know it"}, "lyrics": {"type": "boolean", "description": "also transcribe lyrics (default false here)"}, "model": {"type": "string"}, "notes": {"type": "integer", "description": "how many notes to list (default 48)"}, "pitch_detect": {"type": "string", "enum": ["legacy", "yin_gated"], "description": "the pitch track the notes are segmented from. yin_gated (default): only frames with YIN aperiodicity < 0.15 above -55 dBFS in voiced runs of 120 ms or more, the notes rounded on the gated key's tuning. legacy: the original track, as before the default flip"}, "key_detect": {"type": "string", "enum": ["notes", "yin_gated"], "description": "yin_gated also reports key_gated: the key from YIN-gated pitch frames (aperiodicity < 0.15, -55 dBFS, 120 ms smoothing, octave folding, tuning offset removed)"}}), &["path"]),
             run: |e, a| {
                 let path = e.resolve(&s_req(a, "path")?);
                 let x = samples::decode_file(&path)?;
@@ -543,10 +543,8 @@ pub fn tools() -> Vec<Tool> {
                 }
                 let (lyrics, note) = lyrics_for(e, &path, &aa);
                 let words = lyrics.as_ref().map(|l| l.words()).unwrap_or_default();
-                let pitch_detect = s_opt(a, "pitch_detect").unwrap_or_else(|| "legacy".into());
-                let Some(pd) = vocal::PitchDetect::parse(&pitch_detect) else {
-                    bail!("pitch_detect must be legacy (default) or yin_gated, not {pitch_detect:?}");
-                };
+                // yin_gated is the default since the flip; "legacy" is the original track, byte-identical
+                let pd = vocal::PitchDetect::from_arg(s_opt(a, "pitch_detect").as_deref())?;
                 // yin_gated rounds the notes against the gated key's tuning, so the
                 // gated key is read once for both
                 let key_gated_on = s_opt(a, "key_detect").as_deref() == Some("yin_gated");

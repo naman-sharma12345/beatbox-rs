@@ -165,18 +165,33 @@ pub fn pitch_track(x: &[f32], sr: f32) -> Vec<PitchFrame> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PitchDetect {
     /// `pitch_track`: yin() above a level gate relative to the take's loud
-    /// parts (the original analysis; byte-identical).
+    /// parts (the original analysis; byte-identical to renders before the
+    /// default flip when asked for explicitly).
     Legacy,
-    /// `pitch_track_gated`: the frames `gated_key` trusts.
+    /// `pitch_track_gated`: the frames `gated_key` trusts, with the notes
+    /// rounded on the gated key's tuning. The default for analyze_vocal and
+    /// cover_song / plan_cover.
     YinGated,
 }
 
 impl PitchDetect {
+    /// What analyze_vocal and cover_song use when `pitch_detect` is not given.
+    pub const DEFAULT: PitchDetect = PitchDetect::YinGated;
+
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "legacy" => Some(PitchDetect::Legacy),
             "yin_gated" => Some(PitchDetect::YinGated),
             _ => None,
+        }
+    }
+
+    /// The `pitch_detect` tool argument: absent = `DEFAULT` (yin_gated),
+    /// "legacy" = the original track.
+    pub fn from_arg(s: Option<&str>) -> Result<Self> {
+        match s {
+            None => Ok(Self::DEFAULT),
+            Some(v) => Self::parse(v).ok_or_else(|| anyhow!("pitch_detect must be yin_gated (default) or legacy, not {v:?}")),
         }
     }
 }
@@ -1512,6 +1527,15 @@ mod tests {
         let fr = pitch_track_gated(&x, sr);
         assert!(fr.iter().all(|f| f.midi == 0.0), "white noise has no voiced frames");
         assert!(analyze_with(&x, sr, &[], None, PitchDetect::YinGated).notes.is_empty());
+    }
+
+    #[test]
+    fn pitch_detect_defaults_to_yin_gated() {
+        assert_eq!(PitchDetect::DEFAULT, PitchDetect::YinGated);
+        assert_eq!(PitchDetect::from_arg(None).unwrap(), PitchDetect::YinGated);
+        assert_eq!(PitchDetect::from_arg(Some("yin_gated")).unwrap(), PitchDetect::YinGated);
+        assert_eq!(PitchDetect::from_arg(Some("legacy")).unwrap(), PitchDetect::Legacy);
+        assert!(PitchDetect::from_arg(Some("notes")).is_err());
     }
 
     #[test]
