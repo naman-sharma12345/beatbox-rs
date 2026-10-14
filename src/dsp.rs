@@ -27,6 +27,11 @@ pub fn memtrace(label: &str) {
     }
 }
 
+/// BS.1770-4 / R128 streaming loudness meter (opt-in; nothing existing calls it).
+pub mod loudness_meter;
+/// Sidechain dynamic-EQ band carving (opt-in; nothing existing calls it).
+pub mod carve_eq;
+
 thread_local! {
     static FLUSH_DENORMALS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
@@ -635,3 +640,6 @@ mod tests {
         assert!((0.0..1.0).contains(&v));
     }
 }
+
+/// ITU-R BS.1770-4 Annex 2 true-peak interpolator and meter.
+pub mod true_peak;
