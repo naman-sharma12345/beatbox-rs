@@ -928,6 +928,14 @@ fn notes_json(v: &[NoteOut]) -> Value {
 /// exciter or tuning on the lead.
 fn raw_vocal_chain(e: &mut Engine, track: &str) -> Result<()> {
     call(e, "add_effect", json!({"track": track, "type": "parametric_eq", "params": {"bands": [{"kind": "low_cut", "freq": 85.0, "stages": 2}, {"kind": "bell", "freq": 300.0, "gain_db": -4.0, "q": 0.6}, {"kind": "bell", "freq": 3000.0, "gain_db": 3.0, "q": 0.8}]}}))?;
+    // TECH DEBT (known, left as is on purpose; Naman, Oct 14 2026): range_db +4.0
+    // has the wrong sign. The de-esser clamps range_db to -24..0, so +4 becomes 0
+    // and this de-esser never reduces gain: it is a no-op (the IWBY v5 render is
+    // byte-identical with it removed). Not fixed because flipping it to -4 changes
+    // every cover golden, and as a 6.5 kHz high split it would cut the 10 kHz+ air
+    // along with the sibilance (v5's air gate fails). The fix needs a band-limited
+    // dynamic bell in its place AND a coordinated golden migration. The same line
+    // is in arrange_tx.rs (the arrange vocal chain).
     call(e, "add_effect", json!({"track": track, "type": "deesser", "params": {"freq": 6500.0, "threshold_db": -30.0, "range_db": 4.0, "release_ms": 60.0}}))?;
     call(e, "add_effect", json!({"track": track, "type": "compressor", "params": {"threshold_db": -20.0, "ratio": 2.5, "attack_ms": 10.0, "release_ms": 100.0, "makeup_db": 3.0, "knee_db": 6.0}}))?;
     call(e, "add_bus", json!({"name": "plate", "preset": "none"}))?;

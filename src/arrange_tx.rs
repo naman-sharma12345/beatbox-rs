@@ -427,6 +427,12 @@ fn arrange(e: &mut Engine, a: &Value) -> Result<Value> {
             call(e, "add_audio_clip", json!({"sample": "take", "track": "vox", "start_beat": start_beat, "offset_s": offset_s, "length_s": (dur - offset_s).max(0.1), "fade_in_ms": 5, "fade_out_ms": 30}))?;
         }
         call(e, "add_effect", json!({"track": "vox", "type": "parametric_eq", "params": {"bands": [{"kind": "low_cut", "freq": 85.0, "stages": 2}]}}))?;
+        // TECH DEBT (known, left as is on purpose; Naman, Oct 14 2026): range_db +4.0
+        // has the wrong sign. The de-esser clamps range_db to -24..0, so +4 becomes 0
+        // and this de-esser never reduces gain (a no-op). Not fixed because flipping
+        // it changes the cover goldens, and as a 6.5 kHz high split it would cut the
+        // 10 kHz+ air with the sibilance. The fix needs a band-limited dynamic bell
+        // AND a coordinated golden migration. Same line: tools_cover.rs raw_vocal_chain.
         call(e, "add_effect", json!({"track": "vox", "type": "deesser", "params": {"freq": 6500.0, "threshold_db": -30.0, "range_db": 4.0, "release_ms": 60.0}}))?;
         call(e, "add_effect", json!({"track": "vox", "type": "compressor", "params": {"threshold_db": -20.0, "ratio": 2.5, "attack_ms": 10.0, "release_ms": 100.0, "makeup_db": 3.0, "knee_db": 6.0}}))?;
         call(e, "add_bus", json!({"name": "plate", "preset": "none"}))?;
