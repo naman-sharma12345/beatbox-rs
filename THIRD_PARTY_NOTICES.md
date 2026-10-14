@@ -55,6 +55,45 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Signalsmith Audio DSP library
+
+- Source: https://github.com/Signalsmith-Audio/dsp (commit `ca390d2`)
+- Copyright (c) 2021 Geraint Luff / Signalsmith Audio Ltd.
+- License: MIT (the repository's `LICENSE.txt`, reproduced below; the adapted
+  files carry no per-file header)
+- Changes: ported from C++ to Rust (no FFI), one mono channel per instance
+  with streaming history instead of a fixed maximum block, a 4x mode built as
+  two cascaded 2x stages with a shorter second-stage kernel, the Bessel I0
+  series summed to a relative tolerance, tests added.
+
+| Beatbox file | Adapted from (Signalsmith DSP) | What |
+|---|---|---|
+| `src/oversample.rs` | `rates.h` (`Oversampler2xFIR`, `fillKaiserSinc`), `windows.h` (`Kaiser::bandwidthToBeta`, `Kaiser::fill`) | Opt-in 2x/4x half-band polyphase FIR oversampler |
+
+```
+MIT License
+
+Copyright (c) 2021 Geraint Luff / Signalsmith Audio Ltd.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Sound palette samples (downloaded on first use, not bundled)
 
 53 CC0 1.0 one-shots from Sonic Pi's bundled freesound CC0 set and Michael Fischer's 1994 TR-808 set (tidalcycles/sounds-tr808-fischer, CC0). Per-file author, source page, pinned URL and SHA-256: [SAMPLES_LICENSES.md](SAMPLES_LICENSES.md).
