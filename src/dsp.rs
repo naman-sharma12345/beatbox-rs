@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::f32::consts::PI;
 
 pub mod adaa;
+pub mod adaa_oversampled;
 
 /// Engine sample rate. Everything renders at 44.1 kHz.
 pub const SR: f32 = 44_100.0;
