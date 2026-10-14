@@ -442,12 +442,33 @@ mod tests {
         }
     }
 
+    /// Runs `input` as one `process_block` call through a fresh shaper
+    /// prepared for `prep` (`None`: the default `DEFAULT_MAX_BLOCK`).
+    fn run_prepared(name: &str, order: AdaaOrder, mode: Oversampling, drive: f64, input: &[f32], prep: Option<usize>) -> Vec<f32> {
+        fn go<N: Nonlinearity>(mut s: OversampledShaper<N>, input: &[f32], prep: Option<usize>) -> Vec<f32> {
+            if let Some(m) = prep {
+                s.prepare(m);
+                assert_eq!(s.max_block(), m);
+            }
+            let mut buf = input.to_vec();
+            s.process_block(&mut buf);
+            buf
+        }
+        match name {
+            "hard" => go(OversampledShaper::with_oversampling(HardClip, order, drive, mode), input, prep),
+            "tanh" => go(OversampledShaper::with_oversampling(Tanh, order, drive, mode), input, prep),
+            "soft3" => go(OversampledShaper::with_oversampling(SoftClip3, order, drive, mode), input, prep),
+            _ => go(OversampledShaper::with_oversampling(SoftClip5, order, drive, mode), input, prep),
+        }
+    }
+
     #[test]
     fn processing_never_allocates() {
-        // Counted by the test allocator on this thread: after construction
-        // (and after prepare), process_block makes no heap allocation at
-        // any rate or order, for blocks shorter than, equal to and longer
-        // than max_block, and across reset().
+        // Counted by the test allocator on this thread: after construction,
+        // prepare and set_oversampling (all outside the counted region),
+        // process_block makes no heap allocation for any curve, rate or
+        // order, for blocks shorter than, equal to and longer than
+        // max_block, and across reset().
         use super::alloc_count::on_this_thread;
         let x = noise(9000, 21);
         // The counter is live: an oversampler that was never prepared grows
@@ -456,37 +477,57 @@ mod tests {
         let (mut probe, before) = (x[..64].to_vec(), on_this_thread());
         raw.process(&mut probe, |_| {});
         assert!(on_this_thread() > before, "allocation counter saw nothing");
-        for mode in MODES {
-            for order in ORDERS {
-                let mut a = OversampledShaper::with_oversampling(Tanh, order, 6.0, mode);
-                let mut b = OversampledShaper::with_oversampling(HardClip, order, 6.0, mode);
-                b.prepare(256);
-                let mut buf = x.clone();
-                let before = on_this_thread();
-                for (lo, hi) in [(0, 1), (1, 38), (38, 550), (550, 2598), (2598, 9000)] {
-                    a.process_block(&mut buf[lo..hi]);
-                    b.process_block(&mut buf[lo..hi]);
+
+        fn check<N: Nonlinearity>(name: &str, mk: impl Fn(AdaaOrder, Oversampling) -> OversampledShaper<N>, x: &[f32]) {
+            let other = |m: Oversampling| if m == Oversampling::X4 { Oversampling::X1 } else { Oversampling::X4 };
+            for mode in MODES {
+                for order in ORDERS {
+                    // Setup, not counted: default capacity; a smaller
+                    // prepare; and a rate round trip away and back.
+                    let mut a = mk(order, mode);
+                    let mut b = mk(order, mode);
+                    b.prepare(256);
+                    let mut c = mk(order, mode);
+                    c.set_oversampling(other(mode));
+                    c.set_oversampling(mode);
+                    let mut buf = x.to_vec();
+                    let before = on_this_thread();
+                    for (lo, hi) in [(0, 1), (1, 38), (38, 550), (550, 2598), (2598, 9000)] {
+                        a.process_block(&mut buf[lo..hi]);
+                        b.process_block(&mut buf[lo..hi]);
+                        c.process_block(&mut buf[lo..hi]);
+                    }
+                    a.reset();
+                    a.process_block(&mut buf[..DEFAULT_MAX_BLOCK]);
+                    let made = on_this_thread() - before;
+                    assert_eq!(made, 0, "{name} {mode:?} {order:?}: {made} allocations while processing");
+                    assert!(buf.iter().all(|v| v.is_finite()), "{name} {mode:?} {order:?}");
                 }
-                a.reset();
-                a.process_block(&mut buf[..DEFAULT_MAX_BLOCK]);
-                let made = on_this_thread() - before;
-                assert_eq!(made, 0, "{mode:?} {order:?}: {made} allocations while processing");
-                assert!(buf.iter().all(|v| v.is_finite()));
             }
         }
+        check("hard", |o, m| OversampledShaper::with_oversampling(HardClip, o, 6.0, m), &x);
+        check("tanh", |o, m| OversampledShaper::with_oversampling(Tanh, o, 6.0, m), &x);
+        check("soft3", |o, m| OversampledShaper::with_oversampling(SoftClip3, o, 6.0, m), &x);
+        check("soft5", |o, m| OversampledShaper::with_oversampling(SoftClip5, o, 6.0, m), &x);
     }
 
     #[test]
     fn prepare_and_piecewise_processing_do_not_change_output() {
+        // Reference: the whole 7000-sample signal as ONE piece (prepared for
+        // its full length). Compared bit for bit with the default capacity
+        // (2048: pieces of 2048) and prepare(100) (pieces of 100), both fed
+        // a block longer than their capacity, for every rate and ADAA order.
         let x = noise(7000, 8);
         for mode in MODES {
-            let whole = run("soft3", AdaaOrder::Second, mode, 5.0, &x, x.len());
-            let mut s = OversampledShaper::with_oversampling(SoftClip3, AdaaOrder::Second, 5.0, mode);
-            s.prepare(100);
-            assert_eq!(s.max_block(), 100);
-            let mut y = x.clone();
-            s.process_block(&mut y);
-            assert!(y.iter().zip(&whole).all(|(p, q)| p.to_bits() == q.to_bits()), "{mode:?}");
+            for order in [AdaaOrder::First, AdaaOrder::Second] {
+                for name in ["soft3", "tanh"] {
+                    let whole = run_prepared(name, order, mode, 5.0, &x, Some(x.len()));
+                    for prep in [None, Some(100)] {
+                        let y = run_prepared(name, order, mode, 5.0, &x, prep);
+                        assert!(y.iter().zip(&whole).all(|(p, q)| p.to_bits() == q.to_bits()), "{name} {mode:?} {order:?} prep {prep:?}");
+                    }
+                }
+            }
         }
     }
 
