@@ -99,6 +99,11 @@ pub struct VocalAnalysis {
     pub voiced_percent: f32,
     /// Sung phrases (start, end) in seconds, split at breaths/silences.
     pub phrases: Vec<(f32, f32)>,
+    /// Where `tuning_cents` came from: "frames" (the note path's own pitch
+    /// frames, as always on legacy) or "gated_key" (yin_gated: the gated
+    /// key's tuning offset). Not serialized, so legacy output is unchanged.
+    #[serde(skip)]
+    pub tuning_source: &'static str,
 }
 
 fn hz_to_midi(hz: f32) -> f32 {
@@ -722,12 +727,33 @@ pub fn analyze(x: &[f32], sr: f32, words: &[Word], bpm_hint: Option<f32>) -> Voc
 
 /// `analyze` with a choice of pitch track for the notes (and so for the
 /// note-based key, tempo, range, phrases and voiced share).
+///
+/// yin_gated segments and rounds the notes against the gated key's tuning
+/// offset (`gated_key`), not the note frames' own estimate: a singer about
+/// half a semitone flat sits on the rounding line, and the two estimates can
+/// land on opposite sides of it (+38 c vs -45 c on a real take), which puts
+/// every note a semitone off. Without enough gated frames for a key, the
+/// frames' own estimate is used.
 pub fn analyze_with(x: &[f32], sr: f32, words: &[Word], bpm_hint: Option<f32>, pd: PitchDetect) -> VocalAnalysis {
-    let frames = match pd {
-        PitchDetect::Legacy => pitch_track(x, sr),
-        PitchDetect::YinGated => pitch_track_gated(x, sr),
+    match pd {
+        PitchDetect::Legacy => analyze_frames(x, sr, pitch_track(x, sr), words, bpm_hint, None),
+        PitchDetect::YinGated => analyze_yin_gated(x, sr, words, bpm_hint, gated_key(x, sr).as_ref()),
+    }
+}
+
+/// `analyze_with(.., YinGated)` with the gated key already in hand (cover_song
+/// reads it anyway): the notes are rounded against its tuning offset.
+pub fn analyze_yin_gated(x: &[f32], sr: f32, words: &[Word], bpm_hint: Option<f32>, gated: Option<&GatedKey>) -> VocalAnalysis {
+    analyze_frames(x, sr, pitch_track_gated(x, sr), words, bpm_hint, gated.map(|g| g.tuning_cents))
+}
+
+/// Notes, key, tempo, range and phrases from a pitch track; `note_tuning`
+/// (cents) replaces the frames' own tuning estimate when given.
+fn analyze_frames(x: &[f32], sr: f32, frames: Vec<PitchFrame>, words: &[Word], bpm_hint: Option<f32>, note_tuning: Option<f32>) -> VocalAnalysis {
+    let (tuning, tuning_source) = match note_tuning {
+        Some(t) => (t, "gated_key"),
+        None => (tuning_cents(&frames), "frames"),
     };
-    let tuning = tuning_cents(&frames);
     let mut notes = segment_notes(&frames, tuning);
     retune_and_merge(&mut notes);
     let keys = vocal_key(&notes);
@@ -754,6 +780,7 @@ pub fn analyze_with(x: &[f32], sr: f32, words: &[Word], bpm_hint: Option<f32>, p
         voiced_percent: (voiced * 1000.0).round() / 10.0,
         phrases: phrases(&notes, 0.35),
         notes,
+        tuning_source,
     }
 }
 
@@ -1409,6 +1436,71 @@ mod tests {
         assert_eq!((g.key_root.as_str(), g.scale.as_str()), ("E", "minor"));
     }
 
+
+    /// An E minor line sung `flat` cents flat (light vibrato, a noise floor),
+    /// every note of 0.4 s or more flipping up `flip_st` semitones for
+    /// `flip_s` seconds in its middle, `flip_gain` louder: a quick upper
+    /// ornament the note frames keep and the gated key's 120 ms smoothing drops.
+    fn flipped_flat_line(sr: f32, flat: f32, flip_st: f32, flip_s: f32, flip_gain: f32, flip_every: f32) -> (Vec<f32>, Vec<u8>) {
+        let line: [(f32, f32); 14] = [(52.0, 0.6), (55.0, 0.4), (54.0, 0.4), (52.0, 0.8), (47.0, 0.4), (50.0, 0.4), (52.0, 1.0),
+            (55.0, 0.4), (57.0, 0.4), (59.0, 0.8), (57.0, 0.4), (55.0, 0.4), (54.0, 0.4), (52.0, 1.0)];
+        let mut x: Vec<f32> = Vec::new();
+        let mut seed = 777u32;
+        let mut noise = move || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); (seed >> 8) as f32 / 8388608.0 - 1.0 };
+        let mut phase = 0.0f32;
+        let mut want = Vec::new();
+        for _rep in 0..2 {
+            for &(m, d) in line.iter() {
+                want.push(m as u8);
+                let n = (d * sr) as usize;
+                // flips centred in equal slices of the note, one per `flip_every` s
+                let k = ((d / flip_every).floor() as usize).max(1);
+                let slice = d / k as f32;
+                for i in 0..n {
+                    let t = i as f32 / sr;
+                    let c = (t / slice).floor() * slice + slice / 2.0;
+                    let flip = (t - c).abs() < flip_s / 2.0;
+                    let midi = m - flat / 100.0 + if flip { flip_st } else { 0.08 * (std::f32::consts::TAU * 5.5 * t).sin() };
+                    let hz = 440.0 * 2f32.powf((midi - 69.0) / 12.0);
+                    phase = (phase + std::f32::consts::TAU * hz / sr) % std::f32::consts::TAU;
+                    let env = (t / 0.02).min(1.0) * ((d - t) / 0.03).min(1.0) * if flip { flip_gain } else { 1.0 };
+                    x.push(0.25 * env * (phase.sin() + 0.5 * (2.0 * phase).sin() + 0.25 * (3.0 * phase).sin()));
+                }
+                x.extend(std::iter::repeat(0.0).take((0.15 * sr) as usize));
+            }
+            x.extend(std::iter::repeat(0.0).take((0.5 * sr) as usize));
+        }
+        for v in x.iter_mut() {
+            *v += 0.003 * noise();
+        }
+        (x, want)
+    }
+
+    #[test]
+    fn yin_gated_rounds_a_45_cent_flat_line_on_the_gated_tuning() {
+        // E minor sung 45 c flat, right on the rounding line, with a quick
+        // upper flip every 0.3 s. The note frames keep the flips, so their own
+        // tuning estimate wraps past -50 c to the sharp side and every note
+        // would round a semitone low (D# minor); the gated key's tuning drops
+        // them and stays flat, and yin_gated now rounds the notes on it.
+        let sr = crate::dsp::SR;
+        let (x, want) = flipped_flat_line(sr, 45.0, 0.65, 0.06, 2.3, 0.3);
+        let frames = pitch_track_gated(&x, sr);
+        let own = tuning_cents(&frames);
+        let g = analyze_with(&x, sr, &[], None, PitchDetect::YinGated);
+        let old = analyze_frames(&x, sr, frames, &[], None, None);
+        let got: Vec<u8> = g.notes.iter().map(|n| n.pitch).collect();
+        let old_p: Vec<u8> = old.notes.iter().map(|n| n.pitch).collect();
+        eprintln!("frames' own tuning {own:.1} c -> {} {}; gated-key tuning {:.1} c ({}) -> {} {}, {} notes", old.key_root, old.scale, g.tuning_cents, g.tuning_source, g.key_root, g.scale, got.len());
+        assert!(own > 0.0, "the frames' own estimate wraps to the sharp side: {own}");
+        assert_ne!(old_p, want, "rounded on the frames' own tuning the notes land a semitone off");
+        assert_eq!(g.tuning_source, "gated_key");
+        assert!((g.tuning_cents + 45.0).abs() < 10.0, "gated tuning {}", g.tuning_cents);
+        assert_eq!(got, want, "one note per sung note, at its pitch (gated tuning removed)");
+        assert_eq!((g.key_root.as_str(), g.scale.as_str()), ("E", "minor"));
+        // legacy keeps its own estimate
+        assert_eq!(analyze_with(&x, sr, &[], None, PitchDetect::Legacy).tuning_source, "frames");
+    }
 
     #[test]
     fn yin_gated_pitch_track_hears_no_notes_in_noise() {

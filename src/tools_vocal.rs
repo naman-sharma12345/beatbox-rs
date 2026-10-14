@@ -547,13 +547,21 @@ pub fn tools() -> Vec<Tool> {
                 let Some(pd) = vocal::PitchDetect::parse(&pitch_detect) else {
                     bail!("pitch_detect must be legacy (default) or yin_gated, not {pitch_detect:?}");
                 };
-                let an = vocal::analyze_with(&x, SR, &words, f_opt(a, "bpm"), pd);
+                // yin_gated rounds the notes against the gated key's tuning, so the
+                // gated key is read once for both
+                let key_gated_on = s_opt(a, "key_detect").as_deref() == Some("yin_gated");
+                let gk = if key_gated_on || pd == vocal::PitchDetect::YinGated { vocal::gated_key(&x, SR) } else { None };
+                let an = match pd {
+                    vocal::PitchDetect::Legacy => vocal::analyze_with(&x, SR, &words, f_opt(a, "bpm"), pd),
+                    vocal::PitchDetect::YinGated => vocal::analyze_yin_gated(&x, SR, &words, f_opt(a, "bpm"), gk.as_ref()),
+                };
                 let mut v = analysis_json(&an, u_or(a, "notes", 48) as usize);
                 if pd == vocal::PitchDetect::YinGated {
                     v["pitch_detect"] = json!("yin_gated");
+                    v["tuning_source"] = json!(an.tuning_source);
                 }
-                if s_opt(a, "key_detect").as_deref() == Some("yin_gated") {
-                    v["key_gated"] = match vocal::gated_key(&x, SR) {
+                if key_gated_on {
+                    v["key_gated"] = match gk {
                         Some(g) => serde_json::to_value(&g)?,
                         None => json!({"unknown": true, "note": "too few gated pitch frames"}),
                     };

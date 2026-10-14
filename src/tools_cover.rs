@@ -620,7 +620,22 @@ pub fn make_plan(take_x: &[f32], take_fe: &Features, words: &[vocal::Word], rec:
     let Some(pd) = vocal::PitchDetect::parse(&pitch_detect) else {
         bail!("pitch_detect must be legacy (default) or yin_gated, not {pitch_detect:?}");
     };
-    let an = vocal::analyze_with(take_x, SR, words, hint, pd);
+    // key_detect "yin_gated": the key from gated YIN frames (vocal::gated_key)
+    // instead of the segmented notes; an "unknown" read falls back to the notes
+    // default since commit 3: yin_gated; "legacy" (or "notes") is the old note-based read, byte-identical
+    let key_detect = s_opt(a, "key_detect").unwrap_or_else(|| "yin_gated".into());
+    if !matches!(key_detect.as_str(), "yin_gated" | "legacy" | "notes") {
+        bail!("key_detect must be yin_gated (default), legacy or notes, not {key_detect:?}");
+    }
+    let gated_on = key_detect == "yin_gated" && (s_opt(a, "key").is_none() || s_opt(a, "scale").is_none());
+    // pitch_detect yin_gated rounds the notes against the gated key's tuning
+    // (read once here); the key and match_tuning still use it only when gated_on
+    let gk = if gated_on || pd == vocal::PitchDetect::YinGated { vocal::gated_key(take_x, SR) } else { None };
+    let an = match pd {
+        vocal::PitchDetect::Legacy => vocal::analyze_with(take_x, SR, words, hint, pd),
+        vocal::PitchDetect::YinGated => vocal::analyze_yin_gated(take_x, SR, words, hint, gk.as_ref()),
+    };
+    let gated = if gated_on { gk } else { None };
     if an.notes.len() < 4 {
         bail!("could not hear a sung melody in the take (only {} notes); is it a dry vocal?", an.notes.len());
     }
@@ -632,15 +647,6 @@ pub fn make_plan(take_x: &[f32], take_fe: &Features, words: &[vocal::Word], rec:
     }
     let beat_s = 60.0 / bpm;
     let bs = 4.0 * beat_s;
-    // key_detect "yin_gated": the key from gated YIN frames (vocal::gated_key)
-    // instead of the segmented notes; an "unknown" read falls back to the notes
-    // default since commit 3: yin_gated; "legacy" (or "notes") is the old note-based read, byte-identical
-    let key_detect = s_opt(a, "key_detect").unwrap_or_else(|| "yin_gated".into());
-    if !matches!(key_detect.as_str(), "yin_gated" | "legacy" | "notes") {
-        bail!("key_detect must be yin_gated (default), legacy or notes, not {key_detect:?}");
-    }
-    let gated_on = key_detect == "yin_gated" && (s_opt(a, "key").is_none() || s_opt(a, "scale").is_none());
-    let gated = if gated_on { vocal::gated_key(take_x, SR) } else { None };
     let (heard_root, heard_scale) = match &gated {
         Some(g) if !g.unknown => (g.key_root.clone(), g.scale.clone()),
         _ => (an.key_root.clone(), an.scale.clone()),
@@ -764,6 +770,8 @@ pub fn make_plan(take_x: &[f32], take_fe: &Features, words: &[vocal::Word], rec:
     info["take"] = json!({"bpm": an.tempo.bpm, "tempo_confidence": an.tempo.confidence, "key": format!("{} {}", an.key_root, an.scale), "notes": an.notes.len(), "range": [an.range.0, an.range.1]});
     if pd == vocal::PitchDetect::YinGated {
         info["take"]["pitch_detect"] = json!("yin_gated");
+        info["take"]["note_tuning_cents"] = json!(an.tuning_cents);
+        info["take"]["note_tuning_source"] = json!(an.tuning_source);
     }
     // match_tuning (default on with yin_gated): render the backing at the
     // singer's measured tuning when it is at least 15 cents off A440 and the
