@@ -72,6 +72,7 @@ pub mod sound_catalog;
 pub mod tools_library;
 pub mod recorder;
 pub mod web_import;
+pub mod tools_tp_limit;
 pub mod server;
 pub mod smf;
 pub mod synth_extra;
