@@ -19,6 +19,11 @@ pub fn rss_mb() -> f32 {
         .unwrap_or(0.0)
 }
 
+/// Linkwitz-Riley LR4 crossover tree (opt-in; nothing existing calls it).
+pub mod crossover;
+/// LR4 multiband compressor (opt-in; nothing existing calls it).
+pub mod multiband;
+
 /// BEATBOX_MEMTRACE=1: one stderr line per traced step with the resident
 /// memory, so a long render that runs the box out of memory says where.
 pub fn memtrace(label: &str) {

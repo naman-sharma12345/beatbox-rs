@@ -85,6 +85,7 @@ pub mod tools_ears;
 pub mod tools_ears_pro;
 pub mod tools_fl;
 pub mod tools_fx2;
+pub mod tools_multiband;
 pub mod tools_groove;
 pub mod tools_listen;
 pub mod tools_midi;
