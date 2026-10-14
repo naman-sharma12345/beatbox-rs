@@ -286,6 +286,50 @@ pub fn section_lift_db(l: &[f32], r: &[f32]) -> f32 {
 pub const LIMITER_UNDER_CEILING_DB: f32 = 0.25;
 /// Most trims exact_trim takes before it gives up (and says so).
 pub const EXACT_TRIM_PASSES: usize = 12;
+/// Most common trims export_stems' tp_trim takes before it gives up (and says so).
+pub const TP_TRIM_PASSES: usize = 12;
+
+/// What export_stems' opt-in tp_trim "common" did.
+#[derive(Clone, Debug)]
+pub struct TpTrim {
+    /// The common trim steps (dB), appended to every stem's own gain.
+    pub steps: Vec<f32>,
+    /// Each stem's true peak (dBTP) read back from its file before any trim.
+    pub before: Vec<f32>,
+    /// Each stem's true peak read back from its file after the last trim.
+    pub after: Vec<f32>,
+    /// How many times every stem was written and read back.
+    pub measures: usize,
+    /// false: it gave up after `TP_TRIM_PASSES` trims with the hottest stem
+    /// still over the ceiling.
+    pub converged: bool,
+}
+
+/// One trim for every stem, set by the hottest one. `measure(steps)` writes
+/// every stem with `steps` appended to its own gain and returns each stem's
+/// true peak read back from the written file. Each trim aims 0.1 dB under
+/// `ceiling` (the meter is 4x oversampled and can under-read a peak close to
+/// Nyquist); it stops once the hottest stem is at or under `ceiling`, and
+/// gives up after `max_trims` trims (converged false, never an endless loop).
+/// Every stem gets the same steps, so the balance between stems is unchanged.
+pub fn common_tp_trim<F: FnMut(&[f32]) -> Result<Vec<f32>>>(ceiling: f32, max_trims: usize, mut measure: F) -> Result<TpTrim> {
+    let mut steps: Vec<f32> = Vec::new();
+    let before = measure(&steps)?;
+    let mut now = before.clone();
+    let mut measures = 1;
+    loop {
+        let hottest = now.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        if hottest <= ceiling {
+            return Ok(TpTrim { steps, before, after: now, measures, converged: true });
+        }
+        if steps.len() >= max_trims {
+            return Ok(TpTrim { steps, before, after: now, measures, converged: false });
+        }
+        steps.push(-(hottest - ceiling + 0.1));
+        now = measure(&steps)?;
+        measures += 1;
+    }
+}
 
 /// Samples of an integer file at its full-scale code (hard clipped), per
 /// channel sample; None for float and lossy files, which do not clip there.
@@ -581,6 +625,7 @@ pub fn tools() -> Vec<Tool> {
                 "stem_gain": {"type": "string", "enum": ["trim", "common"], "description": "trim (default, as before): each stem trimmed to 0 dBTP on its own, so its level follows its own true peak; common: one gain for all stems (the hottest stem's trim), balance exactly as mixed"},
                 "stem_format": {"type": "string", "enum": ["int", "f32"], "description": "int (default, unchanged): wav/flac at bits (default 24-bit, dithered); f32: 32-bit float wav, no dither, so a stem above 0 dBFS (a pinned gain, a hot bus) is carried exactly and never clipped. Each stem reports clipped_samples (integer files) and warnings"},
                 "stem_gain_db": {"type": "object", "description": "Pinned gain per stem name (track or bus name as in the project; dB as a number or numeric string, or a list of dB steps applied in order). A pinned stem is not trimmed: its level no longer depends on its own peak and the file may exceed 0 dBTP (reported as over_ceiling). Feed back a report's stem_gain_db_pin to rebuild the same files bit for bit. Overrides stem_gain for the stems it names"},
+                "tp_trim": {"type": "string", "enum": ["common"], "description": "Opt-in, stem_format f32 only (absent: unchanged). common: after each stem's own gain (pinned, common or as mixed), ONE extra trim for every stem, set by the hottest stem's true peak read back from its written file, aiming 0.1 dB under the 0 dBTP ceiling; repeated until the hottest stem meets 0 dBTP, giving up with a warning after 12 trims. The balance between stems stays exactly as it was (every stem gets the same steps). The report's tp_trim block has each trim, the passes and the hottest stem before/after; each stem reports true_peak_before_dbtp, and stem_gain_db_pin rebuilds the trimmed files bit for bit"},
             })), &[]),
             run: |e, a| {
                 let mut o = opts_from(a, "wav")?;
@@ -605,6 +650,18 @@ pub fn tools() -> Vec<Tool> {
                 let stem_gain = s_opt(a, "stem_gain").unwrap_or_else(|| "trim".into()).to_lowercase();
                 if stem_gain != "trim" && stem_gain != "common" { bail!("stem_gain must be trim or common"); }
                 let pinned = stem_gain_pins(a.get("stem_gain_db"))?;
+                // tp_trim common (opt-in, float stems only): after each stem's
+                // own gain, one more trim for every stem, set by the hottest
+                // stem's read-back true peak, until it meets the ceiling. Absent:
+                // nothing changes.
+                let tp_trim = match s_opt(a, "tp_trim").map(|m| m.to_lowercase()) {
+                    None => false,
+                    Some(m) if m == "common" => {
+                        if stem_format != "f32" { bail!("tp_trim common needs stem_format f32 (float stems are measured and trimmed unclipped)"); }
+                        true
+                    }
+                    Some(m) => bail!("tp_trim must be common (got {m:?})"),
+                };
                 let p = e.project.clone();
                 let dir = match s_opt(a, "dir") {
                     Some(d) => e.resolve(&d),
@@ -671,35 +728,75 @@ pub fn tools() -> Vec<Tool> {
                 } else {
                     None
                 };
+                let base_gain = |name: &str| -> (Option<Vec<f32>>, &'static str) {
+                    match (pinned.get(&name.to_lowercase()), common_db) {
+                        (Some(steps), _) => (Some(steps.clone()), "pinned"),
+                        (None, Some(c)) => (Some(if c != 0.0 { vec![c] } else { vec![] }), "common"),
+                        (None, None) => (None, "trim"),
+                    }
+                };
+                let stem_path = |kind: &str, s: &render::Stem| -> PathBuf {
+                    dir.join(format!("{}{}.{}", if kind == "bus" { "bus_" } else { "" }, samples::sample_name(&s.name), ext(&o.format)))
+                };
+                // tp_trim: write every stem at its own gain plus the common
+                // steps so far, read each file back, trim by the hottest
+                let tp = if tp_trim {
+                    Some(common_tp_trim(o.ceiling_dbtp, TP_TRIM_PASSES, |extra| {
+                        let mut tps = Vec::with_capacity(stems.len());
+                        for &(kind, s, _) in stems.iter() {
+                            let (mut l, mut r) = (s.left.clone(), s.right.clone());
+                            if mode == "post_master" {
+                                master_fx(&mut l, &mut r);
+                            }
+                            let mut fixed = base_gain(&s.name).0.unwrap_or_default();
+                            fixed.extend_from_slice(extra);
+                            let path = stem_path(kind, s);
+                            deliver(&l, &r, &path, &DeliverOpts { fixed_gain_db: Some(fixed), ..o.clone() })?;
+                            tps.push(DecodedOutput::read(&path)?.true_peak_db());
+                        }
+                        Ok(tps)
+                    })?)
+                } else {
+                    None
+                };
+                let names: Vec<String> = stems.iter().map(|(_, s, _)| s.name.clone()).collect();
                 let mut out = Vec::new();
                 let mut pin_map = serde_json::Map::new();
                 let mut warns: Vec<Value> = Vec::new();
                 let (mut ql, mut qr) = (vec![0.0f32; n], vec![0.0f32; n]);
-                for (kind, s, audible) in stems {
+                for (si, (kind, s, audible)) in stems.into_iter().enumerate() {
                     let (mut l, mut r) = (s.left.clone(), s.right.clone());
                     if mode == "post_master" {
                         master_fx(&mut l, &mut r);
                     }
-                    let (fixed, source) = match (pinned.get(&s.name.to_lowercase()), common_db) {
-                        (Some(steps), _) => (Some(steps.clone()), "pinned"),
-                        (None, Some(c)) => (Some(if c != 0.0 { vec![c] } else { vec![] }), "common"),
-                        (None, None) => (None, "trim"),
-                    };
+                    let (mut fixed, mut source) = base_gain(&s.name);
+                    if let Some(t) = &tp {
+                        let mut f = fixed.unwrap_or_default();
+                        f.extend_from_slice(&t.steps);
+                        fixed = Some(f);
+                        if source == "trim" {
+                            source = "as_mixed";
+                        }
+                    }
                     let so = DeliverOpts { fixed_gain_db: fixed, ..o.clone() };
                     let direct = kind == "bus" || p.tracks.iter().find(|t| t.name == s.name).and_then(|t| t.output.as_deref()).map(|b| p.bus_index(b).is_err()).unwrap_or(true);
                     if audible && direct {
                         for i in 0..n.min(l.len()) { ql[i] += l[i]; qr[i] += r[i]; }
                     }
-                    let path: PathBuf = dir.join(format!("{}{}.{}", if kind == "bus" { "bus_" } else { "" }, samples::sample_name(&s.name), ext(&o.format)));
+                    let path: PathBuf = stem_path(kind, s);
                     let v = deliver(&l, &r, &path, &so)?;
                     let steps = v["gain_steps_db"].clone();
                     let gain: f64 = steps.as_array().map(|x| x.iter().filter_map(|g| g.as_f64()).sum()).unwrap_or(0.0);
                     pin_map.insert(s.name.clone(), v["gain_steps_exact"].clone());
-                    out.push(json!({"name": s.name, "kind": kind, "path": path, "audible": audible, "in_sum": audible && direct,
+                    let mut entry = json!({"name": s.name, "kind": kind, "path": path, "audible": audible, "in_sum": audible && direct,
                         "routed_to": if kind == "bus" { json!("master") } else { json!(p.tracks.iter().find(|t| t.name == s.name).and_then(|t| t.output.clone()).unwrap_or_else(|| "master".into())) },
                         "lufs": v["after"]["integrated_lufs"], "true_peak_dbtp": v["after"]["true_peak_dbtp"], "silent": v["after"]["integrated_lufs"].as_f64().unwrap_or(-70.0) <= -69.0,
                         "gain_source": source, "gain_db": (gain * 1000.0).round() / 1000.0, "gain_steps_db": steps, "over_ceiling": v["over_ceiling"],
-                        "clipped_samples": v["clipped_samples"], "warnings": v["warnings"]}));
+                        "clipped_samples": v["clipped_samples"], "warnings": v["warnings"]});
+                    if let Some(t) = &tp {
+                        entry["true_peak_before_dbtp"] = json!((t.before[si] as f64 * 100.0).round() / 100.0);
+                    }
+                    out.push(entry);
                     for w in v["warnings"].as_array().into_iter().flatten() {
                         if let Some(w) = w.as_str() { warns.push(json!(format!("{}: {w}", s.name))); }
                     }
@@ -710,11 +807,35 @@ pub fn tools() -> Vec<Tool> {
                     let r = resid(&mix.left, &mix.right, &ql, &qr);
                     (r, if r < -40.0 { "post-master stems sum close to the master" } else { "post-master stems do not sum to the master: the master chain is nonlinear (compressor/limiter/clipper react to the full mix)" })
                 };
-                Ok(json!({"dir": dir, "mode": mode, "format": o.format, "count": out.len(), "seconds": (mix.seconds * 100.0).round() / 100.0,
+                let hottest = |v: &[f32]| -> (String, f64) {
+                    let i = (0..v.len()).max_by(|&x, &y| v[x].total_cmp(&v[y]));
+                    i.map(|i| (names[i].clone(), (v[i] as f64 * 100.0).round() / 100.0)).unwrap_or_default()
+                };
+                let tp_report = tp.as_ref().map(|t| {
+                    let (b, a) = (hottest(&t.before), hottest(&t.after));
+                    if !t.converged {
+                        warns.push(json!(format!(
+                            "tp_trim gave up after {} trims: the hottest stem ({}) is at {:+.2} dBTP, over the {:+.1} dBTP ceiling",
+                            t.steps.len(), a.0, a.1, o.ceiling_dbtp
+                        )));
+                    }
+                    let total: f32 = t.steps.iter().sum();
+                    json!({"mode": "common", "ceiling_dbtp": o.ceiling_dbtp, "aim_dbtp": o.ceiling_dbtp - 0.1,
+                        "trim_db": (total as f64 * 1000.0).round() / 1000.0,
+                        "trim_steps_db": t.steps.iter().map(|g| *g as f64).collect::<Vec<f64>>(),
+                        "trims": t.steps.len(), "measure_passes": t.measures, "max_trims": TP_TRIM_PASSES, "converged": t.converged,
+                        "hottest_before": {"stem": b.0, "true_peak_dbtp": b.1}, "hottest_after": {"stem": a.0, "true_peak_dbtp": a.1},
+                        "meter": "true peak read back from each written file: 4x oversampled, per channel, max of L/R"})
+                });
+                let mut report = json!({"dir": dir, "mode": mode, "format": o.format, "count": out.len(), "seconds": (mix.seconds * 100.0).round() / 100.0,
                     "sum_residual_db": sum_check, "sums_to": if mode == "pre_master" { "pre-master mix" } else { "master" }, "verdict": verdict,
                     "master_chain": p.master_effects.iter().map(|x| x.type_name()).collect::<Vec<_>>(),
                     "stem_gain": stem_gain, "common_gain_db": common_db.map(|c| c as f64), "stem_gain_db_pin": pin_map,
-                    "stem_format": stem_format, "bits": o.bits, "exact_trim": o.exact_trim, "warnings": warns, "stems": out}))
+                    "stem_format": stem_format, "bits": o.bits, "exact_trim": o.exact_trim, "warnings": warns, "stems": out});
+                if let Some(t) = tp_report {
+                    report["tp_trim"] = t;
+                }
+                Ok(report)
             },
         },
         Tool {
@@ -1076,6 +1197,183 @@ mod tests {
         let fx = std::fs::read(b["path"].as_str().unwrap()).unwrap();
         let fy = std::fs::read(stem(&pin, &hot)["path"].as_str().unwrap()).unwrap();
         assert!(fx == fy, "pinned rebuild of the exact-trimmed stem differs");
+    }
+
+    // ---- tp_trim common (opt-in, float stems) ----
+
+    fn f32_file(path: &str) -> super::DecodedOutput {
+        super::DecodedOutput::read(std::path::Path::new(path)).unwrap()
+    }
+
+    fn energy(d: &super::DecodedOutput) -> f64 {
+        d.left.iter().chain(d.right.iter()).map(|x| (*x as f64) * (*x as f64)).sum()
+    }
+
+    /// (a) tp_trim absent: nothing changes. A hot pinned float stem stays over
+    /// 0 dBTP with no tp_trim fields in the report; on a song whose stems are
+    /// all under the ceiling, tp_trim takes no trim and writes the same bytes
+    /// as the export without it. tp_trim needs f32 and only takes "common".
+    #[test]
+    fn export_stems_tp_trim_off_is_unchanged() {
+        let (mut e, hot) = hot_stems("beatbox_stems_tp_off");
+        let pin = json!({hot.clone(): 0.0});
+        let a = e.call("export_stems", &json!({"dir": "out/a", "tracks": [hot.clone()], "stem_gain_db": pin, "stem_format": "f32"})).unwrap();
+        let x = stem(&a, &hot);
+        assert!(a.get("tp_trim").is_none(), "{a}");
+        assert!(x.get("true_peak_before_dbtp").is_none(), "{x}");
+        assert_eq!(x["gain_source"], "pinned");
+        assert_eq!(x["over_ceiling"], true, "no trim without tp_trim: {x}");
+        // all stems under the ceiling: same files with and without tp_trim
+        for t in e.project.tracks.iter_mut() {
+            t.volume_db -= 24.0;
+        }
+        let off = e.call("export_stems", &json!({"dir": "out/off", "stem_format": "f32"})).unwrap();
+        let on = e.call("export_stems", &json!({"dir": "out/on", "stem_format": "f32", "tp_trim": "common"})).unwrap();
+        assert_eq!(on["tp_trim"]["trims"], 0, "{}", on["tp_trim"]);
+        assert_eq!(on["tp_trim"]["converged"], true);
+        let so = off["stems"].as_array().unwrap();
+        assert!(!so.is_empty());
+        for x in so {
+            assert!(x["true_peak_dbtp"].as_f64().unwrap() <= 0.0, "{x}");
+            assert!(x["gain_steps_db"].as_array().unwrap().is_empty(), "{x}");
+            let y = stem(&on, x["name"].as_str().unwrap());
+            let fx = std::fs::read(x["path"].as_str().unwrap()).unwrap();
+            let fy = std::fs::read(y["path"].as_str().unwrap()).unwrap();
+            assert!(fx == fy, "{} differs with tp_trim at 0 trims", x["name"]);
+        }
+        assert!(e.call("export_stems", &json!({"dir": "out/x", "tp_trim": "common"})).is_err(), "tp_trim needs f32");
+        assert!(e.call("export_stems", &json!({"dir": "out/x", "stem_format": "f32", "tp_trim": "per_stem"})).is_err());
+    }
+
+    /// (b) Synthetic stems with inter-sample peaks at +2 dBTP (a tone at fs/4,
+    /// 45 degrees, whose samples sit 3 dB under its true peak; one at 0.45 fs)
+    /// written as float files: the common trim brings the hottest to 0.1 dB
+    /// under 0 dBTP, measured on the files read back, in one trim.
+    #[test]
+    fn tp_trim_common_converges_on_inter_sample_peaks() {
+        use std::f32::consts::{PI, TAU};
+        let dir = std::env::temp_dir().join(format!("beatbox_tp_trim_synth_{}", std::process::id()));
+        let sr = super::SR;
+        let n = sr as usize;
+        let tone = |f: f32, ph: f32, db: f32| -> Vec<f32> {
+            let a = super::db_to_gain(db);
+            (0..n).map(|i| a * (TAU * f * i as f32 / sr + ph).sin()).collect()
+        };
+        let stems = [tone(sr / 4.0, PI / 4.0, 2.0), tone(0.45 * sr, 0.3, 2.0), tone(1000.0, 0.0, -6.0)];
+        let sample_peak = stems[0].iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(crate::dsp::gain_to_db(sample_peak) < -0.9, "the fs/4 stem's samples sit under 0 dBFS");
+        let o = super::DeliverOpts { bits: 32, dither: false, limit: false, ceiling_dbtp: 0.0, ..Default::default() };
+        let paths: Vec<std::path::PathBuf> = (0..stems.len()).map(|i| dir.join(format!("s{i}.wav"))).collect();
+        let t = super::common_tp_trim(0.0, super::TP_TRIM_PASSES, |extra| {
+            stems
+                .iter()
+                .zip(&paths)
+                .map(|(x, p)| {
+                    let v = super::deliver(x, x, p, &super::DeliverOpts { fixed_gain_db: Some(extra.to_vec()), ..o.clone() })?;
+                    assert!(v["warnings"].as_array().unwrap().is_empty(), "{v}");
+                    Ok(super::DecodedOutput::read(p)?.true_peak_db())
+                })
+                .collect()
+        })
+        .unwrap();
+        assert!(t.before[0] > 1.8 && t.before[0] < 2.2, "the meter sees the +2 dBTP inter-sample peak: {:?}", t.before);
+        assert!(t.before[1] > 0.0, "{:?}", t.before);
+        assert!(t.converged, "{t:?}");
+        assert_eq!(t.steps.len(), 1, "float scales exactly, so one trim: {t:?}");
+        assert_eq!(t.measures, 2);
+        let hottest = t.after.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        assert!((hottest + 0.1).abs() < 0.02, "aims 0.1 dB under the ceiling: {hottest}");
+        for (i, p) in paths.iter().enumerate() {
+            let d = super::DecodedOutput::read(p).unwrap();
+            assert!(d.true_peak_db() <= 0.0, "s{i} read back at {}", d.true_peak_db());
+            assert!((d.true_peak_db() - t.after[i]).abs() < 1e-6);
+            // every stem moved by the same trim
+            assert!((t.after[i] - t.before[i] - t.steps[0]).abs() < 0.01, "{t:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (c) On a real export (float stems at pinned gains, as IWBY v6 writes
+    /// them): the hot stem meets 0 dBTP, every stem moves by exactly the same
+    /// gain (stem-to-stem balance within 1e-4 dB), and the report's pin map
+    /// rebuilds the trimmed files bit for bit.
+    #[test]
+    fn export_stems_tp_trim_common_keeps_the_balance() {
+        let (mut e, hot) = hot_stems("beatbox_stems_tp_common");
+        let raw = e.call("export_stems", &json!({"dir": "out/r", "stem_format": "f32"})).unwrap();
+        let mut pins = serde_json::Map::new();
+        for x in raw["stems"].as_array().unwrap() {
+            pins.insert(x["name"].as_str().unwrap().to_string(), json!(0.0));
+        }
+        let pinned = e.call("export_stems", &json!({"dir": "out/p", "stem_format": "f32", "stem_gain_db": pins})).unwrap();
+        let tp = e.call("export_stems", &json!({"dir": "out/t", "stem_format": "f32", "stem_gain_db": pins, "tp_trim": "common"})).unwrap();
+        let rep = &tp["tp_trim"];
+        assert_eq!(rep["converged"], true, "{rep}");
+        assert_eq!(rep["mode"], "common");
+        assert_eq!(rep["hottest_before"]["stem"], hot.as_str(), "{rep}");
+        assert!(rep["hottest_before"]["true_peak_dbtp"].as_f64().unwrap() > 0.5, "{rep}");
+        assert!(rep["trims"].as_u64().unwrap() >= 1 && rep["trims"].as_u64().unwrap() <= 2, "{rep}");
+        let after = rep["hottest_after"]["true_peak_dbtp"].as_f64().unwrap();
+        assert!(after <= 0.0 && after > -0.2, "{rep}");
+        assert!(tp["warnings"].as_array().unwrap().is_empty(), "{tp}");
+        assert!(rep["trim_db"].as_f64().unwrap() < -0.5, "{rep}");
+        // the exact common gain: every trim step as applied (f32)
+        let trim: f64 = rep["trim_steps_db"].as_array().unwrap().iter().map(|g| g.as_f64().unwrap()).sum();
+        let mut moved: Vec<f64> = Vec::new();
+        let mut checked = 0;
+        for x in tp["stems"].as_array().unwrap() {
+            let name = x["name"].as_str().unwrap();
+            assert_eq!(x["over_ceiling"], false, "{x}");
+            assert_eq!(x["gain_source"], "pinned");
+            assert!(x["true_peak_dbtp"].as_f64().unwrap() <= 0.0, "{x}");
+            assert!(x["true_peak_before_dbtp"].is_number(), "{x}");
+            let (a, b) = (energy(&f32_file(stem(&pinned, name)["path"].as_str().unwrap())), energy(&f32_file(x["path"].as_str().unwrap())));
+            if a > 0.0 {
+                let d = 10.0 * (b / a).log10();
+                assert!((d - trim).abs() < 1e-4, "{name}: moved {d:+.6} dB, common trim {trim:+.6}");
+                moved.push(d);
+                checked += 1;
+            }
+        }
+        assert!(checked >= 2, "balance checked on {checked} stems");
+        // stem-to-stem balance: every stem moved by the same gain
+        let spread = moved.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - moved.iter().cloned().fold(f64::INFINITY, f64::min);
+        assert!(spread < 1e-4, "stems moved by different gains: {moved:?}");
+        let re = e.call("export_stems", &json!({"dir": "out/re", "stem_format": "f32", "stem_gain_db": tp["stem_gain_db_pin"]})).unwrap();
+        for x in tp["stems"].as_array().unwrap() {
+            let fx = std::fs::read(x["path"].as_str().unwrap()).unwrap();
+            let fy = std::fs::read(stem(&re, x["name"].as_str().unwrap())["path"].as_str().unwrap()).unwrap();
+            assert!(fx == fy, "pinned rebuild of {} differs", x["name"]);
+        }
+        // unpinned stems are taken as mixed (0 dB), then trimmed together
+        let mixed = e.call("export_stems", &json!({"dir": "out/m", "stem_format": "f32", "tp_trim": "common"})).unwrap();
+        assert_eq!(mixed["tp_trim"]["converged"], true);
+        for x in mixed["stems"].as_array().unwrap() {
+            assert_eq!(x["gain_source"], "as_mixed", "{x}");
+            assert!(x["true_peak_dbtp"].as_f64().unwrap() <= 0.0, "{x}");
+        }
+    }
+
+    /// (e) A meter that never comes down: the loop gives up after 12 trims
+    /// (converged false) instead of looping forever; under the ceiling it
+    /// takes no trim; a failed write is an error.
+    #[test]
+    fn tp_trim_gives_up_after_12_trims() {
+        let mut calls = 0;
+        let t = super::common_tp_trim(0.0, super::TP_TRIM_PASSES, |_| {
+            calls += 1;
+            Ok(vec![3.0, -1.0])
+        })
+        .unwrap();
+        assert!(!t.converged);
+        assert_eq!(super::TP_TRIM_PASSES, 12);
+        assert_eq!(t.steps.len(), 12);
+        assert_eq!(t.measures, 13);
+        assert_eq!(calls, 13);
+        assert!(t.steps.iter().all(|s| (*s + 3.1).abs() < 1e-6), "{:?}", t.steps);
+        let t = super::common_tp_trim(0.0, 12, |_| Ok(vec![-3.0, f32::NEG_INFINITY])).unwrap();
+        assert!(t.converged && t.steps.is_empty() && t.measures == 1, "{t:?}");
+        assert!(super::common_tp_trim(0.0, 12, |_| Err(anyhow::anyhow!("write failed"))).is_err());
     }
 
     /// Independent check of a delivered file: decode at its own rate.

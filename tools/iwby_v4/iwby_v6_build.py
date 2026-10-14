@@ -3,7 +3,7 @@
 the opt-in 7 kHz sibilance band ON (Naman approved it by ear, 2026-10-14 1:43 PM) and CLEAN STEMS: export_stems
 writes 32-bit float stems (stem_format "f32") at v5's pinned gains. Nothing else changes.
 
-    python3 iwby_v6_build.py BEATBOX_BIN TAKE.wav WORKDIR OUT.wav [--sibilance-band THRESHOLD_DB | --no-sibilance-band] [--int-exact]
+    python3 iwby_v6_build.py BEATBOX_BIN TAKE.wav WORKDIR OUT.wav [--sibilance-band THRESHOLD_DB | --no-sibilance-band] [--int-exact | --f32-tp]
 
 The band is cover_song's sibilance_band (7 kHz bell, Q2, 4:1, at most -4 dB, threshold -27 dB), kept LAST on the
 vocal chain, exactly as iwby_v5_build.py --sibilance-band builds it (B53's d4c45e57). --no-sibilance-band builds
@@ -21,6 +21,12 @@ The vocal stem then meets -0.10 dBTP with nothing clipped, but the trim takes it
 2.0 dB lower against an unchanged backing; measured (B54): dry vocal -2.0 dB in iwby_post, 20 phrases but 7 boundaries
 move more than 0.02 s (up to 0.35 s), the throw windows move up to 0.14 s, throw energy -2.0..+0.4 dB, total wet -0.6..-2.0 dB.
 sha256 a3fd9cca...a91126. v6 keeps float stems at v5's gains (Naman's call, 2026-10-14 2:12 PM).
+--f32-tp (opt-in, not v6; Naman approved 2026-10-14 10:19 PM): float stems at v5's pinned gains, then export_stems'
+tp_trim "common": ONE extra trim for every stem, set by the hottest stem's true peak read back from its file, aiming
+-0.1 dBTP, until every stem is at or under 0.0 dBTP (12 trims at most). The stem-to-stem balance stays v6's exactly.
+The build fails unless the trim converged with every stem under 0 dBTP and no warnings; its report is WORKDIR/stems.json
+(tp_trim block). iwby_post re-levels the master, so the trim mostly washes out there. Name the output
+beatbox_iwby_v6_f32tp.wav. Without the flag nothing changes (v6 stays 8e024845...).
 """
 import json, os, shutil, subprocess, sys
 
@@ -111,7 +117,11 @@ if SIB is not None:
 save(p)
 # 6. stems at v5's pinned gains, then the IWBY post-process
 INT_EXACT = '--int-exact' in sys.argv  # 24-bit stems, exact_trim to 0.1 dB under 0 dBTP, no pins (the vocal level moves)
-if INT_EXACT:
+F32_TP = '--f32-tp' in sys.argv  # float stems at v5's pins + tp_trim common to <= 0.0 dBTP (balance kept)
+if INT_EXACT and F32_TP: sys.exit('--int-exact and --f32-tp are alternatives; pick one')
+if F32_TP:
+    r = json.loads(call('export_stems', {'dir': STEMS, 'format': 'wav', 'stem_format': 'f32', 'mode': 'pre_master', 'stem_gain_db': PINS, 'tp_trim': 'common'}))
+elif INT_EXACT:
     r = json.loads(call('export_stems', {'dir': STEMS, 'format': 'wav', 'mode': 'pre_master', 'exact_trim': True}))
 else:
     r = json.loads(call('export_stems', {'dir': STEMS, 'format': 'wav', 'stem_format': 'f32', 'mode': 'pre_master', 'stem_gain_db': PINS}))
@@ -122,6 +132,12 @@ bad = [(s['name'], s.get('clipped_samples'), s.get('warnings')) for s in r['stem
 if bad: sys.exit(f'stems not clean: {bad}')
 over = [(s['name'], s['true_peak_dbtp']) for s in r['stems'] if s.get('over_ceiling')]
 if over: print('note: over 0 dBTP at the pinned gain, carried unclipped in float:', over, file=LOG, flush=True)
+if F32_TP:
+    tp = r.get('tp_trim') or {}
+    hot = [(s['name'], s['true_peak_dbtp']) for s in r['stems'] if s['true_peak_dbtp'] > 0.0]
+    if not tp.get('converged') or over or hot or r.get('warnings'):
+        sys.exit(f"--f32-tp: stems not under 0 dBTP: {tp} {hot} {r.get('warnings')}")
+    print('tp_trim', json.dumps(tp), file=LOG, flush=True)
 post = subprocess.run([sys.executable, os.path.join(HERE, 'iwby_post.py'), STEMS, OUT, PROJ], capture_output=True, text=True, timeout=290)
 print(post.stdout[-1500:], post.stderr[-1500:], file=LOG, flush=True)
 if post.returncode != 0: sys.exit(f'iwby_post failed: {post.stderr[-600:]}')
