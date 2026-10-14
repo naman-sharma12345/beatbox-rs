@@ -49,3 +49,21 @@ stem levels whatever its peaks do. Only vox was trimmed; the other stems' pins a
 `--sibilance-band [DB]` asks cover_song for its opt-in `sibilance_band` (7 kHz dynamic bell, Q2, ratio 4, at most -4 dB,
 attack 1 ms, release 60 ms, default threshold -27 dB) and moves it LAST on the vocal chain, after this recipe's shelves and
 exciter. `IWBY_KEEP_STEMS=1` keeps WORKDIR/stems for measuring.
+
+## iwby_v6_build.py: IWBY v6 = v5 + the 7 kHz band + clean stems (B54, 2026-10-14)
+
+    python3 iwby_v6_build.py BEATBOX_BIN take_dn2.wav WORKDIR v6.wav                        # IWBY v6, sha256 8e024845...2d6a6b
+    python3 iwby_v6_build.py BEATBOX_BIN take_dn2.wav WORKDIR v5f.wav --no-sibilance-band   # v5 + clean stems only
+
+v5 stays locked (iwby_v5_build.py, 4c42f368, untouched). v6 is the v5 recipe with two changes: cover_song's opt-in
+`sibilance_band` ON (the 7 kHz band, threshold -27 dB, last on the vocal chain; Naman approved it by ear on 2026-10-14), and
+the stems exported as 32-bit float (`stem_format: "f32"`) at v5's pinned gains. v5's 24-bit vocal stem at the pinned gain
+sits at +0.85 dBTP with 382 samples hard clipped at full scale (the band variant d4c45e57: +0.04 dBTP, 374); as float the
+same gain carries those peaks (v6 vocal stem +1.94 dBTP, nothing clipped), and every stem keeps v5's level, so the phrase
+split and the throws are unchanged. iwby_post.py reads stems with soundfile as float32, so values over 1.0 pass through.
+The build refuses stems that report clipped samples or warnings.
+
+Measured against the band variant (iwby_v5_build.py --sibilance-band, d4c45e57), i.e. the clean stems alone: band shares
+5-9k / 2-4.5k / 10k+ unchanged (0.00 dB), 20 phrases with identical boundaries, dry vocal level +0.001 dB, throw and wet
+energy unchanged. The integer route (24-bit with `exact_trim: true`, the trim that reaches 0 dBTP unclipped) would take the
+vocal down 9.09 dB instead of 7.05, about 2 dB under v5's level (not rendered through iwby_post; its phrase split reads the vocal's absolute level); v6 keeps v5's gain.
