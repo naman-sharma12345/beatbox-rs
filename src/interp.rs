@@ -234,6 +234,156 @@ mod tests {
     }
 
     #[test]
+    fn integer_delay_settings_match_the_existing_ring_delay_bit_for_bit() {
+        // The engine's existing integer delay (fx.rs `Effect::Delay`): a ring
+        // of exactly d slots, read slot i % d, then write the input there.
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let x: Vec<f32> = (0..20_000)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                ((seed >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+            })
+            .collect();
+        for d in [1usize, 2, 7, 100, 1000, 4410] {
+            let mut ring = vec![0.0f32; d];
+            let mut dl = FracDelay::with_max(d + 8);
+            for (i, &v) in x.iter().enumerate() {
+                let k = i % d;
+                let want = ring[k];
+                ring[k] = v;
+                dl.push(v);
+                for interp in [Interp::Hermite, Interp::Linear] {
+                    assert_eq!(dl.read(d as f64, interp).to_bits(), want.to_bits(), "d = {d}, {interp:?}, sample {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn swept_delay_has_no_clicks_or_zipper_noise() {
+        // A 1 kHz sine at -6 dBFS read through a delay that glides 10 -> 410
+        // samples over 2 s (400 integer crossings), then wobbles fast
+        // (+/- 40 samples at 5 Hz).
+        let n = 2 * 44_100 + 44_100;
+        let amp = 0.5f64;
+        let w = 2.0 * PI * 1000.0 / FS;
+        let delay = |k: usize| -> f64 {
+            let t = k as f64 / FS;
+            if t < 2.0 {
+                10.0 + 200.0 * t
+            } else {
+                410.0 - 40.0 * (2.0 * PI * 5.0 * (t - 2.0)).sin()
+            }
+        };
+        let run = |read: &dyn Fn(&FracDelay, f64) -> f32| -> (f64, f64, f64) {
+            let mut dl = FracDelay::with_max(512);
+            let (mut res_peak, mut d2_out, mut d2_ideal) = (0.0f64, 0.0f64, 0.0f64);
+            let (mut y1, mut y2, mut i1, mut i2) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            for k in 0..n {
+                dl.push((amp * (w * k as f64).sin()) as f32);
+                let d = delay(k);
+                let y = read(&dl, d) as f64;
+                let ideal = amp * (w * (k as f64 - d)).sin();
+                if k > 1024 {
+                    res_peak = res_peak.max((y - ideal).abs());
+                    d2_out = d2_out.max((y - 2.0 * y1 + y2).abs());
+                    d2_ideal = d2_ideal.max((ideal - 2.0 * i1 + i2).abs());
+                }
+                (y2, y1, i2, i1) = (y1, y, i1, ideal);
+            }
+            (res_peak, d2_out, d2_ideal)
+        };
+        let (h_res, h_d2, ideal_d2) = run(&|dl, d| dl.read_hermite(d));
+        let (l_res, l_d2, _) = run(&|dl, d| dl.read_linear(d));
+        let (s_res, s_d2, _) = run(&|dl, d| dl.tap(d.round() as usize));
+        let db = |v: f64| 20.0 * (v / amp).log10();
+        eprintln!(
+            "swept 1 kHz: residual peak hermite {:.1} dB, linear {:.1} dB, stepped integer {:.1} dB (re signal); \
+             max 2nd difference hermite {h_d2:.5}, linear {l_d2:.5}, stepped {s_d2:.5}, ideal {ideal_d2:.5}",
+            db(h_res),
+            db(l_res),
+            db(s_res)
+        );
+        // No click: the output never bends harder than the ideal glide does.
+        assert!(h_d2 <= ideal_d2 * 1.01, "hermite 2nd difference {h_d2} vs ideal {ideal_d2}");
+        // No zipper: the residual stays 60 dB under the signal, where
+        // integer-stepped delay (which zippers) is far louder.
+        assert!(db(h_res) < -60.0, "hermite residual {}", db(h_res));
+        assert!(s_res > 30.0 * h_res, "stepped {s_res} should be far worse than hermite {h_res}");
+
+        // Continuity across integer crossings on a frozen buffer: stepping
+        // the delay by 1e-4 never jumps more at an integer than between them.
+        let mut dl = FracDelay::with_max(64);
+        for k in 0..64 {
+            dl.push((amp * (w * k as f64).sin()) as f32);
+        }
+        let (mut jump_at_int, mut jump_between) = (0.0f64, 0.0f64);
+        let mut prev = dl.read_hermite(5.0) as f64;
+        for s in 1..=40_000 {
+            let d = 5.0 + s as f64 * 1e-4;
+            let y = dl.read_hermite(d) as f64;
+            let j = (y - prev).abs();
+            let near_int = (d - d.round()).abs() < 1.5e-4;
+            if near_int {
+                jump_at_int = jump_at_int.max(j);
+            } else {
+                jump_between = jump_between.max(j);
+            }
+            prev = y;
+        }
+        eprintln!("frozen buffer, delay 5..9 in 1e-4 steps: max step at integer crossings {jump_at_int:.2e}, elsewhere {jump_between:.2e}");
+        assert!(jump_at_int <= jump_between * 1.5 + 1e-6, "discontinuity at an integer crossing");
+    }
+
+    /// Reference: the same delayed read done on the plain history array with
+    /// `read_at` (forward-time stencil), independent of the ring indexing.
+    fn reference(x: &[f32], k: usize, d: f64) -> f32 {
+        read_at(x, k as f64 - d, Interp::Hermite)
+    }
+
+    #[test]
+    fn boundary_cases_d1_max_delay_and_ring_wrap_have_no_fencepost_errors() {
+        let x: Vec<f32> = (0..1000).map(|i| (0.37 * i as f64).sin() as f32 * 0.8 + 0.1).collect();
+        let mut dl = FracDelay::with_max(60);
+        let len = dl.buf.len(); // 64: wraps every 64 pushes
+        let max = dl.max_delay();
+        assert_eq!(len, 64);
+        assert!(max >= 60.0 && max == (len - 3) as f64);
+        let mut checked = 0usize;
+        let mut wraps_seen = 0usize;
+        for (k, &v) in x.iter().enumerate() {
+            dl.push(v);
+            if dl.pos == 0 {
+                wraps_seen += 1;
+            }
+            if k < len + 4 {
+                continue; // buffer not yet full of real history
+            }
+            // d = 1: the stencil [-1, 0, 1, 2] reaches tap(0), the newest sample.
+            // max: the stencil's far end is tap(len - 1), the oldest slot.
+            for d in [1.0, 1.001, 1.25, 1.5, 1.999, 2.0, max - 1.75, max - 1.0, max - 0.5, max - 0.001, max] {
+                let got = dl.read_hermite(d);
+                let want = reference(&x, k, d);
+                assert!((got - want).abs() <= 2e-6, "k {k} (ring pos {}), d {d}: {got} vs {want}", dl.pos);
+                checked += 1;
+            }
+            // Integer delays across the whole range are the stored sample,
+            // including d = 1 and d = max at every ring position.
+            for d in [1usize, 2, len / 2, len - 4, len - 3] {
+                assert_eq!(dl.read_hermite(d as f64).to_bits(), x[k - d].to_bits(), "k {k}, d {d}");
+                assert_eq!(dl.read_linear(d as f64).to_bits(), x[k - d].to_bits(), "k {k}, d {d}");
+            }
+            // Past the end clamps to max, never reads a wrapped (newer) slot.
+            assert_eq!(dl.read_hermite(max + 10.0).to_bits(), dl.read_hermite(max).to_bits());
+            assert_eq!(dl.read_hermite(0.25).to_bits(), dl.read_hermite(1.0).to_bits(), "below 1 clamps to 1");
+        }
+        assert!(wraps_seen >= 10, "ring wrapped {wraps_seen} times");
+        eprintln!("boundary reads checked: {checked} (d = 1 .. max = {max}, {wraps_seen} ring wraps), all within 2e-6 of the array reference");
+    }
+
+    #[test]
     fn integer_delays_are_bit_exact_copies() {
         let x = sine(1234.5, 4000);
         let mut dl = FracDelay::with_max(64);
