@@ -20,8 +20,9 @@
 //! and the same half-sample filter run over the odd samples.
 //!
 //! Opt-in only: nothing in the engine uses this yet, so no existing render
-//! changes. Latency is an integer number of base-rate samples, reported by
-//! [`Oversampler::latency`] (round trip, up then down).
+//! changes. Latency is an integer number of base-rate (1x) samples, reported
+//! by [`Oversampler::latency_samples`] (round trip, up then down) for host
+//! delay compensation.
 
 use std::f64::consts::PI;
 
@@ -99,7 +100,13 @@ impl HalfBand2x {
         assert!(half_latency >= 1, "half_latency must be at least 1");
         assert!(pass_freq > 0.0 && pass_freq < 0.5, "pass_freq must be in (0, 0.5)");
         let k = 2 * half_latency;
-        let kernel = kaiser_sinc(k, pass_freq, 1.0 - pass_freq).into_iter().map(|v| v as f32).collect();
+        let mut kernel: Vec<f32> = kaiser_sinc(k, pass_freq, 1.0 - pass_freq).into_iter().map(|v| v as f32).collect();
+        // The design is symmetric in exact arithmetic; mirror the first half so
+        // the taps are bit-for-bit symmetric (strictly linear phase) whatever
+        // the last-bit rounding of the window and sinc evaluation.
+        for i in 0..k / 2 {
+            kernel[k - 1 - i] = kernel[i];
+        }
         HalfBand2x { half_latency, kernel, up_hist: vec![0.0; k], down_hist: vec![0.0; 2 * k], scratch: Vec::new() }
     }
 
@@ -186,9 +193,11 @@ impl Oversampler {
         self.factor
     }
 
-    /// Round-trip latency (up, then down) in base-rate samples: 0 at 1x,
-    /// 48 at 2x, 56 at 4x. Each direction is half of it.
-    pub fn latency(&self) -> usize {
+    /// Round-trip latency (up, then down) in base-rate (1x) samples, for
+    /// host delay compensation: 0 at 1x, 48 at 2x, 56 at 4x. Each direction
+    /// is half of it (the upsampled signal is `factor * latency / 2`
+    /// high-rate samples late).
+    pub fn latency_samples(&self) -> usize {
         // Stage i runs with a lower rate of 2^i x base, so its round trip in
         // base samples is its own latency / 2^i (exact for the designs here).
         self.stages.iter().enumerate().map(|(i, s)| s.latency() >> i).sum()
@@ -230,7 +239,8 @@ impl Oversampler {
     }
 
     /// Runs `f` on `block` at the oversampled rate, in place:
-    /// up, `f(high_rate_samples)`, down. Output is delayed by `latency()`.
+    /// up, `f(high_rate_samples)`, down. Output is delayed by
+    /// `latency_samples()` base-rate samples.
     pub fn process<F: FnMut(&mut [f32])>(&mut self, block: &mut [f32], mut f: F) {
         self.up(block);
         let mut hi = std::mem::take(&mut self.hi);
@@ -378,7 +388,7 @@ mod tests {
         let x = multitone(1 << 15);
         for factor in [2usize, 4] {
             let y = round_trip(factor, &x, 512);
-            let l = Oversampler::new(factor).latency();
+            let l = Oversampler::new(factor).latency_samples();
             let at = null_db(&x, &y, l, 4096);
             let off_lo = null_db(&x, &y, l - 1, 4096);
             let off_hi = null_db(&x, &y, l + 1, 4096);
@@ -390,11 +400,11 @@ mod tests {
 
     #[test]
     fn reported_latency_matches_the_impulse_and_the_design() {
-        assert_eq!(Oversampler::new(1).latency(), 0);
-        assert_eq!(Oversampler::new(2).latency(), 2 * STAGE1_HALF_LATENCY);
-        assert_eq!(Oversampler::new(4).latency(), 2 * STAGE1_HALF_LATENCY + STAGE2_HALF_LATENCY);
+        assert_eq!(Oversampler::new(1).latency_samples(), 0);
+        assert_eq!(Oversampler::new(2).latency_samples(), 2 * STAGE1_HALF_LATENCY);
+        assert_eq!(Oversampler::new(4).latency_samples(), 2 * STAGE1_HALF_LATENCY + STAGE2_HALF_LATENCY);
         for factor in [1usize, 2, 4] {
-            let l = Oversampler::new(factor).latency();
+            let l = Oversampler::new(factor).latency_samples();
             let mut x = vec![0.0f32; 1024];
             x[100] = 1.0;
             let y = round_trip(factor, &x, 1024);
@@ -462,6 +472,82 @@ mod tests {
         let (a1, a4) = (rel(&tail(&plain)), rel(&tail(&hq)));
         eprintln!("tanh alias at {alias:.0} Hz: 1x {a1:.1} dB, 4x {a4:.1} dB");
         assert!(a4 < a1 - 30.0, "4x {a4} vs 1x {a1}");
+    }
+
+    #[test]
+    fn unit_impulse_up_passthrough_down_peaks_exactly_at_latency_samples() {
+        // Input [1.0, 0.0, 0.0, ...] at the base rate, up -> untouched -> down,
+        // one block; the peak index is in base-rate frames.
+        for (factor, want) in [(1usize, 0usize), (2, 48), (4, 56)] {
+            let mut os = Oversampler::new(factor);
+            assert_eq!(os.latency_samples(), want, "{factor}x latency_samples (base-rate samples)");
+            let mut x = vec![0.0f32; 512];
+            x[0] = 1.0;
+            let hi = os.up(&x).to_vec();
+            let mut y = vec![0.0f32; 512];
+            os.down(&hi, &mut y);
+            let peak = y.iter().enumerate().max_by(|a, b| a.1.abs().total_cmp(&b.1.abs())).unwrap().0;
+            eprintln!("{factor}x unit impulse: output peak at base-rate index {peak} (latency_samples {}), height {:.6}", os.latency_samples(), y[peak]);
+            assert_eq!(peak, os.latency_samples(), "{factor}x peak index");
+            // Nothing arrives before the reported latency except the filter's
+            // own pre-ring, which is symmetric around the peak.
+            for k in 0..peak {
+                assert!((y[k] - y[2 * peak - k]).abs() <= 1e-6, "{factor}x round trip not symmetric at {k}");
+            }
+        }
+    }
+
+    #[test]
+    fn fir_coefficients_are_symmetric_linear_phase_and_strict_half_band() {
+        for (h, pass) in [(STAGE1_HALF_LATENCY, STAGE1_PASS), (STAGE2_HALF_LATENCY, STAGE2_PASS)] {
+            // The raw f64 design, before mirroring: how far rounding leaves it
+            // from exact symmetry.
+            let raw = kaiser_sinc(2 * h, pass, 1.0 - pass);
+            let raw_asym = (0..raw.len()).map(|i| (raw[i] - raw[raw.len() - 1 - i]).abs()).fold(0.0f64, f64::max);
+            let raw_f32_asym = (0..raw.len())
+                .filter(|&i| (raw[i] as f32).to_bits() != (raw[raw.len() - 1 - i] as f32).to_bits())
+                .count();
+            // The whole 2x interpolation filter, read off the stage's own
+            // upsampler: an impulse at input 0 gives h on high-rate indices
+            // 1 ..= 4h-1, so N = 4h - 1 taps centred on index 2h.
+            let mut st = HalfBand2x::new(h, pass);
+            let mut x = vec![0.0f32; 4 * h];
+            x[0] = 1.0;
+            let mut ir = vec![0.0f32; 8 * h];
+            st.up(&x, &mut ir);
+            assert_eq!(ir[0], 0.0);
+            assert!(ir[4 * h..].iter().all(|&v| v == 0.0), "taps beyond N");
+            let taps = &ir[1..4 * h];
+            let n = taps.len();
+            let centre = n / 2;
+            for i in 0..n {
+                assert_eq!(taps[i].to_bits(), taps[n - 1 - i].to_bits(), "half-latency {h}: h[{i}] != h[{}]", n - 1 - i);
+                let dist = i.abs_diff(centre);
+                if dist == 0 {
+                    assert_eq!(taps[i], 1.0, "centre tap (0.5 in unity-gain half-band scaling)");
+                } else if dist % 2 == 0 {
+                    assert_eq!(taps[i].to_bits(), 0.0f32.to_bits(), "half-latency {h}: h[{i}] should be a zero tap");
+                } else {
+                    assert!(taps[i] != 0.0, "half-latency {h}: h[{i}] odd tap is zero");
+                }
+            }
+            let zeros = taps.iter().filter(|&&v| v == 0.0).count();
+            eprintln!(
+                "half-latency {h}: N = {n} taps, h[n] == h[N-1-n] bit-exact, {zeros} zero taps (every other one), centre h[{centre}] = 1.0; \
+                 raw f64 design asymmetry {raw_asym:.1e} ({raw_f32_asym} of {} f32 taps differ from their mirror before mirroring)",
+                raw.len()
+            );
+        }
+        // The 4x cascade is a convolution of two symmetric half-band filters:
+        // symmetric to float rounding, but not itself a half-band (no zero taps).
+        let mut os = Oversampler::new(4);
+        let mut x = vec![0.0f32; 256];
+        x[0] = 1.0;
+        let ir = os.up(&x).to_vec();
+        let c = 4 * os.latency_samples() / 2;
+        let worst = (0..=c).map(|n| (ir[c - n] - ir[c + n]).abs()).fold(0.0f32, f32::max);
+        eprintln!("4x cascade impulse response: centre {c} (high-rate), worst asymmetry {worst:.1e}");
+        assert!(worst <= 1e-6, "4x asymmetry {worst}");
     }
 
     #[test]
