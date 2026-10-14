@@ -323,7 +323,9 @@ mod tests {
                 worst_rt = worst_rt.max(db(gu * gd).abs());
             }
             eprintln!("{factor}x passband 0-18 kHz worst |dev|: up {worst_up:.6} dB, down {worst_down:.6} dB, round trip {worst_rt:.6} dB");
-            assert!(worst_up <= 0.1 && worst_down <= 0.1 && worst_rt <= 0.1, "{factor}x passband");
+            // Spec: +/-0.1 dB. Regression guard (measured 0.00016 dB worst on
+            // x86), with headroom for x86/ARM or SIMD drift: 0.0005 dB.
+            assert!(worst_up <= 0.0005 && worst_down <= 0.0005 && worst_rt <= 0.0005, "{factor}x passband");
         }
     }
 
@@ -342,7 +344,8 @@ mod tests {
                 worst_down = worst_down.max(db(dtft_mag(&down, f, rate)));
             }
             eprintln!("{factor}x stopband {:.0} Hz..{:.0} Hz worst: up (image) {worst_up:.1} dB, down (alias) {worst_down:.1} dB", lo, rate / 2.0);
-            assert!(worst_up <= -90.0 && worst_down <= -90.0, "{factor}x stopband");
+            // Spec: -90 dB. Regression guard (measured -103.1 dB on x86): -100 dB.
+            assert!(worst_up <= -100.0 && worst_down <= -100.0, "{factor}x stopband");
         }
     }
 
@@ -393,7 +396,10 @@ mod tests {
             let off_lo = null_db(&x, &y, l - 1, 4096);
             let off_hi = null_db(&x, &y, l + 1, 4096);
             eprintln!("{factor}x round-trip null at latency {l}: {at:.1} dB (at {}: {off_lo:.1} dB, at {}: {off_hi:.1} dB)", l - 1, l + 1);
-            assert!(at < -90.0, "{factor}x null {at}");
+            // Spec: -90 dB. Regression guards (measured -110.9 dB at 2x and
+            // -101.1 dB at 4x on x86): -105 dB at 2x, -98 dB at 4x.
+            let guard = if factor == 2 { -105.0 } else { -98.0 };
+            assert!(at <= guard, "{factor}x null {at} (guard {guard})");
             assert!(off_lo > -20.0 && off_hi > -20.0, "only the reported latency should null");
         }
     }
