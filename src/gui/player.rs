@@ -26,8 +26,11 @@ struct Shared {
     /// and the block the head was in when it arrived. It takes over when the
     /// head enters the next `SWAP_BLOCK`, crossfading over `XFADE` samples.
     pending: Option<(Arc<Mix>, usize, usize)>,
-    /// The buffer being faded out and how many crossfade samples are done.
-    fade: Option<(Arc<Mix>, u32)>,
+    /// Buffers being faded out, oldest first, each with how many crossfade
+    /// samples of its fade into the next one (the last into `mix`) are
+    /// done. A second update during a crossfade fades out of what is
+    /// audible (the first fade, still running), not out of its target.
+    fade: Vec<(Arc<Mix>, u32)>,
 }
 
 /// Live updates swap in on a boundary of this many source samples.
@@ -44,7 +47,7 @@ impl Shared {
             return;
         }
         self.pending = None;
-        self.fade = None;
+        self.fade.clear();
         self.loop_len = len;
         if self.pos as usize >= self.loop_len {
             self.pos = 0.0;
@@ -63,7 +66,7 @@ impl Shared {
         if matches!(&self.pending, Some((_, _, b)) if i / SWAP_BLOCK != *b) {
             let (mix, len, _) = self.pending.take().unwrap();
             if let Some(old) = self.mix.take() {
-                self.fade = Some((old, 0));
+                self.fade.push((old, 0));
             }
             self.mix = Some(mix);
             self.loop_len = len.max(1);
@@ -71,13 +74,19 @@ impl Shared {
         let Some(m) = &self.mix else { return (0.0, 0.0) };
         let at = |m: &Mix| (m.left.get(i).copied().unwrap_or(0.0), m.right.get(i).copied().unwrap_or(0.0));
         let mut v = at(m);
-        if let Some((old, done)) = self.fade.as_mut() {
-            let g = (*done + 1) as f32 / (XFADE + 1) as f32;
-            let o = at(old);
-            v = (o.0 + (v.0 - o.0) * g, o.1 + (v.1 - o.1) * g);
-            *done += 1;
-            if *done >= XFADE {
-                self.fade = None;
+        if !self.fade.is_empty() {
+            // what was audible before each swap, fading into the next buffer
+            let mut o = at(&self.fade[0].0);
+            for k in 0..self.fade.len() {
+                let next = if k + 1 < self.fade.len() { at(&self.fade[k + 1].0) } else { v };
+                let g = (self.fade[k].1 + 1) as f32 / (XFADE + 1) as f32;
+                o = (o.0 + (next.0 - o.0) * g, o.1 + (next.1 - o.1) * g);
+                self.fade[k].1 += 1;
+            }
+            v = o;
+            // fades end oldest first (all are XFADE long)
+            while self.fade.first().is_some_and(|f| f.1 >= XFADE) {
+                self.fade.remove(0);
             }
         }
         let old = self.pos;
@@ -122,7 +131,7 @@ impl Player {
             queued: None,
             quantum: 0,
             pending: None,
-            fade: None,
+            fade: Vec::new(),
         }));
         let (stream, device_name) = match open_stream(shared.clone()) {
             Ok((s, n)) => (Some(s), n),
@@ -150,7 +159,7 @@ impl Player {
                 let mut s = self.shared.lock().unwrap();
                 s.queued = None;
                 s.pending = None;
-                s.fade = None;
+                s.fade.clear();
                 s.mix = Some(mix);
                 s.loop_len = len;
                 s.pos = 0.0;
@@ -234,7 +243,7 @@ impl Player {
         s.playing = false;
         s.pos = 0.0;
         s.queued = None;
-        s.fade = None;
+        s.fade.clear();
         if let Some((mix, len, _)) = s.pending.take() {
             s.mix = Some(mix);
             s.loop_len = len.max(1);
@@ -389,7 +398,7 @@ mod tests {
     }
 
     fn shared(m: Arc<Mix>, len: usize) -> Shared {
-        Shared { mix: Some(m), pos: 0.0, loop_len: len, playing: true, step: 1.0, one: None, queued: None, quantum: 0, pending: None, fade: None }
+        Shared { mix: Some(m), pos: 0.0, loop_len: len, playing: true, step: 1.0, one: None, queued: None, quantum: 0, pending: None, fade: Vec::new() }
     }
 
     #[test]
@@ -436,7 +445,7 @@ mod tests {
         assert!(steps <= 1.0 / XFADE as f32 + 1e-4, "no click: max step {steps}");
         // no restart: the head kept going
         assert_eq!(s.pos as usize, 3000);
-        assert!(s.pending.is_none() && s.fade.is_none());
+        assert!(s.pending.is_none() && s.fade.is_empty());
     }
 
     /// A ramp buffer (sample i = i * k) shows exactly which source sample
@@ -491,7 +500,7 @@ mod tests {
             let want = if i < XFADE as usize { blend(o, n, i as u32) } else { n };
             assert_eq!(l, want, "after the wrap, source sample {i}");
         }
-        assert!(s.pending.is_none() && s.fade.is_none());
+        assert!(s.pending.is_none() && s.fade.is_empty());
     }
 
     /// A crossfade that starts in the last samples of the loop carries on
@@ -515,15 +524,14 @@ mod tests {
 
     /// A second live update that lands while the first one's crossfade is
     /// still running. Constant buffers +0.5 -> -0.5 -> +0.25, the second
-    /// update queued 100 samples into the first fade. Measured, not fixed:
-    /// the largest frame-to-frame step is reported against a single fade's
-    /// own step (1/XFADE of the jump).
-    /// KNOWN FAILURE (B47, 2026-10-14), not fixed yet: the second swap starts
-    /// a new fade from the current buffer and drops the half-done blend, so
-    /// the output jumps 0.419 in one frame (a single fade steps 0.0023): a
-    /// click when two updates land within one crossfade + block (~16 ms).
+    /// update queued 100 samples into the first fade: the largest
+    /// frame-to-frame step stays within 1.5x a single fade's own step
+    /// (1/XFADE of the jump).
+    /// Before B47's fix the second swap started a new fade from the current
+    /// buffer and dropped the half-done blend: a one-frame jump of 0.419 (a
+    /// single fade steps 0.0023), a click when two updates land within one
+    /// crossfade + block (~16 ms). Now it fades out of what is audible.
     #[test]
-    #[ignore = "known: a second live update mid-crossfade restarts the fade (B47 2026-10-14); fix is its own commit"]
     fn a_second_live_update_during_a_crossfade() {
         let mut s = shared(mix(0.5, 10_000), 10_000);
         for _ in 0..1000 { s.song_frame(); }
