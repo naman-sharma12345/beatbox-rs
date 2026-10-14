@@ -19,6 +19,13 @@
 //!   described on the [`OversampleHook`] impl below. 4x does not lift that
 //!   floor; it shares the 2x stage that sets it.
 //!
+//! Real-time safe: [`OversampledShaper::process_block`] never allocates.
+//! Every buffer is reserved at construction (for [`DEFAULT_MAX_BLOCK`]
+//! samples) or by [`OversampledShaper::prepare`], and a longer block is run
+//! in pieces of at most that size, which gives the same output (the
+//! processing does not depend on block size). Construction, `prepare` and
+//! `set_oversampling` do allocate; call them off the audio thread.
+//!
 //! Opt-in only: nothing in the engine uses this yet, so no existing render
 //! changes.
 
@@ -91,8 +98,14 @@ impl Oversampling {
     }
 }
 
+/// Block size, in base-rate samples, an [`OversampledShaper`] reserves for
+/// at construction. Longer blocks still work without allocating; they are
+/// processed in pieces of this size.
+pub const DEFAULT_MAX_BLOCK: usize = 2048;
+
 /// A mono waveshaper with optional ADAA, run inside its own oversampler.
-/// One per channel. Defaults to 2x.
+/// One per channel. Defaults to 2x. Processing never allocates (see the
+/// module docs).
 #[derive(Clone, Debug)]
 pub struct OversampledShaper<N: Nonlinearity> {
     /// The shaper, running at the high rate. Its `drive`, `order` and
@@ -101,6 +114,7 @@ pub struct OversampledShaper<N: Nonlinearity> {
     pub shaper: Waveshaper<N>,
     os: Oversampler,
     mode: Oversampling,
+    max_block: usize,
 }
 
 impl<N: Nonlinearity> OversampledShaper<N> {
@@ -111,7 +125,22 @@ impl<N: Nonlinearity> OversampledShaper<N> {
 
     /// Same as [`Self::new`] at the given rate.
     pub fn with_oversampling(shape: N, order: AdaaOrder, drive: f64, mode: Oversampling) -> Self {
-        OversampledShaper { shaper: Waveshaper::new(shape, order, drive), os: Oversampler::new(mode.factor()), mode }
+        let mut os = Oversampler::new(mode.factor());
+        os.prepare(DEFAULT_MAX_BLOCK);
+        OversampledShaper { shaper: Waveshaper::new(shape, order, drive), os, mode, max_block: DEFAULT_MAX_BLOCK }
+    }
+
+    /// Reserves for blocks of up to `max_block` base-rate samples (at least
+    /// 1), the size [`Self::process_block`] then works in. Allocates; call
+    /// it off the audio thread. Output does not change.
+    pub fn prepare(&mut self, max_block: usize) {
+        self.max_block = max_block.max(1);
+        self.os.prepare(self.max_block);
+    }
+
+    /// The block size processing works in (see [`Self::prepare`]).
+    pub fn max_block(&self) -> usize {
+        self.max_block
     }
 
     pub fn oversampling(&self) -> Oversampling {
@@ -119,12 +148,14 @@ impl<N: Nonlinearity> OversampledShaper<N> {
     }
 
     /// Changes the rate. A change clears the oversampler and the shaper's
-    /// history (both live at the old rate); setting the current rate is a
-    /// no-op.
+    /// history (both live at the old rate) and allocates the new
+    /// oversampler, so call it off the audio thread; setting the current
+    /// rate is a no-op.
     pub fn set_oversampling(&mut self, mode: Oversampling) {
         if mode != self.mode {
             self.mode = mode;
             self.os = Oversampler::new(mode.factor());
+            self.os.prepare(self.max_block);
             self.shaper.reset();
         }
     }
@@ -144,9 +175,56 @@ impl<N: Nonlinearity> OversampledShaper<N> {
     }
 
     /// Shapes `block` in place at the chosen rate. Any block size; the
-    /// output does not depend on how the stream is split into blocks.
+    /// output does not depend on how the stream is split into blocks. Never
+    /// allocates: blocks longer than [`Self::max_block`] run in pieces.
     pub fn process_block(&mut self, block: &mut [f32]) {
-        self.shaper.process_with(&mut self.os, block);
+        for piece in block.chunks_mut(self.max_block) {
+            self.shaper.process_with(&mut self.os, piece);
+        }
+    }
+}
+
+/// Counts heap allocations per thread in this crate's unit-test binary, so
+/// a test can prove a code path never allocates. Test builds only.
+#[cfg(test)]
+pub(crate) mod alloc_count {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNT: Cell<u64> = const { Cell::new(0) };
+    }
+
+    struct Counting;
+
+    fn bump() {
+        let _ = COUNT.try_with(|c| c.set(c.get() + 1));
+    }
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            bump();
+            System.alloc(layout)
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            bump();
+            System.alloc_zeroed(layout)
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            bump();
+            System.realloc(ptr, layout, new_size)
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            System.dealloc(ptr, layout)
+        }
+    }
+
+    #[global_allocator]
+    static ALLOC: Counting = Counting;
+
+    /// Allocations (including reallocations) made on this thread so far.
+    pub(crate) fn on_this_thread() -> u64 {
+        COUNT.with(|c| c.get())
     }
 }
 
@@ -360,6 +438,54 @@ mod tests {
             Waveshaper::new(SoftClip5, order, 5.0).process_block(&mut plain);
             let os = run("soft5", order, Oversampling::X1, 5.0, &x, 512);
             assert!(plain.iter().zip(&os).all(|(p, q)| p.to_bits() == q.to_bits()), "{order:?}");
+        }
+    }
+
+    #[test]
+    fn processing_never_allocates() {
+        // Counted by the test allocator on this thread: after construction
+        // (and after prepare), process_block makes no heap allocation at
+        // any rate or order, for blocks shorter than, equal to and longer
+        // than max_block, and across reset().
+        use super::alloc_count::on_this_thread;
+        let x = noise(9000, 21);
+        // The counter is live: an oversampler that was never prepared grows
+        // its buffers on first use.
+        let mut raw = Oversampler::new(2);
+        let (mut probe, before) = (x[..64].to_vec(), on_this_thread());
+        raw.process(&mut probe, |_| {});
+        assert!(on_this_thread() > before, "allocation counter saw nothing");
+        for mode in MODES {
+            for order in ORDERS {
+                let mut a = OversampledShaper::with_oversampling(Tanh, order, 6.0, mode);
+                let mut b = OversampledShaper::with_oversampling(HardClip, order, 6.0, mode);
+                b.prepare(256);
+                let mut buf = x.clone();
+                let before = on_this_thread();
+                for (lo, hi) in [(0, 1), (1, 38), (38, 550), (550, 2598), (2598, 9000)] {
+                    a.process_block(&mut buf[lo..hi]);
+                    b.process_block(&mut buf[lo..hi]);
+                }
+                a.reset();
+                a.process_block(&mut buf[..DEFAULT_MAX_BLOCK]);
+                let made = on_this_thread() - before;
+                assert_eq!(made, 0, "{mode:?} {order:?}: {made} allocations while processing");
+                assert!(buf.iter().all(|v| v.is_finite()));
+            }
+        }
+    }
+
+    #[test]
+    fn prepare_and_piecewise_processing_do_not_change_output() {
+        let x = noise(7000, 8);
+        for mode in MODES {
+            let whole = run("soft3", AdaaOrder::Second, mode, 5.0, &x, x.len());
+            let mut s = OversampledShaper::with_oversampling(SoftClip3, AdaaOrder::Second, 5.0, mode);
+            s.prepare(100);
+            assert_eq!(s.max_block(), 100);
+            let mut y = x.clone();
+            s.process_block(&mut y);
+            assert!(y.iter().zip(&whole).all(|(p, q)| p.to_bits() == q.to_bits()), "{mode:?}");
         }
     }
 

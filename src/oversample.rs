@@ -116,6 +116,14 @@ impl HalfBand2x {
         2 * self.half_latency
     }
 
+    /// Reserves scratch for blocks of up to `max_lower` lower-rate samples
+    /// (`up` input / `down` output), so `up` and `down` on such blocks never
+    /// allocate. Output is unaffected.
+    pub fn prepare(&mut self, max_lower: usize) {
+        let need = 2 * self.kernel.len() + 2 * max_lower;
+        self.scratch.reserve(need.saturating_sub(self.scratch.len()));
+    }
+
     pub fn reset(&mut self) {
         self.up_hist.iter_mut().for_each(|v| *v = 0.0);
         self.down_hist.iter_mut().for_each(|v| *v = 0.0);
@@ -205,6 +213,20 @@ impl Oversampler {
 
     pub fn reset(&mut self) {
         self.stages.iter_mut().for_each(HalfBand2x::reset);
+    }
+
+    /// Reserves every internal buffer for blocks of up to `max_block`
+    /// base-rate samples, so [`Self::up`], [`Self::down`] and
+    /// [`Self::process`] on such blocks never touch the heap. Without it the
+    /// buffers grow on first use. Output is unaffected.
+    pub fn prepare(&mut self, max_block: usize) {
+        self.hi.reserve((self.factor * max_block).saturating_sub(self.hi.len()));
+        if self.stages.len() > 1 {
+            self.mid.reserve((2 * max_block).saturating_sub(self.mid.len()));
+        }
+        for (i, s) in self.stages.iter_mut().enumerate() {
+            s.prepare(max_block << i);
+        }
     }
 
     /// Upsamples `input` and returns the `factor * input.len()` high-rate
