@@ -115,3 +115,6 @@ no third-party mixing or dynamics source was read or used.
   audio level", 2015 (integrated loudness, Annex 2 true peak).
 - `mix_report` short-term loudness: EBU Tech 3341, "Loudness Metering: 'EBU Mode' metering to
   supplement EBU R 128 loudness normalization", v3.0, 2016 (3 s short-term window, 100 ms update).
+- `sidechain_compress`: D. Giannoulis, M. Massberg, J. D. Reiss, "Digital Dynamic Range
+  Compressor Design - A Tutorial and Analysis", J. Audio Eng. Soc. 60(6), 2012 (soft-knee
+  gain computer, branching attack/release smoothing, peak and RMS level detection, lookahead).

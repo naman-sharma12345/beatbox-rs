@@ -405,6 +405,247 @@ fn mix_report(e: &mut Engine, a: &Value) -> Result<Value> {
     }))
 }
 
+/// Key level detector of `sidechain_compress`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Detector {
+    /// max |key| (stereo-linked) held over the last PEAK_HOLD_MS
+    Peak,
+    /// RMS of the key (L and R averaged) over the last RMS_WINDOW_MS
+    Rms,
+}
+
+/// Peak-hold window of the peak detector: a steady tone reads its peak, not
+/// its instantaneous value, so the gain sits on the static curve.
+pub(crate) const PEAK_HOLD_MS: f32 = 10.0;
+/// Rectangular RMS window: one full cycle of 50 Hz, so a kick's fundamental
+/// does not ripple the level.
+pub(crate) const RMS_WINDOW_MS: f32 = 20.0;
+
+/// Feed-forward compressor parameters for `sidechain_compress`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct KeyedComp {
+    pub threshold_db: f32,
+    /// 1..20, or infinity (a limiter)
+    pub ratio: f32,
+    pub knee_db: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+    pub makeup_db: f32,
+    pub key_hpf_hz: f32,
+    pub detector: Detector,
+}
+
+/// Static curve (dB in -> gain reduction dB, <= 0) with a quadratic soft
+/// knee, after Giannoulis, Massberg & Reiss, "Digital Dynamic Range
+/// Compressor Design - A Tutorial and Analysis", JAES 60(6), 2012, eq. 4.
+/// An infinite ratio gives 1/r = 0: the output holds at the threshold.
+pub(crate) fn gain_computer(x_db: f32, c: &KeyedComp) -> f32 {
+    let (t, w) = (c.threshold_db, c.knee_db.max(0.0));
+    let inv = 1.0 / c.ratio;
+    let y = if 2.0 * (x_db - t) < -w {
+        x_db
+    } else if w > 0.0 && 2.0 * (x_db - t).abs() <= w {
+        x_db + (inv - 1.0) * (x_db - t + w / 2.0).powi(2) / (2.0 * w)
+    } else {
+        t + (x_db - t) * inv
+    };
+    y - x_db
+}
+
+/// The key's level in dB per sample: optional one-pole high-pass, then the
+/// peak-hold or RMS detector, stereo-linked. Causal; O(n) with a monotonic
+/// queue (peak) or a running sum over a fixed ring (RMS).
+pub(crate) fn key_level_db(key_l: &[f32], key_r: &[f32], c: &KeyedComp) -> Vec<f32> {
+    let n = key_l.len().min(key_r.len());
+    let hp = if c.key_hpf_hz > 0.0 { (-2.0 * std::f32::consts::PI * c.key_hpf_hz / SR).exp() } else { 0.0 };
+    let (mut xl, mut yl, mut xr, mut yr) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let w = match c.detector {
+        Detector::Peak => (PEAK_HOLD_MS * 0.001 * SR).round() as usize,
+        Detector::Rms => (RMS_WINDOW_MS * 0.001 * SR).round() as usize,
+    }
+    .max(1);
+    let mut q: std::collections::VecDeque<(usize, f32)> = std::collections::VecDeque::with_capacity(w + 1);
+    let mut ring = vec![0.0f64; w];
+    let mut sum = 0.0f64;
+    let mut out = Vec::with_capacity(n);
+    let db = |v: f32| if v > 1e-9 { 20.0 * v.log10() } else { -180.0 };
+    for i in 0..n {
+        let (mut a, mut b) = (key_l[i], key_r[i]);
+        if hp > 0.0 {
+            yl = hp * (yl + a - xl);
+            xl = a;
+            yr = hp * (yr + b - xr);
+            xr = b;
+            a = yl;
+            b = yr;
+        }
+        match c.detector {
+            Detector::Peak => {
+                let v = a.abs().max(b.abs());
+                while q.back().is_some_and(|&(_, x)| x <= v) {
+                    q.pop_back();
+                }
+                q.push_back((i, v));
+                while q.front().is_some_and(|&(j, _)| j + w <= i) {
+                    q.pop_front();
+                }
+                out.push(db(q.front().map(|&(_, x)| x).unwrap_or(0.0)));
+            }
+            Detector::Rms => {
+                let e = 0.5 * ((a as f64).powi(2) + (b as f64).powi(2));
+                let k = i % w;
+                sum += e - ring[k];
+                ring[k] = e;
+                if k == w - 1 {
+                    sum = ring.iter().sum(); // re-sum once per lap: no drift
+                }
+                out.push(db((sum.max(0.0) / w as f64).sqrt() as f32));
+            }
+        }
+    }
+    out
+}
+
+/// Gain (linear, per sample) a compressor keyed by `key` applies: the key
+/// level, the static curve in dB, then a branching attack/release smoother on
+/// the gain reduction (same paper, sec. 3.2), plus makeup.
+pub(crate) fn keyed_gain(key_l: &[f32], key_r: &[f32], c: &KeyedComp) -> Vec<f32> {
+    let coef = |ms: f32| if ms <= 0.0 { 0.0 } else { (-1.0 / (ms * 0.001 * SR)).exp() };
+    let (aa, ar) = (coef(c.attack_ms), coef(c.release_ms));
+    let mut gr = 0.0f32;
+    key_level_db(key_l, key_r, c)
+        .into_iter()
+        .map(|x_db| {
+            let target = gain_computer(x_db, c);
+            // more reduction = attack, less = release
+            let k = if target < gr { aa } else { ar };
+            gr = k * gr + (1.0 - k) * target;
+            10f32.powf((gr + c.makeup_db) / 20.0)
+        })
+        .collect()
+}
+
+/// A stereo source by track name (its post-fader stem) or file path.
+fn source_audio(e: &mut Engine, a: &Value, track_key: &str, path_key: &str) -> Result<(String, Vec<f32>, Vec<f32>)> {
+    if let Some(pth) = s_opt(a, path_key) {
+        let path = e.resolve(&pth);
+        let (l, r) = crate::samples::decode_stereo(&path)?;
+        return Ok((path.display().to_string(), l, r));
+    }
+    let Some(name) = s_opt(a, track_key) else { bail!("give {track_key} (a track) or {path_key} (an audio file)") };
+    let p = e.project.clone();
+    let i = p.track_index(&name)?;
+    let m = e.render_stems_all(&p)?;
+    let s = m.stems.iter().find(|s| s.name == p.tracks[i].name && !s.left.is_empty());
+    let Some(s) = s else { bail!("track '{}' is silent in this render (muted, no notes, or soloed out)", p.tracks[i].name) };
+    Ok((format!("track {}", p.tracks[i].name), s.left.clone(), s.right.clone()))
+}
+
+fn sidechain_compress(e: &mut Engine, a: &Value) -> Result<Value> {
+    let ratio = match a.get("ratio") {
+        None | Some(Value::Null) => 4.0,
+        Some(Value::Number(x)) => x.as_f64().unwrap_or(f64::NAN) as f32,
+        Some(Value::String(s)) if matches!(s.trim().to_ascii_lowercase().as_str(), "inf" | "infinity" | "limit") => f32::INFINITY,
+        Some(other) => bail!("ratio must be 1..20 or \"inf\" (got {other})"),
+    };
+    let detector = match s_opt(a, "detector").unwrap_or_else(|| "peak".into()).to_ascii_lowercase().as_str() {
+        "peak" => Detector::Peak,
+        "rms" => Detector::Rms,
+        other => bail!("detector must be peak or rms (got '{other}')"),
+    };
+    let c = KeyedComp {
+        threshold_db: f_opt(a, "threshold_db").unwrap_or(-24.0),
+        ratio,
+        knee_db: f_opt(a, "knee_db").unwrap_or(6.0),
+        attack_ms: f_opt(a, "attack_ms").unwrap_or(5.0),
+        release_ms: f_opt(a, "release_ms").unwrap_or(150.0),
+        makeup_db: f_opt(a, "makeup_db").unwrap_or(0.0),
+        key_hpf_hz: f_opt(a, "key_hpf_hz").unwrap_or(0.0),
+        detector,
+    };
+    let lookahead_ms = f_opt(a, "lookahead_ms").unwrap_or(0.0);
+    if !(-60.0..=0.0).contains(&c.threshold_db) { bail!("threshold_db must be -60..0 (got {})", c.threshold_db); }
+    if !(c.ratio.is_infinite() || (1.0..=20.0).contains(&c.ratio)) { bail!("ratio must be 1..20 or \"inf\" (got {})", c.ratio); }
+    if !(0.0..=24.0).contains(&c.knee_db) { bail!("knee_db must be 0..24 (got {})", c.knee_db); }
+    if !(0.1..=100.0).contains(&c.attack_ms) { bail!("attack_ms must be 0.1..100 (got {})", c.attack_ms); }
+    if !(10.0..=1000.0).contains(&c.release_ms) { bail!("release_ms must be 10..1000 (got {})", c.release_ms); }
+    if !(lookahead_ms == 0.0 || (1.0..=5.0).contains(&lookahead_ms)) { bail!("lookahead_ms must be 0 (off) or 1..5 (got {lookahead_ms})"); }
+    if !(-24.0..=24.0).contains(&c.makeup_db) { bail!("makeup_db must be -24..24 (got {})", c.makeup_db); }
+    if !(0.0..=1000.0).contains(&c.key_hpf_hz) { bail!("key_hpf_hz must be 0..1000 (got {})", c.key_hpf_hz); }
+    let (tname, mut tl, mut tr) = source_audio(e, a, "target", "target_path")?;
+    // no key given (or the target named as its own key): internal detection,
+    // keyed by the target's own signal like an ordinary compressor
+    let external = s_opt(a, "key").is_some() || s_opt(a, "key_path").is_some();
+    let (kname, kl, kr) = if external { source_audio(e, a, "key", "key_path")? } else { (tname.clone(), tl.clone(), tr.clone()) };
+    let internal = kname == tname;
+    let kname = if internal { format!("internal ({tname}'s own signal)") } else { kname };
+    let lufs_before = read_meter(Meter::Lufs, &tl, &tr).unwrap_or(-70.0);
+    let n = tl.len().min(tr.len());
+    // Lookahead, offline: instead of delaying the target (which would shift it
+    // against the rest of the mix) the gain path is read `la` samples ahead, so
+    // the gain lands that much before each key transient and the output keeps
+    // the target's timing exactly (0 samples of latency).
+    let la = (lookahead_ms * 0.001 * SR).round() as usize;
+    let mut g = keyed_gain(&kl, &kr, &c);
+    // past the key's end the key is silent: the reduction releases to 0
+    let tail = 10f32.powf(c.makeup_db / 20.0);
+    let ar = (-1.0 / (c.release_ms * 0.001 * SR)).exp();
+    let mut cur = g.last().copied().unwrap_or(tail) / tail;
+    while g.len() < n + la {
+        cur = 1.0 - ar * (1.0 - cur);
+        g.push(cur * tail);
+    }
+    let g = &g[la..la + n];
+    let mut max_gr = 0.0f32;
+    let blk = (0.05 * SR) as usize;
+    let mut env = Vec::new();
+    for i in 0..n {
+        tl[i] *= g[i];
+        tr[i] *= g[i];
+        let gr = 20.0 * g[i].max(1e-9).log10() - c.makeup_db;
+        max_gr = max_gr.min(gr);
+        if i % blk == 0 {
+            env.push(r2(gr));
+        }
+    }
+    let gr_db: Vec<f32> = g.iter().map(|v| 20.0 * v.max(1e-9).log10() - c.makeup_db).collect();
+    let mean = |v: &[f32]| if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 };
+    // how the reduction splits between where the key is over the threshold and where it rests
+    let mut key_db = key_level_db(&kl, &kr, &c);
+    key_db.resize(n + la, -180.0);
+    let (mut on, mut off) = (Vec::new(), Vec::new());
+    for i in 0..n {
+        if key_db[i + la] > c.threshold_db { on.push(gr_db[i]) } else { off.push(gr_db[i]) }
+    }
+    let mut v = json!({
+        "target": tname, "key": kname,
+        "detector": match c.detector { Detector::Peak => format!("peak (max |key| held {PEAK_HOLD_MS} ms, stereo-linked)"), Detector::Rms => format!("rms ({RMS_WINDOW_MS} ms rectangular window, L and R averaged)") },
+        "threshold_db": c.threshold_db, "ratio": if c.ratio.is_infinite() { json!("inf") } else { json!(c.ratio) },
+        "knee_db": c.knee_db, "attack_ms": c.attack_ms, "release_ms": c.release_ms, "makeup_db": c.makeup_db, "key_hpf_hz": c.key_hpf_hz,
+        "lookahead_ms": lookahead_ms,
+        "lookahead_samples": la,
+        "latency_samples": 0,
+        "latency": "none: lookahead reads the gain path ahead instead of delaying the target, so the output stays time-aligned with the mix",
+        "max_gain_reduction_db": r2(max_gr),
+        "mean_gain_reduction_db": r2(mean(&gr_db)),
+        "mean_gr_while_key_over_threshold_db": r2(mean(&on)),
+        "key_over_threshold_percent": r2(100.0 * on.len() as f32 / n.max(1) as f32),
+        "mean_gr_elsewhere_db": r2(mean(&off)),
+        "gain_reduction_every_50ms_db": env,
+        "lufs_before_after": [r2(lufs_before), r2(read_meter(Meter::Lufs, &tl, &tr).unwrap_or(-70.0))],
+        "design": "feed-forward, stereo-linked peak-hold or RMS detector on the key, soft-knee static curve and branching attack/release smoothing (Giannoulis, Massberg & Reiss, JAES 2012)",
+    });
+    match s_opt(a, "out") {
+        Some(out) => {
+            let path = e.resolve(&out);
+            crate::render::write_wav(&path, &tl, &tr)?;
+            v["out"] = json!(path.display().to_string());
+        }
+        None => v["note"] = json!("measured only; pass out to write the compressed target (16-bit wav)"),
+    }
+    Ok(v)
+}
+
 pub fn tools() -> Vec<Tool> {
     vec![
     Tool {
@@ -440,6 +681,33 @@ pub fn tools() -> Vec<Tool> {
             )
         },
         run: mix_report,
+    },
+    Tool {
+        name: "sidechain_compress",
+        description: "Keyed (sidechain) compressor: compresses a target by another source's level, e.g. a kick keying the 808/bass so it ducks on every hit, or a vocal keying a reverb throw so the tail blooms between phrases. target/key = track names (post-fader output) or target_path/key_path = audio files; no key = internal detection on the target itself. Feed-forward, stereo-linked; detector peak (max |key| held 10 ms, default) or rms (20 ms window), optional key_hpf_hz; soft-knee curve, attack/release smoothing. threshold_db -60..0 (-24), ratio 1..20 or \"inf\" to limit (4), knee_db 0..24 (6), attack_ms 0.1..100 (5), release_ms 10..1000 (150), makeup_db (0). lookahead_ms 0 or 1..5 (0): the gain path is read that far ahead instead of delaying the target, so transients duck without overshoot and the output stays time-aligned with the mix (0 latency). Writes the compressed target to out (16-bit wav) if given. Reports max/mean gain reduction, reduction while the key is over the threshold vs elsewhere, a 50 ms envelope and LUFS before/after. Unlike the trigger-driven sidechain effect this follows the key's audio. Does not change the project.",
+        mutates: false,
+        schema: || {
+            obj(
+                json!({
+                    "target": {"type": "string", "description": "Track to compress"},
+                    "target_path": {"type": "string", "description": "Audio file to compress instead"},
+                    "key": {"type": "string", "description": "Track whose level drives the compressor (none: the target keys itself)"},
+                    "key_path": {"type": "string", "description": "Audio file that keys it instead"},
+                    "detector": {"type": "string", "enum": ["peak", "rms"], "description": "peak: max |key| held 10 ms (default); rms: 20 ms rectangular window"},
+                    "threshold_db": {"type": "number", "description": "Key level where reduction starts, -60..0 (default -24)"},
+                    "ratio": {"type": ["number", "string"], "description": "1..20, or \"inf\" to limit (default 4)"},
+                    "knee_db": {"type": "number", "description": "Soft-knee width, 0..24 (default 6)"},
+                    "attack_ms": {"type": "number", "description": "0.1..100 (default 5)"},
+                    "release_ms": {"type": "number", "description": "10..1000 (default 150)"},
+                    "lookahead_ms": {"type": "number", "description": "0 = off, or 1..5 ms (default 0); no latency, the output stays aligned"},
+                    "makeup_db": {"type": "number", "description": "-24..24 (default 0)"},
+                    "key_hpf_hz": {"type": "number", "description": "High-pass on the key detector, 0 = off (default 0)"},
+                    "out": {"type": "string", "description": "Where to write the compressed target"}
+                }),
+                &[],
+            )
+        },
+        run: sidechain_compress,
     },
     ]
 }
@@ -649,5 +917,227 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn sidechain_compress_follows_the_key_not_the_target() {
+        let dir = std::env::temp_dir().join("bb_sc_compress");
+        let _ = std::fs::create_dir_all(&dir);
+        let n = (2.0 * SR) as usize;
+        let half = n / 2;
+        let tone = |f: f32, a: f32, i: usize| a * (2.0 * std::f32::consts::PI * f * i as f32 / SR).sin();
+        let target: Vec<f32> = (0..n).map(|i| tone(200.0, 0.25, i)).collect();
+        let key_a: Vec<f32> = (0..n).map(|i| if i < half { tone(1000.0, 0.9, i) } else { 0.0 }).collect();
+        let key_b: Vec<f32> = (0..n).map(|i| if i >= half { tone(1000.0, 0.9, i) } else { 0.0 }).collect();
+        let (tp, ka, kb) = (dir.join("t.wav"), dir.join("ka.wav"), dir.join("kb.wav"));
+        crate::render::write_wav(&tp, &target, &target).unwrap();
+        crate::render::write_wav(&ka, &key_a, &key_a).unwrap();
+        crate::render::write_wav(&kb, &key_b, &key_b).unwrap();
+        let mut e = Engine::new(dir.clone());
+        let env = |v: &Value| v["gain_reduction_every_50ms_db"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect::<Vec<f64>>();
+        let mean = |x: &[f64]| x.iter().sum::<f64>() / x.len() as f64;
+        let m = (1.0 / 0.05) as usize; // envelope points per second
+        let out = dir.join("ducked.wav");
+        let a = e.call("sidechain_compress", &json!({"target_path": tp.display().to_string(), "key_path": ka.display().to_string(), "release_ms": 50.0, "out": out.display().to_string()})).unwrap();
+        let ea = env(&a);
+        // key A plays in the first second: about 0.75 x 23 dB of reduction there, none once it has released
+        assert!(mean(&ea[2..m - 1]) < -12.0, "{a}");
+        assert!(mean(&ea[m + 8..]) > -0.05, "{a}");
+        assert!(a["mean_gr_while_key_over_threshold_db"].as_f64().unwrap() < -12.0, "{a}");
+        assert!(a["mean_gr_elsewhere_db"].as_f64().unwrap() > -3.0, "{a}");
+        let (l, _) = crate::samples::decode_stereo(&out).unwrap();
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        assert!(rms(&l[half / 4..half - 2000]) < 0.3 * rms(&l[half + half / 2..]), "first half ducked, second half untouched");
+        // key B plays in the second second: the reduction moves with it
+        let b = e.call("sidechain_compress", &json!({"target_path": tp.display().to_string(), "key_path": kb.display().to_string(), "release_ms": 50.0})).unwrap();
+        let eb = env(&b);
+        assert!(mean(&eb[2..m - 1]) > -0.05, "{b}");
+        assert!(mean(&eb[m + 2..2 * m - 1]) < -12.0, "{b}");
+        // tracks: the named key track drives the reduction and another track does not.
+        // The tool's envelope equals the gain computed from that track's own stem.
+        let mut s = song("bb_sc_compress_song");
+        let p = s.project.clone();
+        let stems = s.render_stems_all(&p).unwrap();
+        let stem = |n: &str| stems.stems.iter().find(|x| x.name == n).unwrap();
+        let blk = (0.05 * SR) as usize;
+        let c = KeyedComp { threshold_db: -30.0, ratio: 4.0, knee_db: 6.0, attack_ms: 1.0, release_ms: 30.0, makeup_db: 0.0, key_hpf_hz: 0.0, detector: Detector::Peak };
+        let expect = |n: &str| -> Vec<f64> {
+            let k = stem(n);
+            let g = keyed_gain(&k.left, &k.right, &c);
+            (0..g.len()).step_by(blk).map(|i| r2(20.0 * g[i].max(1e-9).log10()) as f64).collect()
+        };
+        for (key, other) in [("kick", "hat"), ("hat", "kick")] {
+            let v = s.call("sidechain_compress", &json!({"target": "keys", "key": key, "threshold_db": -30.0, "attack_ms": 1.0, "release_ms": 30.0})).unwrap();
+            let got = env(&v);
+            let (own, oth) = (expect(key), expect(other));
+            let len = got.len().min(own.len()).min(oth.len());
+            let dev = |x: &[f64]| (0..len).map(|i| (got[i] - x[i]).abs()).fold(0.0, f64::max);
+            eprintln!("key {key}: max |env - own key| {:.3} dB, max |env - {other}| {:.3} dB", dev(&own), dev(&oth));
+            assert!(dev(&own) <= 0.011, "{key}: {v}");
+            assert!(dev(&oth) > 1.0, "{key} vs {other}");
+            assert!(v["max_gain_reduction_db"].as_f64().unwrap() < -1.0, "{v}");
+        }
+        // no key: internal detection on the target itself (the same as naming it as its own key)
+        let own = s.call("sidechain_compress", &json!({"target": "keys", "attack_ms": 1.0, "release_ms": 30.0})).unwrap();
+        assert!(own["key"].as_str().unwrap().starts_with("internal"), "{own}");
+        let same = s.call("sidechain_compress", &json!({"target": "keys", "key": "keys", "attack_ms": 1.0, "release_ms": 30.0})).unwrap();
+        assert_eq!(env(&own), env(&same));
+        let ks = stem("keys");
+        let gk = keyed_gain(&ks.left, &ks.right, &KeyedComp { threshold_db: -24.0, ..c });
+        let want: Vec<f64> = (0..gk.len()).step_by(blk).map(|i| r2(20.0 * gk[i].max(1e-9).log10()) as f64).collect();
+        assert!(env(&own).iter().zip(&want).all(|(x, y)| (x - y).abs() <= 0.011), "internal keying follows the target's own level");
+        assert!(s.call("sidechain_compress", &json!({"key": "kick"})).is_err());
+        for bad in [json!({"ratio": 0.5}), json!({"ratio": 21.0}), json!({"ratio": "lots"}), json!({"attack_ms": 0.05}), json!({"attack_ms": 101.0}),
+                    json!({"release_ms": 5.0}), json!({"release_ms": 1001.0}), json!({"lookahead_ms": 0.5}), json!({"lookahead_ms": 6.0}),
+                    json!({"threshold_db": 3.0}), json!({"knee_db": 30.0}), json!({"detector": "vu"})] {
+            let mut a = json!({"target": "keys", "key": "kick"});
+            a.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+            assert!(s.call("sidechain_compress", &a).is_err(), "{a}");
+        }
+        assert_eq!(s.call("sidechain_compress", &json!({"target": "keys", "key": "kick", "ratio": "inf"})).unwrap()["ratio"], "inf");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sidechain_burst_key_attenuates_by_the_curve_and_releases_on_its_time_constant() {
+        let dir = std::env::temp_dir().join("bb_sc_burst");
+        let _ = std::fs::create_dir_all(&dir);
+        // target: a steady 200 Hz tone; key: a 1 kHz burst at 0.5 peak (-6.02 dBFS) from 0.5 s to 1.5 s
+        let n = (3.0 * SR) as usize;
+        let (b0, b1) = ((0.5 * SR) as usize, (1.5 * SR) as usize);
+        let t = sine(200.0, 0.25, 3.0, 0.0);
+        let k1 = sine(1000.0, 0.5, 3.0, 0.0);
+        let key: Vec<f32> = (0..n).map(|i| if (b0..b1).contains(&i) { k1[i] } else { 0.0 }).collect();
+        let (tp, kp, op) = (dir.join("t.wav"), dir.join("k.wav"), dir.join("o.wav"));
+        crate::render::write_wav(&tp, &t, &t).unwrap();
+        crate::render::write_wav(&kp, &key, &key).unwrap();
+        let mut e = Engine::new(dir.clone());
+        e.call("sidechain_compress", &json!({"target_path": tp.display().to_string(), "key_path": kp.display().to_string(), "out": op.display().to_string()})).unwrap();
+        let (o, _) = crate::samples::decode_stereo(&op).unwrap();
+        let rms = |x: &[f32]| (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
+        // settled part of the burst (0.7..1.4 s): the target drops by exactly the static curve at -6.02 dB
+        let (s0, s1) = ((0.7 * SR) as usize, (1.4 * SR) as usize);
+        let att = 20.0 * (rms(&o[s0..s1]) / rms(&t[s0..s1])).log10();
+        let c = KeyedComp { threshold_db: -24.0, ratio: 4.0, knee_db: 6.0, attack_ms: 5.0, release_ms: 150.0, makeup_db: 0.0, key_hpf_hz: 0.0, detector: Detector::Peak };
+        let want = gain_computer(20.0 * 0.5f32.log10(), &c) as f64;
+        eprintln!("1 kHz burst: target attenuated {att:.4} dB, curve {want:.4} dB");
+        assert!((att - want).abs() <= 0.05, "{att} vs {want}");
+        // before the burst the target is untouched
+        assert!((20.0 * (rms(&o[..b0 - 1000]) / rms(&t[..b0 - 1000])).log10()).abs() <= 0.01);
+        // release: once the 10 ms hold lets go of the last peak, the reduction (in dB)
+        // decays as exp(-t / release): 1/e after one time constant, e^-3 after three
+        for rel in [50.0f32, 150.0, 400.0] {
+            let c = KeyedComp { release_ms: rel, ..c };
+            let g: Vec<f32> = keyed_gain(&key, &key, &c).iter().map(|v| 20.0 * v.log10()).collect();
+            let lvl = key_level_db(&key, &key, &c);
+            let i0 = (b1..n).find(|&i| gain_computer(lvl[i], &c) == 0.0).unwrap(); // first sample the curve asks for no reduction
+            let g0 = g[i0 - 1];
+            let tau_n = (rel * 0.001 * SR) as usize;
+            let k = (i0..n).find(|&i| g[i] >= g0 / std::f32::consts::E).unwrap() - (i0 - 1);
+            let tau_ms = k as f32 / SR * 1000.0;
+            let at3 = g[i0 - 1 + 3 * tau_n];
+            eprintln!("release {rel} ms: GR {g0:.3} dB at release start ({:.2} ms after the burst), measured time constant {tau_ms:.3} ms, at 3 tau {at3:.4} dB (expect {:.4})", (i0 - b1) as f32 / SR * 1000.0, g0 * (-3.0f32).exp());
+            // tolerance: one sample (0.023 ms) plus 0.1 % for the f32 smoothing coefficient
+            assert!((tau_ms - rel).abs() <= 0.03 + 0.001 * rel, "{tau_ms} vs {rel}");
+            assert!((at3 - g0 * (-3.0f32).exp()).abs() <= 0.01, "{at3}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sidechain_gain_on_a_steady_key_sits_on_the_static_curve() {
+        // the curve itself, by hand: above the knee GR = (x - t)(1/r - 1); at the
+        // knee centre (1/r - 1) w / 8; an infinite ratio pins the output at t
+        let base = KeyedComp { threshold_db: -24.0, ratio: 4.0, knee_db: 6.0, attack_ms: 5.0, release_ms: 150.0, makeup_db: 0.0, key_hpf_hz: 0.0, detector: Detector::Peak };
+        assert!((gain_computer(-6.0, &base) + 18.0 * 0.75).abs() < 1e-4);
+        assert!((gain_computer(-24.0, &base) + 0.75 * 6.0 / 8.0).abs() < 1e-4);
+        assert_eq!(gain_computer(-30.0, &base), 0.0);
+        assert!((gain_computer(-6.0, &KeyedComp { ratio: f32::INFINITY, ..base }) + 18.0).abs() < 1e-4);
+        // a steady 1 kHz key at 0.5 peak: peak -6.02 dBFS, RMS -9.03 dBFS
+        let key = sine(1000.0, 0.5, 3.0, 0.0);
+        let pk = 20.0 * 0.5f32.log10();
+        let rms = pk - 10.0 * 2f32.log10();
+        let cases = [
+            (base, pk),
+            (KeyedComp { detector: Detector::Rms, ..base }, rms),
+            (KeyedComp { threshold_db: -7.0, ..base }, pk),
+            (KeyedComp { ratio: f32::INFINITY, ..base }, pk),
+            (KeyedComp { ratio: 20.0, knee_db: 0.0, attack_ms: 0.1, release_ms: 10.0, detector: Detector::Rms, ..base }, rms),
+        ];
+        for (c, lvl) in cases {
+            let g = keyed_gain(&key, &key, &c);
+            let last: Vec<f32> = g[g.len() - SR as usize..].iter().map(|v| 20.0 * v.log10()).collect();
+            let (lo, hi) = last.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+            let curve = gain_computer(lvl, &c);
+            eprintln!("{:?} t {} r {} w {}: measured {lo:.4}..{hi:.4} dB, curve {curve:.4} dB", c.detector, c.threshold_db, c.ratio, c.knee_db);
+            assert!((lo - curve).abs() <= 0.1 && (hi - curve).abs() <= 0.1, "{c:?}");
+        }
+        // and through the tool, from files
+        let dir = std::env::temp_dir().join("bb_sc_curve");
+        let _ = std::fs::create_dir_all(&dir);
+        let (kp, tp) = (dir.join("k.wav"), dir.join("t.wav"));
+        crate::render::write_wav(&kp, &key, &key).unwrap();
+        let t = sine(200.0, 0.25, 3.0, 0.0);
+        crate::render::write_wav(&tp, &t, &t).unwrap();
+        let mut e = Engine::new(dir.clone());
+        let v = e.call("sidechain_compress", &json!({"target_path": tp.display().to_string(), "key_path": kp.display().to_string()})).unwrap();
+        let tail = v["gain_reduction_every_50ms_db"].as_array().unwrap().last().unwrap().as_f64().unwrap();
+        assert!((tail as f32 - gain_computer(pk, &base)).abs() <= 0.1, "{v}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sidechain_rms_and_peak_detectors_differ_as_expected_on_a_crest_heavy_key() {
+        // a click every 10 ms at 0.9: the peak detector (10 ms hold) always holds one
+        // click, -0.92 dBFS; the 20 ms RMS window always holds two, 0.9 sqrt(2/882) = -27.36 dBFS
+        let n = 3 * SR as usize;
+        let key: Vec<f32> = (0..n).map(|i| if i % 441 == 0 { 0.9 } else { 0.0 }).collect();
+        let base = KeyedComp { threshold_db: -24.0, ratio: 4.0, knee_db: 6.0, attack_ms: 1.0, release_ms: 100.0, makeup_db: 0.0, key_hpf_hz: 0.0, detector: Detector::Peak };
+        let pk_lvl = 20.0 * 0.9f32.log10();
+        let rms_lvl = 20.0 * (0.9 * (2.0f32 / 882.0).sqrt()).log10();
+        let settled = |c: &KeyedComp| -> f32 { let g = keyed_gain(&key, &key, c); 20.0 * g[n - 100].log10() };
+        let (gp, gr) = (settled(&base), settled(&KeyedComp { detector: Detector::Rms, ..base }));
+        eprintln!("click train: peak mode {gp:.3} dB (curve {:.3}), rms mode {gr:.3} dB (curve {:.3})", gain_computer(pk_lvl, &base), gain_computer(rms_lvl, &base));
+        assert!((gp - gain_computer(pk_lvl, &base)).abs() <= 0.1, "{gp}");
+        assert!((gr - gain_computer(rms_lvl, &base)).abs() <= 0.1, "{gr}");
+        assert!(gp < -15.0 && gr > -0.1, "the peak detector clamps hard on the clicks, the RMS one barely moves");
+    }
+
+    #[test]
+    fn sidechain_lookahead_ducks_the_transient_without_overshoot_and_keeps_timing() {
+        let dir = std::env::temp_dir().join("bb_sc_lookahead");
+        let _ = std::fs::create_dir_all(&dir);
+        // 0.5 s of silence, then a 1 kHz tone at 0.5 peak for 1 s: target and key are the same audio in two files
+        let n0 = (0.5 * SR) as usize;
+        let mut x = vec![0.0f32; n0];
+        x.extend(sine(1000.0, 0.5, 1.0, 0.0));
+        x.resize(n0 + (1.5 * SR) as usize, 0.0);
+        let (tp, kp) = (dir.join("t.wav"), dir.join("k.wav"));
+        crate::render::write_wav(&tp, &x, &x).unwrap();
+        crate::render::write_wav(&kp, &x, &x).unwrap();
+        let mut e = Engine::new(dir.clone());
+        let c = KeyedComp { threshold_db: -24.0, ratio: 4.0, knee_db: 0.0, attack_ms: 0.5, release_ms: 100.0, makeup_db: 0.0, key_hpf_hz: 0.0, detector: Detector::Peak };
+        let pk = 20.0 * 0.5f32.log10();
+        let curve_out = pk + gain_computer(pk, &c);
+        let run = |e: &mut Engine, la: f64, name: &str| -> Vec<f32> {
+            let out = dir.join(name);
+            let v = e.call("sidechain_compress", &json!({"target_path": tp.display().to_string(), "key_path": kp.display().to_string(),
+                "threshold_db": -24.0, "ratio": 4.0, "knee_db": 0.0, "attack_ms": 0.5, "release_ms": 100.0, "lookahead_ms": la, "out": out.display().to_string()})).unwrap();
+            assert_eq!(v["latency_samples"], 0);
+            crate::samples::decode_stereo(&out).unwrap().0
+        };
+        // worst 1 ms block peak over the first 30 ms of the tone, against the curve's output level
+        let over = |y: &[f32]| -> f32 {
+            (0..30).map(|b| { let s = n0 + b * 44; let p = y[s..s + 44].iter().fold(0.0f32, |m, v| m.max(v.abs())); 20.0 * p.max(1e-9).log10() - curve_out }).fold(f32::MIN, f32::max)
+        };
+        let (with, without) = (run(&mut e, 5.0, "la5.wav"), run(&mut e, 0.0, "la0.wav"));
+        eprintln!("transient vs curve: lookahead 5 ms {:+.4} dB, none {:+.4} dB", over(&with), over(&without));
+        assert!(over(&with) <= 0.0 + 0.01, "with lookahead the transient sits on or under the curve");
+        assert!(over(&without) > 1.0, "without it the first cycles overshoot");
+        // timing is kept: the output starts on the same sample as the target
+        let first = |y: &[f32]| y.iter().position(|v| v.abs() > 1e-4).unwrap();
+        assert_eq!(first(&with), first(&x));
+        assert_eq!(with.len(), x.len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
