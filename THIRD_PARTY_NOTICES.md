@@ -125,3 +125,18 @@ published formula only; no third-party filter source was read or used.
 
 - R. Bristow-Johnson, "Cookbook formulae for audio EQ biquad filter coefficients" (the
   "Audio EQ Cookbook"; HPF coefficients, direct form I).
+
+`src/waveform_png.rs` (the headless waveform PNG: its PNG writer, CRC-32, zlib wrapper,
+Adler-32 and DEFLATE encoder) is written from the published specifications only; no
+third-party encoder or compression source was read or used, and none of the `png`, `image`,
+`flate2` or `tiny-skia` crates is used on this path (the `png` and `flate2` crates appear only
+in its tests, to decode the output and prove it valid).
+
+- W3C, "Portable Network Graphics (PNG) Specification (Second Edition)" / ISO/IEC 15948:2004
+  (signature, IHDR / IDAT / IEND chunks, filter types 0 and 2, the CRC-32 of Annex D).
+- P. Deutsch, J-L. Gailly, RFC 1950, "ZLIB Compressed Data Format Specification version 3.3",
+  1996 (CMF/FLG header, Adler-32).
+- P. Deutsch, RFC 1951, "DEFLATE Compressed Data Format Specification version 1.3", 1996
+  (stored blocks, fixed Huffman codes, length and distance code tables).
+- J. Ziv, A. Lempel, "A Universal Algorithm for Sequential Data Compression", IEEE Trans.
+  Information Theory 23(3), 1977 (LZ77 matching).

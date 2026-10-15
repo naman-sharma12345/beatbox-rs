@@ -149,6 +149,7 @@ beatbox call song_create '{"genre":"trap","seed":1,"structure":[{"kind":"verse",
 
 beatbox call judge_audio '{"path":"song.wav"}'     # judge any file
 beatbox render song.json -o again.wav              # re-render a saved project
+beatbox waveform song.json -o song.png --rms     # waveform PNG, no GUI (also any wav/mp3/flac; --lanes stereo|channels)
 beatbox tools                                      # what an AI sees
 ```
 

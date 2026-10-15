@@ -111,6 +111,7 @@ pub mod vocal_corpus;
 pub mod tools_discovery;
 pub mod tools_click;
 pub mod tools_markers;
+pub mod waveform_png;
 pub mod tools_tempo;
 pub mod tools_mix_analysis;
 pub mod tools_mix_primitives;

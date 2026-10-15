@@ -94,6 +94,45 @@ enum Cmd {
     },
     /// Analyze a project's mix and print suggestions
     Analyze { project: PathBuf },
+    /// Draw a waveform PNG of a project's mix (.json) or an audio file, headless
+    Waveform {
+        /// A project (.json, rendered first) or an audio file (wav/mp3/flac/ogg)
+        input: PathBuf,
+        /// PNG path (default renders/waveform_<source>.png in the workdir)
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value_t = 1200)]
+        width: u32,
+        #[arg(long, default_value_t = 300)]
+        height: u32,
+        /// Lanes: mono (downmix), stereo (left over right) or channels (one per file channel)
+        #[arg(long, default_value = "mono")]
+        lanes: String,
+        /// Shorthand for --lanes stereo
+        #[arg(long)]
+        stereo: bool,
+        /// Overlay each column's RMS as an inner band
+        #[arg(long)]
+        rms: bool,
+        /// Only this track of a project (soloed render)
+        #[arg(long)]
+        track: Option<String>,
+        /// Background colour (#rrggbb)
+        #[arg(long)]
+        background: Option<String>,
+        /// Peak colour (#rrggbb)
+        #[arg(long)]
+        wave: Option<String>,
+        /// RMS band colour (#rrggbb)
+        #[arg(long)]
+        rms_color: Option<String>,
+        /// Zero-line colour (#rrggbb, or none)
+        #[arg(long)]
+        center: Option<String>,
+        /// Use DEFLATE stored blocks instead of fixed Huffman
+        #[arg(long)]
+        stored: bool,
+    },
 }
 
 fn engine(workdir: &Option<PathBuf>) -> Engine {
@@ -239,6 +278,30 @@ fn main() -> Result<()> {
             let mut e = engine(&cli.workdir);
             load(&mut e, &project)?;
             print(&e.call("analyze_mix", &json!({}))?);
+        }
+        Cmd::Waveform { input, out, width, height, lanes, stereo, rms, track, background, wave, rms_color, center, stored } => {
+            let mut e = engine(&cli.workdir);
+            // relative paths are the caller's, not the workdir's
+            let abs = |p: PathBuf| if p.is_relative() { std::env::current_dir().unwrap_or_default().join(p) } else { p };
+            let (input, out) = (abs(input), out.map(abs));
+            let mut a = json!({"width": width, "height": height, "lanes": if stereo { "stereo".to_string() } else { lanes }, "rms": rms,
+                "compression": if stored { "stored" } else { "fixed" }, "inline": false});
+            let is_project = input.extension().map(|x| x.eq_ignore_ascii_case("json")).unwrap_or(false);
+            if is_project {
+                load(&mut e, &input)?;
+                if let Some(t) = track {
+                    a["track"] = json!(t);
+                }
+            } else {
+                anyhow::ensure!(track.is_none(), "--track needs a project (.json) input");
+                a["path"] = json!(input);
+            }
+            for (k, v) in [("out", out.map(|p| p.to_string_lossy().to_string())), ("background", background), ("wave", wave), ("rms_color", rms_color), ("center", center)] {
+                if let Some(v) = v {
+                    a[k] = json!(v);
+                }
+            }
+            print(&beatbox::media::summarize_content(e.call("render_waveform_png", &a)?));
         }
     }
     Ok(())
