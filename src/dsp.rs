@@ -35,6 +35,11 @@ pub fn memtrace(label: &str) {
     }
 }
 
+/// BS.1770-4 / R128 streaming loudness meter (opt-in; nothing existing calls it).
+pub mod loudness_meter;
+/// Sidechain dynamic-EQ band carving (opt-in; nothing existing calls it).
+pub mod carve_eq;
+
 thread_local! {
     static FLUSH_DENORMALS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }

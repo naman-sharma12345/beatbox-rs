@@ -228,14 +228,14 @@ pub struct Loudness {
     pub leading_silence_s: f32,
 }
 
-struct Biquad {
+pub(crate) struct Biquad {
     b: [f64; 3],
     a: [f64; 2],
     z: [f64; 2],
 }
 
 impl Biquad {
-    fn run(&mut self, x: f64) -> f64 {
+    pub(crate) fn run(&mut self, x: f64) -> f64 {
         let y = self.b[0] * x + self.z[0];
         self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
         self.z[1] = self.b[2] * x - self.a[1] * y;
@@ -244,7 +244,7 @@ impl Biquad {
 }
 
 /// The two-stage K-weighting filter of BS.1770 for sample rate `fs`.
-fn k_weighting(fs: f64) -> [Biquad; 2] {
+pub(crate) fn k_weighting(fs: f64) -> [Biquad; 2] {
     let (f0, g, q) = (
         1681.974450955533f64,
         3.999843853973347f64,
