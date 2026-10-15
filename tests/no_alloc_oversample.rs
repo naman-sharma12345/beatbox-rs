@@ -61,9 +61,9 @@ fn processing_never_allocates() {
     let mut buf: Vec<f32> = (0..20_000).map(|_| noise()).collect();
     for f in [OversampleFactor::X2, OversampleFactor::X4] {
         let mut os = HalfBandOversampler::new(f);
-        let mut a1 = AdaaOversampled::new(HardClip, AdaaOrder::First, 4.0, f);
-        let mut a2 = AdaaOversampled::new(Tanh, AdaaOrder::Second, 8.0, f);
-        let mut a3 = AdaaOversampled::new(SoftClip5, AdaaOrder::Naive, 2.0, f);
+        let mut a1 = AdaaOversampled::draft(HardClip, 4.0, f);
+        let mut a2 = AdaaOversampled::new(Tanh, 8.0, f);
+        let mut a3 = AdaaOversampled::with_order(SoftClip5, AdaaOrder::Naive, 2.0, f);
         let n = count(|| {
             for len in [1usize, 37, 512, 513, 2048, 6402, 20_000] {
                 os.run(&mut buf[..len], &mut |hi: &mut [f32]| {
@@ -75,7 +75,9 @@ fn processing_never_allocates() {
                 a2.process_block(&mut buf[..len]);
                 a3.process_block(&mut buf[..len]);
             }
-            a2.shaper_mut().drive = 2.0;
+            a2.set_drive(2.0);
+            a2.set_order(AdaaOrder::First);
+            a2.set_out_gain(0.5);
             a2.process_block(&mut buf[..300]);
             os.reset();
             a1.reset();

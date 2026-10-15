@@ -66,8 +66,10 @@
 //!
 //! (ADAA2's own sinc-squared averaging dims a 15 kHz fundamental at 1x,
 //! hence the negative figure there.) First order at 2x stays near 20 dB
-//! on 10-15 kHz tones because the shaper itself aliases at the 2x rate;
-//! use second order at 2x, or 4x. Cost per base-rate sample, ADAA2 tanh:
+//! on 10-15 kHz tones because the shaper itself aliases at the 2x rate,
+//! so second order is the default at both factors, and a first-order
+//! request at 2x is routed to second order outside the low-CPU draft mode
+//! ([`route_order`]). Cost per base-rate sample, ADAA2 tanh:
 //! about 31 ns at 1x, 101 ns at 2x, 193 ns at 4x.
 //!
 //! Opt-in only: nothing in the engine uses this, so no existing render
@@ -471,17 +473,53 @@ impl OversampleHook for HalfBandOversampler {
     }
 }
 
+/// The ADAA order the oversampled path actually runs for a requested
+/// `order` at `factor`. Second order is the default at both 2x and 4x.
+/// First order at 2x leaves 10-15 kHz tones only about 20 dB below the
+/// naive clipper (the shaper aliases at the 2x rate itself, my
+/// measurement), short of the 24 dB floor, so outside draft mode a
+/// first-order request at 2x is routed to second order. First order runs
+/// as asked at 4x, and at either factor in draft mode (the low-CPU
+/// preview). `Naive` is never changed.
+pub fn route_order(order: AdaaOrder, factor: OversampleFactor, draft: bool) -> AdaaOrder {
+    match (order, factor, draft) {
+        (AdaaOrder::First, OversampleFactor::X2, false) => AdaaOrder::Second,
+        _ => order,
+    }
+}
+
 /// An ADAA waveshaper running inside the half-band oversampler: opt-in
 /// anti-aliased saturation. One per channel.
+///
+/// Second-order ADAA is the default at 2x and 4x ([`Self::new`]). First
+/// order is available at 4x through [`Self::with_order`], and at either
+/// factor through [`Self::draft`], the low-CPU mode; a first-order request
+/// at 2x outside draft mode runs second order (see [`route_order`]).
 #[derive(Clone, Debug)]
 pub struct AdaaOversampled<N: Nonlinearity> {
     shaper: Waveshaper<N>,
     os: HalfBandOversampler,
+    draft: bool,
 }
 
 impl<N: Nonlinearity> AdaaOversampled<N> {
-    pub fn new(shape: N, order: AdaaOrder, drive: f64, factor: OversampleFactor) -> Self {
-        Self { shaper: Waveshaper::new(shape, order, drive), os: HalfBandOversampler::new(factor) }
+    /// The default: second-order ADAA at `factor`.
+    pub fn new(shape: N, drive: f64, factor: OversampleFactor) -> Self {
+        Self::with_order(shape, AdaaOrder::Second, drive, factor)
+    }
+
+    /// `order` at `factor`, routed by [`route_order`] (first order at 2x
+    /// runs second order).
+    pub fn with_order(shape: N, order: AdaaOrder, drive: f64, factor: OversampleFactor) -> Self {
+        let order = route_order(order, factor, false);
+        Self { shaper: Waveshaper::new(shape, order, drive), os: HalfBandOversampler::new(factor), draft: false }
+    }
+
+    /// Low-CPU draft mode: first-order ADAA at `factor`, 2x included
+    /// (about 20% cheaper than second order with `tanh`, and less clean
+    /// at 2x on high tones).
+    pub fn draft(shape: N, drive: f64, factor: OversampleFactor) -> Self {
+        Self { shaper: Waveshaper::new(shape, AdaaOrder::First, drive), os: HalfBandOversampler::new(factor), draft: true }
     }
 
     /// Shapes `block` in place.
@@ -501,9 +539,29 @@ impl<N: Nonlinearity> AdaaOversampled<N> {
         self.os.reset();
     }
 
-    /// The shaper, e.g. to change `drive`, `order` or `out_gain` between blocks.
-    pub fn shaper_mut(&mut self) -> &mut Waveshaper<N> {
-        &mut self.shaper
+    /// The order that runs (after routing).
+    pub fn order(&self) -> AdaaOrder {
+        self.shaper.order
+    }
+
+    pub fn is_draft(&self) -> bool {
+        self.draft
+    }
+
+    /// Changes the order between blocks, routed like the constructor (the
+    /// draft flag is kept).
+    pub fn set_order(&mut self, order: AdaaOrder) {
+        self.shaper.order = route_order(order, self.os.oversample_factor(), self.draft);
+    }
+
+    /// Input gain into the curve (may change between blocks).
+    pub fn set_drive(&mut self, drive: f64) {
+        self.shaper.drive = drive;
+    }
+
+    /// Output gain after the curve.
+    pub fn set_out_gain(&mut self, gain: f64) {
+        self.shaper.out_gain = gain;
     }
 
     pub fn oversampler(&self) -> &HalfBandOversampler {
@@ -575,7 +633,10 @@ mod tests {
         fn go<N: Nonlinearity>(nl: N, order: AdaaOrder, drive: f64, factor: Option<OversampleFactor>, buf: &mut [f32]) {
             match factor {
                 None => Waveshaper::new(nl, order, drive).process_block(buf),
-                Some(f) => AdaaOversampled::new(nl, order, drive, f).process_block(buf),
+                // measurement wants the order as asked: draft for first order
+                // (2x routing would turn it into second), with_order otherwise
+                Some(f) if order == AdaaOrder::First => AdaaOversampled::draft(nl, drive, f).process_block(buf),
+                Some(f) => AdaaOversampled::with_order(nl, order, drive, f).process_block(buf),
             }
         }
         let mut buf = input.to_vec();
@@ -678,8 +739,8 @@ mod tests {
             eprintln!("{f:?}: latency {lat}, passband (0..0.47 fs) deviation {worst:.5} dB");
             // the shaper's own delay rides on top, at the high rate
             let r = f.ratio() as f64;
-            let a1 = AdaaOversampled::new(Tanh, AdaaOrder::First, 2.0, f);
-            let a2 = AdaaOversampled::new(Tanh, AdaaOrder::Second, 2.0, f);
+            let a1 = AdaaOversampled::draft(Tanh, 2.0, f);
+            let a2 = AdaaOversampled::new(Tanh, 2.0, f);
             assert_eq!(a1.latency(), lat as f64 + 0.5 / r);
             assert_eq!(a2.latency(), lat as f64 + 1.0 / r);
         }
@@ -732,6 +793,63 @@ mod tests {
             let err = (lat + 300..8192).map(|i| (y[i] - x[i - lat]).abs()).fold(0.0f32, f32::max);
             assert!(err < 2e-5, "{f:?}: {err}");
         }
+    }
+
+    #[test]
+    fn second_order_is_the_default_and_first_order_at_2x_is_routed() {
+        use AdaaOrder::*;
+        use OversampleFactor::*;
+        // the routing table
+        assert_eq!(route_order(First, X2, false), Second);
+        assert_eq!(route_order(First, X4, false), First);
+        assert_eq!(route_order(First, X2, true), First);
+        assert_eq!(route_order(First, X4, true), First);
+        for f in [X2, X4] {
+            for d in [false, true] {
+                assert_eq!(route_order(Second, f, d), Second);
+                assert_eq!(route_order(Naive, f, d), Naive);
+            }
+        }
+        // constructors
+        for f in [X2, X4] {
+            let a = AdaaOversampled::new(Tanh, 4.0, f);
+            assert_eq!((a.order(), a.is_draft()), (Second, false));
+            let d = AdaaOversampled::draft(Tanh, 4.0, f);
+            assert_eq!((d.order(), d.is_draft()), (First, true));
+        }
+        let mut r = AdaaOversampled::with_order(HardClip, First, 4.0, X2);
+        assert_eq!(r.order(), Second);
+        assert_eq!(r.latency(), 111.0 + 0.5);
+        assert_eq!(AdaaOversampled::with_order(HardClip, First, 4.0, X4).order(), First);
+        r.set_order(First);
+        assert_eq!(r.order(), Second);
+        let mut d = AdaaOversampled::draft(HardClip, 4.0, X2);
+        d.set_order(Second);
+        assert_eq!(d.order(), Second);
+        d.set_order(First);
+        assert_eq!(d.order(), First);
+        // Case 1: ADAA1 requested at 2x runs as ADAA2 (renders exactly the
+        // 2x default, and differs from a real first-order 2x render).
+        let (x, _) = tone(10_000.0, 44_100.0, 4096, 0);
+        let render = |a: &mut AdaaOversampled<SoftClip3>| {
+            let mut y = x.clone();
+            a.process_block(&mut y);
+            y
+        };
+        let asked1_2x = render(&mut AdaaOversampled::with_order(SoftClip3, First, 4.0, X2));
+        assert_eq!(asked1_2x, render(&mut AdaaOversampled::new(SoftClip3, 4.0, X2)));
+        assert_ne!(asked1_2x, render(&mut AdaaOversampled::draft(SoftClip3, 4.0, X2)));
+        // Case 2: ADAA1 requested at 4x stays ADAA1, untouched: same order,
+        // same latency, and bit-identical to the plain first-order shaper in
+        // the same 4x oversampler.
+        let mut a4 = AdaaOversampled::with_order(SoftClip3, First, 4.0, X4);
+        assert_eq!((a4.order(), a4.is_draft()), (First, false));
+        assert_eq!(a4.latency(), 118.0 + 0.5 / 4.0);
+        let asked1_4x = render(&mut a4);
+        let mut plain = x.clone();
+        Waveshaper::new(SoftClip3, First, 4.0).process_with(&mut HalfBandOversampler::new(X4), &mut plain);
+        assert_eq!(asked1_4x, plain);
+        assert_ne!(asked1_4x, render(&mut AdaaOversampled::new(SoftClip3, 4.0, X4)));
     }
 
     /// FNV-1a over the bytes of `v`.
@@ -907,7 +1025,7 @@ mod tests {
                     let base = time(&mut |c: &mut [f32]| ws.process_block(c));
                     println!("CPU {},{order:?},1x,{base:.1}", $name);
                     for f in [OversampleFactor::X2, OversampleFactor::X4] {
-                        let mut a = AdaaOversampled::new($nl, order, 4.0, f);
+                        let mut a = if order == AdaaOrder::First { AdaaOversampled::draft($nl, 4.0, f) } else { AdaaOversampled::with_order($nl, order, 4.0, f) };
                         let ns = time(&mut |c: &mut [f32]| a.process_block(c));
                         println!("CPU {},{order:?},{f:?},{ns:.1}", $name);
                     }
