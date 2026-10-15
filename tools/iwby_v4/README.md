@@ -72,3 +72,11 @@ vocal stem meets -0.10 dBTP with 0 clipped samples, but the trim takes it down 9
 2.0 dB lower against an unchanged backing. Measured against v5: dry vocal -2.0 dB inside iwby_post, 20 phrases but 7 boundaries
 moved more than 0.02 s (largest 0.35 s, phrase 15's end), throw windows moved up to 0.14 s, throw energy -2.0 to +0.4 dB and total wet -0.6 to -2.0 dB,
 master -10.41 LUFS / -1.15 dBTP, judge all pass (air_5_11k -22.0). sha256 a3fd9cca...a91126. v6 keeps float stems at v5's gains.
+
+`--f32-tp` (opt-in, not v6; Naman's call 2026-10-14 10:19 PM) keeps v6's float stems at v5's pinned gains and adds export_stems'
+`tp_trim: "common"`: one extra trim for every stem, set by the hottest stem's true peak read back from its file, aiming
+-0.1 dBTP, until every stem is at or under 0.0 dBTP (at most 12 trims). Every stem moves by the same gain, so v6's stem
+balance is kept exactly; iwby_post re-levels the master. The build fails unless the trim converged, every stem is under
+0 dBTP and there are no warnings; WORKDIR/stems.json carries the tp_trim block. Name the output `beatbox_iwby_v6_f32tp.wav`.
+
+    python3 iwby_v6_build.py BEATBOX_BIN take_dn2.wav WORKDIR beatbox_iwby_v6_f32tp.wav --f32-tp
