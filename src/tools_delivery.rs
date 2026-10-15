@@ -695,6 +695,16 @@ pub fn tools() -> Vec<Tool> {
                     }
                     if e0 < 1e-12 { -120.0 } else { ((10.0 * (e1.max(1e-20) / e0).log10()) * 10.0).round() as f32 / 10.0 }
                 };
+                // render() runs the master sum through a DC blocker (one-pole,
+                // R 0.995, -3 dB near 35 Hz) before the master chain, so `pre`
+                // has it and the stem taps do not: give the stem sum the same
+                // filter (linear, so a correct routing nulls to float rounding).
+                // Only this check's copy of the sum; stems and mix are untouched.
+                let (mut dcl, mut dcr) = (crate::dsp::DcBlock::default(), crate::dsp::DcBlock::default());
+                for (a, b) in sl.iter_mut().zip(sr.iter_mut()) {
+                    *a = dcl.process(*a);
+                    *b = dcr.process(*b);
+                }
                 let pre_resid = resid(&pre.left, &pre.right, &sl, &sr);
                 let master_fx = |l: &mut Vec<f32>, r: &mut Vec<f32>| {
                     let trig = HashMap::new();
@@ -1066,6 +1076,27 @@ mod tests {
             )
             .unwrap();
         assert!(s["count"].as_u64().unwrap() >= 3, "{s}");
+    }
+
+    /// Pre-master stems (direct tracks + every bus) null against the
+    /// pre-master mix. render()'s master path runs a DC blocker (one-pole,
+    /// about -3 dB at 35 Hz) before the master chain; the stem sum gets the
+    /// same filter, or anything with bass reads as a failed null (IWBY v6
+    /// read -15.8 dB with nothing misrouted).
+    #[test]
+    fn export_stems_pre_master_nulls_against_the_pre_master_mix() {
+        let mut e = eng("beatbox_stems_pre_master_null");
+        // a return bus fed by a pre-fader and a post-fader send
+        e.call("add_bus", &json!({"name": "verb", "preset": "reverb"})).unwrap();
+        let t0 = e.project.tracks[0].name.clone();
+        let t1 = e.project.tracks[1].name.clone();
+        e.call("set_send", &json!({"track": t0, "bus": "verb", "db": -6, "pre_fader": true})).unwrap();
+        e.call("set_send", &json!({"track": t1, "bus": "verb", "db": -12})).unwrap();
+        e.project.tracks[0].volume_db -= 6.0;
+        let s = e.call("export_stems", &json!({"dir": "out/n", "format": "wav", "stem_format": "f32", "mode": "pre_master"})).unwrap();
+        let r = s["sum_residual_db"].as_f64().unwrap();
+        assert!(r < -60.0, "pre-master stems do not null: {r} dB {}", s["verdict"]);
+        assert_eq!(s["verdict"], "stems sum back to the pre-master mix (null within -60 dB)", "{s}");
     }
 
     fn hot_stems(dir: &str) -> (Engine, String) {
