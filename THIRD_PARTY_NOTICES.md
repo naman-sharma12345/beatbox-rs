@@ -118,3 +118,10 @@ no third-party mixing or dynamics source was read or used.
 - `sidechain_compress`: D. Giannoulis, M. Massberg, J. D. Reiss, "Digital Dynamic Range
   Compressor Design - A Tutorial and Analysis", J. Audio Eng. Soc. 60(6), 2012 (soft-knee
   gain computer, branching attack/release smoothing, peak and RMS level detection, lookahead).
+
+`src/dsp/tape_dc.rs` (the tape-stop DC guard: a 20 Hz 2-pole Butterworth high-pass on the
+`stutter` tape_stop and `gross_beat` tape_stop / tape_stop_end ramps) is written from a
+published formula only; no third-party filter source was read or used.
+
+- R. Bristow-Johnson, "Cookbook formulae for audio EQ biquad filter coefficients" (the
+  "Audio EQ Cookbook"; HPF coefficients, direct form I).

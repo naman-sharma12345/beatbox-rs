@@ -45,6 +45,8 @@ pub fn memtrace(label: &str) {
 pub mod loudness_meter;
 /// Sidechain dynamic-EQ band carving (opt-in; nothing existing calls it).
 pub mod carve_eq;
+/// 20 Hz high-pass DC guard on the tape-stop ramps (`stutter` tape_stop, `gross_beat` tape_stop presets).
+pub mod tape_dc;
 
 thread_local! {
     static FLUSH_DENORMALS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };

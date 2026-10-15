@@ -3,6 +3,7 @@
 //! drawn volume envelope (trance gates, pumps, chops), both looping every
 //! `cycle_steps` 16ths and both read from presets or from points.
 
+use crate::dsp::tape_dc::TapeDcGuard;
 use crate::dsp::SR;
 use crate::fx::GrossBeatFx;
 
@@ -150,6 +151,37 @@ pub fn gross_beat(p: &GrossBeatFx, l: &mut [f32], r: &mut [f32], step_secs: f32)
 /// cycles count from the song's start, so a window matches the same samples
 /// of a whole-song pass (source audio from before the buffer reads as silence).
 pub fn gross_beat_at(p: &GrossBeatFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
+    gross_beat_guarded(p, l, r, step_secs, offset, true)
+}
+
+/// `gross_beat_at` without the tape-stop DC guard (tests compare against it).
+#[cfg(test)]
+pub(crate) fn gross_beat_unguarded(p: &GrossBeatFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
+    gross_beat_guarded(p, l, r, step_secs, offset, false)
+}
+
+/// Where the tape-stop ramp of a time preset starts (fraction of the cycle),
+/// for the presets the DC guard runs on.
+fn tape_ramp_start(p: &GrossBeatFx) -> Option<f32> {
+    if !p.time_points.trim().is_empty() {
+        return None;
+    }
+    match p.time.as_str() {
+        "tape_stop" => Some(0.0),
+        "tape_stop_end" => Some(0.75),
+        _ => None,
+    }
+}
+
+/// `gross_beat_at` with the tape-stop DC guard switchable (`dc_guard`; the
+/// rack always runs it on). The guard (`crate::dsp::tape_dc`, a 20 Hz 2-pole
+/// high-pass on the wet read, before the volume envelope) runs only on the
+/// ramp of the `tape_stop` / `tape_stop_end` time presets; every other
+/// preset, and drawn time points, never read it and come out the same bit
+/// for bit either way. `tape_stop_end` plays at unity speed until 3/4 of the
+/// cycle, so the guard fades in over the first quarter of its ramp (speed
+/// 1 -> 0.75) instead of switching on with a step.
+fn gross_beat_guarded(p: &GrossBeatFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize, dc_guard: bool) {
     let mix = p.mix.clamp(0.0, 1.0);
     if mix <= 0.0 || check(p).is_err() {
         return;
@@ -177,6 +209,18 @@ pub fn gross_beat_at(p: &GrossBeatFx, l: &mut [f32], r: &mut [f32], step_secs: f
     let a = (-1.0 / (fade as f32)).exp();
     // source at song position `pos` (seconds of the song, in samples)
     let rd = |src: &[f32], pos: f32| read(src, pos - offset as f32);
+    // tape-stop DC guard: the ramp start, the guard on the current ramp's read
+    // (per channel), the guard carried on the old read through a jump's
+    // crossfade, and the cycle the current one was warmed for
+    let ramp = if dc_guard { tape_ramp_start(p) } else { None };
+    let mut dc = [TapeDcGuard::default(); 2];
+    let mut dc_old = [TapeDcGuard::default(); 2];
+    let mut dc_old_on = false;
+    let mut dc_cycle: Option<usize> = None;
+    let u_of = |j: usize| -> f32 {
+        let c0 = (j / cycle) * cycle;
+        (j - c0) as f32 / cycle as f32
+    };
     for i in 0..n {
         let j = i + offset;
         let pos = pos_of(j);
@@ -184,13 +228,63 @@ pub fn gross_beat_at(p: &GrossBeatFx, l: &mut [f32], r: &mut [f32], step_secs: f
         if prev_pos >= 0.0 && (pos - (prev_pos + 1.0)).abs() > 4.0 && (pos - prev_pos).abs() > 4.0 {
             jump_at = i;
             jump_from = prev_pos;
+            if ramp.is_some() {
+                // the old read keeps its guard through the crossfade
+                dc_old = dc;
+                dc_old_on = dc_cycle.is_some();
+            }
         }
         let (mut wl, mut wr) = (rd(&src_l, pos), rd(&src_r, pos));
+        if let Some(u0) = ramp {
+            let c0 = (j / cycle) * cycle;
+            let u = u_of(j);
+            if u >= u0 {
+                if dc_cycle != Some(c0) {
+                    // a new ramp: warm the guard on the source playing at unity
+                    // speed into the ramp's first sample, then on this ramp's
+                    // reads up to here (a buffer that starts mid-ramp)
+                    dc_cycle = Some(c0);
+                    let mut je = c0;
+                    while u_of(je) < u0 {
+                        je += 1;
+                    }
+                    let pe = pos_of(je);
+                    let pre = crate::dsp::tape_dc::preroll();
+                    for g in dc.iter_mut() {
+                        g.reset();
+                    }
+                    for k in (1..=pre).rev() {
+                        let q = pe - k as f32;
+                        dc[0].process(rd(&src_l, q));
+                        dc[1].process(rd(&src_r, q));
+                    }
+                    for jj in je..j {
+                        let q = pos_of(jj);
+                        dc[0].process(rd(&src_l, q));
+                        dc[1].process(rd(&src_r, q));
+                    }
+                }
+                let (fl, fr) = (dc[0].process(wl), dc[1].process(wr));
+                if u0 > 0.0 {
+                    let xf = ((u - u0) / ((1.0 - u0) * 0.25)).min(1.0);
+                    wl += (fl - wl) * xf;
+                    wr += (fr - wr) * xf;
+                } else {
+                    wl = fl;
+                    wr = fr;
+                }
+            }
+        }
         if jump_at != usize::MAX && i - jump_at < fade {
             let t = (i - jump_at) as f32 / fade as f32;
             let old = jump_from + (i - jump_at) as f32 + 1.0;
-            wl = wl * t + rd(&src_l, old) * (1.0 - t);
-            wr = wr * t + rd(&src_r, old) * (1.0 - t);
+            let (mut ol, mut or) = (rd(&src_l, old), rd(&src_r, old));
+            if dc_old_on {
+                ol = dc_old[0].process(ol);
+                or = dc_old[1].process(or);
+            }
+            wl = wl * t + ol * (1.0 - t);
+            wr = wr * t + or * (1.0 - t);
         }
         prev_pos = pos;
         let c0 = (j / cycle) * cycle;
@@ -214,6 +308,83 @@ mod tests {
 
     fn tone(n: usize) -> Vec<f32> {
         (0..n).map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / SR).sin() * 0.5).collect()
+    }
+
+    /// Worst |mean| of the 100 ms before each cycle ends (where the stop has
+    /// frozen; the next cycle's jump comes after it).
+    fn stop_tail_dc(x: &[f32], cycle: usize) -> f32 {
+        let tail = (0.1 * SR) as usize;
+        (1..=x.len() / cycle)
+            .map(|k| (x[k * cycle - tail..k * cycle].iter().map(|v| *v as f64).sum::<f64>() / tail as f64).abs() as f32)
+            .fold(0.0, f32::max)
+    }
+
+    /// B75: the tape-stop DC guard on gross_beat's tape_stop and tape_stop_end
+    /// presets (no volume envelope, so the frozen stop would hold its value).
+    #[test]
+    fn gross_beat_tape_stop_dc_guard() {
+        let step = 0.125;
+        let cycle = (16.0 * step * SR) as usize;
+        for (preset, bound) in [("tape_stop", 0.03f32), ("tape_stop_end", 0.04)] {
+            let p = GrossBeatFx { time: preset.into(), ..Default::default() };
+            let (mut off, mut on, mut re_off, mut re_on) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+            let fade = ((p.smooth_ms.max(0.5) * 0.001 * SR) as usize).max(1);
+            for f in [55.0f32, 110.0, 220.0] {
+                for k in 0..8 {
+                    let ph = k as f32 * std::f32::consts::PI / 4.0;
+                    let x: Vec<f32> = (0..2 * cycle).map(|i| (i as f32 * f * std::f32::consts::TAU / SR + ph).sin() * 0.5).collect();
+                    let (mut l0, mut r0) = (x.clone(), x.clone());
+                    gross_beat_guarded(&p, &mut l0, &mut r0, step, 0, false);
+                    let (mut l1, mut r1) = (x.clone(), x.clone());
+                    gross_beat_guarded(&p, &mut l1, &mut r1, step, 0, true);
+                    assert!(l1.iter().all(|v| v.is_finite() && v.abs() < 1.5));
+                    off = off.max(stop_tail_dc(&l0, cycle));
+                    on = on.max(stop_tail_dc(&l1, cycle));
+                    // the re-trigger: whole source periods just after the
+                    // jump's crossfade into the next cycle
+                    let w = ((if f < 100.0 { 2.0 } else if f < 200.0 { 3.0 } else { 6.0 }) / f * SR).round() as usize;
+                    let s = cycle + fade;
+                    let dc = |y: &[f32]| (y[s..s + w].iter().map(|v| *v as f64).sum::<f64>() / w as f64).abs() as f32;
+                    re_off = re_off.max(dc(&l0));
+                    re_on = re_on.max(dc(&l1));
+                }
+            }
+            eprintln!("gross_beat {preset} DC (worst mean of the last 100 ms): guard off {off:.4} FS, on {on:.4} FS; at the re-trigger: off {re_off:.4}, on {re_on:.4}");
+            assert!(off > 0.10, "{preset}: the unguarded stop drifts: {off}");
+            assert!(on < bound, "{preset}: the guarded stop: {on}");
+            assert!(re_on < 0.015, "{preset}: no blip at the re-trigger: {re_on}");
+        }
+        // every other preset (and drawn points) is the same bit for bit
+        let n = cycle + 5000;
+        for (t, _) in TIME_PRESETS {
+            if t.starts_with("tape_stop") {
+                continue;
+            }
+            for p in [
+                GrossBeatFx { time: t.to_string(), volume: "pump".into(), ..Default::default() },
+                GrossBeatFx { time: "tape_stop".into(), time_points: "0:0, 1:0.5".into(), ..Default::default() },
+            ] {
+                let (mut a, mut b) = (tone(n), tone(n));
+                gross_beat_guarded(&p, &mut a, &mut b, step, 0, false);
+                let (mut c, mut d) = (tone(n), tone(n));
+                gross_beat(&p, &mut c, &mut d, step);
+                assert!(a == c && b == d, "{t}");
+            }
+        }
+        // a buffer that starts into the song (silent before it and for 0.5 s
+        // after, the live-splice convention), also mid-ramp,
+        // matches the whole-song pass exactly
+        for preset in ["tape_stop", "tape_stop_end"] {
+            let p = GrossBeatFx { time: preset.into(), cycle_steps: 4.0, ..Default::default() };
+            for off in [50_000usize, 21_000] {
+                let x: Vec<f32> = (0..150_000).map(|i| if i >= off + 22_050 { (i as f32 * 61.0 * std::f32::consts::TAU / SR).sin() * 0.5 } else { 0.0 }).collect();
+                let (mut fl, mut fr) = (x.clone(), x.clone());
+                gross_beat_at(&p, &mut fl, &mut fr, step, 0);
+                let (mut wl, mut wr) = (x[off..].to_vec(), x[off..].to_vec());
+                gross_beat_at(&p, &mut wl, &mut wr, step, off);
+                assert!(fl[off..] == wl[..] && fr[off..] == wr[..], "{preset} offset {off}");
+            }
+        }
     }
 
     #[test]

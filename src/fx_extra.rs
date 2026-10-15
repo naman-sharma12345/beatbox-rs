@@ -6,6 +6,7 @@
 //! Every processor is a whole-buffer stereo function (like the rest of the
 //! rack), deterministic and allocation-light.
 
+use crate::dsp::tape_dc::{self, TapeDcGuard};
 use crate::dsp::*;
 use crate::fx::*;
 use std::f32::consts::PI;
@@ -474,6 +475,14 @@ pub fn stutter(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
 /// matches the same samples of a whole-song pass (source audio from before
 /// the buffer reads as silence).
 pub fn stutter_at(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
+    stutter_guarded(p, l, r, step_secs, offset, true)
+}
+
+/// `stutter_at` with the tape-stop DC guard switchable (`dc_guard`; the
+/// rack always runs it on). The guard (`crate::dsp::tape_dc`, a 20 Hz
+/// 2-pole high-pass) touches only `tape_stop` mode: the other modes never
+/// read it, so their output is the same bit for bit either way.
+fn stutter_guarded(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize, dc_guard: bool) {
     let n = l.len();
     let step = (step_secs * SR).max(1.0);
     let mix = p.mix.clamp(0.0, 1.0);
@@ -496,6 +505,17 @@ pub fn stutter_at(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32, o
     let at = |src: &[f32], a: usize| if a >= offset { src.get(a - offset).copied().unwrap_or(0.0) } else { 0.0 };
     let lerp_at = |src: &[f32], f: f32| lerp_read(src, f - offset as f32);
     let end = offset + n;
+    // tape stop: source position of song sample `j` (speed falls 1 -> 0 over
+    // each cycle: position = c0 + T*(u - u^2/2))
+    let tape_pos = |j: usize| -> f32 {
+        let c0 = (j / cycle) * cycle;
+        let u = (j - c0) as f32 / cycle as f32;
+        c0 as f32 + cycle as f32 * (u - 0.5 * u * u)
+    };
+    // the DC guard on the tape-stop read, one per channel, and the cycle it
+    // was warmed for
+    let mut dc = (TapeDcGuard::default(), TapeDcGuard::default());
+    let mut dc_cycle: Option<usize> = None;
     for i in 0..n {
         let j = i + offset;
         let (wl, wr) = match p.mode {
@@ -541,12 +561,33 @@ pub fn stutter_at(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32, o
                 (at(&src_l, src) * g, at(&src_r, src) * g)
             }
             StutterMode::TapeStop => {
-                // speed falls 1 -> 0 over each cycle: position = c0 + T*(u - u^2/2)
                 let c0 = (j / cycle) * cycle;
                 let u = (j - c0) as f32 / cycle as f32;
-                let srcf = c0 as f32 + cycle as f32 * (u - 0.5 * u * u);
+                let srcf = tape_pos(j);
                 let g = (1.0 - u).powf(0.3) * win(j - c0, cycle).max(0.0);
-                (lerp_at(&src_l, srcf) * g, lerp_at(&src_r, srcf) * g)
+                let (mut rl, mut rr) = (lerp_at(&src_l, srcf), lerp_at(&src_r, srcf));
+                if dc_guard {
+                    if dc_cycle != Some(c0) {
+                        // a new ramp: warm the guard on the source playing at
+                        // unity speed into it, then on this cycle's reads up to
+                        // here (a buffer that starts mid-ramp)
+                        dc_cycle = Some(c0);
+                        dc.0.reset();
+                        dc.1.reset();
+                        for a in c0.saturating_sub(tape_dc::preroll())..c0 {
+                            dc.0.process(at(&src_l, a));
+                            dc.1.process(at(&src_r, a));
+                        }
+                        for jj in c0..j {
+                            let f = tape_pos(jj);
+                            dc.0.process(lerp_at(&src_l, f));
+                            dc.1.process(lerp_at(&src_r, f));
+                        }
+                    }
+                    rl = dc.0.process(rl);
+                    rr = dc.1.process(rr);
+                }
+                (rl * g, rr * g)
             }
         };
         l[i] = src_l[i] * (1.0 - mix) + wl * mix;
@@ -891,6 +932,286 @@ mod tests {
         let p = ConvolutionFx::default();
         let (a, b) = synth_ir(&p);
         assert!(a.len() > 10000 && a.iter().chain(b.iter()).all(|v| v.is_finite()));
+    }
+
+    /// Worst |mean| of the last `tail` samples of each `cycle`-long ramp: the
+    /// DC a tape stop leaves where the tape has all but stopped (speed under
+    /// 5% for 100 ms of a 2 s ramp, so every tone here is below 11 Hz).
+    fn stop_tail_dc(x: &[f32], cycle: usize, tail: usize) -> f32 {
+        (1..=x.len() / cycle)
+            .map(|k| {
+                let s = &x[k * cycle - tail..k * cycle];
+                (s.iter().map(|v| *v as f64).sum::<f64>() / tail as f64).abs() as f32
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// B75: the tape-stop DC guard. A 0.5 FS sine under a 2 s tape-stop ramp,
+    /// at 55 / 110 / 220 Hz and 8 start phases; the DC is the worst mean of
+    /// the ramp's last 100 ms. Measured: unguarded 0.142 FS (producers saw
+    /// 0.12 FS on a real render), guarded 0.0100 FS.
+    #[test]
+    fn tape_stop_dc_guard_removes_the_stop_drift() {
+        let step = 0.125;
+        let cycle = (16.0 * step * SR) as usize;
+        let tail = (0.1 * SR) as usize;
+        let p = StutterFx { mode: StutterMode::TapeStop, cycle_steps: 16.0, ..Default::default() };
+        let (mut off, mut on) = (0.0f32, 0.0f32);
+        for f in [55.0f32, 110.0, 220.0] {
+            for k in 0..8 {
+                let ph = k as f32 * PI / 4.0;
+                let x: Vec<f32> = (0..2 * cycle).map(|i| (2.0 * PI * f * i as f32 / SR + ph).sin() * 0.5).collect();
+                let (mut l0, mut r0) = (x.clone(), x.clone());
+                stutter_guarded(&p, &mut l0, &mut r0, step, 0, false);
+                let (mut l1, mut r1) = (x.clone(), x.clone());
+                stutter_guarded(&p, &mut l1, &mut r1, step, 0, true);
+                assert!(l1.iter().all(|v| v.is_finite()) && l1 == r1);
+                off = off.max(stop_tail_dc(&l0, cycle, tail));
+                on = on.max(stop_tail_dc(&l1, cycle, tail));
+            }
+        }
+        eprintln!("tape-stop DC (worst mean of the last 100 ms): guard off {off:.4} FS, on {on:.4} FS ({:.1} dB)", 20.0 * (on / off).log10());
+        assert!(off > 0.10, "the unguarded stop drifts: {off}");
+        assert!(on < 0.015, "the guarded stop: {on}");
+        // the rack's entry point runs the guard
+        let x: Vec<f32> = (0..cycle).map(|i| (2.0 * PI * 110.0 * i as f32 / SR).sin() * 0.5).collect();
+        let (mut a, mut b) = (x.clone(), x.clone());
+        stutter(&p, &mut a, &mut b, step);
+        let (mut c, mut d) = (x.clone(), x.clone());
+        stutter_guarded(&p, &mut c, &mut d, step, 0, true);
+        assert_eq!(a, c);
+    }
+
+    /// Re-trigger: the ramp starts again at every cycle. Warm-started, the
+    /// guard adds no blip there: the mean of the output over a whole number
+    /// of source periods just after the fade-in at each re-trigger (where
+    /// the speed is still ~1) stays under the same 0.015 FS bound. A guard
+    /// started cold at the re-trigger (computed here for comparison) blips.
+    #[test]
+    fn tape_stop_dc_guard_retrigger_has_no_blip() {
+        let step = 0.125;
+        let cycle = (16.0 * step * SR) as usize;
+        let p = StutterFx { mode: StutterMode::TapeStop, cycle_steps: 16.0, ..Default::default() };
+        let fade = ((p.smooth_ms.max(0.5) * 0.001 * SR) as usize).max(1);
+        let (mut off, mut on, mut cold) = (0.0f32, 0.0f32, 0.0f32);
+        for (f, periods) in [(55.0f32, 2.0f32), (110.0, 3.0), (220.0, 6.0)] {
+            let w = (periods / f * SR).round() as usize;
+            for k in 0..16 {
+                let ph = k as f32 * PI / 8.0;
+                let x: Vec<f32> = (0..3 * cycle).map(|i| (2.0 * PI * f * i as f32 / SR + ph).sin() * 0.5).collect();
+                let (mut l0, mut r0) = (x.clone(), x.clone());
+                stutter_guarded(&p, &mut l0, &mut r0, step, 0, false);
+                let (mut l1, mut r1) = (x.clone(), x.clone());
+                stutter_guarded(&p, &mut l1, &mut r1, step, 0, true);
+                // the same ramp with the guard started from zero at the re-trigger
+                let mut c = vec![0.0f32; 3 * cycle];
+                for c0 in [cycle, 2 * cycle] {
+                    let mut g = TapeDcGuard::default();
+                    for j in c0..c0 + cycle {
+                        let u = (j - c0) as f32 / cycle as f32;
+                        let srcf = c0 as f32 + cycle as f32 * (u - 0.5 * u * u);
+                        let a = ((j - c0) as f32 / fade as f32).min(1.0).min(((c0 + cycle - j) as f32 / fade as f32).min(1.0));
+                        c[j] = g.process(lerp_read(&x, srcf)) * (1.0 - u).powf(0.3) * a;
+                    }
+                }
+                let dc = |y: &[f32], c0: usize| (y[c0 + fade..c0 + fade + w].iter().map(|v| *v as f64).sum::<f64>() / w as f64).abs() as f32;
+                for c0 in [cycle, 2 * cycle] {
+                    off = off.max(dc(&l0, c0));
+                    on = on.max(dc(&l1, c0));
+                    cold = cold.max(dc(&c, c0));
+                }
+            }
+        }
+        eprintln!("tape-stop re-trigger DC (whole periods after the fade-in): guard off {off:.4} FS, warm guard {on:.4} FS, cold-started guard {cold:.4} FS");
+        assert!(on < 0.015, "no blip at the re-trigger: {on}");
+        assert!(cold > 0.015, "a cold start would blip: {cold}");
+    }
+
+    /// Rate to zero: one 16 s ramp, the last seconds crawling toward rate 0.
+    /// Finite, bounded, and decaying to silence; bypassed, the effect leaves
+    /// the audio untouched and keeps no state (the next pass is a fresh one).
+    #[test]
+    fn tape_stop_dc_guard_long_ramp_and_bypass() {
+        let step = 0.125;
+        let p = StutterFx { mode: StutterMode::TapeStop, cycle_steps: 128.0, ..Default::default() };
+        let cycle = (128.0 * step * SR) as usize;
+        let x: Vec<f32> = (0..cycle).map(|i| (2.0 * PI * 41.2 * i as f32 / SR).sin() * 0.5).collect();
+        let (mut l, mut r) = (x.clone(), x.clone());
+        stutter(&p, &mut l, &mut r, step);
+        assert!(l.iter().all(|v| v.is_finite() && v.abs() <= 0.75));
+        let tail = l[cycle - (0.05 * SR) as usize..].iter().fold(0.0f32, |a, v| a.max(v.abs()));
+        let early = rms(&l[..SR as usize]);
+        eprintln!("16 s tape stop: rms first second {early:.3}, max |y| last 50 ms {tail:.2e}");
+        assert!(tail < 0.01, "decays toward the stop: {tail}");
+        // bypass: untouched, and un-bypassed it is the same as a fresh pass
+        let mut b = Effect::Stutter(StutterFx { bypass: true, ..p.clone() });
+        let ctx_tr = std::collections::HashMap::new();
+        let ctx = FxContext { step_secs: step, triggers: &ctx_tr, offset: 0, levels: None };
+        let (mut bl, mut br) = (x.clone(), x.clone());
+        b.process(&mut bl, &mut br, &ctx);
+        assert!(bl == x && br == x);
+        b.set_bypass(false);
+        let (mut ul, mut ur) = (x.clone(), x.clone());
+        b.process(&mut ul, &mut ur, &ctx);
+        assert!(ul == l && ur == r);
+    }
+
+    /// Rate to exactly 0, held, then back up to 1: a tape transport whose
+    /// read position integrates a rate envelope (1 -> 0 over 1 s, exactly 0.0
+    /// for 2 s, 0 -> 1 over 1 s, then 1 for 0.5 s) reads a 110 + 41.2 Hz
+    /// source through the guard. (The effects' own ramps only run 1 -> 0 and
+    /// restart; this drives the guard through the full stop-and-start.)
+    /// Every sample is finite, the state is never denormal (outputs under
+    /// 1e-20 flush to 0), the output stays bounded, settles to exactly 0
+    /// during the hold, comes back with the source, and the restart has no
+    /// sample-to-sample jump larger than the source's own.
+    #[test]
+    fn tape_stop_dc_guard_rate_to_zero_and_back() {
+        let sr = SR as usize;
+        let x: Vec<f32> = (0..6 * sr)
+            .map(|i| {
+                let t = i as f32 / SR;
+                (2.0 * PI * 110.0 * t).sin() * 0.5 + (2.0 * PI * 41.2 * t).sin() * 0.25
+            })
+            .collect();
+        let src_jump = x.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        let rate = |i: usize| -> f64 {
+            let t = i as f64 / SR as f64;
+            if t < 1.0 {
+                1.0 - t
+            } else if t < 3.0 {
+                0.0
+            } else if t < 4.0 {
+                t - 3.0
+            } else {
+                1.0
+            }
+        };
+        let (mut gl, mut gr) = (TapeDcGuard::default(), TapeDcGuard::default());
+        let mut pos = 0.0f64;
+        let n = (4.5 * SR) as usize;
+        let mut y = Vec::with_capacity(n);
+        for i in 0..n {
+            let rd = lerp_read(&x, pos as f32);
+            let (a, b) = (gl.process(rd), gr.process(-rd));
+            assert!(a.is_finite() && b.is_finite(), "sample {i}");
+            for v in gl.state().into_iter().chain(gr.state()) {
+                assert!(v == 0.0 || v.is_normal(), "denormal state {v:e} at sample {i}");
+            }
+            y.push(a);
+            pos += rate(i);
+        }
+        let peak = y.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let hold_end = y[3 * sr - sr / 2..3 * sr].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let back = rms(&y[4 * sr..]);
+        let restart_jump = y[3 * sr..4 * sr].windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        eprintln!("rate 1 -> 0 -> hold -> 1: peak {peak:.3}, max |y| last 0.5 s of the hold {hold_end:e}, rms back at rate 1 {back:.3}, max jump on the restart {restart_jump:.5} (source's own {src_jump:.5})");
+        assert!(peak <= 1.0, "bounded: {peak}");
+        assert_eq!(hold_end, 0.0, "the hold settles to exactly 0");
+        assert!(back > 0.3, "back with the source: {back}");
+        assert!(restart_jump <= src_jump, "the restart: {restart_jump} vs the source's {src_jump}");
+    }
+
+    /// Rapid trigger -> interrupt -> retrigger, the way a transition plays a
+    /// tape stop: the effect's mix automated (fx.0.mix, step points) through
+    /// the rack's own automation path, ramps restarting every 1/8 note, the
+    /// wet interrupted and re-triggered three times, each re-trigger
+    /// mid-ramp (60%, 20%, 70% in). The guard is warm at every onset (it
+    /// runs on the wet whether or not the mix lets it through, and each ramp
+    /// starts from its warm-up): the largest sample-to-sample jump from 64
+    /// samples before to 512 after each onset stays within the source's own
+    /// largest jump (tolerance 0%). The wet alone, guarded and unguarded, is
+    /// printed beside it.
+    #[test]
+    fn tape_stop_dc_guard_rapid_retrigger_no_onset_click() {
+        use crate::automation::{AutoPoint, AutomationLane, Curve};
+        let mut p = crate::project::Project::new("t", 120.0);
+        for pt in p.patterns.iter_mut() {
+            pt.bars = 16;
+        }
+        let tl = crate::render::Timeline::new(&p, &crate::render::RenderOptions::default());
+        let sr = SR as usize;
+        let n = 3 * sr;
+        let x: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                (2.0 * PI * 110.0 * t).sin() * 0.5 + (2.0 * PI * 41.2 * t + 0.7).sin() * 0.25
+            })
+            .collect();
+        let src_jump = x.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        // trigger at 0; interrupt / re-trigger (beats; a ramp restarts every 0.5 beat)
+        let edges = [(1.3f32, 0.0f32), (1.8, 1.0), (2.6, 0.0), (3.1, 1.0), (3.9, 0.0), (4.35, 1.0)];
+        let mut lane = AutomationLane::new("x", "fx.0.mix");
+        lane.points.push(AutoPoint { beat: 0.0, value: 1.0, curve: Curve::Step });
+        for (b, v) in edges {
+            lane.points.push(AutoPoint { beat: b, value: v, curve: Curve::Step });
+        }
+        let onsets: Vec<usize> = edges.iter().filter(|e| e.1 > 0.0).map(|e| (e.0 * 0.5 * SR) as usize).collect();
+        let tr = std::collections::HashMap::new();
+        let ctx = FxContext { step_secs: 0.125, triggers: &tr, offset: 0, levels: None };
+        let effects = [
+            ("stutter tape_stop", Effect::Stutter(StutterFx { mode: StutterMode::TapeStop, cycle_steps: 2.0, ..Default::default() })),
+            ("gross_beat tape_stop", Effect::GrossBeat(crate::fx::GrossBeatFx { time: "tape_stop".into(), cycle_steps: 2.0, ..Default::default() })),
+            ("gross_beat tape_stop_end", Effect::GrossBeat(crate::fx::GrossBeatFx { time: "tape_stop_end".into(), cycle_steps: 2.0, ..Default::default() })),
+        ];
+        for (name, fx) in effects {
+            let (mut l, mut r) = (x.clone(), x.clone());
+            crate::render::process_chain(std::slice::from_ref(&fx), &[&lane], &mut l, &mut r, &ctx, &tl);
+            assert!(l.iter().all(|v| v.is_finite()));
+            // the same automation over the effect without the guard
+            let unguarded = |l: &mut [f32], r: &mut [f32]| match &fx {
+                Effect::Stutter(s) => stutter_guarded(s, l, r, 0.125, 0, false),
+                Effect::GrossBeat(g) => crate::fx_time::gross_beat_unguarded(g, l, r, 0.125, 0),
+                _ => unreachable!(),
+            };
+            let (mut wl, mut wr) = (x.clone(), x.clone());
+            unguarded(&mut wl, &mut wr);
+            let (mut gl, mut gr) = (x.clone(), x.clone());
+            fx.process(&mut gl, &mut gr, &ctx);
+            for &o in &onsets {
+                let w = o - 64..o + 512;
+                let jump = |y: &[f32]| y[w.clone()].windows(2).map(|v| (v[1] - v[0]).abs()).fold(0.0f32, f32::max);
+                let j = jump(&l);
+                // the guarded vs unguarded wet at the onset (the automation
+                // blends these with the dry)
+                let (jg, ju) = (jump(&gl), jump(&wl));
+                eprintln!("{name} re-trigger at {:.3} s: max jump {j:.5} (source's own {src_jump:.5}); wet alone guarded {jg:.5} / unguarded {ju:.5}", o as f32 / SR);
+                assert!(j <= src_jump, "{name}: onset click at {o}: {j} > {src_jump}");
+            }
+        }
+    }
+
+    /// The guard touches nothing but tape_stop mode: every other mode is the
+    /// same bit for bit with it on or off.
+    #[test]
+    fn tape_stop_dc_guard_leaves_other_modes_bit_identical() {
+        let x: Vec<f32> = (0..40_000).map(|i| (2.0 * PI * 97.0 * i as f32 / SR).sin() * 0.4 + 0.1 * (i as f32 * 0.37).sin()).collect();
+        for mode in [StutterMode::Gate, StutterMode::Stutter, StutterMode::HalfTime, StutterMode::Reverse] {
+            let p = StutterFx { mode, mix: 0.8, ..Default::default() };
+            let (mut a, mut b) = (x.clone(), x.clone());
+            stutter_guarded(&p, &mut a, &mut b, 0.125, 0, false);
+            let (mut c, mut d) = (x.clone(), x.clone());
+            stutter_guarded(&p, &mut c, &mut d, 0.125, 0, true);
+            assert!(a == c && b == d, "{mode:?}");
+        }
+    }
+
+    /// With the guard warmed per ramp from the song position, a buffer that
+    /// starts `offset` into the song (silent before it, as the windowed
+    /// renders read it, and for 0.5 s after: the live-splice convention) matches the same samples of a whole-song pass exactly,
+    /// including a buffer that starts mid-ramp.
+    #[test]
+    fn tape_stop_dc_guard_follows_the_song_position() {
+        let p = StutterFx { mode: StutterMode::TapeStop, cycle_steps: 4.0, ..Default::default() };
+        let n = 200_000;
+        for off in [44_100usize, 50_000] {
+            let x: Vec<f32> = (0..n).map(|i| if i >= off + 22_050 { (2.0 * PI * 61.0 * i as f32 / SR).sin() * 0.5 } else { 0.0 }).collect();
+            let (mut fl, mut fr) = (x.clone(), x.clone());
+            stutter_at(&p, &mut fl, &mut fr, 0.125, 0);
+            let (mut wl, mut wr) = (x[off..].to_vec(), x[off..].to_vec());
+            stutter_at(&p, &mut wl, &mut wr, 0.125, off);
+            assert!(fl[off..] == wl[..] && fr[off..] == wr[..], "offset {off}");
+        }
     }
 
     #[test]
