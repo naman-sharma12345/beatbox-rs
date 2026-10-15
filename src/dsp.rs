@@ -381,7 +381,20 @@ impl Svf {
     }
 }
 
-/// One-pole DC blocker.
+/// One-pole DC blocker: `y = x - x1 + 0.995 * y1`.
+///
+/// Known legacy behavior / technical debt: at R = 0.995 this is a gentle low
+/// cut, not a pure DC blocker. At 44.1 kHz it is -3 dB at ~35 Hz, -6.1 dB at
+/// 20 Hz and -1.7 dB at 50 Hz, with ~10 degrees of phase shift at 200 Hz.
+///
+/// It runs on the master sum in `render()` (src/render.rs, before the master
+/// chain) and on `export_stems`' private copy of the stem sum for its null
+/// check, so both sides of that check match.
+///
+/// R = 0.995 is intentionally kept for byte-identity with the goldens, D11 and
+/// the IWBY v5/v6 renders. Do not change it in place. A true DC blocker
+/// (R ~ 0.9995, -3 dB at ~3.5 Hz) is deferred to a future major milestone or an
+/// opt-in mastering flag.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DcBlock {
     x1: f32,
