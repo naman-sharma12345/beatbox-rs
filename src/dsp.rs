@@ -10,6 +10,9 @@ pub fn midi_to_hz(m: f32) -> f32 {
     440.0 * 2f32.powf((m - 69.0) / 12.0)
 }
 
+/// Streaming true-peak lookahead limiter (opt-in; nothing existing calls it).
+pub mod tp_limiter;
+
 /// Resident memory of this process in MB (Linux /proc; 0 elsewhere).
 pub fn rss_mb() -> f32 {
     std::fs::read_to_string("/proc/self/status")
@@ -635,3 +638,6 @@ mod tests {
         assert!((0.0..1.0).contains(&v));
     }
 }
+
+/// ITU-R BS.1770-4 Annex 2 true-peak interpolator and meter.
+pub mod true_peak;
