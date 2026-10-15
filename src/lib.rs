@@ -113,6 +113,7 @@ pub mod tools_click;
 pub mod tools_markers;
 pub mod tools_tempo;
 pub mod tools_mix_analysis;
+pub mod tools_mix_primitives;
 pub mod tempo_curve;
 pub mod stems;
 pub mod transcribe;
