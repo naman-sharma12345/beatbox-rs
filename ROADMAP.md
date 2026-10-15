@@ -66,5 +66,6 @@ Numbering note: this slot was planned as "real-time engine"; what actually shipp
 
 ## Known behavior / technical debt
 - Master DC blocker (`DcBlock` in src/dsp.rs, R = 0.995): `y = x - x1 + 0.995*y1` is really a gentle low cut, not a pure DC blocker: -3 dB at ~35 Hz at 44.1 kHz, -6.1 dB at 20 Hz, -1.7 dB at 50 Hz, ~10 degrees of phase at 200 Hz.
-- It runs on the master sum in `render()` and on `export_stems`' null-check copy of the stem sum.
+- It runs on the master sum in `render()`, on each post_master stem, and on `export_stems`' null-check copy of the pre-master stem sum.
 - Kept at 0.995 on purpose for byte-identity with the goldens, D11 and IWBY v5/v6. A true DC blocker (R ~ 0.9995, ~3.5 Hz) is deferred to a future major milestone or an opt-in mastering flag.
+- `export_stems` mode post_master runs render()'s own master section on every stem (`render::master_section`: master fader + volume lane, DC blocker, master chain with its automation and sidechain context). A linear master (EQ, filters, gain, automation, trigger-keyed ducking) sums back to the real master within -60 dB. A compressor, limiter, clipper or saturator on the master reacts to each stem alone, so those stems cannot null; that is inherent to per-stem export.

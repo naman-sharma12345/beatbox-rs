@@ -415,7 +415,7 @@ impl Timeline {
 /// Automation is evaluated once per block and interpolated per sample.
 pub const AUTO_BLOCK: usize = 64;
 
-fn owner_lanes<'a>(p: &'a Project, owner: &str) -> Vec<&'a AutomationLane> {
+pub(crate) fn owner_lanes<'a>(p: &'a Project, owner: &str) -> Vec<&'a AutomationLane> {
     p.automation
         .iter()
         .filter(|l| l.enabled && !l.points.is_empty() && l.target.eq_ignore_ascii_case(owner))
@@ -581,7 +581,7 @@ pub fn process_chain(
 
 /// Apply fader (with optional `volume` lane, in dB) and stereo balance
 /// (with optional `pan` lane) to a stereo buffer.
-fn apply_fader(
+pub(crate) fn apply_fader(
     l: &mut [f32],
     r: &mut [f32],
     volume_db: f32,
@@ -1161,6 +1161,88 @@ pub fn render_window(p: &Project, bank: &SampleBank, opts: &RenderOptions, index
     render_impl(p, bank, opts, None, Some(index_base))
 }
 
+/// The song-time mapping of one render and the buffer's place in the song
+/// (in samples, for LFO phase; the same arithmetic as live_splice's splice
+/// offset). render() builds its timeline here, and post_master stem export
+/// uses the same one so master automation lands on the same samples.
+pub(crate) fn render_timeline(p: &Project, opts: &RenderOptions) -> (Timeline, usize) {
+    let mut tl = Timeline::new(p, opts);
+    let tcurve = crate::tempo_curve::TempoCurve::new(p);
+    let offset = match opts.step_range {
+        Some((r0, _)) if r0 > 0 => {
+            if tcurve.is_constant() {
+                (r0 as f64 * p.step_secs() as f64 * SR as f64) as usize
+            } else {
+                (song_secs_at_step(&tcurve, p.song_steps() as f64, r0 as f64) * SR as f64) as usize
+            }
+        }
+        _ => 0,
+    };
+    tl.sample0 = offset;
+    (tl, offset)
+}
+
+/// The sidechain context and timeline a render of `p` with `opts` gives
+/// its master chain: triggers and level keys (sidechain_inputs), the song
+/// timeline and the buffer offset (render_timeline), and the buffer length.
+/// post_master stem export builds its FxContext from these, so a master
+/// effect keyed off a track (a ducker, a level-keyed dynamic EQ) or an LFO
+/// sees exactly what it sees in render().
+pub(crate) struct MasterInputs {
+    pub triggers: HashMap<String, Vec<usize>>,
+    pub levels: HashMap<String, Vec<f32>>,
+    pub tl: Timeline,
+    pub offset: usize,
+    pub total: usize,
+}
+
+pub(crate) fn master_inputs(p: &Project, bank: &SampleBank, opts: &RenderOptions) -> MasterInputs {
+    let (events, body_len) = schedule(p, opts);
+    let total = body_len + (opts.tail.max(0.0) * SR) as usize;
+    let (triggers, levels) = sidechain_inputs(p, bank, opts, &events, total);
+    let (tl, offset) = render_timeline(p, opts);
+    MasterInputs { triggers, levels, tl, offset, total }
+}
+
+/// The master section, in render order: master fader (with its `volume`
+/// lane), the master DC blocker (R 0.995, see [`DcBlock`]), the master
+/// effect chain (with its automation lanes and the render's sidechain
+/// context), then non-finite samples to zero. render() runs it on the
+/// master sum; post_master stem export runs it on each stem.
+pub(crate) fn master_section(p: &Project, ml: &mut Vec<f32>, mr: &mut Vec<f32>, ctx: &FxContext, tl: &Timeline) {
+    let master_lanes = owner_lanes(p, "master");
+    apply_fader(
+        ml,
+        mr,
+        p.master_volume_db,
+        &master_lanes,
+        tl,
+        None,
+    );
+    // DC block before the master chain so the limiter has the last word
+    let (mut dl, mut dr) = (DcBlock::default(), DcBlock::default());
+    for (a, b) in ml.iter_mut().zip(mr.iter_mut()) {
+        *a = dl.process(*a);
+        *b = dr.process(*b);
+    }
+    process_chain(
+        &p.master_effects,
+        &master_lanes,
+        ml,
+        mr,
+        ctx,
+        tl,
+    );
+    for (a, b) in ml.iter_mut().zip(mr.iter_mut()) {
+        if !a.is_finite() {
+            *a = 0.0;
+        }
+        if !b.is_finite() {
+            *b = 0.0;
+        }
+    }
+}
+
 fn render_impl(
     p: &Project,
     bank: &SampleBank,
@@ -1237,23 +1319,9 @@ fn render_impl(
         }
     };
     let any_solo = p.tracks.iter().any(|t| t.solo);
-    let mut tl = Timeline::new(p, opts);
-    let tcurve = crate::tempo_curve::TempoCurve::new(p);
     crate::dsp::memtrace(&format!("render start: {} tracks, {} buses, {:.0} s, stems {}, cached {}", p.tracks.len(), p.buses.len(), total as f32 / SR, opts.keep_stems, cached.len()));
-
-    // the buffer's place in the song, for LFO phase (the same arithmetic
-    // as live_splice's splice offset)
-    let offset = match opts.step_range {
-        Some((r0, _)) if r0 > 0 => {
-            if tcurve.is_constant() {
-                (r0 as f64 * p.step_secs() as f64 * SR as f64) as usize
-            } else {
-                (song_secs_at_step(&tcurve, p.song_steps() as f64, r0 as f64) * SR as f64) as usize
-            }
-        }
-        _ => 0,
-    };
-    tl.sample0 = offset;
+    let (tl, offset) = render_timeline(p, opts);
+    let tcurve = crate::tempo_curve::TempoCurve::new(p);
     let ctx = FxContext {
         step_secs: p.step_secs(),
         triggers: &triggers,
@@ -1759,37 +1827,7 @@ fn render_impl(
     }
     crate::producer::prof("render.buses", t_bus);
     let t_master = std::time::Instant::now();
-    let master_lanes = owner_lanes(p, "master");
-    apply_fader(
-        &mut ml,
-        &mut mr,
-        p.master_volume_db,
-        &master_lanes,
-        &tl,
-        None,
-    );
-    // DC block before the master chain so the limiter has the last word
-    let (mut dl, mut dr) = (DcBlock::default(), DcBlock::default());
-    for (a, b) in ml.iter_mut().zip(mr.iter_mut()) {
-        *a = dl.process(*a);
-        *b = dr.process(*b);
-    }
-    process_chain(
-        &p.master_effects,
-        &master_lanes,
-        &mut ml,
-        &mut mr,
-        &ctx,
-        &tl,
-    );
-    for (a, b) in ml.iter_mut().zip(mr.iter_mut()) {
-        if !a.is_finite() {
-            *a = 0.0;
-        }
-        if !b.is_finite() {
-            *b = 0.0;
-        }
-    }
+    master_section(p, &mut ml, &mut mr, &ctx, &tl);
     crate::producer::prof("render.master", t_master);
     crate::dsp::memtrace("render end");
     Ok(Mix {

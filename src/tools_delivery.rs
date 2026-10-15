@@ -615,7 +615,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "export_stems",
-            description: "Export every track AND every bus/return (reverb, delay, drum group) as its own file, all the same length and aligned at 0. mode pre_master (default): post-fader, before the master chain; the track stems routed straight to master plus the bus stems SUM BACK to the pre-master mix, and the residual is reported. mode post_master: each stem is also run through the master chain + master fader (approximate: compressors/limiters react to each stem alone, so the sum will not null against the real master; the report says how far off it is). Formats wav/flac/mp3 with dither; no loudness normalisation. Stem level (stem_gain): trim (default) = each stem on its own is trimmed until its decoded true peak meets 0 dBTP, so a stem's level depends on its own peak (lowering a stem's peaks, e.g. by de-essing, makes it louder in the file); common = ONE gain for every stem (the trim the hottest stem needs), so the balance between stems is exactly the mix's; stem_gain_db pins a stem's gain (dB, or a list of dB steps), so processing never moves it. Every stem reports gain_steps_db, and the report's stem_gain_db_pin (each step as exact text) is the map that rebuilds these exact files.",
+            description: "Export every track AND every bus/return (reverb, delay, drum group) as its own file, all the same length and aligned at 0. mode pre_master (default): post-fader, before the master chain; the track stems routed straight to master plus the bus stems SUM BACK to the pre-master mix, and the residual is reported. mode post_master: each stem runs through the render's own master section (fader + automation, DC blocker, master chain, sidechain keys); a linear master nulls within -60 dB, a compressor/limiter cannot (it hears each stem alone; reported). Formats wav/flac/mp3 with dither; no loudness normalisation. Stem level (stem_gain): trim (default) = each stem on its own is trimmed until its decoded true peak meets 0 dBTP, so a stem's level depends on its own peak (lowering a stem's peaks, e.g. by de-essing, makes it louder in the file); common = ONE gain for every stem (the trim the hottest stem needs), so the balance between stems is exactly the mix's; stem_gain_db pins a stem's gain (dB, or a list of dB steps), so processing never moves it. Every stem reports gain_steps_db, and the report's stem_gain_db_pin (each step as exact text) is the map that rebuilds these exact files.",
             mutates: false,
             schema: || obj(merge_props(delivery_props(), json!({
                 "dir": {"type": "string", "description": "Output folder (default renders/<project>_stems)"},
@@ -668,7 +668,8 @@ pub fn tools() -> Vec<Tool> {
                     None => e.renders_dir().join(format!("{}_stems", samples::sample_name(&p.name))),
                 };
                 e.bank.sync(&p.samples);
-                let mix = render::render(&p, &e.bank, &RenderOptions { keep_stems: true, ..Default::default() })?;
+                let ropts = RenderOptions { keep_stems: true, ..Default::default() };
+                let mix = render::render(&p, &e.bank, &ropts)?;
                 // the pre-master reference: same song with an empty master chain at 0 dB
                 let mut pm = p.clone();
                 pm.master_effects.clear();
@@ -706,12 +707,27 @@ pub fn tools() -> Vec<Tool> {
                     *b = dcr.process(*b);
                 }
                 let pre_resid = resid(&pre.left, &pre.right, &sl, &sr);
+                // post_master: each stem goes through render()'s own master
+                // section (render::master_section), in render order: master
+                // fader with its volume lane, the DC blocker (R 0.995), the
+                // master chain with its automation lanes and the render's
+                // sidechain context (triggers, level keys, offset, timeline),
+                // then the non-finite scrub. Every stage is fresh per stem, as
+                // it is fresh for the master sum, so a LINEAR master (EQ,
+                // filters, gain, automation, trigger-keyed ducking) applied to
+                // the stems sums back to the real master to float rounding.
+                // A compressor, limiter, clipper or saturator on the master
+                // reacts to the full mix in render() and to each stem alone
+                // here, so its stems cannot null; that is inherent to per-stem
+                // export, and the report's sum_check says how far off it is.
+                let mi = if mode == "post_master" { Some(render::master_inputs(&p, &e.bank, &ropts)) } else { None };
+                if let Some(mi) = &mi {
+                    debug_assert_eq!(mi.total, n, "post_master: master inputs and the mix disagree on length");
+                }
                 let master_fx = |l: &mut Vec<f32>, r: &mut Vec<f32>| {
-                    let trig = HashMap::new();
-                    let ctx = FxContext { step_secs: p.step_secs(), triggers: &trig, offset: 0, levels: None };
-                    let g = db_to_gain(p.master_volume_db);
-                    for v in l.iter_mut().chain(r.iter_mut()) { *v *= g; }
-                    for fx in &p.master_effects { fx.process(l, r, &ctx); }
+                    let Some(mi) = &mi else { return };
+                    let ctx = FxContext { step_secs: p.step_secs(), triggers: &mi.triggers, offset: mi.offset, levels: Some(&mi.levels) };
+                    render::master_section(&p, l, r, &ctx, &mi.tl);
                 };
                 let only: Option<Vec<String>> = a.get("tracks").and_then(|v| v.as_array()).map(|x| x.iter().filter_map(|s| s.as_str().map(|s| s.to_lowercase())).collect());
                 let mut stems: Vec<(&str, &render::Stem, bool)> = p.tracks.iter().zip(mix.stems.iter()).map(|(t, s)| ("track", s, !t.mute && (!any_solo || t.solo))).collect();
@@ -815,7 +831,7 @@ pub fn tools() -> Vec<Tool> {
                     (pre_resid, if pre_resid < -60.0 { "stems sum back to the pre-master mix (null within -60 dB)" } else { "stems do NOT fully null against the pre-master mix (check pre-fader sends / bus routing)" })
                 } else {
                     let r = resid(&mix.left, &mix.right, &ql, &qr);
-                    (r, if r < -40.0 { "post-master stems sum close to the master" } else { "post-master stems do not sum to the master: the master chain is nonlinear (compressor/limiter/clipper react to the full mix)" })
+                    (r, if r < -60.0 { "post-master stems sum back to the master (null within -60 dB)" } else { "post-master stems do not null against the master: the master chain is nonlinear (compressor/limiter/clipper react to the full mix, each stem alone here)" })
                 };
                 let hottest = |v: &[f32]| -> (String, f64) {
                     let i = (0..v.len()).max_by(|&x, &y| v[x].total_cmp(&v[y]));
@@ -1097,6 +1113,116 @@ mod tests {
         let r = s["sum_residual_db"].as_f64().unwrap();
         assert!(r < -60.0, "pre-master stems do not null: {r} dB {}", s["verdict"]);
         assert_eq!(s["verdict"], "stems sum back to the pre-master mix (null within -60 dB)", "{s}");
+    }
+
+    /// A lofi beat with one return bus (a pre- and a post-fader send) and a
+    /// LINEAR master: the master chain cleared to a parametric EQ only, a
+    /// master volume automation lane (0 dB -> -9 dB -> +2 dB over the song)
+    /// and the static master fader moved off 0 dB, so a stub that ignored
+    /// the lane, the DC blocker or the fader shows up in the null.
+    fn linear_master_eng(dir: &str) -> Engine {
+        let mut e = eng(dir);
+        e.call("add_bus", &json!({"name": "verb", "preset": "reverb"})).unwrap();
+        let t0 = e.project.tracks[0].name.clone();
+        let t1 = e.project.tracks[1].name.clone();
+        e.call("set_send", &json!({"track": t0, "bus": "verb", "db": -6, "pre_fader": true})).unwrap();
+        e.call("set_send", &json!({"track": t1, "bus": "verb", "db": -12})).unwrap();
+        e.project.master_effects.clear();
+        e.project.automation.retain(|l| !l.target.eq_ignore_ascii_case("master"));
+        e.project.master_volume_db = -3.0;
+        e.call("add_effect", &json!({"track": "master", "type": "parametric_eq", "params": {"bands": [
+            {"kind": "low_cut", "freq": 60},
+            {"kind": "bell", "freq": 3200, "gain_db": 4, "q": 1.2},
+            {"kind": "high_shelf", "freq": 9000, "gain_db": -3}
+        ]}})).unwrap();
+        let beats = e.project.song_beats();
+        e.call("add_automation", &json!({"track": "master", "param": "volume", "points": [[0.0, 0.0], [beats * 0.5, -9.0], [beats, 2.0]]})).unwrap();
+        e
+    }
+
+    /// post_master runs render()'s own master section on every stem (fader
+    /// + volume lane -> DC blocker R 0.995 -> master chain with its lanes and
+    /// sidechain context): with a linear master the post-master stems
+    /// (direct tracks + the bus) sum back to the real master below -60 dB.
+    #[test]
+    fn export_stems_post_master_linear_master_nulls_against_the_master() {
+        let mut e = linear_master_eng("beatbox_stems_post_master_null");
+        assert!(e.project.automation.iter().any(|l| l.target == "master" && l.param == "volume" && l.enabled), "the master volume lane is in place");
+        let s = e.call("export_stems", &json!({"dir": "out/pm", "format": "wav", "stem_format": "f32", "mode": "post_master"})).unwrap();
+        let r = s["sum_residual_db"].as_f64().unwrap();
+        eprintln!("post_master linear-master null: {r} dB");
+        assert!(r < -60.0, "post-master stems do not null against the master: {r} dB {}", s["verdict"]);
+        assert_eq!(s["verdict"], "post-master stems sum back to the master (null within -60 dB)", "{s}");
+        // the bus is exported and is in the sum
+        let bus = stem(&s, "verb");
+        assert_eq!(bus["kind"], "bus", "{s}");
+        assert_eq!(bus["in_sum"], true, "{s}");
+        // pre_master on the same project still nulls against the pre-master mix
+        let q = e.call("export_stems", &json!({"dir": "out/pre", "format": "wav", "stem_format": "f32", "mode": "pre_master"})).unwrap();
+        assert!(q["sum_residual_db"].as_f64().unwrap() < -60.0, "{q}");
+    }
+
+    /// The master chain gets the render's sidechain context: a trigger-keyed
+    /// ducker on the master (its gain follows the key track's notes, not the
+    /// signal, so it is linear) nulls per stem too. The old stub passed no
+    /// triggers, so the ducker did nothing on the stems.
+    #[test]
+    fn export_stems_post_master_master_ducker_follows_the_render_triggers() {
+        let mut e = linear_master_eng("beatbox_stems_post_master_duck");
+        let key = e.project.tracks[0].name.clone();
+        e.call("add_effect", &json!({"track": "master", "type": "sidechain", "params": {"source": key, "amount": 0.8}})).unwrap();
+        let s = e.call("export_stems", &json!({"dir": "out/pmd", "format": "wav", "stem_format": "f32", "mode": "post_master"})).unwrap();
+        let r = s["sum_residual_db"].as_f64().unwrap();
+        eprintln!("post_master master-ducker null: {r} dB");
+        assert!(r < -60.0, "post-master stems with a master ducker do not null: {r} dB {}", s["verdict"]);
+    }
+
+    /// A limiter on the master reacts to the full mix in render() and to
+    /// each stem alone in post_master, so the stems cannot null; the report
+    /// says so instead of claiming a match.
+    #[test]
+    fn export_stems_post_master_limiter_cannot_null_and_says_so() {
+        let mut e = linear_master_eng("beatbox_stems_post_master_limiter");
+        e.project.master_volume_db = 12.0;
+        e.call("add_effect", &json!({"track": "master", "type": "limiter", "params": {"ceiling_db": -6.0}})).unwrap();
+        let s = e.call("export_stems", &json!({"dir": "out/pml", "format": "wav", "stem_format": "f32", "mode": "post_master"})).unwrap();
+        let r = s["sum_residual_db"].as_f64().unwrap();
+        eprintln!("post_master master-limiter residual: {r} dB");
+        assert!(r > -60.0, "a hard-driven master limiter should not null per stem: {r} dB");
+        assert!(s["verdict"].as_str().unwrap().contains("nonlinear"), "{s}");
+    }
+
+    /// The master gain is applied exactly once on each path: stems are
+    /// tapped before the master section and post_master adds the master
+    /// fader once. With no master lane the static fader is what applies, so
+    /// a stem path that doubled it (or skipped it) would miss the master by
+    /// about -6 dB here instead of nulling. Also the defaults: an empty
+    /// master chain with no automation, and a bypassed (hard-driven) master
+    /// limiter, null in both paths exactly as the master sees them.
+    #[test]
+    fn export_stems_post_master_master_gain_applied_once_and_defaults_null() {
+        let mut e = eng("beatbox_stems_post_master_gain_once");
+        e.call("add_bus", &json!({"name": "verb", "preset": "reverb"})).unwrap();
+        let t0 = e.project.tracks[0].name.clone();
+        e.call("set_send", &json!({"track": t0, "bus": "verb", "db": -6})).unwrap();
+        e.project.master_effects.clear();
+        e.project.automation.retain(|l| !l.target.eq_ignore_ascii_case("master"));
+        e.project.master_volume_db = 0.0;
+        let null = |e: &mut Engine, d: &str| -> f64 {
+            let s = e.call("export_stems", &json!({"dir": d, "format": "wav", "stem_format": "f32", "mode": "post_master"})).unwrap();
+            s["sum_residual_db"].as_f64().unwrap()
+        };
+        let r0 = null(&mut e, "out/g0");
+        assert!(r0 < -60.0, "empty master chain, 0 dB, no automation: {r0} dB");
+        e.project.master_volume_db = -6.0;
+        let r6 = null(&mut e, "out/g6");
+        assert!(r6 < -60.0, "static master fader -6 dB applied once per path: {r6} dB");
+        e.project.master_volume_db = 12.0;
+        e.call("add_effect", &json!({"track": "master", "type": "limiter", "params": {"ceiling_db": -6.0}})).unwrap();
+        e.project.master_effects.last_mut().unwrap().set_bypass(true);
+        let rb = null(&mut e, "out/gb");
+        assert!(rb < -60.0, "a bypassed master limiter is skipped in both paths: {rb} dB");
+        eprintln!("post_master gain-once nulls: empty {r0} dB, -6 dB fader {r6} dB, bypassed limiter {rb} dB");
     }
 
     fn hot_stems(dir: &str) -> (Engine, String) {
