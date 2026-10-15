@@ -89,7 +89,7 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "effects",
         description: "Effects: add/tweak/remove/bypass/reorder effects, FX chains, one-knob polish, A/B an effect.",
-        actions: &["add_effect", "tweak_effect", "remove_effect", "get_effects", "bypass_effect", "reorder_effects", "describe_effect", "place_fx", "move_effect", "ab_compare", "list_fx_chains", "apply_fx_chain", "save_fx_chain", "copy_fx_chain", "soundgoodizer"],
+        actions: &["add_effect", "tweak_effect", "remove_effect", "get_effects", "bypass_effect", "reorder_effects", "describe_effect", "place_fx", "move_effect", "ab_compare", "list_fx_chains", "apply_fx_chain", "save_fx_chain", "copy_fx_chain", "soundgoodizer", "multiband_dynamics"],
     },
     Category {
         name: "vocals",
