@@ -107,3 +107,11 @@ Remez exchange.
 - f. j. harris, "Multirate Signal Processing for Communication Systems", 2004.
 - ADAA (`src/dsp/adaa.rs`): J. D. Parker, V. Zavalishin, E. Le Bivic, DAFx-16, 2016;
   S. Bilbao, F. Esqueda, J. D. Parker, V. Välimäki, IEEE SPL 24(7), 2017.
+
+`src/tools_mix_primitives.rs` (MCP mixing primitives) is written from published methods only;
+no third-party mixing or dynamics source was read or used.
+
+- Meters: ITU-R BS.1770-4, "Algorithms to measure audio programme loudness and true-peak
+  audio level", 2015 (integrated loudness, Annex 2 true peak).
+- `mix_report` short-term loudness: EBU Tech 3341, "Loudness Metering: 'EBU Mode' metering to
+  supplement EBU R 128 loudness normalization", v3.0, 2016 (3 s short-term window, 100 ms update).
