@@ -106,6 +106,52 @@ impl TempoCurve {
     }
 }
 
+/// Samples from the song start to `beat`, by piecewise integration through
+/// the tempo map: the samples of each segment between tempo events, summed
+/// (a jump holds its bpm: db * 60 * SR / bpm; a linear ramp in beats from
+/// bpm0 to bpm1: 60 * SR * ln(bpm_end / bpm0) / slope, slope = d bpm / d beat).
+/// Exact, with no table: a boundary whose sample count is a whole number
+/// comes out as that number. Same point rules as `TempoCurve::new` (beats
+/// >= 0, finite, bpm clamped to 20..400, sorted; the base bpm before the
+/// first point).
+pub fn samples_at_beat(p: &Project, beat: f64) -> f64 {
+    let base = p.bpm.clamp(20.0, 400.0) as f64;
+    let mut pts: Vec<TempoPoint> = p.tempo_points.iter().filter(|t| t.beat >= 0.0 && t.bpm.is_finite()).cloned().collect();
+    for t in pts.iter_mut() {
+        t.bpm = t.bpm.clamp(20.0, 400.0);
+    }
+    pts.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+    let k = 60.0 * crate::dsp::SR as f64;
+    let beat = beat.max(0.0);
+    let (mut b0, mut v0) = (0.0f64, base);
+    let mut n = 0.0f64;
+    for t in &pts {
+        let (b1, v1) = (t.beat as f64, t.bpm as f64);
+        let end = beat.min(b1);
+        if end > b0 {
+            n += if t.ramp && b1 > b0 && v1 != v0 {
+                let slope = (v1 - v0) / (b1 - b0);
+                k * ((v0 + slope * (end - b0)) / v0).ln() / slope
+            } else {
+                (end - b0) * k / v0
+            };
+        }
+        if beat <= b1 {
+            return n;
+        }
+        b0 = b1;
+        v0 = v1;
+    }
+    n + (beat - b0) * k / v0
+}
+
+/// The sample a note at `beat` starts on: `samples_at_beat` truncated, as the
+/// renderer truncates note onsets (a value within 1e-6 of a whole number is
+/// that number).
+pub fn sample_index_at_beat(p: &Project, beat: f64) -> usize {
+    (samples_at_beat(p, beat) + 1e-6).floor().max(0.0) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +184,31 @@ mod tests {
             assert!((r.beat_at_secs(r.secs_at_beat(b)) - b).abs() < 1e-6, "round trip at {b}");
         }
         assert!((bpm_at(120.0, &q.tempo_points, 4.0) - 90.0).abs() < 1e-4);
+    }
+
+    /// B75: the exact piecewise integration agrees with the closed forms and
+    /// with the renderer's table.
+    #[test]
+    fn piecewise_samples_match_the_closed_forms() {
+        let sr = crate::dsp::SR as f64;
+        let mut p = Project::new("t", 120.0);
+        assert_eq!(samples_at_beat(&p, 8.0), 4.0 * sr, "constant: 8 beats at 120 = 4 s");
+        // 120 for 4 beats, then 60: beat 6 = 2 s + 2 s
+        p.tempo_points.push(TempoPoint { beat: 4.0, bpm: 60.0, ramp: false });
+        assert_eq!(samples_at_beat(&p, 6.0), 4.0 * sr);
+        assert_eq!(sample_index_at_beat(&p, 6.0), 176_400);
+        // a ramp 120 -> 60 over beats 0..8: 8 * 60 / 60 * ln 2 s, then 60
+        let mut q = Project::new("t", 120.0);
+        q.tempo_points.push(TempoPoint { beat: 8.0, bpm: 60.0, ramp: true });
+        let want = 8.0 * (2.0f64).ln() * sr;
+        assert!((samples_at_beat(&q, 8.0) - want).abs() < 1e-6, "{} vs {want}", samples_at_beat(&q, 8.0));
+        assert!((samples_at_beat(&q, 9.0) - want - sr).abs() < 1e-6);
+        // the table integrates a ramp by the midpoint rule per 1/64 beat: over
+        // this 8-beat ramp its error grows to about 0.11 samples at the end
+        let c = TempoCurve::new(&q);
+        for b in [0.5, 3.3, 7.99, 8.0, 12.0] {
+            let d = samples_at_beat(&q, b) - c.secs_at_beat(b) * sr;
+            assert!(d.abs() < 0.25, "beat {b}: {d} samples from the table");
+        }
     }
 }
