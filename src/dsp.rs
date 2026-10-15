@@ -5,6 +5,10 @@ use std::f32::consts::PI;
 
 pub mod adaa;
 
+/// Clean-room 2x/4x half-band oversampler and oversampled ADAA (opt-in;
+/// nothing existing calls it).
+pub mod oversample;
+
 /// Engine sample rate. Everything renders at 44.1 kHz.
 pub const SR: f32 = 44_100.0;
 

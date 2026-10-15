@@ -90,3 +90,20 @@ SOFTWARE.
 - `scripts/separate_stems.py` follows the model card's chunked overlap-add reference inference (MIT).
 - Use: analysis of a reference record (transcription, sound matching, A/B scoring). Separated stems
   of someone else's record are never placed in a song.
+
+## Published methods (no code adapted)
+
+`src/dsp/oversample.rs` (half-band oversampler, oversampled ADAA) is a clean-room
+implementation written from published methods only; no third-party oversampler source,
+coefficients or design notes were read or used. Its filters are designed in code by the
+Remez exchange.
+
+- T. W. Parks, J. H. McClellan, "Chebyshev approximation for nonrecursive digital filters
+  with linear phase", IEEE Trans. Circuit Theory 19(2), 1972.
+- A. V. Oppenheim, R. W. Schafer, "Discrete-Time Signal Processing" (multirate, polyphase,
+  optimum FIR design).
+- R. E. Crochiere, L. R. Rabiner, "Multirate Digital Signal Processing", 1983 (half-band
+  filters, multistage decimation and interpolation).
+- f. j. harris, "Multirate Signal Processing for Communication Systems", 2004.
+- ADAA (`src/dsp/adaa.rs`): J. D. Parker, V. Zavalishin, E. Le Bivic, DAFx-16, 2016;
+  S. Bilbao, F. Esqueda, J. D. Parker, V. Välimäki, IEEE SPL 24(7), 2017.
