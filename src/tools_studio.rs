@@ -1045,7 +1045,7 @@ mod tests {
         let (mut flat, t) = send_rig("beatbox_send_auto_flat");
         let (mut ramp, _) = send_rig("beatbox_send_auto_ramp");
         assert!(super::automatable(&ramp.project, &t).contains(&"send.verb".to_string()));
-        let end = ramp.project.song_beats() as f32;
+        let end = ramp.project.song_beats();
         ramp.call(
             "add_automation",
             &json!({"track": t, "param": "send.verb", "points": [[0, -60], [end, 0]]}),
@@ -1119,7 +1119,7 @@ mod tests {
         // (step corners included), and a cutoff lane 200 Hz <-> 18 kHz every
         // half beat
         let (mut au, _) = sweep_rig("beatbox_nozip_auto");
-        let end = au.project.song_beats() as f32;
+        let end = au.project.song_beats();
         // volume lanes are absolute: ride from the track's own fader down
         let v0 = au.project.tracks[au.project.track_index(&t).unwrap()].volume_db;
         let mut vol = Vec::new();
