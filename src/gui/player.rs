@@ -710,7 +710,7 @@ mod tests {
             )
         };
         assert!(
-            a >= 32 && a <= 36 && b <= 48,
+            (32..=36).contains(&a) && b <= 48,
             "only bar 3 is dirty: {a}..{b}"
         );
         let t = std::time::Instant::now();
