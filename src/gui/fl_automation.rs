@@ -74,9 +74,24 @@ pub fn snap_beat(b: f32) -> f32 {
 /// Where point `i` lands after a drag to (beat, value): snapped, kept one
 /// step clear of its neighbours (so it never jumps over or onto them),
 /// never before beat 0 or past `max_beat`, value inside the row's range.
-pub fn moved_point(l: &AutomationLane, i: usize, beat: f32, value: f32, row: &AutoRow, max_beat: f32) -> (f32, f32) {
-    let lo_b = if i > 0 { l.points[i - 1].beat + SNAP_BEATS } else { 0.0 };
-    let hi_b = l.points.get(i + 1).map(|q| q.beat - SNAP_BEATS).unwrap_or(max_beat.max(lo_b));
+pub fn moved_point(
+    l: &AutomationLane,
+    i: usize,
+    beat: f32,
+    value: f32,
+    row: &AutoRow,
+    max_beat: f32,
+) -> (f32, f32) {
+    let lo_b = if i > 0 {
+        l.points[i - 1].beat + SNAP_BEATS
+    } else {
+        0.0
+    };
+    let hi_b = l
+        .points
+        .get(i + 1)
+        .map(|q| q.beat - SNAP_BEATS)
+        .unwrap_or(max_beat.max(lo_b));
     let b = snap_beat(beat).clamp(lo_b, hi_b.max(lo_b));
     (b, value.clamp(row.lo, row.hi))
 }
@@ -93,26 +108,51 @@ pub fn strip_height(p: &Project) -> f32 {
 /// The automation strip under the playlist grid. `geo` is the geometry the
 /// grid used this frame (its bar axis, scroll and zoom). Returns the engine
 /// calls the gestures ask for.
-pub fn automation_lanes(ui: &mut egui::Ui, p: &Project, geo: &GridGeo) -> Vec<(&'static str, Value)> {
+pub fn automation_lanes(
+    ui: &mut egui::Ui,
+    p: &Project,
+    geo: &GridGeo,
+) -> Vec<(&'static str, Value)> {
     let mut actions: Vec<(&'static str, Value)> = Vec::new();
-    let (full, _) = ui.allocate_exact_size(vec2(ui.available_width(), strip_height(p)), Sense::hover());
+    let (full, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), strip_height(p)), Sense::hover());
     let painter = ui.painter_at(full);
     painter.rect_filled(full, 0.0, Color32::from_rgb(24, 26, 30));
-    painter.text(pos2(full.min.x + 4.0, full.min.y + 1.0), Align2::LEFT_TOP, "AUTOMATION", FontId::proportional(9.0), Color32::from_gray(150));
+    painter.text(
+        pos2(full.min.x + 4.0, full.min.y + 1.0),
+        Align2::LEFT_TOP,
+        "AUTOMATION",
+        FontId::proportional(9.0),
+        Color32::from_gray(150),
+    );
     let x_lo = geo.grid.min.x;
     let x_hi = geo.grid.max.x.min(full.max.x);
     let max_beat = geo.bar_at(x_hi) * BEATS_PER_BAR;
     if p.automation.is_empty() {
-        let r = Rect::from_min_size(pos2(full.min.x, full.min.y + AUTO_CAPTION_H), vec2(full.width(), AUTO_H));
+        let r = Rect::from_min_size(
+            pos2(full.min.x, full.min.y + AUTO_CAPTION_H),
+            vec2(full.width(), AUTO_H),
+        );
         painter.text(r.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, "No automation lanes yet: add_automation / generate_automation (or the Automation view) put one here.", FontId::proportional(10.0), Color32::from_gray(120));
         return actions;
     }
     for (li, lane) in p.automation.iter().enumerate() {
         let top = full.min.y + AUTO_CAPTION_H + li as f32 * AUTO_H;
-        let head = Rect::from_min_max(pos2(full.min.x, top), pos2(full.min.x + HEAD_W - 2.0, top + AUTO_H - 2.0));
+        let head = Rect::from_min_max(
+            pos2(full.min.x, top),
+            pos2(full.min.x + HEAD_W - 2.0, top + AUTO_H - 2.0),
+        );
         let (lo, hi) = display_range(lane);
-        let row = AutoRow { rect: Rect::from_min_max(pos2(x_lo, top + 4.0), pos2(x_hi, top + AUTO_H - 4.0)), lo, hi };
-        let key = if lane.id.is_empty() { format!("{}:{}", lane.target, lane.param) } else { lane.id.clone() };
+        let row = AutoRow {
+            rect: Rect::from_min_max(pos2(x_lo, top + 4.0), pos2(x_hi, top + AUTO_H - 4.0)),
+            lo,
+            hi,
+        };
+        let key = if lane.id.is_empty() {
+            format!("{}:{}", lane.target, lane.param)
+        } else {
+            lane.id.clone()
+        };
         let args = |extra: Value| {
             let mut a = json!({"track": lane.target, "param": lane.param});
             if let (Some(m), Value::Object(x)) = (a.as_object_mut(), extra) {
@@ -122,11 +162,35 @@ pub fn automation_lanes(ui: &mut egui::Ui, p: &Project, geo: &GridGeo) -> Vec<(&
         };
         // the head: name, click = bypass / enable
         let hr = ui.interact(head, egui::Id::new(("auto-head", &key)), Sense::click());
-        painter.rect_filled(head, 3.0, if lane.enabled { Color32::from_rgb(44, 52, 64) } else { Color32::from_rgb(34, 34, 38) });
+        painter.rect_filled(
+            head,
+            3.0,
+            if lane.enabled {
+                Color32::from_rgb(44, 52, 64)
+            } else {
+                Color32::from_rgb(34, 34, 38)
+            },
+        );
         let label = format!("{} · {}", lane.target, lane.param);
-        painter.text(head.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, label, FontId::proportional(9.5), if lane.enabled { Color32::from_gray(220) } else { Color32::from_gray(110) });
-        if hr.on_hover_text("Click to bypass / enable this automation lane").clicked() {
-            actions.push(("set_automation_points", args(json!({"enabled": !lane.enabled}))));
+        painter.text(
+            head.left_center() + vec2(4.0, 0.0),
+            Align2::LEFT_CENTER,
+            label,
+            FontId::proportional(9.5),
+            if lane.enabled {
+                Color32::from_gray(220)
+            } else {
+                Color32::from_gray(110)
+            },
+        );
+        if hr
+            .on_hover_text("Click to bypass / enable this automation lane")
+            .clicked()
+        {
+            actions.push((
+                "set_automation_points",
+                args(json!({"enabled": !lane.enabled})),
+            ));
         }
         // the row: background, then the envelope
         let row_bg = Rect::from_min_max(pos2(x_lo, top), pos2(x_hi, top + AUTO_H - 2.0));
@@ -134,9 +198,17 @@ pub fn automation_lanes(ui: &mut egui::Ui, p: &Project, geo: &GridGeo) -> Vec<(&
         // empty-spot click = add a point (registered first so the handles,
         // registered after it, win the hit test)
         let rr = ui.interact(row_bg, egui::Id::new(("auto-row", &key)), Sense::click());
-        let col = if lane.enabled { Color32::from_rgb(120, 200, 255) } else { Color32::from_gray(90) };
+        let col = if lane.enabled {
+            Color32::from_rgb(120, 200, 255)
+        } else {
+            Color32::from_gray(90)
+        };
         // where each point is drawn this frame (a dragged one follows the pointer)
-        let mut drawn: Vec<egui::Pos2> = lane.points.iter().map(|q| pos2(row.x_of_beat(geo, q.beat), row.y_of(q.value))).collect();
+        let mut drawn: Vec<egui::Pos2> = lane
+            .points
+            .iter()
+            .map(|q| pos2(row.x_of_beat(geo, q.beat), row.y_of(q.value)))
+            .collect();
         let mut hit_point = false;
         for (i, q) in lane.points.iter().enumerate() {
             let c = drawn[i];
@@ -154,17 +226,47 @@ pub fn automation_lanes(ui: &mut egui::Ui, p: &Project, geo: &GridGeo) -> Vec<(&
             // decides it is a drag); the last spot is kept for the release
             let did = id.with("d");
             if r.dragged() {
-                let off = ui.input(|m| m.pointer.latest_pos().zip(m.pointer.press_origin()).map(|(a, b)| a - b)).unwrap_or_default();
-                let (b, v) = moved_point(lane, i, row.beat_at(geo, c.x + off.x), row.value_at(c.y + off.y), &row, max_beat);
+                let off = ui
+                    .input(|m| {
+                        m.pointer
+                            .latest_pos()
+                            .zip(m.pointer.press_origin())
+                            .map(|(a, b)| a - b)
+                    })
+                    .unwrap_or_default();
+                let (b, v) = moved_point(
+                    lane,
+                    i,
+                    row.beat_at(geo, c.x + off.x),
+                    row.value_at(c.y + off.y),
+                    &row,
+                    max_beat,
+                );
                 ui.ctx().data_mut(|m| m.insert_temp(did, (b, v)));
                 drawn[i] = pos2(row.x_of_beat(geo, b), row.y_of(v));
             }
             if r.drag_stopped() {
                 let got: Option<(f32, f32)> = ui.ctx().data(|m| m.get_temp(did));
                 ui.ctx().data_mut(|m| m.remove::<(f32, f32)>(did));
-                if let Some((b, v)) = got.filter(|(b, v)| (b - q.beat).abs() > 1e-4 || (v - q.value).abs() > 1e-4) {
-                    let pts: Vec<Value> = lane.points.iter().enumerate().map(|(j, o)| if j == i { json!({"beat": b, "value": v, "curve": o.curve}) } else { pt_json(o) }).collect();
-                    actions.push(("set_automation_points", args(json!({"points": pts, "mode": "replace"}))));
+                if let Some((b, v)) =
+                    got.filter(|(b, v)| (b - q.beat).abs() > 1e-4 || (v - q.value).abs() > 1e-4)
+                {
+                    let pts: Vec<Value> = lane
+                        .points
+                        .iter()
+                        .enumerate()
+                        .map(|(j, o)| {
+                            if j == i {
+                                json!({"beat": b, "value": v, "curve": o.curve})
+                            } else {
+                                pt_json(o)
+                            }
+                        })
+                        .collect();
+                    actions.push((
+                        "set_automation_points",
+                        args(json!({"points": pts, "mode": "replace"})),
+                    ));
                 }
             } else if r.secondary_clicked() {
                 actions.push(("set_automation_points", args(json!({"mode": "erase", "from_beat": q.beat - 1e-3, "to_beat": q.beat + 1e-3}))));
@@ -187,10 +289,27 @@ pub fn automation_lanes(ui: &mut egui::Ui, p: &Project, geo: &GridGeo) -> Vec<(&
                 line.push(drawn[i]);
                 if let (Some(n), Some(q)) = (drawn.get(i + 1), lane.points.get(i)) {
                     if q.curve != crate::automation::Curve::Linear {
-                        let tmp = AutomationLane { points: vec![AutoPoint { beat: 0.0, value: drawn[i].y, curve: q.curve }, AutoPoint { beat: 1.0, value: n.y, curve: q.curve }], ..AutomationLane::new("", "") };
+                        let tmp = AutomationLane {
+                            points: vec![
+                                AutoPoint {
+                                    beat: 0.0,
+                                    value: drawn[i].y,
+                                    curve: q.curve,
+                                },
+                                AutoPoint {
+                                    beat: 1.0,
+                                    value: n.y,
+                                    curve: q.curve,
+                                },
+                            ],
+                            ..AutomationLane::new("", "")
+                        };
                         for s in 1..12 {
                             let t = s as f32 / 12.0;
-                            line.push(pos2(drawn[i].x + (n.x - drawn[i].x) * t, tmp.value_at(t).unwrap_or(n.y)));
+                            line.push(pos2(
+                                drawn[i].x + (n.x - drawn[i].x) * t,
+                                tmp.value_at(t).unwrap_or(n.y),
+                            ));
                         }
                     }
                 }
@@ -219,10 +338,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let mut e = Engine::new(d);
-        e.call("add_track", &json!({"name": "pad", "preset": "epiano"})).unwrap();
-        e.call("add_pattern", &json!({"name": "verse", "bars": 2})).unwrap();
-        e.call("place_pattern", &json!({"pattern": "verse", "start_bar": 0, "lane": 0})).unwrap();
-        e.call("add_automation", &json!({"track": "pad", "param": "volume", "points": [[0, -12], [8, -6], [16, -12]]})).unwrap();
+        e.call("add_track", &json!({"name": "pad", "preset": "epiano"}))
+            .unwrap();
+        e.call("add_pattern", &json!({"name": "verse", "bars": 2}))
+            .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern": "verse", "start_bar": 0, "lane": 0}),
+        )
+        .unwrap();
+        e.call(
+            "add_automation",
+            &json!({"track": "pad", "param": "volume", "points": [[0, -12], [8, -6], [16, -12]]}),
+        )
+        .unwrap();
         let p = e.project.clone();
         (e, p)
     }
@@ -230,15 +359,31 @@ mod tests {
     /// Run the playlist grid and the automation strip under it, the way the
     /// app does, feeding real egui events; `gesture` gets a function from
     /// (lane index, beat, value) to the screen point.
-    fn drive(p: &Project, ppp: f32, view: PlaylistView, gesture: &dyn Fn(&dyn Fn(usize, f32, f32) -> egui::Pos2) -> Vec<Vec<Event>>) -> Vec<(&'static str, Value)> {
+    fn drive(
+        p: &Project,
+        ppp: f32,
+        view: PlaylistView,
+        gesture: &dyn Fn(&dyn Fn(usize, f32, f32) -> egui::Pos2) -> Vec<Vec<Event>>,
+    ) -> Vec<(&'static str, Value)> {
         let ctx = egui::Context::default();
         ctx.set_pixels_per_point(ppp);
         let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 700.0));
-        let mut sel = GridSel { view, ..Default::default() };
+        let mut sel = GridSel {
+            view,
+            ..Default::default()
+        };
         let mut out = Vec::new();
         let mut rows: Vec<(GridGeo, AutoRow)> = Vec::new();
-        let mut frame = |events: Vec<Event>, k: usize, out: &mut Vec<(&'static str, Value)>, rows: &mut Vec<(GridGeo, AutoRow)>| {
-            let input = egui::RawInput { screen_rect: Some(screen), events, time: Some(k as f64 * 0.05), ..Default::default() };
+        let mut frame = |events: Vec<Event>,
+                         k: usize,
+                         out: &mut Vec<(&'static str, Value)>,
+                         rows: &mut Vec<(GridGeo, AutoRow)>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                time: Some(k as f64 * 0.05),
+                ..Default::default()
+            };
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     out.extend(playlist_grid(ui, p, &mut sel, 0.0));
@@ -249,7 +394,17 @@ mod tests {
                     for (li, l) in p.automation.iter().enumerate() {
                         let t = top + AUTO_CAPTION_H + li as f32 * AUTO_H;
                         let (lo, hi) = display_range(l);
-                        rows.push((geo, AutoRow { rect: Rect::from_min_max(pos2(geo.grid.min.x, t + 4.0), pos2(geo.grid.max.x, t + AUTO_H - 4.0)), lo, hi }));
+                        rows.push((
+                            geo,
+                            AutoRow {
+                                rect: Rect::from_min_max(
+                                    pos2(geo.grid.min.x, t + 4.0),
+                                    pos2(geo.grid.max.x, t + AUTO_H - 4.0),
+                                ),
+                                lo,
+                                hi,
+                            },
+                        ));
                     }
                 });
             });
@@ -268,13 +423,23 @@ mod tests {
     }
 
     fn press(pos: egui::Pos2, button: PointerButton, pressed: bool) -> Event {
-        Event::PointerButton { pos, button, pressed, modifiers: Modifiers::default() }
+        Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: Modifiers::default(),
+        }
     }
 
     fn drag(from: egui::Pos2, to: egui::Pos2) -> Vec<Vec<Event>> {
-        let mut f = vec![vec![Event::PointerMoved(from)], vec![press(from, PointerButton::Primary, true)]];
+        let mut f = vec![
+            vec![Event::PointerMoved(from)],
+            vec![press(from, PointerButton::Primary, true)],
+        ];
         for i in 1..=8 {
-            f.push(vec![Event::PointerMoved(from + (to - from) * (i as f32 / 8.0))]);
+            f.push(vec![Event::PointerMoved(
+                from + (to - from) * (i as f32 / 8.0),
+            )]);
         }
         f.push(vec![press(to, PointerButton::Primary, false)]);
         f.push(vec![]);
@@ -282,7 +447,12 @@ mod tests {
     }
 
     fn click(at: egui::Pos2, button: PointerButton) -> Vec<Vec<Event>> {
-        vec![vec![Event::PointerMoved(at)], vec![press(at, button, true)], vec![press(at, button, false)], vec![]]
+        vec![
+            vec![Event::PointerMoved(at)],
+            vec![press(at, button, true)],
+            vec![press(at, button, false)],
+            vec![],
+        ]
     }
 
     fn apply(e: &mut Engine, calls: &[(&'static str, Value)]) {
@@ -292,7 +462,11 @@ mod tests {
     }
 
     fn pts(e: &Engine) -> Vec<(f32, f32)> {
-        e.project.automation[0].points.iter().map(|q| (q.beat, (q.value * 10.0).round() / 10.0)).collect()
+        e.project.automation[0]
+            .points
+            .iter()
+            .map(|q| (q.beat, (q.value * 10.0).round() / 10.0))
+            .collect()
     }
 
     #[test]
@@ -301,8 +475,17 @@ mod tests {
         let l = &p.automation[0];
         let (lo, hi) = display_range(l);
         assert_eq!((lo, hi), (-30.0, 0.0));
-        let geo = GridGeo { grid: Rect::from_min_size(pos2(100.0, 0.0), vec2(800.0, 100.0)), bar_px: 25.0, scroll_bar: 2.0, scroll_lane: 0.0 };
-        let row = AutoRow { rect: Rect::from_min_size(pos2(100.0, 200.0), vec2(800.0, 26.0)), lo, hi };
+        let geo = GridGeo {
+            grid: Rect::from_min_size(pos2(100.0, 0.0), vec2(800.0, 100.0)),
+            bar_px: 25.0,
+            scroll_bar: 2.0,
+            scroll_lane: 0.0,
+        };
+        let row = AutoRow {
+            rect: Rect::from_min_size(pos2(100.0, 200.0), vec2(800.0, 26.0)),
+            lo,
+            hi,
+        };
         for b in [8.0f32, 13.5, 40.0] {
             assert!((row.beat_at(&geo, row.x_of_beat(&geo, b)) - b).abs() < 1e-3);
         }
@@ -320,10 +503,31 @@ mod tests {
 
     #[test]
     fn a_real_pointer_adds_moves_deletes_and_bypasses_points() {
-        for (ppp, view) in [(1.0f32, PlaylistView::default()), (2.0, PlaylistView::default()), (1.0, PlaylistView { scroll_bar: 1.0, scroll_lane: 0.0, zoom: 2.0 }), (2.0, PlaylistView { scroll_bar: 1.0, scroll_lane: 0.0, zoom: 2.0 })] {
+        for (ppp, view) in [
+            (1.0f32, PlaylistView::default()),
+            (2.0, PlaylistView::default()),
+            (
+                1.0,
+                PlaylistView {
+                    scroll_bar: 1.0,
+                    scroll_lane: 0.0,
+                    zoom: 2.0,
+                },
+            ),
+            (
+                2.0,
+                PlaylistView {
+                    scroll_bar: 1.0,
+                    scroll_lane: 0.0,
+                    zoom: 2.0,
+                },
+            ),
+        ] {
             let (mut e, p) = project();
             // drag the middle point (beat 8, -6 dB) to beat 12, -3 dB
-            let moved = drive(&p, ppp, view, &|at| drag(at(0, 8.0, -6.0), at(0, 12.0, -3.0)));
+            let moved = drive(&p, ppp, view, &|at| {
+                drag(at(0, 8.0, -6.0), at(0, 12.0, -3.0))
+            });
             assert_eq!(moved.len(), 1, "ppp {ppp} {view:?}: {moved:?}");
             assert_eq!(moved[0].1["mode"], json!("replace"));
             apply(&mut e, &moved);
@@ -333,7 +537,9 @@ mod tests {
             assert!((got[1].1 + 3.0).abs() <= 0.6, "ppp {ppp} {view:?}: {got:?}");
             // click an empty spot at beat 4, -20 dB: a new point there
             let p2 = e.project.clone();
-            let added = drive(&p2, ppp, view, &|at| click(at(0, 4.0, -20.0), PointerButton::Primary));
+            let added = drive(&p2, ppp, view, &|at| {
+                click(at(0, 4.0, -20.0), PointerButton::Primary)
+            });
             assert_eq!(added.len(), 1, "ppp {ppp} {view:?}: {added:?}");
             apply(&mut e, &added);
             let got = pts(&e);
@@ -342,19 +548,35 @@ mod tests {
             assert!((got[1].1 + 20.0).abs() <= 0.6, "{got:?}");
             // right-click the point at beat 12: it is gone
             let p3 = e.project.clone();
-            let erased = drive(&p3, ppp, view, &|at| click(at(0, 12.0, got[2].1), PointerButton::Secondary));
+            let erased = drive(&p3, ppp, view, &|at| {
+                click(at(0, 12.0, got[2].1), PointerButton::Secondary)
+            });
             assert_eq!(erased.len(), 1, "{erased:?}");
             apply(&mut e, &erased);
-            assert_eq!(pts(&e).iter().map(|q| q.0).collect::<Vec<_>>(), vec![0.0, 4.0, 16.0]);
+            assert_eq!(
+                pts(&e).iter().map(|q| q.0).collect::<Vec<_>>(),
+                vec![0.0, 4.0, 16.0]
+            );
             // click the head: bypassed (still there), click again: enabled
             let p4 = e.project.clone();
-            let geo_head = drive(&p4, ppp, view, &|at| { let r = at(0, 0.0, -30.0); click(pos2(20.0, r.y - 4.0), PointerButton::Primary) });
-            assert_eq!(geo_head, vec![("set_automation_points", json!({"track": "pad", "param": "volume", "enabled": false}))]);
+            let geo_head = drive(&p4, ppp, view, &|at| {
+                let r = at(0, 0.0, -30.0);
+                click(pos2(20.0, r.y - 4.0), PointerButton::Primary)
+            });
+            assert_eq!(
+                geo_head,
+                vec![(
+                    "set_automation_points",
+                    json!({"track": "pad", "param": "volume", "enabled": false})
+                )]
+            );
             apply(&mut e, &geo_head);
             assert!(!e.project.automation[0].enabled);
             assert_eq!(e.project.automation[0].points.len(), 3);
             // nothing touched: no calls (hovering is not editing)
-            let idle = drive(&e.project.clone(), ppp, view, &|at| vec![vec![Event::PointerMoved(at(0, 4.0, -20.0))], vec![]]);
+            let idle = drive(&e.project.clone(), ppp, view, &|at| {
+                vec![vec![Event::PointerMoved(at(0, 4.0, -20.0))], vec![]]
+            });
             assert!(idle.is_empty(), "{idle:?}");
         }
     }
@@ -367,20 +589,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let mut e = Engine::new(d);
-        e.call("add_track", &json!({"name": "pad", "preset": "supersaw"})).unwrap();
-        e.call("add_pattern", &json!({"name": "verse", "bars": 4})).unwrap();
+        e.call("add_track", &json!({"name": "pad", "preset": "supersaw"}))
+            .unwrap();
+        e.call("add_pattern", &json!({"name": "verse", "bars": 4}))
+            .unwrap();
         // steps: one held note per bar
-        let notes: Vec<_> = (0..4).map(|i| json!({"start": i * 16, "len": 16, "pitch": "C4"})).collect();
-        e.call("add_notes", &json!({"track": "pad", "pattern": "verse", "notes": notes})).unwrap();
-        e.call("place_pattern", &json!({"pattern": "verse", "start_bar": 0, "lane": 0})).unwrap();
-        e.call("add_bus", &json!({"name": "verb", "preset": "reverb"})).unwrap();
-        e.call("set_send", &json!({"track": "pad", "bus": "verb", "db": -60})).unwrap();
-        e.call("add_automation", &json!({"track": "pad", "param": "send.verb", "points": [[0, -60], [16, -60]]})).unwrap();
+        let notes: Vec<_> = (0..4)
+            .map(|i| json!({"start": i * 16, "len": 16, "pitch": "C4"}))
+            .collect();
+        e.call(
+            "add_notes",
+            &json!({"track": "pad", "pattern": "verse", "notes": notes}),
+        )
+        .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern": "verse", "start_bar": 0, "lane": 0}),
+        )
+        .unwrap();
+        e.call("add_bus", &json!({"name": "verb", "preset": "reverb"}))
+            .unwrap();
+        e.call(
+            "set_send",
+            &json!({"track": "pad", "bus": "verb", "db": -60}),
+        )
+        .unwrap();
+        e.call(
+            "add_automation",
+            &json!({"track": "pad", "param": "send.verb", "points": [[0, -60], [16, -60]]}),
+        )
+        .unwrap();
         assert_eq!(display_range(&e.project.automation[0]), (-60.0, 0.0));
         let before = e.mix().unwrap();
         // drag the end point (beat 16, -60 dB) up to 0 dB: a -60 -> 0 ramp
         let p = e.project.clone();
-        let calls = drive(&p, 1.0, PlaylistView::default(), &|at| drag(at(0, 16.0, -60.0), at(0, 16.0, 0.0)));
+        let calls = drive(&p, 1.0, PlaylistView::default(), &|at| {
+            drag(at(0, 16.0, -60.0), at(0, 16.0, 0.0))
+        });
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert_eq!(calls[0].1["param"], json!("send.verb"));
         apply(&mut e, &calls);
@@ -395,12 +640,17 @@ mod tests {
         let n = before.left.len().min(after.left.len());
         let rms_diff = |(i0, i1): (usize, usize)| {
             let i1 = i1.min(n);
-            let s: f32 = (i0..i1).map(|i| (after.left[i] - before.left[i]).powi(2)).sum();
+            let s: f32 = (i0..i1)
+                .map(|i| (after.left[i] - before.left[i]).powi(2))
+                .sum();
             (s / (i1 - i0).max(1) as f32).sqrt()
         };
         let head = rms_diff(seg(0.0, 4.0));
         let tail = rms_diff(seg(12.0, 16.0));
-        assert!(tail > 1e-3 && tail > head * 4.0, "the drawn ramp brings the reverb in: head {head}, tail {tail}");
+        assert!(
+            tail > 1e-3 && tail > head * 4.0,
+            "the drawn ramp brings the reverb in: head {head}, tail {tail}"
+        );
     }
 
     #[test]
@@ -409,7 +659,12 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let p = Engine::new(d).project.clone();
         assert_eq!(strip_height(&p), AUTO_CAPTION_H + AUTO_H + 2.0);
-        let calls = drive(&p, 1.0, PlaylistView::default(), &|_| click(pos2(500.0, 200.0), PointerButton::Primary));
-        assert!(calls.iter().all(|(t, _)| *t != "set_automation_points"), "{calls:?}");
+        let calls = drive(&p, 1.0, PlaylistView::default(), &|_| {
+            click(pos2(500.0, 200.0), PointerButton::Primary)
+        });
+        assert!(
+            calls.iter().all(|(t, _)| *t != "set_automation_points"),
+            "{calls:?}"
+        );
     }
 }

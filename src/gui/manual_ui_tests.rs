@@ -63,7 +63,9 @@ fn literals(src: &str) -> Vec<(usize, String)> {
 }
 
 fn is_ident(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 #[test]
@@ -79,13 +81,25 @@ fn gui_text_has_no_ai_wording() {
                 continue;
             }
             // default file names (a saved project, a part file) are names, not wording
-            let is_file = lit.contains('.') && !lit.contains(' ') && lit.chars().all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c));
+            let is_file = lit.contains('.')
+                && !lit.contains(' ')
+                && lit
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c));
             if is_file {
                 continue;
             }
             let low = lit.to_lowercase();
-            let words: Vec<&str> = low.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect();
-            if words.iter().any(|w| banned.contains(w)) || low.contains("make with") || low.contains("tool call") || low.contains("auto-produce") || low.contains("auto produce") {
+            let words: Vec<&str> = low
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .collect();
+            if words.iter().any(|w| banned.contains(w))
+                || low.contains("make with")
+                || low.contains("tool call")
+                || low.contains("auto-produce")
+                || low.contains("auto produce")
+            {
                 bad.push(format!("{file}:{line}: \"{lit}\""));
             }
         }
@@ -99,8 +113,27 @@ fn gui_text_has_no_ai_wording() {
 #[test]
 fn gui_shows_no_plumbing() {
     for (file, src) in SOURCES {
-        let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-        for needle in ["{args}\")", "{args} ", "registry().len()", "tools::registry()", "e.tool", ".summary", "e.source", "\"YOU\"", "\"SYS\"", "\"EXT\"", "\"PORT", "ACTIVITY", "to_string_pretty(", "summarize_args"] {
+        let code: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for needle in [
+            "{args}\")",
+            "{args} ",
+            "registry().len()",
+            "tools::registry()",
+            "e.tool",
+            ".summary",
+            "e.source",
+            "\"YOU\"",
+            "\"SYS\"",
+            "\"EXT\"",
+            "\"PORT",
+            "ACTIVITY",
+            "to_string_pretty(",
+            "summarize_args",
+        ] {
             assert!(!code.contains(needle), "{file} shows plumbing: {needle}");
         }
     }
@@ -116,32 +149,53 @@ fn gui_shows_no_plumbing() {
 fn history_panel_reads_plainly() {
     let mut e = crate::Engine::new(std::env::temp_dir());
     let _ = e.call_from("set_tempo", &serde_json::json!({"bpm": 96}), "you");
-    let _ = e.call_from("add_track", &serde_json::json!({"name": "drums", "preset": "kick"}), "you");
+    let _ = e.call_from(
+        "add_track",
+        &serde_json::json!({"name": "drums", "preset": "kick"}),
+        "you",
+    );
     let (done, _) = e.history();
     assert!(!done.is_empty());
     for l in &done {
         assert!(!l.contains(['{', '"', '_', ':']), "{l}");
         let low = l.to_lowercase();
-        assert!(!low.split(|c: char| !c.is_alphanumeric()).any(|w| crate::gui_words::BANNED.contains(&w)), "{l}");
+        assert!(
+            !low.split(|c: char| !c.is_alphanumeric())
+                .any(|w| crate::gui_words::BANNED.contains(&w)),
+            "{l}"
+        );
     }
     assert_eq!(done[0], "Added track · drums");
     // undo two steps from the panel, then redo one
-    e.call_from("undo", &serde_json::json!({"steps": 2}), "you").unwrap();
+    e.call_from("undo", &serde_json::json!({"steps": 2}), "you")
+        .unwrap();
     let (d2, u2) = e.history();
     assert_eq!(u2.len(), 2);
     assert_eq!(d2.len(), done.len() - 2);
-    e.call_from("redo", &serde_json::json!({"steps": 1}), "you").unwrap();
+    e.call_from("redo", &serde_json::json!({"steps": 1}), "you")
+        .unwrap();
     assert_eq!(e.history().0[0], "Tempo · 96 BPM");
 }
 
 #[test]
 fn gui_has_only_manual_views() {
     for v in super::VIEWS {
-        assert!(!matches!(v, "CREATE" | "CRITIQUE" | "AI" | "ASSISTANT"), "{v}");
+        assert!(
+            !matches!(v, "CREATE" | "CRITIQUE" | "AI" | "ASSISTANT"),
+            "{v}"
+        );
     }
     // the one-call production tools are MCP-only
     for (file, src) in SOURCES {
-        for t in ["make_beat", "produce_song", "critique_mix", "generate_beat", "sing_lyrics", "vocal_to_song", "produce_track"] {
+        for t in [
+            "make_beat",
+            "produce_song",
+            "critique_mix",
+            "generate_beat",
+            "sing_lyrics",
+            "vocal_to_song",
+            "produce_track",
+        ] {
             assert!(!src.contains(&format!("\"{t}\"")), "{file} calls {t}");
         }
     }
@@ -157,11 +211,17 @@ fn every_gui_action_is_an_mcp_tool() {
             while let Some(k) = rest.find(pat) {
                 rest = &rest[k + pat.len()..];
                 let name: String = rest.chars().take_while(|c| *c != '"').collect();
-                if is_ident(&name) && crate::tools::find(&name).is_none() && !matches!(name.as_str(), "time" | "pitch" | "staccato") {
+                if is_ident(&name)
+                    && crate::tools::find(&name).is_none()
+                    && !matches!(name.as_str(), "time" | "pitch" | "staccato")
+                {
                     missing.push(format!("{file}: {name}"));
                 }
             }
         }
     }
-    assert!(missing.is_empty(), "GUI actions with no MCP tool: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "GUI actions with no MCP tool: {missing:?}"
+    );
 }

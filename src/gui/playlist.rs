@@ -16,9 +16,9 @@ use super::theme::{clip_colors, Tokens};
 use super::widgets::*;
 use super::Studio;
 use crate::project::{AudioClip, Project};
-use serde_json::{json, Value};
 use crate::timebase::{step_to_tick, TempoMap, TICKS_PER_QUARTER};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke};
+use serde_json::{json, Value};
 
 const HEAD_W: f32 = 150.0;
 const RULER_H: f32 = 18.0;
@@ -65,7 +65,14 @@ impl Studio {
             let e = self.engine.lock().unwrap();
             p.audio_clips
                 .iter()
-                .map(|c| audio_clip_secs(c, e.bank.get(&c.sample).map(|d| d.len() as f32 / crate::dsp::SR)))
+                .map(|c| {
+                    audio_clip_secs(
+                        c,
+                        e.bank
+                            .get(&c.sample)
+                            .map(|d| d.len() as f32 / crate::dsp::SR),
+                    )
+                })
                 .collect()
         };
         let tick_of_beat = |b: f32| (f64::from(b) * TICKS_PER_QUARTER as f64).round() as i64;
@@ -87,21 +94,40 @@ impl Studio {
         let want_h = RULER_H * 2.0 + LANE_H * lanes as f32 + 4.0;
         // performance strip: launch any pattern live, on the next bar
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("PERFORM").size(11.0).color(tk.ruler_text));
+            ui.label(
+                egui::RichText::new("PERFORM")
+                    .size(11.0)
+                    .color(tk.ruler_text),
+            );
             for pat in &p.patterns {
                 let live = self.perf.as_deref() == Some(pat.name.as_str());
                 let next = matches!(&self.perf_next, Some(Some(n)) if *n == pat.name);
-                let label = if next { format!("{} (next bar)", pat.name) } else { pat.name.clone() };
-                let b = ui.selectable_label(live, label).on_hover_text(format!("Loop {} ({} bars), switching on the next bar", pat.name, pat.bars));
+                let label = if next {
+                    format!("{} (next bar)", pat.name)
+                } else {
+                    pat.name.clone()
+                };
+                let b = ui.selectable_label(live, label).on_hover_text(format!(
+                    "Loop {} ({} bars), switching on the next bar",
+                    pat.name, pat.bars
+                ));
                 if b.clicked() {
-                    let key = if pat.id.is_empty() { pat.name.clone() } else { pat.id.clone() };
+                    let key = if pat.id.is_empty() {
+                        pat.name.clone()
+                    } else {
+                        pat.id.clone()
+                    };
                     actions.push(("perform", json!({"action": "launch", "pattern": key})));
                 }
             }
             if self.perf.is_some() || self.perf_next.is_some() {
                 let back = matches!(&self.perf_next, Some(None));
                 let label = if back { "SONG (next bar)" } else { "SONG" };
-                if ui.button(label).on_hover_text("Back to the song arrangement on the next bar").clicked() {
+                if ui
+                    .button(label)
+                    .on_hover_text("Back to the song arrangement on the next bar")
+                    .clicked()
+                {
                     actions.push(("perform", json!({"action": "exit"})));
                 }
             }
@@ -119,8 +145,19 @@ impl Studio {
                 for c in order {
                     let sel = self.clip_sel.as_deref() == Some(c.id.as_str()) && !c.id.is_empty();
                     let b = ui
-                        .selectable_label(sel, format!("{} \u{00B7} bar {}\u{2013}{}", c.pattern, c.start_bar + 1, c.start_bar + c.bars.max(1)))
-                        .on_hover_text(format!("{} · lane {} · right-click to move, split, trim, duplicate or delete", c.id, c.lane));
+                        .selectable_label(
+                            sel,
+                            format!(
+                                "{} \u{00B7} bar {}\u{2013}{}",
+                                c.pattern,
+                                c.start_bar + 1,
+                                c.start_bar + c.bars.max(1)
+                            ),
+                        )
+                        .on_hover_text(format!(
+                            "{} · lane {} · right-click to move, split, trim, duplicate or delete",
+                            c.id, c.lane
+                        ));
                     if b.clicked() || b.secondary_clicked() {
                         self.clip_sel = Some(c.id.clone());
                     }
@@ -346,12 +383,16 @@ impl Studio {
                             continue;
                         }
                         let secs = take_secs[ai];
-                        let (s0, s1) = (tick_of_beat(c.start_beat), tick_of_beat(c.start_beat + secs * p.bpm / 60.0));
+                        let (s0, s1) = (
+                            tick_of_beat(c.start_beat),
+                            tick_of_beat(c.start_beat + secs * p.bpm / 60.0),
+                        );
                         let r = Rect::from_min_max(
                             pos2(x_of(s0.max(0)) + 1.0, y + 2.0),
                             pos2(x_of(s1).max(x_of(s0.max(0)) + 3.0) - 1.0, y + LANE_H - 2.0),
                         );
-                        let selected = self.clip_sel.as_deref() == Some(c.id.as_str()) && !c.id.is_empty();
+                        let selected =
+                            self.clip_sel.as_deref() == Some(c.id.as_str()) && !c.id.is_empty();
                         let audio_c = Color32::from_rgb(92, 150, 190);
                         let (body, bar_c, ink) = clip_colors(audio_c, selected);
                         pt.rect_filled(r, 2.0, body);
@@ -394,12 +435,17 @@ impl Studio {
                         let next = p
                             .audio_clips
                             .iter()
-                            .filter(|o| o.track.eq_ignore_ascii_case(&c.track) && o.start_beat > c.start_beat)
+                            .filter(|o| {
+                                o.track.eq_ignore_ascii_case(&c.track)
+                                    && o.start_beat > c.start_beat
+                            })
                             .min_by(|a, b| a.start_beat.total_cmp(&b.start_beat))
                             .map(|o| o.id.clone());
                         let track = t.name.clone();
                         resp.context_menu(|ui| {
-                            for (label, tool, args) in clip_menu(&id, &track, playhead_beat, next.as_deref()) {
+                            for (label, tool, args) in
+                                clip_menu(&id, &track, playhead_beat, next.as_deref())
+                            {
                                 if ui.button(label).clicked() {
                                     actions.push((tool, args));
                                     ui.close_menu();
@@ -445,23 +491,72 @@ pub fn audio_clip_secs(c: &AudioClip, take_secs: Option<f32>) -> f32 {
 }
 
 /// The audio clip edit menu: label, timeline tool, arguments.
-pub fn clip_menu(id: &str, track: &str, playhead_beat: f32, next: Option<&str>) -> Vec<(&'static str, &'static str, Value)> {
+pub fn clip_menu(
+    id: &str,
+    track: &str,
+    playhead_beat: f32,
+    next: Option<&str>,
+) -> Vec<(&'static str, &'static str, Value)> {
     let mut v = vec![
-        ("Split at playhead", "split_clip", json!({"id": id, "at_beat": playhead_beat})),
-        ("Trim start to playhead", "trim_clip", json!({"id": id, "start_beat": playhead_beat})),
-        ("Trim end to playhead", "trim_clip", json!({"id": id, "end_beat": playhead_beat})),
-        ("Move to playhead", "move_clip", json!({"id": id, "start_beat": playhead_beat})),
+        (
+            "Split at playhead",
+            "split_clip",
+            json!({"id": id, "at_beat": playhead_beat}),
+        ),
+        (
+            "Trim start to playhead",
+            "trim_clip",
+            json!({"id": id, "start_beat": playhead_beat}),
+        ),
+        (
+            "Trim end to playhead",
+            "trim_clip",
+            json!({"id": id, "end_beat": playhead_beat}),
+        ),
+        (
+            "Move to playhead",
+            "move_clip",
+            json!({"id": id, "start_beat": playhead_beat}),
+        ),
         ("Duplicate", "duplicate_clip", json!({"id": id})),
-        ("Slip 10 ms earlier", "slip_clip", json!({"id": id, "by_s": -0.01})),
-        ("Slip 10 ms later", "slip_clip", json!({"id": id, "by_s": 0.01})),
-        ("Fade in 200 ms", "fade_clip", json!({"id": id, "fade_in_ms": 200})),
-        ("Fade out 500 ms", "fade_clip", json!({"id": id, "fade_out_ms": 500})),
-        ("Remove fades", "fade_clip", json!({"id": id, "fade_in_ms": 0, "fade_out_ms": 0})),
+        (
+            "Slip 10 ms earlier",
+            "slip_clip",
+            json!({"id": id, "by_s": -0.01}),
+        ),
+        (
+            "Slip 10 ms later",
+            "slip_clip",
+            json!({"id": id, "by_s": 0.01}),
+        ),
+        (
+            "Fade in 200 ms",
+            "fade_clip",
+            json!({"id": id, "fade_in_ms": 200}),
+        ),
+        (
+            "Fade out 500 ms",
+            "fade_clip",
+            json!({"id": id, "fade_out_ms": 500}),
+        ),
+        (
+            "Remove fades",
+            "fade_clip",
+            json!({"id": id, "fade_in_ms": 0, "fade_out_ms": 0}),
+        ),
     ];
     if let Some(n) = next {
-        v.push(("Crossfade with next clip", "crossfade_clips", json!({"first": id, "second": n, "ms": 30})));
+        v.push((
+            "Crossfade with next clip",
+            "crossfade_clips",
+            json!({"first": id, "second": n, "ms": 30}),
+        ));
     }
-    v.push(("Consolidate track clips", "consolidate_clips", json!({"track": track})));
+    v.push((
+        "Consolidate track clips",
+        "consolidate_clips",
+        json!({"track": track}),
+    ));
     v.push(("Ripple delete", "ripple_delete", json!({"id": id})));
     v.push(("Delete", "remove_audio_clip", json!({"id": id})));
     v
@@ -477,37 +572,93 @@ mod tests {
             let t = crate::tools::find(tool).unwrap_or_else(|| panic!("{label}: no tool {tool}"));
             let schema = (t.schema)();
             for k in args.as_object().unwrap().keys() {
-                assert!(schema["properties"].get(k).is_some(), "{label}: {tool} has no argument {k}");
+                assert!(
+                    schema["properties"].get(k).is_some(),
+                    "{label}: {tool} has no argument {k}"
+                );
             }
-            assert!(!label.to_lowercase().contains(&["ai", ""].join(" ")), "manual wording: {label}");
+            assert!(
+                !label.to_lowercase().contains(&["ai", ""].join(" ")),
+                "manual wording: {label}"
+            );
         }
     }
 }
 
 /// The pattern clip edit menu: label, tool, arguments (each one undo step).
-pub fn pattern_clip_menu(c: &crate::project::PlaylistClip, playhead_bar: f32) -> Vec<(&'static str, &'static str, Value)> {
+pub fn pattern_clip_menu(
+    c: &crate::project::PlaylistClip,
+    playhead_bar: f32,
+) -> Vec<(&'static str, &'static str, Value)> {
     let id = c.id.as_str();
-    let (s0, s1) = (i64::from(c.start_bar), i64::from(c.start_bar + c.bars.max(1)));
+    let (s0, s1) = (
+        i64::from(c.start_bar),
+        i64::from(c.start_bar + c.bars.max(1)),
+    );
     let mut v = vec![
-        ("Move left a bar", "playlist_clip", json!({"action": "move", "id": id, "by_bars": -1})),
-        ("Move right a bar", "playlist_clip", json!({"action": "move", "id": id, "by_bars": 1})),
+        (
+            "Move left a bar",
+            "playlist_clip",
+            json!({"action": "move", "id": id, "by_bars": -1}),
+        ),
+        (
+            "Move right a bar",
+            "playlist_clip",
+            json!({"action": "move", "id": id, "by_bars": 1}),
+        ),
     ];
     let at = playhead_bar.round() as i64;
     if at > s0 && at < s1 {
-        v.push(("Split at playhead", "playlist_clip", json!({"action": "split", "id": id, "at_bar": at})));
+        v.push((
+            "Split at playhead",
+            "playlist_clip",
+            json!({"action": "split", "id": id, "at_bar": at}),
+        ));
     }
     if s1 - s0 > 1 {
-        v.push(("Trim start a bar", "playlist_clip", json!({"action": "trim", "id": id, "start_bar": s0 + 1})));
-        v.push(("Trim end a bar", "playlist_clip", json!({"action": "trim", "id": id, "end_bar": s1 - 1})));
+        v.push((
+            "Trim start a bar",
+            "playlist_clip",
+            json!({"action": "trim", "id": id, "start_bar": s0 + 1}),
+        ));
+        v.push((
+            "Trim end a bar",
+            "playlist_clip",
+            json!({"action": "trim", "id": id, "end_bar": s1 - 1}),
+        ));
     }
-    v.push(("Extend end a bar", "playlist_clip", json!({"action": "trim", "id": id, "end_bar": s1 + 1})));
-    v.push(("Duplicate after", "playlist_clip", json!({"action": "duplicate", "id": id})));
-    v.push(("Make unique", "playlist_clip", json!({"action": "make_unique", "id": id})));
-    v.push(("Lane down", "playlist_clip", json!({"action": "move", "id": id, "lane": c.lane + 1})));
+    v.push((
+        "Extend end a bar",
+        "playlist_clip",
+        json!({"action": "trim", "id": id, "end_bar": s1 + 1}),
+    ));
+    v.push((
+        "Duplicate after",
+        "playlist_clip",
+        json!({"action": "duplicate", "id": id}),
+    ));
+    v.push((
+        "Make unique",
+        "playlist_clip",
+        json!({"action": "make_unique", "id": id}),
+    ));
+    v.push((
+        "Lane down",
+        "playlist_clip",
+        json!({"action": "move", "id": id, "lane": c.lane + 1}),
+    ));
     if c.lane > 0 {
-        v.push(("Lane up", "playlist_clip", json!({"action": "move", "id": id, "lane": c.lane - 1})));
+        v.push((
+            "Lane up",
+            "playlist_clip",
+            json!({"action": "move", "id": id, "lane": c.lane - 1}),
+        ));
     }
-    v.push(("Delete", "playlist_clip", json!({"action": "delete", "id": id})));
+    v.push((
+        "Delete",
+        "playlist_clip",
+        json!({"action": "delete", "id": id}),
+    ));
     v
 }
 
@@ -521,18 +672,29 @@ mod menu_tests {
         let d = std::env::temp_dir().join("beatbox_pl_menu_tests");
         std::fs::create_dir_all(&d).unwrap();
         let mut e = Engine::new(d.clone());
-        e.call("new_project", &json!({"name": "m", "bpm": 120})).unwrap();
-        e.call("add_track", &json!({"name": "kick", "preset": "kick"})).unwrap();
-        e.call("add_pattern", &json!({"name": "riff", "bars": 1})).unwrap();
-        e.call("place_pattern", &json!({"pattern": "riff", "start_bar": 2, "bars": 4, "lane": 1})).unwrap();
+        e.call("new_project", &json!({"name": "m", "bpm": 120}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "kick", "preset": "kick"}))
+            .unwrap();
+        e.call("add_pattern", &json!({"name": "riff", "bars": 1}))
+            .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern": "riff", "start_bar": 2, "bars": 4, "lane": 1}),
+        )
+        .unwrap();
         let c = e.project.playlist[0].clone();
         let menu = super::pattern_clip_menu(&c, 3.6);
-        assert!(menu.iter().any(|m| m.0 == "Split at playhead" && m.2["at_bar"] == 4));
+        assert!(menu
+            .iter()
+            .any(|m| m.0 == "Split at playhead" && m.2["at_bar"] == 4));
         assert!(menu.iter().any(|m| m.0 == "Lane up"));
         for (label, tool, args) in menu {
             let mut e2 = Engine::new(d.clone());
             e2.project = e.project.clone();
-            let r = e2.call(tool, &args).unwrap_or_else(|err| panic!("{label}: {err:#}"));
+            let r = e2
+                .call(tool, &args)
+                .unwrap_or_else(|err| panic!("{label}: {err:#}"));
             assert!(r["clips"].is_array(), "{label}");
         }
     }

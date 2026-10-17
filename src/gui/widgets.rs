@@ -204,7 +204,6 @@ fn short(label: &str) -> String {
     }
 }
 
-
 /// Big round transport button with a play / stop glyph.
 pub fn transport_button(ui: &mut Ui, playing: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::click());
@@ -245,7 +244,11 @@ pub fn record_button(ui: &mut Ui, recording: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
     let c = rect.center();
     let p = ui.painter();
-    let base = if resp.hovered() { HOT } else { HOT.gamma_multiply(0.85) };
+    let base = if resp.hovered() {
+        HOT
+    } else {
+        HOT.gamma_multiply(0.85)
+    };
     if recording {
         p.circle_filled(c, 14.0, base);
         p.circle_stroke(c, 9.0, Stroke::new(2.0_f32, Color32::WHITE));
@@ -329,12 +332,27 @@ pub fn stat_chip(ui: &mut Ui, label: &str, value: &str, color: Color32) {
 /// reset), so one gesture is one undo step; while dragging the knob shows
 /// the working value. `bipolar` draws the arc from the centre (pan).
 #[allow(clippy::too_many_arguments)]
-pub fn mini_knob(ui: &mut Ui, rect: Rect, id: egui::Id, value: f32, min: f32, max: f32, default: f32, bipolar: bool, color: Color32, tip: &str) -> Option<f32> {
+pub fn mini_knob(
+    ui: &mut Ui,
+    rect: Rect,
+    id: egui::Id,
+    value: f32,
+    min: f32,
+    max: f32,
+    default: f32,
+    bipolar: bool,
+    color: Color32,
+    tip: &str,
+) -> Option<f32> {
     let resp = ui.interact(rect, id, Sense::click_and_drag());
     let mut v: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(value);
     let mut done = None;
     if resp.dragged() {
-        let fine = if ui.input(|i| i.modifiers.shift) { 0.2 } else { 1.0 };
+        let fine = if ui.input(|i| i.modifiers.shift) {
+            0.2
+        } else {
+            1.0
+        };
         v = (v - resp.drag_delta().y / 140.0 * (max - min) * fine).clamp(min, max);
         ui.data_mut(|d| d.insert_temp(id, v));
     }
@@ -353,39 +371,77 @@ pub fn mini_knob(ui: &mut Ui, rect: Rect, id: egui::Id, value: f32, min: f32, ma
     let r = rect.width().min(rect.height()) * 0.5 - 1.5;
     let hot = resp.hovered() || resp.dragged();
     p.circle_filled(c, r, Color32::from_rgb(28, 29, 33));
-    p.circle_stroke(c, r, Stroke::new(1.0_f32, if hot { Color32::from_rgb(110, 114, 124) } else { Color32::from_rgb(64, 67, 74) }));
+    p.circle_stroke(
+        c,
+        r,
+        Stroke::new(
+            1.0_f32,
+            if hot {
+                Color32::from_rgb(110, 114, 124)
+            } else {
+                Color32::from_rgb(64, 67, 74)
+            },
+        ),
+    );
     let ang = |t: f32| std::f32::consts::PI * (0.75 + 1.5 * t);
     let at = |a: f32, rr: f32| Pos2::new(c.x + a.cos() * rr, c.y + a.sin() * rr);
     let t = ((v - min) / (max - min)).clamp(0.0, 1.0);
     let t0 = if bipolar { 0.5 } else { 0.0 };
     let (a, b) = if t >= t0 { (t0, t) } else { (t, t0) };
     let n = 18;
-    let pts: Vec<Pos2> = (0..=n).map(|k| at(ang(a + (b - a) * k as f32 / n as f32), r - 1.5)).collect();
+    let pts: Vec<Pos2> = (0..=n)
+        .map(|k| at(ang(a + (b - a) * k as f32 / n as f32), r - 1.5))
+        .collect();
     if b - a > 0.002 {
         p.add(egui::Shape::line(pts, Stroke::new(2.0_f32, color)));
     }
-    p.line_segment([at(ang(t), r * 0.25), at(ang(t), r - 2.5)], Stroke::new(1.6_f32, Color32::from_rgb(232, 232, 236)));
+    p.line_segment(
+        [at(ang(t), r * 0.25), at(ang(t), r - 2.5)],
+        Stroke::new(1.6_f32, Color32::from_rgb(232, 232, 236)),
+    );
     done
 }
 
 /// A tiny piano-keys glyph button (the rack's "open in piano roll").
 pub fn keys_button(ui: &mut Ui, rect: Rect, id: egui::Id, on: bool, color: Color32) -> Response {
-    let resp = ui.interact(rect, id, Sense::click()).on_hover_text("Open in the piano roll");
+    let resp = ui
+        .interact(rect, id, Sense::click())
+        .on_hover_text("Open in the piano roll");
     let p = ui.painter_at(rect);
-    let bg = if on { color.gamma_multiply(0.45) } else if resp.hovered() { Color32::from_rgb(58, 60, 66) } else { Color32::from_rgb(40, 41, 46) };
+    let bg = if on {
+        color.gamma_multiply(0.45)
+    } else if resp.hovered() {
+        Color32::from_rgb(58, 60, 66)
+    } else {
+        Color32::from_rgb(40, 41, 46)
+    };
     p.rect_filled(rect, 3.0, bg);
     let inner = rect.shrink2(Vec2::new(3.0, 4.0));
     let kw = inner.width() / 4.0;
     for k in 0..4 {
         let x = inner.left() + k as f32 * kw;
-        p.rect_filled(Rect::from_min_size(Pos2::new(x + 0.5, inner.top()), Vec2::new(kw - 1.0, inner.height())), 1.0, Color32::from_rgb(214, 214, 220));
+        p.rect_filled(
+            Rect::from_min_size(
+                Pos2::new(x + 0.5, inner.top()),
+                Vec2::new(kw - 1.0, inner.height()),
+            ),
+            1.0,
+            Color32::from_rgb(214, 214, 220),
+        );
     }
     for k in [1.0f32, 2.0, 3.0] {
         if k == 2.0 {
             continue;
         }
         let x = inner.left() + k * kw - kw * 0.3;
-        p.rect_filled(Rect::from_min_size(Pos2::new(x, inner.top()), Vec2::new(kw * 0.6, inner.height() * 0.58)), 0.5, Color32::from_rgb(24, 24, 28));
+        p.rect_filled(
+            Rect::from_min_size(
+                Pos2::new(x, inner.top()),
+                Vec2::new(kw * 0.6, inner.height() * 0.58),
+            ),
+            0.5,
+            Color32::from_rgb(24, 24, 28),
+        );
     }
     resp
 }
@@ -403,21 +459,55 @@ mod pointer_tests {
         let rect = Rect::from_min_size(Pos2::new(100.0, 100.0), Vec2::splat(20.0));
         // events in points (the windowing layer maps pixels through ppp)
         let c = rect.center();
-        let mods = Modifiers { shift, ..Default::default() };
-        let mut frames: Vec<Vec<Event>> = vec![vec![], vec![Event::PointerMoved(c)], vec![Event::PointerButton { pos: c, button: PointerButton::Primary, pressed: true, modifiers: mods }]];
+        let mods = Modifiers {
+            shift,
+            ..Default::default()
+        };
+        let mut frames: Vec<Vec<Event>> = vec![
+            vec![],
+            vec![Event::PointerMoved(c)],
+            vec![Event::PointerButton {
+                pos: c,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: mods,
+            }],
+        ];
         let mut y = c.y;
         for dy in steps {
             y += dy;
             frames.push(vec![Event::PointerMoved(Pos2::new(c.x, y))]);
         }
-        frames.push(vec![Event::PointerButton { pos: Pos2::new(c.x, y), button: PointerButton::Primary, pressed: false, modifiers: mods }]);
+        frames.push(vec![Event::PointerButton {
+            pos: Pos2::new(c.x, y),
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: mods,
+        }]);
         frames.push(vec![]);
         let mut out = None;
         for (k, ev) in frames.into_iter().enumerate() {
-            let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(400.0))), events: ev, modifiers: mods, time: Some(k as f64 * 0.05), ..Default::default() };
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(400.0))),
+                events: ev,
+                modifiers: mods,
+                time: Some(k as f64 * 0.05),
+                ..Default::default()
+            };
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    if let Some(v) = mini_knob(ui, rect, egui::Id::new("knob"), 0.0, -1.0, 1.0, 0.0, true, Color32::WHITE, "pan") {
+                    if let Some(v) = mini_knob(
+                        ui,
+                        rect,
+                        egui::Id::new("knob"),
+                        0.0,
+                        -1.0,
+                        1.0,
+                        0.0,
+                        true,
+                        Color32::WHITE,
+                        "pan",
+                    ) {
                         out = Some(v);
                     }
                 });

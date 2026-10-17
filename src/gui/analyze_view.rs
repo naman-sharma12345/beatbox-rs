@@ -37,7 +37,12 @@ pub struct AnalyzeState {
 }
 
 /// How a part's notes are played on its track.
-pub const PLAY_MODES: [&str; 4] = ["as written", "broken chords", "rhythm of a part", "rhythm of a recording"];
+pub const PLAY_MODES: [&str; 4] = [
+    "as written",
+    "broken chords",
+    "rhythm of a part",
+    "rhythm of a recording",
+];
 
 /// One row of BUILD A SONG FROM PARTS: one part (arrange_transcription parts[i]).
 #[derive(Clone)]
@@ -152,7 +157,13 @@ impl PartRow {
         if !self.fx_chain.trim().is_empty() {
             p["fx_chain"] = json!(self.fx_chain.trim());
         }
-        let fx: Vec<Value> = self.effects.split(',').map(str::trim).filter(|t| !t.is_empty()).map(|t| json!({"type": t})).collect();
+        let fx: Vec<Value> = self
+            .effects
+            .split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(|t| json!({"type": t}))
+            .collect();
         if !fx.is_empty() {
             p["effects"] = json!(fx);
         }
@@ -169,9 +180,19 @@ impl PartRow {
 impl BuildState {
     /// The whole build as arrange_transcription takes it.
     pub fn to_json(&self, bpm: Option<f64>) -> Value {
-        let parts: Vec<Value> = self.parts.iter().filter(|r| !r.name.trim().is_empty() && !r.file.trim().is_empty()).map(PartRow::to_json).collect();
+        let parts: Vec<Value> = self
+            .parts
+            .iter()
+            .filter(|r| !r.name.trim().is_empty() && !r.file.trim().is_empty())
+            .map(PartRow::to_json)
+            .collect();
         let mut a = json!({"parts": parts});
-        for (k, v) in [("sections_file", &self.sections_file), ("name", &self.name), ("key", &self.key), ("vocal", &self.vocal)] {
+        for (k, v) in [
+            ("sections_file", &self.sections_file),
+            ("name", &self.name),
+            ("key", &self.key),
+            ("vocal", &self.vocal),
+        ] {
             if !v.trim().is_empty() {
                 a[k] = json!(v.trim());
             }
@@ -207,12 +228,27 @@ fn result_lines(label: &str, v: &Value) -> String {
                 continue;
             }
             let txt = match val {
-                Value::String(s) if k == "midi" || k.ends_with("path") => std::path::Path::new(s).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(),
+                Value::String(s) if k == "midi" || k.ends_with("path") => std::path::Path::new(s)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_default(),
                 Value::String(s) => s.clone(),
-                Value::Array(a) => a.iter().take(8).map(|x| x.as_str().map(String::from).unwrap_or_else(|| x.to_string())).collect::<Vec<_>>().join("  |  "),
+                Value::Array(a) => a
+                    .iter()
+                    .take(8)
+                    .map(|x| {
+                        x.as_str()
+                            .map(String::from)
+                            .unwrap_or_else(|| x.to_string())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("  |  "),
                 other => other.to_string(),
             };
-            out.push(format!("{k}: {}", txt.chars().take(400).collect::<String>()));
+            out.push(format!(
+                "{k}: {}",
+                txt.chars().take(400).collect::<String>()
+            ));
         }
     }
     out.join("\n")
@@ -229,11 +265,20 @@ impl Studio {
         let add = self.analyze.add_to_project;
         std::thread::spawn(move || {
             let mut own = crate::engine::Engine::new(workdir);
-            let mut r = own.call_from(tool, &args, "you").map_err(|e| format!("{e:#}"));
+            let mut r = own
+                .call_from(tool, &args, "you")
+                .map_err(|e| format!("{e:#}"));
             if let (true, Ok(v)) = (add, r.as_mut()) {
                 if let Some(m) = v["midi"].as_str().map(String::from) {
-                    let name = std::path::Path::new(&m).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                    let imp = eng.lock().unwrap().call_from("import_midi", &json!({"path": m, "pattern": name, "set_tempo": false}), "you");
+                    let name = std::path::Path::new(&m)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let imp = eng.lock().unwrap().call_from(
+                        "import_midi",
+                        &json!({"path": m, "pattern": name, "set_tempo": false}),
+                        "you",
+                    );
                     v["added_to_project"] = json!(imp.is_ok());
                 }
             }
@@ -253,24 +298,45 @@ impl Studio {
         };
         ui.horizontal_wrapped(|ui| {
             lab(ui, "SECTIONS FILE");
-            ui.add(egui::TextEdit::singleline(&mut b.sections_file).desired_width(180.0).hint_text("from SECTIONS + PARTS (optional)"));
+            ui.add(
+                egui::TextEdit::singleline(&mut b.sections_file)
+                    .desired_width(180.0)
+                    .hint_text("from SECTIONS + PARTS (optional)"),
+            );
             lab(ui, "BARS PER PATTERN");
-            ui.add(egui::TextEdit::singleline(&mut b.bars_per_pattern).desired_width(36.0).hint_text("8"));
+            ui.add(
+                egui::TextEdit::singleline(&mut b.bars_per_pattern)
+                    .desired_width(36.0)
+                    .hint_text("8"),
+            );
             lab(ui, "SONG NAME");
             ui.add(egui::TextEdit::singleline(&mut b.name).desired_width(110.0));
             lab(ui, "KEY");
-            ui.add(egui::TextEdit::singleline(&mut b.key).desired_width(70.0).hint_text("D minor"));
-            ui.checkbox(&mut b.tidy, "tidy repeats").on_hover_text("each section's bars voted into its repeating 1, 2 or 4 bar figure");
+            ui.add(
+                egui::TextEdit::singleline(&mut b.key)
+                    .desired_width(70.0)
+                    .hint_text("D minor"),
+            );
+            ui.checkbox(&mut b.tidy, "tidy repeats")
+                .on_hover_text("each section's bars voted into its repeating 1, 2 or 4 bar figure");
         });
         ui.horizontal_wrapped(|ui| {
             lab(ui, "VOCAL TAKE");
-            ui.add(egui::TextEdit::singleline(&mut b.vocal).desired_width(180.0).hint_text("take.wav (optional)"));
+            ui.add(
+                egui::TextEdit::singleline(&mut b.vocal)
+                    .desired_width(180.0)
+                    .hint_text("take.wav (optional)"),
+            );
             lab(ui, "STARTS AT (s)");
             ui.add(egui::TextEdit::singleline(&mut b.vocal_start_s).desired_width(50.0));
             lab(ui, "LEVEL dB");
             ui.add(egui::TextEdit::singleline(&mut b.vocal_db).desired_width(40.0));
             lab(ui, "LINE PLACEMENT");
-            ui.add(egui::TextEdit::singleline(&mut b.vocal_phrases).desired_width(160.0).hint_text("phrase times file (optional)"));
+            ui.add(
+                egui::TextEdit::singleline(&mut b.vocal_phrases)
+                    .desired_width(160.0)
+                    .hint_text("phrase times file (optional)"),
+            );
         });
         let mut remove = None;
         for (i, r) in b.parts.iter_mut().enumerate() {
@@ -354,7 +420,11 @@ impl Studio {
             }
             let args = b.to_json(bpm);
             let has = args["parts"].as_array().is_some_and(|p| !p.is_empty());
-            if ui.add_enabled(ready && has, egui::Button::new("BUILD SONG").small()).on_hover_text("Build a song from the transcribed parts").clicked() {
+            if ui
+                .add_enabled(ready && has, egui::Button::new("BUILD SONG").small())
+                .on_hover_text("Build a song from the transcribed parts")
+                .clicked()
+            {
                 out = Some(args);
             }
         });
@@ -369,7 +439,11 @@ impl Studio {
         let (tx, rx) = std::sync::mpsc::channel();
         let eng = self.engine.clone();
         std::thread::spawn(move || {
-            let r = eng.lock().unwrap().call_from("arrange_transcription", &args, "you").map_err(|e| format!("{e:#}"));
+            let r = eng
+                .lock()
+                .unwrap()
+                .call_from("arrange_transcription", &args, "you")
+                .map_err(|e| format!("{e:#}"));
             let _ = tx.send(r);
             ctx.request_repaint();
         });
@@ -516,11 +590,48 @@ mod build_form_tests {
 
     #[test]
     fn build_form_sends_only_options_the_tool_takes() {
-        let mut b = BuildState { bars_per_pattern: "8".into(), vocal: "take.wav".into(), vocal_db: "-2".into(), tidy: true, ..Default::default() };
-        b.parts.push(PartRow { name: "gtr".into(), file: "chords.json".into(), instrument: "preset:keys".into(), play: 3, rhythm_audio: "other.wav".into(), min_share: 0.5, center: 64, strum: "0.5".into(), strum_dir: 2, fx_chain: "clean_chorus_guitar".into(), effects: "reverb, delay".into(), ..Default::default() });
-        b.parts.push(PartRow { name: "riff".into(), file: "riff.json".into(), source_only: true, ..Default::default() });
-        b.parts.push(PartRow { name: "keys".into(), file: "chords.json".into(), play: 1, rate: "2".into(), ..Default::default() });
-        b.parts.push(PartRow { name: "lead".into(), file: "chords.json".into(), play: 2, rhythm_part: "riff".into(), octave: 1, ..Default::default() });
+        let mut b = BuildState {
+            bars_per_pattern: "8".into(),
+            vocal: "take.wav".into(),
+            vocal_db: "-2".into(),
+            tidy: true,
+            ..Default::default()
+        };
+        b.parts.push(PartRow {
+            name: "gtr".into(),
+            file: "chords.json".into(),
+            instrument: "preset:keys".into(),
+            play: 3,
+            rhythm_audio: "other.wav".into(),
+            min_share: 0.5,
+            center: 64,
+            strum: "0.5".into(),
+            strum_dir: 2,
+            fx_chain: "clean_chorus_guitar".into(),
+            effects: "reverb, delay".into(),
+            ..Default::default()
+        });
+        b.parts.push(PartRow {
+            name: "riff".into(),
+            file: "riff.json".into(),
+            source_only: true,
+            ..Default::default()
+        });
+        b.parts.push(PartRow {
+            name: "keys".into(),
+            file: "chords.json".into(),
+            play: 1,
+            rate: "2".into(),
+            ..Default::default()
+        });
+        b.parts.push(PartRow {
+            name: "lead".into(),
+            file: "chords.json".into(),
+            play: 2,
+            rhythm_part: "riff".into(),
+            octave: 1,
+            ..Default::default()
+        });
         b.parts.push(PartRow::default()); // an empty row is skipped
         let a = b.to_json(Some(96.0));
         let parts = a["parts"].as_array().unwrap();

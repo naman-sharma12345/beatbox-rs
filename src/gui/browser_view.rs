@@ -56,7 +56,6 @@ pub struct SampleEdit {
     pub anchor: Option<egui::Pos2>,
 }
 
-
 fn matches(q: &str, a: &str, b: &str) -> bool {
     let q = q.trim().to_lowercase();
     q.is_empty() || a.to_lowercase().contains(&q) || b.to_lowercase().contains(&q)
@@ -67,31 +66,50 @@ impl Studio {
         let tk = Tokens::DARK;
         if self.browser.catalog.is_none() {
             let mut e = self.engine.lock().unwrap();
-            let pr = e.call_from("list_presets", &json!({}), "you").unwrap_or(Value::Null);
-            let pa = e.call_from("list_palettes", &json!({}), "you").unwrap_or(Value::Null);
+            let pr = e
+                .call_from("list_presets", &json!({}), "you")
+                .unwrap_or(Value::Null);
+            let pa = e
+                .call_from("list_palettes", &json!({}), "you")
+                .unwrap_or(Value::Null);
             drop(e);
             self.browser.catalog = Some((pr, pa));
         }
         if self.browser.chains.is_none() {
-            let c = self.engine.lock().unwrap().call_from("list_fx_chains", &json!({}), "you").unwrap_or(Value::Null);
+            let c = self
+                .engine
+                .lock()
+                .unwrap()
+                .call_from("list_fx_chains", &json!({}), "you")
+                .unwrap_or(Value::Null);
             self.browser.chains = Some(c);
         }
         let chains = self.browser.chains.clone().unwrap_or(Value::Null);
         if self.browser.track.is_empty() || p.track_index(&self.browser.track).is_err() {
             self.browser.track = p.tracks.first().map(|t| t.name.clone()).unwrap_or_default();
         }
-        let (presets, palettes) = self.browser.catalog.clone().unwrap_or((Value::Null, Value::Null));
+        let (presets, palettes) = self
+            .browser
+            .catalog
+            .clone()
+            .unwrap_or((Value::Null, Value::Null));
         let mut call: Option<(String, Value)> = None;
         ui.horizontal(|ui| {
             ui.label(RichText::new("SEARCH").size(11.0).color(tk.text_dim));
-            ui.add(egui::TextEdit::singleline(&mut self.browser.search).desired_width(220.0).hint_text("808, bell, reverb, dark..."));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.browser.search)
+                    .desired_width(220.0)
+                    .hint_text("808, bell, reverb, dark..."),
+            );
             ui.add_space(12.0);
             ui.label(RichText::new("TARGET TRACK").size(11.0).color(tk.text_dim));
-            egui::ComboBox::from_id_salt("browser_track").selected_text(self.browser.track.clone()).show_ui(ui, |ui| {
-                for t in &p.tracks {
-                    ui.selectable_value(&mut self.browser.track, t.name.clone(), &t.name);
-                }
-            });
+            egui::ComboBox::from_id_salt("browser_track")
+                .selected_text(self.browser.track.clone())
+                .show_ui(ui, |ui| {
+                    for t in &p.tracks {
+                        ui.selectable_value(&mut self.browser.track, t.name.clone(), &t.name);
+                    }
+                });
         });
         ui.add_space(6.0);
         let q = self.browser.search.clone();
@@ -300,7 +318,12 @@ impl Studio {
             self.browser.chains = None;
         }
         if let Some(n) = hear {
-            self.library_job(format!("hear {n}"), ui.ctx().clone(), "preview_instrument", json!({"preset": n, "play": true}));
+            self.library_job(
+                format!("hear {n}"),
+                ui.ctx().clone(),
+                "preview_instrument",
+                json!({"preset": n, "play": true}),
+            );
         }
     }
 }
@@ -316,14 +339,29 @@ impl Studio {
         let eng = self.engine.clone();
         std::thread::spawn(move || {
             let pre: Result<(), String> = match tool {
-                "import_from_url" => crate::web_import::prefetch(args["url"].as_str().unwrap_or(""), args.get("max_mb").and_then(|v| v.as_u64()).unwrap_or(200)).map_err(|e| format!("{e:#}")),
-                "load_instrument" | "audition_instrument" => match crate::sound_catalog::entry(args["catalog_id"].as_str().unwrap_or("")) {
-                    Some(ent) if ent.format == "sfz_git" => crate::sound_catalog::fetch_sfz_git(&ent, 400, 2).map(|_| ()).map_err(|e| format!("{e:#}")),
-                    _ => Ok(()),
-                },
+                "import_from_url" => crate::web_import::prefetch(
+                    args["url"].as_str().unwrap_or(""),
+                    args.get("max_mb").and_then(|v| v.as_u64()).unwrap_or(200),
+                )
+                .map_err(|e| format!("{e:#}")),
+                "load_instrument" | "audition_instrument" => {
+                    match crate::sound_catalog::entry(args["catalog_id"].as_str().unwrap_or("")) {
+                        Some(ent) if ent.format == "sfz_git" => {
+                            crate::sound_catalog::fetch_sfz_git(&ent, 400, 2)
+                                .map(|_| ())
+                                .map_err(|e| format!("{e:#}"))
+                        }
+                        _ => Ok(()),
+                    }
+                }
                 _ => Ok(()),
             };
-            let r = pre.and_then(|_| eng.lock().unwrap().call_from(tool, &args, "you").map_err(|e| format!("{e:#}")));
+            let r = pre.and_then(|_| {
+                eng.lock()
+                    .unwrap()
+                    .call_from(tool, &args, "you")
+                    .map_err(|e| format!("{e:#}"))
+            });
             let _ = tx.send(r);
             ctx.request_repaint();
         });
@@ -339,17 +377,38 @@ impl Studio {
                     Ok(v) if v["played_as"].is_string() && v["playing"].is_boolean() => {
                         let name = v["name"].as_str().or(v["preset"].as_str()).unwrap_or("");
                         if v["playing"] == true {
-                            format!("{label}: playing {name} ({:.1} s, peak {:.1} dBFS)", v["play_seconds"].as_f64().unwrap_or(0.0), v["peak_dbfs"].as_f64().unwrap_or(0.0))
+                            format!(
+                                "{label}: playing {name} ({:.1} s, peak {:.1} dBFS)",
+                                v["play_seconds"].as_f64().unwrap_or(0.0),
+                                v["peak_dbfs"].as_f64().unwrap_or(0.0)
+                            )
                         } else {
-                            format!("{label}: no audio output here \u{00B7} saved {}", v["path"].as_str().unwrap_or(""))
+                            format!(
+                                "{label}: no audio output here \u{00B7} saved {}",
+                                v["path"].as_str().unwrap_or("")
+                            )
                         }
                     }
                     Ok(v) if v["played_as"].is_string() => {
-                        format!("{label}: {} \u{00B7} peak {:.1} dBFS \u{00B7} {}", v["name"].as_str().unwrap_or(""), v["peak_dbfs"].as_f64().unwrap_or(0.0), v["path"].as_str().unwrap_or(""))
+                        format!(
+                            "{label}: {} \u{00B7} peak {:.1} dBFS \u{00B7} {}",
+                            v["name"].as_str().unwrap_or(""),
+                            v["peak_dbfs"].as_f64().unwrap_or(0.0),
+                            v["path"].as_str().unwrap_or("")
+                        )
                     }
                     Ok(v) => {
-                        let what = v["loaded"].as_str().or(v["name"].as_str()).unwrap_or("done");
-                        format!("{label}: {what} {}", v["license"].as_str().map(|l| format!("({l})")).unwrap_or_default())
+                        let what = v["loaded"]
+                            .as_str()
+                            .or(v["name"].as_str())
+                            .unwrap_or("done");
+                        format!(
+                            "{label}: {what} {}",
+                            v["license"]
+                                .as_str()
+                                .map(|l| format!("({l})"))
+                                .unwrap_or_default()
+                        )
                     }
                     Err(e) => format!("{label} failed: {e}"),
                 };
@@ -359,15 +418,40 @@ impl Studio {
             }
         }
         let q = self.browser.search.trim().to_string();
-        if self.browser.lib_hits.as_ref().map(|h| h.0 != q).unwrap_or(true) {
-            let r = self.engine.lock().unwrap().call_from("search_instruments", &json!({"query": q, "limit": 60}), "you").unwrap_or(Value::Null);
+        if self
+            .browser
+            .lib_hits
+            .as_ref()
+            .map(|h| h.0 != q)
+            .unwrap_or(true)
+        {
+            let r = self
+                .engine
+                .lock()
+                .unwrap()
+                .call_from(
+                    "search_instruments",
+                    &json!({"query": q, "limit": 60}),
+                    "you",
+                )
+                .unwrap_or(Value::Null);
             self.browser.lib_hits = Some((q.clone(), r));
         }
         if self.browser.imports.is_none() {
-            let r = self.engine.lock().unwrap().call_from("list_imports", &json!({}), "you").unwrap_or(Value::Null);
+            let r = self
+                .engine
+                .lock()
+                .unwrap()
+                .call_from("list_imports", &json!({}), "you")
+                .unwrap_or(Value::Null);
             self.browser.imports = Some(r);
         }
-        let hits = self.browser.lib_hits.clone().map(|h| h.1).unwrap_or(Value::Null);
+        let hits = self
+            .browser
+            .lib_hits
+            .clone()
+            .map(|h| h.1)
+            .unwrap_or(Value::Null);
         let imports = self.browser.imports.clone().unwrap_or(Value::Null);
         let busy = self.browser.job.as_ref().map(|j| j.0.clone());
         let mut job: Option<(String, &'static str, Value)> = None;
@@ -455,12 +539,22 @@ impl Studio {
 }
 
 /// The audio editor (FL Edison): region, band and the edits that make a new sample.
-fn audio_editor(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, dur: f32) -> Option<(String, Value)> {
+fn audio_editor(
+    ui: &mut egui::Ui,
+    tk: &Tokens,
+    ed: &mut SampleEdit,
+    dur: f32,
+) -> Option<(String, Value)> {
     let mut call: Option<(String, Value)> = None;
     let name = ed.sample.clone();
     ui.add_space(8.0);
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("AUDIO EDITOR \u{00B7} {name}")).size(11.0).strong().color(tk.header_text));
+        ui.label(
+            RichText::new(format!("AUDIO EDITOR \u{00B7} {name}"))
+                .size(11.0)
+                .strong()
+                .color(tk.header_text),
+        );
         if ui.small_button("CLOSE").clicked() {
             ed.sample.clear();
         }
@@ -471,17 +565,39 @@ fn audio_editor(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, dur: f32) -
     }
     ui.horizontal(|ui| {
         ui.label(RichText::new("region s").size(10.0).color(tk.text_dim));
-        ui.add(egui::DragValue::new(&mut ed.start).speed(0.01).range(0.0..=top).max_decimals(3));
+        ui.add(
+            egui::DragValue::new(&mut ed.start)
+                .speed(0.01)
+                .range(0.0..=top)
+                .max_decimals(3),
+        );
         ui.label(RichText::new("to").size(10.0).color(tk.text_dim));
-        ui.add(egui::DragValue::new(&mut ed.end).speed(0.01).range(0.0..=top).max_decimals(3));
+        ui.add(
+            egui::DragValue::new(&mut ed.end)
+                .speed(0.01)
+                .range(0.0..=top)
+                .max_decimals(3),
+        );
     });
     ui.horizontal(|ui| {
         ui.label(RichText::new("band Hz").size(10.0).color(tk.text_dim));
-        ui.add(egui::DragValue::new(&mut ed.lo).speed(10.0).range(1.0..=24000.0));
+        ui.add(
+            egui::DragValue::new(&mut ed.lo)
+                .speed(10.0)
+                .range(1.0..=24000.0),
+        );
         ui.label(RichText::new("to").size(10.0).color(tk.text_dim));
-        ui.add(egui::DragValue::new(&mut ed.hi).speed(10.0).range(1.0..=24000.0));
+        ui.add(
+            egui::DragValue::new(&mut ed.hi)
+                .speed(10.0)
+                .range(1.0..=24000.0),
+        );
         ui.label(RichText::new("gain dB").size(10.0).color(tk.text_dim));
-        ui.add(egui::DragValue::new(&mut ed.gain).speed(0.5).range(-120.0..=24.0));
+        ui.add(
+            egui::DragValue::new(&mut ed.gain)
+                .speed(0.5)
+                .range(-120.0..=24.0),
+        );
         ui.checkbox(&mut ed.outside, "keep only the band");
     });
     let end = if ed.end > ed.start { ed.end } else { top };
@@ -509,7 +625,11 @@ fn audio_editor(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, dur: f32) -
             call = Some(("slice_sample".into(), json!({"sample": name})));
         }
     });
-    ui.label(RichText::new("each edit keeps the original and adds a new sample").size(10.0).color(tk.text_dim));
+    ui.label(
+        RichText::new("each edit keeps the original and adds a new sample")
+            .size(10.0)
+            .color(tk.text_dim),
+    );
     call
 }
 
@@ -522,7 +642,15 @@ fn mix_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
 /// region (time) and the band (frequency) the edits use.
 fn spectrogram_view(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, sp: &Value, dur: f32) {
     let rows = sp["db"].as_array().cloned().unwrap_or_default();
-    let edges: Vec<f32> = sp["band_edges_hz"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).map(|v| v as f32).collect()).unwrap_or_default();
+    let edges: Vec<f32> = sp["band_edges_hz"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_f64())
+                .map(|v| v as f32)
+                .collect()
+        })
+        .unwrap_or_default();
     if rows.is_empty() || edges.len() < 2 {
         return;
     }
@@ -536,14 +664,24 @@ fn spectrogram_view(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, sp: &Va
     let nb = edges.len() - 1;
     let (cw, ch) = (w / nf as f32, h / nb as f32);
     for (fi, row) in rows.iter().enumerate() {
-        for (bi, v) in row.as_array().map(|r| r.as_slice()).unwrap_or(&[]).iter().enumerate() {
+        for (bi, v) in row
+            .as_array()
+            .map(|r| r.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .enumerate()
+        {
             let t = ((v.as_f64().unwrap_or(-90.0) as f32 + 60.0) / 60.0).clamp(0.0, 1.0);
             if t <= 0.02 {
                 continue;
             }
             let x = rect.left() + fi as f32 * cw;
             let y = rect.bottom() - (bi + 1) as f32 * ch;
-            painter.rect_filled(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cw + 0.5, ch + 0.5)), 0.0, mix_color(tk.panel_bg2, tk.accent, t));
+            painter.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cw + 0.5, ch + 0.5)),
+                0.0,
+                mix_color(tk.panel_bg2, tk.accent, t),
+            );
         }
     }
     let span = (hi_e / lo_e).ln().max(1e-3);
@@ -566,7 +704,10 @@ fn spectrogram_view(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, sp: &Va
         ed.anchor = None;
     }
     let end = if ed.end > ed.start { ed.end } else { dur };
-    let sel = egui::Rect::from_min_max(egui::pos2(x_of(ed.start), y_of(ed.hi)), egui::pos2(x_of(end), y_of(ed.lo)));
+    let sel = egui::Rect::from_min_max(
+        egui::pos2(x_of(ed.start), y_of(ed.hi)),
+        egui::pos2(x_of(end), y_of(ed.lo)),
+    );
     painter.rect_stroke(sel, 0.0, egui::Stroke::new(1.5_f32, tk.text));
     resp.on_hover_text("drag a box to choose the region and the band");
 }

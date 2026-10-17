@@ -71,14 +71,25 @@ impl Shared {
             self.mix = Some(mix);
             self.loop_len = len.max(1);
         }
-        let Some(m) = &self.mix else { return (0.0, 0.0) };
-        let at = |m: &Mix| (m.left.get(i).copied().unwrap_or(0.0), m.right.get(i).copied().unwrap_or(0.0));
+        let Some(m) = &self.mix else {
+            return (0.0, 0.0);
+        };
+        let at = |m: &Mix| {
+            (
+                m.left.get(i).copied().unwrap_or(0.0),
+                m.right.get(i).copied().unwrap_or(0.0),
+            )
+        };
         let mut v = at(m);
         if !self.fade.is_empty() {
             // what was audible before each swap, fading into the next buffer
             let mut o = at(&self.fade[0].0);
             for k in 0..self.fade.len() {
-                let next = if k + 1 < self.fade.len() { at(&self.fade[k + 1].0) } else { v };
+                let next = if k + 1 < self.fade.len() {
+                    at(&self.fade[k + 1].0)
+                } else {
+                    v
+                };
                 let g = (self.fade[k].1 + 1) as f32 / (XFADE + 1) as f32;
                 o = (o.0 + (next.0 - o.0) * g, o.1 + (next.1 - o.1) * g);
                 self.fade[k].1 += 1;
@@ -100,7 +111,11 @@ impl Shared {
             let crossed = q <= 0.0 || wrapped || (old / q).floor() != (self.pos / q).floor();
             if crossed {
                 let (mix, len) = self.queued.take().unwrap();
-                self.pos = if wrapped || q <= 0.0 { 0.0 } else { self.pos - (self.pos / q).floor() * q };
+                self.pos = if wrapped || q <= 0.0 {
+                    0.0
+                } else {
+                    self.pos - (self.pos / q).floor() * q
+                };
                 self.mix = Some(mix);
                 self.loop_len = len.max(1);
             }
@@ -183,7 +198,11 @@ impl Player {
             let loop_now = self.shared.lock().unwrap().loop_len as f32 / crate::dsp::SR;
             let next = (((now / quantum_secs).floor() + 1.0) * quantum_secs).min(loop_now.max(now));
             let wait = (next - now).max(0.0);
-            self.virtual_queued = Some((mix, len, Instant::now() + std::time::Duration::from_secs_f32(wait)));
+            self.virtual_queued = Some((
+                mix,
+                len,
+                Instant::now() + std::time::Duration::from_secs_f32(wait),
+            ));
         }
     }
 
@@ -394,23 +413,45 @@ mod tests {
     use super::*;
 
     fn mix(v: f32, n: usize) -> Arc<Mix> {
-        Arc::new(Mix { left: vec![v; n], right: vec![v; n], stems: vec![], track_info: vec![], bus_stems: vec![], seconds: n as f32 / crate::dsp::SR })
+        Arc::new(Mix {
+            left: vec![v; n],
+            right: vec![v; n],
+            stems: vec![],
+            track_info: vec![],
+            bus_stems: vec![],
+            seconds: n as f32 / crate::dsp::SR,
+        })
     }
 
     fn shared(m: Arc<Mix>, len: usize) -> Shared {
-        Shared { mix: Some(m), pos: 0.0, loop_len: len, playing: true, step: 1.0, one: None, queued: None, quantum: 0, pending: None, fade: Vec::new() }
+        Shared {
+            mix: Some(m),
+            pos: 0.0,
+            loop_len: len,
+            playing: true,
+            step: 1.0,
+            one: None,
+            queued: None,
+            quantum: 0,
+            pending: None,
+            fade: Vec::new(),
+        }
     }
 
     #[test]
     fn launch_waits_for_the_next_bar_then_loops_from_the_top() {
         let mut s = shared(mix(1.0, 1000), 1000);
-        for _ in 0..130 { s.song_frame(); }
+        for _ in 0..130 {
+            s.song_frame();
+        }
         s.queued = Some((mix(2.0, 300), 300));
         s.quantum = 100;
         let mut first_new = None;
         for n in 0..200 {
             let (l, _) = s.song_frame();
-            if l == 2.0 && first_new.is_none() { first_new = Some(n); }
+            if l == 2.0 && first_new.is_none() {
+                first_new = Some(n);
+            }
         }
         // 130 frames in: the old loop sounds through frame 199, the new one from 200
         assert_eq!(first_new, Some(70));
@@ -426,7 +467,9 @@ mod tests {
         let mut first_new = None;
         for n in 0..400 {
             let (l, _) = s.song_frame();
-            if l == 2.0 && first_new.is_none() { first_new = Some(n); }
+            if l == 2.0 && first_new.is_none() {
+                first_new = Some(n);
+            }
         }
         assert_eq!(first_new, Some(150));
     }
@@ -434,15 +477,29 @@ mod tests {
     fn a_live_update_waits_for_the_next_block_then_crossfades() {
         // old buffer +0.5, new -0.5: a hard swap would step by 1.0
         let mut s = shared(mix(0.5, 10_000), 10_000);
-        for _ in 0..1000 { s.song_frame(); }
+        for _ in 0..1000 {
+            s.song_frame();
+        }
         s.update(mix(-0.5, 10_000), 10_000, true);
         let out: Vec<f32> = (0..2000).map(|_| s.song_frame().0).collect();
         // the head was at 1000 (block 3): untouched until 1024
-        assert!(out[..24].iter().all(|v| *v == 0.5), "old buffer plays to the block boundary");
+        assert!(
+            out[..24].iter().all(|v| *v == 0.5),
+            "old buffer plays to the block boundary"
+        );
         assert!(out[24] < 0.5, "the swap starts at the boundary");
-        assert!(out[24 + XFADE as usize..].iter().all(|v| *v == -0.5), "the new buffer after the crossfade");
-        let steps = out.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0f32, f32::max);
-        assert!(steps <= 1.0 / XFADE as f32 + 1e-4, "no click: max step {steps}");
+        assert!(
+            out[24 + XFADE as usize..].iter().all(|v| *v == -0.5),
+            "the new buffer after the crossfade"
+        );
+        let steps = out
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            steps <= 1.0 / XFADE as f32 + 1e-4,
+            "no click: max step {steps}"
+        );
         // no restart: the head kept going
         assert_eq!(s.pos as usize, 3000);
         assert!(s.pending.is_none() && s.fade.is_empty());
@@ -452,7 +509,14 @@ mod tests {
     /// each output frame read.
     fn ramp(k: f32, n: usize) -> Arc<Mix> {
         let v: Vec<f32> = (0..n).map(|i| i as f32 * k).collect();
-        Arc::new(Mix { left: v.clone(), right: v, stems: vec![], track_info: vec![], bus_stems: vec![], seconds: n as f32 / crate::dsp::SR })
+        Arc::new(Mix {
+            left: v.clone(),
+            right: v,
+            stems: vec![],
+            track_info: vec![],
+            bus_stems: vec![],
+            seconds: n as f32 / crate::dsp::SR,
+        })
     }
 
     /// The expected frame while a crossfade is `done` samples in.
@@ -469,13 +533,21 @@ mod tests {
     fn a_live_update_on_either_side_of_a_block_boundary_swaps_on_the_next_one() {
         for head in [3 * SWAP_BLOCK - 1, 3 * SWAP_BLOCK] {
             let mut s = shared(ramp(1e-4, 10_000), 10_000);
-            for _ in 0..head { s.song_frame(); }
+            for _ in 0..head {
+                s.song_frame();
+            }
             s.update(ramp(-1e-4, 10_000), 10_000, true);
             let swap_at = (head / SWAP_BLOCK + 1) * SWAP_BLOCK;
             for i in head..swap_at + XFADE as usize + 10 {
                 let (l, _) = s.song_frame();
                 let (o, n) = (i as f32 * 1e-4, i as f32 * -1e-4);
-                let want = if i < swap_at { o } else if i < swap_at + XFADE as usize { blend(o, n, (i - swap_at) as u32) } else { n };
+                let want = if i < swap_at {
+                    o
+                } else if i < swap_at + XFADE as usize {
+                    blend(o, n, (i - swap_at) as u32)
+                } else {
+                    n
+                };
                 assert_eq!(l, want, "head {head}: frame at source sample {i}");
             }
         }
@@ -488,16 +560,26 @@ mod tests {
     fn a_live_update_just_before_the_loop_wraps_swaps_at_the_top() {
         let len = 5 * SWAP_BLOCK + 100; // the loop ends 100 samples into block 5
         let mut s = shared(ramp(1e-4, len + 2000), len);
-        for _ in 0..len - 20 { s.song_frame(); }
+        for _ in 0..len - 20 {
+            s.song_frame();
+        }
         s.update(ramp(-1e-4, len + 2000), len, true);
         for k in 0..20 {
             let (l, _) = s.song_frame();
-            assert_eq!(l, (len - 20 + k) as f32 * 1e-4, "old buffer to the end of the loop");
+            assert_eq!(
+                l,
+                (len - 20 + k) as f32 * 1e-4,
+                "old buffer to the end of the loop"
+            );
         }
         for i in 0..XFADE as usize + 10 {
             let (l, _) = s.song_frame();
             let (o, n) = (i as f32 * 1e-4, i as f32 * -1e-4);
-            let want = if i < XFADE as usize { blend(o, n, i as u32) } else { n };
+            let want = if i < XFADE as usize {
+                blend(o, n, i as u32)
+            } else {
+                n
+            };
             assert_eq!(l, want, "after the wrap, source sample {i}");
         }
         assert!(s.pending.is_none() && s.fade.is_empty());
@@ -509,15 +591,21 @@ mod tests {
     fn a_crossfade_running_across_the_loop_wrap_continues_at_the_top() {
         let len = 4 * SWAP_BLOCK;
         let mut s = shared(ramp(1e-4, len + 2000), len);
-        for _ in 0..len - SWAP_BLOCK - 1 { s.song_frame(); } // head in block 2, last sample
+        for _ in 0..len - SWAP_BLOCK - 1 {
+            s.song_frame();
+        } // head in block 2, last sample
         s.update(ramp(-1e-4, len + 2000), len, true);
         s.song_frame(); // last sample of block 2
-        // the swap starts at block 3 = the loop's last 256 samples, so the fade wraps
+                        // the swap starts at block 3 = the loop's last 256 samples, so the fade wraps
         for d in 0..XFADE as usize + 10 {
             let i = (len - SWAP_BLOCK + d) % len;
             let (l, _) = s.song_frame();
             let (o, n) = (i as f32 * 1e-4, i as f32 * -1e-4);
-            let want = if d < XFADE as usize { blend(o, n, d as u32) } else { n };
+            let want = if d < XFADE as usize {
+                blend(o, n, d as u32)
+            } else {
+                n
+            };
             assert_eq!(l, want, "fade sample {d} (source {i})");
         }
     }
@@ -534,16 +622,25 @@ mod tests {
     #[test]
     fn a_second_live_update_during_a_crossfade() {
         let mut s = shared(mix(0.5, 10_000), 10_000);
-        for _ in 0..1000 { s.song_frame(); }
+        for _ in 0..1000 {
+            s.song_frame();
+        }
         s.update(mix(-0.5, 10_000), 10_000, true);
         let mut out: Vec<f32> = (0..124).map(|_| s.song_frame().0).collect(); // to 1124: 100 into the fade
         s.update(mix(0.25, 10_000), 10_000, true);
         out.extend((0..2000).map(|_| s.song_frame().0));
         let steps: Vec<f32> = out.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
-        let (at, max) = steps.iter().enumerate().fold((0, 0f32), |m, (i, v)| if *v > m.1 { (i, *v) } else { m });
+        let (at, max) =
+            steps
+                .iter()
+                .enumerate()
+                .fold((0, 0f32), |m, (i, v)| if *v > m.1 { (i, *v) } else { m });
         let single = 1.0 / XFADE as f32;
         eprintln!("second update during a fade: max step {max:.5} at frame {} (head {}), a single fade's step {single:.5}", at + 1, 1000 + at + 1);
-        assert!(out.last().copied() == Some(0.25), "ends on the newest buffer");
+        assert!(
+            out.last().copied() == Some(0.25),
+            "ends on the newest buffer"
+        );
         assert!(max <= single * 1.5, "a step of {max} where a single fade steps {single}: a click when two edits land within one crossfade");
     }
 
@@ -568,25 +665,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let mut e = Engine::new(d);
-        e.call("add_track", &json!({"name": "kick", "preset": "kick"})).unwrap();
-        e.call("add_track", &json!({"name": "keys", "preset": "epiano"})).unwrap();
-        e.call("add_pattern", &json!({"name": "verse", "bars": 16})).unwrap();
+        e.call("add_track", &json!({"name": "kick", "preset": "kick"}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "keys", "preset": "epiano"}))
+            .unwrap();
+        e.call("add_pattern", &json!({"name": "verse", "bars": 16}))
+            .unwrap();
         for st in (0..16).map(|b| b * 16) {
-            e.call("toggle_step", &json!({"track": "kick", "step": st, "pattern": "verse"})).unwrap();
+            e.call(
+                "toggle_step",
+                &json!({"track": "kick", "step": st, "pattern": "verse"}),
+            )
+            .unwrap();
         }
-        let chords: Vec<serde_json::Value> = (0..16).map(|b| json!({"start": b * 16, "len": 12, "pitch": 60, "vel": 0.6})).collect();
-        e.call("add_notes", &json!({"track": "keys", "pattern": "verse", "notes": chords})).unwrap();
+        let chords: Vec<serde_json::Value> = (0..16)
+            .map(|b| json!({"start": b * 16, "len": 12, "pitch": 60, "vel": 0.6}))
+            .collect();
+        e.call(
+            "add_notes",
+            &json!({"track": "keys", "pattern": "verse", "notes": chords}),
+        )
+        .unwrap();
         // the song plays the pattern from the playlist (as the rack does)
-        e.call("place_pattern", &json!({"pattern": "verse", "start_bar": 0, "lane": 0})).unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern": "verse", "start_bar": 0, "lane": 0}),
+        )
+        .unwrap();
         let opts = RenderOptions::default();
         let p0 = e.project.clone();
         assert_eq!(live_splice::dirty_steps(&p0, &p0), Dirty::Nothing);
         let m0 = render(&p0, &e.bank, &opts).unwrap();
         // the edit: one kick step in bar 3 (step 36), "during playback"
-        e.call("toggle_step", &json!({"track": "kick", "step": 36, "pattern": "verse"})).unwrap();
+        e.call(
+            "toggle_step",
+            &json!({"track": "kick", "step": 36, "pattern": "verse"}),
+        )
+        .unwrap();
         let p1 = e.project.clone();
-        let Dirty::Steps(a, b) = live_splice::dirty_steps(&p0, &p1) else { panic!("a step edit is a partial update: {:?}", live_splice::dirty_steps(&p0, &p1)) };
-        assert!(a >= 32 && a <= 36 && b <= 48, "only bar 3 is dirty: {a}..{b}");
+        let Dirty::Steps(a, b) = live_splice::dirty_steps(&p0, &p1) else {
+            panic!(
+                "a step edit is a partial update: {:?}",
+                live_splice::dirty_steps(&p0, &p1)
+            )
+        };
+        assert!(
+            a >= 32 && a <= 36 && b <= 48,
+            "only bar 3 is dirty: {a}..{b}"
+        );
         let t = std::time::Instant::now();
         let (m1, changed) = live_splice::splice(&p0, &p1, &e.bank, &m0, a, b).unwrap();
         let t_splice = t.elapsed();
@@ -596,12 +722,16 @@ mod tests {
         let sps = p0.step_secs() * crate::dsp::SR;
         let (w0, w1) = live_splice::window(&p0, &p1, a, b);
         assert!(live_splice::worth_splicing(&p0, &p1, a, b));
-        assert!(w0 > 0 && w1 < p0.song_steps(), "the window is part of the song: {w0}..{w1}");
+        assert!(
+            w0 > 0 && w1 < p0.song_steps(),
+            "the window is part of the song: {w0}..{w1}"
+        );
         // outside the window the playing mix is kept bit for bit
         let ws = (w0 as f32 * sps) as usize;
         assert!(changed.0 >= ws, "nothing before the window changed");
         assert_eq!(&m1.left[..ws], &m0.left[..ws]);
-        let we = ((w1 as f32 * sps) as usize + (opts.tail * crate::dsp::SR) as usize + 1).min(m0.left.len());
+        let we = ((w1 as f32 * sps) as usize + (opts.tail * crate::dsp::SR) as usize + 1)
+            .min(m0.left.len());
         assert_eq!(&m1.left[we..], &m0.left[we..]);
         // inside, it is what a full render of the edit sounds like
         let (h0, h1) = ((36.0 * sps) as usize, (40.0 * sps) as usize);
@@ -612,7 +742,10 @@ mod tests {
         let err = rms(&err);
         eprintln!("live splice: dirty {a}..{b}, window {w0}..{w1}, splice {t_splice:?} vs full {t_full:?}; hit rms {hit}, before {before}, splice-vs-full err {err}");
         assert!(hit > before * 2.0 + 1e-4, "the new kick is audible");
-        assert!(err < hit * 0.1, "the splice matches a full render: err {err} vs {hit}");
+        assert!(
+            err < hit * 0.1,
+            "the splice matches a full render: err {err} vs {hit}"
+        );
         // playback: the head is mid-bar just before the hit, off any boundary
         let start = h0 - 300;
         let mut s = shared(Arc::new(m0), full.left.len());
@@ -624,21 +757,35 @@ mod tests {
         let out: Vec<(f32, f32)> = (0..n).map(|_| s.song_frame()).collect();
         let boundary = (start / SWAP_BLOCK + 1) * SWAP_BLOCK;
         for k in 0..(boundary - start) {
-            assert_eq!(out[k].0, old.left[start + k], "old buffer until the boundary");
+            assert_eq!(
+                out[k].0,
+                old.left[start + k],
+                "old buffer until the boundary"
+            );
         }
         let fade_end = boundary + XFADE as usize;
         for k in (fade_end - start)..n {
-            assert_eq!(out[k].0, new.left[start + k], "new buffer after the crossfade");
+            assert_eq!(
+                out[k].0,
+                new.left[start + k],
+                "new buffer after the crossfade"
+            );
         }
         let l: Vec<f32> = out.iter().map(|v| v.0).collect();
         let r: Vec<f32> = out.iter().map(|v| v.1).collect();
         let played = live_splice::max_step(&l, &r, 0, n);
-        let stat = live_splice::max_step(&old.left, &old.right, start, start + n).max(live_splice::max_step(&new.left, &new.right, start, start + n));
+        let stat = live_splice::max_step(&old.left, &old.right, start, start + n).max(
+            live_splice::max_step(&new.left, &new.right, start, start + n),
+        );
         eprintln!("live swap: max step {played} vs static {stat}");
-        assert!(played <= stat * 2.5 + 1e-6, "no discontinuity at the swap: {played} vs static {stat}");
+        assert!(
+            played <= stat * 2.5 + 1e-6,
+            "no discontinuity at the swap: {played} vs static {stat}"
+        );
         assert_eq!(s.pos as usize, start + n, "no restart");
         // a mixer move is global: the whole song re-renders
-        e.call("set_mixer", &json!({"track": "kick", "volume_db": -12.0})).unwrap();
+        e.call("set_mixer", &json!({"track": "kick", "volume_db": -12.0}))
+            .unwrap();
         assert_eq!(live_splice::dirty_steps(&p1, &e.project), Dirty::Everything);
     }
 }

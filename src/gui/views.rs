@@ -626,20 +626,40 @@ impl Studio {
             let label = match (on, prof.extra_db.abs() >= 0.05) {
                 (false, _) => "LIFT off".to_string(),
                 (true, false) => format!("LIFT {:+.1} / {:+.1}", prof.presence_db, prof.air_db),
-                (true, true) => format!("LIFT {:+.1} / {:+.1} / {:+.1}", prof.presence_db, prof.air_db, prof.extra_db),
+                (true, true) => format!(
+                    "LIFT {:+.1} / {:+.1} / {:+.1}",
+                    prof.presence_db, prof.air_db, prof.extra_db
+                ),
             };
-            let b = ui.put(br, egui::Button::new(egui::RichText::new(label).size(9.0)).selected(on));
+            let b = ui.put(
+                br,
+                egui::Button::new(egui::RichText::new(label).size(9.0)).selected(on),
+            );
             if b.on_hover_text("Master lift: presence bell + air shelf (MixProfile). Click to turn it on/off; drag P (presence dB), A (air dB) and N (the extra bell nudge, dB at its centre, default 3.5 kHz) below.").clicked() {
                 self.call("master_lift", json!({"preset": if on { "off" } else { "default" }}));
             }
             y += 19.0;
             if on {
                 let hw = iw / 3.0 - 3.0;
-                for (k, key, val, lim, pre) in [(0usize, "presence_db", prof.presence_db, 6.0f32, "P "), (1, "air_db", prof.air_db, 6.0, "A "), (2, "extra_db", prof.extra_db, 3.0, "N ")] {
+                for (k, key, val, lim, pre) in [
+                    (0usize, "presence_db", prof.presence_db, 6.0f32, "P "),
+                    (1, "air_db", prof.air_db, 6.0, "A "),
+                    (2, "extra_db", prof.extra_db, 3.0, "N "),
+                ] {
                     let id = egui::Id::new(("master-lift", k));
                     let mut val_now: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(val);
-                    let cell = Rect::from_min_size(Pos2::new(x0 + k as f32 * (hw + 4.0), y), Vec2::new(hw, 16.0));
-                    let resp = ui.put(cell, egui::DragValue::new(&mut val_now).range(-lim..=lim).speed(0.05).fixed_decimals(1).prefix(pre));
+                    let cell = Rect::from_min_size(
+                        Pos2::new(x0 + k as f32 * (hw + 4.0), y),
+                        Vec2::new(hw, 16.0),
+                    );
+                    let resp = ui.put(
+                        cell,
+                        egui::DragValue::new(&mut val_now)
+                            .range(-lim..=lim)
+                            .speed(0.05)
+                            .fixed_decimals(1)
+                            .prefix(pre),
+                    );
                     if resp.changed() {
                         ui.ctx().data_mut(|d| d.insert_temp(id, val_now));
                     }

@@ -155,19 +155,42 @@ impl Studio {
             op = Some(("legato", json!({})));
         }
         // FL piano-roll tools, each the MCP call it names
-        if tb.small_button("Stacc").on_hover_text("articulate {style: staccato}").clicked() {
+        if tb
+            .small_button("Stacc")
+            .on_hover_text("articulate {style: staccato}")
+            .clicked()
+        {
             op = Some(("articulate", json!({"style": "staccato"})));
         }
-        if tb.small_button("Chop").on_hover_text("chop_notes {pattern: 'x.x.x.x.'}: held notes into 8ths").clicked() {
+        if tb
+            .small_button("Chop")
+            .on_hover_text("chop_notes {pattern: 'x.x.x.x.'}: held notes into 8ths")
+            .clicked()
+        {
             op = Some(("chop_notes", json!({"pattern": "x.x.x.x."})));
         }
-        if tb.small_button("LFO").on_hover_text("A velocity wave across the notes (sine, one bar)").clicked() {
-            op = Some(("lfo_tool", json!({"property": "velocity", "shape": "sine", "rate": "1 bar"})));
+        if tb
+            .small_button("LFO")
+            .on_hover_text("A velocity wave across the notes (sine, one bar)")
+            .clicked()
+        {
+            op = Some((
+                "lfo_tool",
+                json!({"property": "velocity", "shape": "sine", "rate": "1 bar"}),
+            ));
         }
-        if tb.small_button("Rev").on_hover_text("flip_notes {mode: time}: play backwards").clicked() {
+        if tb
+            .small_button("Rev")
+            .on_hover_text("flip_notes {mode: time}: play backwards")
+            .clicked()
+        {
             op = Some(("flip_notes", json!({"mode": "time"})));
         }
-        if tb.small_button("Flip").on_hover_text("flip_notes {mode: pitch}: mirror the pitches").clicked() {
+        if tb
+            .small_button("Flip")
+            .on_hover_text("flip_notes {mode: pitch}: mirror the pitches")
+            .clicked()
+        {
             op = Some(("flip_notes", json!({"mode": "pitch"})));
         }
         if tb

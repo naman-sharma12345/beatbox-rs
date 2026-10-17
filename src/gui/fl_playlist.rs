@@ -18,7 +18,9 @@ const EDGE_PX: f32 = 7.0;
 
 /// A pattern's clip colour, stable per name (FL tints each pattern).
 pub fn pattern_color(name: &str) -> Color32 {
-    let h = name.bytes().fold(2166136261u32, |a, b| (a ^ b as u32).wrapping_mul(16777619));
+    let h = name
+        .bytes()
+        .fold(2166136261u32, |a, b| (a ^ b as u32).wrapping_mul(16777619));
     let hue = (h % 360) as f32 / 360.0;
     let c = egui::ecolor::Hsva::new(hue, 0.42, 0.78, 1.0);
     Color32::from(c)
@@ -26,7 +28,10 @@ pub fn pattern_color(name: &str) -> Color32 {
 
 /// Where a drag lands: whole bars and lanes from pixel deltas.
 pub fn snap_drag(dx: f32, dy: f32, bar_px: f32) -> (i64, i64) {
-    ((dx / bar_px.max(1.0)).round() as i64, (dy / LANE_H).round() as i64)
+    (
+        (dx / bar_px.max(1.0)).round() as i64,
+        (dy / LANE_H).round() as i64,
+    )
 }
 
 /// The calls that paint `pattern` at (bar, lane): the section arrangement is
@@ -36,7 +41,10 @@ pub fn paint_calls(p: &Project, pattern: &str, bar: u32, lane: u32) -> Vec<(&'st
     if p.playlist.is_empty() && !p.arrangement.is_empty() {
         v.push(("arrangement_to_playlist", json!({})));
     }
-    v.push(("place_pattern", json!({"pattern": pattern, "start_bar": bar, "lane": lane})));
+    v.push((
+        "place_pattern",
+        json!({"pattern": pattern, "start_bar": bar, "lane": lane}),
+    ));
     v
 }
 
@@ -84,7 +92,11 @@ pub struct PlaylistView {
 
 impl Default for PlaylistView {
     fn default() -> Self {
-        PlaylistView { scroll_bar: 0.0, scroll_lane: 0.0, zoom: 1.0 }
+        PlaylistView {
+            scroll_bar: 0.0,
+            scroll_lane: 0.0,
+            zoom: 1.0,
+        }
     }
 }
 
@@ -93,10 +105,27 @@ impl PlaylistView {
     /// bar 0 / lane 0, never past the song's bars or the last lane page.
     pub fn clamped(self, total_bars: u32, lanes: usize) -> Self {
         let visible = lanes.min(MAX_VISIBLE_LANES);
-        let z = if self.zoom.is_finite() { self.zoom.clamp(ZOOM_MIN, ZOOM_MAX) } else { 1.0 };
-        let sb = if self.scroll_bar.is_finite() { self.scroll_bar.clamp(0.0, total_bars as f32) } else { 0.0 };
-        let sl = if self.scroll_lane.is_finite() { self.scroll_lane.clamp(0.0, lanes.saturating_sub(visible) as f32) } else { 0.0 };
-        PlaylistView { scroll_bar: sb, scroll_lane: sl, zoom: z }
+        let z = if self.zoom.is_finite() {
+            self.zoom.clamp(ZOOM_MIN, ZOOM_MAX)
+        } else {
+            1.0
+        };
+        let sb = if self.scroll_bar.is_finite() {
+            self.scroll_bar.clamp(0.0, total_bars as f32)
+        } else {
+            0.0
+        };
+        let sl = if self.scroll_lane.is_finite() {
+            self.scroll_lane
+                .clamp(0.0, lanes.saturating_sub(visible) as f32)
+        } else {
+            0.0
+        };
+        PlaylistView {
+            scroll_bar: sb,
+            scroll_lane: sl,
+            zoom: z,
+        }
     }
 }
 
@@ -132,15 +161,30 @@ impl GridGeo {
 /// last track (`lanes - 1`) and is never shorter than one grid step (one
 /// bar: clips are whole bars). A left-edge trim keeps the clip's end.
 /// Returns (start_bar, lane, bars).
-fn dragged_clip(start: u32, lane: u32, bars: u32, grab: Option<(Grab, egui::Vec2)>, bar_px: f32, lanes: usize) -> (u32, u32, u32) {
+fn dragged_clip(
+    start: u32,
+    lane: u32,
+    bars: u32,
+    grab: Option<(Grab, egui::Vec2)>,
+    bar_px: f32,
+    lanes: usize,
+) -> (u32, u32, u32) {
     let (s, l, n) = (start as i64, lane as i64, bars.max(1) as i64);
     let last_lane = (lanes.max(1) - 1) as i64;
     match grab {
         Some((Grab::Move, d)) => {
             let (db, dl) = snap_drag(d.x, d.y, bar_px);
-            ((s + db).max(0) as u32, (l + dl).clamp(0, last_lane) as u32, n as u32)
+            (
+                (s + db).max(0) as u32,
+                (l + dl).clamp(0, last_lane) as u32,
+                n as u32,
+            )
         }
-        Some((Grab::Resize, d)) => (s as u32, l as u32, (n + (d.x / bar_px.max(1.0)).round() as i64).max(1) as u32),
+        Some((Grab::Resize, d)) => (
+            s as u32,
+            l as u32,
+            (n + (d.x / bar_px.max(1.0)).round() as i64).max(1) as u32,
+        ),
         Some((Grab::ResizeStart, d)) => {
             let end = s + n;
             let ns = (s + (d.x / bar_px.max(1.0)).round() as i64).clamp(0, end - 1);
@@ -167,8 +211,16 @@ impl Studio {
     pub(super) fn fl_playlist(&mut self, ui: &mut egui::Ui, p: &Project) {
         let bar_now = self.player.position_secs() * p.bpm / 240.0;
         let vid = egui::Id::new("flpl_view");
-        let view = ui.data(|d| d.get_temp::<PlaylistView>(vid)).unwrap_or_default();
-        let mut sel = GridSel { pattern: self.pattern, clip_sel: self.clip_sel.clone(), toast: None, view, geo: None };
+        let view = ui
+            .data(|d| d.get_temp::<PlaylistView>(vid))
+            .unwrap_or_default();
+        let mut sel = GridSel {
+            pattern: self.pattern,
+            clip_sel: self.clip_sel.clone(),
+            toast: None,
+            view,
+            geo: None,
+        };
         let mut actions = playlist_grid(ui, p, &mut sel, bar_now);
         // the track automation lanes, on the grid's bar axis (scroll + zoom)
         if let Some(geo) = sel.geo {
@@ -189,20 +241,43 @@ impl Studio {
 /// The playlist grid itself, driven by egui pointer input (a real mouse,
 /// or synthetic events in tests): returns the engine calls a click, drag or
 /// edge drag asks for. Hit tests honour the view's scroll and zoom.
-pub fn playlist_grid(ui: &mut egui::Ui, p: &Project, sel: &mut GridSel, bar_now: f32) -> Vec<(&'static str, Value)> {
+pub fn playlist_grid(
+    ui: &mut egui::Ui,
+    p: &Project,
+    sel: &mut GridSel,
+    bar_now: f32,
+) -> Vec<(&'static str, Value)> {
     let mut actions: Vec<(&'static str, Value)> = Vec::new();
-    let lanes = p.playlist.iter().map(|c| c.lane + 1).max().unwrap_or(0).max(3) as usize + 1;
+    let lanes = p
+        .playlist
+        .iter()
+        .map(|c| c.lane + 1)
+        .max()
+        .unwrap_or(0)
+        .max(3) as usize
+        + 1;
     let visible = lanes.min(MAX_VISIBLE_LANES);
-    let end_bar = p.playlist.iter().map(|c| c.start_bar + c.bars.max(1)).max().unwrap_or(0);
+    let end_bar = p
+        .playlist
+        .iter()
+        .map(|c| c.start_bar + c.bars.max(1))
+        .max()
+        .unwrap_or(0);
     let total_bars = (end_bar + 8).max(32);
     let h = RULER_H + LANE_H * visible as f32 + 2.0;
     let (full, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
-    let grid = Rect::from_min_max(pos2(full.min.x + HEAD_W, full.min.y + RULER_H), pos2(full.max.x, full.min.y + RULER_H + LANE_H * visible as f32));
+    let grid = Rect::from_min_max(
+        pos2(full.min.x + HEAD_W, full.min.y + RULER_H),
+        pos2(full.max.x, full.min.y + RULER_H + LANE_H * visible as f32),
+    );
     let fit_px = (grid.width() / total_bars as f32).max(10.0);
     // mouse wheel over the grid: Ctrl zooms around the pointer, Shift (or a
     // sideways wheel) scrolls bars, plain wheel scrolls lanes when they overflow
     let mut view = sel.view.clamped(total_bars, lanes);
-    if let Some(hp) = ui.input(|i| i.pointer.hover_pos()).filter(|hp| grid.contains(*hp)) {
+    if let Some(hp) = ui
+        .input(|i| i.pointer.hover_pos())
+        .filter(|hp| grid.contains(*hp))
+    {
         let zoom = ui.input(|i| i.zoom_delta());
         if zoom != 1.0 && zoom.is_finite() {
             let old_px = (fit_px * view.zoom).max(3.0);
@@ -228,26 +303,69 @@ pub fn playlist_grid(ui: &mut egui::Ui, p: &Project, sel: &mut GridSel, bar_now:
         view = view.clamped(total_bars, lanes);
     }
     sel.view = view;
-    let geo = GridGeo { grid, bar_px: (fit_px * view.zoom).max(3.0), scroll_bar: view.scroll_bar, scroll_lane: view.scroll_lane };
+    let geo = GridGeo {
+        grid,
+        bar_px: (fit_px * view.zoom).max(3.0),
+        scroll_bar: view.scroll_bar,
+        scroll_lane: view.scroll_lane,
+    };
     sel.geo = Some(geo);
     let bar_px = geo.bar_px;
     let pt = ui.painter_at(full);
     let gp = ui.painter_at(grid);
-    let ruler = ui.painter_at(Rect::from_min_max(pos2(grid.min.x, full.min.y), pos2(full.max.x, grid.min.y)));
-    let heads = ui.painter_at(Rect::from_min_max(pos2(full.min.x, grid.min.y), pos2(grid.min.x, grid.max.y)));
+    let ruler = ui.painter_at(Rect::from_min_max(
+        pos2(grid.min.x, full.min.y),
+        pos2(full.max.x, grid.min.y),
+    ));
+    let heads = ui.painter_at(Rect::from_min_max(
+        pos2(full.min.x, grid.min.y),
+        pos2(grid.min.x, grid.max.y),
+    ));
     pt.rect_filled(full, 4.0, Color32::from_rgb(30, 32, 36));
     // ruler + bar grid (only the bars in view)
-    pt.rect_filled(Rect::from_min_max(pos2(full.min.x, full.min.y), pos2(full.max.x, grid.min.y)), 0.0, Color32::from_rgb(38, 40, 45));
-    pt.text(pos2(full.min.x + 8.0, full.min.y + RULER_H * 0.5), Align2::LEFT_CENTER, "PLAYLIST", FontId::proportional(10.0), DIM);
+    pt.rect_filled(
+        Rect::from_min_max(pos2(full.min.x, full.min.y), pos2(full.max.x, grid.min.y)),
+        0.0,
+        Color32::from_rgb(38, 40, 45),
+    );
+    pt.text(
+        pos2(full.min.x + 8.0, full.min.y + RULER_H * 0.5),
+        Align2::LEFT_CENTER,
+        "PLAYLIST",
+        FontId::proportional(10.0),
+        DIM,
+    );
     let b0 = geo.bar_at(grid.min.x).floor().max(0.0) as u32;
     let b1 = geo.bar_at(grid.max.x).ceil().max(0.0) as u32;
-    let label_every = if bar_px >= 12.0 { 4 } else if bar_px >= 6.0 { 8 } else { 16 };
+    let label_every = if bar_px >= 12.0 {
+        4
+    } else if bar_px >= 6.0 {
+        8
+    } else {
+        16
+    };
     for b in b0..=b1 {
         let x = geo.x_of(b as f32);
         let major = b % 4 == 0;
-        gp.line_segment([pos2(x, grid.min.y), pos2(x, grid.max.y)], Stroke::new(1.0_f32, if major { Color32::from_rgb(58, 61, 68) } else { Color32::from_rgb(43, 45, 50) }));
+        gp.line_segment(
+            [pos2(x, grid.min.y), pos2(x, grid.max.y)],
+            Stroke::new(
+                1.0_f32,
+                if major {
+                    Color32::from_rgb(58, 61, 68)
+                } else {
+                    Color32::from_rgb(43, 45, 50)
+                },
+            ),
+        );
         if b % label_every == 0 {
-            ruler.text(pos2(x + 3.0, full.min.y + RULER_H * 0.5), Align2::LEFT_CENTER, (b + 1).to_string(), FontId::monospace(9.5), DIM);
+            ruler.text(
+                pos2(x + 3.0, full.min.y + RULER_H * 0.5),
+                Align2::LEFT_CENTER,
+                (b + 1).to_string(),
+                FontId::monospace(9.5),
+                DIM,
+            );
         }
     }
     // lanes in view
@@ -256,12 +374,33 @@ pub fn playlist_grid(ui: &mut egui::Ui, p: &Project, sel: &mut GridSel, bar_now:
     for l in l0..l1 {
         let y = geo.y_of(l as f32);
         let head = Rect::from_min_size(pos2(full.min.x, y), vec2(HEAD_W - 2.0, LANE_H - 1.0));
-        heads.rect_filled(head, 0.0, if l % 2 == 0 { Color32::from_rgb(40, 42, 47) } else { Color32::from_rgb(36, 38, 43) });
-        heads.text(head.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, format!("Track {}", l + 1), FontId::proportional(11.0), TEXT);
-        gp.line_segment([pos2(grid.min.x, y + LANE_H), pos2(grid.max.x, y + LANE_H)], Stroke::new(1.0_f32, Color32::from_rgb(24, 25, 28)));
-        heads.line_segment([pos2(full.min.x, y + LANE_H), pos2(grid.min.x, y + LANE_H)], Stroke::new(1.0_f32, Color32::from_rgb(24, 25, 28)));
+        heads.rect_filled(
+            head,
+            0.0,
+            if l % 2 == 0 {
+                Color32::from_rgb(40, 42, 47)
+            } else {
+                Color32::from_rgb(36, 38, 43)
+            },
+        );
+        heads.text(
+            head.left_center() + vec2(8.0, 0.0),
+            Align2::LEFT_CENTER,
+            format!("Track {}", l + 1),
+            FontId::proportional(11.0),
+            TEXT,
+        );
+        gp.line_segment(
+            [pos2(grid.min.x, y + LANE_H), pos2(grid.max.x, y + LANE_H)],
+            Stroke::new(1.0_f32, Color32::from_rgb(24, 25, 28)),
+        );
+        heads.line_segment(
+            [pos2(full.min.x, y + LANE_H), pos2(grid.min.x, y + LANE_H)],
+            Stroke::new(1.0_f32, Color32::from_rgb(24, 25, 28)),
+        );
         // paint: a click on an empty cell drops the selected pattern
-        let lane_r = Rect::from_min_max(pos2(grid.min.x, y), pos2(grid.max.x, y + LANE_H)).intersect(grid);
+        let lane_r =
+            Rect::from_min_max(pos2(grid.min.x, y), pos2(grid.max.x, y + LANE_H)).intersect(grid);
         if !lane_r.is_positive() {
             continue;
         }
@@ -270,9 +409,17 @@ pub fn playlist_grid(ui: &mut egui::Ui, p: &Project, sel: &mut GridSel, bar_now:
             if let Some(pos) = resp.interact_pointer_pos() {
                 let bar = geo.bar_at(pos.x).floor().max(0.0) as u32;
                 let lane = (geo.lane_at(pos.y).floor().max(0.0) as usize).min(lanes - 1) as u32;
-                match p.patterns.get(sel.pattern).map(|pt| pt.name.clone()).filter(|n| !n.starts_with("pl:")) {
+                match p
+                    .patterns
+                    .get(sel.pattern)
+                    .map(|pt| pt.name.clone())
+                    .filter(|n| !n.starts_with("pl:"))
+                {
                     Some(name) => actions.extend(paint_calls(p, &name, bar, lane)),
-                    None => sel.toast = Some("Select a pattern to paint (the generated pl: sections can't be placed)".into()),
+                    None => sel.toast = Some(
+                        "Select a pattern to paint (the generated pl: sections can't be placed)"
+                            .into(),
+                    ),
                 }
             }
         }
@@ -280,10 +427,15 @@ pub fn playlist_grid(ui: &mut egui::Ui, p: &Project, sel: &mut GridSel, bar_now:
     // clips
     for c in &p.playlist {
         let id = ui.id().with(("flpl_clip", c.id.as_str()));
-        let grab: Option<(Grab, egui::Vec2)> = ui.data(|d| d.get_temp::<(u8, f32, f32)>(id)).map(|(g, x, y)| (Grab::from_code(g), vec2(x, y)));
+        let grab: Option<(Grab, egui::Vec2)> = ui
+            .data(|d| d.get_temp::<(u8, f32, f32)>(id))
+            .map(|(g, x, y)| (Grab::from_code(g), vec2(x, y)));
         let (start, lane, len) = dragged_clip(c.start_bar, c.lane, c.bars, grab, bar_px, lanes);
         let (start, lane, len) = (start as f32, lane as f32, len as f32);
-        let r = Rect::from_min_size(pos2(geo.x_of(start) + 1.0, geo.y_of(lane) + 2.0), vec2((len * bar_px - 2.0).max(1.0), LANE_H - 4.0));
+        let r = Rect::from_min_size(
+            pos2(geo.x_of(start) + 1.0, geo.y_of(lane) + 2.0),
+            vec2((len * bar_px - 2.0).max(1.0), LANE_H - 4.0),
+        );
         let vr = r.intersect(grid);
         if !vr.is_positive() && grab.is_none() {
             continue; // scrolled out of view: not drawn, not hit
@@ -294,13 +446,22 @@ pub fn playlist_grid(ui: &mut egui::Ui, p: &Project, sel: &mut GridSel, bar_now:
         let title = Rect::from_min_size(r.min, vec2(r.width(), 10.0));
         gp.rect_filled(title, 3.0, col);
         if vr.is_positive() {
-            gp.with_clip_rect(vr).text(pos2(vr.min.x.max(r.min.x) + 4.0, title.center().y), Align2::LEFT_CENTER, &c.pattern, FontId::proportional(8.5), Color32::from_rgb(20, 20, 24));
+            gp.with_clip_rect(vr).text(
+                pos2(vr.min.x.max(r.min.x) + 4.0, title.center().y),
+                Align2::LEFT_CENTER,
+                &c.pattern,
+                FontId::proportional(8.5),
+                Color32::from_rgb(20, 20, 24),
+            );
         }
         // the pattern's notes, tiny, so a clip reads as its music
         if let Ok(pi) = p.pattern_index(&c.pattern) {
             let pat = &p.patterns[pi];
             let steps = pat.steps().max(1) as f32;
-            let body = Rect::from_min_max(pos2(r.min.x, title.max.y + 1.0), pos2(r.max.x, r.max.y - 1.0));
+            let body = Rect::from_min_max(
+                pos2(r.min.x, title.max.y + 1.0),
+                pos2(r.max.x, r.max.y - 1.0),
+            );
             let per_rep = pat.bars.max(1) as f32 * bar_px;
             let reps = (len / pat.bars.max(1) as f32).ceil() as usize;
             for (ti, (_, notes)) in pat.clips.iter().enumerate().take(8) {
@@ -311,24 +472,60 @@ pub fn playlist_grid(ui: &mut egui::Ui, p: &Project, sel: &mut GridSel, bar_now:
                         if x0 >= r.max.x - 1.0 || x0 < grid.min.x - 2.0 || x0 > grid.max.x {
                             continue;
                         }
-                        gp.line_segment([pos2(x0, yy), pos2((x0 + 1.5).min(r.max.x), yy)], Stroke::new(1.0_f32, col.gamma_multiply(0.95)));
+                        gp.line_segment(
+                            [pos2(x0, yy), pos2((x0 + 1.5).min(r.max.x), yy)],
+                            Stroke::new(1.0_f32, col.gamma_multiply(0.95)),
+                        );
                     }
                 }
             }
         }
-        gp.rect_stroke(r, 3.0, Stroke::new(if is_sel { 1.5_f32 } else { 1.0 }, if is_sel { Color32::WHITE } else { col.gamma_multiply(0.7) }));
+        gp.rect_stroke(
+            r,
+            3.0,
+            Stroke::new(
+                if is_sel { 1.5_f32 } else { 1.0 },
+                if is_sel {
+                    Color32::WHITE
+                } else {
+                    col.gamma_multiply(0.7)
+                },
+            ),
+        );
         // edge grips: right edge resizes, left edge trims the start
         let ew = EDGE_PX.min(r.width() / 3.0).max(2.0);
-        gp.line_segment([pos2(r.max.x - 3.0, r.min.y + 12.0), pos2(r.max.x - 3.0, r.max.y - 3.0)], Stroke::new(1.0_f32, Color32::from_white_alpha(90)));
-        gp.line_segment([pos2(r.min.x + 3.0, r.min.y + 12.0), pos2(r.min.x + 3.0, r.max.y - 3.0)], Stroke::new(1.0_f32, Color32::from_white_alpha(50)));
+        gp.line_segment(
+            [
+                pos2(r.max.x - 3.0, r.min.y + 12.0),
+                pos2(r.max.x - 3.0, r.max.y - 3.0),
+            ],
+            Stroke::new(1.0_f32, Color32::from_white_alpha(90)),
+        );
+        gp.line_segment(
+            [
+                pos2(r.min.x + 3.0, r.min.y + 12.0),
+                pos2(r.min.x + 3.0, r.max.y - 3.0),
+            ],
+            Stroke::new(1.0_f32, Color32::from_white_alpha(50)),
+        );
         let edge_full = Rect::from_min_max(pos2(r.max.x - ew, r.min.y), r.max);
         let left_full = Rect::from_min_max(r.min, pos2(r.min.x + ew, r.max.y));
         // hit rects stay inside the grid (a clip scrolled half out of view is
         // only hit where it shows), except while it is being dragged
-        let hit = |rr: Rect| if grab.is_some() { rr } else { rr.intersect(grid) };
+        let hit = |rr: Rect| {
+            if grab.is_some() {
+                rr
+            } else {
+                rr.intersect(grid)
+            }
+        };
         let body_resp = ui.interact(hit(r), id.with("body"), Sense::click_and_drag());
-        let left_resp = ui.interact(hit(left_full), id.with("left"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-        let edge_resp = ui.interact(hit(edge_full), id.with("edge"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        let left_resp = ui
+            .interact(hit(left_full), id.with("left"), Sense::drag())
+            .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        let edge_resp = ui
+            .interact(hit(edge_full), id.with("edge"), Sense::drag())
+            .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
         let busy = |r: &egui::Response| r.drag_started() || r.dragged() || r.drag_stopped();
         let (resp, kind) = if busy(&edge_resp) {
             (&edge_resp, Grab::Resize)
@@ -342,16 +539,27 @@ pub fn playlist_grid(ui: &mut egui::Ui, p: &Project, sel: &mut GridSel, bar_now:
         }
         if resp.dragged() {
             let d = resp.drag_delta();
-            let cur = ui.data(|m| m.get_temp::<(u8, f32, f32)>(id)).unwrap_or((kind.code(), 0.0, 0.0));
+            let cur =
+                ui.data(|m| m.get_temp::<(u8, f32, f32)>(id))
+                    .unwrap_or((kind.code(), 0.0, 0.0));
             ui.data_mut(|m| m.insert_temp(id, (cur.0, cur.1 + d.x, cur.2 + d.y)));
         }
         if resp.drag_stopped() {
             ui.data_mut(|m| m.remove::<(u8, f32, f32)>(id));
             let (s, l, n) = (start as u32, lane as u32, len as u32);
             match kind {
-                Grab::Resize if n != c.bars.max(1) => actions.push(("playlist_clip", json!({"action": "trim", "id": c.id, "end_bar": s as i64 + n as i64}))),
-                Grab::ResizeStart if s != c.start_bar => actions.push(("playlist_clip", json!({"action": "trim", "id": c.id, "start_bar": s as i64}))),
-                Grab::Move if s != c.start_bar || l != c.lane => actions.push(("playlist_clip", json!({"action": "move", "id": c.id, "to_bar": s as i64, "lane": l as i64}))),
+                Grab::Resize if n != c.bars.max(1) => actions.push((
+                    "playlist_clip",
+                    json!({"action": "trim", "id": c.id, "end_bar": s as i64 + n as i64}),
+                )),
+                Grab::ResizeStart if s != c.start_bar => actions.push((
+                    "playlist_clip",
+                    json!({"action": "trim", "id": c.id, "start_bar": s as i64}),
+                )),
+                Grab::Move if s != c.start_bar || l != c.lane => actions.push((
+                    "playlist_clip",
+                    json!({"action": "move", "id": c.id, "to_bar": s as i64, "lane": l as i64}),
+                )),
                 _ => {}
             }
         }
@@ -362,22 +570,38 @@ pub fn playlist_grid(ui: &mut egui::Ui, p: &Project, sel: &mut GridSel, bar_now:
             }
         }
         let menu = super::playlist::pattern_clip_menu(c, bar_now);
-        body_resp.on_hover_text(format!("{} · bar {}–{} · drag to move, drag an edge to trim, right-click for more", c.pattern, c.start_bar + 1, c.start_bar + c.bars.max(1))).context_menu(|ui| {
-            for (label, tool, args) in menu.clone() {
-                if ui.button(label).clicked() {
-                    actions.push((tool, args));
-                    ui.close_menu();
+        body_resp
+            .on_hover_text(format!(
+                "{} · bar {}–{} · drag to move, drag an edge to trim, right-click for more",
+                c.pattern,
+                c.start_bar + 1,
+                c.start_bar + c.bars.max(1)
+            ))
+            .context_menu(|ui| {
+                for (label, tool, args) in menu.clone() {
+                    if ui.button(label).clicked() {
+                        actions.push((tool, args));
+                        ui.close_menu();
+                    }
                 }
-            }
-        });
+            });
     }
     // playhead
     let x = geo.x_of(bar_now);
     if bar_now > 0.0 && x >= grid.min.x && x <= grid.max.x {
-        pt.line_segment([pos2(x, full.min.y), pos2(x, full.max.y)], Stroke::new(1.5_f32, Color32::from_rgb(120, 220, 140)));
+        pt.line_segment(
+            [pos2(x, full.min.y), pos2(x, full.max.y)],
+            Stroke::new(1.5_f32, Color32::from_rgb(120, 220, 140)),
+        );
     }
     if p.playlist.is_empty() {
-        pt.text(grid.center(), Align2::CENTER_CENTER, "Click a cell to paint the selected pattern here", FontId::proportional(12.0), DIM);
+        pt.text(
+            grid.center(),
+            Align2::CENTER_CENTER,
+            "Click a cell to paint the selected pattern here",
+            FontId::proportional(12.0),
+            DIM,
+        );
     }
     actions
 }
@@ -405,9 +629,14 @@ mod tests {
         let d = std::env::temp_dir().join(format!("flpl_test_{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let mut e = Engine::new(d);
-        e.call("add_pattern", &json!({"name": "verse", "bars": 2})).unwrap();
+        e.call("add_pattern", &json!({"name": "verse", "bars": 2}))
+            .unwrap();
         let first = "verse".to_string();
-        e.call("set_arrangement", &json!({"sections": [{"pattern": first, "repeats": 2}]})).unwrap();
+        e.call(
+            "set_arrangement",
+            &json!({"sections": [{"pattern": first, "repeats": 2}]}),
+        )
+        .unwrap();
         let calls = paint_calls(&e.project, &first, 6, 1);
         if !e.project.arrangement.is_empty() {
             assert_eq!(calls[0].0, "arrangement_to_playlist");
@@ -415,7 +644,18 @@ mod tests {
         for (t, a) in calls {
             e.call(t, &a).unwrap();
         }
-        assert!(e.project.playlist.iter().any(|c| c.start_bar == 6 && c.lane == 1), "{:?}", e.project.playlist.iter().map(|c| (c.start_bar, c.lane)).collect::<Vec<_>>());
+        assert!(
+            e.project
+                .playlist
+                .iter()
+                .any(|c| c.start_bar == 6 && c.lane == 1),
+            "{:?}",
+            e.project
+                .playlist
+                .iter()
+                .map(|c| (c.start_bar, c.lane))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -423,30 +663,113 @@ mod tests {
         let lanes = 4;
         let m = |dx: f32, dy: f32| Some((Grab::Move, vec2(dx, dy)));
         // no negative bars: a drag far left stops at bar 0
-        assert_eq!(dragged_clip(2, 1, 3, m(-500.0, 0.0), 20.0, lanes), (0, 1, 3));
+        assert_eq!(
+            dragged_clip(2, 1, 3, m(-500.0, 0.0), 20.0, lanes),
+            (0, 1, 3)
+        );
         // no lane past the last track, none above the first
-        assert_eq!(dragged_clip(2, 1, 3, m(0.0, 10.0 * LANE_H), 20.0, lanes), (2, 3, 3));
-        assert_eq!(dragged_clip(2, 1, 3, m(0.0, -10.0 * LANE_H), 20.0, lanes), (2, 0, 3));
+        assert_eq!(
+            dragged_clip(2, 1, 3, m(0.0, 10.0 * LANE_H), 20.0, lanes),
+            (2, 3, 3)
+        );
+        assert_eq!(
+            dragged_clip(2, 1, 3, m(0.0, -10.0 * LANE_H), 20.0, lanes),
+            (2, 0, 3)
+        );
         // right edge: never shorter than one step (one bar)
-        assert_eq!(dragged_clip(2, 1, 3, Some((Grab::Resize, vec2(-500.0, 0.0))), 20.0, lanes), (2, 1, 1));
-        assert_eq!(dragged_clip(2, 1, 3, Some((Grab::Resize, vec2(41.0, 0.0))), 20.0, lanes), (2, 1, 5));
+        assert_eq!(
+            dragged_clip(
+                2,
+                1,
+                3,
+                Some((Grab::Resize, vec2(-500.0, 0.0))),
+                20.0,
+                lanes
+            ),
+            (2, 1, 1)
+        );
+        assert_eq!(
+            dragged_clip(2, 1, 3, Some((Grab::Resize, vec2(41.0, 0.0))), 20.0, lanes),
+            (2, 1, 5)
+        );
         // left edge: never before bar 0, never past the end minus one step
-        assert_eq!(dragged_clip(2, 1, 3, Some((Grab::ResizeStart, vec2(-500.0, 0.0))), 20.0, lanes), (0, 1, 5));
-        assert_eq!(dragged_clip(2, 1, 3, Some((Grab::ResizeStart, vec2(500.0, 0.0))), 20.0, lanes), (4, 1, 1));
-        assert_eq!(dragged_clip(2, 1, 3, Some((Grab::ResizeStart, vec2(21.0, 0.0))), 20.0, lanes), (3, 1, 2));
+        assert_eq!(
+            dragged_clip(
+                2,
+                1,
+                3,
+                Some((Grab::ResizeStart, vec2(-500.0, 0.0))),
+                20.0,
+                lanes
+            ),
+            (0, 1, 5)
+        );
+        assert_eq!(
+            dragged_clip(
+                2,
+                1,
+                3,
+                Some((Grab::ResizeStart, vec2(500.0, 0.0))),
+                20.0,
+                lanes
+            ),
+            (4, 1, 1)
+        );
+        assert_eq!(
+            dragged_clip(
+                2,
+                1,
+                3,
+                Some((Grab::ResizeStart, vec2(21.0, 0.0))),
+                20.0,
+                lanes
+            ),
+            (3, 1, 2)
+        );
         // a zero-length clip counts as one bar
         assert_eq!(dragged_clip(2, 1, 0, None, 20.0, lanes), (2, 1, 1));
     }
 
     #[test]
     fn the_view_stays_inside_the_song_and_geometry_round_trips() {
-        let v = PlaylistView { scroll_bar: -3.0, scroll_lane: 99.0, zoom: 100.0 }.clamped(32, 11);
-        assert_eq!(v, PlaylistView { scroll_bar: 0.0, scroll_lane: 3.0, zoom: ZOOM_MAX });
-        let v = PlaylistView { scroll_bar: 50.0, scroll_lane: 2.0, zoom: 0.0 }.clamped(32, 4);
-        assert_eq!(v, PlaylistView { scroll_bar: 32.0, scroll_lane: 0.0, zoom: ZOOM_MIN });
-        let g = GridGeo { grid: Rect::from_min_size(pos2(100.0, 20.0), vec2(800.0, 224.0)), bar_px: 55.5, scroll_bar: 3.25, scroll_lane: 1.5 };
+        let v = PlaylistView {
+            scroll_bar: -3.0,
+            scroll_lane: 99.0,
+            zoom: 100.0,
+        }
+        .clamped(32, 11);
+        assert_eq!(
+            v,
+            PlaylistView {
+                scroll_bar: 0.0,
+                scroll_lane: 3.0,
+                zoom: ZOOM_MAX
+            }
+        );
+        let v = PlaylistView {
+            scroll_bar: 50.0,
+            scroll_lane: 2.0,
+            zoom: 0.0,
+        }
+        .clamped(32, 4);
+        assert_eq!(
+            v,
+            PlaylistView {
+                scroll_bar: 32.0,
+                scroll_lane: 0.0,
+                zoom: ZOOM_MIN
+            }
+        );
+        let g = GridGeo {
+            grid: Rect::from_min_size(pos2(100.0, 20.0), vec2(800.0, 224.0)),
+            bar_px: 55.5,
+            scroll_bar: 3.25,
+            scroll_lane: 1.5,
+        };
         for (b, l) in [(3.25_f32, 1.5_f32), (7.0, 2.0), (12.6, 6.25)] {
-            assert!((g.bar_at(g.x_of(b)) - b).abs() < 1e-4 && (g.lane_at(g.y_of(l)) - l).abs() < 1e-4);
+            assert!(
+                (g.bar_at(g.x_of(b)) - b).abs() < 1e-4 && (g.lane_at(g.y_of(l)) - l).abs() < 1e-4
+            );
         }
         assert_eq!(g.x_of(3.25), 100.0);
         assert_eq!(g.y_of(1.5), 20.0);
@@ -456,16 +779,32 @@ mod tests {
     /// and return every engine call it asked for, plus the final view. `at`
     /// maps a song (bar, lane) to the point the grid shows it at, using the
     /// geometry the grid itself reported (so through its scroll and zoom).
-    fn drive_view(p: &Project, ppp: f32, view: PlaylistView, gesture: &dyn Fn(&dyn Fn(f32, f32) -> egui::Pos2) -> Vec<Vec<egui::Event>>) -> (Vec<(&'static str, Value)>, GridSel) {
+    fn drive_view(
+        p: &Project,
+        ppp: f32,
+        view: PlaylistView,
+        gesture: &dyn Fn(&dyn Fn(f32, f32) -> egui::Pos2) -> Vec<Vec<egui::Event>>,
+    ) -> (Vec<(&'static str, Value)>, GridSel) {
         let ctx = egui::Context::default();
         ctx.set_pixels_per_point(ppp);
-        let mut sel = GridSel { view, ..Default::default() };
+        let mut sel = GridSel {
+            view,
+            ..Default::default()
+        };
         let mut out = Vec::new();
         // egui input is in points; the windowing layer has already divided
         // physical pixels by pixels_per_point (HiDPI) before it gets here
         let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 700.0));
-        let frame = |events: Vec<egui::Event>, k: usize, out: &mut Vec<(&'static str, Value)>, sel: &mut GridSel| {
-            let input = egui::RawInput { screen_rect: Some(screen), events, time: Some(k as f64 * 0.05), ..Default::default() };
+        let frame = |events: Vec<egui::Event>,
+                     k: usize,
+                     out: &mut Vec<(&'static str, Value)>,
+                     sel: &mut GridSel| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                time: Some(k as f64 * 0.05),
+                ..Default::default()
+            };
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     out.extend(playlist_grid(ui, p, sel, 0.0));
@@ -482,17 +821,36 @@ mod tests {
         (out, sel)
     }
 
-    fn drive(p: &Project, ppp: f32, gesture: &dyn Fn(&dyn Fn(f32, f32) -> egui::Pos2) -> Vec<Vec<egui::Event>>) -> Vec<(&'static str, Value)> {
+    fn drive(
+        p: &Project,
+        ppp: f32,
+        gesture: &dyn Fn(&dyn Fn(f32, f32) -> egui::Pos2) -> Vec<Vec<egui::Event>>,
+    ) -> Vec<(&'static str, Value)> {
         drive_view(p, ppp, PlaylistView::default(), gesture).0
     }
 
     fn drag(from: egui::Pos2, to: egui::Pos2) -> Vec<Vec<egui::Event>> {
         use egui::{Event, Modifiers, PointerButton};
-        let mut f = vec![vec![Event::PointerMoved(from)], vec![Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::default() }]];
+        let mut f = vec![
+            vec![Event::PointerMoved(from)],
+            vec![Event::PointerButton {
+                pos: from,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::default(),
+            }],
+        ];
         for i in 1..=8 {
-            f.push(vec![Event::PointerMoved(from + (to - from) * (i as f32 / 8.0))]);
+            f.push(vec![Event::PointerMoved(
+                from + (to - from) * (i as f32 / 8.0),
+            )]);
         }
-        f.push(vec![Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::default() }]);
+        f.push(vec![Event::PointerButton {
+            pos: to,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::default(),
+        }]);
         f.push(vec![]);
         f
     }
@@ -501,8 +859,13 @@ mod tests {
         let d = std::env::temp_dir().join(format!("flpl_ptr_{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let mut e = Engine::new(d);
-        e.call("add_pattern", &json!({"name": "verse", "bars": 2})).unwrap();
-        e.call("place_pattern", &json!({"pattern": "verse", "start_bar": 0, "lane": 0})).unwrap();
+        e.call("add_pattern", &json!({"name": "verse", "bars": 2}))
+            .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern": "verse", "start_bar": 0, "lane": 0}),
+        )
+        .unwrap();
         e.project.clone()
     }
 
@@ -514,13 +877,35 @@ mod tests {
         for ppp in [1.0_f32, 2.0] {
             // grab the clip's body and drag it 3 bars right and one lane down
             let moved = drive(&p, ppp, &|at| drag(at(0.8, 0.0), at(3.8, 1.0)));
-            assert!(moved.iter().any(|(t, a)| *t == "playlist_clip" && a["action"] == "move" && a["to_bar"] == 3 && a["lane"] == 1), "ppp {ppp}: {moved:?}");
+            assert!(
+                moved.iter().any(|(t, a)| *t == "playlist_clip"
+                    && a["action"] == "move"
+                    && a["to_bar"] == 3
+                    && a["lane"] == 1),
+                "ppp {ppp}: {moved:?}"
+            );
             // grab the right edge and pull it 2 bars longer
-            let resized = drive(&p, ppp, &|at| { let e = at(2.0, 0.0) - egui::vec2(3.0, 0.0); drag(e, e + egui::vec2(at(4.0, 0.0).x - at(2.0, 0.0).x, 0.0)) });
-            assert!(resized.iter().any(|(t, a)| *t == "playlist_clip" && a["action"] == "trim" && a["end_bar"] == 4), "ppp {ppp}: {resized:?}");
+            let resized = drive(&p, ppp, &|at| {
+                let e = at(2.0, 0.0) - egui::vec2(3.0, 0.0);
+                drag(e, e + egui::vec2(at(4.0, 0.0).x - at(2.0, 0.0).x, 0.0))
+            });
+            assert!(
+                resized.iter().any(|(t, a)| *t == "playlist_clip"
+                    && a["action"] == "trim"
+                    && a["end_bar"] == 4),
+                "ppp {ppp}: {resized:?}"
+            );
             // click an empty cell: the selected pattern is painted there
-            let painted = drive(&p, ppp, &|at| { let c = at(10.5, 1.0); drag(c, c) });
-            assert!(painted.iter().any(|(t, a)| *t == "place_pattern" && a["start_bar"] == 10 && a["lane"] == 1), "ppp {ppp}: {painted:?}");
+            let painted = drive(&p, ppp, &|at| {
+                let c = at(10.5, 1.0);
+                drag(c, c)
+            });
+            assert!(
+                painted
+                    .iter()
+                    .any(|(t, a)| *t == "place_pattern" && a["start_bar"] == 10 && a["lane"] == 1),
+                "ppp {ppp}: {painted:?}"
+            );
         }
     }
 
@@ -530,14 +915,27 @@ mod tests {
         let d = std::env::temp_dir().join(format!("flpl_view_{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let mut e = Engine::new(d);
-        e.call("add_pattern", &json!({"name": "verse", "bars": 2})).unwrap();
-        e.call("place_pattern", &json!({"pattern": "verse", "start_bar": 4, "lane": 2})).unwrap();
-        e.call("place_pattern", &json!({"pattern": "verse", "start_bar": 0, "lane": 9})).unwrap();
+        e.call("add_pattern", &json!({"name": "verse", "bars": 2}))
+            .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern": "verse", "start_bar": 4, "lane": 2}),
+        )
+        .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern": "verse", "start_bar": 0, "lane": 9}),
+        )
+        .unwrap();
         e.project.clone()
     }
 
     fn find<'a>(calls: &'a [(&'static str, Value)], action: &str) -> Vec<&'a Value> {
-        calls.iter().filter(|(t, a)| *t == "playlist_clip" && a["action"] == action).map(|(_, a)| a).collect()
+        calls
+            .iter()
+            .filter(|(t, a)| *t == "playlist_clip" && a["action"] == action)
+            .map(|(_, a)| a)
+            .collect()
     }
 
     #[test]
@@ -545,9 +943,21 @@ mod tests {
         let p = two_lane_project();
         let id = p.playlist.iter().find(|c| c.lane == 2).unwrap().id.clone();
         let views = [
-            PlaylistView { scroll_bar: 3.0, scroll_lane: 1.0, zoom: 2.0 },
-            PlaylistView { scroll_bar: 3.0, scroll_lane: 1.0, zoom: 0.5 },
-            PlaylistView { scroll_bar: 2.5, scroll_lane: 2.0, zoom: 3.0 },
+            PlaylistView {
+                scroll_bar: 3.0,
+                scroll_lane: 1.0,
+                zoom: 2.0,
+            },
+            PlaylistView {
+                scroll_bar: 3.0,
+                scroll_lane: 1.0,
+                zoom: 0.5,
+            },
+            PlaylistView {
+                scroll_bar: 2.5,
+                scroll_lane: 2.0,
+                zoom: 3.0,
+            },
         ];
         for ppp in [1.0_f32, 2.0] {
             for v in views {
@@ -558,33 +968,74 @@ mod tests {
                 // move: 3 bars right, 1 lane down, grabbed where the scrolled, zoomed grid shows it
                 let (c, _) = drive_view(&p, ppp, v, &|at| drag(at(4.8, 2.0), at(7.8, 3.0)));
                 let mv = find(&c, "move");
-                assert!(mv.len() == 1 && mv[0]["id"] == id.as_str() && mv[0]["to_bar"] == 7 && mv[0]["lane"] == 3, "{tag}: {c:?}");
+                assert!(
+                    mv.len() == 1
+                        && mv[0]["id"] == id.as_str()
+                        && mv[0]["to_bar"] == 7
+                        && mv[0]["lane"] == 3,
+                    "{tag}: {c:?}"
+                );
                 // right edge: 2 bars longer
-                let (c, _) = drive_view(&p, ppp, v, &|at| { let e = at(6.0, 2.0) - vec2(2.0, 0.0); drag(e, e + vec2(at(8.0, 2.0).x - at(6.0, 2.0).x, 0.0)) });
+                let (c, _) = drive_view(&p, ppp, v, &|at| {
+                    let e = at(6.0, 2.0) - vec2(2.0, 0.0);
+                    drag(e, e + vec2(at(8.0, 2.0).x - at(6.0, 2.0).x, 0.0))
+                });
                 let tr = find(&c, "trim");
                 assert!(tr.len() == 1 && tr[0]["end_bar"] == 8, "{tag}: {c:?}");
                 // left edge: start one bar earlier (end kept)
-                let (c, _) = drive_view(&p, ppp, v, &|at| { let e = at(4.0, 2.0) + vec2(2.0, 0.0); drag(e, e - vec2(at(5.0, 2.0).x - at(4.0, 2.0).x, 0.0)) });
+                let (c, _) = drive_view(&p, ppp, v, &|at| {
+                    let e = at(4.0, 2.0) + vec2(2.0, 0.0);
+                    drag(e, e - vec2(at(5.0, 2.0).x - at(4.0, 2.0).x, 0.0))
+                });
                 let tr = find(&c, "trim");
-                assert!(tr.len() == 1 && tr[0]["start_bar"] == 3 && tr[0].get("end_bar").is_none(), "{tag}: {c:?}");
+                assert!(
+                    tr.len() == 1 && tr[0]["start_bar"] == 3 && tr[0].get("end_bar").is_none(),
+                    "{tag}: {c:?}"
+                );
                 // clamps under scroll/zoom: far left -> bar 0, far down -> last track (lane 10)
-                let (c, _) = drive_view(&p, ppp, v, &|at| { let a = at(4.8, 2.0); drag(a, pos2(-400.0, a.y)) });
+                let (c, _) = drive_view(&p, ppp, v, &|at| {
+                    let a = at(4.8, 2.0);
+                    drag(a, pos2(-400.0, a.y))
+                });
                 let mv = find(&c, "move");
-                assert!(mv.len() == 1 && mv[0]["to_bar"] == 0 && mv[0]["lane"] == 2, "{tag}: {c:?}");
-                let (c, _) = drive_view(&p, ppp, v, &|at| { let a = at(4.8, 2.0); drag(a, a + vec2(0.0, 20.0 * LANE_H)) });
+                assert!(
+                    mv.len() == 1 && mv[0]["to_bar"] == 0 && mv[0]["lane"] == 2,
+                    "{tag}: {c:?}"
+                );
+                let (c, _) = drive_view(&p, ppp, v, &|at| {
+                    let a = at(4.8, 2.0);
+                    drag(a, a + vec2(0.0, 20.0 * LANE_H))
+                });
                 let mv = find(&c, "move");
-                assert!(mv.len() == 1 && mv[0]["to_bar"] == 4 && mv[0]["lane"] == 10, "{tag}: {c:?}");
+                assert!(
+                    mv.len() == 1 && mv[0]["to_bar"] == 4 && mv[0]["lane"] == 10,
+                    "{tag}: {c:?}"
+                );
                 // left edge dragged far left: trims to bar 0, never negative
-                let (c, _) = drive_view(&p, ppp, v, &|at| { let e = at(4.0, 2.0) + vec2(2.0, 0.0); drag(e, pos2(-400.0, e.y)) });
+                let (c, _) = drive_view(&p, ppp, v, &|at| {
+                    let e = at(4.0, 2.0) + vec2(2.0, 0.0);
+                    drag(e, pos2(-400.0, e.y))
+                });
                 let tr = find(&c, "trim");
                 assert!(tr.len() == 1 && tr[0]["start_bar"] == 0, "{tag}: {c:?}");
                 // right edge dragged far left: one bar long, not zero or negative
-                let (c, _) = drive_view(&p, ppp, v, &|at| { let e = at(6.0, 2.0) - vec2(2.0, 0.0); drag(e, pos2(-400.0, e.y)) });
+                let (c, _) = drive_view(&p, ppp, v, &|at| {
+                    let e = at(6.0, 2.0) - vec2(2.0, 0.0);
+                    drag(e, pos2(-400.0, e.y))
+                });
                 let tr = find(&c, "trim");
                 assert!(tr.len() == 1 && tr[0]["end_bar"] == 5, "{tag}: {c:?}");
                 // paint: an empty cell in view maps through scroll and zoom
-                let (c, _) = drive_view(&p, ppp, v, &|at| { let a = at(8.5, 4.0); drag(a, a) });
-                assert!(c.iter().any(|(t, a)| *t == "place_pattern" && a["start_bar"] == 8 && a["lane"] == 4), "{tag}: {c:?}");
+                let (c, _) = drive_view(&p, ppp, v, &|at| {
+                    let a = at(8.5, 4.0);
+                    drag(a, a)
+                });
+                assert!(
+                    c.iter().any(|(t, a)| *t == "place_pattern"
+                        && a["start_bar"] == 8
+                        && a["lane"] == 4),
+                    "{tag}: {c:?}"
+                );
             }
         }
     }
@@ -595,11 +1046,21 @@ mod tests {
         // it would be without scroll paints instead of grabbing it
         let p = two_lane_project();
         for ppp in [1.0_f32, 2.0] {
-            let v = PlaylistView { scroll_bar: 3.0, scroll_lane: 2.0, zoom: 2.0 };
-            let (c, s) = drive_view(&p, ppp, v, &|at| { let a = at(3.5, 9.0); drag(a, a + vec2(80.0, 0.0)) });
+            let v = PlaylistView {
+                scroll_bar: 3.0,
+                scroll_lane: 2.0,
+                zoom: 2.0,
+            };
+            let (c, s) = drive_view(&p, ppp, v, &|at| {
+                let a = at(3.5, 9.0);
+                drag(a, a + vec2(80.0, 0.0))
+            });
             assert!(find(&c, "move").is_empty(), "ppp {ppp}: {c:?}");
             let g = s.geo.unwrap();
-            assert!(g.y_of(9.0) + LANE_H * 0.5 < g.grid.max.y, "lane 9 is in view at scroll_lane 2");
+            assert!(
+                g.y_of(9.0) + LANE_H * 0.5 < g.grid.max.y,
+                "lane 9 is in view at scroll_lane 2"
+            );
         }
     }
 
@@ -609,23 +1070,55 @@ mod tests {
         let p = two_lane_project();
         for ppp in [1.0_f32, 2.0] {
             let wheel = |pos: egui::Pos2, dy: f32, m: Modifiers| {
-                let mut f = vec![vec![Event::PointerMoved(pos)], vec![Event::MouseWheel { unit: MouseWheelUnit::Line, delta: vec2(0.0, dy), modifiers: m }]];
+                let mut f = vec![
+                    vec![Event::PointerMoved(pos)],
+                    vec![Event::MouseWheel {
+                        unit: MouseWheelUnit::Line,
+                        delta: vec2(0.0, dy),
+                        modifiers: m,
+                    }],
+                ];
                 f.extend((0..40).map(|_| vec![Event::PointerMoved(pos)]));
                 f
             };
             // Ctrl+wheel up: zoom in, the bar under the pointer stays put
-            let v0 = PlaylistView { scroll_bar: 2.0, scroll_lane: 0.0, zoom: 1.0 };
+            let v0 = PlaylistView {
+                scroll_bar: 2.0,
+                scroll_lane: 0.0,
+                zoom: 1.0,
+            };
             let anchor = std::cell::Cell::new(0.0_f32);
-            let (_, s) = drive_view(&p, ppp, v0, &|at| { let a = at(9.0, 1.0); anchor.set(a.x); wheel(a, 1.0, Modifiers::CTRL) });
+            let (_, s) = drive_view(&p, ppp, v0, &|at| {
+                let a = at(9.0, 1.0);
+                anchor.set(a.x);
+                wheel(a, 1.0, Modifiers::CTRL)
+            });
             let g = s.geo.unwrap();
             assert!(s.view.zoom > 1.05, "ppp {ppp}: {:?}", s.view);
-            assert!((g.bar_at(anchor.get()) - 9.0).abs() < 0.05, "ppp {ppp}: bar under pointer {} ({:?})", g.bar_at(anchor.get()), s.view);
+            assert!(
+                (g.bar_at(anchor.get()) - 9.0).abs() < 0.05,
+                "ppp {ppp}: bar under pointer {} ({:?})",
+                g.bar_at(anchor.get()),
+                s.view
+            );
             // Shift+wheel down: scrolls later bars into view
-            let (_, s) = drive_view(&p, ppp, v0, &|at| wheel(at(9.0, 1.0), -1.0, Modifiers::SHIFT));
-            assert!(s.view.scroll_bar > 2.5 && s.view.zoom == 1.0, "ppp {ppp}: {:?}", s.view);
+            let (_, s) = drive_view(&p, ppp, v0, &|at| {
+                wheel(at(9.0, 1.0), -1.0, Modifiers::SHIFT)
+            });
+            assert!(
+                s.view.scroll_bar > 2.5 && s.view.zoom == 1.0,
+                "ppp {ppp}: {:?}",
+                s.view
+            );
             // plain wheel down: lanes scroll (11 lanes, 8 shown), bars don't
-            let (_, s) = drive_view(&p, ppp, v0, &|at| wheel(at(9.0, 1.0), -1.0, Modifiers::NONE));
-            assert!(s.view.scroll_lane > 0.5 && s.view.scroll_lane <= 3.0 && s.view.scroll_bar == 2.0, "ppp {ppp}: {:?}", s.view);
+            let (_, s) = drive_view(&p, ppp, v0, &|at| {
+                wheel(at(9.0, 1.0), -1.0, Modifiers::NONE)
+            });
+            assert!(
+                s.view.scroll_lane > 0.5 && s.view.scroll_lane <= 3.0 && s.view.scroll_bar == 2.0,
+                "ppp {ppp}: {:?}",
+                s.view
+            );
         }
     }
 }
