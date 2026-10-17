@@ -871,7 +871,7 @@ mod tests {
         files.insert("/kits/mykit.zip".to_string(), kit);
         files.insert("/page.html".to_string(), b"<html><a href=\"/kits/mykit.zip\">My kit</a> <a href='sounds/clean_hit.wav'>hit</a> <a href=\"/about\">about</a></html>".to_vec());
         let font = crate::soundfont::font_entry("generaluser_gs")
-            .map(|f| crate::soundfont::installed_path(f))
+            .map(crate::soundfont::installed_path)
             .filter(|p| p.is_file());
         if let Some(p) = &font {
             files.insert("/fonts/small.sf2".to_string(), std::fs::read(p).unwrap());
