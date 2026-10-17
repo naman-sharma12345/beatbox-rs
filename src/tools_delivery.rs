@@ -1256,8 +1256,8 @@ mod tests {
 
     /// post_master runs render()'s own master section on every stem (fader
     /// + volume lane -> DC blocker R 0.995 -> master chain with its lanes and
-    /// sidechain context): with a linear master the post-master stems
-    /// (direct tracks + the bus) sum back to the real master below -60 dB.
+    ///   sidechain context): with a linear master the post-master stems
+    ///   (direct tracks + the bus) sum back to the real master below -60 dB.
     #[test]
     fn export_stems_post_master_linear_master_nulls_against_the_master() {
         let mut e = linear_master_eng("beatbox_stems_post_master_null");
