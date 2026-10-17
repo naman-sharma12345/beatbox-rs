@@ -23,7 +23,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libxkbcommon-dev libwayland-dev libx11-dev ffmpeg
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
-      - run: cargo clippy --locked --all-targets -- -D warnings
+      - name: clippy (default features, public errors)
+        run: |
+          set +o pipefail
+          cargo clippy --locked --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.txt
+          status=${PIPESTATUS[0]}
+          grep -E "(error|warning)" clippy.txt | head -50 | while read -r line; do echo "::error::$line"; done
+          exit $status
       - run: cargo test --locked --no-default-features
       - name: rust-toolchain.toml matches the CI toolchain
         run: grep -q 'channel = "1.99.0"' rust-toolchain.toml
