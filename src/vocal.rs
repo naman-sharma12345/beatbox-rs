@@ -1932,7 +1932,7 @@ mod tests {
             })
             .collect();
         assert!(
-            gated_key(&x, crate::dsp::SR).map_or(true, |g| g.unknown),
+            gated_key(&x, crate::dsp::SR).is_none_or(|g| g.unknown),
             "white noise has no key"
         );
     }
