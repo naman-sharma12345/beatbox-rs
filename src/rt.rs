@@ -2165,6 +2165,10 @@ mod tests {
         )
         .unwrap();
         e.bank.sync(&e.project.samples);
+        // Test 0 covers track/mixdown identity: MixNode's master section
+        // is fader + DcBlock only, so the fixture deliberately drops the
+        // default master compressor+limiter until master-chain streaming.
+        e.project.master_effects.clear();
         let pt = |beat: f32, value: f32| AutoPoint {
             beat,
             value,
@@ -2489,6 +2493,9 @@ mod tests {
         e.call("set_tempo", &serde_json::json!({"bpm": 200.0}))
             .unwrap();
         e.bank.sync(&e.project.samples);
+        // Test 0 covers track/mixdown identity: no master chain in the
+        // engine path yet, so the default master chain is cleared here.
+        e.project.master_effects.clear();
         e.project.arrangement = vec![crate::project::Section {
             pattern: "main".into(),
             repeats: 1,
