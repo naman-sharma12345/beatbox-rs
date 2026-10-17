@@ -49,24 +49,63 @@ pub struct Coeffs {
 }
 
 impl Coeffs {
-    pub const IDENTITY: Coeffs = Coeffs { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0 };
+    pub const IDENTITY: Coeffs = Coeffs {
+        b0: 1.0,
+        b1: 0.0,
+        b2: 0.0,
+        a1: 0.0,
+        a2: 0.0,
+    };
 
     /// RBJ cookbook design, computed in f64.
     pub fn design(kind: FilterType, freq: f32, q: f32, gain_db: f32, sample_rate: f32) -> Coeffs {
         let sr = f64::from(sample_rate.max(1000.0));
-        let f = if freq.is_finite() { f64::from(freq).clamp(1.0, sr * 0.49) } else { 1000.0 };
-        let q = if q.is_finite() { f64::from(q).clamp(0.025, 100.0) } else { std::f64::consts::FRAC_1_SQRT_2 };
-        let g = if gain_db.is_finite() { f64::from(gain_db).clamp(-48.0, 48.0) } else { 0.0 };
+        let f = if freq.is_finite() {
+            f64::from(freq).clamp(1.0, sr * 0.49)
+        } else {
+            1000.0
+        };
+        let q = if q.is_finite() {
+            f64::from(q).clamp(0.025, 100.0)
+        } else {
+            std::f64::consts::FRAC_1_SQRT_2
+        };
+        let g = if gain_db.is_finite() {
+            f64::from(gain_db).clamp(-48.0, 48.0)
+        } else {
+            0.0
+        };
         let w0 = 2.0 * PI * f / sr;
         let (sw, cw) = w0.sin_cos();
         let alpha = sw / (2.0 * q);
         let a = 10f64.powf(g / 40.0);
         let (b0, b1, b2, a0, a1, a2) = match kind {
-            FilterType::LowPass => ((1.0 - cw) / 2.0, 1.0 - cw, (1.0 - cw) / 2.0, 1.0 + alpha, -2.0 * cw, 1.0 - alpha),
-            FilterType::HighPass => ((1.0 + cw) / 2.0, -(1.0 + cw), (1.0 + cw) / 2.0, 1.0 + alpha, -2.0 * cw, 1.0 - alpha),
+            FilterType::LowPass => (
+                (1.0 - cw) / 2.0,
+                1.0 - cw,
+                (1.0 - cw) / 2.0,
+                1.0 + alpha,
+                -2.0 * cw,
+                1.0 - alpha,
+            ),
+            FilterType::HighPass => (
+                (1.0 + cw) / 2.0,
+                -(1.0 + cw),
+                (1.0 + cw) / 2.0,
+                1.0 + alpha,
+                -2.0 * cw,
+                1.0 - alpha,
+            ),
             FilterType::BandPass => (alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cw, 1.0 - alpha),
             FilterType::Notch => (1.0, -2.0 * cw, 1.0, 1.0 + alpha, -2.0 * cw, 1.0 - alpha),
-            FilterType::Peak => (1.0 + alpha * a, -2.0 * cw, 1.0 - alpha * a, 1.0 + alpha / a, -2.0 * cw, 1.0 - alpha / a),
+            FilterType::Peak => (
+                1.0 + alpha * a,
+                -2.0 * cw,
+                1.0 - alpha * a,
+                1.0 + alpha / a,
+                -2.0 * cw,
+                1.0 - alpha / a,
+            ),
             FilterType::LowShelf => {
                 let s = 2.0 * a.sqrt() * alpha;
                 (
@@ -95,13 +134,31 @@ impl Coeffs {
                 let norm = 1.0 / (1.0 + k);
                 let a1 = (k - 1.0) * norm;
                 return if kind == FilterType::LowPass1 {
-                    Coeffs { b0: (k * norm) as f32, b1: (k * norm) as f32, b2: 0.0, a1: a1 as f32, a2: 0.0 }
+                    Coeffs {
+                        b0: (k * norm) as f32,
+                        b1: (k * norm) as f32,
+                        b2: 0.0,
+                        a1: a1 as f32,
+                        a2: 0.0,
+                    }
                 } else {
-                    Coeffs { b0: norm as f32, b1: -norm as f32, b2: 0.0, a1: a1 as f32, a2: 0.0 }
+                    Coeffs {
+                        b0: norm as f32,
+                        b1: -norm as f32,
+                        b2: 0.0,
+                        a1: a1 as f32,
+                        a2: 0.0,
+                    }
                 };
             }
         };
-        let c = Coeffs { b0: (b0 / a0) as f32, b1: (b1 / a0) as f32, b2: (b2 / a0) as f32, a1: (a1 / a0) as f32, a2: (a2 / a0) as f32 };
+        let c = Coeffs {
+            b0: (b0 / a0) as f32,
+            b1: (b1 / a0) as f32,
+            b2: (b2 / a0) as f32,
+            a1: (a1 / a0) as f32,
+            a2: (a2 / a0) as f32,
+        };
         if [c.b0, c.b1, c.b2, c.a1, c.a2].iter().all(|v| v.is_finite()) {
             c
         } else {
@@ -115,7 +172,13 @@ impl Coeffs {
         let w = 2.0 * PI * f64::from(freq).clamp(0.0, sr * 0.5) / sr;
         let (s1, c1) = w.sin_cos();
         let (s2, c2) = (2.0 * w).sin_cos();
-        let (b0, b1, b2, a1, a2) = (f64::from(self.b0), f64::from(self.b1), f64::from(self.b2), f64::from(self.a1), f64::from(self.a2));
+        let (b0, b1, b2, a1, a2) = (
+            f64::from(self.b0),
+            f64::from(self.b1),
+            f64::from(self.b2),
+            f64::from(self.a1),
+            f64::from(self.a2),
+        );
         let nr = b0 + b1 * c1 + b2 * c2;
         let ni = -(b1 * s1 + b2 * s2);
         let dr = 1.0 + a1 * c1 + a2 * c2;
@@ -145,7 +208,11 @@ pub struct Bq {
 
 impl Bq {
     pub fn new(c: Coeffs) -> Bq {
-        Bq { c, z1: 0.0, z2: 0.0 }
+        Bq {
+            c,
+            z1: 0.0,
+            z2: 0.0,
+        }
     }
     #[inline]
     pub fn run(&mut self, x: f32) -> f32 {
@@ -169,21 +236,38 @@ fn butterworth_qs4() -> [f32; 2] {
 
 /// 1-2 cascaded sections for an HPF/LPF; slope in dB/oct (6, 12, 18, 24).
 pub fn pass_filter(slope_db: u32, high: bool, freq: f32) -> [Coeffs; 2] {
-    let (k1, k2) = if high { (FilterType::HighPass1, FilterType::HighPass) } else { (FilterType::LowPass1, FilterType::LowPass) };
+    let (k1, k2) = if high {
+        (FilterType::HighPass1, FilterType::HighPass)
+    } else {
+        (FilterType::LowPass1, FilterType::LowPass)
+    };
     if slope_db <= 6 {
         [Coeffs::design(k1, freq, 0.707, 0.0, SR), Coeffs::IDENTITY]
     } else if slope_db >= 19 {
         let q = butterworth_qs4();
-        [Coeffs::design(k2, freq, q[0], 0.0, SR), Coeffs::design(k2, freq, q[1], 0.0, SR)]
+        [
+            Coeffs::design(k2, freq, q[0], 0.0, SR),
+            Coeffs::design(k2, freq, q[1], 0.0, SR),
+        ]
     } else if slope_db >= 13 {
-        [Coeffs::design(k1, freq, 0.707, 0.0, SR), Coeffs::design(k2, freq, 1.0, 0.0, SR)]
+        [
+            Coeffs::design(k1, freq, 0.707, 0.0, SR),
+            Coeffs::design(k2, freq, 1.0, 0.0, SR),
+        ]
     } else {
-        [Coeffs::design(k2, freq, std::f32::consts::FRAC_1_SQRT_2, 0.0, SR), Coeffs::IDENTITY]
+        [
+            Coeffs::design(k2, freq, std::f32::consts::FRAC_1_SQRT_2, 0.0, SR),
+            Coeffs::IDENTITY,
+        ]
     }
 }
 
 fn cascade(x: &mut [f32], cs: &[Coeffs], gain: f32) {
-    let mut f: Vec<Bq> = cs.iter().filter(|c| **c != Coeffs::IDENTITY).map(|c| Bq::new(*c)).collect();
+    let mut f: Vec<Bq> = cs
+        .iter()
+        .filter(|c| **c != Coeffs::IDENTITY)
+        .map(|c| Bq::new(*c))
+        .collect();
     for v in x.iter_mut() {
         let mut y = *v;
         for b in f.iter_mut() {
@@ -249,31 +333,56 @@ impl Eq7 {
         c
     }
     pub fn process(&self, x: &mut [f32]) {
-        cascade(x, &self.coeffs(), 10f32.powf((self.input_db + self.output_db) / 20.0));
+        cascade(
+            x,
+            &self.coeffs(),
+            10f32.powf((self.input_db + self.output_db) / 20.0),
+        );
     }
     pub fn response_db(&self, f: f32) -> f32 {
-        self.input_db + self.output_db + self.coeffs().iter().map(|c| c.magnitude_db(f, SR)).sum::<f32>()
+        self.input_db
+            + self.output_db
+            + self
+                .coeffs()
+                .iter()
+                .map(|c| c.magnitude_db(f, SR))
+                .sum::<f32>()
     }
 }
 
 /// EQ 1-Band: one filter of any type.
-pub fn eq1(x: &mut [f32], kind: FilterType, freq: f32, gain_db: f32, q: f32, output_db: f32) -> Coeffs {
-    let c = if kind == FilterType::Peak && gain_db.abs() < 1e-4 { Coeffs::IDENTITY } else { Coeffs::design(kind, freq, q, gain_db, SR) };
+pub fn eq1(
+    x: &mut [f32],
+    kind: FilterType,
+    freq: f32,
+    gain_db: f32,
+    q: f32,
+    output_db: f32,
+) -> Coeffs {
+    let c = if kind == FilterType::Peak && gain_db.abs() < 1e-4 {
+        Coeffs::IDENTITY
+    } else {
+        Coeffs::design(kind, freq, q, gain_db, SR)
+    };
     cascade(x, &[c], 10f32.powf(output_db / 20.0));
     c
 }
 
 pub fn filter_type(s: &str) -> Result<FilterType> {
-    Ok(match s.trim().to_lowercase().replace([' ', '-'], "_").as_str() {
-        "peak" | "bell" => FilterType::Peak,
-        "low_shelf" | "lowshelf" => FilterType::LowShelf,
-        "high_shelf" | "highshelf" => FilterType::HighShelf,
-        "high_pass" | "highpass" | "hpf" | "low_cut" => FilterType::HighPass,
-        "low_pass" | "lowpass" | "lpf" | "high_cut" => FilterType::LowPass,
-        "notch" => FilterType::Notch,
-        "band_pass" | "bandpass" => FilterType::BandPass,
-        o => bail!("type '{o}': peak, low_shelf, high_shelf, high_pass, low_pass, notch, band_pass"),
-    })
+    Ok(
+        match s.trim().to_lowercase().replace([' ', '-'], "_").as_str() {
+            "peak" | "bell" => FilterType::Peak,
+            "low_shelf" | "lowshelf" => FilterType::LowShelf,
+            "high_shelf" | "highshelf" => FilterType::HighShelf,
+            "high_pass" | "highpass" | "hpf" | "low_cut" => FilterType::HighPass,
+            "low_pass" | "lowpass" | "lpf" | "high_cut" => FilterType::LowPass,
+            "notch" => FilterType::Notch,
+            "band_pass" | "bandpass" => FilterType::BandPass,
+            o => bail!(
+                "type '{o}': peak, low_shelf, high_shelf, high_pass, low_pass, notch, band_pass"
+            ),
+        },
+    )
 }
 
 // ------------------------------------------------------------------ dynamics
@@ -307,7 +416,14 @@ pub struct Gate {
 
 impl Default for Gate {
     fn default() -> Self {
-        Gate { threshold_db: -40.0, ratio: 100.0, range_db: 80.0, attack_ms: 0.5, hold_ms: 50.0, release_ms: 100.0 }
+        Gate {
+            threshold_db: -40.0,
+            ratio: 100.0,
+            range_db: 80.0,
+            attack_ms: 0.5,
+            hold_ms: 50.0,
+            release_ms: 100.0,
+        }
     }
 }
 
@@ -324,7 +440,11 @@ pub fn expander_gate(x: &mut [f32], p: &Gate) -> (f32, f32) {
         let level = if v.is_finite() { v.abs() } else { 0.0 };
         env = level.max(env * env_rel);
         let ldb = to_db(env);
-        let mut target = if ldb < p.threshold_db { ((p.threshold_db - ldb) * (p.ratio.max(1.0) - 1.0)).min(p.range_db.max(0.0)) } else { 0.0 };
+        let mut target = if ldb < p.threshold_db {
+            ((p.threshold_db - ldb) * (p.ratio.max(1.0) - 1.0)).min(p.range_db.max(0.0))
+        } else {
+            0.0
+        };
         if target <= 0.0 {
             hold_left = hold;
         } else if target > gr && hold_left > 0 {
@@ -360,7 +480,13 @@ pub fn de_ess(x: &mut [f32], p: &DeEss) -> (f32, f32) {
     const CHUNK: usize = 16;
     let att = time_coef(0.5);
     let rel = time_coef(60.0);
-    let mut hp = Bq::new(Coeffs::design(FilterType::HighPass, p.freq, std::f32::consts::FRAC_1_SQRT_2, 0.0, SR));
+    let mut hp = Bq::new(Coeffs::design(
+        FilterType::HighPass,
+        p.freq,
+        std::f32::consts::FRAC_1_SQRT_2,
+        0.0,
+        SR,
+    ));
     let mut shelf = Bq::new(Coeffs::IDENTITY);
     let mut shelf_gr = 0.0f32;
     let mut env = 0.0f32;
@@ -384,7 +510,11 @@ pub fn de_ess(x: &mut [f32], p: &DeEss) -> (f32, f32) {
         }
         if (gr - shelf_gr).abs() > 0.05 || (gr == 0.0 && shelf_gr != 0.0) {
             shelf_gr = gr;
-            shelf.c = if gr < 0.01 { Coeffs::IDENTITY } else { Coeffs::design(FilterType::HighShelf, p.freq * 0.8, 0.8, -gr, SR) };
+            shelf.c = if gr < 0.01 {
+                Coeffs::IDENTITY
+            } else {
+                Coeffs::design(FilterType::HighShelf, p.freq * 0.8, 0.8, -gr, SR)
+            };
         }
         for v in &mut x[i0..i0 + len] {
             *v = shelf.run(*v);
@@ -397,7 +527,9 @@ pub fn de_ess(x: &mut [f32], p: &DeEss) -> (f32, f32) {
 /// 10 ms RMS levels (dB) of the frames.
 fn rms_db_frames(x: &[f32]) -> Vec<f32> {
     let w = (0.01 * SR) as usize;
-    x.chunks(w.max(1)).map(|c| to_db((c.iter().map(|v| v * v).sum::<f32>() / c.len().max(1) as f32).sqrt())).collect()
+    x.chunks(w.max(1))
+        .map(|c| to_db((c.iter().map(|v| v * v).sum::<f32>() / c.len().max(1) as f32).sqrt()))
+        .collect()
 }
 
 fn pct(v: &[f32], p: f32) -> f32 {
@@ -416,16 +548,28 @@ pub fn auto_gate_threshold(x: &[f32]) -> f32 {
     let f = rms_db_frames(x);
     let floor = pct(&f, 0.1);
     let voice = pct(&f, 0.7);
-    (floor + 0.5 * (voice - floor)).max(floor + 6.0).min(voice - 3.0)
+    (floor + 0.5 * (voice - floor))
+        .max(floor + 6.0)
+        .min(voice - 3.0)
 }
 
 /// De-esser threshold from the take: the 90th percentile of the
 /// high-passed peak envelope, so only the loudest tenth (the esses) dips.
 pub fn auto_deess_threshold(x: &[f32], freq: f32) -> f32 {
-    let mut hp = Bq::new(Coeffs::design(FilterType::HighPass, freq, std::f32::consts::FRAC_1_SQRT_2, 0.0, SR));
+    let mut hp = Bq::new(Coeffs::design(
+        FilterType::HighPass,
+        freq,
+        std::f32::consts::FRAC_1_SQRT_2,
+        0.0,
+        SR,
+    ));
     let h: Vec<f32> = x.iter().map(|v| hp.run(*v)).collect();
     let w = (0.005 * SR) as usize;
-    let pk: Vec<f32> = h.chunks(w.max(1)).map(|c| to_db(c.iter().fold(0.0f32, |m, v| m.max(v.abs())))).filter(|d| *d > -90.0).collect();
+    let pk: Vec<f32> = h
+        .chunks(w.max(1))
+        .map(|c| to_db(c.iter().fold(0.0f32, |m, v| m.max(v.abs()))))
+        .filter(|d| *d > -90.0)
+        .collect();
     pct(&pk, 0.9)
 }
 
@@ -438,9 +582,26 @@ pub fn auto_comp_threshold(x: &[f32]) -> f32 {
     pct(&voiced, 0.8) - 3.0
 }
 
-fn comp(x: &mut [f32], threshold_db: f32, ratio: f32, attack_ms: f32, release_ms: f32, makeup_db: f32) -> f32 {
+fn comp(
+    x: &mut [f32],
+    threshold_db: f32,
+    ratio: f32,
+    attack_ms: f32,
+    release_ms: f32,
+    makeup_db: f32,
+) -> f32 {
     let mut r = x.to_vec();
-    let p = crate::sc_dsp::CompParams { threshold_db, ratio, attack_ms, release_ms, knee_db: 6.0, makeup_db, sc_hpf_hz: 0.0, lookahead_ms: 0.0, mix: 1.0 };
+    let p = crate::sc_dsp::CompParams {
+        threshold_db,
+        ratio,
+        attack_ms,
+        release_ms,
+        knee_db: 6.0,
+        makeup_db,
+        sc_hpf_hz: 0.0,
+        lookahead_ms: 0.0,
+        mix: 1.0,
+    };
     crate::sc_dsp::compress(&p, x, &mut r)
 }
 
@@ -460,8 +621,15 @@ pub struct Strip {
 pub fn channel_strip(x: &mut [f32], s: &Strip) -> (f32, f32) {
     let g = from_db(s.input_db);
     x.iter_mut().for_each(|v| *v *= g);
-    let gate_gr = s.gate.as_ref().map(|p| expander_gate(x, p).0).unwrap_or(0.0);
-    let comp_gr = s.comp.map(|(t, r, a, rl, m)| comp(x, t, r, a, rl, m)).unwrap_or(0.0);
+    let gate_gr = s
+        .gate
+        .as_ref()
+        .map(|p| expander_gate(x, p).0)
+        .unwrap_or(0.0);
+    let comp_gr = s
+        .comp
+        .map(|(t, r, a, rl, m)| comp(x, t, r, a, rl, m))
+        .unwrap_or(0.0);
     if let Some(eq) = &s.eq {
         eq.process(x);
     }
@@ -476,7 +644,13 @@ pub(crate) fn r1(x: f32) -> f32 {
     (x * 10.0).round() / 10.0
 }
 
-fn save(e: &mut Engine, base: &crate::samples::SampleInfo, nn: &str, y: &[f32], what: &str) -> Result<String> {
+fn save(
+    e: &mut Engine,
+    base: &crate::samples::SampleInfo,
+    nn: &str,
+    y: &[f32],
+    what: &str,
+) -> Result<String> {
     let mut y = y.to_vec();
     let pk = y.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     if pk > 0.98 {
@@ -487,7 +661,14 @@ fn save(e: &mut Engine, base: &crate::samples::SampleInfo, nn: &str, y: &[f32], 
     std::fs::create_dir_all(e.samples_dir())?;
     let path = e.samples_dir().join(format!("{name}.wav"));
     crate::render::write_wav(&path, &y, &y)?;
-    let info = crate::samples::SampleInfo { name, path: path.to_string_lossy().into(), source: format!("{} ({what})", base.source), license: base.license.clone(), author: base.author.clone(), duration: 0.0 };
+    let info = crate::samples::SampleInfo {
+        name,
+        path: path.to_string_lossy().into(),
+        source: format!("{} ({what})", base.source),
+        license: base.license.clone(),
+        author: base.author.clone(),
+        duration: 0.0,
+    };
     let r = crate::tools::register_sample(e, info)?;
     e.revision += 1;
     Ok(r["sample"].as_str().unwrap_or(nn).to_string())
@@ -497,7 +678,9 @@ fn save(e: &mut Engine, base: &crate::samples::SampleInfo, nn: &str, y: &[f32], 
 fn retarget(e: &mut Engine, old: &str, new: &str, track: Option<&str>) -> usize {
     let mut n = 0;
     for c in e.project.audio_clips.iter_mut() {
-        if c.sample.eq_ignore_ascii_case(old) && track.map_or(true, |t| c.track.eq_ignore_ascii_case(t)) {
+        if c.sample.eq_ignore_ascii_case(old)
+            && track.is_none_or(|t| c.track.eq_ignore_ascii_case(t))
+        {
             c.sample = new.to_string();
             n += 1;
         }
@@ -505,7 +688,16 @@ fn retarget(e: &mut Engine, old: &str, new: &str, track: Option<&str>) -> usize 
     n
 }
 
-pub(crate) fn finish(e: &mut Engine, a: &Value, info: &crate::samples::SampleInfo, x: &[f32], y: &[f32], suffix: &str, what: &str, mut extra: Value) -> Result<Value> {
+pub(crate) fn finish(
+    e: &mut Engine,
+    a: &Value,
+    info: &crate::samples::SampleInfo,
+    x: &[f32],
+    y: &[f32],
+    suffix: &str,
+    what: &str,
+    mut extra: Value,
+) -> Result<Value> {
     let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_{suffix}", info.name));
     let s = save(e, info, &nn, y, what)?;
     let mut moved = 0;
@@ -530,30 +722,47 @@ fn slope(a: &Value, k: &str) -> u32 {
 fn eq7_from(a: &Value) -> Eq7 {
     let d = Eq7::default();
     let band = |pre: &str, def: (f32, f32, f32)| -> (f32, f32, f32) {
-        (f_or(a, &format!("{pre}_freq"), def.0), f_or(a, &format!("{pre}_gain"), def.1).clamp(-24.0, 24.0), f_or(a, &format!("{pre}_q"), def.2).clamp(0.1, 10.0))
+        (
+            f_or(a, &format!("{pre}_freq"), def.0),
+            f_or(a, &format!("{pre}_gain"), def.1).clamp(-24.0, 24.0),
+            f_or(a, &format!("{pre}_q"), def.2).clamp(0.1, 10.0),
+        )
     };
     Eq7 {
         input_db: f_or(a, "input_gain", 0.0).clamp(-24.0, 24.0),
-        hpf: f_opt(a, "hpf_freq").filter(|_| b_or(a, "hpf_on", true)).map(|f| (f.clamp(10.0, 2000.0), slope(a, "hpf_slope"))),
+        hpf: f_opt(a, "hpf_freq")
+            .filter(|_| b_or(a, "hpf_on", true))
+            .map(|f| (f.clamp(10.0, 2000.0), slope(a, "hpf_slope"))),
         low_shelf: band("low_shelf", d.low_shelf),
         low_mid: band("low_mid", d.low_mid),
         mid: band("mid", d.mid),
         high_mid: band("high_mid", d.high_mid),
         high_shelf: band("high_shelf", d.high_shelf),
-        lpf: f_opt(a, "lpf_freq").filter(|_| b_or(a, "lpf_on", true)).map(|f| (f.clamp(1000.0, 20000.0), slope(a, "lpf_slope"))),
+        lpf: f_opt(a, "lpf_freq")
+            .filter(|_| b_or(a, "lpf_on", true))
+            .map(|f| (f.clamp(1000.0, 20000.0), slope(a, "lpf_slope"))),
         output_db: f_or(a, "output_gain", 0.0).clamp(-24.0, 24.0),
     }
 }
 
 fn eq7_curve(eq: &Eq7) -> Value {
-    let fs = [50.0f32, 100.0, 200.0, 300.0, 500.0, 1000.0, 2000.0, 3000.0, 5000.0, 8000.0, 12000.0, 16000.0];
-    Value::Object(fs.iter().map(|f| (format!("{f:.0}"), json!(r1(eq.response_db(*f))))).collect())
+    let fs = [
+        50.0f32, 100.0, 200.0, 300.0, 500.0, 1000.0, 2000.0, 3000.0, 5000.0, 8000.0, 12000.0,
+        16000.0,
+    ];
+    Value::Object(
+        fs.iter()
+            .map(|f| (format!("{f:.0}"), json!(r1(eq.response_db(*f)))))
+            .collect(),
+    )
 }
 
 fn gate_from(a: &Value, x: &[f32]) -> Gate {
     let d = Gate::default();
     Gate {
-        threshold_db: f_opt(a, "threshold").unwrap_or_else(|| auto_gate_threshold(x)).clamp(-80.0, 0.0),
+        threshold_db: f_opt(a, "threshold")
+            .unwrap_or_else(|| auto_gate_threshold(x))
+            .clamp(-80.0, 0.0),
         ratio: f_or(a, "ratio", d.ratio).clamp(1.0, 100.0),
         range_db: f_or(a, "range", d.range_db).clamp(0.0, 80.0),
         attack_ms: f_or(a, "attack_ms", d.attack_ms),
@@ -571,7 +780,14 @@ const EQ7_KEYS: &str = "input_gain, hpf_freq (+hpf_slope 6/12/18/24 dB/oct), low
 fn eq7_schema() -> Value {
     let mut m = serde_json::Map::new();
     m.insert("sample".into(), json!({"type": "string"}));
-    for k in ["input_gain", "hpf_freq", "hpf_slope", "lpf_freq", "lpf_slope", "output_gain"] {
+    for k in [
+        "input_gain",
+        "hpf_freq",
+        "hpf_slope",
+        "lpf_freq",
+        "lpf_slope",
+        "output_gain",
+    ] {
         m.insert(k.into(), json!({"type": "number"}));
     }
     for b in ["low_shelf", "low_mid", "mid", "high_mid", "high_shelf"] {
@@ -583,7 +799,10 @@ fn eq7_schema() -> Value {
     m.insert("lpf_on".into(), json!({"type": "boolean"}));
     m.insert("new_name".into(), json!({"type": "string"}));
     m.insert("track".into(), json!({"type": "string", "description": "switch this track's clips of the sample to the result"}));
-    m.insert("replace_clips".into(), json!({"type": "boolean", "description": "switch every clip of the sample to the result"}));
+    m.insert(
+        "replace_clips".into(),
+        json!({"type": "boolean", "description": "switch every clip of the sample to the result"}),
+    );
     obj(Value::Object(m), &["sample"])
 }
 
@@ -604,26 +823,59 @@ pub fn vocal_clean(x: &[f32], a: &Value) -> (Vec<f32>, Value) {
     // 1. EQ: HPF 90 (18 dB/oct), box cut ~300 Hz, presence +3 dB at 3 kHz
     let eq = Eq7 {
         hpf: Some((f_or(a, "hpf_hz", 90.0).clamp(20.0, 400.0), 18)),
-        low_mid: (f_or(a, "box_hz", 300.0).clamp(150.0, 800.0), f_or(a, "box_db", -3.0).clamp(-12.0, 0.0), 1.2),
-        high_mid: (f_or(a, "presence_hz", 3000.0).clamp(1500.0, 8000.0), f_or(a, "presence_db", 3.0).clamp(0.0, 8.0), 0.9),
+        low_mid: (
+            f_or(a, "box_hz", 300.0).clamp(150.0, 800.0),
+            f_or(a, "box_db", -3.0).clamp(-12.0, 0.0),
+            1.2,
+        ),
+        high_mid: (
+            f_or(a, "presence_hz", 3000.0).clamp(1500.0, 8000.0),
+            f_or(a, "presence_db", 3.0).clamp(0.0, 8.0),
+            0.9,
+        ),
         ..Eq7::default()
     };
     eq.process(&mut y);
     // 2. de-ess (auto threshold: only the loudest tenth of the esses dips)
     let df = f_or(a, "deess_hz", 6500.0).clamp(3000.0, 12000.0);
     let dt = f_opt(a, "deess_threshold").unwrap_or_else(|| auto_deess_threshold(&y, df));
-    let (ds_gr, ds_t) = if b_or(a, "deess", true) { de_ess(&mut y, &DeEss { freq: df, range_db: f_or(a, "deess_range", 6.0).clamp(0.0, 20.0), threshold_db: dt }) } else { (0.0, 0.0) };
+    let (ds_gr, ds_t) = if b_or(a, "deess", true) {
+        de_ess(
+            &mut y,
+            &DeEss {
+                freq: df,
+                range_db: f_or(a, "deess_range", 6.0).clamp(0.0, 20.0),
+                threshold_db: dt,
+            },
+        )
+    } else {
+        (0.0, 0.0)
+    };
     // 3. gentle gate: a 2:1 expander, at most 10 dB down, slow release
     let gt = f_opt(a, "gate_threshold").unwrap_or_else(|| auto_gate_threshold(&y));
     let (g_gr, g_t) = if b_or(a, "gate", true) {
-        expander_gate(&mut y, &Gate { threshold_db: gt, ratio: 2.0, range_db: f_or(a, "gate_range", 10.0).clamp(0.0, 40.0), attack_ms: 1.0, hold_ms: 60.0, release_ms: 160.0 })
+        expander_gate(
+            &mut y,
+            &Gate {
+                threshold_db: gt,
+                ratio: 2.0,
+                range_db: f_or(a, "gate_range", 10.0).clamp(0.0, 40.0),
+                attack_ms: 1.0,
+                hold_ms: 60.0,
+                release_ms: 160.0,
+            },
+        )
     } else {
         (0.0, 0.0)
     };
     // 4. comp 3:1, 10/120 ms, soft knee, half the reduction made up
     let ct = f_opt(a, "comp_threshold").unwrap_or_else(|| auto_comp_threshold(&y));
     let ratio = f_or(a, "comp_ratio", 3.0).clamp(1.0, 10.0);
-    let c_gr = if b_or(a, "comp", true) { comp(&mut y, ct, ratio, 10.0, 120.0, 0.0) } else { 0.0 };
+    let c_gr = if b_or(a, "comp", true) {
+        comp(&mut y, ct, ratio, 10.0, 120.0, 0.0)
+    } else {
+        0.0
+    };
     // level: match the input's voiced loudness (no surprise jumps on the track)
     let f_in = rms_db_frames(x);
     let f_out = rms_db_frames(&y);
@@ -764,7 +1016,9 @@ mod tests {
     use super::*;
 
     fn sine(f: f32, secs: f32, amp: f32) -> Vec<f32> {
-        (0..(secs * SR) as usize).map(|i| amp * (std::f32::consts::TAU * f * i as f32 / SR).sin()).collect()
+        (0..(secs * SR) as usize)
+            .map(|i| amp * (std::f32::consts::TAU * f * i as f32 / SR).sin())
+            .collect()
     }
 
     fn rms(x: &[f32]) -> f32 {
@@ -773,9 +1027,22 @@ mod tests {
 
     #[test]
     fn eq7_curve_matches_its_bands() {
-        let eq = Eq7 { hpf: Some((90.0, 18)), low_mid: (300.0, -3.0, 1.2), high_mid: (3000.0, 3.0, 0.9), ..Eq7::default() };
-        assert!((eq.response_db(300.0) + 3.0).abs() < 0.6, "{}", eq.response_db(300.0));
-        assert!((eq.response_db(3000.0) - 3.0).abs() < 0.6, "{}", eq.response_db(3000.0));
+        let eq = Eq7 {
+            hpf: Some((90.0, 18)),
+            low_mid: (300.0, -3.0, 1.2),
+            high_mid: (3000.0, 3.0, 0.9),
+            ..Eq7::default()
+        };
+        assert!(
+            (eq.response_db(300.0) + 3.0).abs() < 0.6,
+            "{}",
+            eq.response_db(300.0)
+        );
+        assert!(
+            (eq.response_db(3000.0) - 3.0).abs() < 0.6,
+            "{}",
+            eq.response_db(3000.0)
+        );
         assert!(eq.response_db(30.0) < -20.0);
         assert!(eq.response_db(1000.0).abs() < 1.5);
         // the processed signal follows the curve
@@ -785,8 +1052,16 @@ mod tests {
         let d = 20.0 * (rms(&x[4800..]) / r0).log10();
         assert!((d - 3.0).abs() < 0.7, "{d}");
         // 24 dB/oct LPF is steeper than 12
-        let a = Eq7 { lpf: Some((2000.0, 24)), ..Eq7::default() }.response_db(8000.0);
-        let b = Eq7 { lpf: Some((2000.0, 12)), ..Eq7::default() }.response_db(8000.0);
+        let a = Eq7 {
+            lpf: Some((2000.0, 24)),
+            ..Eq7::default()
+        }
+        .response_db(8000.0);
+        let b = Eq7 {
+            lpf: Some((2000.0, 12)),
+            ..Eq7::default()
+        }
+        .response_db(8000.0);
         assert!(a < b - 10.0, "{a} {b}");
     }
 
@@ -797,16 +1072,31 @@ mod tests {
         let thr = auto_gate_threshold(&x);
         assert!(thr < -10.0 && thr > -50.0, "{thr}");
         let mut y = x.clone();
-        let (gr, _) = expander_gate(&mut y, &Gate { threshold_db: -30.0, ..Gate::default() });
+        let (gr, _) = expander_gate(
+            &mut y,
+            &Gate {
+                threshold_db: -30.0,
+                ..Gate::default()
+            },
+        );
         assert!(gr > 20.0);
         assert!(rms(&y[(0.8 * SR) as usize..]) < rms(&x[(0.8 * SR) as usize..]) * 0.2);
-        assert!((rms(&y[..(0.4 * SR) as usize]) / rms(&x[..(0.4 * SR) as usize]) - 1.0).abs() < 0.05);
+        assert!(
+            (rms(&y[..(0.4 * SR) as usize]) / rms(&x[..(0.4 * SR) as usize]) - 1.0).abs() < 0.05
+        );
         // de-esser: an 8 kHz burst is dipped, a 300 Hz tone is untouched
         let mut s = sine(300.0, 0.4, 0.3);
         let burst = sine(8000.0, 0.2, 0.4);
         s.extend(burst.iter());
         let mut z = s.clone();
-        let (dgr, _) = de_ess(&mut z, &DeEss { freq: 6000.0, range_db: 10.0, threshold_db: -30.0 });
+        let (dgr, _) = de_ess(
+            &mut z,
+            &DeEss {
+                freq: 6000.0,
+                range_db: 10.0,
+                threshold_db: -30.0,
+            },
+        );
         assert!(dgr > 5.0, "{dgr}");
         let n = (0.4 * SR) as usize;
         assert!(rms(&z[n + 2000..]) < rms(&s[n + 2000..]) * 0.7);
@@ -844,7 +1134,12 @@ mod tests {
         // the gaps sit further under the voice (a gentle 2:1 expander, not a hard gate)
         let (f0, p0) = crate::vocal_repair::floor_and_peak_db(&x);
         let (f1, p1) = crate::vocal_repair::floor_and_peak_db(&y);
-        assert!((p1 - f1) > (p0 - f0) + 2.5, "voice-to-gap {} -> {} ({rep})", p0 - f0, p1 - f1);
+        assert!(
+            (p1 - f1) > (p0 - f0) + 2.5,
+            "voice-to-gap {} -> {} ({rep})",
+            p0 - f0,
+            p1 - f1
+        );
         assert!(rep["level_match_db"].as_f64().unwrap().abs() <= 12.0);
     }
 }

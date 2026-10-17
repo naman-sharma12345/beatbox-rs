@@ -50,17 +50,36 @@ pub fn from_steps(onsets: &[(f32, f32)], bpm: f32) -> GrooveTemplate {
     }
     let used: Vec<usize> = (0..n).filter(|&i| cnt[i] > 0).collect();
     let mean_acc = used.iter().map(|&i| acc[i]).sum::<f32>() / used.len().max(1) as f32;
-    let accents: Vec<f32> = (0..n).map(|i| if cnt[i] > 0 { acc[i] / mean_acc.max(1e-6) } else { 1.0 }).collect();
+    let accents: Vec<f32> = (0..n)
+        .map(|i| {
+            if cnt[i] > 0 {
+                acc[i] / mean_acc.max(1e-6)
+            } else {
+                1.0
+            }
+        })
+        .collect();
     let mean = |odd: bool| -> f32 {
-        let v: Vec<f32> = (0..n).filter(|i| (i % 2 == 1) == odd && cnt[*i] > 0).map(|i| off[i]).collect();
-        if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 }
+        let v: Vec<f32> = (0..n)
+            .filter(|i| (i % 2 == 1) == odd && cnt[*i] > 0)
+            .map(|i| off[i])
+            .collect();
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().sum::<f32>() / v.len() as f32
+        }
     };
     let swing = mean(true) - mean(false);
     let step_ms = 60_000.0 / bpm.max(1.0) / 4.0;
-    let rms = (used.iter().map(|&i| off[i] * off[i]).sum::<f32>() / used.len().max(1) as f32).sqrt();
+    let rms =
+        (used.iter().map(|&i| off[i] * off[i]).sum::<f32>() / used.len().max(1) as f32).sqrt();
     GrooveTemplate {
         offsets: off.iter().map(|x| (x * 1000.0).round() / 1000.0).collect(),
-        accents: accents.iter().map(|x| (x * 100.0).round() / 100.0).collect(),
+        accents: accents
+            .iter()
+            .map(|x| (x * 100.0).round() / 100.0)
+            .collect(),
         counts: cnt,
         swing: (swing * 1000.0).round() / 1000.0,
         looseness_ms: (rms * step_ms * 10.0).round() / 10.0,
@@ -70,12 +89,20 @@ pub fn from_steps(onsets: &[(f32, f32)], bpm: f32) -> GrooveTemplate {
 
 /// Lay a template onto tracks: each note on a 16th takes that slot's offset
 /// (blended by `amount`) and accent. Returns how many notes moved.
-pub fn apply(p: &mut Project, t: &GrooveTemplate, tracks: &[String], patterns: &[usize], amount: f32) -> usize {
+pub fn apply(
+    p: &mut Project,
+    t: &GrooveTemplate,
+    tracks: &[String],
+    patterns: &[usize],
+    amount: f32,
+) -> usize {
     let a = amount.clamp(0.0, 1.0);
     let n = STEPS_PER_BAR as i64;
     let mut moved = 0;
     for &pi in patterns {
-        let Some(pat) = p.patterns.get_mut(pi) else { continue };
+        let Some(pat) = p.patterns.get_mut(pi) else {
+            continue;
+        };
         for (name, notes) in pat.clips.iter_mut() {
             if !tracks.iter().any(|t| t.eq_ignore_ascii_case(name)) {
                 continue;

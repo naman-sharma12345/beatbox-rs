@@ -82,17 +82,23 @@ fn median(v: &mut [f32]) -> f32 {
 /// Separate a stereo signal into [drums, bass, vocals, other], each (L, R).
 pub fn separate(l: &[f32], r: &[f32]) -> Vec<(Vec<f32>, Vec<f32>)> {
     let len = l.len().min(r.len());
-    let win: Vec<f32> = (0..N).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / N as f32).cos()).collect();
+    let win: Vec<f32> = (0..N)
+        .map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / N as f32).cos())
+        .collect();
     let sl = stft(&l[..len], &win);
     let sr = stft(&r[..len], &win);
     let frames = sl.len();
     let bins = N / 2 + 1;
     // magnitude of the mid signal
     let mag: Vec<Vec<f32>> = (0..frames)
-        .map(|f| (0..bins).map(|k| {
-            let (a, b) = (sl[f].0[k] + sr[f].0[k], sl[f].1[k] + sr[f].1[k]);
-            0.5 * (a * a + b * b).sqrt()
-        }).collect())
+        .map(|f| {
+            (0..bins)
+                .map(|k| {
+                    let (a, b) = (sl[f].0[k] + sr[f].0[k], sl[f].1[k] + sr[f].1[k]);
+                    0.5 * (a * a + b * b).sqrt()
+                })
+                .collect()
+        })
         .collect();
     let h = MED / 2;
     let mut buf = Vec::with_capacity(MED);
@@ -117,7 +123,15 @@ pub fn separate(l: &[f32], r: &[f32]) -> Vec<(Vec<f32>, Vec<f32>)> {
             let dl = ((lr - rr).powi(2) + (li - ri).powi(2)).sqrt();
             let sm = (lr * lr + li * li).sqrt() + (rr * rr + ri * ri).sqrt() + 1e-12;
             let centre = (1.0 - dl / sm).clamp(0.0, 1.0).powi(4);
-            let band = if fr < 150.0 { 0.0 } else if fr < 250.0 { (fr - 150.0) / 100.0 } else if fr < 6000.0 { 1.0 } else { ((9000.0 - fr) / 3000.0).max(0.0) };
+            let band = if fr < 150.0 {
+                0.0
+            } else if fr < 250.0 {
+                (fr - 150.0) / 100.0
+            } else if fr < 6000.0 {
+                1.0
+            } else {
+                ((9000.0 - fr) / 3000.0).max(0.0)
+            };
             let voc = (1.0 - bass) * centre * band;
             masks[f][k] = [pm, hm * bass, hm * voc, hm * (1.0 - bass - voc).max(0.0)];
         }
@@ -125,9 +139,21 @@ pub fn separate(l: &[f32], r: &[f32]) -> Vec<(Vec<f32>, Vec<f32>)> {
     (0..4)
         .map(|s| {
             let apply = |spec: &Vec<(Vec<f32>, Vec<f32>)>| -> Vec<(Vec<f32>, Vec<f32>)> {
-                spec.iter().enumerate().map(|(f, (re, im))| {
-                    (re.iter().enumerate().map(|(k, v)| v * masks[f][k][s]).collect(), im.iter().enumerate().map(|(k, v)| v * masks[f][k][s]).collect())
-                }).collect()
+                spec.iter()
+                    .enumerate()
+                    .map(|(f, (re, im))| {
+                        (
+                            re.iter()
+                                .enumerate()
+                                .map(|(k, v)| v * masks[f][k][s])
+                                .collect(),
+                            im.iter()
+                                .enumerate()
+                                .map(|(k, v)| v * masks[f][k][s])
+                                .collect(),
+                        )
+                    })
+                    .collect()
             };
             (istft(&apply(&sl), &win, len), istft(&apply(&sr), &win, len))
         })
@@ -146,7 +172,10 @@ fn separate_stems(e: &mut Engine, a: &Value) -> Result<Value> {
     if method == "neural" || (method == "auto" && (fetch || model_file().exists())) {
         let dir = match s_opt(a, "out_dir") {
             Some(d) => e.resolve(&d),
-            None => e.renders_dir().join(format!("{}_stems", path.file_stem().and_then(|s| s.to_str()).unwrap_or("audio"))),
+            None => e.renders_dir().join(format!(
+                "{}_stems",
+                path.file_stem().and_then(|s| s.to_str()).unwrap_or("audio")
+            )),
         };
         std::fs::create_dir_all(&dir)?;
         let threads = a.get("threads").and_then(|v| v.as_u64()).unwrap_or(2);
@@ -165,7 +194,10 @@ fn separate_stems(e: &mut Engine, a: &Value) -> Result<Value> {
     }
     let dir = match s_opt(a, "out_dir") {
         Some(d) => e.resolve(&d),
-        None => e.renders_dir().join(format!("{}_stems", path.file_stem().and_then(|s| s.to_str()).unwrap_or("audio"))),
+        None => e.renders_dir().join(format!(
+            "{}_stems",
+            path.file_stem().and_then(|s| s.to_str()).unwrap_or("audio")
+        )),
     };
     std::fs::create_dir_all(&dir)?;
     let stems = separate(&l, &r);
@@ -178,9 +210,11 @@ fn separate_stems(e: &mut Engine, a: &Value) -> Result<Value> {
         let share = (rms(sl) + rms(sr)) / total;
         out.push(json!({"stem": name, "path": p.to_string_lossy(), "level_share_pct": (share * 100.0).round()}));
     }
-    Ok(json!({"stems": out, "seconds": (l.len() as f32 / SR * 100.0).round() / 100.0, "neural_unavailable": fell_back,
+    Ok(
+        json!({"stems": out, "seconds": (l.len() as f32 / SR * 100.0).round() / 100.0, "neural_unavailable": fell_back,
         "method": "harmonic/percussive median filtering + bass band + centre-panned voice band (no model); the four stems sum back to the input",
-        "next": ["import_sample", "add_audio_clip"]}))
+        "next": ["import_sample", "add_audio_clip"]}),
+    )
 }
 
 /// The neural separator's helper (htdemucs, ONNX, CPU): scripts/separate_stems.py.
@@ -188,26 +222,48 @@ pub const STEMS_PY: &str = include_str!("../scripts/separate_stems.py");
 
 /// Where the separator model lives once fetched (~/.beatbox/models or $BEATBOX_MODELS).
 pub fn model_file() -> std::path::PathBuf {
-    let dir = std::env::var("BEATBOX_MODELS").map(std::path::PathBuf::from).unwrap_or_else(|_| {
-        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".beatbox").join("models")
-    });
+    let dir = std::env::var("BEATBOX_MODELS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+                .join(".beatbox")
+                .join("models")
+        });
     dir.join("htdemucs_fp16weights.onnx")
 }
 
 /// Neural separation through the helper script; Err carries the helper's words.
-fn separate_neural(e: &Engine, path: &std::path::Path, dir: &std::path::Path, fetch: bool, threads: u64) -> Result<Value> {
+fn separate_neural(
+    e: &Engine,
+    path: &std::path::Path,
+    dir: &std::path::Path,
+    fetch: bool,
+    threads: u64,
+) -> Result<Value> {
     let script = e.workdir.join(".beatbox_separate_stems.py");
     std::fs::write(&script, STEMS_PY)?;
     let py = std::env::var("BEATBOX_PYTHON").unwrap_or_else(|_| "python3".into());
     let mut cmd = std::process::Command::new(&py);
-    cmd.arg(&script).arg(path).arg(dir).arg("--threads").arg(threads.max(1).to_string());
+    cmd.arg(&script)
+        .arg(path)
+        .arg(dir)
+        .arg("--threads")
+        .arg(threads.max(1).to_string());
     if fetch {
         cmd.arg("--fetch");
     }
-    let o = cmd.output().map_err(|err| anyhow::anyhow!("running {py}: {err} (set BEATBOX_PYTHON to a Python with onnxruntime)"))?;
+    let o = cmd.output().map_err(|err| {
+        anyhow::anyhow!("running {py}: {err} (set BEATBOX_PYTHON to a Python with onnxruntime)")
+    })?;
     let txt = String::from_utf8_lossy(&o.stdout);
     let v: Value = serde_json::from_str(txt.trim()).map_err(|_| {
-        anyhow::anyhow!("separator failed: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("no output"))
+        anyhow::anyhow!(
+            "separator failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+                .lines()
+                .last()
+                .unwrap_or("no output")
+        )
     })?;
     if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
         bail!("{err}");
@@ -218,9 +274,11 @@ fn separate_neural(e: &Engine, path: &std::path::Path, dir: &std::path::Path, fe
             out.push(json!({"stem": name, "path": p}));
         }
     }
-    Ok(json!({"stems": out, "seconds": v["duration_s"], "took_s": v["seconds"],
+    Ok(
+        json!({"stems": out, "seconds": v["duration_s"], "took_s": v["seconds"],
         "method": "htdemucs neural separator (MIT, ONNX on CPU, 7.8 s segments)",
-        "next": ["import_sample", "add_audio_clip", "transcribe"]}))
+        "next": ["import_sample", "add_audio_clip", "transcribe"]}),
+    )
 }
 
 pub fn tools() -> Vec<Tool> {
@@ -259,7 +317,10 @@ mod tests {
         let s = separate(&l, &r);
         let mid = n / 4..3 * n / 4;
         // sum of stems ~ input
-        let err: f32 = mid.clone().map(|i| (s.iter().map(|x| x.0[i]).sum::<f32>() - l[i]).abs()).fold(0.0, f32::max);
+        let err: f32 = mid
+            .clone()
+            .map(|i| (s.iter().map(|x| x.0[i]).sum::<f32>() - l[i]).abs())
+            .fold(0.0, f32::max);
         assert!(err < 0.02, "stems don't sum back: {err}");
         let e = |x: &[f32]| mid.clone().map(|i| x[i] * x[i]).sum::<f32>();
         let (dr, ba, vo) = (e(&s[0].0), e(&s[1].0), e(&s[2].0));
@@ -274,7 +335,13 @@ mod tests {
             }
             (c * c + si * si).sqrt()
         };
-        assert!(tone(&s[1].0, 60.0) > 5.0 * tone(&s[1].0, 440.0), "bass stem");
-        assert!(tone(&s[2].0, 440.0) > 5.0 * tone(&s[2].0, 60.0), "vocal stem");
+        assert!(
+            tone(&s[1].0, 60.0) > 5.0 * tone(&s[1].0, 440.0),
+            "bass stem"
+        );
+        assert!(
+            tone(&s[2].0, 440.0) > 5.0 * tone(&s[2].0, 60.0),
+            "vocal stem"
+        );
     }
 }

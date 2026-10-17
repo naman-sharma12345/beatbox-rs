@@ -281,9 +281,16 @@ pub fn parse_meter(s: &str) -> Option<(u32, u32)> {
 pub fn meter_clicks(meter: (u32, u32)) -> Vec<(u32, bool)> {
     let (n, d) = (meter.0.clamp(1, 32), meter.1.clamp(1, 16));
     let unit = (16 / d).max(1);
-    let step = if d == 8 && n % 3 == 0 && n > 3 { unit * 3 } else { unit };
+    let step = if d == 8 && n % 3 == 0 && n > 3 {
+        unit * 3
+    } else {
+        unit
+    };
     let bar = meter_steps(meter);
-    (0..bar).step_by(step as usize).map(|s| (s, s == 0)).collect()
+    (0..bar)
+        .step_by(step as usize)
+        .map(|s| (s, s == 0))
+        .collect()
 }
 
 impl Pattern {
@@ -616,7 +623,11 @@ impl Project {
         if let Some(i) = self.tracks.iter().position(|t| t.name.to_lowercase() == k) {
             return Ok(i);
         }
-        if let Some(i) = self.tracks.iter().position(|t| !t.id.is_empty() && t.id == key.trim()) {
+        if let Some(i) = self
+            .tracks
+            .iter()
+            .position(|t| !t.id.is_empty() && t.id == key.trim())
+        {
             return Ok(i);
         }
         if let Ok(i) = k.parse::<usize>() {
@@ -687,7 +698,9 @@ impl Project {
         let mut b0 = 0.0f32;
         let mut bar = 1.0f32;
         for s in self.song_sections() {
-            let Ok(i) = self.pattern_index(&s.pattern) else { continue };
+            let Ok(i) = self.pattern_index(&s.pattern) else {
+                continue;
+            };
             let pat = &self.patterns[i];
             let bb = pat.steps_per_bar() as f32 / 4.0;
             let span = bb * (pat.bars * s.repeats.max(1)) as f32;
@@ -705,7 +718,9 @@ impl Project {
         let mut b0 = 0.0f32;
         let mut first = 1.0f32;
         for s in self.song_sections() {
-            let Ok(i) = self.pattern_index(&s.pattern) else { continue };
+            let Ok(i) = self.pattern_index(&s.pattern) else {
+                continue;
+            };
             let pat = &self.patterns[i];
             let n = (pat.bars * s.repeats.max(1)) as f32;
             let bb = pat.steps_per_bar() as f32 / 4.0;
@@ -811,7 +826,15 @@ impl Project {
 /// numeric position) or `index`.
 pub fn audio_clip_index(p: &Project, a: &serde_json::Value) -> Result<usize> {
     let n = p.audio_clips.len();
-    let pick = |i: usize| if i < n { Ok(i) } else { Err(anyhow!("no audio clip {i}; there are {n} (list_audio_clips)")) };
+    let pick = |i: usize| {
+        if i < n {
+            Ok(i)
+        } else {
+            Err(anyhow!(
+                "no audio clip {i}; there are {n} (list_audio_clips)"
+            ))
+        }
+    };
     if let Some(v) = a.get("id").or_else(|| a.get("clip")) {
         if let Some(s) = v.as_str() {
             let s = s.trim();
@@ -829,6 +852,8 @@ pub fn audio_clip_index(p: &Project, a: &serde_json::Value) -> Result<usize> {
     }
     match a.get("index").and_then(|v| v.as_u64()) {
         Some(i) => pick(i as usize),
-        None => Err(anyhow!("give the clip's id (\"clip3\") or index (list_audio_clips)")),
+        None => Err(anyhow!(
+            "give the clip's id (\"clip3\") or index (list_audio_clips)"
+        )),
     }
 }

@@ -26,7 +26,10 @@ struct Ap2 {
 
 impl Ap2 {
     fn new(a: f32) -> Self {
-        Ap2 { a2: a * a, ..Default::default() }
+        Ap2 {
+            a2: a * a,
+            ..Default::default()
+        }
     }
     #[inline]
     fn process(&mut self, x: f32) -> f32 {
@@ -51,7 +54,11 @@ impl Hilbert {
     fn new() -> Self {
         let ca = [0.692_387_8, 0.936_065_43, 0.988_229_5, 0.998_748_85];
         let cb = [0.402_192_12, 0.856_171_1, 0.972_290_95, 0.995_288_5];
-        Hilbert { a: ca.map(Ap2::new), b: cb.map(Ap2::new), delay: 0.0 }
+        Hilbert {
+            a: ca.map(Ap2::new),
+            b: cb.map(Ap2::new),
+            delay: 0.0,
+        }
     }
     #[inline]
     fn process(&mut self, x: f32) -> (f32, f32) {
@@ -164,7 +171,11 @@ pub fn ring_mod_at(p: &RingModFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     let inc = p.freq_hz / SR;
     // a slow LFO on the carrier frequency (lfo_hz, lfo_depth in semitones)
     let step_at = |i: usize| {
-        let semis = if p.lfo_hz > 0.0 { p.lfo_depth * (2.0 * PI * p.lfo_hz * i as f32 / SR).sin() } else { 0.0 };
+        let semis = if p.lfo_hz > 0.0 {
+            p.lfo_depth * (2.0 * PI * p.lfo_hz * i as f32 / SR).sin()
+        } else {
+            0.0
+        };
         inc * 2f32.powf(semis / 12.0)
     };
     let advance = |ph: &mut f32, step: f32| {
@@ -174,7 +185,11 @@ pub fn ring_mod_at(p: &RingModFx, l: &mut [f32], r: &mut [f32], offset: usize) {
         }
     };
     for (ci, ch) in [&mut *l, &mut *r].into_iter().enumerate() {
-        let mut ph = if ci == 1 { p.stereo_phase.rem_euclid(1.0) } else { 0.0 };
+        let mut ph = if ci == 1 {
+            p.stereo_phase.rem_euclid(1.0)
+        } else {
+            0.0
+        };
         for i in 0..offset {
             advance(&mut ph, step_at(i));
         }
@@ -205,11 +220,25 @@ fn preset(name: &str) -> Option<(f32, f32, f32, f32)> {
     })
 }
 
-pub const STEREO_PRESETS: &[&str] = &["custom", "mono", "swap", "left_only", "right_only", "wide", "narrow", "side_only", "pseudo_stereo"];
+pub const STEREO_PRESETS: &[&str] = &[
+    "custom",
+    "mono",
+    "swap",
+    "left_only",
+    "right_only",
+    "wide",
+    "narrow",
+    "side_only",
+    "pseudo_stereo",
+];
 
 pub fn check_stereo_shaper(p: &StereoShaperFx) -> Result<(), String> {
     if !STEREO_PRESETS.contains(&p.preset.as_str()) && p.preset != "none" {
-        return Err(format!("preset '{}' ({})", p.preset, STEREO_PRESETS.join(", ")));
+        return Err(format!(
+            "preset '{}' ({})",
+            p.preset,
+            STEREO_PRESETS.join(", ")
+        ));
     }
     if !(0.0..=50.0).contains(&p.delay_ms) {
         return Err(format!("delay_ms {} outside 0..50", p.delay_ms));
@@ -218,12 +247,21 @@ pub fn check_stereo_shaper(p: &StereoShaperFx) -> Result<(), String> {
 }
 
 pub fn stereo_shaper(p: &StereoShaperFx, l: &mut [f32], r: &mut [f32]) {
-    let (ll, rl, lr, rr) = preset(&p.preset).unwrap_or((p.left_from_left, p.left_from_right, p.right_from_left, p.right_from_right));
+    let (ll, rl, lr, rr) = preset(&p.preset).unwrap_or((
+        p.left_from_left,
+        p.left_from_right,
+        p.right_from_left,
+        p.right_from_right,
+    ));
     let mix = p.mix.clamp(0.0, 1.0);
     // pseudo_stereo: a mono source gets a short delay on the right, and the
     // delayed side is phase-flipped against the low end staying mono
     let pseudo = p.preset == "pseudo_stereo";
-    let delay_ms = if pseudo && p.delay_ms == 0.0 { 12.0 } else { p.delay_ms };
+    let delay_ms = if pseudo && p.delay_ms == 0.0 {
+        12.0
+    } else {
+        p.delay_ms
+    };
     let d = (delay_ms.clamp(0.0, 50.0) * 0.001 * SR) as usize;
     let mut buf = vec![0.0f32; d + 1];
     let mut w = 0usize;
@@ -262,7 +300,9 @@ mod tests {
     use super::*;
 
     fn tone(f: f32, n: usize) -> Vec<f32> {
-        (0..n).map(|i| (2.0 * PI * f * i as f32 / SR).sin() * 0.5).collect()
+        (0..n)
+            .map(|i| (2.0 * PI * f * i as f32 / SR).sin() * 0.5)
+            .collect()
     }
 
     /// Goertzel power at f over x.
@@ -283,20 +323,36 @@ mod tests {
         let n = 44100;
         let mut l = tone(1000.0, n);
         let mut r = l.clone();
-        let p = FreqShiftFx { shift_hz: 150.0, ..Default::default() };
+        let p = FreqShiftFx {
+            shift_hz: 150.0,
+            ..Default::default()
+        };
         freq_shift(&p, &mut l, &mut r);
         let tail = &l[4410..];
         let up = power(tail, 1150.0);
         let down = power(tail, 850.0);
         let orig = power(tail, 1000.0);
         assert!(up > 40.0 * down, "upper sideband wins: {up} vs {down}");
-        assert!(up > 40.0 * orig, "the original partial is gone: {up} vs {orig}");
+        assert!(
+            up > 40.0 * orig,
+            "the original partial is gone: {up} vs {orig}"
+        );
         // negative shift goes down
         let mut l2 = tone(1000.0, n);
         let mut r2 = l2.clone();
-        freq_shift(&FreqShiftFx { shift_hz: -150.0, ..Default::default() }, &mut l2, &mut r2);
+        freq_shift(
+            &FreqShiftFx {
+                shift_hz: -150.0,
+                ..Default::default()
+            },
+            &mut l2,
+            &mut r2,
+        );
         assert!(power(&l2[4410..], 850.0) > 40.0 * power(&l2[4410..], 1150.0));
-        assert!(l.iter().chain(l2.iter()).all(|x| x.is_finite() && x.abs() < 1.5));
+        assert!(l
+            .iter()
+            .chain(l2.iter())
+            .all(|x| x.is_finite() && x.abs() < 1.5));
     }
 
     #[test]
@@ -304,27 +360,64 @@ mod tests {
         let n = 44100;
         let mut l = tone(1000.0, n);
         let mut r = l.clone();
-        ring_mod(&RingModFx { freq_hz: 200.0, ..Default::default() }, &mut l, &mut r);
+        ring_mod(
+            &RingModFx {
+                freq_hz: 200.0,
+                ..Default::default()
+            },
+            &mut l,
+            &mut r,
+        );
         let (lo, hi, mid) = (power(&l, 800.0), power(&l, 1200.0), power(&l, 1000.0));
         assert!(lo > 100.0 * mid && hi > 100.0 * mid, "{lo} {hi} {mid}");
-        assert!(check_ring_mod(&RingModFx { shape: "wobble".into(), ..Default::default() }).is_err());
+        assert!(check_ring_mod(&RingModFx {
+            shape: "wobble".into(),
+            ..Default::default()
+        })
+        .is_err());
     }
 
     #[test]
     fn stereo_shaper_presets() {
         let mut l = vec![1.0f32; 100];
         let mut r = vec![0.0f32; 100];
-        stereo_shaper(&StereoShaperFx { preset: "swap".into(), ..Default::default() }, &mut l, &mut r);
+        stereo_shaper(
+            &StereoShaperFx {
+                preset: "swap".into(),
+                ..Default::default()
+            },
+            &mut l,
+            &mut r,
+        );
         assert_eq!((l[50], r[50]), (0.0, 1.0));
         let mut l = vec![1.0f32; 100];
         let mut r = vec![0.0f32; 100];
-        stereo_shaper(&StereoShaperFx { preset: "mono".into(), ..Default::default() }, &mut l, &mut r);
+        stereo_shaper(
+            &StereoShaperFx {
+                preset: "mono".into(),
+                ..Default::default()
+            },
+            &mut l,
+            &mut r,
+        );
         assert_eq!(l[50], r[50]);
         // pseudo stereo widens a mono source: the sides differ after the delay
         let mut l = tone(700.0, 4410);
         let mut r = l.clone();
-        stereo_shaper(&StereoShaperFx { preset: "pseudo_stereo".into(), ..Default::default() }, &mut l, &mut r);
-        let side: f32 = l.iter().zip(&r).skip(1000).map(|(a, b)| (a - b).abs()).sum();
+        stereo_shaper(
+            &StereoShaperFx {
+                preset: "pseudo_stereo".into(),
+                ..Default::default()
+            },
+            &mut l,
+            &mut r,
+        );
+        let side: f32 = l
+            .iter()
+            .zip(&r)
+            .skip(1000)
+            .map(|(a, b)| (a - b).abs())
+            .sum();
         assert!(side > 10.0, "{side}");
         // defaults are a clean pass-through
         let mut l = tone(300.0, 1000);
@@ -332,6 +425,10 @@ mod tests {
         let (l0, r0) = (l.clone(), r.clone());
         stereo_shaper(&StereoShaperFx::default(), &mut l, &mut r);
         assert_eq!((l, r), (l0, r0));
-        assert!(check_stereo_shaper(&StereoShaperFx { preset: "huge".into(), ..Default::default() }).is_err());
+        assert!(check_stereo_shaper(&StereoShaperFx {
+            preset: "huge".into(),
+            ..Default::default()
+        })
+        .is_err());
     }
 }

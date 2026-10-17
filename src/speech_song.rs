@@ -55,7 +55,9 @@ pub fn denoise(x: &[f32], floor_db: f32, strength: f32) -> (Vec<f32>, f32) {
     if x.len() < N * 4 {
         return (x.to_vec(), 0.0);
     }
-    let win: Vec<f32> = (0..N).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / N as f32).cos()).collect();
+    let win: Vec<f32> = (0..N)
+        .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / N as f32).cos())
+        .collect();
     let frames = (x.len() - N) / H + 1;
     let mut spec: Vec<(Vec<f32>, Vec<f32>)> = Vec::with_capacity(frames);
     let mut energy = Vec::with_capacity(frames);
@@ -63,12 +65,22 @@ pub fn denoise(x: &[f32], floor_db: f32, strength: f32) -> (Vec<f32>, f32) {
         let mut re: Vec<f32> = (0..N).map(|i| x[f * H + i] * win[i]).collect();
         let mut im = vec![0.0f32; N];
         fft(&mut re, &mut im);
-        energy.push(re.iter().zip(im.iter()).take(N / 2).map(|(a, b)| a * a + b * b).sum::<f32>());
+        energy.push(
+            re.iter()
+                .zip(im.iter())
+                .take(N / 2)
+                .map(|(a, b)| a * a + b * b)
+                .sum::<f32>(),
+        );
         spec.push((re, im));
     }
     // noise profile: mean magnitude of the quietest 12% of frames
     let mut order: Vec<usize> = (0..frames).collect();
-    order.sort_by(|a, b| energy[*a].partial_cmp(&energy[*b]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|a, b| {
+        energy[*a]
+            .partial_cmp(&energy[*b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let q = (frames / 8).max(1);
     let mut noise = vec![0.0f32; N / 2 + 1];
     for &f in order.iter().take(q) {
@@ -91,13 +103,19 @@ pub fn denoise(x: &[f32], floor_db: f32, strength: f32) -> (Vec<f32>, f32) {
             g[k] = (1.0 - strength * noise[k] / m).clamp(floor, 1.0);
         }
         // smooth across frequency and time (fast attack, slower release)
-        let gs: Vec<f32> = (0..=N / 2).map(|k| {
-            let a = g[k.saturating_sub(1)];
-            let c = g[(k + 1).min(N / 2)];
-            0.25 * a + 0.5 * g[k] + 0.25 * c
-        }).collect();
+        let gs: Vec<f32> = (0..=N / 2)
+            .map(|k| {
+                let a = g[k.saturating_sub(1)];
+                let c = g[(k + 1).min(N / 2)];
+                0.25 * a + 0.5 * g[k] + 0.25 * c
+            })
+            .collect();
         for k in 0..=N / 2 {
-            let v = if gs[k] > prev[k] { gs[k] } else { 0.6 * prev[k] + 0.4 * gs[k] };
+            let v = if gs[k] > prev[k] {
+                gs[k]
+            } else {
+                0.6 * prev[k] + 0.4 * gs[k]
+            };
             prev[k] = v;
             let m2 = (re[k] * re[k] + im[k] * im[k]) as f64;
             total += m2;
@@ -124,7 +142,11 @@ pub fn denoise(x: &[f32], floor_db: f32, strength: f32) -> (Vec<f32>, f32) {
             *o /= *w;
         }
     }
-    let red_db = if total > 0.0 { (10.0 * (1.0 - removed / total).max(1e-9).log10()) as f32 } else { 0.0 };
+    let red_db = if total > 0.0 {
+        (10.0 * (1.0 - removed / total).max(1e-9).log10()) as f32
+    } else {
+        0.0
+    };
     (out, red_db)
 }
 
@@ -136,7 +158,12 @@ pub fn tighten(x: &[f32], db: f32) -> Vec<f32> {
     }
     let th = pk * 10f32.powf(db / 20.0);
     let w = (SR * 0.005) as usize;
-    let loud = |i: usize| x[i..(i + w).min(x.len())].iter().fold(0.0f32, |m, v| m.max(v.abs())) > th;
+    let loud = |i: usize| {
+        x[i..(i + w).min(x.len())]
+            .iter()
+            .fold(0.0f32, |m, v| m.max(v.abs()))
+            > th
+    };
     let mut a = 0;
     while a + w < x.len() && !loud(a) {
         a += w;
@@ -149,15 +176,66 @@ pub fn tighten(x: &[f32], db: f32) -> Vec<f32> {
 }
 
 /// Fillers and false starts a producer would cut.
-pub const FILLERS: &[&str] = &["um", "uh", "uhm", "umm", "uhh", "er", "erm", "ah", "hmm", "mm", "mhm"];
+pub const FILLERS: &[&str] = &[
+    "um", "uh", "uhm", "umm", "uhh", "er", "erm", "ah", "hmm", "mm", "mhm",
+];
 
 /// Plan where every word sits: lines start on bar lines inside their section,
 /// words take whole grid units (16ths for rap, 8ths per syllable for singing),
 /// and a line slows down to fill its share of the section when there is room.
 /// Short words a singer passes through rather than holds.
 pub fn is_function_word(w: &str) -> bool {
-    let w: String = w.chars().filter(|c| c.is_alphabetic() || *c == '\'').collect::<String>().to_lowercase();
-    matches!(w.as_str(), "a" | "an" | "the" | "to" | "of" | "and" | "or" | "but" | "in" | "on" | "at" | "for" | "is" | "it" | "i" | "my" | "me" | "we" | "you" | "your" | "be" | "as" | "so" | "that" | "this" | "with" | "from" | "by" | "do" | "if" | "are" | "was" | "not" | "i'm" | "don't" | "da" | "di" | "de" | "nu" | "ke" | "ki" | "ka" | "te" | "ve")
+    let w: String = w
+        .chars()
+        .filter(|c| c.is_alphabetic() || *c == '\'')
+        .collect::<String>()
+        .to_lowercase();
+    matches!(
+        w.as_str(),
+        "a" | "an"
+            | "the"
+            | "to"
+            | "of"
+            | "and"
+            | "or"
+            | "but"
+            | "in"
+            | "on"
+            | "at"
+            | "for"
+            | "is"
+            | "it"
+            | "i"
+            | "my"
+            | "me"
+            | "we"
+            | "you"
+            | "your"
+            | "be"
+            | "as"
+            | "so"
+            | "that"
+            | "this"
+            | "with"
+            | "from"
+            | "by"
+            | "do"
+            | "if"
+            | "are"
+            | "was"
+            | "not"
+            | "i'm"
+            | "don't"
+            | "da"
+            | "di"
+            | "de"
+            | "nu"
+            | "ke"
+            | "ki"
+            | "ka"
+            | "te"
+            | "ve"
+    )
 }
 
 /// Words a singer keeps at spoken rhythm: numbers ("thirty-five", "1962")
@@ -170,17 +248,37 @@ pub fn is_spoken_word(w: &str, first_in_line: bool) -> bool {
         return true;
     }
     let l = t.to_lowercase();
-    let num = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred", "thousand", "million"];
-    if l.split('-').all(|p| num.contains(&p) || p.ends_with("teen") && p.len() > 4) {
+    let num = [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+        "twelve", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+        "hundred", "thousand", "million",
+    ];
+    if l.split('-')
+        .all(|p| num.contains(&p) || p.ends_with("teen") && p.len() > 4)
+    {
         return true;
     }
-    !first_in_line && t.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) && l != "i" && !l.starts_with("i'")
+    !first_in_line
+        && t.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+        && l != "i"
+        && !l.starts_with("i'")
 }
 
-pub fn plan(lines: &[Line], sec_start_bar: &[u32], sec_bars: &[u32], bpm: f32, mode: &str) -> Performance {
+pub fn plan(
+    lines: &[Line],
+    sec_start_bar: &[u32],
+    sec_bars: &[u32],
+    bpm: f32,
+    mode: &str,
+) -> Performance {
     let beat_s = 60.0 / bpm;
     let sing = mode == "sing";
-    let mut perf = Performance { mode: mode.into(), lines: lines.len(), stretch_range: (9.0, 0.0), ..Default::default() };
+    let mut perf = Performance {
+        mode: mode.into(),
+        lines: lines.len(),
+        stretch_range: (9.0, 0.0),
+        ..Default::default()
+    };
     let nsec = sec_start_bar.len();
     for s in 0..nsec {
         let ls: Vec<&Line> = lines.iter().filter(|l| l.section == s).collect();
@@ -194,20 +292,45 @@ pub fn plan(lines: &[Line], sec_start_bar: &[u32], sec_bars: &[u32], bpm: f32, m
             // sung function words ("to", "the", "and") keep their spoken length;
             // the melody's long notes go on the content words (critic: "to go to"
             // blurred when every word was stretched)
-            let func: Vec<bool> = l.clips.iter().enumerate().map(|(i, c)| sing && (is_function_word(&c.text) || is_spoken_word(&c.text, i == 0))).collect();
-            let nat: Vec<f32> = l.clips.iter().zip(&func).map(|(c, f)| {
-                let d = c.audio.len() as f32 / SR / (beat_s / 4.0);
-                if *f { ((d / 2.0).ceil() * 2.0).max(2.0) } else if sing { (d.round()).max(2.0 * c.syl as f32) } else { (d.round()).max(c.syl as f32) }
-            }).collect();
+            let func: Vec<bool> = l
+                .clips
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    sing && (is_function_word(&c.text) || is_spoken_word(&c.text, i == 0))
+                })
+                .collect();
+            let nat: Vec<f32> = l
+                .clips
+                .iter()
+                .zip(&func)
+                .map(|(c, f)| {
+                    let d = c.audio.len() as f32 / SR / (beat_s / 4.0);
+                    if *f {
+                        ((d / 2.0).ceil() * 2.0).max(2.0)
+                    } else if sing {
+                        (d.round()).max(2.0 * c.syl as f32)
+                    } else {
+                        (d.round()).max(c.syl as f32)
+                    }
+                })
+                .collect();
             let need: f32 = nat.iter().sum::<f32>() + if sing { 4.0 } else { 0.0 };
             let line_bars = (need / 16.0).ceil().max(share.floor()).max(1.0);
             // unit scale: slow the flow into the room (rap: 16ths -> 8ths at most 2x)
-            let k = ((line_bars * 16.0) / need).floor().clamp(1.0, if sing { 2.0 } else { 2.0 });
+            // NOTE: originally `.clamp(1.0, if sing { 2.0 } else { 2.0 })` - both branches
+            // were identical, collapsed by clippy. The intended sing vs non-sing bounds
+            // are unconfirmed; Naman holds the question. Do not change bounds without him.
+            let k = ((line_bars * 16.0) / need).floor().clamp(1.0, 2.0);
             let mut pos = bar * 4.0;
             let nwords = l.clips.len();
             for (wi, c) in l.clips.iter().enumerate() {
                 let last = wi + 1 == nwords;
-                let mut units = if func[wi] && !last { nat[wi] } else { nat[wi] * k };
+                let mut units = if func[wi] && !last {
+                    nat[wi]
+                } else {
+                    nat[wi] * k
+                };
                 if sing && last {
                     // the line's last syllable is held to the end of its room
                     let room = (bar + line_bars) * 16.0 - pos * 4.0;
@@ -219,14 +342,19 @@ pub fn plan(lines: &[Line], sec_start_bar: &[u32], sec_bars: &[u32], bpm: f32, m
                 // (critic: long stretched vowels blurred the words); the rest of
                 // the slot is a breath
                 let max_sing = ((src + 0.6) / src.max(0.05)).min(2.6);
-                let stretch = (beats * beat_s / src.max(0.05)).clamp(0.6, if sing { max_sing.max(1.0) } else { 1.35 });
+                let stretch = (beats * beat_s / src.max(0.05))
+                    .clamp(0.6, if sing { max_sing.max(1.0) } else { 1.35 });
                 perf.stretch_range.0 = perf.stretch_range.0.min(stretch);
                 perf.stretch_range.1 = perf.stretch_range.1.max(stretch);
                 let mut notes = Vec::new();
                 if sing {
                     let n = c.syl.max(1);
                     // the last syllable gets the long note
-                    let first = if n > 1 { (beats * 0.5 / (n - 1) as f32).min(0.5) } else { beats };
+                    let first = if n > 1 {
+                        (beats * 0.5 / (n - 1) as f32).min(0.5)
+                    } else {
+                        beats
+                    };
                     let mut b0 = pos;
                     for si in 0..n {
                         let len = if si + 1 == n { pos + beats - b0 } else { first };
@@ -234,7 +362,13 @@ pub fn plan(lines: &[Line], sec_start_bar: &[u32], sec_bars: &[u32], bpm: f32, m
                         b0 += len;
                     }
                 }
-                perf.words.push(PlacedWord { text: c.text.clone(), beat: pos, beats, notes, stretch });
+                perf.words.push(PlacedWord {
+                    text: c.text.clone(),
+                    beat: pos,
+                    beats,
+                    notes,
+                    stretch,
+                });
                 pos += beats;
             }
             bar += line_bars;
@@ -245,7 +379,14 @@ pub fn plan(lines: &[Line], sec_start_bar: &[u32], sec_bars: &[u32], bpm: f32, m
 
 /// Write the melody: chord tones on strong beats, scale steps between, an arch
 /// over each line, hooks sung higher, line ends resolving to a chord tone.
-pub fn write_melody(perf: &mut Performance, chord_at: &dyn Fn(f32) -> Option<Chord>, key_pc: u8, scale: &[u8], center: f32, hook_beats: &[(f32, f32)]) {
+pub fn write_melody(
+    perf: &mut Performance,
+    chord_at: &dyn Fn(f32) -> Option<Chord>,
+    key_pc: u8,
+    scale: &[u8],
+    center: f32,
+    hook_beats: &[(f32, f32)],
+) {
     perf.center_midi = center;
     let in_scale = |m: i32| scale.contains(&((((m - key_pc as i32) % 12 + 12) % 12) as u8));
     let mut prev: Option<i32> = None;
@@ -286,10 +427,19 @@ pub fn write_melody(perf: &mut Performance, chord_at: &dyn Fn(f32) -> Option<Cho
         let len = (j + 1 - line_start).max(1) as f32;
         let p = (i - line_start) as f32 / (len - 1.0).max(1.0);
         let hook = hook_beats.iter().any(|(a, l)| b >= *a && b < a + l);
-        let target = center + if hook { 3.0 } else { 0.0 } + 3.5 * (std::f32::consts::PI * p).sin() - if line_end { 1.0 } else { 0.0 };
+        let target = center + if hook { 3.0 } else { 0.0 } + 3.5 * (std::f32::consts::PI * p).sin()
+            - if line_end { 1.0 } else { 0.0 };
         let chord = chord_at(b);
         let strong = (b % 1.0).abs() < 0.01 || line_end;
-        let tones: Vec<i32> = chord.as_ref().map(|c| c.intervals.iter().map(|iv| ((c.root_pc + iv) % 12) as i32).collect()).unwrap_or_default();
+        let tones: Vec<i32> = chord
+            .as_ref()
+            .map(|c| {
+                c.intervals
+                    .iter()
+                    .map(|iv| ((c.root_pc + iv) % 12) as i32)
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut best = target.round() as i32;
         let mut best_cost = f32::MAX;
         for m in (center as i32 - 9)..=(center as i32 + 12) {
@@ -303,9 +453,16 @@ pub fn write_melody(perf: &mut Performance, chord_at: &dyn Fn(f32) -> Option<Cho
             let mut cost = (m as f32 - target).abs();
             if let Some(pv) = prev {
                 let leap = (m - pv).abs() as f32;
-                cost += if leap > 4.0 { 0.6 * (leap - 4.0) } else { 0.0 } + if m == pv { 0.4 } else { 0.0 };
+                cost += if leap > 4.0 { 0.6 * (leap - 4.0) } else { 0.0 }
+                    + if m == pv { 0.4 } else { 0.0 };
             }
-            if line_end && !tones.is_empty() && chord.as_ref().map(|c| (c.root_pc % 12) as i32 == m.rem_euclid(12)).unwrap_or(false) {
+            if line_end
+                && !tones.is_empty()
+                && chord
+                    .as_ref()
+                    .map(|c| (c.root_pc % 12) as i32 == m.rem_euclid(12))
+                    .unwrap_or(false)
+            {
                 cost -= 0.8;
             }
             if cost < best_cost {
@@ -337,7 +494,12 @@ pub fn fricative_len(x: &[f32]) -> Option<usize> {
     }
     let frame = |i: usize| &x[i * w..(i + 1) * w];
     let rms = |s: &[f32]| (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt();
-    let zcr = |s: &[f32]| s.windows(2).filter(|p| (p[0] <= 0.0) != (p[1] <= 0.0)).count() as f32 / (s.len() as f32 / SR);
+    let zcr = |s: &[f32]| {
+        s.windows(2)
+            .filter(|p| (p[0] <= 0.0) != (p[1] <= 0.0))
+            .count() as f32
+            / (s.len() as f32 / SR)
+    };
     let mut i = 0;
     while i < n && rms(frame(i)) < pk * 10f32.powf(-50.0 / 20.0) {
         i += 1;
@@ -357,12 +519,19 @@ pub fn fricative_len(x: &[f32]) -> Option<usize> {
 /// s / soft c: 4.5-8 kHz; sh: 2.5-6.5 kHz; f / th: a softer 1.5-8 kHz.
 /// "st", "sp", "sk", "sc"+consonant get a 25 ms closure before the stop.
 pub fn fricative_recipe(word: &str) -> Option<(f32, f32, f32, f32)> {
-    let w: String = word.chars().filter(|c| c.is_alphabetic()).collect::<String>().to_lowercase();
+    let w: String = word
+        .chars()
+        .filter(|c| c.is_alphabetic())
+        .collect::<String>()
+        .to_lowercase();
     let b = w.as_bytes();
     if b.len() < 2 {
         return None;
     }
-    let stop_after = |i: usize| b.get(i).is_some_and(|c| matches!(*c, b't' | b'p' | b'k' | b'c'));
+    let stop_after = |i: usize| {
+        b.get(i)
+            .is_some_and(|c| matches!(*c, b't' | b'p' | b'k' | b'c'))
+    };
     match (b[0], b[1]) {
         (b's', b'h') => Some((2500.0, 6500.0, -9.0, 0.0)),
         (b's', _) => Some((4500.0, 8000.0, -8.0, if stop_after(1) { 25.0 } else { 0.0 })),
@@ -407,7 +576,9 @@ pub fn split_fricative(text: &str, x: &[f32]) -> (Option<Vec<f32>>, usize, Vec<f
         return (None, 0, x.to_vec());
     }
     let n = (FRICATIVE_MS / 1000.0 * SR) as usize;
-    let mut seed = text.bytes().fold(2166136261u32, |h, c| (h ^ c as u32).wrapping_mul(16777619));
+    let mut seed = text
+        .bytes()
+        .fold(2166136261u32, |h, c| (h ^ c as u32).wrapping_mul(16777619));
     let mut f: Vec<f32> = (0..n + 512)
         .map(|_| {
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -422,13 +593,23 @@ pub fn split_fricative(text: &str, x: &[f32]) -> (Option<Vec<f32>>, usize, Vec<f
         }
     }
     let mut f = f.split_off(512); // drop the filters' settling
-    let rms = (f.iter().map(|v| v * v).sum::<f32>() / n as f32).sqrt().max(1e-9);
+    let rms = (f.iter().map(|v| v * v).sum::<f32>() / n as f32)
+        .sqrt()
+        .max(1e-9);
     let g = vowel * 10f32.powf(db / 20.0) / rms;
     let fi = (FRICATIVE_FADE_IN_MS / 1000.0 * SR) as usize;
     let fo = (0.012 * SR) as usize;
     for (j, v) in f.iter_mut().enumerate() {
-        let a = if j < fi { 0.5 - 0.5 * (std::f32::consts::PI * j as f32 / fi as f32).cos() } else { 1.0 };
-        let b = if j + fo > n { 0.5 - 0.5 * (std::f32::consts::PI * (n - j) as f32 / fo as f32).cos() } else { 1.0 };
+        let a = if j < fi {
+            0.5 - 0.5 * (std::f32::consts::PI * j as f32 / fi as f32).cos()
+        } else {
+            1.0
+        };
+        let b = if j + fo > n {
+            0.5 - 0.5 * (std::f32::consts::PI * (n - j) as f32 / fo as f32).cos()
+        } else {
+            1.0
+        };
         *v *= g * a * b;
     }
     (Some(f), (closure_ms / 1000.0 * SR) as usize, body)
@@ -443,7 +624,11 @@ pub const FRICATIVE_FADE_IN_MS: f32 = 35.0;
 /// then tuned onto its note. Returns mono audio starting at beat 0.
 pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> Vec<f32> {
     let beat_s = 60.0 / bpm;
-    let end_beat = perf.words.iter().map(|w| w.beat + w.beats).fold(0.0f32, f32::max);
+    let end_beat = perf
+        .words
+        .iter()
+        .map(|w| w.beat + w.beats)
+        .fold(0.0f32, f32::max);
     let mut out = vec![0.0f32; ((end_beat * beat_s + 1.0) * SR) as usize];
     // leading fricatives ride their own buffer: never pitch-tuned, held at
     // 80-100 ms and placed just before the beat so the vowel lands on it
@@ -463,7 +648,9 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
         // start on a zero crossing (within 3 ms), then equal-power fades:
         // 10 ms in (8 ms after a fricative), 25 ms out (critic: splice clicks
         // at every word edge; v19: 5-10 ms on every onset)
-        let zc = (1..((0.003 * SR) as usize).min(y.len())).find(|&i| (y[i - 1] <= 0.0) != (y[i] <= 0.0)).unwrap_or(0);
+        let zc = (1..((0.003 * SR) as usize).min(y.len()))
+            .find(|&i| (y[i - 1] <= 0.0) != (y[i] <= 0.0))
+            .unwrap_or(0);
         if zc > 0 {
             y.drain(..zc);
         }
@@ -486,7 +673,11 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
             // the hiss comes before the beat so the vowel lands on it: it
             // overlaps the body by 5 ms, or ends a closure before an "st" stop
             let k = f.len();
-            let end = if gap > 0 { at.saturating_sub(gap) } else { at + xf.min(k) };
+            let end = if gap > 0 {
+                at.saturating_sub(gap)
+            } else {
+                at + xf.min(k)
+            };
             let skip = k.saturating_sub(end);
             let s0 = end + skip - k;
             for (i, v) in f.iter().enumerate().skip(skip) {
@@ -523,7 +714,9 @@ pub fn render(perf: &Performance, clips: &[&Clip], bpm: f32, tune_hard: f32) -> 
         while ti + 1 < targets.len() && targets[ti].1 <= t {
             ti += 1;
         }
-        let Some(&(a, b, m)) = targets.get(ti) else { continue };
+        let Some(&(a, b, m)) = targets.get(ti) else {
+            continue;
+        };
         if t < a - 0.05 || t > b + 0.05 {
             continue;
         }
@@ -559,7 +752,9 @@ pub fn declick(y: &mut [f32]) -> usize {
     let mut hp = crate::dsp::Biquad::new(crate::dsp::BiquadKind::LowCut, 6000.0, 0.7, 0.0);
     let mut hp2 = crate::dsp::Biquad::new(crate::dsp::BiquadKind::LowCut, 6000.0, 0.7, 0.0);
     let h: Vec<f32> = y.iter().map(|&v| hp2.process(hp.process(v))).collect();
-    let e: Vec<f32> = (0..n).map(|i| h[i * w..(i + 1) * w].iter().map(|v| v * v).sum::<f32>() / w as f32 + 1e-12).collect();
+    let e: Vec<f32> = (0..n)
+        .map(|i| h[i * w..(i + 1) * w].iter().map(|v| v * v).sum::<f32>() / w as f32 + 1e-12)
+        .collect();
     let mut sorted = e.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let floor = sorted[n / 2];
@@ -571,7 +766,11 @@ pub fn declick(y: &mut [f32]) -> usize {
         let mut nb: Vec<f32> = e[lo..hi].to_vec();
         nb.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let med = nb[nb.len() / 2];
-        let after = if i + 8 < n { e[i + 3..i + 8].iter().copied().fold(0.0, f32::max) } else { e[i] };
+        let after = if i + 8 < n {
+            e[i + 3..i + 8].iter().copied().fold(0.0, f32::max)
+        } else {
+            e[i]
+        };
         if e[i] > 30.0 * med && e[i] > 4.0 * floor && after < 0.3 * e[i] {
             hits.push(i * w);
             i += 4;
@@ -664,7 +863,11 @@ pub fn level(y: &mut [f32]) {
     let g = 10f32.powf(-12.0 / 20.0) / rms.max(1e-6);
     for v in y.iter_mut() {
         let a = (*v * g).abs();
-        let s = if a > 0.7 { 0.7 + 0.28 * ((a - 0.7) / 0.28).tanh() } else { a };
+        let s = if a > 0.7 {
+            0.7 + 0.28 * ((a - 0.7) / 0.28).tanh()
+        } else {
+            a
+        };
         *v = s.copysign(*v);
     }
 }
@@ -680,23 +883,69 @@ pub fn median_pitch(x: &[f32]) -> f32 {
     v[v.len() / 2]
 }
 
-
 /// How a Hindi / Punjabi word should be spelled for an English TTS voice to
 /// say it right ("tere" -> "theh-reh", not "tear"; critic heard "Tere bina"
 /// as "Dear Venus"). Unknown words pass through unchanged.
 pub fn respell(word: &str) -> String {
-    let w: String = word.chars().filter(|c| c.is_alphanumeric() || *c == '\'').collect::<String>().to_lowercase();
+    let w: String = word
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '\'')
+        .collect::<String>()
+        .to_lowercase();
     let r = match w.as_str() {
-        "tere" => "theh-reh", "teri" => "theh-ree", "tera" => "theh-raa", "tu" => "thoo", "tainu" => "thai-noo",
-        "mere" => "meh-reh", "meri" => "meh-ree", "mera" => "meh-raa", "main" => "mainh", "mainu" => "mai-noo",
-        "bina" => "bee-naa", "dil" => "dhill", "nahi" => "nuh-hee", "nahin" => "nuh-heen", "lagda" => "lug-dhaa",
-        "lagdi" => "lug-dhee", "kuch" => "kooch", "chalda" => "chull-dhaa", "hai" => "hay", "hain" => "hain",
-        "pyaar" => "pyaar", "pyar" => "pyaar", "yaad" => "yaadh", "yaar" => "yaar", "raat" => "raath", "raatan" => "raa-thaan",
-        "jaan" => "jaan", "rab" => "rubb", "sajna" => "suj-naa", "sohneya" => "sohh-neh-yaa", "ve" => "vey",
-        "kyun" => "kyoon", "kya" => "kyaa", "aaja" => "aa-jaa", "menu" => "mai-noo", "vich" => "vitch",
-        "naal" => "naal", "ki" => "kee", "ke" => "keh", "da" => "dhaa", "di" => "dhee", "de" => "dheh", "nu" => "noo",
-        "dard" => "dhurd", "ishq" => "ishk", "mohabbat" => "mo-hub-buth", "zindagi" => "zin-dhuh-gee", "dooriyan" => "dhoo-ree-yaan",
-        "sapna" => "sup-naa", "sapne" => "sup-neh", "ankhiyan" => "ankh-ee-yaan", "akhiyan" => "akh-ee-yaan", "oh" => "oh",
+        "tere" => "theh-reh",
+        "teri" => "theh-ree",
+        "tera" => "theh-raa",
+        "tu" => "thoo",
+        "tainu" => "thai-noo",
+        "mere" => "meh-reh",
+        "meri" => "meh-ree",
+        "mera" => "meh-raa",
+        "main" => "mainh",
+        "mainu" => "mai-noo",
+        "bina" => "bee-naa",
+        "dil" => "dhill",
+        "nahi" => "nuh-hee",
+        "nahin" => "nuh-heen",
+        "lagda" => "lug-dhaa",
+        "lagdi" => "lug-dhee",
+        "kuch" => "kooch",
+        "chalda" => "chull-dhaa",
+        "hai" => "hay",
+        "hain" => "hain",
+        "pyaar" => "pyaar",
+        "pyar" => "pyaar",
+        "yaad" => "yaadh",
+        "yaar" => "yaar",
+        "raat" => "raath",
+        "raatan" => "raa-thaan",
+        "jaan" => "jaan",
+        "rab" => "rubb",
+        "sajna" => "suj-naa",
+        "sohneya" => "sohh-neh-yaa",
+        "ve" => "vey",
+        "kyun" => "kyoon",
+        "kya" => "kyaa",
+        "aaja" => "aa-jaa",
+        "menu" => "mai-noo",
+        "vich" => "vitch",
+        "naal" => "naal",
+        "ki" => "kee",
+        "ke" => "keh",
+        "da" => "dhaa",
+        "di" => "dhee",
+        "de" => "dheh",
+        "nu" => "noo",
+        "dard" => "dhurd",
+        "ishq" => "ishk",
+        "mohabbat" => "mo-hub-buth",
+        "zindagi" => "zin-dhuh-gee",
+        "dooriyan" => "dhoo-ree-yaan",
+        "sapna" => "sup-naa",
+        "sapne" => "sup-neh",
+        "ankhiyan" => "ankh-ee-yaan",
+        "akhiyan" => "akh-ee-yaan",
+        "oh" => "oh",
         _ => return word.to_string(),
     };
     r.to_string()
@@ -707,12 +956,18 @@ pub const TTS_PY: &str = include_str!("../scripts/tts_words.py");
 
 /// Speak every word of `lines` with the local TTS voice; one clip per word,
 /// trimmed tight. The voice lives in `<workdir>/tts` (or BEATBOX_TTS_DIR).
-pub fn tts_words(workdir: &std::path::Path, lines: &[Vec<String>], tag: &str) -> anyhow::Result<Vec<Vec<Clip>>> {
+pub fn tts_words(
+    workdir: &std::path::Path,
+    lines: &[Vec<String>],
+    tag: &str,
+) -> anyhow::Result<Vec<Vec<Clip>>> {
     use anyhow::{anyhow, bail, Context};
     use std::io::Write;
     let script = workdir.join(".beatbox_tts_words.py");
     std::fs::write(&script, TTS_PY).context("writing the TTS helper")?;
-    let vdir = std::env::var("BEATBOX_TTS_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| workdir.join("tts"));
+    let vdir = std::env::var("BEATBOX_TTS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| workdir.join("tts"));
     let out_dir = vdir.join(format!("words_{tag}"));
     let py = std::env::var("BEATBOX_PYTHON").unwrap_or_else(|_| "python3".into());
     let mut child = std::process::Command::new(&py)
@@ -726,11 +981,24 @@ pub fn tts_words(workdir: &std::path::Path, lines: &[Vec<String>], tag: &str) ->
         .spawn()
         .with_context(|| format!("running {py} (set BEATBOX_PYTHON to a Python with piper-tts)"))?;
     // Hindi / Punjabi words go to the English voice respelled the way they sound
-    let spoken: Vec<Vec<String>> = lines.iter().map(|l| l.iter().map(|w| respell(w)).collect()).collect();
-    child.stdin.take().unwrap().write_all(serde_json::json!({"lines": spoken}).to_string().as_bytes())?;
+    let spoken: Vec<Vec<String>> = lines
+        .iter()
+        .map(|l| l.iter().map(|w| respell(w)).collect())
+        .collect();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(serde_json::json!({"lines": spoken}).to_string().as_bytes())?;
     let out = child.wait_with_output()?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| {
-        anyhow!("TTS helper failed: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("no output"))
+        anyhow!(
+            "TTS helper failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .last()
+                .unwrap_or("no output")
+        )
     })?;
     if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
         bail!("{e}");
@@ -740,7 +1008,10 @@ pub fn tts_words(workdir: &std::path::Path, lines: &[Vec<String>], tag: &str) ->
         let li = w["line"].as_u64().unwrap_or(0) as usize;
         let wi = w["index"].as_u64().map(|x| x as usize);
         // the written word, not its respelling, names the clip
-        let text = wi.and_then(|i| lines.get(li).and_then(|l| l.get(i))).cloned().unwrap_or_else(|| w["word"].as_str().unwrap_or("").to_string());
+        let text = wi
+            .and_then(|i| lines.get(li).and_then(|l| l.get(i)))
+            .cloned()
+            .unwrap_or_else(|| w["word"].as_str().unwrap_or("").to_string());
         let path = std::path::PathBuf::from(w["path"].as_str().unwrap_or(""));
         let audio = tighten(&crate::samples::decode_file(&path)?, -38.0);
         if audio.len() < (SR * 0.04) as usize || li >= res.len() {
@@ -767,10 +1038,13 @@ mod tests {
     use super::*;
 
     fn tone(hz: f32, secs: f32) -> Vec<f32> {
-        (0..(secs * SR) as usize).map(|i| {
-            let t = i as f32 / SR;
-            0.4 * (std::f32::consts::TAU * hz * t).sin() + 0.2 * (std::f32::consts::TAU * 2.0 * hz * t).sin()
-        }).collect()
+        (0..(secs * SR) as usize)
+            .map(|i| {
+                let t = i as f32 / SR;
+                0.4 * (std::f32::consts::TAU * hz * t).sin()
+                    + 0.2 * (std::f32::consts::TAU * 2.0 * hz * t).sin()
+            })
+            .collect()
     }
 
     #[test]
@@ -799,13 +1073,24 @@ mod tests {
     fn nucleus_stretch_keeps_the_onset_and_expression_moves() {
         let x = tone(220.0, 0.4);
         let y = stretch_nucleus(&x, 2.0);
-        assert!((y.len() as f32 / x.len() as f32 - 2.0).abs() < 0.1, "{} vs {}", y.len(), x.len());
+        assert!(
+            (y.len() as f32 / x.len() as f32 - 2.0).abs() < 0.1,
+            "{} vs {}",
+            y.len(),
+            x.len()
+        );
         // the first 50 ms are untouched
         let k = (0.05 * SR) as usize;
-        assert!(x[..k].iter().zip(&y[..k]).all(|(a, b)| (a - b).abs() < 1e-6));
+        assert!(x[..k]
+            .iter()
+            .zip(&y[..k])
+            .all(|(a, b)| (a - b).abs() < 1e-6));
         assert!(expression(0.0, 1.0, true) < -0.5);
-        let vib: Vec<f32> = (0..100).map(|i| expression(0.4 + i as f32 * 0.01, 1.5, false)).collect();
-        let span = vib.iter().cloned().fold(f32::MIN, f32::max) - vib.iter().cloned().fold(f32::MAX, f32::min);
+        let vib: Vec<f32> = (0..100)
+            .map(|i| expression(0.4 + i as f32 * 0.01, 1.5, false))
+            .collect();
+        let span = vib.iter().cloned().fold(f32::MIN, f32::max)
+            - vib.iter().cloned().fold(f32::MAX, f32::min);
         assert!(span > 0.4 && span < 0.6, "vibrato span {span}");
         assert_eq!(expression(0.2, 0.3, false), 0.0);
         assert_eq!(respell("Tere"), "theh-reh");
@@ -837,7 +1122,11 @@ mod tests {
         let lvl = 20.0 * (ms(0.04, 0.08) / rms(&tone(200.0, 0.3))).log10();
         assert!((-11.0..-5.0).contains(&lvl), "level {lvl}");
         // the hiss lives in 4.5-8 kHz: it crosses zero fast
-        let zc = f.windows(2).filter(|p| (p[0] <= 0.0) != (p[1] <= 0.0)).count() as f32 / 0.1;
+        let zc = f
+            .windows(2)
+            .filter(|p| (p[0] <= 0.0) != (p[1] <= 0.0))
+            .count() as f32
+            / 0.1;
         assert!(zc > 7000.0, "zcr {zc}");
         // "City" gets an s without a closure, "sh" a lower band, "day" nothing
         assert_eq!(split_fricative("City", &x).1, 0);
@@ -848,14 +1137,31 @@ mod tests {
 
     #[test]
     fn words_land_on_the_grid_and_get_sung_in_key() {
-        let clip = |t: &str, hz: f32, d: f32| Clip { text: t.into(), audio: tone(hz, d), syl: syllables(t) };
+        let clip = |t: &str, hz: f32, d: f32| Clip {
+            text: t.into(),
+            audio: tone(hz, d),
+            syl: syllables(t),
+        };
         let lines = vec![
-            Line { clips: vec![clip("stay", 200.0, 0.3), clip("with", 210.0, 0.2), clip("me", 190.0, 0.35)], section: 0 },
-            Line { clips: vec![clip("tonight", 205.0, 0.5)], section: 0 },
+            Line {
+                clips: vec![
+                    clip("stay", 200.0, 0.3),
+                    clip("with", 210.0, 0.2),
+                    clip("me", 190.0, 0.35),
+                ],
+                section: 0,
+            },
+            Line {
+                clips: vec![clip("tonight", 205.0, 0.5)],
+                section: 0,
+            },
         ];
         let mut perf = plan(&lines, &[4], &[4], 90.0, "sing");
         assert_eq!(perf.words.len(), 4);
-        assert!((perf.words[0].beat - 16.0).abs() < 1e-3, "line 1 starts on bar 4");
+        assert!(
+            (perf.words[0].beat - 16.0).abs() < 1e-3,
+            "line 1 starts on bar 4"
+        );
         for w in &perf.words {
             assert!((w.beat * 2.0).fract().abs() < 1e-3, "8th grid: {}", w.beat);
         }
@@ -866,7 +1172,11 @@ mod tests {
         write_melody(&mut perf, &|_b| Some(c0.clone()), key_pc, &minor, 55.0, &[]);
         for w in &perf.words {
             for n in &w.notes {
-                assert!(minor.contains(&((((n.2 as i32 - 1) % 12 + 12) % 12) as u8)), "{}", n.2);
+                assert!(
+                    minor.contains(&((((n.2 as i32 - 1) % 12 + 12) % 12) as u8)),
+                    "{}",
+                    n.2
+                );
             }
         }
         let refs: Vec<&Clip> = lines.iter().flat_map(|l| l.clips.iter()).collect();
@@ -877,6 +1187,10 @@ mod tests {
         let a = (w0.beat * 60.0 / 90.0 * SR) as usize;
         let seg = &y[a + 2000..a + 9000];
         let m = median_pitch(seg);
-        assert!((m - w0.notes[0].2).abs() < 0.7, "sung {m} vs note {}", w0.notes[0].2);
+        assert!(
+            (m - w0.notes[0].2).abs() < 0.7,
+            "sung {m} vs note {}",
+            w0.notes[0].2
+        );
     }
 }

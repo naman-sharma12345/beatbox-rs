@@ -29,7 +29,9 @@ pub struct Frame {
 /// keeping at most `max_partials` peaks no more than 60 dB under the frame's
 /// strongest. Frame f is centred on sample f*HOP.
 pub fn analyze(x: &[f32], max_partials: usize) -> Vec<Frame> {
-    let win: Vec<f32> = (0..N).map(|i| 0.5 - 0.5 * (TAU * i as f32 / N as f32).cos()).collect();
+    let win: Vec<f32> = (0..N)
+        .map(|i| 0.5 - 0.5 * (TAU * i as f32 / N as f32).cos())
+        .collect();
     let wsum: f32 = win.iter().sum();
     let frames = x.len() / HOP + 1;
     let mut out = Vec::with_capacity(frames);
@@ -38,11 +40,17 @@ pub fn analyze(x: &[f32], max_partials: usize) -> Vec<Frame> {
     for f in 0..frames {
         for k in 0..N {
             let i = (f * HOP + k) as isize - (N / 2) as isize;
-            re[k] = if i >= 0 && (i as usize) < x.len() { x[i as usize] * win[k] } else { 0.0 };
+            re[k] = if i >= 0 && (i as usize) < x.len() {
+                x[i as usize] * win[k]
+            } else {
+                0.0
+            };
             im[k] = 0.0;
         }
         fft(&mut re, &mut im);
-        let mag: Vec<f32> = (0..=N / 2).map(|k| (re[k] * re[k] + im[k] * im[k]).sqrt()).collect();
+        let mag: Vec<f32> = (0..=N / 2)
+            .map(|k| (re[k] * re[k] + im[k] * im[k]).sqrt())
+            .collect();
         let top = mag.iter().cloned().fold(0.0f32, f32::max);
         let mut peaks = Vec::new();
         if top > 1e-7 {
@@ -55,7 +63,11 @@ pub fn analyze(x: &[f32], max_partials: usize) -> Vec<Frame> {
                     // parabolic interpolation on dB
                     let (la, lb, lc) = ((a + 1e-12).ln(), (b + 1e-12).ln(), (c + 1e-12).ln());
                     let den = la - 2.0 * lb + lc;
-                    let d = if den.abs() > 1e-9 { 0.5 * (la - lc) / den } else { 0.0 };
+                    let d = if den.abs() > 1e-9 {
+                        0.5 * (la - lc) / den
+                    } else {
+                        0.0
+                    };
                     let hz = (k as f32 + d.clamp(-0.5, 0.5)) * SR / N as f32;
                     let amp = (lb - 0.25 * (la - lc) * d).exp() * 2.0 / wsum;
                     peaks.push((hz, amp));
@@ -89,14 +101,25 @@ pub struct Shape {
 
 impl Default for Shape {
     fn default() -> Self {
-        Shape { pitch_st: 0.0, keep_formants: false, partials: 64, blur: 0.0, tilt_db_oct: 0.0, odd_even: 0.0 }
+        Shape {
+            pitch_st: 0.0,
+            keep_formants: false,
+            partials: 64,
+            blur: 0.0,
+            tilt_db_oct: 0.0,
+            odd_even: 0.0,
+        }
     }
 }
 
 /// The frame's fundamental guess: the lowest peak within 20 dB of the strongest.
 fn frame_f0(fr: &Frame) -> Option<f32> {
     let top = fr.peaks.iter().map(|p| p.1).fold(0.0f32, f32::max);
-    fr.peaks.iter().filter(|p| p.1 > top * 0.1 && p.0 > 30.0).map(|p| p.0).fold(None, |m: Option<f32>, f| Some(m.map_or(f, |m| m.min(f))))
+    fr.peaks
+        .iter()
+        .filter(|p| p.1 > top * 0.1 && p.0 > 30.0)
+        .map(|p| p.0)
+        .fold(None, |m: Option<f32>, f| Some(m.map_or(f, |m| m.min(f))))
 }
 
 /// Spectral envelope of a frame at `hz` (linear interpolation between peaks).
@@ -135,21 +158,31 @@ pub fn reshape(frames: &[Frame], s: &Shape) -> Vec<Frame> {
                     if nf > 0.45 * SR || nf < 20.0 {
                         return None;
                     }
-                    let mut a = if s.keep_formants && ratio != 1.0 { envelope(&env, nf) } else { amp };
+                    let mut a = if s.keep_formants && ratio != 1.0 {
+                        envelope(&env, nf)
+                    } else {
+                        amp
+                    };
                     if s.tilt_db_oct != 0.0 {
                         a *= 10f32.powf(s.tilt_db_oct * (nf / 1000.0).log2() / 20.0);
                     }
                     if oe != 0.0 {
                         if let Some(f0) = f0 {
                             let h = (hz / f0).round().max(1.0) as u32;
-                            let g = if h == 1 { 1.0 } else if h % 2 == 0 { (1.0 + oe).min(1.0) } else { (1.0 - oe).min(1.0) };
+                            let g = if h == 1 {
+                                1.0
+                            } else if h % 2 == 0 {
+                                (1.0 + oe).min(1.0)
+                            } else {
+                                (1.0 - oe).min(1.0)
+                            };
                             a *= g;
                         }
                     }
                     (a > 1e-7).then_some((nf, a))
                 })
                 .collect();
-            Frame { peaks: peaks }
+            Frame { peaks }
         })
         .collect();
     if s.blur > 0.0 {
@@ -179,7 +212,8 @@ pub fn reshape(frames: &[Frame], s: &Shape) -> Vec<Frame> {
             }
             held.retain(|_, v| v.1 > 1e-6);
             fr.peaks.extend(tails);
-            fr.peaks.sort_by(|p, q| q.1.partial_cmp(&p.1).unwrap_or(std::cmp::Ordering::Equal));
+            fr.peaks
+                .sort_by(|p, q| q.1.partial_cmp(&p.1).unwrap_or(std::cmp::Ordering::Equal));
             fr.peaks.truncate(s.partials.max(1) * 2);
         }
     }
@@ -227,7 +261,14 @@ pub fn synthesize(frames: &[Frame], len: usize) -> Vec<f32> {
                     osc[i].alive = true;
                 }
                 None => {
-                    osc.push(Osc { hz, amp: 0.0, phase: 0.0, t_hz: hz, t_amp: amp, alive: true });
+                    osc.push(Osc {
+                        hz,
+                        amp: 0.0,
+                        phase: 0.0,
+                        t_hz: hz,
+                        t_amp: amp,
+                        alive: true,
+                    });
                     used.push(true);
                 }
             }
@@ -269,9 +310,13 @@ pub fn synthesize(frames: &[Frame], len: usize) -> Vec<f32> {
 /// Analyse, reshape and resynthesise `x`; the result keeps the input's peak level.
 pub fn resynthesize(x: &[f32], s: &Shape) -> Vec<f32> {
     // a blurred bank rings on: analyse with a tail of silence for it to decay into
-    let tail = if s.blur > 0.0 { (SR * 1.5 * s.blur) as usize } else { 0 };
+    let tail = if s.blur > 0.0 {
+        (SR * 1.5 * s.blur) as usize
+    } else {
+        0
+    };
     let mut xp = x.to_vec();
-    xp.extend(std::iter::repeat(0.0).take(tail));
+    xp.extend(std::iter::repeat_n(0.0, tail));
     let frames = analyze(&xp, s.partials.max(1));
     let shaped = reshape(&frames, s);
     let mut y = synthesize(&shaped, xp.len());
@@ -289,7 +334,9 @@ pub fn resynthesize(x: &[f32], s: &Shape) -> Vec<f32> {
 
 /// Harmonic amplitudes of a named recipe (index 0 = the fundamental).
 pub fn recipe(name: &str, n: usize) -> Result<Vec<f32>> {
-    let known = ["saw", "square", "triangle", "sine", "organ", "choir", "bell", "hollow"];
+    let known = [
+        "saw", "square", "triangle", "sine", "organ", "choir", "bell", "hollow",
+    ];
     if !known.contains(&name) {
         bail!("unknown recipe '{name}': {}", known.join(", "));
     }
@@ -300,15 +347,47 @@ pub fn recipe(name: &str, n: usize) -> Result<Vec<f32>> {
         let odd = i % 2 == 1;
         v.push(match name {
             "saw" => 1.0 / h,
-            "square" => if odd { 1.0 / h } else { 0.0 },
-            "triangle" => if odd { 1.0 / (h * h) } else { 0.0 },
-            "sine" => if i == 1 { 1.0 } else { 0.0 },
+            "square" => {
+                if odd {
+                    1.0 / h
+                } else {
+                    0.0
+                }
+            }
+            "triangle" => {
+                if odd {
+                    1.0 / (h * h)
+                } else {
+                    0.0
+                }
+            }
+            "sine" => {
+                if i == 1 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             // drawbars 16' 8' 4' 2 2/3' 2': 1, 2, 3, 4 strong, the rest faint
-            "organ" => match i { 1 => 1.0, 2 => 0.8, 3 => 0.6, 4 => 0.5, 6 => 0.3, 8 => 0.25, _ => 0.02 / h },
+            "organ" => match i {
+                1 => 1.0,
+                2 => 0.8,
+                3 => 0.6,
+                4 => 0.5,
+                6 => 0.3,
+                8 => 0.25,
+                _ => 0.02 / h,
+            },
             // soft choir/pad: a formant-ish hump around harmonics 2-5
             "choir" => (-((h - 3.5) / 2.5).powi(2)).exp() * 0.8 + 0.2 / h,
             "bell" => 1.0 / h.sqrt(),
-            _ => if odd { 1.0 / h.sqrt() } else { 0.1 / h }, // hollow
+            _ => {
+                if odd {
+                    1.0 / h.sqrt()
+                } else {
+                    0.1 / h
+                }
+            } // hollow
         });
     }
     Ok(v)
@@ -317,7 +396,15 @@ pub fn recipe(name: &str, n: usize) -> Result<Vec<f32>> {
 /// Build a tone from harmonic amplitudes. `inharm` stretches partial h to
 /// h*sqrt(1 + inharm*h^2) (piano/bell-like); `decay` makes higher partials
 /// die sooner (seconds for the fundamental's 60 dB fall; 0 = sustained).
-pub fn additive_tone(hz: f32, amps: &[f32], secs: f32, inharm: f32, decay: f32, attack: f32, release: f32) -> Vec<f32> {
+pub fn additive_tone(
+    hz: f32,
+    amps: &[f32],
+    secs: f32,
+    inharm: f32,
+    decay: f32,
+    attack: f32,
+    release: f32,
+) -> Vec<f32> {
     let n = (secs.clamp(0.05, 30.0) * SR) as usize;
     let mut y = vec![0.0f32; n];
     for (i, &a) in amps.iter().enumerate() {
@@ -329,7 +416,11 @@ pub fn additive_tone(hz: f32, amps: &[f32], secs: f32, inharm: f32, decay: f32, 
         if f >= 0.45 * SR {
             break;
         }
-        let rate = if decay > 0.0 { 6.9 / decay * h.powf(0.6) } else { 0.0 };
+        let rate = if decay > 0.0 {
+            6.9 / decay * h.powf(0.6)
+        } else {
+            0.0
+        };
         let ph0 = (h * 1.618).fract() * TAU;
         for (j, v) in y.iter_mut().enumerate() {
             let t = j as f32 / SR;
@@ -340,7 +431,11 @@ pub fn additive_tone(hz: f32, amps: &[f32], secs: f32, inharm: f32, decay: f32, 
     let rel = (release.max(0.005) * SR) as usize;
     for (j, v) in y.iter_mut().enumerate() {
         let g_in = if j < att { j as f32 / att as f32 } else { 1.0 };
-        let g_out = if j + rel > n { (n - j) as f32 / rel as f32 } else { 1.0 };
+        let g_out = if j + rel > n {
+            (n - j) as f32 / rel as f32
+        } else {
+            1.0
+        };
         *v *= g_in * g_out;
     }
     let pk = y.iter().fold(0.0f32, |m, v| m.max(v.abs()));
@@ -356,7 +451,17 @@ fn save(e: &mut Engine, name: &str, data: &[f32], source: String) -> Result<Valu
     let name = crate::samples::sample_name(name);
     let path = e.samples_dir().join(format!("{name}.wav"));
     crate::render::write_wav(&path, data, data)?;
-    crate::tools::register_sample(e, SampleInfo { name, path: path.to_string_lossy().to_string(), source, license: "own (beatbox)".into(), author: "beatbox".into(), duration: 0.0 })
+    crate::tools::register_sample(
+        e,
+        SampleInfo {
+            name,
+            path: path.to_string_lossy().to_string(),
+            source,
+            license: "own (beatbox)".into(),
+            author: "beatbox".into(),
+            duration: 0.0,
+        },
+    )
 }
 
 fn shape_from(a: &Value) -> Shape {
@@ -420,7 +525,9 @@ fn additive_sample(e: &mut Engine, a: &Value) -> Result<Value> {
     let hz = 440.0 * 2f32.powf((midi - 69.0) / 12.0);
     let n = u_or(a, "partials", 32) as usize;
     let mut amps = if let Some(arr) = a["harmonics"].as_array() {
-        arr.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect::<Vec<_>>()
+        arr.iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect::<Vec<_>>()
     } else {
         recipe(&s_opt(a, "recipe").unwrap_or_else(|| "saw".into()), n)?
     };
@@ -436,15 +543,43 @@ fn additive_sample(e: &mut Engine, a: &Value) -> Result<Value> {
             *x *= 10f32.powf(tilt * h.log2() / 20.0);
         }
         if oe != 0.0 && i > 0 {
-            *x *= if (i + 1) % 2 == 0 { (1.0 + oe).min(1.0) } else { (1.0 - oe).min(1.0) };
+            *x *= if (i + 1) % 2 == 0 {
+                (1.0 + oe).min(1.0)
+            } else {
+                (1.0 - oe).min(1.0)
+            };
         }
     }
     let secs = f_or(a, "seconds", 2.0);
-    let y = additive_tone(hz, &amps, secs, f_or(a, "inharmonicity", 0.0).clamp(0.0, 0.01), f_or(a, "decay_s", 0.0).max(0.0), f_or(a, "attack_s", 0.01), f_or(a, "release_s", 0.2));
-    let name = s_opt(a, "name").unwrap_or_else(|| format!("additive_{}_{}", s_opt(a, "recipe").unwrap_or_else(|| "custom".into()), note.replace('#', "s")));
-    let mut r = save(e, &name, &y, format!("additive synthesis by beatbox: {note}, {} harmonics", amps.len()))?;
+    let y = additive_tone(
+        hz,
+        &amps,
+        secs,
+        f_or(a, "inharmonicity", 0.0).clamp(0.0, 0.01),
+        f_or(a, "decay_s", 0.0).max(0.0),
+        f_or(a, "attack_s", 0.01),
+        f_or(a, "release_s", 0.2),
+    );
+    let name = s_opt(a, "name").unwrap_or_else(|| {
+        format!(
+            "additive_{}_{}",
+            s_opt(a, "recipe").unwrap_or_else(|| "custom".into()),
+            note.replace('#', "s")
+        )
+    });
+    let mut r = save(
+        e,
+        &name,
+        &y,
+        format!(
+            "additive synthesis by beatbox: {note}, {} harmonics",
+            amps.len()
+        ),
+    )?;
     r["hz"] = json!((hz * 100.0).round() / 100.0);
-    r["next"] = json!("add_track {preset:'sampler'} with this sample, or resynthesize_sample to blur/morph it");
+    r["next"] = json!(
+        "add_track {preset:'sampler'} with this sample, or resynthesize_sample to blur/morph it"
+    );
     Ok(r)
 }
 
@@ -533,18 +668,41 @@ mod tests {
         let p0 = pitch(&x[a..b]);
         let p1 = pitch(&y[a..b]);
         assert!((p0 - p1).abs() < 0.3, "{p0} vs {p1}");
-        let up = resynthesize(&x, &Shape { pitch_st: 7.0, ..Default::default() });
+        let up = resynthesize(
+            &x,
+            &Shape {
+                pitch_st: 7.0,
+                ..Default::default()
+            },
+        );
         let p2 = pitch(&up[a..b]);
         assert!((p2 - p0 - 7.0).abs() < 0.4, "{p0} -> {p2}");
         // odd only: the 2nd harmonic is gone
-        let odd = resynthesize(&x, &Shape { odd_even: -1.0, ..Default::default() });
+        let odd = resynthesize(
+            &x,
+            &Shape {
+                odd_even: -1.0,
+                ..Default::default()
+            },
+        );
         let fr = analyze(&odd[a..b], 12);
         let m = &fr[fr.len() / 2];
         let top = m.peaks.iter().map(|p| p.1).fold(0.0f32, f32::max);
-        let h2 = m.peaks.iter().filter(|p| (p.0 - 440.0).abs() < 8.0).map(|p| p.1).fold(0.0f32, f32::max);
+        let h2 = m
+            .peaks
+            .iter()
+            .filter(|p| (p.0 - 440.0).abs() < 8.0)
+            .map(|p| p.1)
+            .fold(0.0f32, f32::max);
         assert!(h2 < top * 0.05, "h2 {h2} top {top}");
         // blur rings on past the end
-        let bl = resynthesize(&x, &Shape { blur: 0.8, ..Default::default() });
+        let bl = resynthesize(
+            &x,
+            &Shape {
+                blur: 0.8,
+                ..Default::default()
+            },
+        );
         assert!(bl.len() > x.len());
     }
 
@@ -555,10 +713,24 @@ mod tests {
         assert_eq!(sq[1], 0.0);
         assert!((sq[2] - 1.0 / 3.0).abs() < 1e-6);
         let mut e = Engine::new(std::env::temp_dir().join("beatbox_resynth_tests"));
-        e.call("new_project", &json!({"bpm": 100, "patterns": [{"name": "a", "bars": 1}]})).unwrap();
-        let r = e.call("additive_sample", &json!({"note": "A3", "recipe": "organ", "seconds": 0.6, "name": "org"})).unwrap();
+        e.call(
+            "new_project",
+            &json!({"bpm": 100, "patterns": [{"name": "a", "bars": 1}]}),
+        )
+        .unwrap();
+        let r = e
+            .call(
+                "additive_sample",
+                &json!({"note": "A3", "recipe": "organ", "seconds": 0.6, "name": "org"}),
+            )
+            .unwrap();
         assert!((r["hz"].as_f64().unwrap() - 220.0).abs() < 0.1, "{r}");
-        let p = e.call("analyze_partials", &json!({"sample": "org", "at_s": 0.2, "partials": 6})).unwrap();
+        let p = e
+            .call(
+                "analyze_partials",
+                &json!({"sample": "org", "at_s": 0.2, "partials": 6}),
+            )
+            .unwrap();
         assert!((p["f0_hz"].as_f64().unwrap() - 220.0).abs() < 3.0, "{p}");
         let s = e.call("resynthesize_sample", &json!({"sample": "org", "partials": 8, "pitch_semitones": -12, "new_name": "org_low"})).unwrap();
         assert!(e.project.samples.iter().any(|x| x.name == "org_low"), "{s}");

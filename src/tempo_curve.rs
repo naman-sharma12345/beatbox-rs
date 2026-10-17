@@ -40,13 +40,23 @@ pub fn bpm_at(base: f32, points: &[TempoPoint], beat: f32) -> f32 {
 impl TempoCurve {
     pub fn new(p: &Project) -> Self {
         let base = p.bpm.clamp(20.0, 400.0) as f64;
-        let mut pts: Vec<TempoPoint> = p.tempo_points.iter().filter(|t| t.beat >= 0.0 && t.bpm.is_finite()).cloned().collect();
+        let mut pts: Vec<TempoPoint> = p
+            .tempo_points
+            .iter()
+            .filter(|t| t.beat >= 0.0 && t.bpm.is_finite())
+            .cloned()
+            .collect();
         for t in pts.iter_mut() {
             t.bpm = t.bpm.clamp(20.0, 400.0);
         }
         pts.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
         if pts.is_empty() {
-            return TempoCurve { base_bpm: base, table: Vec::new(), end_beat: 0.0, end_bpm: base };
+            return TempoCurve {
+                base_bpm: base,
+                table: Vec::new(),
+                end_beat: 0.0,
+                end_bpm: base,
+            };
         }
         let end_beat = pts.last().map(|t| t.beat as f64).unwrap_or(0.0);
         let n = (end_beat * RES).ceil() as usize + 1;
@@ -62,7 +72,12 @@ impl TempoCurve {
             table.push(last + 60.0 / bpm / RES);
         }
         let end_bpm = pts.last().map(|t| t.bpm as f64).unwrap_or(base);
-        TempoCurve { base_bpm: base, table, end_beat: n as f64 / RES, end_bpm }
+        TempoCurve {
+            base_bpm: base,
+            table,
+            end_beat: n as f64 / RES,
+            end_bpm,
+        }
     }
 
     pub fn is_constant(&self) -> bool {
@@ -113,10 +128,15 @@ impl TempoCurve {
 /// Exact, with no table: a boundary whose sample count is a whole number
 /// comes out as that number. Same point rules as `TempoCurve::new` (beats
 /// >= 0, finite, bpm clamped to 20..400, sorted; the base bpm before the
-/// first point).
+/// > first point).
 pub fn samples_at_beat(p: &Project, beat: f64) -> f64 {
     let base = p.bpm.clamp(20.0, 400.0) as f64;
-    let mut pts: Vec<TempoPoint> = p.tempo_points.iter().filter(|t| t.beat >= 0.0 && t.bpm.is_finite()).cloned().collect();
+    let mut pts: Vec<TempoPoint> = p
+        .tempo_points
+        .iter()
+        .filter(|t| t.beat >= 0.0 && t.bpm.is_finite())
+        .cloned()
+        .collect();
     for t in pts.iter_mut() {
         t.bpm = t.bpm.clamp(20.0, 400.0);
     }
@@ -169,19 +189,38 @@ mod tests {
     fn jumps_and_ramps_map_both_ways() {
         let mut p = Project::new("t", 120.0);
         // 120 for 4 beats, then jump to 60
-        p.tempo_points.push(TempoPoint { beat: 4.0, bpm: 60.0, ramp: false });
+        p.tempo_points.push(TempoPoint {
+            beat: 4.0,
+            bpm: 60.0,
+            ramp: false,
+        });
         let c = TempoCurve::new(&p);
         assert!((c.secs_at_beat(4.0) - 2.0).abs() < 1e-6);
         assert!((c.secs_at_beat(6.0) - 4.0).abs() < 1e-6);
-        assert!((c.secs_at_beat(10.0) - 8.0).abs() < 1e-6, "past the last point: {}", c.secs_at_beat(10.0));
+        assert!(
+            (c.secs_at_beat(10.0) - 8.0).abs() < 1e-6,
+            "past the last point: {}",
+            c.secs_at_beat(10.0)
+        );
         // ramp 120 -> 60 over beats 0..8: t = 8 * 60 / 60 * ln(2) = 5.545 s
         let mut q = Project::new("t", 120.0);
-        q.tempo_points.push(TempoPoint { beat: 8.0, bpm: 60.0, ramp: true });
+        q.tempo_points.push(TempoPoint {
+            beat: 8.0,
+            bpm: 60.0,
+            ramp: true,
+        });
         let r = TempoCurve::new(&q);
         let want = 8.0 * 60.0 / (120.0 - 60.0) * (120.0f64 / 60.0).ln();
-        assert!((r.secs_at_beat(8.0) - want).abs() < 1e-3, "{} vs {want}", r.secs_at_beat(8.0));
+        assert!(
+            (r.secs_at_beat(8.0) - want).abs() < 1e-3,
+            "{} vs {want}",
+            r.secs_at_beat(8.0)
+        );
         for b in [0.3, 2.0, 7.9, 8.0, 11.5] {
-            assert!((r.beat_at_secs(r.secs_at_beat(b)) - b).abs() < 1e-6, "round trip at {b}");
+            assert!(
+                (r.beat_at_secs(r.secs_at_beat(b)) - b).abs() < 1e-6,
+                "round trip at {b}"
+            );
         }
         assert!((bpm_at(120.0, &q.tempo_points, 4.0) - 90.0).abs() < 1e-4);
     }
@@ -192,16 +231,32 @@ mod tests {
     fn piecewise_samples_match_the_closed_forms() {
         let sr = crate::dsp::SR as f64;
         let mut p = Project::new("t", 120.0);
-        assert_eq!(samples_at_beat(&p, 8.0), 4.0 * sr, "constant: 8 beats at 120 = 4 s");
+        assert_eq!(
+            samples_at_beat(&p, 8.0),
+            4.0 * sr,
+            "constant: 8 beats at 120 = 4 s"
+        );
         // 120 for 4 beats, then 60: beat 6 = 2 s + 2 s
-        p.tempo_points.push(TempoPoint { beat: 4.0, bpm: 60.0, ramp: false });
+        p.tempo_points.push(TempoPoint {
+            beat: 4.0,
+            bpm: 60.0,
+            ramp: false,
+        });
         assert_eq!(samples_at_beat(&p, 6.0), 4.0 * sr);
         assert_eq!(sample_index_at_beat(&p, 6.0), 176_400);
         // a ramp 120 -> 60 over beats 0..8: 8 * 60 / 60 * ln 2 s, then 60
         let mut q = Project::new("t", 120.0);
-        q.tempo_points.push(TempoPoint { beat: 8.0, bpm: 60.0, ramp: true });
+        q.tempo_points.push(TempoPoint {
+            beat: 8.0,
+            bpm: 60.0,
+            ramp: true,
+        });
         let want = 8.0 * (2.0f64).ln() * sr;
-        assert!((samples_at_beat(&q, 8.0) - want).abs() < 1e-6, "{} vs {want}", samples_at_beat(&q, 8.0));
+        assert!(
+            (samples_at_beat(&q, 8.0) - want).abs() < 1e-6,
+            "{} vs {want}",
+            samples_at_beat(&q, 8.0)
+        );
         assert!((samples_at_beat(&q, 9.0) - want - sr).abs() < 1e-6);
         // the table integrates a ramp by the midpoint rule per 1/64 beat: over
         // this 8-beat ramp its error grows to about 0.11 samples at the end

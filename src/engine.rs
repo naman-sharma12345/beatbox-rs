@@ -170,7 +170,9 @@ impl Engine {
             return match crate::tools_categories::resolve(cat, args)? {
                 crate::tools_categories::Resolved::Answer(v) => Ok(v),
                 crate::tools_categories::Resolved::Call(t, a) => self.call_tool_from(t, &a, source),
-                crate::tools_categories::Resolved::Routed(t, a, note) => self.call_tool_from(t, &a, source).map(|v| with_note(v, note)),
+                crate::tools_categories::Resolved::Routed(t, a, note) => self
+                    .call_tool_from(t, &a, source)
+                    .map(|v| with_note(v, note)),
             };
         }
         self.call_tool_from(name, args, source)
@@ -205,7 +207,11 @@ impl Engine {
                 // after the beat (an AI or script adding a take); the manual
                 // GUI is left exactly as the person sets it
                 if let Some(s) = &snapshot {
-                    if source != "you" && source != "gui" && !crate::mix_rules::has_voice(s) && crate::mix_rules::has_voice(&self.project) {
+                    if source != "you"
+                        && source != "gui"
+                        && !crate::mix_rules::has_voice(s)
+                        && crate::mix_rules::has_voice(&self.project)
+                    {
                         let _ = crate::mix_rules::ensure_vocal_pocket(self, "mix_rules");
                     }
                 }
@@ -299,7 +305,11 @@ impl Engine {
             Ok(a) => a,
             Err(e) => return (Err(e), args.clone()),
         };
-        let owners = if tool.mutates { Some(crate::ids::owner_keys(&self.project)) } else { None };
+        let owners = if tool.mutates {
+            Some(crate::ids::owner_keys(&self.project))
+        } else {
+            None
+        };
         let mut fresh_seed = None;
         if top
             && (tool.schema)()["properties"].get("seed").is_some()
@@ -343,13 +353,28 @@ impl Engine {
                 if let Value::Object(m) = &mut args_kept {
                     m.remove("project");
                 }
-                let source = if fresh_seed.is_some() { "fresh" } else { "given" };
+                let source = if fresh_seed.is_some() {
+                    "fresh"
+                } else {
+                    "given"
+                };
                 eprintln!("seed: {name} seed={seed} ({source})");
-                let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                self.project.seed_log.push(crate::project::SeedEntry { tool: name.to_string(), seed, source: source.into(), args: args_kept, at });
+                let at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                self.project.seed_log.push(crate::project::SeedEntry {
+                    tool: name.to_string(),
+                    seed,
+                    source: source.into(),
+                    args: args_kept,
+                    at,
+                });
                 let n = self.project.seed_log.len();
                 if n > crate::project::SEED_LOG_MAX {
-                    self.project.seed_log.drain(..n - crate::project::SEED_LOG_MAX);
+                    self.project
+                        .seed_log
+                        .drain(..n - crate::project::SEED_LOG_MAX);
                 }
             }
         }
@@ -368,8 +393,12 @@ impl Engine {
         if let Some(cat) = crate::tools_categories::find(name) {
             return match crate::tools_categories::resolve(cat, args)? {
                 crate::tools_categories::Resolved::Answer(v) => Ok(v),
-                crate::tools_categories::Resolved::Call(t, a) => self.call_nested_tool(t, &a, source),
-                crate::tools_categories::Resolved::Routed(t, a, note) => self.call_nested_tool(t, &a, source).map(|v| with_note(v, note)),
+                crate::tools_categories::Resolved::Call(t, a) => {
+                    self.call_nested_tool(t, &a, source)
+                }
+                crate::tools_categories::Resolved::Routed(t, a, note) => self
+                    .call_nested_tool(t, &a, source)
+                    .map(|v| with_note(v, note)),
             };
         }
         self.call_nested_tool(name, args, source)
@@ -428,7 +457,10 @@ impl Engine {
     /// newest first, and steps that were undone and can be redone, the
     /// next redo last (so the list reads top to bottom, newest to oldest).
     pub fn history(&self) -> (Vec<String>, Vec<String>) {
-        (self.undo_labels.iter().rev().cloned().collect(), self.redo_labels.clone())
+        (
+            self.undo_labels.iter().rev().cloned().collect(),
+            self.redo_labels.clone(),
+        )
     }
 
     pub fn undo(&mut self) -> bool {
@@ -510,8 +542,20 @@ impl Engine {
     /// Long songs: the kept full renders stay under RENDER_CACHE_MB (the
     /// newest is always kept); three 5:00 mixes would hold ~320 MB.
     fn trim_render_cache(&mut self) {
-        let mb = |m: &Mix| (m.left.len() + m.right.len() + m.stems.iter().chain(m.bus_stems.iter()).map(|s| s.left.len() + s.right.len()).sum::<usize>()) as f32 * 4.0 / 1_048_576.0;
-        while self.render_cache.len() > 1 && self.render_cache.iter().map(|(_, m)| mb(m)).sum::<f32>() > RENDER_CACHE_MB {
+        let mb = |m: &Mix| {
+            (m.left.len()
+                + m.right.len()
+                + m.stems
+                    .iter()
+                    .chain(m.bus_stems.iter())
+                    .map(|s| s.left.len() + s.right.len())
+                    .sum::<usize>()) as f32
+                * 4.0
+                / 1_048_576.0
+        };
+        while self.render_cache.len() > 1
+            && self.render_cache.iter().map(|(_, m)| mb(m)).sum::<f32>() > RENDER_CACHE_MB
+        {
             self.render_cache.remove(0);
         }
     }
@@ -553,7 +597,15 @@ impl Engine {
     /// per-part comparisons read them sample by sample).
     pub fn render_stems_all(&mut self, p: &Project) -> Result<Mix> {
         self.bank.sync(&p.samples);
-        render::render_cached(p, &self.bank, &RenderOptions { keep_stems: true, ..Default::default() }, self.track_cache.as_mut())
+        render::render_cached(
+            p,
+            &self.bank,
+            &RenderOptions {
+                keep_stems: true,
+                ..Default::default()
+            },
+            self.track_cache.as_mut(),
+        )
     }
 
     pub fn render_stems(&mut self, p: &Project) -> Result<Mix> {
@@ -597,7 +649,12 @@ impl Engine {
             return Ok((m.clone(), secs));
         }
         self.bank.sync(&p.samples);
-        let m = Arc::new(render::render_cached(&p, &self.bank, &RenderOptions::default(), None)?);
+        let m = Arc::new(render::render_cached(
+            &p,
+            &self.bank,
+            &RenderOptions::default(),
+            None,
+        )?);
         if self.perf_cache.len() >= 16 {
             self.perf_cache.remove(0);
         }
@@ -824,12 +881,21 @@ fn with_note(v: Value, note: String) -> Value {
 /// since `before`.
 fn playlist_sources_changed(before: &Project, now: &Project) -> bool {
     use crate::tools_fl::PL;
-    if now.playlist.is_empty() || now.arrangement.is_empty() || !now.arrangement.iter().all(|s| s.pattern.starts_with(PL)) {
+    if now.playlist.is_empty()
+        || now.arrangement.is_empty()
+        || !now.arrangement.iter().all(|s| s.pattern.starts_with(PL))
+    {
         return false;
     }
     now.playlist.iter().any(|c| {
-        let a = before.patterns.iter().find(|p| p.name.eq_ignore_ascii_case(&c.pattern));
-        let b = now.patterns.iter().find(|p| p.name.eq_ignore_ascii_case(&c.pattern));
+        let a = before
+            .patterns
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(&c.pattern));
+        let b = now
+            .patterns
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(&c.pattern));
         a != b
     })
 }

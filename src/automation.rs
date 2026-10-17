@@ -418,8 +418,16 @@ mod tests {
     fn frequency_lanes_sweep_geometrically() {
         let mut l = AutomationLane::new("lead", "fx.0.cutoff");
         l.points = vec![
-            AutoPoint { beat: 0.0, value: 18000.0, curve: Curve::Linear },
-            AutoPoint { beat: 1.0, value: 60.0, curve: Curve::Linear },
+            AutoPoint {
+                beat: 0.0,
+                value: 18000.0,
+                curve: Curve::Linear,
+            },
+            AutoPoint {
+                beat: 1.0,
+                value: 60.0,
+                curve: Curve::Linear,
+            },
         ];
         // halfway in time is halfway in octaves (sqrt(18000*60) ~ 1039 Hz)
         let mid = l.value_at_in(0.5, true).unwrap();
@@ -427,14 +435,23 @@ mod tests {
         // linear Hz is still what value_at gives (and what non-log lanes use)
         assert!((l.value_at(0.5).unwrap() - 9030.0).abs() < 1.0);
         // the bottom octave (60..120 Hz) takes ~1/8 of the segment, not ~1/300
-        let t120 = (0..=1000).map(|i| i as f32 / 1000.0).find(|&t| l.value_at_in(t, true).unwrap() <= 120.0).unwrap();
+        let t120 = (0..=1000)
+            .map(|i| i as f32 / 1000.0)
+            .find(|&t| l.value_at_in(t, true).unwrap() <= 120.0)
+            .unwrap();
         assert!(t120 < 0.9 && t120 > 0.85, "{t120}");
     }
 
     #[test]
     fn send_targets_parse_with_a_db_range() {
-        assert_eq!(parse_target("send.Reverb"), Some(Target::Send("reverb".into())));
-        assert_eq!(parse_target("sends.delay.bus"), Some(Target::Send("delay.bus".into())));
+        assert_eq!(
+            parse_target("send.Reverb"),
+            Some(Target::Send("reverb".into()))
+        );
+        assert_eq!(
+            parse_target("sends.delay.bus"),
+            Some(Target::Send("delay.bus".into()))
+        );
         assert_eq!(parse_target("send"), None);
         assert_eq!(parse_target("send."), None);
         assert_eq!(canonical("SEND.verb").as_deref(), Some("send.verb"));

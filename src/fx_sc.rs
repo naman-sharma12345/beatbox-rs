@@ -55,8 +55,15 @@ struct Line {
 
 impl Line {
     fn new(max_delay: usize) -> Self {
-        let len = max_delay.saturating_add(4).clamp(4, 1 << 24).next_power_of_two();
-        Line { buf: vec![0.0; len], mask: len - 1, pos: 0 }
+        let len = max_delay
+            .saturating_add(4)
+            .clamp(4, 1 << 24)
+            .next_power_of_two();
+        Line {
+            buf: vec![0.0; len],
+            mask: len - 1,
+            pos: 0,
+        }
     }
     #[inline]
     fn push(&mut self, x: f32) {
@@ -74,10 +81,19 @@ impl Line {
     /// Hermite-interpolated read `d` samples back.
     #[inline]
     fn read_cubic(&self, d: f32) -> f32 {
-        let d = if d.is_finite() { d.clamp(2.0, (self.max_delay() - 1.0).max(2.0)) } else { 2.0 };
+        let d = if d.is_finite() {
+            d.clamp(2.0, (self.max_delay() - 1.0).max(2.0))
+        } else {
+            2.0
+        };
         let i = d as usize;
         let f = d - i as f32;
-        let (xm1, x0, x1, x2) = (self.tap(i - 1), self.tap(i), self.tap(i + 1), self.tap(i + 2));
+        let (xm1, x0, x1, x2) = (
+            self.tap(i - 1),
+            self.tap(i),
+            self.tap(i + 1),
+            self.tap(i + 2),
+        );
         let c1 = 0.5 * (x1 - xm1);
         let c2 = xm1 - 2.5 * x0 + 2.0 * x1 - 0.5 * x2;
         let c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
@@ -120,7 +136,11 @@ pub fn mod_delay(p: &ModDelayFx, l: &mut [f32], r: &mut [f32], offset: usize) {
         for c in 0..2 {
             let x = if c == 0 { &mut l[i] } else { &mut r[i] };
             let dry = fin(*x);
-            let ph = if c == 1 { (phase + 0.25).fract() } else { phase };
+            let ph = if c == 1 {
+                (phase + 0.25).fract()
+            } else {
+                phase
+            };
             let modv = depth * 0.5 * (1.0 + (ph * TAU).sin());
             let y = lines[c].read_cubic(ms_to_samples(time + modv));
             lp[c] = flush(y + (lp[c] - y) * a);
@@ -156,13 +176,21 @@ pub fn maximizer(p: &MaximizerFx, l: &mut [f32], r: &mut [f32]) -> f32 {
     let mut out_r = vec![0.0f32; n];
     // run la - 1 extra frames of silence to flush the lookahead
     for k in 0..n + la - 1 {
-        let (xl, xr) = if k < n { (fin(l[k]) * drive, fin(r[k]) * drive) } else { (0.0, 0.0) };
+        let (xl, xr) = if k < n {
+            (fin(l[k]) * drive, fin(r[k]) * drive)
+        } else {
+            (0.0, 0.0)
+        };
         dl[0].push(xl);
         dl[1].push(xr);
         let peak = xl.abs().max(xr.abs());
         req[idx] = if peak > ceil { ceil / peak } else { 1.0 };
         let hold = req.iter().copied().fold(1.0f32, f32::min);
-        held = if hold < held { hold } else { hold + (held - hold) * rel };
+        held = if hold < held {
+            hold
+        } else {
+            hold + (held - hold) * rel
+        };
         sum += f64::from(held) - f64::from(smooth[idx]);
         smooth[idx] = held;
         idx = (idx + 1) % la;
@@ -269,7 +297,9 @@ mod tests {
     use super::*;
 
     fn sine(f: f32, secs: f32, amp: f32) -> Vec<f32> {
-        (0..(secs * SR) as usize).map(|i| amp * (TAU * f * i as f32 / SR).sin()).collect()
+        (0..(secs * SR) as usize)
+            .map(|i| amp * (TAU * f * i as f32 / SR).sin())
+            .collect()
     }
 
     fn peak(x: &[f32]) -> f32 {
@@ -280,7 +310,11 @@ mod tests {
     fn maximizer_holds_the_ceiling_and_stays_in_time() {
         let mut l = sine(220.0, 1.0, 1.6);
         let mut r = l.clone();
-        let p = MaximizerFx { threshold_db: -6.0, ceiling_db: -1.0, ..Default::default() };
+        let p = MaximizerFx {
+            threshold_db: -6.0,
+            ceiling_db: -1.0,
+            ..Default::default()
+        };
         let gr = maximizer(&p, &mut l, &mut r);
         assert!(peak(&l) <= db_to_gain(-1.0) + 1e-4, "peak {}", peak(&l));
         assert!(gr > 6.0, "gr {gr}");
@@ -289,7 +323,12 @@ mod tests {
         c[22050] = 0.5;
         let mut c2 = c.clone();
         maximizer(&MaximizerFx::default(), &mut c, &mut c2);
-        let at = c.iter().enumerate().max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap()).unwrap().0;
+        let at = c
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
+            .unwrap()
+            .0;
         assert_eq!(at, 22050);
     }
 
@@ -298,7 +337,13 @@ mod tests {
         let mut l = vec![0.0f32; SR as usize];
         l[0] = 1.0;
         let mut r = l.clone();
-        let p = ModDelayFx { time_ms: 100.0, feedback: 0.5, mix: 1.0, mod_depth: 0.0, ..Default::default() };
+        let p = ModDelayFx {
+            time_ms: 100.0,
+            feedback: 0.5,
+            mix: 1.0,
+            mod_depth: 0.0,
+            ..Default::default()
+        };
         mod_delay(&p, &mut l, &mut r, 0);
         let d = ms_to_samples(100.0) as usize;
         let e1: f32 = l[d - 5..d + 20].iter().map(|v| v.abs()).sum();
@@ -311,7 +356,15 @@ mod tests {
     fn lofi_quantizes_and_rectifier_doubles_frequency() {
         let mut l = sine(100.0, 0.5, 0.8);
         let mut r = l.clone();
-        lofi(&LoFiFx { bits: 3.0, sample_rate_hz: 8000.0, ..Default::default() }, &mut l, &mut r);
+        lofi(
+            &LoFiFx {
+                bits: 3.0,
+                sample_rate_hz: 8000.0,
+                ..Default::default()
+            },
+            &mut l,
+            &mut r,
+        );
         let mut levels: Vec<i32> = l.iter().map(|v| (v * 1000.0).round() as i32).collect();
         levels.sort_unstable();
         levels.dedup();
@@ -329,6 +382,11 @@ mod tests {
             }
             (c * c + s * s).sqrt()
         };
-        assert!(corr(200.0) > 10.0 * corr(100.0), "{} vs {}", corr(200.0), corr(100.0));
+        assert!(
+            corr(200.0) > 10.0 * corr(100.0),
+            "{} vs {}",
+            corr(200.0),
+            corr(100.0)
+        );
     }
 }

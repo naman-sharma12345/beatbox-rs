@@ -64,10 +64,16 @@ fn tool_mode() -> u8 {
     if m != 0 {
         return m;
     }
-    if std::env::var("BEATBOX_LEGACY_TOOLS").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) {
+    if std::env::var("BEATBOX_LEGACY_TOOLS")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    {
         return 1;
     }
-    match std::env::var("BEATBOX_MCP_TOOLS").unwrap_or_default().to_ascii_lowercase().as_str() {
+    match std::env::var("BEATBOX_MCP_TOOLS")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "legacy" | "full" | "all" => 1,
         "compact" => 2,
         _ => 0,
@@ -175,7 +181,9 @@ mod tests {
         assert_eq!(full, tools::registry().len());
         assert!(small <= 30 && small * 5 < full, "{small} of {full}");
         // a tool outside the compact list still runs by name through call_tool
-        let mut b = Backend::Local(Box::new(Engine::new(std::env::temp_dir().join("bb_mcp_compact"))));
+        let mut b = Backend::Local(Box::new(Engine::new(
+            std::env::temp_dir().join("bb_mcp_compact"),
+        )));
         let r = handle(&mut b, &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"call_tool","arguments":{"name":"theory_scale","arguments":{"root":"C","scale":"minor"}}}})).unwrap();
         assert_eq!(r["result"]["isError"], false, "{r}");
     }
@@ -197,8 +205,15 @@ mod tests {
         .unwrap();
         // the default list is the category tools, never more than the ceiling
         let n = list["result"]["tools"].as_array().unwrap().len();
-        assert!((10..=crate::tools_categories::MAX_TOOLS).contains(&n), "{n} tools listed");
-        assert!(list["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "mixer"));
+        assert!(
+            (10..=crate::tools_categories::MAX_TOOLS).contains(&n),
+            "{n} tools listed"
+        );
+        assert!(list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "mixer"));
         // a category call
         let call = handle(&mut b, &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"project","arguments":{"action":"set_tempo","params":{"bpm":97}}}})).unwrap();
         assert_eq!(call["result"]["isError"], false, "{call}");
@@ -208,7 +223,10 @@ mod tests {
         assert_eq!(call["result"]["isError"], false);
         assert_eq!(call["result"]["structuredContent"]["bpm"], 98.0);
         // legacy mode lists every engine tool
-        assert_eq!(tools_list_mode(1)["tools"].as_array().unwrap().len(), tools::registry().len());
+        assert_eq!(
+            tools_list_mode(1)["tools"].as_array().unwrap().len(),
+            tools::registry().len()
+        );
         let bad = handle(
             &mut b,
             &json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"nope"}}),

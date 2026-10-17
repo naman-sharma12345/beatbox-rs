@@ -66,7 +66,9 @@ const HOP: usize = 2048;
 
 /// 1/3-octave band centres, 25 Hz..16 kHz (1000 * 2^(k/3)).
 pub fn centres() -> Vec<f32> {
-    (-16..=12).map(|k| 1000.0 * 2f32.powf(k as f32 / 3.0)).collect()
+    (-16..=12)
+        .map(|k| 1000.0 * 2f32.powf(k as f32 / 3.0))
+        .collect()
 }
 
 /// Per frame, per 1/3-octave band (as `centres`), the band power of `mono`.
@@ -82,7 +84,9 @@ pub fn band_frames(mono: &[f32]) -> Vec<Vec<f32>> {
             (lo.max(1), hi.min(N / 2).max(lo.max(1)))
         })
         .collect();
-    let win: Vec<f32> = (0..N).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos()).collect();
+    let win: Vec<f32> = (0..N)
+        .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos())
+        .collect();
     let mut out = Vec::new();
     if mono.len() < N {
         return out;
@@ -141,7 +145,10 @@ impl PairStat {
     pub fn reduction(&self, hz: f32, db: f32, q: f32) -> f32 {
         let c = centres();
         let f = crate::dsp::Biquad::new(crate::dsp::BiquadKind::Bell, hz, q, db);
-        let s: Vec<f32> = c.iter().map(|x| 10f32.powf(0.03 * f.response_db(*x))).collect();
+        let s: Vec<f32> = c
+            .iter()
+            .map(|x| 10f32.powf(0.03 * f.response_db(*x)))
+            .collect();
         let nb = c.len();
         let mut d = 0f64;
         for (ra, rb) in self.la.chunks(nb).zip(self.lb.chunks(nb)) {
@@ -175,7 +182,10 @@ pub fn pair_stat(a: &[Vec<f32>], b: &[Vec<f32>], range: (f32, f32)) -> PairStat 
                 lb_all.push(0.0);
                 continue;
             }
-            let (la, lb) = ((a[t][k] as f64).max(0.0).powf(0.3), (b[t][k] as f64).max(0.0).powf(0.3));
+            let (la, lb) = (
+                (a[t][k] as f64).max(0.0).powf(0.3),
+                (b[t][k] as f64).max(0.0).powf(0.3),
+            );
             la_all.push(la as f32);
             lb_all.push(lb as f32);
             num[k] += la.min(lb);
@@ -188,7 +198,15 @@ pub fn pair_stat(a: &[Vec<f32>], b: &[Vec<f32>], range: (f32, f32)) -> PairStat 
     PairStat {
         overlap: (num.iter().sum::<f64>() / den) as f32,
         band_share: num.iter().map(|x| (x / den) as f32).collect(),
-        excess_db: (0..nb).map(|k| if pa[k] > 0.0 && pb[k] > 0.0 { (10.0 * (pb[k] / pa[k]).log10()) as f32 } else { -120.0 }).collect(),
+        excess_db: (0..nb)
+            .map(|k| {
+                if pa[k] > 0.0 && pb[k] > 0.0 {
+                    (10.0 * (pb[k] / pa[k]).log10()) as f32
+                } else {
+                    -120.0
+                }
+            })
+            .collect(),
         frames,
         la: la_all,
         lb: lb_all,
@@ -226,10 +244,21 @@ pub fn candidates(st: &PairStat, pair: &str, q: f32, cut_range: (f32, f32)) -> V
     let top = st.band_share.iter().cloned().fold(0.0f32, f32::max);
     let floor = MIN_SHARE.max(REL_SHARE * top);
     let mut v: Vec<Cand> = (0..c.len())
-        .filter(|&k| st.band_share[k] >= floor && st.band_share[k] > 0.0 && c[k] >= cut_range.0 && c[k] <= cut_range.1)
+        .filter(|&k| {
+            st.band_share[k] >= floor
+                && st.band_share[k] > 0.0
+                && c[k] >= cut_range.0
+                && c[k] <= cut_range.1
+        })
         .map(|k| {
             let db = cut_db(st.excess_db[k]);
-            Cand { hz: c[k], db, score: st.reduction(c[k], db, q), q, pair: pair.to_string() }
+            Cand {
+                hz: c[k],
+                db,
+                score: st.reduction(c[k], db, q),
+                q,
+                pair: pair.to_string(),
+            }
         })
         .filter(|c| c.score > 1e-5)
         .collect();
@@ -262,7 +291,9 @@ pub fn plan_part(part: &str, cands: &[Cand], user: Option<&PartEq>) -> (Vec<EqBe
             cands.push(c.clone());
         }
     }
-    let user_bells: Vec<&EqBell> = user.map(|u| u.bells.iter().filter(|b| !b.auto).collect()).unwrap_or_default();
+    let user_bells: Vec<&EqBell> = user
+        .map(|u| u.bells.iter().filter(|b| !b.auto).collect())
+        .unwrap_or_default();
     let mut user_hz: Vec<f32> = user_bells.iter().map(|b| b.hz).collect();
     if let Some(u) = user {
         user_hz.extend(u.low_shelf.iter().chain(u.high_shelf.iter()).map(|s| s.hz));
@@ -286,7 +317,12 @@ pub fn plan_part(part: &str, cands: &[Cand], user: Option<&PartEq>) -> (Vec<EqBe
             continue;
         }
         let db = c.db.clamp(-MAX_CUT_DB, -MIN_CUT_DB);
-        out.push(EqBell { hz: c.hz.round(), db: (db * 10.0).round() / 10.0, q: c.q, auto: true });
+        out.push(EqBell {
+            hz: c.hz.round(),
+            db: (db * 10.0).round() / 10.0,
+            q: c.q,
+            auto: true,
+        });
     }
     (out, log)
 }
@@ -316,7 +352,13 @@ pub fn duck_band(st: &PairStat, pair: &str, q: f32, cut_range: (f32, f32)) -> Op
     let c = centres();
     (0..c.len())
         .filter(|&k| st.band_share[k] > 0.0 && c[k] >= cut_range.0 && c[k] <= cut_range.1)
-        .map(|k| Cand { hz: c[k], db: -DUCK_DB, score: st.reduction(c[k], -DUCK_DB, q), q, pair: pair.to_string() })
+        .map(|k| Cand {
+            hz: c[k],
+            db: -DUCK_DB,
+            score: st.reduction(c[k], -DUCK_DB, q),
+            q,
+            pair: pair.to_string(),
+        })
         .filter(|c| c.score > 1e-5)
         .max_by(|a, b| a.score.total_cmp(&b.score))
 }
@@ -325,14 +367,23 @@ pub fn duck_band(st: &PairStat, pair: &str, q: f32, cut_range: (f32, f32)) -> Op
 /// octave of `hz`, if any: an auto band backs off from it.
 pub fn user_band_near(user: Option<&PartEq>, hz: f32) -> Option<f32> {
     let u = user?;
-    u.bells.iter().filter(|b| !b.auto).map(|b| b.hz).chain(u.low_shelf.iter().chain(u.high_shelf.iter()).map(|s| s.hz)).find(|x| near(*x, hz))
+    u.bells
+        .iter()
+        .filter(|b| !b.auto)
+        .map(|b| b.hz)
+        .chain(u.low_shelf.iter().chain(u.high_shelf.iter()).map(|s| s.hz))
+        .find(|x| near(*x, hz))
 }
 
 /// The kick duck's release for kick hits at these sample positions:
 /// `DUCK_RELEASE_MS`, or `KICK_RELEASE_SHARE` of the median spacing when
 /// that is shorter (never under 40 ms).
 pub fn kick_release_ms(hits: &[usize]) -> f32 {
-    let mut gaps: Vec<f32> = hits.windows(2).map(|w| (w[1].saturating_sub(w[0])) as f32 / SR * 1000.0).filter(|g| *g > 20.0).collect();
+    let mut gaps: Vec<f32> = hits
+        .windows(2)
+        .map(|w| (w[1].saturating_sub(w[0])) as f32 / SR * 1000.0)
+        .filter(|g| *g > 20.0)
+        .collect();
     if gaps.is_empty() {
         return DUCK_RELEASE_MS;
     }
@@ -350,6 +401,7 @@ pub fn mono(l: &[f32], r: &[f32]) -> Vec<f32> {
 mod tests {
     use super::*;
     use crate::fx::{EqBand, EqBandKind, ParametricEqFx};
+    use std::f32::consts::TAU;
 
     fn noise_band(seed: u32, len: usize, lo: f32, hi: f32, gain: f32) -> Vec<f32> {
         // a sum of sines spaced across lo..hi (deterministic)
@@ -359,9 +411,9 @@ mod tests {
         for i in 0..n {
             let f = lo * (hi / lo).powf(i as f32 / (n - 1) as f32);
             s = s.wrapping_mul(1664525).wrapping_add(1013904223);
-            let ph = (s >> 8) as f32 / (1u32 << 24) as f32 * 6.283;
+            let ph = (s >> 8) as f32 / (1u32 << 24) as f32 * TAU;
             for (t, v) in x.iter_mut().enumerate() {
-                *v += gain / n as f32 * (6.283 * f * t as f32 / SR + ph).sin();
+                *v += gain / n as f32 * (TAU * f * t as f32 / SR + ph).sin();
             }
         }
         x
@@ -369,7 +421,16 @@ mod tests {
 
     fn eq(x: &[f32], bells: &[EqBell]) -> Vec<f32> {
         let p = ParametricEqFx {
-            bands: bells.iter().map(|b| EqBand { kind: EqBandKind::Bell, freq: b.hz, gain_db: b.db, q: b.q, ..Default::default() }).collect(),
+            bands: bells
+                .iter()
+                .map(|b| EqBand {
+                    kind: EqBandKind::Bell,
+                    freq: b.hz,
+                    gain_db: b.db,
+                    q: b.q,
+                    ..Default::default()
+                })
+                .collect(),
             ..Default::default()
         };
         let (mut l, mut r) = (x.to_vec(), x.to_vec());
@@ -388,58 +449,120 @@ mod tests {
         let (fv, fp) = (band_frames(&vocal), band_frames(&pad));
         let before = pair_stat(&fv, &fp, VOCAL_RANGE);
         assert!(before.overlap > 0.1, "a clash to clear: {before:?}");
-        let (bells, log) = plan_part("pad", &candidates(&before, "vocal/pad", AUTO_Q, VOCAL_CUT_RANGE), None);
-        assert!(!bells.is_empty() && bells.len() <= MAX_AUTO_BELLS, "{bells:?} {log:?}");
-        assert!(bells.iter().all(|b| b.db <= -MIN_CUT_DB && b.db >= -MAX_CUT_DB && b.auto && (500.0..=1000.0).contains(&b.hz)), "{bells:?}");
+        let (bells, log) = plan_part(
+            "pad",
+            &candidates(&before, "vocal/pad", AUTO_Q, VOCAL_CUT_RANGE),
+            None,
+        );
+        assert!(
+            !bells.is_empty() && bells.len() <= MAX_AUTO_BELLS,
+            "{bells:?} {log:?}"
+        );
+        assert!(
+            bells.iter().all(|b| b.db <= -MIN_CUT_DB
+                && b.db >= -MAX_CUT_DB
+                && b.auto
+                && (500.0..=1000.0).contains(&b.hz)),
+            "{bells:?}"
+        );
         let after = pair_stat(&fv, &band_frames(&eq(&pad, &bells)), VOCAL_RANGE);
         // the predicted drop of the first bell alone is real and positive
         assert!(before.reduction(bells[0].hz, bells[0].db, bells[0].q) > 0.001);
-        assert!(after.overlap < before.overlap - 0.005, "overlap {:.4} -> {:.4}", before.overlap, after.overlap);
+        assert!(
+            after.overlap < before.overlap - 0.005,
+            "overlap {:.4} -> {:.4}",
+            before.overlap,
+            after.overlap
+        );
         // a part elsewhere (sub only) does not clash with the vocal's range
         let sub = noise_band(3, len, 35.0, 70.0, 0.8);
         let st = pair_stat(&fv, &band_frames(&sub), VOCAL_RANGE);
-        assert!(candidates(&st, "vocal/sub", AUTO_Q, VOCAL_CUT_RANGE).is_empty(), "{st:?}");
+        assert!(
+            candidates(&st, "vocal/sub", AUTO_Q, VOCAL_CUT_RANGE).is_empty(),
+            "{st:?}"
+        );
     }
 
     fn cand(hz: f32, db: f32, score: f32) -> Cand {
-        Cand { hz, db, score, q: AUTO_Q, pair: "vocal/keys".into() }
+        Cand {
+            hz,
+            db,
+            score,
+            q: AUTO_Q,
+            pair: "vocal/keys".into(),
+        }
     }
 
     #[test]
     fn auto_cuts_are_capped_at_minus_3_db_and_2_bells_per_part() {
-        let cs = vec![cand(800.0, -9.0, 0.3), cand(2000.0, -2.0, 0.2), cand(400.0, -3.0, 0.1), cand(1000.0, -3.0, 0.25)];
+        let cs = vec![
+            cand(800.0, -9.0, 0.3),
+            cand(2000.0, -2.0, 0.2),
+            cand(400.0, -3.0, 0.1),
+            cand(1000.0, -3.0, 0.25),
+        ];
         let (b, _) = plan_part("keys", &cs, None);
         assert_eq!(b.len(), 2, "{b:?}");
-        assert!(b.iter().all(|x| x.db >= -3.0 && x.db <= -1.0 && x.auto), "{b:?}");
+        assert!(
+            b.iter().all(|x| x.db >= -3.0 && x.db <= -1.0 && x.auto),
+            "{b:?}"
+        );
         // 1000 Hz is within a third of an octave of 800: the same collision
-        assert_eq!(b.iter().map(|x| x.hz).collect::<Vec<_>>(), vec![800.0, 2000.0]);
+        assert_eq!(
+            b.iter().map(|x| x.hz).collect::<Vec<_>>(),
+            vec![800.0, 2000.0]
+        );
         assert_eq!(cut_db(30.0), -3.0);
         assert_eq!(cut_db(-30.0), -1.0);
     }
 
     #[test]
     fn a_user_band_within_a_third_of_an_octave_makes_the_auto_cut_back_off() {
-        let user = PartEq { bells: vec![EqBell { hz: 1000.0, db: -1.0, q: 1.0, auto: false }], ..Default::default() };
+        let user = PartEq {
+            bells: vec![EqBell {
+                hz: 1000.0,
+                db: -1.0,
+                q: 1.0,
+                auto: false,
+            }],
+            ..Default::default()
+        };
         // 1260 Hz is a third of an octave above the user's 1000 Hz: backs off, with a log line
         let (b, log) = plan_part("keys", &[cand(1260.0, -3.0, 0.5)], Some(&user));
         assert!(b.is_empty(), "{b:?}");
-        assert!(log.len() == 1 && log[0].contains("user band sits at 1000 Hz") && log[0].contains("the user's band wins"), "{log:?}");
+        assert!(
+            log.len() == 1
+                && log[0].contains("user band sits at 1000 Hz")
+                && log[0].contains("the user's band wins"),
+            "{log:?}"
+        );
         // half an octave away (1414 Hz) is clear of it
         let (b, _) = plan_part("keys", &[cand(1414.0, -3.0, 0.5)], Some(&user));
         assert_eq!(b.len(), 1);
         // and below: 794 Hz (a third under) backs off too
-        assert!(plan_part("keys", &[cand(794.0, -2.0, 0.5)], Some(&user)).0.is_empty());
+        assert!(plan_part("keys", &[cand(794.0, -2.0, 0.5)], Some(&user))
+            .0
+            .is_empty());
         // the user's own bell is never touched or counted as auto
         assert!(!user.bells[0].auto && user.bells[0].db == -1.0);
     }
 
     #[test]
     fn each_clashing_pair_gets_its_strongest_band_first() {
-        let low = |hz: f32, s: f32| Cand { hz, db: -2.0, score: s, q: LOW_Q, pair: "kick/bass".into() };
+        let low = |hz: f32, s: f32| Cand {
+            hz,
+            db: -2.0,
+            score: s,
+            q: LOW_Q,
+            pair: "kick/bass".into(),
+        };
         // the kick pair's two bands outscore the vocal pair's best: one of each still goes in
         let cs = vec![low(40.0, 0.5), low(80.0, 0.4), cand(500.0, -1.0, 0.05)];
         let (b, _) = plan_part("bass", &cs, None);
-        assert_eq!(b.iter().map(|x| (x.hz, x.q)).collect::<Vec<_>>(), vec![(40.0, LOW_Q), (500.0, AUTO_Q)]);
+        assert_eq!(
+            b.iter().map(|x| (x.hz, x.q)).collect::<Vec<_>>(),
+            vec![(40.0, LOW_Q), (500.0, AUTO_Q)]
+        );
     }
 
     #[test]
@@ -449,16 +572,35 @@ mod tests {
         let pad = noise_band(2, len, 500.0, 1200.0, 0.2);
         let st = pair_stat(&band_frames(&vocal), &band_frames(&pad), VOCAL_RANGE);
         let d = duck_band(&st, "vocal/pad", AUTO_Q, VOCAL_CUT_RANGE).expect("a clash");
-        assert!((500.0..=1000.0).contains(&d.hz) && d.db == -DUCK_DB && d.score > 0.0, "{d:?}");
-        let quiet = pair_stat(&band_frames(&vocal), &band_frames(&noise_band(3, len, 35.0, 70.0, 0.8)), VOCAL_RANGE);
+        assert!(
+            (500.0..=1000.0).contains(&d.hz) && d.db == -DUCK_DB && d.score > 0.0,
+            "{d:?}"
+        );
+        let quiet = pair_stat(
+            &band_frames(&vocal),
+            &band_frames(&noise_band(3, len, 35.0, 70.0, 0.8)),
+            VOCAL_RANGE,
+        );
         assert!(duck_band(&quiet, "vocal/sub", AUTO_Q, VOCAL_CUT_RANGE).is_none());
         // hits every 480 ms keep 120 ms; every 200 ms -> 100 ms; every 60 ms -> the 40 ms floor
-        let hits = |ms: f32| (0..20).map(|i| (i as f32 * ms * SR / 1000.0) as usize).collect::<Vec<_>>();
+        let hits = |ms: f32| {
+            (0..20)
+                .map(|i| (i as f32 * ms * SR / 1000.0) as usize)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(kick_release_ms(&hits(480.0)), DUCK_RELEASE_MS);
         assert!((kick_release_ms(&hits(200.0)) - 100.0).abs() < 0.5);
         assert_eq!(kick_release_ms(&hits(60.0)), 40.0);
         // user bands win here too
-        let user = PartEq { bells: vec![EqBell { hz: 800.0, db: 1.0, q: 1.0, auto: false }], ..Default::default() };
+        let user = PartEq {
+            bells: vec![EqBell {
+                hz: 800.0,
+                db: 1.0,
+                q: 1.0,
+                auto: false,
+            }],
+            ..Default::default()
+        };
         assert_eq!(user_band_near(Some(&user), 1000.0), Some(800.0));
         assert_eq!(user_band_near(Some(&user), 1414.0), None);
         assert_eq!(user_band_near(None, 800.0), None);
@@ -467,23 +609,64 @@ mod tests {
     #[test]
     fn user_bands_win_over_auto_cuts() {
         let user = PartEq {
-            low_shelf: Some(crate::song::EqShelf { hz: 180.0, db: -2.0 }),
+            low_shelf: Some(crate::song::EqShelf {
+                hz: 180.0,
+                db: -2.0,
+            }),
             high_shelf: None,
-            bells: vec![EqBell { hz: 800.0, db: 2.0, q: 1.0, auto: false }],
+            bells: vec![EqBell {
+                hz: 800.0,
+                db: 2.0,
+                q: 1.0,
+                auto: false,
+            }],
             ducks: vec![],
         };
-        let cs = vec![cand(800.0, -3.0, 0.4), cand(200.0, -3.0, 0.3), cand(2500.0, -2.0, 0.2), cand(5000.0, -1.5, 0.1)];
+        let cs = vec![
+            cand(800.0, -3.0, 0.4),
+            cand(200.0, -3.0, 0.3),
+            cand(2500.0, -2.0, 0.2),
+            cand(5000.0, -1.5, 0.1),
+        ];
         let (b, log) = plan_part("keys", &cs, Some(&user));
         // 800 (a user bell there) and 200 (near the user's 180 Hz shelf) are skipped with a log line
-        assert_eq!(b.iter().map(|x| x.hz).collect::<Vec<_>>(), vec![2500.0, 5000.0], "{log:?}");
-        assert_eq!(log.iter().filter(|l| l.contains("user")).count(), 2, "{log:?}");
+        assert_eq!(
+            b.iter().map(|x| x.hz).collect::<Vec<_>>(),
+            vec![2500.0, 5000.0],
+            "{log:?}"
+        );
+        assert_eq!(
+            log.iter().filter(|l| l.contains("user")).count(),
+            2,
+            "{log:?}"
+        );
         // no free slot: six user bells take every one
-        let full = PartEq { bells: (0..6).map(|i| EqBell { hz: 100.0 * 3f32.powi(i), db: 1.0, q: 1.0, auto: false }).collect(), ..Default::default() };
+        let full = PartEq {
+            bells: (0..6)
+                .map(|i| EqBell {
+                    hz: 100.0 * 3f32.powi(i),
+                    db: 1.0,
+                    q: 1.0,
+                    auto: false,
+                })
+                .collect(),
+            ..Default::default()
+        };
         let (b, log) = plan_part("keys", &[cand(1500.0, -3.0, 0.5)], Some(&full));
-        assert!(b.is_empty() && log[0].contains("no free bell slot"), "{b:?} {log:?}");
+        assert!(
+            b.is_empty() && log[0].contains("no free bell slot"),
+            "{b:?} {log:?}"
+        );
         // five user bells: one slot left
-        let five = PartEq { bells: full.bells[..5].to_vec(), ..Default::default() };
-        let (b, log) = plan_part("keys", &[cand(1500.0, -3.0, 0.5), cand(14000.0, -3.0, 0.4)], Some(&five));
+        let five = PartEq {
+            bells: full.bells[..5].to_vec(),
+            ..Default::default()
+        };
+        let (b, log) = plan_part(
+            "keys",
+            &[cand(1500.0, -3.0, 0.5), cand(14000.0, -3.0, 0.4)],
+            Some(&five),
+        );
         assert_eq!(b.len(), 1, "{b:?} {log:?}");
     }
 }

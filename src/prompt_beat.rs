@@ -38,33 +38,139 @@ pub const ARTISTS: &[ArtistRef] = &[
 ];
 
 const GENRE_WORDS: &[(&str, &str)] = &[
-    ("uk drill", "drill"), ("drill", "drill"), ("boom bap", "boom_bap"), ("boombap", "boom_bap"), ("boom-bap", "boom_bap"),
-    ("lo-fi", "lofi"), ("lofi", "lofi"), ("r&b", "rnb"), ("rnb", "rnb"), ("phonk", "phonk"), ("afro", "afrobeats"),
-    ("punjabi party", "punjabi_party"), ("desi party", "punjabi_party"), ("bhangra", "punjabi_party"), ("dhol", "punjabi_party"), ("punjabi", "punjabi_party"), ("desi", "desi_hiphop"), ("indian", "desi_hiphop"), ("bollywood", "desi_hiphop"),
-    ("melodic", "melodic_rap"), ("emo", "melodic_rap"), ("trap", "trap"), ("rap", "trap"), ("hip hop", "boom_bap"), ("hip-hop", "boom_bap"),
+    ("uk drill", "drill"),
+    ("drill", "drill"),
+    ("boom bap", "boom_bap"),
+    ("boombap", "boom_bap"),
+    ("boom-bap", "boom_bap"),
+    ("lo-fi", "lofi"),
+    ("lofi", "lofi"),
+    ("r&b", "rnb"),
+    ("rnb", "rnb"),
+    ("phonk", "phonk"),
+    ("afro", "afrobeats"),
+    ("punjabi party", "punjabi_party"),
+    ("desi party", "punjabi_party"),
+    ("bhangra", "punjabi_party"),
+    ("dhol", "punjabi_party"),
+    ("punjabi", "punjabi_party"),
+    ("desi", "desi_hiphop"),
+    ("indian", "desi_hiphop"),
+    ("bollywood", "desi_hiphop"),
+    ("melodic", "melodic_rap"),
+    ("emo", "melodic_rap"),
+    ("trap", "trap"),
+    ("rap", "trap"),
+    ("hip hop", "boom_bap"),
+    ("hip-hop", "boom_bap"),
 ];
 
 const CONTRASTS: &[(&[&str], &str)] = &[
-    (&["quiet", "breakdown", "stripped", "calm part", "calm section", "soft part", "ambient part", "break section"], "quiet_section"),
-    (&["drums drop out", "no drums", "drop out the drums", "dropout"], "drum_dropout"),
-    (&["beat switch", "switch up", "switchup", "beat change", "flip the beat", "second half", "tempo change"], "beat_switch"),
+    (
+        &[
+            "quiet",
+            "breakdown",
+            "stripped",
+            "calm part",
+            "calm section",
+            "soft part",
+            "ambient part",
+            "break section",
+        ],
+        "quiet_section",
+    ),
+    (
+        &[
+            "drums drop out",
+            "no drums",
+            "drop out the drums",
+            "dropout",
+        ],
+        "drum_dropout",
+    ),
+    (
+        &[
+            "beat switch",
+            "switch up",
+            "switchup",
+            "beat change",
+            "flip the beat",
+            "second half",
+            "tempo change",
+        ],
+        "beat_switch",
+    ),
     (&["drop", "silence before"], "silence_before_drop"),
     (&["half time", "half-time", "halftime"], "half_time_hook"),
     (&["key change", "modulat", "change key"], "key_change"),
-    (&["build", "builds up", "grows", "sparse to dense", "escalat"], "sparse_to_dense"),
-    (&["call and response", "call & response", "call-and-response"], "bass_kick_call_response"),
+    (
+        &["build", "builds up", "grows", "sparse to dense", "escalat"],
+        "sparse_to_dense",
+    ),
+    (
+        &["call and response", "call & response", "call-and-response"],
+        "bass_kick_call_response",
+    ),
     (&["odd", "weird phrase", "unexpected"], "odd_phrase"),
 ];
 
 const MOOD_WORDS: &[(&[&str], &str)] = &[
-    (&["dark", "evil", "sinister", "menac", "eerie", "horror", "cold"], "dark"),
-    (&["sad", "emotional", "heartbreak", "pain", "melanchol", "lonely", "cry"], "sad"),
-    (&["hype", "aggressive", "hard", "energetic", "banger", "angry", "gym", "turn up"], "hype"),
-    (&["chill", "relax", "calm", "study", "sleep", "mellow", "smooth vibe"], "chill"),
+    (
+        &[
+            "dark", "evil", "sinister", "menac", "eerie", "horror", "cold",
+        ],
+        "dark",
+    ),
+    (
+        &[
+            "sad",
+            "emotional",
+            "heartbreak",
+            "pain",
+            "melanchol",
+            "lonely",
+            "cry",
+        ],
+        "sad",
+    ),
+    (
+        &[
+            "hype",
+            "aggressive",
+            "hard",
+            "energetic",
+            "banger",
+            "angry",
+            "gym",
+            "turn up",
+        ],
+        "hype",
+    ),
+    (
+        &[
+            "chill",
+            "relax",
+            "calm",
+            "study",
+            "sleep",
+            "mellow",
+            "smooth vibe",
+        ],
+        "chill",
+    ),
     (&["jazz", "soul", "dusty"], "jazzy"),
-    (&["happy", "uplift", "hopeful", "bright", "summer", "inspir"], "hopeful"),
-    (&["spiritual", "devotional", "prayer", "sufi", "god"], "devotional"),
-    (&["romantic", "love", "smooth", "sensual", "late night"], "smooth"),
+    (
+        &["happy", "uplift", "hopeful", "bright", "summer", "inspir"],
+        "hopeful",
+    ),
+    (
+        &["spiritual", "devotional", "prayer", "sufi", "god"],
+        "devotional",
+    ),
+    (
+        &["romantic", "love", "smooth", "sensual", "late night"],
+        "smooth",
+    ),
 ];
 
 const INSTRUMENTS: &[(&[&str], &str, &str)] = &[
@@ -107,7 +213,14 @@ fn has(text: &str, w: &str) -> bool {
 fn number_before(text: &str, unit: &str) -> Option<f32> {
     let i = text.find(unit)?;
     let head = text[..i].trim_end();
-    let digits: String = head.chars().rev().take_while(|c| c.is_ascii_digit() || *c == '.').collect::<Vec<_>>().into_iter().rev().collect();
+    let digits: String = head
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     digits.parse().ok()
 }
 
@@ -125,7 +238,10 @@ pub fn parse_duration(t: &str) -> Option<f32> {
     };
     // a number glued to its unit: "2min", "50s", "3m"
     let split = |s: &str| -> Option<(f32, f32)> {
-        let d: String = s.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let d: String = s
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
         if d.is_empty() || d.len() == s.len() {
             return None;
         }
@@ -229,7 +345,10 @@ pub fn parse_prompt(prompt: &str) -> PromptPlan {
             let rest: Vec<&str> = t[i + kw.len()..].split_whitespace().take(2).collect();
             if let Some(k) = rest.first() {
                 let k = k.trim_end_matches('m');
-                if crate::theory::pitch_class(k).is_ok() && k.len() <= 2 && k.chars().next().map_or(false, |c| ('a'..='g').contains(&c)) {
+                if crate::theory::pitch_class(k).is_ok()
+                    && k.len() <= 2
+                    && k.chars().next().is_some_and(|c| ('a'..='g').contains(&c))
+                {
                     let mut kk = k.to_uppercase();
                     if kk.len() == 2 {
                         kk = format!("{}{}", &kk[..1], &k[1..]);
@@ -251,21 +370,36 @@ pub fn parse_prompt(prompt: &str) -> PromptPlan {
         let toks: Vec<&str> = t.split_whitespace().collect();
         for (i, tok) in toks.iter().enumerate() {
             let next = toks.get(i + 1).copied().unwrap_or("");
-            let (root, scale) = if ["minor", "min", "major", "maj", "dorian", "phrygian"].contains(&next) {
-                (*tok, Some(match next { "min" => "minor", "maj" => "major", s => s }))
-            } else if tok.len() >= 2 && tok.len() <= 3 && tok.ends_with('m') && *tok != "am" {
-                (&tok[..tok.len() - 1], Some("minor"))
-            } else {
-                continue;
-            };
-            let ok = root.len() <= 2 && root.chars().next().is_some_and(|c| ('a'..='g').contains(&c)) && (root.len() == 1 || matches!(&root[1..], "#" | "b")) && crate::theory::pitch_class(root).is_ok();
+            let (root, scale) =
+                if ["minor", "min", "major", "maj", "dorian", "phrygian"].contains(&next) {
+                    (
+                        *tok,
+                        Some(match next {
+                            "min" => "minor",
+                            "maj" => "major",
+                            s => s,
+                        }),
+                    )
+                } else if tok.len() >= 2 && tok.len() <= 3 && tok.ends_with('m') && *tok != "am" {
+                    (&tok[..tok.len() - 1], Some("minor"))
+                } else {
+                    continue;
+                };
+            let ok = root.len() <= 2
+                && root
+                    .chars()
+                    .next()
+                    .is_some_and(|c| ('a'..='g').contains(&c))
+                && (root.len() == 1 || matches!(&root[1..], "#" | "b"))
+                && crate::theory::pitch_class(root).is_ok();
             if ok {
                 let kk = format!("{}{}", root[..1].to_uppercase(), &root[1..]);
                 p.key = Some(kk.clone());
                 if let Some(s) = scale {
                     p.scale = Some(s.to_string());
                 }
-                p.reasons.push(format!("key {kk} {} as asked", scale.unwrap_or("")));
+                p.reasons
+                    .push(format!("key {kk} {} as asked", scale.unwrap_or("")));
                 break;
             }
         }
@@ -316,7 +450,11 @@ pub struct LyricsReport {
 }
 
 pub fn syllables(word: &str) -> usize {
-    let w: Vec<char> = word.to_lowercase().chars().filter(|c| c.is_alphabetic()).collect();
+    let w: Vec<char> = word
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphabetic())
+        .collect();
     if w.is_empty() {
         return 0;
     }
@@ -344,7 +482,14 @@ fn rhyme_key(line: &str) -> String {
     if w.is_empty() {
         return w;
     }
-    for (a, b) in [("igh", "i"), ("ie", "i"), ("ye", "i"), ("y", "i"), ("ee", "i"), ("ea", "i")] {
+    for (a, b) in [
+        ("igh", "i"),
+        ("ie", "i"),
+        ("ye", "i"),
+        ("y", "i"),
+        ("ee", "i"),
+        ("ea", "i"),
+    ] {
         if w.ends_with(a) && w.len() > a.len() {
             w.truncate(w.len() - a.len());
             w.push_str(b);
@@ -370,15 +515,55 @@ fn rhyme_key(line: &str) -> String {
     k
 }
 
-const DESI_WORDS: &[&str] = &["main", "hoon", "mera", "meri", "tera", "teri", "tere", "da", "di", "de", "nu", "vich", "sab", "dil", "raja", "sheher", "gali", "yaar", "jatt", "pind", "nahi", "hai", "kya", "ki", "ke", "raat", "raatan", "jaan", "rab", "munde", "kudi", "apna", "sadda", "tu", "mainu", "tainu"];
+const DESI_WORDS: &[&str] = &[
+    "main", "hoon", "mera", "meri", "tera", "teri", "tere", "da", "di", "de", "nu", "vich", "sab",
+    "dil", "raja", "sheher", "gali", "yaar", "jatt", "pind", "nahi", "hai", "kya", "ki", "ke",
+    "raat", "raatan", "jaan", "rab", "munde", "kudi", "apna", "sadda", "tu", "mainu", "tainu",
+];
 
 const LEX: &[(&str, &[&str])] = &[
-    ("dark", &["dark", "blood", "gun", "kill", "death", "die", "grave", "street", "war", "night", "devil", "cold", "smoke", "enemy", "knife", "shadow"]),
-    ("sad", &["tears", "cry", "alone", "lonely", "miss", "broken", "gone", "goodbye", "pain", "hurt", "lost", "empty", "sorry"]),
-    ("hype", &["money", "boss", "king", "fire", "win", "hustle", "grind", "racks", "drip", "flex", "run", "top", "crown", "power", "raja", "baadshah", "game", "name", "block", "bars", "city", "paper", "haters", "bouncing", "bottom", "goat", "legend", "stack", "whip", "gang"]),
-    ("smooth", &["love", "heart", "baby", "kiss", "forever", "touch", "eyes", "dil", "pyaar", "jaan", "ishq", "mohabbat", "tere", "sajna"]),
-    ("devotional", &["god", "rab", "prayer", "lord", "allah", "waheguru", "soul", "heaven", "faith"]),
-    ("hopeful", &["dream", "rise", "shine", "light", "sun", "hope", "fly", "free", "tomorrow"]),
+    (
+        "dark",
+        &[
+            "dark", "blood", "gun", "kill", "death", "die", "grave", "street", "war", "night",
+            "devil", "cold", "smoke", "enemy", "knife", "shadow",
+        ],
+    ),
+    (
+        "sad",
+        &[
+            "tears", "cry", "alone", "lonely", "miss", "broken", "gone", "goodbye", "pain", "hurt",
+            "lost", "empty", "sorry",
+        ],
+    ),
+    (
+        "hype",
+        &[
+            "money", "boss", "king", "fire", "win", "hustle", "grind", "racks", "drip", "flex",
+            "run", "top", "crown", "power", "raja", "baadshah", "game", "name", "block", "bars",
+            "city", "paper", "haters", "bouncing", "bottom", "goat", "legend", "stack", "whip",
+            "gang",
+        ],
+    ),
+    (
+        "smooth",
+        &[
+            "love", "heart", "baby", "kiss", "forever", "touch", "eyes", "dil", "pyaar", "jaan",
+            "ishq", "mohabbat", "tere", "sajna",
+        ],
+    ),
+    (
+        "devotional",
+        &[
+            "god", "rab", "prayer", "lord", "allah", "waheguru", "soul", "heaven", "faith",
+        ],
+    ),
+    (
+        "hopeful",
+        &[
+            "dream", "rise", "shine", "light", "sun", "hope", "fly", "free", "tomorrow",
+        ],
+    ),
 ];
 
 /// Read lyrics: rap or sung, mood, and the song's sections (stanzas; a
@@ -386,7 +571,12 @@ const LEX: &[(&str, &[&str])] = &[
 pub fn analyze_lyrics(text: &str) -> LyricsReport {
     let stanzas: Vec<Vec<&str>> = text
         .split("\n\n")
-        .map(|s| s.lines().map(|l| l.trim()).filter(|l| !l.is_empty() && !l.starts_with('[')).collect::<Vec<_>>())
+        .map(|s| {
+            s.lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && !l.starts_with('['))
+                .collect::<Vec<_>>()
+        })
         .filter(|s| !s.is_empty())
         .collect();
     let lines: Vec<&str> = stanzas.iter().flatten().copied().collect();
@@ -394,19 +584,49 @@ pub fn analyze_lyrics(text: &str) -> LyricsReport {
     if lines.is_empty() {
         return r;
     }
-    let syl: Vec<usize> = lines.iter().map(|l| l.split_whitespace().map(syllables).sum()).collect();
+    let syl: Vec<usize> = lines
+        .iter()
+        .map(|l| l.split_whitespace().map(syllables).sum())
+        .collect();
     r.syllables_per_line = syl.iter().sum::<usize>() as f32 / syl.len() as f32;
     // end rhymes between neighbouring lines
     let keys: Vec<String> = lines.iter().map(|l| rhyme_key(l)).collect();
-    let rhymes = keys.windows(2).filter(|w| !w[0].is_empty() && w[0] == w[1]).count() + keys.windows(3).filter(|w| !w[0].is_empty() && w[0] == w[2]).count();
+    let rhymes = keys
+        .windows(2)
+        .filter(|w| !w[0].is_empty() && w[0] == w[1])
+        .count()
+        + keys
+            .windows(3)
+            .filter(|w| !w[0].is_empty() && w[0] == w[2])
+            .count();
     r.rhyme_density = rhymes as f32 / lines.len() as f32;
     let all = text.to_lowercase();
-    let melodic_marks = ["oh", "ooh", "yeah", "baby", "la la", "na na", "hmm", "aaj", "tere", "dil"].iter().filter(|w| all.contains(*w)).count();
-    let rap = r.syllables_per_line >= 10.5 || (r.syllables_per_line >= 8.5 && r.rhyme_density > 0.5 && melodic_marks < 3);
+    let melodic_marks = [
+        "oh", "ooh", "yeah", "baby", "la la", "na na", "hmm", "aaj", "tere", "dil",
+    ]
+    .iter()
+    .filter(|w| all.contains(*w))
+    .count();
+    let rap = r.syllables_per_line >= 10.5
+        || (r.syllables_per_line >= 8.5 && r.rhyme_density > 0.5 && melodic_marks < 3);
     r.delivery = if rap { "rap".into() } else { "melodic".into() };
-    r.reasons.push(format!("{:.1} syllables per line, rhyme density {:.2}{} -> {}", r.syllables_per_line, r.rhyme_density, if melodic_marks > 0 { format!(", {melodic_marks} sung-style words") } else { String::new() }, r.delivery));
+    r.reasons.push(format!(
+        "{:.1} syllables per line, rhyme density {:.2}{} -> {}",
+        r.syllables_per_line,
+        r.rhyme_density,
+        if melodic_marks > 0 {
+            format!(", {melodic_marks} sung-style words")
+        } else {
+            String::new()
+        },
+        r.delivery
+    ));
     // mood
-    let words: Vec<String> = all.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(String::from).collect();
+    let words: Vec<String> = all
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect();
     let mut best = ("dark", 0usize);
     for (m, lex) in LEX {
         let n = words.iter().filter(|w| lex.contains(&w.as_str())).count();
@@ -416,20 +636,53 @@ pub fn analyze_lyrics(text: &str) -> LyricsReport {
         }
     }
     // longing phrases outweigh the love words they contain ("tere bina" = without you)
-    let longing = ["let you go", "without you", "tere bina", "never pick up", "miss you", "yaad", "judaa", "dard", "tanha", "bichad", "on my own", "you're gone", "come back"]
-        .iter()
-        .filter(|p| all.contains(*p))
-        .count();
+    let longing = [
+        "let you go",
+        "without you",
+        "tere bina",
+        "never pick up",
+        "miss you",
+        "yaad",
+        "judaa",
+        "dard",
+        "tanha",
+        "bichad",
+        "on my own",
+        "you're gone",
+        "come back",
+    ]
+    .iter()
+    .filter(|p| all.contains(*p))
+    .count();
     if longing > 0 {
-        let sad = r.mood_scores.get("sad").and_then(|v| v.as_u64()).unwrap_or(0) as usize + 3 * longing;
+        let sad = r
+            .mood_scores
+            .get("sad")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize
+            + 3 * longing;
         r.mood_scores.insert("sad".into(), json!(sad));
         if sad >= best.1 {
             best = ("sad", sad);
         }
     }
-    r.mood = if best.1 == 0 { if rap { "dark".into() } else { "smooth".into() } } else { best.0.into() };
+    r.mood = if best.1 == 0 {
+        if rap {
+            "dark".into()
+        } else {
+            "smooth".into()
+        }
+    } else {
+        best.0.into()
+    };
     // sections: repeated stanzas are hooks
-    let norm = |s: &[&str]| s.join(" ").to_lowercase().chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect::<String>();
+    let norm = |s: &[&str]| {
+        s.join(" ")
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == ' ')
+            .collect::<String>()
+    };
     // one block with no blank lines: lines that come back are hook lines;
     // runs of them become hook stanzas, the rest verses of up to 8 lines
     let stanzas: Vec<Vec<&str>> = if stanzas.len() == 1 && lines.len() > 8 {
@@ -438,11 +691,18 @@ pub fn analyze_lyrics(text: &str) -> LyricsReport {
         let hooky: Vec<bool> = (0..lines.len())
             .map(|i| {
                 (0..lines.len()).any(|j| {
-                    j != i && (crate::vocal::lyric_similarity(&nl[i], &nl[j]) > 0.75 || (i.abs_diff(j) > 3 && nl[i] == nl[j]))
+                    j != i
+                        && (crate::vocal::lyric_similarity(&nl[i], &nl[j]) > 0.75
+                            || (i.abs_diff(j) > 3 && nl[i] == nl[j]))
                 }) || {
                     // a chant: the line's first two words repeat inside the line ("raja raja")
                     let w: Vec<&str> = nl[i].split_whitespace().collect();
-                    w.len() >= 2 && w[0] == w[1] && (0..lines.len()).filter(|j| first_word(&nl[*j]) == w[0]).count() >= 3
+                    w.len() >= 2
+                        && w[0] == w[1]
+                        && (0..lines.len())
+                            .filter(|j| first_word(&nl[*j]) == w[0])
+                            .count()
+                            >= 3
                 }
             })
             .collect();
@@ -462,7 +722,10 @@ pub fn analyze_lyrics(text: &str) -> LyricsReport {
             out.push(cur);
         }
         if out.len() > 1 {
-            r.reasons.push(format!("no blank lines: split into {} sections by the lines that come back", out.len()));
+            r.reasons.push(format!(
+                "no blank lines: split into {} sections by the lines that come back",
+                out.len()
+            ));
         }
         out
     } else {
@@ -471,15 +734,33 @@ pub fn analyze_lyrics(text: &str) -> LyricsReport {
     let ns: Vec<String> = stanzas.iter().map(|s| norm(s)).collect();
     let line_bars = if rap { 1 } else { 2 };
     for (i, s) in stanzas.iter().enumerate() {
-        let repeated = ns.iter().enumerate().any(|(j, o)| j != i && crate::vocal::lyric_similarity(o, &ns[i]) > 0.6);
-        let short_and_repetitive = s.len() <= 4 && { let mut u: Vec<String> = s.iter().map(|l| l.to_lowercase()).collect(); u.sort(); u.dedup(); u.len() < s.len() };
-        let kind = if repeated || short_and_repetitive { "hook" } else { "verse" };
+        let repeated = ns
+            .iter()
+            .enumerate()
+            .any(|(j, o)| j != i && crate::vocal::lyric_similarity(o, &ns[i]) > 0.6);
+        let short_and_repetitive = s.len() <= 4 && {
+            let mut u: Vec<String> = s.iter().map(|l| l.to_lowercase()).collect();
+            u.sort();
+            u.dedup();
+            u.len() < s.len()
+        };
+        let kind = if repeated || short_and_repetitive {
+            "hook"
+        } else {
+            "verse"
+        };
         let mut bars = ((s.len() as u32 * line_bars).div_ceil(4) * 4).clamp(4, 32);
         if kind == "hook" {
             // a hook needs room to land (and usually goes round twice)
             bars = bars.max(8);
         }
-        r.sections.push(LyricSection { kind: kind.into(), lines: s.len(), bars, first_line: s[0].to_string(), text: s.iter().map(|l| l.to_string()).collect() });
+        r.sections.push(LyricSection {
+            kind: kind.into(),
+            lines: s.len(),
+            bars,
+            first_line: s[0].to_string(),
+            text: s.iter().map(|l| l.to_string()).collect(),
+        });
     }
     if !r.sections.iter().any(|s| s.kind == "hook") && r.sections.len() > 1 {
         // no repeat: the shortest stanza reads as the hook
@@ -510,9 +791,13 @@ pub fn analyze_lyrics(text: &str) -> LyricsReport {
         }
     };
     // Punjabi/Hindi in the lyrics: the desi palette (tumbi/flute/tabla over the 808)
-    let desi = words.iter().filter(|w| DESI_WORDS.contains(&w.as_str())).count();
+    let desi = words
+        .iter()
+        .filter(|w| DESI_WORDS.contains(&w.as_str()))
+        .count();
     let (genre, bpm) = if desi >= 4 && desi * 12 >= words.len() / 4 {
-        r.reasons.push(format!("{desi} Punjabi/Hindi words -> desi palette"));
+        r.reasons
+            .push(format!("{desi} Punjabi/Hindi words -> desi palette"));
         if rap {
             ("desi_hiphop", if r.mood == "hype" { 94.0 } else { 90.0 })
         } else {
@@ -523,7 +808,10 @@ pub fn analyze_lyrics(text: &str) -> LyricsReport {
     };
     r.genre = genre.into();
     r.bpm = bpm;
-    r.reasons.push(format!("{} delivery + {} mood -> {} at {} BPM", r.delivery, r.mood, genre, bpm));
+    r.reasons.push(format!(
+        "{} delivery + {} mood -> {} at {} BPM",
+        r.delivery, r.mood, genre, bpm
+    ));
     r
 }
 
@@ -538,7 +826,11 @@ mod tests {
         assert!(p.contrasts.contains(&"beat_switch".to_string()));
         assert!(p.contrasts.contains(&"quiet_section".to_string()));
         // the quiet section is placed first so the switch can slam in out of it
-        let qi = p.contrasts.iter().position(|c| c == "quiet_section").unwrap();
+        let qi = p
+            .contrasts
+            .iter()
+            .position(|c| c == "quiet_section")
+            .unwrap();
         let si = p.contrasts.iter().position(|c| c == "beat_switch").unwrap();
         assert!(qi < si);
         assert!(p.duration_s.unwrap() >= 75.0);
@@ -557,10 +849,16 @@ mod tests {
         assert_eq!(parse_duration(" 2:50 long "), Some(170.0));
         assert_eq!(parse_duration(" 3min "), Some(180.0));
         assert_eq!(parse_duration(" 170 seconds long "), Some(170.0));
-        assert_eq!(parse_prompt("trap in F#m, 90 seconds").key.as_deref(), Some("F#"));
+        assert_eq!(
+            parse_prompt("trap in F#m, 90 seconds").key.as_deref(),
+            Some("F#")
+        );
         assert!(parse_prompt("i am a rapper, 140 bpm").key.is_none());
         assert_eq!(parse_duration(" sliding 808s and 90s soul "), None);
-        assert_eq!(q.palette.get("harmony").and_then(|v| v.as_str()), Some("felt_piano"));
+        assert_eq!(
+            q.palette.get("harmony").and_then(|v| v.as_str()),
+            Some("felt_piano")
+        );
     }
 
     #[test]
@@ -596,12 +894,16 @@ mod tests {
         assert_eq!(r.delivery, "rap");
         assert_eq!(r.mood, "hype");
         assert_eq!(r.genre, "desi_hiphop");
-        assert_eq!(r.sections.iter().filter(|s| s.kind == "hook").count(), 2, "{:?}", r.sections);
+        assert_eq!(
+            r.sections.iter().filter(|s| s.kind == "hook").count(),
+            2,
+            "{:?}",
+            r.sections
+        );
         assert!(r.rhyme_density > 0.4, "{}", r.rhyme_density);
         assert_eq!(rhyme_key("pain"), rhyme_key("lane"));
         assert_eq!(rhyme_key("high"), rhyme_key("goodbye"));
     }
-
 
     #[test]
     fn sung_longing_reads_sad_and_melodic() {
@@ -611,5 +913,4 @@ mod tests {
         assert_eq!(r.mood, "sad");
         assert_eq!(r.sections.iter().filter(|s| s.kind == "hook").count(), 2);
     }
-
 }

@@ -11,9 +11,17 @@ use crate::fx::GrossBeatFx;
 pub fn parse_points(s: &str) -> Result<Vec<(f32, f32)>, String> {
     let mut v = Vec::new();
     for part in s.split([',', ';', ' ']).filter(|x| !x.trim().is_empty()) {
-        let (a, b) = part.split_once(':').ok_or_else(|| format!("point '{part}' is not u:v (e.g. 0:0, 0.5:0.25)"))?;
-        let u: f32 = a.trim().parse().map_err(|_| format!("bad position in '{part}'"))?;
-        let y: f32 = b.trim().parse().map_err(|_| format!("bad value in '{part}'"))?;
+        let (a, b) = part
+            .split_once(':')
+            .ok_or_else(|| format!("point '{part}' is not u:v (e.g. 0:0, 0.5:0.25)"))?;
+        let u: f32 = a
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad position in '{part}'"))?;
+        let y: f32 = b
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad value in '{part}'"))?;
         if !(0.0..=1.0).contains(&u) {
             return Err(format!("position {u} outside 0..1 in '{part}'"));
         }
@@ -43,18 +51,33 @@ fn eval(pts: &[(f32, f32)], u: f32) -> f32 {
 /// Time presets: (name, what it does). Positions are fractions of the cycle.
 pub const TIME_PRESETS: &[(&str, &str)] = &[
     ("none", "plays in time"),
-    ("half_speed", "whole cycle at half speed, an octave down (classic slow-down)"),
-    ("half_speed_end", "last quarter of the cycle drops to half speed"),
+    (
+        "half_speed",
+        "whole cycle at half speed, an octave down (classic slow-down)",
+    ),
+    (
+        "half_speed_end",
+        "last quarter of the cycle drops to half speed",
+    ),
     ("repeat_beat", "first beat of the cycle repeats four times"),
     ("repeat_end_8th", "last beat stutters an 8th note"),
-    ("repeat_end_16th", "last beat stutters 16ths (a build-up roll)"),
+    (
+        "repeat_end_16th",
+        "last beat stutters 16ths (a build-up roll)",
+    ),
     ("reverse_end", "last beat plays backwards"),
     ("reverse", "the whole cycle plays backwards"),
     ("tape_stop", "the whole cycle slows to a stop"),
     ("tape_stop_end", "last beat slows to a stop (before a drop)"),
     ("scratch_end", "last beat is scratched back and forth"),
-    ("freeze_end", "last beat holds the start of that beat (a stutter freeze)"),
-    ("double_speed", "plays the first half of the cycle twice as fast, twice"),
+    (
+        "freeze_end",
+        "last beat holds the start of that beat (a stutter freeze)",
+    ),
+    (
+        "double_speed",
+        "plays the first half of the cycle twice as fast, twice",
+    ),
 ];
 
 /// Volume presets: (name, what it does).
@@ -74,7 +97,13 @@ pub const VOLUME_PRESETS: &[(&str, &str)] = &[
 
 /// Source position (fraction of the cycle) for output fraction u.
 fn time_preset(name: &str, u: f32) -> Option<f32> {
-    let end = |f: &dyn Fn(f32) -> f32| if u < 0.75 { u } else { 0.75 + f((u - 0.75) / 0.25) * 0.25 };
+    let end = |f: &dyn Fn(f32) -> f32| {
+        if u < 0.75 {
+            u
+        } else {
+            0.75 + f((u - 0.75) / 0.25) * 0.25
+        }
+    };
     Some(match name {
         "none" | "" => u,
         "half_speed" => u * 0.5,
@@ -99,18 +128,48 @@ fn volume_preset(name: &str, u: f32, cycle_steps: f32) -> Option<f32> {
     let beat = (s / 4.0).fract();
     Some(match name {
         "none" | "" => 1.0,
-        "trance_gate" => if s.fract() < 0.55 { 1.0 } else { 0.0 },
-        "trance_gate_8th" => if (s / 2.0).fract() < 0.55 { 1.0 } else { 0.0 },
+        "trance_gate" => {
+            if s.fract() < 0.55 {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        "trance_gate_8th" => {
+            if (s / 2.0).fract() < 0.55 {
+                1.0
+            } else {
+                0.0
+            }
+        }
         "pump" => 0.35 + 0.65 * (beat / 0.45).min(1.0).powf(0.6),
         "pump_hard" => 0.05 + 0.95 * (beat / 0.3).min(1.0).powf(0.5),
         "tresillo" => {
             let k = (s as usize) % 8;
-            if matches!(k, 0 | 3 | 6) { 1.0 } else if matches!(k, 1 | 4) { 0.5 } else { 0.0 }
+            if matches!(k, 0 | 3 | 6) {
+                1.0
+            } else if matches!(k, 1 | 4) {
+                0.5
+            } else {
+                0.0
+            }
         }
-        "offbeat" => if beat >= 0.5 { 1.0 } else { 0.0 },
+        "offbeat" => {
+            if beat >= 0.5 {
+                1.0
+            } else {
+                0.0
+            }
+        }
         "fade_in" => u,
         "fade_out" => 1.0 - u,
-        "stop_end" => if u < 0.75 { 1.0 } else { 0.0 },
+        "stop_end" => {
+            if u < 0.75 {
+                1.0
+            } else {
+                0.0
+            }
+        }
         "swell" => beat.powf(2.0),
         _ => return None,
     })
@@ -118,10 +177,26 @@ fn volume_preset(name: &str, u: f32, cycle_steps: f32) -> Option<f32> {
 
 pub fn check(p: &GrossBeatFx) -> Result<(), String> {
     if p.time_points.trim().is_empty() && time_preset(&p.time, 0.5).is_none() {
-        return Err(format!("unknown time preset '{}'. Presets: {}", p.time, TIME_PRESETS.iter().map(|x| x.0).collect::<Vec<_>>().join(", ")));
+        return Err(format!(
+            "unknown time preset '{}'. Presets: {}",
+            p.time,
+            TIME_PRESETS
+                .iter()
+                .map(|x| x.0)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     if p.volume_points.trim().is_empty() && volume_preset(&p.volume, 0.5, 16.0).is_none() {
-        return Err(format!("unknown volume preset '{}'. Presets: {}", p.volume, VOLUME_PRESETS.iter().map(|x| x.0).collect::<Vec<_>>().join(", ")));
+        return Err(format!(
+            "unknown volume preset '{}'. Presets: {}",
+            p.volume,
+            VOLUME_PRESETS
+                .iter()
+                .map(|x| x.0)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     if !p.time_points.trim().is_empty() {
         parse_points(&p.time_points)?;
@@ -156,7 +231,13 @@ pub fn gross_beat_at(p: &GrossBeatFx, l: &mut [f32], r: &mut [f32], step_secs: f
 
 /// `gross_beat_at` without the tape-stop DC guard (tests compare against it).
 #[cfg(test)]
-pub(crate) fn gross_beat_unguarded(p: &GrossBeatFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
+pub(crate) fn gross_beat_unguarded(
+    p: &GrossBeatFx,
+    l: &mut [f32],
+    r: &mut [f32],
+    step_secs: f32,
+    offset: usize,
+) {
     gross_beat_guarded(p, l, r, step_secs, offset, false)
 }
 
@@ -181,7 +262,14 @@ fn tape_ramp_start(p: &GrossBeatFx) -> Option<f32> {
 /// for bit either way. `tape_stop_end` plays at unity speed until 3/4 of the
 /// cycle, so the guard fades in over the first quarter of its ramp (speed
 /// 1 -> 0.75) instead of switching on with a step.
-fn gross_beat_guarded(p: &GrossBeatFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize, dc_guard: bool) {
+fn gross_beat_guarded(
+    p: &GrossBeatFx,
+    l: &mut [f32],
+    r: &mut [f32],
+    step_secs: f32,
+    offset: usize,
+    dc_guard: bool,
+) {
     let mix = p.mix.clamp(0.0, 1.0);
     if mix <= 0.0 || check(p).is_err() {
         return;
@@ -307,7 +395,9 @@ mod tests {
     use super::*;
 
     fn tone(n: usize) -> Vec<f32> {
-        (0..n).map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / SR).sin() * 0.5).collect()
+        (0..n)
+            .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / SR).sin() * 0.5)
+            .collect()
     }
 
     /// Worst |mean| of the 100 ms before each cycle ends (where the stop has
@@ -315,7 +405,14 @@ mod tests {
     fn stop_tail_dc(x: &[f32], cycle: usize) -> f32 {
         let tail = (0.1 * SR) as usize;
         (1..=x.len() / cycle)
-            .map(|k| (x[k * cycle - tail..k * cycle].iter().map(|v| *v as f64).sum::<f64>() / tail as f64).abs() as f32)
+            .map(|k| {
+                (x[k * cycle - tail..k * cycle]
+                    .iter()
+                    .map(|v| *v as f64)
+                    .sum::<f64>()
+                    / tail as f64)
+                    .abs() as f32
+            })
             .fold(0.0, f32::max)
     }
 
@@ -326,13 +423,18 @@ mod tests {
         let step = 0.125;
         let cycle = (16.0 * step * SR) as usize;
         for (preset, bound) in [("tape_stop", 0.03f32), ("tape_stop_end", 0.04)] {
-            let p = GrossBeatFx { time: preset.into(), ..Default::default() };
+            let p = GrossBeatFx {
+                time: preset.into(),
+                ..Default::default()
+            };
             let (mut off, mut on, mut re_off, mut re_on) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
             let fade = ((p.smooth_ms.max(0.5) * 0.001 * SR) as usize).max(1);
             for f in [55.0f32, 110.0, 220.0] {
                 for k in 0..8 {
                     let ph = k as f32 * std::f32::consts::PI / 4.0;
-                    let x: Vec<f32> = (0..2 * cycle).map(|i| (i as f32 * f * std::f32::consts::TAU / SR + ph).sin() * 0.5).collect();
+                    let x: Vec<f32> = (0..2 * cycle)
+                        .map(|i| (i as f32 * f * std::f32::consts::TAU / SR + ph).sin() * 0.5)
+                        .collect();
                     let (mut l0, mut r0) = (x.clone(), x.clone());
                     gross_beat_guarded(&p, &mut l0, &mut r0, step, 0, false);
                     let (mut l1, mut r1) = (x.clone(), x.clone());
@@ -342,9 +444,19 @@ mod tests {
                     on = on.max(stop_tail_dc(&l1, cycle));
                     // the re-trigger: whole source periods just after the
                     // jump's crossfade into the next cycle
-                    let w = ((if f < 100.0 { 2.0 } else if f < 200.0 { 3.0 } else { 6.0 }) / f * SR).round() as usize;
+                    let w = ((if f < 100.0 {
+                        2.0
+                    } else if f < 200.0 {
+                        3.0
+                    } else {
+                        6.0
+                    }) / f
+                        * SR)
+                        .round() as usize;
                     let s = cycle + fade;
-                    let dc = |y: &[f32]| (y[s..s + w].iter().map(|v| *v as f64).sum::<f64>() / w as f64).abs() as f32;
+                    let dc = |y: &[f32]| {
+                        (y[s..s + w].iter().map(|v| *v as f64).sum::<f64>() / w as f64).abs() as f32
+                    };
                     re_off = re_off.max(dc(&l0));
                     re_on = re_on.max(dc(&l1));
                 }
@@ -352,7 +464,10 @@ mod tests {
             eprintln!("gross_beat {preset} DC (worst mean of the last 100 ms): guard off {off:.4} FS, on {on:.4} FS; at the re-trigger: off {re_off:.4}, on {re_on:.4}");
             assert!(off > 0.10, "{preset}: the unguarded stop drifts: {off}");
             assert!(on < bound, "{preset}: the guarded stop: {on}");
-            assert!(re_on < 0.015, "{preset}: no blip at the re-trigger: {re_on}");
+            assert!(
+                re_on < 0.015,
+                "{preset}: no blip at the re-trigger: {re_on}"
+            );
         }
         // every other preset (and drawn points) is the same bit for bit
         let n = cycle + 5000;
@@ -361,8 +476,16 @@ mod tests {
                 continue;
             }
             for p in [
-                GrossBeatFx { time: t.to_string(), volume: "pump".into(), ..Default::default() },
-                GrossBeatFx { time: "tape_stop".into(), time_points: "0:0, 1:0.5".into(), ..Default::default() },
+                GrossBeatFx {
+                    time: t.to_string(),
+                    volume: "pump".into(),
+                    ..Default::default()
+                },
+                GrossBeatFx {
+                    time: "tape_stop".into(),
+                    time_points: "0:0, 1:0.5".into(),
+                    ..Default::default()
+                },
             ] {
                 let (mut a, mut b) = (tone(n), tone(n));
                 gross_beat_guarded(&p, &mut a, &mut b, step, 0, false);
@@ -375,14 +498,29 @@ mod tests {
         // after, the live-splice convention), also mid-ramp,
         // matches the whole-song pass exactly
         for preset in ["tape_stop", "tape_stop_end"] {
-            let p = GrossBeatFx { time: preset.into(), cycle_steps: 4.0, ..Default::default() };
+            let p = GrossBeatFx {
+                time: preset.into(),
+                cycle_steps: 4.0,
+                ..Default::default()
+            };
             for off in [50_000usize, 21_000] {
-                let x: Vec<f32> = (0..150_000).map(|i| if i >= off + 22_050 { (i as f32 * 61.0 * std::f32::consts::TAU / SR).sin() * 0.5 } else { 0.0 }).collect();
+                let x: Vec<f32> = (0..150_000)
+                    .map(|i| {
+                        if i >= off + 22_050 {
+                            (i as f32 * 61.0 * std::f32::consts::TAU / SR).sin() * 0.5
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect();
                 let (mut fl, mut fr) = (x.clone(), x.clone());
                 gross_beat_at(&p, &mut fl, &mut fr, step, 0);
                 let (mut wl, mut wr) = (x[off..].to_vec(), x[off..].to_vec());
                 gross_beat_at(&p, &mut wl, &mut wr, step, off);
-                assert!(fl[off..] == wl[..] && fr[off..] == wr[..], "{preset} offset {off}");
+                assert!(
+                    fl[off..] == wl[..] && fr[off..] == wr[..],
+                    "{preset} offset {off}"
+                );
             }
         }
     }
@@ -393,26 +531,48 @@ mod tests {
         let n = (SR * step * 16.0) as usize;
         for (t, _) in TIME_PRESETS {
             for (v, _) in VOLUME_PRESETS {
-                let p = GrossBeatFx { time: t.to_string(), volume: v.to_string(), ..Default::default() };
+                let p = GrossBeatFx {
+                    time: t.to_string(),
+                    volume: v.to_string(),
+                    ..Default::default()
+                };
                 let (mut l, mut r) = (tone(n), tone(n));
                 gross_beat(&p, &mut l, &mut r, step);
                 assert!(l.iter().all(|x| x.is_finite() && x.abs() < 1.5), "{t}/{v}");
             }
         }
         // stop_end silences the last beat
-        let p = GrossBeatFx { volume: "stop_end".into(), ..Default::default() };
+        let p = GrossBeatFx {
+            volume: "stop_end".into(),
+            ..Default::default()
+        };
         let (mut l, mut r) = (tone(n), tone(n));
         gross_beat(&p, &mut l, &mut r, step);
         let tail: f32 = l[n * 7 / 8..].iter().map(|x| x.abs()).sum::<f32>() / (n / 8) as f32;
         assert!(tail < 0.01, "tail {tail}");
         // half speed of a 440 Hz tone is ~220 Hz: count zero crossings
-        let p = GrossBeatFx { time: "half_speed".into(), ..Default::default() };
+        let p = GrossBeatFx {
+            time: "half_speed".into(),
+            ..Default::default()
+        };
         let (mut l, mut r) = (tone(n), tone(n));
         gross_beat(&p, &mut l, &mut r, step);
-        let zc = l[100..n - 100].windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count() as f32 / ((n - 200) as f32 / SR);
+        let zc = l[100..n - 100]
+            .windows(2)
+            .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+            .count() as f32
+            / ((n - 200) as f32 / SR);
         assert!((zc - 220.0).abs() < 15.0, "half speed {zc} Hz");
-        assert!(check(&GrossBeatFx { time: "warp9".into(), ..Default::default() }).is_err());
-        assert!(check(&GrossBeatFx { volume_points: "0:1, 0.5:0, 1:1".into(), ..Default::default() }).is_ok());
+        assert!(check(&GrossBeatFx {
+            time: "warp9".into(),
+            ..Default::default()
+        })
+        .is_err());
+        assert!(check(&GrossBeatFx {
+            volume_points: "0:1, 0.5:0, 1:1".into(),
+            ..Default::default()
+        })
+        .is_ok());
         assert!(parse_points("0:1, 2:0").is_err());
     }
 }

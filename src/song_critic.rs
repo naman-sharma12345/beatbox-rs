@@ -63,11 +63,15 @@ impl Profile {
 pub fn profiles() -> Result<BTreeMap<String, Profile>> {
     let v: Value = serde_json::from_str(PROFILES)?;
     let mut out = BTreeMap::new();
-    for (k, p) in v.as_object().ok_or_else(|| anyhow!("genre_profiles.json is not an object"))? {
+    for (k, p) in v
+        .as_object()
+        .ok_or_else(|| anyhow!("genre_profiles.json is not an object"))?
+    {
         if k.starts_with('_') {
             continue;
         }
-        let p: Profile = serde_json::from_value(p.clone()).map_err(|e| anyhow!("genre_profiles.json '{k}': {e}"))?;
+        let p: Profile = serde_json::from_value(p.clone())
+            .map_err(|e| anyhow!("genre_profiles.json '{k}': {e}"))?;
         out.insert(k.clone(), p);
     }
     Ok(out)
@@ -77,8 +81,13 @@ pub fn profiles() -> Result<BTreeMap<String, Profile>> {
 /// "honey singh" -> punjabi_party), filled from "default".
 pub fn profile_for(genre: Option<&str>) -> Result<(String, Profile)> {
     let all = profiles()?;
-    let d = all.get("default").cloned().ok_or_else(|| anyhow!("genre_profiles.json has no default"))?;
-    let name = genre.and_then(|g| crate::producer::playbook(g).ok()).map(|pb| pb.name.to_string());
+    let d = all
+        .get("default")
+        .cloned()
+        .ok_or_else(|| anyhow!("genre_profiles.json has no default"))?;
+    let name = genre
+        .and_then(|g| crate::producer::playbook(g).ok())
+        .map(|pb| pb.name.to_string());
     match name.as_deref().and_then(|n| all.get(n).map(|p| (n, p))) {
         Some((n, p)) => Ok((n.to_string(), p.clone().over(&d))),
         None => Ok(("default".into(), d)),
@@ -130,9 +139,13 @@ fn db(x: f64) -> f32 {
 /// Measure a delivered file; with section spans (beats) and the bpm, also
 /// per-section level and groove, the hook lift and the hook's build.
 pub fn measure(path: &std::path::Path, spans: &[mix_rules::Span], bpm: f32) -> Result<Metrics> {
-    let (l, r, sr) = crate::samples::decode_stereo_native(path).map_err(|e| anyhow!("could not read {}: {e}", path.display()))?;
+    let (l, r, sr) = crate::samples::decode_stereo_native(path)
+        .map_err(|e| anyhow!("could not read {}: {e}", path.display()))?;
     if l.len() < sr as usize {
-        bail!("{} is under a second long: nothing to judge", path.display());
+        bail!(
+            "{} is under a second long: nothing to judge",
+            path.display()
+        );
     }
     let ld = crate::analysis::loudness_at(&l, &r, sr as f32);
     let rel = |lo: f32, hi: f32| mix_rules::band_rel_lufs(&l, &r, ld.integrated_lufs, lo, hi);
@@ -155,13 +168,26 @@ pub fn measure(path: &std::path::Path, spans: &[mix_rules::Span], bpm: f32) -> R
         if b <= a + sr as usize {
             continue;
         }
-        let e: f64 = m[a..b].iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>() / (b - a) as f64;
+        let e: f64 = m[a..b]
+            .iter()
+            .map(|x| (*x as f64) * (*x as f64))
+            .sum::<f64>()
+            / (b - a) as f64;
         let n = on.iter().filter(|&&o| o >= a && o < b).count();
-        sections.push((s.name.clone(), s.kind.clone(), r1(db(e)), r2(n as f32 / ((b - a) as f32 / sr as f32))));
+        sections.push((
+            s.name.clone(),
+            s.kind.clone(),
+            r1(db(e)),
+            r2(n as f32 / ((b - a) as f32 / sr as f32)),
+        ));
     }
     // level: 0 = RMS dB, 1 = onsets per second
     let avg = |kinds: &[&str], what: usize| -> Option<f32> {
-        let v: Vec<f32> = sections.iter().filter(|s| kinds.contains(&s.1.as_str())).map(|s| if what == 0 { s.2 } else { s.3 }).collect();
+        let v: Vec<f32> = sections
+            .iter()
+            .filter(|s| kinds.contains(&s.1.as_str()))
+            .map(|s| if what == 0 { s.2 } else { s.3 })
+            .collect();
         (!v.is_empty()).then(|| v.iter().sum::<f32>() / v.len() as f32)
     };
     let hooks = ["hook", "chorus", "drop"];
@@ -207,7 +233,13 @@ pub struct Weakness {
 
 fn sev(x: f32, [lo, hi]: [f32; 2]) -> f32 {
     let w = (hi - lo).abs().max(1.0);
-    let d = if x < lo { lo - x } else if x > hi { x - hi } else { 0.0 };
+    let d = if x < lo {
+        lo - x
+    } else if x > hi {
+        x - hi
+    } else {
+        0.0
+    };
     (d / w).min(3.0)
 }
 
@@ -226,7 +258,13 @@ fn density_step(cur: Option<&str>, up: bool) -> Option<&'static str> {
 /// The weaknesses of a measured song against its profile and the song
 /// targets, biggest first. `spec` is the song's spec (for the knobs' current
 /// values); `checks` the song's own delivered-file checks.
-pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Value) -> Vec<Weakness> {
+pub fn judge(
+    m: &Metrics,
+    p: &Profile,
+    t: &Targets,
+    spec: &SongSpec,
+    checks: &Value,
+) -> Vec<Weakness> {
     let mut out = Vec::new();
     let level = |role: &str| spec.mix.levels.get(role).copied().unwrap_or(0.0);
     // the verses: where a flat hook gets its lift (thinner arrangement)
@@ -237,8 +275,23 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
         .filter(|(_, s)| s.kind.to_lowercase().starts_with("verse"))
         .map(|(i, s)| (format!("/structure/{i}/energy"), s.energy.unwrap_or(0.0)))
         .collect();
-    let mut w = |id: &str, says: String, measured: Value, target: Value, severity: f32, fix: Vec<(&str, Value)>| {
-        out.push(Weakness { id: id.into(), says, measured, target, severity: r2(severity), fix: fix.into_iter().map(|(k, v)| (k.to_string(), clean(v))).collect() });
+    let mut w = |id: &str,
+                 says: String,
+                 measured: Value,
+                 target: Value,
+                 severity: f32,
+                 fix: Vec<(&str, Value)>| {
+        out.push(Weakness {
+            id: id.into(),
+            says,
+            measured,
+            target,
+            severity: r2(severity),
+            fix: fix
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), clean(v)))
+                .collect(),
+        });
     };
     if let Some(r) = p.sub_rel_lufs_db {
         let s = sev(m.sub_rel_lufs_db, r);
@@ -259,8 +312,16 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
             // master automation, so a loud master keeps the lift; the
             // master's verse step only once the verses are as thin as allowed
             let step = (r[0] + 0.5 - l).clamp(1.0, 3.0);
-            let thin: Vec<(&str, Value)> = verses.iter().filter(|(_, e)| *e > -6.0 + 0.05).map(|(p, e)| (p.as_str(), json!(r1((e - step).max(-6.0))))).collect();
-            let fix = if thin.is_empty() { vec![("/mix/drop_lift_db", json!(r1(want)))] } else { thin };
+            let thin: Vec<(&str, Value)> = verses
+                .iter()
+                .filter(|(_, e)| *e > -6.0 + 0.05)
+                .map(|(p, e)| (p.as_str(), json!(r1((e - step).max(-6.0)))))
+                .collect();
+            let fix = if thin.is_empty() {
+                vec![("/mix/drop_lift_db", json!(r1(want)))]
+            } else {
+                thin
+            };
             w("hook_flat", format!("the hook barely lifts over the verse ({l} dB, wants {}..{}): the verses thin out", r[0], r[1]), json!(l), json!(r), sev(l, r), fix);
         } else if l > r[1] {
             w("hook_jumps", format!("the hook jumps {l} dB over the verse (wants at most {}): the verses may read thin", r[1]), json!(l), json!(r), sev(l, r), vec![]);
@@ -270,20 +331,74 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
     if let Some(r) = p.lra_lu {
         if m.lra_lu > r[1] || (loud_low && m.lra_lu > r[0] + 1.0) {
             let pd = (spec.master.preserve_dynamics - 0.15).max(0.3);
-            let says = if loud_low { format!("quieter than a release ({} LUFS, wants {}) with room to push (range {} LU)", m.lufs, t.lufs, m.lra_lu) } else { format!("the level swings too much for the genre (range {} LU, wants at most {})", m.lra_lu, r[1]) };
-            let fix = if pd < spec.master.preserve_dynamics - 0.01 { vec![("/master/preserve_dynamics", json!(r2(pd)))] } else { vec![] };
-            w(if loud_low { "too_quiet" } else { "too_dynamic" }, says, json!({"lufs": m.lufs, "lra_lu": m.lra_lu}), json!({"lufs": t.lufs, "lra_lu": r}), sev(m.lra_lu, r).max(if loud_low { (t.lufs - m.lufs - t.lufs_tolerance) / 2.0 } else { 0.0 }), fix);
+            let says = if loud_low {
+                format!(
+                    "quieter than a release ({} LUFS, wants {}) with room to push (range {} LU)",
+                    m.lufs, t.lufs, m.lra_lu
+                )
+            } else {
+                format!(
+                    "the level swings too much for the genre (range {} LU, wants at most {})",
+                    m.lra_lu, r[1]
+                )
+            };
+            let fix = if pd < spec.master.preserve_dynamics - 0.01 {
+                vec![("/master/preserve_dynamics", json!(r2(pd)))]
+            } else {
+                vec![]
+            };
+            w(
+                if loud_low { "too_quiet" } else { "too_dynamic" },
+                says,
+                json!({"lufs": m.lufs, "lra_lu": m.lra_lu}),
+                json!({"lufs": t.lufs, "lra_lu": r}),
+                sev(m.lra_lu, r).max(if loud_low {
+                    (t.lufs - m.lufs - t.lufs_tolerance) / 2.0
+                } else {
+                    0.0
+                }),
+                fix,
+            );
         } else if m.lra_lu < r[0] {
             let pd = (spec.master.preserve_dynamics + 0.1).min(0.9);
-            w("squashed", format!("squashed flat (range {} LU, wants at least {}): the drops lose their punch", m.lra_lu, r[0]), json!(m.lra_lu), json!(r), sev(m.lra_lu, r), vec![("/master/preserve_dynamics", json!(r2(pd)))]);
+            w(
+                "squashed",
+                format!(
+                    "squashed flat (range {} LU, wants at least {}): the drops lose their punch",
+                    m.lra_lu, r[0]
+                ),
+                json!(m.lra_lu),
+                json!(r),
+                sev(m.lra_lu, r),
+                vec![("/master/preserve_dynamics", json!(r2(pd)))],
+            );
         }
     }
     if let Some(r) = p.onsets_per_s {
         if m.onsets_per_s < r[0] {
-            let fix = density_step(spec.density.as_deref().or(spec.vocal.as_ref().map(|_| "sparse")), true).map(|d| vec![("/density", json!(d))]).unwrap_or_default();
-            w("groove_sparse", format!("the groove is sparse for the genre ({} hits a second, wants {}..{})", m.onsets_per_s, r[0], r[1]), json!(m.onsets_per_s), json!(r), sev(m.onsets_per_s, r), fix);
+            let fix = density_step(
+                spec.density
+                    .as_deref()
+                    .or(spec.vocal.as_ref().map(|_| "sparse")),
+                true,
+            )
+            .map(|d| vec![("/density", json!(d))])
+            .unwrap_or_default();
+            w(
+                "groove_sparse",
+                format!(
+                    "the groove is sparse for the genre ({} hits a second, wants {}..{})",
+                    m.onsets_per_s, r[0], r[1]
+                ),
+                json!(m.onsets_per_s),
+                json!(r),
+                sev(m.onsets_per_s, r),
+                fix,
+            );
         } else if m.onsets_per_s > r[1] {
-            let fix = density_step(spec.density.as_deref().or(Some("balanced")), false).map(|d| vec![("/density", json!(d))]).unwrap_or_default();
+            let fix = density_step(spec.density.as_deref().or(Some("balanced")), false)
+                .map(|d| vec![("/density", json!(d))])
+                .unwrap_or_default();
             w("groove_busy", format!("the groove is crowded ({} hits a second, wants at most {}): the words have no gaps", m.onsets_per_s, r[1]), json!(m.onsets_per_s), json!(r), sev(m.onsets_per_s, r), fix);
         }
     }
@@ -296,7 +411,17 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
     }
     if let Some(r) = p.width_db {
         if m.width_db < r[0] {
-            w("narrow", format!("narrow, close to mono ({} dB side over mid, wants at least {})", m.width_db, r[0]), json!(m.width_db), json!(r), sev(m.width_db, r), vec![]);
+            w(
+                "narrow",
+                format!(
+                    "narrow, close to mono ({} dB side over mid, wants at least {})",
+                    m.width_db, r[0]
+                ),
+                json!(m.width_db),
+                json!(r),
+                sev(m.width_db, r),
+                vec![],
+            );
         } else if m.width_db > r[1] {
             w("too_wide", format!("very wide ({} dB side over mid, wants at most {}): it folds to mono badly on a phone", m.width_db, r[1]), json!(m.width_db), json!(r), sev(m.width_db, r), vec![]);
         }
@@ -320,21 +445,49 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
         // the delivery's beat-bus tone aims under the ceiling by the overshoot
         let cur = spec.mix.presence_ceiling_db.unwrap_or(phi).min(phi);
         let aim = (cur - (m.presence_rel_lufs_db - phi).max(0.0) - 0.3).max(-30.0);
-        w("harsh", format!("harsh in 2-5 kHz ({} dB, wants at most {}): the beat bus aims darker there", m.presence_rel_lufs_db, phi), json!(m.presence_rel_lufs_db), json!([plo, phi]), sev(m.presence_rel_lufs_db, [plo, phi]), vec![("/mix/presence_ceiling_db", json!(r1(aim)))]);
+        w(
+            "harsh",
+            format!(
+                "harsh in 2-5 kHz ({} dB, wants at most {}): the beat bus aims darker there",
+                m.presence_rel_lufs_db, phi
+            ),
+            json!(m.presence_rel_lufs_db),
+            json!([plo, phi]),
+            sev(m.presence_rel_lufs_db, [plo, phi]),
+            vec![("/mix/presence_ceiling_db", json!(r1(aim)))],
+        );
     }
-    if let Some(c) = checks["checks"].as_array().and_then(|c| c.iter().find(|x| x["check"] == "vocal_over_beat")) {
+    if let Some(c) = checks["checks"]
+        .as_array()
+        .and_then(|c| c.iter().find(|x| x["check"] == "vocal_over_beat"))
+    {
         if c["pass"] == false {
             let lo = c["measured"]["min_db"].as_f64().unwrap_or(99.0) as f32;
             let hi = c["measured"]["max_db"].as_f64().unwrap_or(-99.0) as f32;
             if lo < t.vocal_over_beat_db {
-                let want = (spec.mix.vocal_over_beat_db + 1.0).min(spec.mix.vocal_over_beat_max_db - 2.0);
+                let want =
+                    (spec.mix.vocal_over_beat_db + 1.0).min(spec.mix.vocal_over_beat_max_db - 2.0);
                 w("vocal_buried", format!("the vocal is buried in places ({lo} dB over the beat at its lowest, wants at least {})", t.vocal_over_beat_db), json!(lo), json!(t.vocal_over_beat_db), ((t.vocal_over_beat_db - lo) / 2.0).min(3.0), vec![("/mix/vocal_over_beat_db", json!(r1(want)))]);
             } else if hi > t.vocal_over_beat_max_db {
-                w("vocal_alone", format!("the beat disappears under the vocal in places ({hi} dB, wants at most {})", t.vocal_over_beat_max_db), json!(hi), json!(t.vocal_over_beat_max_db), ((hi - t.vocal_over_beat_max_db) / 2.0).min(3.0), vec![]);
+                w(
+                    "vocal_alone",
+                    format!(
+                        "the beat disappears under the vocal in places ({hi} dB, wants at most {})",
+                        t.vocal_over_beat_max_db
+                    ),
+                    json!(hi),
+                    json!(t.vocal_over_beat_max_db),
+                    ((hi - t.vocal_over_beat_max_db) / 2.0).min(3.0),
+                    vec![],
+                );
             }
         }
     }
-    out.sort_by(|a, b| b.severity.partial_cmp(&a.severity).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.severity
+            .partial_cmp(&a.severity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 
@@ -342,7 +495,12 @@ pub fn judge(m: &Metrics, p: &Profile, t: &Targets, spec: &SongSpec, checks: &Va
 /// near it where it matters most on a phone (top end within ~1 dB, low end
 /// no heavier, loudness within ~0.6 LU). Returns the extra weaknesses (the
 /// top end is judged by `judge` against the raised floor this sets on `t`).
-pub fn judge_reference(m: &Metrics, r: &Metrics, t: &mut Targets, spec: &SongSpec) -> Vec<Weakness> {
+pub fn judge_reference(
+    m: &Metrics,
+    r: &Metrics,
+    t: &mut Targets,
+    spec: &SongSpec,
+) -> Vec<Weakness> {
     let mut out = Vec::new();
     let level = |role: &str| spec.mix.levels.get(role).copied().unwrap_or(0.0);
     // the top end: within REF_AIR_BELOW_DB under the reference (never over
@@ -370,14 +528,19 @@ pub fn judge_reference(m: &Metrics, r: &Metrics, t: &mut Targets, spec: &SongSpe
     // reference without loud-part data, is held to the integrated alone.
     let lifted = m.hook_lift_db.is_some_and(|l| l >= 1.0);
     let quiet = match (lifted, m.loud_lufs, r.loud_lufs) {
-        (true, Some(ml), Some(rl)) => (rl - ml - REF_LUFS_TOL).max(r.lufs - m.lufs - REF_LIFT_LUFS_ALLOW - REF_LUFS_TOL),
+        (true, Some(ml), Some(rl)) => {
+            (rl - ml - REF_LUFS_TOL).max(r.lufs - m.lufs - REF_LIFT_LUFS_ALLOW - REF_LUFS_TOL)
+        }
         _ => r.lufs - m.lufs - REF_LUFS_TOL,
     };
     if quiet > 0.0 {
         let mut fix: BTreeMap<String, Value> = BTreeMap::new();
         // the target rises by what is missing (never past the reference's)
         let want = (m.lufs + quiet + REF_LUFS_TOL).min(r.lufs.max(m.lufs));
-        fix.insert("/master/lufs".into(), clean(json!(r1(want.max(spec.master.lufs)))));
+        fix.insert(
+            "/master/lufs".into(),
+            clean(json!(r1(want.max(spec.master.lufs)))),
+        );
         let pd = (spec.master.preserve_dynamics - 0.15).max(0.3);
         if pd < spec.master.preserve_dynamics - 0.01 {
             fix.insert("/master/preserve_dynamics".into(), clean(json!(r2(pd))));
@@ -419,13 +582,25 @@ fn song_parts(e: &Engine) -> Result<(song::SongState, SongSpec)> {
     let mut sv = st.spec.clone();
     sv["seed"] = json!(st.seed);
     let (spec, probs) = song::validate(&sv);
-    let spec = spec.ok_or_else(|| anyhow!("the stored song spec no longer validates: {}", serde_json::to_string(&probs).unwrap_or_default()))?;
+    let spec = spec.ok_or_else(|| {
+        anyhow!(
+            "the stored song spec no longer validates: {}",
+            serde_json::to_string(&probs).unwrap_or_default()
+        )
+    })?;
     Ok((st, spec))
 }
 
-fn critique_song(e: &Engine, genre: Option<&str>, reference: Option<&Metrics>) -> Result<(Metrics, Vec<Weakness>, String, Profile)> {
+fn critique_song(
+    e: &Engine,
+    genre: Option<&str>,
+    reference: Option<&Metrics>,
+) -> Result<(Metrics, Vec<Weakness>, String, Profile)> {
     let (st, spec) = song_parts(e)?;
-    let audio = st.audio.clone().ok_or_else(|| anyhow!("the song has no delivered file yet: song_render makes one"))?;
+    let audio = st
+        .audio
+        .clone()
+        .ok_or_else(|| anyhow!("the song has no delivered file yet: song_render makes one"))?;
     let (pname, prof) = profile_for(genre.or(spec.genre.as_deref()))?;
     let m = measure(std::path::Path::new(&audio), &st.sections, e.project.bpm)?;
     let mut t = spec.targets();
@@ -435,7 +610,11 @@ fn critique_song(e: &Engine, genre: Option<&str>, reference: Option<&Metrics>) -
     };
     let mut ws = judge(&m, &prof, &t, &spec, &st.checks);
     ws.append(&mut extra);
-    ws.sort_by(|a, b| b.severity.partial_cmp(&a.severity).unwrap_or(std::cmp::Ordering::Equal));
+    ws.sort_by(|a, b| {
+        b.severity
+            .partial_cmp(&a.severity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     Ok((m, ws, pname, prof))
 }
 
@@ -454,7 +633,10 @@ fn verdict(ws: &[Weakness]) -> String {
     if ws.is_empty() {
         "meets its genre profile and every song check".into()
     } else {
-        ws.iter().map(|w| w.says.clone()).collect::<Vec<_>>().join("; ")
+        ws.iter()
+            .map(|w| w.says.clone())
+            .collect::<Vec<_>>()
+            .join("; ")
     }
 }
 
@@ -466,23 +648,39 @@ pub fn critique_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         let (pname, prof) = profile_for(genre)?;
         let m = measure(&path, &[], e.project.bpm)?;
         let t = Targets::default();
-        let ws: Vec<Weakness> = judge(&m, &prof, &t, &SongSpec::default(), &Value::Null).into_iter().map(|mut w| {
-            w.fix.clear();
-            w
-        }).collect();
-        return Ok(json!({"file": path.to_string_lossy(), "profile": pname, "profile_ranges": prof, "metrics": m, "weaknesses": ws, "score": score(&ws), "verdict": verdict(&ws), "note": "a file has no spec: weaknesses are named without fixes, and section measures (hook lift, build) need a song"}));
+        let ws: Vec<Weakness> = judge(&m, &prof, &t, &SongSpec::default(), &Value::Null)
+            .into_iter()
+            .map(|mut w| {
+                w.fix.clear();
+                w
+            })
+            .collect();
+        return Ok(
+            json!({"file": path.to_string_lossy(), "profile": pname, "profile_ranges": prof, "metrics": m, "weaknesses": ws, "score": score(&ws), "verdict": verdict(&ws), "note": "a file has no spec: weaknesses are named without fixes, and section measures (hook lift, build) need a song"}),
+        );
     }
     let rf = reference_metrics(e, a)?;
     let (m, ws, pname, prof) = critique_song(e, genre, rf.as_ref().map(|x| &x.1))?;
     let fixable = ws.iter().filter(|w| !w.fix.is_empty()).count();
-    Ok(json!({"profile": pname, "profile_ranges": prof, "reference": rf.map(|(p, m)| json!({"file": p, "metrics": m})), "metrics": m, "weaknesses": ws, "score": score(&ws), "verdict": verdict(&ws),
-        "next": if fixable > 0 { json!(format!("song_improve applies the {fixable} automatic fix(es) and keeps the better take")) } else { json!("nothing here has an automatic fix: song_patch by hand, or leave it") }}))
+    Ok(
+        json!({"profile": pname, "profile_ranges": prof, "reference": rf.map(|(p, m)| json!({"file": p, "metrics": m})), "metrics": m, "weaknesses": ws, "score": score(&ws), "verdict": verdict(&ws),
+        "next": if fixable > 0 { json!(format!("song_improve applies the {fixable} automatic fix(es) and keeps the better take")) } else { json!("nothing here has an automatic fix: song_patch by hand, or leave it") }}),
+    )
 }
 
 fn round_path(final_path: &std::path::Path, n: usize) -> String {
-    let stem = final_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "song".into());
-    let ext = final_path.extension().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "mp3".into());
-    final_path.with_file_name(format!("{stem}_try{n}.{ext}")).to_string_lossy().to_string()
+    let stem = final_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "song".into());
+    let ext = final_path
+        .extension()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "mp3".into());
+    final_path
+        .with_file_name(format!("{stem}_try{n}.{ext}"))
+        .to_string_lossy()
+        .to_string()
 }
 
 /// How much worse (score) a round may come out and still be built on by the
@@ -496,28 +694,49 @@ pub const MAX_TRIES_PER_FIX: usize = 3;
 /// `rounds` rebuilds. The delivered file at the song's own path is the best
 /// take at the end; the spec holds the knobs that made it.
 pub fn improve_tool(e: &mut Engine, a: &Value) -> Result<Value> {
-    let rounds = a.get("rounds").and_then(|v| v.as_u64()).unwrap_or(2).clamp(1, 4) as usize;
-    let max_fixes = a.get("max_fixes").and_then(|v| v.as_u64()).unwrap_or(3).clamp(1, 6) as usize;
+    let rounds = a
+        .get("rounds")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2)
+        .clamp(1, 4) as usize;
+    let max_fixes = a
+        .get("max_fixes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3)
+        .clamp(1, 6) as usize;
     let genre = a.get("genre").and_then(|v| v.as_str()).map(String::from);
     let rf = reference_metrics(e, a)?;
     improve(e, rounds, max_fixes, genre.as_deref(), rf)
 }
 
-pub fn improve(e: &mut Engine, rounds: usize, max_fixes: usize, genre: Option<&str>, reference: Option<(String, Metrics)>) -> Result<Value> {
+pub fn improve(
+    e: &mut Engine,
+    rounds: usize,
+    max_fixes: usize,
+    genre: Option<&str>,
+    reference: Option<(String, Metrics)>,
+) -> Result<Value> {
     let rm = reference.as_ref().map(|x| &x.1);
     let t0 = std::time::Instant::now();
     let (st0, _) = song_parts(e)?;
-    let final_path = std::path::PathBuf::from(st0.audio.clone().ok_or_else(|| anyhow!("the song has no delivered file yet: song_render makes one"))?);
+    let final_path = std::path::PathBuf::from(
+        st0.audio
+            .clone()
+            .ok_or_else(|| anyhow!("the song has no delivered file yet: song_render makes one"))?,
+    );
     let orig_export = st0.spec.pointer("/export/path").cloned();
     let (m0, w0, pname, _) = critique_song(e, genre, rm)?;
     let s0 = score(&w0);
     // the take we keep: the project, its spec and its file
     let keep0 = round_path(&final_path, 0);
-    std::fs::copy(&final_path, &keep0).map_err(|err| anyhow!("could not keep the first take: {err}"))?;
+    std::fs::copy(&final_path, &keep0)
+        .map_err(|err| anyhow!("could not keep the first take: {err}"))?;
     let mut best = (s0, e.project.clone(), keep0.clone(), 0usize);
     let mut failed: Vec<String> = Vec::new();
     let mut tries: BTreeMap<String, usize> = BTreeMap::new();
-    let mut history = vec![json!({"round": 0, "score": s0, "verdict": verdict(&w0), "weaknesses": w0.iter().map(|w| &w.id).collect::<Vec<_>>()})];
+    let mut history = vec![
+        json!({"round": 0, "score": s0, "verdict": verdict(&w0), "weaknesses": w0.iter().map(|w| &w.id).collect::<Vec<_>>()}),
+    ];
     let mut ws = w0.clone();
     let mut best_ws = w0.clone();
     let mut stop = None;
@@ -526,7 +745,11 @@ pub fn improve(e: &mut Engine, rounds: usize, max_fixes: usize, genre: Option<&s
         let mut using = Vec::new();
         // a fix that helped may be applied again (its values are worked out
         // from the new measures); one from a round that went worse is not
-        for w in ws.iter().filter(|w| !w.fix.is_empty() && !failed.contains(&w.id) && tries.get(&w.id).copied().unwrap_or(0) < MAX_TRIES_PER_FIX) {
+        for w in ws.iter().filter(|w| {
+            !w.fix.is_empty()
+                && !failed.contains(&w.id)
+                && tries.get(&w.id).copied().unwrap_or(0) < MAX_TRIES_PER_FIX
+        }) {
             if using.len() >= max_fixes {
                 break;
             }
@@ -539,7 +762,11 @@ pub fn improve(e: &mut Engine, rounds: usize, max_fixes: usize, genre: Option<&s
             using.push(w.id.clone());
         }
         if set.is_empty() {
-            stop = Some(if ws.is_empty() { "the song meets its profile".to_string() } else { "what is left has no automatic fix (or its fix made the song worse, or was applied 3 times)".to_string() });
+            stop = Some(if ws.is_empty() {
+                "the song meets its profile".to_string()
+            } else {
+                "what is left has no automatic fix (or its fix made the song worse, or was applied 3 times)".to_string()
+            });
             break;
         }
         set.insert("/export/path".into(), json!(round_path(&final_path, n)));
@@ -581,7 +808,12 @@ pub fn improve(e: &mut Engine, rounds: usize, max_fixes: usize, genre: Option<&s
     // spec with the asked export path
     e.project = best.1.clone();
     if best.2 != final_path.to_string_lossy() {
-        std::fs::copy(&best.2, &final_path).map_err(|err| anyhow!("could not put the best take at {}: {err}", final_path.display()))?;
+        std::fs::copy(&best.2, &final_path).map_err(|err| {
+            anyhow!(
+                "could not put the best take at {}: {err}",
+                final_path.display()
+            )
+        })?;
     }
     if let Some(s) = e.project.song.as_mut() {
         match &orig_export {
@@ -625,12 +857,35 @@ mod tests {
         let all = profiles().unwrap();
         assert!(all.contains_key("default"));
         let d = &all["default"];
-        assert!(d.sub_rel_lufs_db.is_some() && d.hook_lift_db.is_some() && d.lra_lu.is_some() && d.width_db.is_some() && d.onsets_per_s.is_some() && d.hook_vs_verse_onsets.is_some());
+        assert!(
+            d.sub_rel_lufs_db.is_some()
+                && d.hook_lift_db.is_some()
+                && d.lra_lu.is_some()
+                && d.width_db.is_some()
+                && d.onsets_per_s.is_some()
+                && d.hook_vs_verse_onsets.is_some()
+        );
         for (k, p) in &all {
             if k != "default" {
-                assert_eq!(crate::producer::playbook(k).map(|pb| pb.name.to_string()).ok().as_deref(), Some(k.as_str()), "profile '{k}' is not a playbook name");
+                assert_eq!(
+                    crate::producer::playbook(k)
+                        .map(|pb| pb.name.to_string())
+                        .ok()
+                        .as_deref(),
+                    Some(k.as_str()),
+                    "profile '{k}' is not a playbook name"
+                );
             }
-            for r in [p.sub_rel_lufs_db, p.hook_lift_db, p.lra_lu, p.width_db, p.onsets_per_s].into_iter().flatten() {
+            for r in [
+                p.sub_rel_lufs_db,
+                p.hook_lift_db,
+                p.lra_lu,
+                p.width_db,
+                p.onsets_per_s,
+            ]
+            .into_iter()
+            .flatten()
+            {
                 assert!(r[0] < r[1], "{k}: {r:?}");
             }
         }
@@ -642,16 +897,55 @@ mod tests {
     }
 
     fn metrics_ok() -> Metrics {
-        Metrics { lufs: -10.0, lra_lu: 5.0, true_peak_db: -1.5, sub_rel_lufs_db: -12.0, low_rel_lufs_db: -12.0, presence_rel_lufs_db: -22.7, air_rel_lufs_db: -25.0, width_db: -14.0, onsets_per_s: 6.0, hook_lift_db: Some(3.0), loud_lufs: None, hook_vs_verse_onsets: Some(1.1), sections: vec![], seconds: 120.0 }
+        Metrics {
+            lufs: -10.0,
+            lra_lu: 5.0,
+            true_peak_db: -1.5,
+            sub_rel_lufs_db: -12.0,
+            low_rel_lufs_db: -12.0,
+            presence_rel_lufs_db: -22.7,
+            air_rel_lufs_db: -25.0,
+            width_db: -14.0,
+            onsets_per_s: 6.0,
+            hook_lift_db: Some(3.0),
+            loud_lufs: None,
+            hook_vs_verse_onsets: Some(1.1),
+            sections: vec![],
+            seconds: 120.0,
+        }
     }
 
     #[test]
     fn the_approved_mix_meets_its_own_genre_profile() {
         // naman_freestyle_song2.mp3 as `song_critique {file}` measures it
-        let m = Metrics { lufs: -9.7, lra_lu: 2.2, true_peak_db: -1.8, sub_rel_lufs_db: -19.4, low_rel_lufs_db: -15.4, presence_rel_lufs_db: -22.4, air_rel_lufs_db: -24.2, width_db: -18.2, onsets_per_s: 8.08, hook_lift_db: None, loud_lufs: Some(-8.9), hook_vs_verse_onsets: None, sections: vec![], seconds: 135.9 };
+        let m = Metrics {
+            lufs: -9.7,
+            lra_lu: 2.2,
+            true_peak_db: -1.8,
+            sub_rel_lufs_db: -19.4,
+            low_rel_lufs_db: -15.4,
+            presence_rel_lufs_db: -22.4,
+            air_rel_lufs_db: -24.2,
+            width_db: -18.2,
+            onsets_per_s: 8.08,
+            hook_lift_db: None,
+            loud_lufs: Some(-8.9),
+            hook_vs_verse_onsets: None,
+            sections: vec![],
+            seconds: 135.9,
+        };
         let (_, p) = profile_for(Some("desi_hiphop")).unwrap();
-        let ws = judge(&m, &p, &Targets::default(), &SongSpec::default(), &Value::Null);
-        assert!(ws.is_empty(), "the mix the person approved must pass: {ws:?}");
+        let ws = judge(
+            &m,
+            &p,
+            &Targets::default(),
+            &SongSpec::default(),
+            &Value::Null,
+        );
+        assert!(
+            ws.is_empty(),
+            "the mix the person approved must pass: {ws:?}"
+        );
     }
 
     #[test]
@@ -659,7 +953,10 @@ mod tests {
         let (_, p) = profile_for(Some("punjabi_party")).unwrap();
         let t = Targets::default();
         let spec = SongSpec::default();
-        assert!(judge(&metrics_ok(), &p, &t, &spec, &Value::Null).is_empty(), "a song inside every range has nothing to fix");
+        assert!(
+            judge(&metrics_ok(), &p, &t, &spec, &Value::Null).is_empty(),
+            "a song inside every range has nothing to fix"
+        );
         let mut m = metrics_ok();
         m.sub_rel_lufs_db = -19.0;
         m.hook_lift_db = Some(1.0);
@@ -671,11 +968,23 @@ mod tests {
             assert!(ids.contains(&id), "{ids:?}");
         }
         let get = |id: &str| ws.iter().find(|w| w.id == id).unwrap();
-        assert!(get("low_end_light").fix["/mix/levels/bass"].as_f64().unwrap() >= 1.0);
+        assert!(
+            get("low_end_light").fix["/mix/levels/bass"]
+                .as_f64()
+                .unwrap()
+                >= 1.0
+        );
         let hf = &get("hook_flat").fix;
-        assert!(hf.iter().any(|(k, v)| k.ends_with("/energy") && v.as_f64().unwrap() < 0.0) || hf["/mix/drop_lift_db"].as_f64().unwrap() > spec.mix.drop_lift_db as f64);
+        assert!(
+            hf.iter()
+                .any(|(k, v)| k.ends_with("/energy") && v.as_f64().unwrap() < 0.0)
+                || hf["/mix/drop_lift_db"].as_f64().unwrap() > spec.mix.drop_lift_db as f64
+        );
         assert_eq!(get("groove_sparse").fix["/density"], "balanced");
-        assert!(ws.windows(2).all(|x| x[0].severity >= x[1].severity), "biggest first");
+        assert!(
+            ws.windows(2).all(|x| x[0].severity >= x[1].severity),
+            "biggest first"
+        );
         assert!(score(&ws) > 0.0);
         // every fix is a spec path the song accepts
         let mut sv = serde_json::to_value(&spec).unwrap();
@@ -704,11 +1013,18 @@ mod tests {
         let mut t = Targets::default();
         let ids = |ws: &[Weakness]| ws.iter().map(|w| w.id.clone()).collect::<Vec<_>>();
         let ws = judge_reference(&m, &song2, &mut t, &spec);
-        assert!(!ids(&ws).contains(&"quieter_than_reference".to_string()), "{:?}", ids(&ws));
+        assert!(
+            !ids(&ws).contains(&"quieter_than_reference".to_string()),
+            "{:?}",
+            ids(&ws)
+        );
         // loud parts 1.0 LU under the reference's: named, target raised by what is missing
         m.loud_lufs = Some(-9.9);
         let ws = judge_reference(&m, &song2, &mut t, &spec);
-        let q = ws.iter().find(|w| w.id == "quieter_than_reference").expect("quiet loud parts are named");
+        let q = ws
+            .iter()
+            .find(|w| w.id == "quieter_than_reference")
+            .expect("quiet loud parts are named");
         assert_eq!(q.fix["/master/lufs"], json!(-9.9), "{:?}", q.fix);
         // integrated far under (a lift cannot excuse 3 LU): named even with loud parts matched
         m.loud_lufs = Some(-8.9);
@@ -736,11 +1052,21 @@ mod tests {
         m.lufs = -10.9;
         let mut t = Targets::default();
         let extra = judge_reference(&m, &song2, &mut t, &spec);
-        assert!((t.air_rel_lufs_db[0] - -25.2).abs() < 0.05, "{:?}", t.air_rel_lufs_db);
+        assert!(
+            (t.air_rel_lufs_db[0] - -25.2).abs() < 0.05,
+            "{:?}",
+            t.air_rel_lufs_db
+        );
         let ids: Vec<&str> = extra.iter().map(|w| w.id.as_str()).collect();
-        assert_eq!(ids, ["low_heavier_than_reference", "quieter_than_reference"]);
+        assert_eq!(
+            ids,
+            ["low_heavier_than_reference", "quieter_than_reference"]
+        );
         let ws = judge(&m, &p, &t, &spec, &Value::Null);
-        let dull = ws.iter().find(|w| w.id == "top_dull").expect("the top end is judged against the raised floor");
+        let dull = ws
+            .iter()
+            .find(|w| w.id == "top_dull")
+            .expect("the top end is judged against the raised floor");
         assert_eq!(dull.fix["/mix/air_floor_db"], json!(-25.2));
         // every fix validates as a spec change
         let mut sv = serde_json::to_value(&spec).unwrap();
@@ -769,19 +1095,49 @@ mod tests {
         let mut l = vec![0f32; n];
         for (i, x) in l.iter_mut().enumerate() {
             let tt = (i % (sr as usize / 2)) as f32 / sr;
-            *x = 0.6 * (std::f32::consts::TAU * 55.0 * tt).sin() * (-tt * 12.0).exp() + 0.01 * ((((i as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 33) % 2000) as f32 / 1000.0 - 1.0);
+            *x = 0.6 * (std::f32::consts::TAU * 55.0 * tt).sin() * (-tt * 12.0).exp()
+                + 0.01
+                    * ((((i as u64)
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407)
+                        >> 33)
+                        % 2000) as f32
+                        / 1000.0
+                        - 1.0);
         }
         let path = d.join("thump.wav");
         crate::render::write_wav(&path, &l, &l).unwrap();
         let m = measure(&path, &[], 120.0).unwrap();
         assert!((m.seconds - 6.0).abs() < 0.2, "{m:?}");
         assert!(m.width_db < -40.0, "mono reads narrow: {}", m.width_db);
-        assert!(m.sub_rel_lufs_db > -12.0, "a 55 Hz thump is all sub: {}", m.sub_rel_lufs_db);
-        assert!(m.onsets_per_s > 1.0 && m.onsets_per_s < 4.0, "two hits a second: {}", m.onsets_per_s);
+        assert!(
+            m.sub_rel_lufs_db > -12.0,
+            "a 55 Hz thump is all sub: {}",
+            m.sub_rel_lufs_db
+        );
+        assert!(
+            m.onsets_per_s > 1.0 && m.onsets_per_s < 4.0,
+            "two hits a second: {}",
+            m.onsets_per_s
+        );
         let mut e = Engine::new(d.clone());
-        let r = critique_tool(&mut e, &json!({"file": path.to_string_lossy(), "genre": "badshah"})).unwrap();
+        let r = critique_tool(
+            &mut e,
+            &json!({"file": path.to_string_lossy(), "genre": "badshah"}),
+        )
+        .unwrap();
         assert_eq!(r["profile"], "punjabi_party");
-        assert!(r["weaknesses"].as_array().unwrap().iter().any(|w| w["id"] == "narrow"), "{r}");
-        assert!(critique_tool(&mut Engine::new(d), &json!({})).is_err(), "no song, no file: a clear error");
+        assert!(
+            r["weaknesses"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["id"] == "narrow"),
+            "{r}"
+        );
+        assert!(
+            critique_tool(&mut Engine::new(d), &json!({})).is_err(),
+            "no song, no file: a clear error"
+        );
     }
 }

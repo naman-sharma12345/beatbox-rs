@@ -39,11 +39,19 @@ macro_rules! visit_body {
             let tn = t.name.to_lowercase();
             $f("trk", format!("track:{tn}"), ref_of!($iter, t.id));
             for s in t.sends.$iter() {
-                $f("snd", format!("send:{tn}>{}", s.bus.to_lowercase()), ref_of!($iter, s.id));
+                $f(
+                    "snd",
+                    format!("send:{tn}>{}", s.bus.to_lowercase()),
+                    ref_of!($iter, s.id),
+                );
             }
         }
         for b in $p.buses.$iter() {
-            $f("bus", format!("bus:{}", b.name.to_lowercase()), ref_of!($iter, b.id));
+            $f(
+                "bus",
+                format!("bus:{}", b.name.to_lowercase()),
+                ref_of!($iter, b.id),
+            );
         }
         for pat in $p.patterns.$iter() {
             let pn = pat.name.to_lowercase();
@@ -55,16 +63,32 @@ macro_rules! visit_body {
             }
         }
         for c in $p.playlist.$iter() {
-            $f("pl", format!("pl:{}", c.pattern.to_lowercase()), ref_of!($iter, c.id));
+            $f(
+                "pl",
+                format!("pl:{}", c.pattern.to_lowercase()),
+                ref_of!($iter, c.id),
+            );
         }
         for c in $p.audio_clips.$iter() {
-            $f("clip", format!("clip:{}", c.track.to_lowercase()), ref_of!($iter, c.id));
+            $f(
+                "clip",
+                format!("clip:{}", c.track.to_lowercase()),
+                ref_of!($iter, c.id),
+            );
         }
         for l in $p.automation.$iter() {
-            $f("lane", format!("lane:{}.{}", l.target.to_lowercase(), l.param), ref_of!($iter, l.id));
+            $f(
+                "lane",
+                format!("lane:{}.{}", l.target.to_lowercase(), l.param),
+                ref_of!($iter, l.id),
+            );
         }
         for c in $p.automation_clips.$iter() {
-            $f("ac", format!("ac:{}", c.name.to_lowercase()), ref_of!($iter, c.id));
+            $f(
+                "ac",
+                format!("ac:{}", c.name.to_lowercase()),
+                ref_of!($iter, c.id),
+            );
         }
     }};
 }
@@ -178,11 +202,15 @@ pub fn lookup(p: &Project, id: &str) -> Option<Value> {
         }
         for (j, s) in t.sends.iter().enumerate() {
             if s.id == id {
-                return Some(json!({"id": id, "kind": "send", "track": t.name, "track_id": t.id, "bus": s.bus, "index": j, "db": s.db}));
+                return Some(
+                    json!({"id": id, "kind": "send", "track": t.name, "track_id": t.id, "bus": s.bus, "index": j, "db": s.db}),
+                );
             }
         }
         if let Some(j) = t.effects.iter().position(|e| e.id() == id) {
-            return Some(json!({"id": id, "kind": "insert", "owner": t.name, "owner_id": t.id, "index": j, "type": t.effects[j].type_name()}));
+            return Some(
+                json!({"id": id, "kind": "insert", "owner": t.name, "owner_id": t.id, "index": j, "type": t.effects[j].type_name()}),
+            );
         }
     }
     for (i, b) in p.buses.iter().enumerate() {
@@ -190,11 +218,15 @@ pub fn lookup(p: &Project, id: &str) -> Option<Value> {
             return Some(json!({"id": id, "kind": "bus", "name": b.name, "index": i}));
         }
         if let Some(j) = b.effects.iter().position(|e| e.id() == id) {
-            return Some(json!({"id": id, "kind": "insert", "owner": b.name, "owner_id": b.id, "index": j, "type": b.effects[j].type_name()}));
+            return Some(
+                json!({"id": id, "kind": "insert", "owner": b.name, "owner_id": b.id, "index": j, "type": b.effects[j].type_name()}),
+            );
         }
     }
     if let Some(j) = p.master_effects.iter().position(|e| e.id() == id) {
-        return Some(json!({"id": id, "kind": "insert", "owner": "master", "index": j, "type": p.master_effects[j].type_name()}));
+        return Some(
+            json!({"id": id, "kind": "insert", "owner": "master", "index": j, "type": p.master_effects[j].type_name()}),
+        );
     }
     for (i, pat) in p.patterns.iter().enumerate() {
         if pat.id == id {
@@ -203,25 +235,38 @@ pub fn lookup(p: &Project, id: &str) -> Option<Value> {
         for (tk, notes) in &pat.clips {
             if let Some(j) = notes.iter().position(|n| n.id == id) {
                 let n = &notes[j];
-                let track_id = p.tracks.iter().find(|t| t.name.to_lowercase() == *tk).map(|t| t.id.clone()).unwrap_or_default();
-                return Some(json!({"id": id, "kind": "note", "pattern": pat.name, "pattern_id": pat.id, "track": tk, "track_id": track_id, "index": j,
-                    "start": n.start, "len": n.len, "pitch": n.pitch, "vel": n.vel}));
+                let track_id = p
+                    .tracks
+                    .iter()
+                    .find(|t| t.name.to_lowercase() == *tk)
+                    .map(|t| t.id.clone())
+                    .unwrap_or_default();
+                return Some(
+                    json!({"id": id, "kind": "note", "pattern": pat.name, "pattern_id": pat.id, "track": tk, "track_id": track_id, "index": j,
+                    "start": n.start, "len": n.len, "pitch": n.pitch, "vel": n.vel}),
+                );
             }
         }
     }
     if let Some(i) = p.playlist.iter().position(|c| c.id == id) {
         let c = &p.playlist[i];
-        return Some(json!({"id": id, "kind": "playlist_clip", "pattern": c.pattern, "start_bar": c.start_bar, "bars": c.bars, "index": i}));
+        return Some(
+            json!({"id": id, "kind": "playlist_clip", "pattern": c.pattern, "start_bar": c.start_bar, "bars": c.bars, "index": i}),
+        );
     }
     if let Some(i) = p.audio_clips.iter().position(|c| c.id == id) {
         return Some(json!({"id": id, "kind": "audio_clip", "index": i, "clip": p.audio_clips[i]}));
     }
     if let Some(i) = p.automation.iter().position(|l| l.id == id) {
         let l = &p.automation[i];
-        return Some(json!({"id": id, "kind": "automation_lane", "target": l.target, "param": l.param, "index": i, "points": l.points.len()}));
+        return Some(
+            json!({"id": id, "kind": "automation_lane", "target": l.target, "param": l.param, "index": i, "points": l.points.len()}),
+        );
     }
     if let Some(i) = p.automation_clips.iter().position(|c| c.id == id) {
-        return Some(json!({"id": id, "kind": "automation_clip", "name": p.automation_clips[i].name, "index": i}));
+        return Some(
+            json!({"id": id, "kind": "automation_clip", "name": p.automation_clips[i].name, "index": i}),
+        );
     }
     None
 }
@@ -230,9 +275,30 @@ pub fn lookup(p: &Project, id: &str) -> Option<Value> {
 /// object's id (and to no object's name) is swapped for that object's
 /// current name before the tool runs, so every tool takes ids.
 const NAME_KEYS: &[&str] = &[
-    "track", "tracks", "pattern", "patterns", "to_patterns", "from_pattern", "to_pattern", "copy_from", "source",
-    "sidechain", "bus", "buses", "to", "output", "target", "owner", "dest", "destination", "from_track", "to_track",
-    "only_tracks", "exclude", "solo", "mute",
+    "track",
+    "tracks",
+    "pattern",
+    "patterns",
+    "to_patterns",
+    "from_pattern",
+    "to_pattern",
+    "copy_from",
+    "source",
+    "sidechain",
+    "bus",
+    "buses",
+    "to",
+    "output",
+    "target",
+    "owner",
+    "dest",
+    "destination",
+    "from_track",
+    "to_track",
+    "only_tracks",
+    "exclude",
+    "solo",
+    "mute",
 ];
 
 fn name_for_id(p: &Project, s: &str) -> Option<String> {
@@ -252,14 +318,22 @@ fn name_for_id(p: &Project, s: &str) -> Option<String> {
         .find(|t| t.id == k)
         .map(|t| t.name.clone())
         .or_else(|| p.buses.iter().find(|b| b.id == k).map(|b| b.name.clone()))
-        .or_else(|| p.patterns.iter().find(|x| x.id == k).map(|x| x.name.clone()))
+        .or_else(|| {
+            p.patterns
+                .iter()
+                .find(|x| x.id == k)
+                .map(|x| x.name.clone())
+        })
 }
 
 fn swap(p: &Project, v: &mut Value) {
     match v {
         Value::String(s) => {
             if s.contains(',') {
-                let parts: Vec<String> = s.split(',').map(|x| name_for_id(p, x).unwrap_or_else(|| x.trim().to_string())).collect();
+                let parts: Vec<String> = s
+                    .split(',')
+                    .map(|x| name_for_id(p, x).unwrap_or_else(|| x.trim().to_string()))
+                    .collect();
                 *s = parts.join(",");
             } else if let Some(n) = name_for_id(p, s) {
                 *s = n;
@@ -279,7 +353,11 @@ pub fn resolve_id_refs(p: &Project, args: &Value) -> Value {
     let mut out = args.clone();
     if let Value::Object(m) = &mut out {
         for (k, v) in m.iter_mut() {
-            if NAME_KEYS.contains(&k.as_str()) || k.ends_with("_track") || k.ends_with("_pattern") || k.ends_with("_bus") {
+            if NAME_KEYS.contains(&k.as_str())
+                || k.ends_with("_track")
+                || k.ends_with("_pattern")
+                || k.ends_with("_bus")
+            {
                 swap(p, v);
             }
         }
@@ -296,17 +374,23 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("beatbox_ids_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir);
-        e.call("new_project", &json!({"name": "ids", "bpm": 120})).unwrap();
+        e.call("new_project", &json!({"name": "ids", "bpm": 120}))
+            .unwrap();
         e
     }
 
     #[test]
     fn every_object_gets_a_unique_id_that_survives_edits_and_undo() {
         let mut e = eng();
-        e.call("add_track", &json!({"name": "keys", "preset": "pad"})).unwrap();
+        e.call("add_track", &json!({"name": "keys", "preset": "pad"}))
+            .unwrap();
         e.call("add_notes", &json!({"track": "keys", "notes": [{"start": 0, "len": 4, "pitch": 60}, {"start": 4, "len": 4, "pitch": 64}]})).unwrap();
         e.call("add_bus", &json!({"name": "verb"})).unwrap();
-        e.call("set_send", &json!({"track": "keys", "bus": "verb", "db": -12})).unwrap();
+        e.call(
+            "set_send",
+            &json!({"track": "keys", "bus": "verb", "db": -12}),
+        )
+        .unwrap();
         let p = &e.project;
         assert_eq!(p.schema_version, SCHEMA_VERSION);
         let tid = p.tracks[0].id.clone();
@@ -323,33 +407,55 @@ mod tests {
         assert_eq!(uniq.len(), all.len(), "ids are unique: {all:?}");
         let n0 = notes[0].id.clone();
         // a tool addressed by id
-        e.call("set_mixer", &json!({"track": tid, "volume_db": -3})).unwrap();
+        e.call("set_mixer", &json!({"track": tid, "volume_db": -3}))
+            .unwrap();
         assert_eq!(e.project.tracks[0].volume_db, -3.0);
         // notes selected by id
-        e.call("edit_notes", &json!({"track": "keys", "ids": [n0.clone()], "transpose": 2})).unwrap();
+        e.call(
+            "edit_notes",
+            &json!({"track": "keys", "ids": [n0.clone()], "transpose": 2}),
+        )
+        .unwrap();
         let ns = e.project.patterns[0].notes("keys");
         assert_eq!(ns.iter().find(|n| n.id == n0).unwrap().pitch, 62);
-        assert_eq!(ns.iter().filter(|n| n.pitch == 64).count(), 1, "the other note did not move");
+        assert_eq!(
+            ns.iter().filter(|n| n.pitch == 64).count(),
+            1,
+            "the other note did not move"
+        );
         // remove a note, undo: the same id comes back
-        e.call("delete_notes", &json!({"track": tid, "ids": [n0.clone()]})).unwrap();
-        assert!(e.project.patterns[0].notes("keys").iter().all(|n| n.id != n0));
+        e.call("delete_notes", &json!({"track": tid, "ids": [n0.clone()]}))
+            .unwrap();
+        assert!(e.project.patterns[0]
+            .notes("keys")
+            .iter()
+            .all(|n| n.id != n0));
         e.call("undo", &json!({})).unwrap();
-        assert!(e.project.patterns[0].notes("keys").iter().any(|n| n.id == n0));
+        assert!(e.project.patterns[0]
+            .notes("keys")
+            .iter()
+            .any(|n| n.id == n0));
         // lookup
         let v = e.call("lookup_id", &json!({"id": n0})).unwrap();
         assert_eq!(v["kind"], "note");
         assert_eq!(v["track_id"], tid.as_str());
         // a new object never reuses a deleted id
         let seq = e.project.id_seq;
-        e.call("add_track", &json!({"name": "bass", "preset": "pad"})).unwrap();
+        e.call("add_track", &json!({"name": "bass", "preset": "pad"}))
+            .unwrap();
         assert!(e.project.id_seq > seq);
     }
 
     #[test]
     fn a_copy_gets_a_fresh_id_and_the_original_keeps_its_own() {
         let mut e = eng();
-        e.call("add_track", &json!({"name": "keys", "preset": "pad"})).unwrap();
-        e.call("add_notes", &json!({"track": "keys", "notes": [{"start": 0, "len": 4, "pitch": 60}]})).unwrap();
+        e.call("add_track", &json!({"name": "keys", "preset": "pad"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track": "keys", "notes": [{"start": 0, "len": 4, "pitch": 60}]}),
+        )
+        .unwrap();
         let src_pat = e.project.patterns[0].id.clone();
         let src_note = e.project.patterns[0].notes("keys")[0].id.clone();
         // insert a copy BEFORE the original: the original still keeps its ids
@@ -369,14 +475,23 @@ mod tests {
     #[test]
     fn legacy_project_files_migrate_on_load() {
         let mut e = eng();
-        e.call("add_track", &json!({"name": "keys", "preset": "pad"})).unwrap();
-        e.call("add_notes", &json!({"track": "keys", "notes": [{"start": 0, "len": 4, "pitch": 60}]})).unwrap();
+        e.call("add_track", &json!({"name": "keys", "preset": "pad"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track": "keys", "notes": [{"start": 0, "len": 4, "pitch": 60}]}),
+        )
+        .unwrap();
         // strip ids and the schema, as a file written before ids
         let mut v = serde_json::to_value(&e.project).unwrap();
         fn strip(v: &mut Value) {
             match v {
                 Value::Object(m) => {
-                    if m.contains_key("start") || m.contains_key("instrument") || m.contains_key("clips") || m.contains_key("bus") {
+                    if m.contains_key("start")
+                        || m.contains_key("instrument")
+                        || m.contains_key("clips")
+                        || m.contains_key("bus")
+                    {
                         m.remove("id");
                     }
                     m.remove("schema_version");
@@ -394,15 +509,18 @@ mod tests {
         assert!(!s.contains("\"trk"), "stripped: {s}");
         let path = e.workdir.join("legacy.json");
         std::fs::write(&path, s).unwrap();
-        e.call("load_project", &json!({"path": path.to_string_lossy()})).unwrap();
+        e.call("load_project", &json!({"path": path.to_string_lossy()}))
+            .unwrap();
         assert_eq!(e.project.schema_version, SCHEMA_VERSION);
         assert!(!e.project.tracks[0].id.is_empty());
         assert!(!e.project.patterns[0].notes("keys")[0].id.is_empty());
         // ids round-trip through save/load unchanged
         let tid = e.project.tracks[0].id.clone();
         let out = e.workdir.join("saved.json");
-        e.call("save_project", &json!({"path": out.to_string_lossy()})).unwrap();
-        e.call("load_project", &json!({"path": out.to_string_lossy()})).unwrap();
+        e.call("save_project", &json!({"path": out.to_string_lossy()}))
+            .unwrap();
+        e.call("load_project", &json!({"path": out.to_string_lossy()}))
+            .unwrap();
         assert_eq!(e.project.tracks[0].id, tid);
     }
 }

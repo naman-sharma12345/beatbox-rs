@@ -23,7 +23,12 @@ pub mod tp_limiter;
 pub fn rss_mb() -> f32 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
-        .and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| l.split_whitespace().nth(1)).and_then(|k| k.parse::<f32>().ok()))
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|k| k.parse::<f32>().ok())
+        })
         .map(|k| k / 1024.0)
         .unwrap_or(0.0)
 }
@@ -41,10 +46,10 @@ pub fn memtrace(label: &str) {
     }
 }
 
-/// BS.1770-4 / R128 streaming loudness meter (opt-in; nothing existing calls it).
-pub mod loudness_meter;
 /// Sidechain dynamic-EQ band carving (opt-in; nothing existing calls it).
 pub mod carve_eq;
+/// BS.1770-4 / R128 streaming loudness meter (opt-in; nothing existing calls it).
+pub mod loudness_meter;
 /// 20 Hz high-pass DC guard on the tape-stop ramps (`stutter` tape_stop, `gross_beat` tape_stop presets).
 pub mod tape_dc;
 

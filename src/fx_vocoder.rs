@@ -19,7 +19,13 @@ pub fn parse_notes(s: &str) -> Result<Vec<f32>, String> {
         }
         let b = t.as_bytes();
         let pc = match b[0].to_ascii_uppercase() {
-            b'C' => 0, b'D' => 2, b'E' => 4, b'F' => 5, b'G' => 7, b'A' => 9, b'B' => 11,
+            b'C' => 0,
+            b'D' => 2,
+            b'E' => 4,
+            b'F' => 5,
+            b'G' => 7,
+            b'A' => 9,
+            b'B' => 11,
             _ => return Err(format!("bad note '{t}' (use C3, Eb3, F#4 or MIDI numbers)")),
         };
         let mut i = 1;
@@ -57,15 +63,22 @@ pub fn vocoder(p: &VocoderFx, l: &mut [f32], r: &mut [f32]) {
 /// audio) is run through the first `offset` samples, so it is the whole-song
 /// pass's carrier; the modulator side settles from the buffer's audio.
 pub fn vocoder_at(p: &VocoderFx, l: &mut [f32], r: &mut [f32], offset: usize) {
-    let Ok(notes) = parse_notes(&p.notes) else { return };
+    let Ok(notes) = parse_notes(&p.notes) else {
+        return;
+    };
     let mix = p.mix.clamp(0.0, 1.0);
     if mix <= 0.0 || l.is_empty() {
         return;
     }
     let n = l.len();
     let bands = p.bands.clamp(4, 40) as usize;
-    let (lo, hi) = (p.low_hz.clamp(50.0, 1000.0), p.high_hz.clamp(2000.0, 16000.0));
-    let freqs: Vec<f32> = (0..bands).map(|i| lo * (hi / lo).powf(i as f32 / (bands - 1) as f32)).collect();
+    let (lo, hi) = (
+        p.low_hz.clamp(50.0, 1000.0),
+        p.high_hz.clamp(2000.0, 16000.0),
+    );
+    let freqs: Vec<f32> = (0..bands)
+        .map(|i| lo * (hi / lo).powf(i as f32 / (bands - 1) as f32))
+        .collect();
     // narrower bands as there are more of them
     let res = (0.35 + bands as f32 / 60.0).min(0.9);
     let att = (-1.0 / (p.attack_ms.max(0.5) * 0.001 * SR)).exp();
@@ -120,7 +133,9 @@ pub fn vocoder_at(p: &VocoderFx, l: &mut [f32], r: &mut [f32], offset: usize) {
         let (cl, cr) = carrier();
         let (mut ol, mut or) = (0.0f32, 0.0f32);
         for b in 0..bands {
-            let x = mod_f[b].process(m, freqs[b], res, FilterMode::Bandpass).abs();
+            let x = mod_f[b]
+                .process(m, freqs[b], res, FilterMode::Bandpass)
+                .abs();
             let c = if x > env[b] { att } else { rel };
             env[b] = x + (env[b] - x) * c;
             ol += car_fl[b].process(cl, freqs[b], res, FilterMode::Bandpass) * env[b];
@@ -150,7 +165,11 @@ mod tests {
         let mut l: Vec<f32> = (0..n)
             .map(|i| {
                 seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                if i < n / 2 { (seed as f32 / u32::MAX as f32 - 0.5) * 0.6 } else { 0.0 }
+                if i < n / 2 {
+                    (seed as f32 / u32::MAX as f32 - 0.5) * 0.6
+                } else {
+                    0.0
+                }
             })
             .collect();
         let mut r = l.clone();
@@ -160,7 +179,10 @@ mod tests {
         let on = rms(&l[n / 8..n / 2]);
         let off = rms(&l[n * 3 / 4..]);
         assert!(on > 0.01, "vocoder output while the voice speaks: {on}");
-        assert!(off < on * 0.05, "silent when the voice stops: {off} vs {on}");
+        assert!(
+            off < on * 0.05,
+            "silent when the voice stops: {off} vs {on}"
+        );
         assert!(l.iter().all(|x| x.is_finite()));
     }
 }

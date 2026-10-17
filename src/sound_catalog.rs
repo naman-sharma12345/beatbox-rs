@@ -69,16 +69,27 @@ pub fn free_mb() -> Option<u64> {
     while !p.exists() {
         p = p.parent()?;
     }
-    let out = std::process::Command::new("df").arg("-Pk").arg(p).output().ok()?;
+    let out = std::process::Command::new("df")
+        .arg("-Pk")
+        .arg(p)
+        .output()
+        .ok()?;
     let s = String::from_utf8_lossy(&out.stdout);
     let line = s.lines().nth(1)?;
-    line.split_whitespace().nth(3)?.parse::<u64>().ok().map(|k| k / 1024)
+    line.split_whitespace()
+        .nth(3)?
+        .parse::<u64>()
+        .ok()
+        .map(|k| k / 1024)
 }
 
 /// Refuse a download that would leave less than BEATBOX_MIN_FREE_MB
 /// (default 2048) free on the library's disk.
 pub fn ensure_free(need_bytes: u64) -> Result<()> {
-    let min: u64 = std::env::var("BEATBOX_MIN_FREE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(2048);
+    let min: u64 = std::env::var("BEATBOX_MIN_FREE_MB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2048);
     if let Some(f) = free_mb() {
         let need = need_bytes / 1_000_000;
         if f < min + need {
@@ -95,18 +106,38 @@ struct Cat {
 
 /// Every catalog entry: the JSON index plus the VSCO 2 CE packs.
 pub fn entries() -> Vec<Entry> {
-    let mut v: Vec<Entry> = serde_json::from_str::<Cat>(CATALOG_JSON).map(|c| c.entries).unwrap_or_default();
+    let mut v: Vec<Entry> = serde_json::from_str::<Cat>(CATALOG_JSON)
+        .map(|c| c.entries)
+        .unwrap_or_default();
     for p in crate::multisample::PACKS {
-        let fam = if p.folder.starts_with("Keys") { "piano" } else if p.folder.starts_with("Strings") { "strings" } else if p.folder.starts_with("Brass") { "brass" } else if p.folder.starts_with("Woodwinds") { "winds" } else { "orchestra" };
+        let fam = if p.folder.starts_with("Keys") {
+            "piano"
+        } else if p.folder.starts_with("Strings") {
+            "strings"
+        } else if p.folder.starts_with("Brass") {
+            "brass"
+        } else if p.folder.starts_with("Woodwinds") {
+            "winds"
+        } else {
+            "orchestra"
+        };
         v.push(Entry {
             id: format!("vsco_{}", p.name),
             name: format!("VSCO 2 CE: {}", p.description),
             family: fam.into(),
-            tags: vec![p.name.replace('_', " "), "orchestral".into(), "multisample".into()],
+            tags: vec![
+                p.name.replace('_', " "),
+                "orchestral".into(),
+                "multisample".into(),
+            ],
             format: "vsco_pack".into(),
             license: crate::multisample::PACK_LICENSE.into(),
             license_url: "https://github.com/sgossner/VSCO-2-CE".into(),
-            source: format!("https://github.com/{}/tree/master/{}", crate::multisample::PACK_REPO, p.folder),
+            source: format!(
+                "https://github.com/{}/tree/master/{}",
+                crate::multisample::PACK_REPO,
+                p.folder
+            ),
             url: String::new(),
             sha256: String::new(),
             bytes: 0,
@@ -126,7 +157,9 @@ pub fn entries() -> Vec<Entry> {
 }
 
 pub fn entry(id: &str) -> Option<Entry> {
-    entries().into_iter().find(|e| e.id.eq_ignore_ascii_case(id))
+    entries()
+        .into_iter()
+        .find(|e| e.id.eq_ignore_ascii_case(id))
 }
 
 pub fn path_of(e: &Entry) -> PathBuf {
@@ -153,7 +186,10 @@ fn touch(p: &std::path::Path) {
 }
 
 pub fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn settings_path() -> PathBuf {
@@ -161,19 +197,27 @@ fn settings_path() -> PathBuf {
 }
 
 pub fn cache_limit_mb() -> u64 {
-    std::fs::read_to_string(settings_path()).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()).and_then(|v| v["cache_limit_mb"].as_u64()).unwrap_or(1500)
+    std::fs::read_to_string(settings_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v["cache_limit_mb"].as_u64())
+        .unwrap_or(1500)
 }
 
 fn dir_size(p: &std::path::Path) -> u64 {
-    let Ok(rd) = std::fs::read_dir(p) else { return 0 };
-    rd.filter_map(|e| e.ok()).map(|e| {
-        let m = e.metadata();
-        match m {
-            Ok(m) if m.is_dir() => dir_size(&e.path()),
-            Ok(m) => m.len(),
-            Err(_) => 0,
-        }
-    }).sum()
+    let Ok(rd) = std::fs::read_dir(p) else {
+        return 0;
+    };
+    rd.filter_map(|e| e.ok())
+        .map(|e| {
+            let m = e.metadata();
+            match m {
+                Ok(m) if m.is_dir() => dir_size(&e.path()),
+                Ok(m) => m.len(),
+                Err(_) => 0,
+            }
+        })
+        .sum()
 }
 
 /// (id, bytes, last_used) of every installed entry: single files by id,
@@ -185,17 +229,27 @@ pub fn installed() -> Vec<(String, u64, u64)> {
         .filter_map(|e| {
             let p = path_of(e);
             let m = std::fs::metadata(&p).ok()?;
-            let used = std::fs::read_to_string(p.with_extension("used")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            let used = std::fs::read_to_string(p.with_extension("used"))
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
             Some((e.id.clone(), m.len(), used))
         })
         .collect();
-    let mut repos: Vec<String> = entries().iter().filter(|e| e.format == "sfz_git").map(|e| e.repo.clone()).collect();
+    let mut repos: Vec<String> = entries()
+        .iter()
+        .filter(|e| e.format == "sfz_git")
+        .map(|e| e.repo.clone())
+        .collect();
     repos.sort();
     repos.dedup();
     for r in repos {
         let d = crate::soundfont::library_dir().join(r.replace('/', "__"));
         if d.is_dir() {
-            let used = std::fs::read_to_string(d.join("used")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            let used = std::fs::read_to_string(d.join("used"))
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
             out.push((r, dir_size(&d), used));
         }
     }
@@ -227,7 +281,13 @@ pub fn evict(keep: &str) -> Vec<String> {
 
 pub fn remove(id: &str) -> Result<u64> {
     // an SFZ repo (owner/repo) or any of its program ids removes the repo folder
-    let repo = entries().into_iter().find(|e| e.format == "sfz_git" && (e.repo.eq_ignore_ascii_case(id) || e.id.eq_ignore_ascii_case(id))).map(|e| e.repo);
+    let repo = entries()
+        .into_iter()
+        .find(|e| {
+            e.format == "sfz_git"
+                && (e.repo.eq_ignore_ascii_case(id) || e.id.eq_ignore_ascii_case(id))
+        })
+        .map(|e| e.repo);
     if let Some(r) = repo {
         let d = crate::soundfont::library_dir().join(r.replace('/', "__"));
         let b = dir_size(&d);
@@ -251,12 +311,17 @@ pub fn fetch(e: &Entry) -> Result<PathBuf> {
         bail!("'{}' is listed but its download is not pinned to a checksum yet, so it is not fetched (licence: {}; source: {})", e.id, e.license, e.source);
     }
     let p = path_of(e);
-    if p.is_file() && (e.bytes == 0 || std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) == e.bytes) {
+    if p.is_file()
+        && (e.bytes == 0 || std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) == e.bytes)
+    {
         touch(&p);
         return Ok(p);
     }
     ensure_free(e.bytes)?;
-    let resp = ureq::get(&e.url).timeout(std::time::Duration::from_secs(900)).call().map_err(|er| anyhow!("download {}: {er}", e.id))?;
+    let resp = ureq::get(&e.url)
+        .timeout(std::time::Duration::from_secs(900))
+        .call()
+        .map_err(|er| anyhow!("download {}: {er}", e.id))?;
     let mut buf = Vec::with_capacity(e.bytes as usize);
     std::io::Read::read_to_end(&mut resp.into_reader(), &mut buf)?;
     let got = crate::voice_ai::sha256_hex(&buf);
@@ -275,13 +340,27 @@ pub fn fetch(e: &Entry) -> Result<PathBuf> {
 fn entry_json(e: &Entry) -> Value {
     let inst = match e.format.as_str() {
         "vsco_pack" => Value::Null,
-        "sfz_git" => json!(crate::soundfont::library_dir().join(e.repo.replace('/', "__")).join(dir_of(&e.sfz)).join(format!("{}.beatbox_flat.sfz", e.sfz.rsplit('/').next().unwrap_or("").trim_end_matches(".sfz"))).is_file()),
+        "sfz_git" => json!(crate::soundfont::library_dir()
+            .join(e.repo.replace('/', "__"))
+            .join(dir_of(&e.sfz))
+            .join(format!(
+                "{}.beatbox_flat.sfz",
+                e.sfz
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("")
+                    .trim_end_matches(".sfz")
+            ))
+            .is_file()),
         _ => json!(!e.file.is_empty() && path_of(e).is_file()),
     };
-    let mb = if e.bytes == 0 { Value::Null } else { json!((e.bytes as f64 / 1e6 * 10.0).round() / 10.0) };
+    let mb = if e.bytes == 0 {
+        Value::Null
+    } else {
+        json!((e.bytes as f64 / 1e6 * 10.0).round() / 10.0)
+    };
     json!({"id": e.id, "name": e.name, "family": e.family, "tags": e.tags, "genres": e.genres, "format": e.format, "license": e.license, "source": e.source, "mb": mb, "status": e.status, "installed": inst})
 }
-
 
 // ------------------------------------------------------------ SFZ from git
 
@@ -318,7 +397,12 @@ pub fn sha1_hex(data: &[u8]) -> String {
                 40..=59 => ((b & cc) | (b & d) | (cc & d), 0x8F1BBCDC),
                 _ => (b ^ cc ^ d, 0xCA62C1D6),
             };
-            let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(*wi);
+            let t = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*wi);
             e = d;
             d = cc;
             cc = b.rotate_left(30);
@@ -349,7 +433,9 @@ fn norm_path(p: &str) -> String {
 }
 
 fn dir_of(p: &str) -> String {
-    p.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default()
+    p.rsplit_once('/')
+        .map(|(d, _)| d.to_string())
+        .unwrap_or_default()
 }
 
 /// Flatten an SFZ: inline `#include "file"` (relative to the main file's
@@ -357,7 +443,14 @@ fn dir_of(p: &str) -> String {
 pub fn flatten_sfz(main: &str, read: &mut dyn FnMut(&str) -> Result<String>) -> Result<String> {
     let base = dir_of(main);
     let mut defs: Vec<(String, String)> = Vec::new();
-    fn go(path: &str, base: &str, defs: &mut Vec<(String, String)>, read: &mut dyn FnMut(&str) -> Result<String>, depth: usize, out: &mut String) -> Result<()> {
+    fn go(
+        path: &str,
+        base: &str,
+        defs: &mut Vec<(String, String)>,
+        read: &mut dyn FnMut(&str) -> Result<String>,
+        depth: usize,
+        out: &mut String,
+    ) -> Result<()> {
         if depth > 12 {
             bail!("#include nested too deep at {path}");
         }
@@ -398,14 +491,31 @@ pub fn flatten_sfz(main: &str, read: &mut dyn FnMut(&str) -> Result<String>) -> 
 }
 
 fn http_bytes(url: &str) -> Result<Vec<u8>> {
-    let resp = ureq::get(url).set("User-Agent", "beatbox-rs").timeout(std::time::Duration::from_secs(300)).call().map_err(|e| anyhow!("{url}: {e}"))?;
+    let resp = ureq::get(url)
+        .set("User-Agent", "beatbox-rs")
+        .timeout(std::time::Duration::from_secs(300))
+        .call()
+        .map_err(|e| anyhow!("{url}: {e}"))?;
     let mut buf = Vec::new();
     std::io::Read::read_to_end(&mut resp.into_reader(), &mut buf)?;
     Ok(buf)
 }
 
 fn url_path(p: &str) -> String {
-    p.split('/').map(|s| s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>()).collect::<Vec<_>>().join("/")
+    p.split('/')
+        .map(|s| {
+            s.bytes()
+                .map(|b| {
+                    if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+                        (b as char).to_string()
+                    } else {
+                        format!("%{b:02X}")
+                    }
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Fetch one program of an SFZ instrument from its pinned git tree: the SFZ,
@@ -413,7 +523,12 @@ fn url_path(p: &str) -> String {
 /// against the tree's blob id. Returns the flattened local .sfz (next to the
 /// original, so sample paths resolve) and the bytes downloaded now.
 pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64)> {
-    let (repo, tree, branch, sfz) = (e.repo.as_str(), e.tree.as_str(), e.branch.as_str(), e.sfz.as_str());
+    let (repo, tree, branch, sfz) = (
+        e.repo.as_str(),
+        e.tree.as_str(),
+        e.branch.as_str(),
+        e.sfz.as_str(),
+    );
     if repo.is_empty() || tree.is_empty() || sfz.is_empty() {
         bail!("{}: catalog entry lacks repo/tree/sfz", e.id);
     }
@@ -425,31 +540,43 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
     let tf = dir.join("tree.json");
     let pinned = !e.files.is_empty();
     let tj: Option<Value> = if pinned {
-        Some(json!({"tree": e.files.iter().map(|f| json!({"type": "blob", "path": f.first(), "sha": f.get(1), "size": f.get(2), "url": f.get(3)})).collect::<Vec<_>>()}))
+        Some(
+            json!({"tree": e.files.iter().map(|f| json!({"type": "blob", "path": f.first(), "sha": f.get(1), "size": f.get(2), "url": f.get(3)})).collect::<Vec<_>>()}),
+        )
     } else {
-        match std::fs::read(&tf).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).filter(|v| v["tree"].is_array()) {
-        Some(v) => Some(v),
-        None => {
-            let url = format!("https://api.github.com/repos/{repo}/git/trees/{tree}?recursive=1");
-            let mut req = ureq::get(&url).set("User-Agent", "beatbox-rs").timeout(std::time::Duration::from_secs(60));
-            if let Ok(t) = std::env::var("BEATBOX_GITHUB_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")) {
-                req = req.set("Authorization", &format!("Bearer {t}"));
-            }
-            match req.call() {
-                Ok(r) => {
-                    let mut b = Vec::new();
-                    std::io::Read::read_to_end(&mut r.into_reader(), &mut b)?;
-                    let v: Value = serde_json::from_slice(&b)?;
-                    std::fs::write(&tf, &b)?;
-                    Some(v)
+        match std::fs::read(&tf)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .filter(|v| v["tree"].is_array())
+        {
+            Some(v) => Some(v),
+            None => {
+                let url =
+                    format!("https://api.github.com/repos/{repo}/git/trees/{tree}?recursive=1");
+                let mut req = ureq::get(&url)
+                    .set("User-Agent", "beatbox-rs")
+                    .timeout(std::time::Duration::from_secs(60));
+                if let Ok(t) =
+                    std::env::var("BEATBOX_GITHUB_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN"))
+                {
+                    req = req.set("Authorization", &format!("Bearer {t}"));
                 }
-                Err(_) => None,
+                match req.call() {
+                    Ok(r) => {
+                        let mut b = Vec::new();
+                        std::io::Read::read_to_end(&mut r.into_reader(), &mut b)?;
+                        let v: Value = serde_json::from_slice(&b)?;
+                        std::fs::write(&tf, &b)?;
+                        Some(v)
+                    }
+                    Err(_) => None,
+                }
             }
         }
-    }
     };
     let verified = tj.is_some();
-    let mut blobs: std::collections::HashMap<String, (String, String, u64)> = std::collections::HashMap::new();
+    let mut blobs: std::collections::HashMap<String, (String, String, u64)> =
+        std::collections::HashMap::new();
     let mut direct: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if let Some(tj) = &tj {
         for it in tj["tree"].as_array().cloned().unwrap_or_default() {
@@ -458,7 +585,14 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
                 if let Some(u) = it["url"].as_str().filter(|u| u.starts_with("https://")) {
                     direct.insert(p.to_lowercase(), u.to_string());
                 }
-                blobs.insert(p.to_lowercase(), (p, it["sha"].as_str().unwrap_or("").to_string(), it["size"].as_u64().unwrap_or(0)));
+                blobs.insert(
+                    p.to_lowercase(),
+                    (
+                        p,
+                        it["sha"].as_str().unwrap_or("").to_string(),
+                        it["size"].as_u64().unwrap_or(0),
+                    ),
+                );
             }
         }
     }
@@ -467,23 +601,37 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
     let get = |p: &str, fetched: &mut u64| -> Result<PathBuf> {
         let np = norm_path(p);
         let (rp, sha, size) = if verified {
-            blobs.get(&np.to_lowercase()).cloned().ok_or_else(|| anyhow!("{p} is not in {repo}"))?
+            blobs
+                .get(&np.to_lowercase())
+                .cloned()
+                .ok_or_else(|| anyhow!("{p} is not in {repo}"))?
         } else {
             (np.clone(), String::new(), 0)
         };
         let local = dir.join(&rp);
-        if local.is_file() && (size == 0 || std::fs::metadata(&local).map(|m| m.len()).unwrap_or(u64::MAX) == size) {
+        if local.is_file()
+            && (size == 0
+                || std::fs::metadata(&local)
+                    .map(|m| m.len())
+                    .unwrap_or(u64::MAX)
+                    == size)
+        {
             return Ok(local);
         }
         let data = match direct.get(&rp.to_lowercase()) {
             Some(u) => {
                 let d = http_bytes(u)?;
                 if crate::voice_ai::sha256_hex(&d) != sha {
-                    bail!("{rp}: download from {u} does not match its pinned sha256; not installed");
+                    bail!(
+                        "{rp}: download from {u} does not match its pinned sha256; not installed"
+                    );
                 }
                 d
             }
-            None => http_bytes(&format!("https://raw.githubusercontent.com/{repo}/{tree}/{}", url_path(&rp)))?,
+            None => http_bytes(&format!(
+                "https://raw.githubusercontent.com/{repo}/{tree}/{}",
+                url_path(&rp)
+            ))?,
         };
         if verified && sha.len() == 40 && git_blob_sha1(&data) != sha {
             bail!("{rp}: content does not match the pinned tree; not installed");
@@ -506,11 +654,22 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
     // alternate between the ones kept
     regions.retain(|r| r.seq <= max_rr.max(1));
     let base = dir_of(sfz);
-    let mut need: Vec<String> = regions.iter().map(|r| norm_path(&format!("{base}/{}", r.sample))).collect();
+    let mut need: Vec<String> = regions
+        .iter()
+        .map(|r| norm_path(&format!("{base}/{}", r.sample)))
+        .collect();
     need.sort();
     need.dedup();
-    let total: u64 = need.iter().filter_map(|p| blobs.get(&p.to_lowercase()).map(|b| b.2)).sum();
-    let missing: u64 = need.iter().filter_map(|p| blobs.get(&p.to_lowercase())).filter(|b| !dir.join(&b.0).is_file()).map(|b| b.2).sum();
+    let total: u64 = need
+        .iter()
+        .filter_map(|p| blobs.get(&p.to_lowercase()).map(|b| b.2))
+        .sum();
+    let missing: u64 = need
+        .iter()
+        .filter_map(|p| blobs.get(&p.to_lowercase()))
+        .filter(|b| !dir.join(&b.0).is_file())
+        .map(|b| b.2)
+        .sum();
     ensure_free(missing)?;
     if total > max_mb * 1_000_000 {
         bail!("{}: this program needs {:.0} MB of samples, over max_mb {max_mb}; pick a smaller program or raise max_mb", e.id, total as f64 / 1e6);
@@ -521,7 +680,11 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
             bail!("{}: stopped after {:.0} MB, over max_mb {max_mb} (files so far stay in the library)", e.id, fetched as f64 / 1e6);
         }
     }
-    let name = sfz.rsplit('/').next().unwrap_or("program.sfz").trim_end_matches(".sfz");
+    let name = sfz
+        .rsplit('/')
+        .next()
+        .unwrap_or("program.sfz")
+        .trim_end_matches(".sfz");
     let out = dir.join(&base).join(format!("{name}.beatbox_flat.sfz"));
     std::fs::write(&out, &flat)?;
     let _ = std::fs::write(dir.join("used"), format!("{}", now()));
@@ -536,26 +699,41 @@ fn role_words(role: &str) -> (Vec<&'static str>, Vec<&'static str>) {
         "kick" => (&["drums"], &["kick", "bass drum", "kit"]),
         "snare" => (&["drums"], &["snare"]),
         "hats" | "hihat" | "hi_hat" | "cymbals" => (&["drums"], &["hat", "hihat", "cymbal"]),
-        "percussion" | "perc" => (&["percussion", "world"], &["percussion", "conga", "bongo", "shaker", "cajon"]),
+        "percussion" | "perc" => (
+            &["percussion", "world"],
+            &["percussion", "conga", "bongo", "shaker", "cajon"],
+        ),
         "tabla" => (&["percussion"], &["tabla"]),
         "dhol" | "dholak" => (&["percussion"], &["dholak", "dhol"]),
         "bass" | "electric_bass" => (&["bass"], &["electric", "finger", "pick", "pluck"]),
         "upright_bass" | "double_bass" => (&["bass"], &["upright", "arco", "pizz", "double bass"]),
-        "guitar" | "clean_guitar" | "electric_guitar" => (&["guitar"], &["electric", "clean", "di"]),
-        "overdriven_guitar" | "distorted_guitar" | "rock_guitar" => (&["guitar"], &["electric", "di", "crunch"]),
+        "guitar" | "clean_guitar" | "electric_guitar" => {
+            (&["guitar"], &["electric", "clean", "di"])
+        }
+        "overdriven_guitar" | "distorted_guitar" | "rock_guitar" => {
+            (&["guitar"], &["electric", "di", "crunch"])
+        }
         "acoustic_guitar" => (&["guitar"], &["acoustic", "nylon", "steel"]),
         "piano" | "keys" => (&["piano", "keys"], &["grand", "piano", "upright"]),
         "epiano" | "e_piano" | "rhodes" => (&["keys", "piano"], &["fm", "electric", "rhodes"]),
         "organ" => (&["keys"], &["organ"]),
-        "strings" | "pad" => (&["strings", "orchestra"], &["violins", "strings", "sus", "ensemble"]),
+        "strings" | "pad" => (
+            &["strings", "orchestra"],
+            &["violins", "strings", "sus", "ensemble"],
+        ),
         "cello" => (&["strings"], &["cello"]),
         "brass" | "horns" => (&["brass"], &["trumpet", "trombone", "horn"]),
         "sax" | "saxophone" => (&["winds"], &["sax"]),
         "flute" | "bansuri" => (&["winds"], &["flute", "recorder", "bansuri"]),
-        "lead" => (&["winds", "synth", "keys"], &["lead", "sax", "flute", "harmonica"]),
+        "lead" => (
+            &["winds", "synth", "keys"],
+            &["lead", "sax", "flute", "harmonica"],
+        ),
         "harmonium" => (&["keys", "world"], &["harmonium"]),
         "santoor" => (&["world", "strings"], &["santoor", "dulcimer", "psaltery"]),
-        "mallets" | "bells" | "marimba" | "vibes" => (&["mallets"], &["marimba", "vibraphone", "glock", "kalimba"]),
+        "mallets" | "bells" | "marimba" | "vibes" => {
+            (&["mallets"], &["marimba", "vibraphone", "glock", "kalimba"])
+        }
         "choir" | "vocals" => (&["choir"], &["choir", "voice"]),
         _ => (&[], &[]),
     };
@@ -565,7 +743,11 @@ fn role_words(role: &str) -> (Vec<&'static str>, Vec<&'static str>) {
 /// Rank catalog entries for a role (kick, drums, bass, guitar, piano ...)
 /// in a genre: family fit, tag fit, genre tag, size under max_mb, already
 /// installed first among equals. Returns (score, entry, reasons).
-pub fn pick_for_role(role: &str, genre: Option<&str>, max_mb: Option<f64>) -> Vec<(f32, Entry, Vec<String>)> {
+pub fn pick_for_role(
+    role: &str,
+    genre: Option<&str>,
+    max_mb: Option<f64>,
+) -> Vec<(f32, Entry, Vec<String>)> {
     let (fams, words) = role_words(role);
     let rl = role.to_lowercase();
     let g = genre.map(|g| g.to_lowercase().replace([' ', '-'], "_"));
@@ -612,7 +794,11 @@ pub fn pick_for_role(role: &str, genre: Option<&str>, max_mb: Option<f64>) -> Ve
         }
         out.push((s, e, why));
     }
-    out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.bytes.cmp(&b.1.bytes)));
+    out.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.bytes.cmp(&b.1.bytes))
+    });
     out
 }
 
@@ -655,11 +841,11 @@ pub fn tools() -> Vec<Tool> {
                 let all = entries();
                 let mut hits: Vec<Value> = all
                     .iter()
-                    .filter(|e| fam.as_ref().map_or(true, |f| e.family.to_lowercase() == *f || e.tags.iter().any(|t| t.to_lowercase().contains(f.as_str()))))
-                    .filter(|e| lic.as_ref().map_or(true, |l| e.license.to_lowercase().contains(l.as_str())))
-                    .filter(|e| genre.as_ref().map_or(true, |g| e.genres.iter().any(|x| x.to_lowercase() == *g) || e.tags.iter().any(|t| t.to_lowercase().replace([' ', '-'], "_") == *g)))
-                    .filter(|e| max_mb.map_or(true, |m| e.bytes == 0 || e.bytes as f64 / 1e6 <= m))
-                    .filter(|e| q.as_ref().map_or(true, |q| q.split_whitespace().all(|w| e.name.to_lowercase().contains(w) || e.id.contains(w) || e.family.to_lowercase().contains(w) || e.genres.iter().any(|t| t.contains(w)) || e.tags.iter().any(|t| t.to_lowercase().contains(w)))))
+                    .filter(|e| fam.as_ref().is_none_or(|f| e.family.to_lowercase() == *f || e.tags.iter().any(|t| t.to_lowercase().contains(f.as_str()))))
+                    .filter(|e| lic.as_ref().is_none_or(|l| e.license.to_lowercase().contains(l.as_str())))
+                    .filter(|e| genre.as_ref().is_none_or(|g| e.genres.iter().any(|x| x.to_lowercase() == *g) || e.tags.iter().any(|t| t.to_lowercase().replace([' ', '-'], "_") == *g)))
+                    .filter(|e| max_mb.is_none_or(|m| e.bytes == 0 || e.bytes as f64 / 1e6 <= m))
+                    .filter(|e| q.as_ref().is_none_or(|q| q.split_whitespace().all(|w| e.name.to_lowercase().contains(w) || e.id.contains(w) || e.family.to_lowercase().contains(w) || e.genres.iter().any(|t| t.contains(w)) || e.tags.iter().any(|t| t.to_lowercase().contains(w)))))
                     .map(entry_json)
                     .collect();
                 let n = hits.len();
@@ -723,7 +909,12 @@ mod tests {
         for e in &all {
             assert!(!e.license.is_empty(), "{} has no licence", e.id);
             let l = e.license.to_lowercase();
-            assert!(!l.contains("non-commercial") && !l.contains("noncommercial") && !l.contains("-nc"), "{}: {}", e.id, e.license);
+            assert!(
+                !l.contains("non-commercial") && !l.contains("noncommercial") && !l.contains("-nc"),
+                "{}: {}",
+                e.id,
+                e.license
+            );
             if e.status == "pinned" && !e.file.is_empty() {
                 assert_eq!(e.sha256.len(), 64, "{}", e.id);
                 assert!(e.url.starts_with("https://"), "{}", e.id);
@@ -733,22 +924,47 @@ mod tests {
         assert_eq!(ids.len(), all.len(), "duplicate ids");
         for e in all.iter().filter(|e| e.format == "sfz_git") {
             let direct = !e.files.is_empty() && e.files.iter().all(|f| f.len() == 4);
-            assert!(!e.repo.is_empty() && (e.tree.len() == 40 || direct) && e.sfz.ends_with(".sfz"), "{}", e.id);
+            assert!(
+                !e.repo.is_empty() && (e.tree.len() == 40 || direct) && e.sfz.ends_with(".sfz"),
+                "{}",
+                e.id
+            );
         }
         // pinned-file programs: every region's sample is pinned, with a checksum
         for e in all.iter().filter(|e| !e.sfz_text.is_empty()) {
             let (regions, _) = crate::multisample::parse_sfz(&e.sfz_text).unwrap();
             let regions = crate::multisample::playable_regions(regions);
             assert!(!regions.is_empty(), "{}", e.id);
-            let pinned: std::collections::HashMap<String, &Vec<Value>> = e.files.iter().map(|f| (f[0].as_str().unwrap_or("").to_lowercase(), f)).collect();
+            let pinned: std::collections::HashMap<String, &Vec<Value>> = e
+                .files
+                .iter()
+                .map(|f| (f[0].as_str().unwrap_or("").to_lowercase(), f))
+                .collect();
             for r in &regions {
-                let f = pinned.get(&r.sample.to_lowercase()).unwrap_or_else(|| panic!("{}: {} not pinned", e.id, r.sample));
+                let f = pinned
+                    .get(&r.sample.to_lowercase())
+                    .unwrap_or_else(|| panic!("{}: {} not pinned", e.id, r.sample));
                 let sha = f[1].as_str().unwrap_or("");
-                assert!(sha.len() == 40 || (sha.len() == 64 && f.len() == 4), "{}: {}", e.id, r.sample);
+                assert!(
+                    sha.len() == 40 || (sha.len() == 64 && f.len() == 4),
+                    "{}: {}",
+                    e.id,
+                    r.sample
+                );
             }
             assert!(e.bytes > 0, "{}", e.id);
         }
-        for fam in ["guitar", "bass", "drums", "piano", "strings", "percussion", "world", "mallets", "keys"] {
+        for fam in [
+            "guitar",
+            "bass",
+            "drums",
+            "piano",
+            "strings",
+            "percussion",
+            "world",
+            "mallets",
+            "keys",
+        ] {
             assert!(all.iter().any(|e| e.family == fam), "no {fam}");
         }
     }
@@ -756,9 +972,18 @@ mod tests {
     #[test]
     fn pick_for_role_ranks_fitting_families_first() {
         let p = super::pick_for_role("tabla", Some("bollywood"), None);
-        assert_eq!(p[0].1.id, "mmiron_tabla_bols", "{:?}", p.iter().take(3).map(|x| &x.1.id).collect::<Vec<_>>());
+        assert_eq!(
+            p[0].1.id,
+            "mmiron_tabla_bols",
+            "{:?}",
+            p.iter().take(3).map(|x| &x.1.id).collect::<Vec<_>>()
+        );
         let p = super::pick_for_role("bass", Some("rock"), Some(400.0));
-        assert!(!p.is_empty() && p.iter().take(5).all(|x| x.1.family == "bass"), "{:?}", p.iter().take(5).map(|x| &x.1.id).collect::<Vec<_>>());
+        assert!(
+            !p.is_empty() && p.iter().take(5).all(|x| x.1.family == "bass"),
+            "{:?}",
+            p.iter().take(5).map(|x| &x.1.id).collect::<Vec<_>>()
+        );
         let p = super::pick_for_role("drums", None, None);
         assert!(p.iter().take(5).all(|x| x.1.family == "drums"));
     }
@@ -766,16 +991,46 @@ mod tests {
     #[test]
     fn search_by_genre_family_and_size() {
         let mut e = crate::engine::Engine::new(std::env::temp_dir().join("beatbox_catalog_search"));
-        let r = e.call("search_instruments", &json!({"genre": "bollywood", "query": "tabla"})).unwrap();
-        assert!(r["results"].as_array().unwrap().iter().any(|x| x["id"] == "mmiron_tabla_bols"), "{r}");
-        let r = e.call("search_instruments", &json!({"query": "harmonium"})).unwrap();
+        let r = e
+            .call(
+                "search_instruments",
+                &json!({"genre": "bollywood", "query": "tabla"}),
+            )
+            .unwrap();
+        assert!(
+            r["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|x| x["id"] == "mmiron_tabla_bols"),
+            "{r}"
+        );
+        let r = e
+            .call("search_instruments", &json!({"query": "harmonium"}))
+            .unwrap();
         assert!(r["matches"].as_u64().unwrap() >= 1, "{r}");
-        let r = e.call("search_instruments", &json!({"family": "piano", "max_mb": 150})).unwrap();
+        let r = e
+            .call(
+                "search_instruments",
+                &json!({"family": "piano", "max_mb": 150}),
+            )
+            .unwrap();
         for x in r["results"].as_array().unwrap() {
-            assert!(x["mb"].is_null() || x["mb"].as_f64().unwrap() <= 150.0, "{x}");
+            assert!(
+                x["mb"].is_null() || x["mb"].as_f64().unwrap() <= 150.0,
+                "{x}"
+            );
         }
-        let r = e.call("search_instruments", &json!({"genre": "classical indian", "limit": 3})).unwrap();
-        assert!(r["matches"].as_u64().unwrap() >= 3 && r["results"].as_array().unwrap().len() == 3, "{r}");
+        let r = e
+            .call(
+                "search_instruments",
+                &json!({"genre": "classical indian", "limit": 3}),
+            )
+            .unwrap();
+        assert!(
+            r["matches"].as_u64().unwrap() >= 3 && r["results"].as_array().unwrap().len() == 3,
+            "{r}"
+        );
         assert!(free_mb().is_some());
     }
 
@@ -783,7 +1038,10 @@ mod tests {
     fn sha1_and_git_blob_ids() {
         assert_eq!(sha1_hex(b"abc"), "a9993e364706816aba3e25717850c26c9cd0d89d");
         // `git hash-object` of "hello\n"
-        assert_eq!(git_blob_sha1(b"hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a");
+        assert_eq!(
+            git_blob_sha1(b"hello\n"),
+            "ce013625030ba8dba906f756967f9e9ca394464a"
+        );
     }
 
     #[test]
@@ -794,12 +1052,23 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let flat = flatten_sfz("Programs/main.sfz", &mut |p| files.get(p).map(|s| s.to_string()).ok_or_else(|| anyhow!("missing {p}"))).unwrap();
+        let flat = flatten_sfz("Programs/main.sfz", &mut |p| {
+            files
+                .get(p)
+                .map(|s| s.to_string())
+                .ok_or_else(|| anyhow!("missing {p}"))
+        })
+        .unwrap();
         assert!(flat.contains("volume=-3"), "{flat}");
         let (r, _) = crate::multisample::parse_sfz(&flat).unwrap();
         let r = crate::multisample::playable_regions(r);
         let names: Vec<&str> = r.iter().map(|x| x.sample.as_str()).collect();
-        assert!(names.contains(&"../Samples/a.wav") && !names.contains(&"../Samples/b.wav") && !names.iter().any(|n| n.contains("rel")), "{names:?}");
+        assert!(
+            names.contains(&"../Samples/a.wav")
+                && !names.contains(&"../Samples/b.wav")
+                && !names.iter().any(|n| n.contains("rel")),
+            "{names:?}"
+        );
         let c = r.iter().find(|x| x.sample.ends_with("c.wav")).unwrap().seq;
         let d = r.iter().find(|x| x.sample.ends_with("d.wav")).unwrap().seq;
         assert_ne!(c, d);

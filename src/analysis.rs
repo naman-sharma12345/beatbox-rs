@@ -388,7 +388,11 @@ pub fn loudness_at(l: &[f32], r: &[f32], sr: f32) -> Loudness {
         .collect();
     st.sort_by(|a, b| a.total_cmp(b));
     let st_max = st.last().copied().unwrap_or(-70.0);
-    let st_p90 = if st.is_empty() { -70.0 } else { st[((st.len() - 1) as f64 * 0.9).round() as usize] };
+    let st_p90 = if st.is_empty() {
+        -70.0
+    } else {
+        st[((st.len() - 1) as f64 * 0.9).round() as usize]
+    };
     let lra = if st.len() >= 2 {
         let at = |q: f64| st[((st.len() - 1) as f64 * q).round() as usize];
         at(0.95) - at(0.10)

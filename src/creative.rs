@@ -2120,7 +2120,10 @@ pub fn apply_wildcards(
                     .position(|s| s.tags.iter().any(|x| x == "quiet"))
                     .map(|q| q + 1)
                     .unwrap_or(t.sections.len() / 2);
-                if from > 0 && from < t.sections.len() && t.sections[from - 1].transition != "silence" {
+                if from > 0
+                    && from < t.sections.len()
+                    && t.sections[from - 1].transition != "silence"
+                {
                     t.sections[from - 1].transition = "silence".into();
                 }
                 let mut names = Vec::new();
@@ -2375,9 +2378,8 @@ pub fn contrast_alias(s: &str) -> Option<&'static str> {
         "beat_switch" | "switch" | "groove_switch" => "beat_switch",
         "odd_phrase" | "odd_length" | "odd_bars" => "odd_phrase",
         "drum_dropout" | "dropout" | "drop_out" => "drum_dropout",
-        "quiet_section" | "quiet" | "quiet_part" | "breakdown" | "calm_section" | "stripped_section" => {
-            "quiet_section"
-        }
+        "quiet_section" | "quiet" | "quiet_part" | "breakdown" | "calm_section"
+        | "stripped_section" => "quiet_section",
         "unusual_instrument" | "unexpected_instrument" => "unusual_instrument",
         "key_change" | "modulation" | "key_lift" => "key_change",
         "bass_kick_call_response"

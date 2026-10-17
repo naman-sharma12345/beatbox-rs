@@ -367,10 +367,14 @@ pub struct SfzRegion {
 /// else the lowest keyswitch). lorand windows become round-robin slots.
 pub fn playable_regions(regions: Vec<SfzRegion>) -> Vec<SfzRegion> {
     // `*sine`, `*silence` ... are built-in generators, not files
-    let mut v: Vec<SfzRegion> = regions.into_iter().filter(|r| !r.sample.rsplit('/').next().unwrap_or("").starts_with('*')).filter(|r| r.trigger.is_empty() || r.trigger == "attack" || r.trigger == "first").collect();
+    let mut v: Vec<SfzRegion> = regions
+        .into_iter()
+        .filter(|r| !r.sample.rsplit('/').next().unwrap_or("").starts_with('*'))
+        .filter(|r| r.trigger.is_empty() || r.trigger == "attack" || r.trigger == "first")
+        .collect();
     let sws: Vec<u8> = v.iter().filter_map(|r| r.sw_last).collect();
     if let Some(&first) = sws.iter().min() {
-        v.retain(|r| r.sw_last.map_or(true, |s| s == first));
+        v.retain(|r| r.sw_last.is_none_or(|s| s == first));
     }
     let mut rands: Vec<f32> = v.iter().map(|r| r.lorand).filter(|x| *x > 0.0).collect();
     rands.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -378,7 +382,11 @@ pub fn playable_regions(regions: Vec<SfzRegion>) -> Vec<SfzRegion> {
     if !rands.is_empty() {
         for r in v.iter_mut() {
             if r.seq <= 1 {
-                r.seq = 1 + rands.iter().position(|x| (*x - r.lorand).abs() < 1e-6).map(|p| p + 1).unwrap_or(0) as u8;
+                r.seq = 1 + rands
+                    .iter()
+                    .position(|x| (*x - r.lorand).abs() < 1e-6)
+                    .map(|p| p + 1)
+                    .unwrap_or(0) as u8;
             }
         }
     }
@@ -840,26 +848,132 @@ mod tests {
     #[test]
     fn new_vsco_packs_have_pitched_file_names() {
         let cases: &[(&str, &[&str])] = &[
-            ("glockenspiel", &["glock_medium_C5.wav", "glock_medium_C6.wav", "glock_medium_G6.wav"]),
-            ("marimba", &["Marimba_hit_Outrigger_B2_loud_01.wav", "Marimba_hit_Outrigger_B4_loud_01.wav", "Marimba_hit_Outrigger_G4_loud_01.wav"]),
-            ("xylophone", &["Xylo_Medium_C4_ff_01_far.wav", "Xylo_Medium_C5_ff_01_far.wav", "Xylo_Medium_G6_ff_01_far.wav"]),
-            ("trumpet_stac", &["Sum_SHTrumpet_stac_A#3_v1_rr1.wav", "Sum_SHTrumpet_stac_A#3_v1_rr2.wav", "Sum_SHTrumpet_stac_G3_v3_rr2.wav"]),
-            ("trumpet_mute_sus", &["Sum_SHTrumpet_straightM-sus_A#2_v1_rr1.wav", "Sum_SHTrumpet_straightM-sus_A#2_v3_rr1.wav", "Sum_SHTrumpet_straightM-sus_G3_v3_rr1.wav"]),
-            ("horn_stac", &["MOHorn_stac_A#1_v1_rr1.wav", "MOHorn_stac_A#1_v2_rr1.wav", "MOHorn_stac_G1_v2_rr2.wav"]),
-            ("trombone_stac", &["tenortbn_stac_A#0_v1_rr1.wav", "tenortbn_stac_A#0_v1_rr2.wav", "tenortbn_stac_F3_v4_rr2.wav"]),
-            ("tuba_stac", &["Tuba3_stac_A#0_v1_rr1_Sum.wav", "Tuba3_stac_A#0_v1_rr2_Sum.wav", "Tuba3_stac_F2_v2_rr4_Sum.wav"]),
-            ("flute_stac", &["LDFlute_stac_A3_v1_rr1.wav", "LDFlute_stac_A3_v1_rr2.wav", "LDFlute_stac_E5_v3_rr2.wav"]),
-            ("clarinet_stac", &["DCClar_stac_A#2_v1_rr1_sum.wav", "DCClar_stac_A#2_v1_rr2_sum.wav", "DCClar_stac_F5_v3_rr2_sum.wav"]),
-            ("oboe_stac", &["Oboe_Stacc_A#2_v1_rr1_Main.wav", "Oboe_Stacc_A#2_v1_rr2_Main.wav", "Oboe_Stacc_F5_v3_rr2_Main.wav"]),
-            ("bassoon_stac", &["PSBassoon_A#0_v2_rr1.wav", "PSBassoon_A#0_v2_rr2.wav", "PSBassoon_G3_v2_rr2.wav"]),
-            ("piccolo_sus", &["piccolo_C5_sustain1.wav", "piccolo_C6_sustain1.wav", "piccolo_G6_sustain1.wav"]),
-            ("violas_pizz", &["ViolaEns_pizz_A3_v1_rr1.wav", "ViolaEns_pizz_A3_v1_rr2.wav", "ViolaEns_pizz_G4_v2_rr2.wav"]),
-            ("contrabass_pizz", &["BKCtbss_Pizz_A#0_v1_rr1.wav", "BKCtbss_Pizz_A#0_v1_rr2.wav", "BKCtbss_Pizz_G0_v3_rr2.wav"]),
+            (
+                "glockenspiel",
+                &[
+                    "glock_medium_C5.wav",
+                    "glock_medium_C6.wav",
+                    "glock_medium_G6.wav",
+                ],
+            ),
+            (
+                "marimba",
+                &[
+                    "Marimba_hit_Outrigger_B2_loud_01.wav",
+                    "Marimba_hit_Outrigger_B4_loud_01.wav",
+                    "Marimba_hit_Outrigger_G4_loud_01.wav",
+                ],
+            ),
+            (
+                "xylophone",
+                &[
+                    "Xylo_Medium_C4_ff_01_far.wav",
+                    "Xylo_Medium_C5_ff_01_far.wav",
+                    "Xylo_Medium_G6_ff_01_far.wav",
+                ],
+            ),
+            (
+                "trumpet_stac",
+                &[
+                    "Sum_SHTrumpet_stac_A#3_v1_rr1.wav",
+                    "Sum_SHTrumpet_stac_A#3_v1_rr2.wav",
+                    "Sum_SHTrumpet_stac_G3_v3_rr2.wav",
+                ],
+            ),
+            (
+                "trumpet_mute_sus",
+                &[
+                    "Sum_SHTrumpet_straightM-sus_A#2_v1_rr1.wav",
+                    "Sum_SHTrumpet_straightM-sus_A#2_v3_rr1.wav",
+                    "Sum_SHTrumpet_straightM-sus_G3_v3_rr1.wav",
+                ],
+            ),
+            (
+                "horn_stac",
+                &[
+                    "MOHorn_stac_A#1_v1_rr1.wav",
+                    "MOHorn_stac_A#1_v2_rr1.wav",
+                    "MOHorn_stac_G1_v2_rr2.wav",
+                ],
+            ),
+            (
+                "trombone_stac",
+                &[
+                    "tenortbn_stac_A#0_v1_rr1.wav",
+                    "tenortbn_stac_A#0_v1_rr2.wav",
+                    "tenortbn_stac_F3_v4_rr2.wav",
+                ],
+            ),
+            (
+                "tuba_stac",
+                &[
+                    "Tuba3_stac_A#0_v1_rr1_Sum.wav",
+                    "Tuba3_stac_A#0_v1_rr2_Sum.wav",
+                    "Tuba3_stac_F2_v2_rr4_Sum.wav",
+                ],
+            ),
+            (
+                "flute_stac",
+                &[
+                    "LDFlute_stac_A3_v1_rr1.wav",
+                    "LDFlute_stac_A3_v1_rr2.wav",
+                    "LDFlute_stac_E5_v3_rr2.wav",
+                ],
+            ),
+            (
+                "clarinet_stac",
+                &[
+                    "DCClar_stac_A#2_v1_rr1_sum.wav",
+                    "DCClar_stac_A#2_v1_rr2_sum.wav",
+                    "DCClar_stac_F5_v3_rr2_sum.wav",
+                ],
+            ),
+            (
+                "oboe_stac",
+                &[
+                    "Oboe_Stacc_A#2_v1_rr1_Main.wav",
+                    "Oboe_Stacc_A#2_v1_rr2_Main.wav",
+                    "Oboe_Stacc_F5_v3_rr2_Main.wav",
+                ],
+            ),
+            (
+                "bassoon_stac",
+                &[
+                    "PSBassoon_A#0_v2_rr1.wav",
+                    "PSBassoon_A#0_v2_rr2.wav",
+                    "PSBassoon_G3_v2_rr2.wav",
+                ],
+            ),
+            (
+                "piccolo_sus",
+                &[
+                    "piccolo_C5_sustain1.wav",
+                    "piccolo_C6_sustain1.wav",
+                    "piccolo_G6_sustain1.wav",
+                ],
+            ),
+            (
+                "violas_pizz",
+                &[
+                    "ViolaEns_pizz_A3_v1_rr1.wav",
+                    "ViolaEns_pizz_A3_v1_rr2.wav",
+                    "ViolaEns_pizz_G4_v2_rr2.wav",
+                ],
+            ),
+            (
+                "contrabass_pizz",
+                &[
+                    "BKCtbss_Pizz_A#0_v1_rr1.wav",
+                    "BKCtbss_Pizz_A#0_v1_rr2.wav",
+                    "BKCtbss_Pizz_G0_v3_rr2.wav",
+                ],
+            ),
         ];
         for (pack_name, files) in cases {
             assert!(pack(pack_name).is_some(), "{pack_name}");
             for f in *files {
-                let (key, _, _) = parse_sample_name(f).unwrap_or_else(|| panic!("{pack_name}: {f}"));
+                let (key, _, _) =
+                    parse_sample_name(f).unwrap_or_else(|| panic!("{pack_name}: {f}"));
                 assert!((12..=108).contains(&key), "{f} -> {key}");
             }
         }

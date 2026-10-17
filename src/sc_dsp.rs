@@ -267,12 +267,16 @@ impl Fdn {
         let lines = cfg
             .delays_ms
             .iter()
-            .map(|m| DelayLine::with_max((ms64(*m as f64 * SIZE_MAX as f64) + mod_depth + 4.0) as usize))
+            .map(|m| {
+                DelayLine::with_max((ms64(*m as f64 * SIZE_MAX as f64) + mod_depth + 4.0) as usize)
+            })
             .collect();
         let base = cfg.delays_ms.map(|m| ms64(m as f64 * size));
-        let gains = cfg
-            .delays_ms
-            .map(|m| 10f64.powf(-3.0 * (m as f64 * size * 0.001) / rt60).min(0.9999));
+        let gains = cfg.delays_ms.map(|m| {
+            10f64
+                .powf(-3.0 * (m as f64 * size * 0.001) / rt60)
+                .min(0.9999)
+        });
         let lfo_inc = cfg.mod_hz as f64 / SR as f64;
         // the same f64 accumulation a whole-song render runs up to `offset`
         let mut lfo = 0.0f64;
@@ -292,7 +296,8 @@ impl Fdn {
             base,
             gains,
             mod_depth,
-            damp: (-std::f64::consts::TAU * p.damping_hz.clamp(500.0, 20000.0) as f64 / SR as f64).exp(),
+            damp: (-std::f64::consts::TAU * p.damping_hz.clamp(500.0, 20000.0) as f64 / SR as f64)
+                .exp(),
             lp: [0.0; LINES],
             lfo,
             lfo_inc,
@@ -346,7 +351,10 @@ impl Fdn {
             let mid = 0.5 * (wl + wr);
             let side = 0.5 * (wl - wr) * width;
             let (wl, wr) = (mid + side, mid - side);
-            let (dl, dr) = (if l[i].is_finite() { l[i] as f64 } else { 0.0 }, if r[i].is_finite() { r[i] as f64 } else { 0.0 });
+            let (dl, dr) = (
+                if l[i].is_finite() { l[i] as f64 } else { 0.0 },
+                if r[i].is_finite() { r[i] as f64 } else { 0.0 },
+            );
             l[i] = (dl * (1.0 - mix) + wl * mix) as f32;
             r[i] = (dr * (1.0 - mix) + wr * mix) as f32;
         }
@@ -796,8 +804,11 @@ mod tests {
     fn yin_aperiodicity_reads_sines_within_a_cent() {
         for (sr, win) in [(11_025.0f32, 441usize), (44_100.0, 2048)] {
             for f0 in [82.41f32, 110.0, 196.0, 261.63, 440.0, 659.26, 880.0, 1046.5] {
-                let f: Vec<f32> = (0..win).map(|i| (TAU * f0 * i as f32 / sr + 0.3).sin()).collect();
-                let (hz, ap) = yin_aperiodicity(&f, sr, 65.0, 1100.0, 0.15).unwrap_or_else(|| panic!("{f0} Hz at {sr}: unvoiced"));
+                let f: Vec<f32> = (0..win)
+                    .map(|i| (TAU * f0 * i as f32 / sr + 0.3).sin())
+                    .collect();
+                let (hz, ap) = yin_aperiodicity(&f, sr, 65.0, 1100.0, 0.15)
+                    .unwrap_or_else(|| panic!("{f0} Hz at {sr}: unvoiced"));
                 let cents = 1200.0 * (hz / f0).log2();
                 assert!(cents.abs() < 1.0, "{f0} Hz at {sr}: {cents:.3} cents");
                 assert!(ap < 0.05, "{f0} Hz at {sr}: aperiodicity {ap}");
@@ -813,12 +824,21 @@ mod tests {
             let f: Vec<f32> = (0..441)
                 .map(|i| {
                     let t = i as f32 / sr;
-                    (1..=10).filter(|k| f0 * *k as f32 <= 5000.0).map(|k| (if k == 1 { 0.3 } else { 1.0 / k as f32 }) * (TAU * f0 * k as f32 * t).sin()).sum::<f32>()
+                    (1..=10)
+                        .filter(|k| f0 * *k as f32 <= 5000.0)
+                        .map(|k| {
+                            (if k == 1 { 0.3 } else { 1.0 / k as f32 })
+                                * (TAU * f0 * k as f32 * t).sin()
+                        })
+                        .sum::<f32>()
                 })
                 .collect();
             let (hz, _) = yin_aperiodicity(&f, sr, 65.0, 1100.0, 0.15).expect("voiced");
             let cents = 1200.0 * (hz / f0).log2();
-            assert!(cents.abs() < 5.0, "{f0} Hz harmonic tone read {hz} Hz ({cents:.1} cents)");
+            assert!(
+                cents.abs() < 5.0,
+                "{f0} Hz harmonic tone read {hz} Hz ({cents:.1} cents)"
+            );
         }
     }
 
@@ -826,8 +846,16 @@ mod tests {
     fn yin_aperiodicity_noise_is_unvoiced() {
         let mut seed = 99u32;
         for _ in 0..20 {
-            let f: Vec<f32> = (0..441).map(|_| { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); (seed >> 8) as f32 / 8388608.0 - 1.0 }).collect();
-            assert!(yin_aperiodicity(&f, 11_025.0, 65.0, 1100.0, 0.15).is_none(), "white noise read as voiced");
+            let f: Vec<f32> = (0..441)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (seed >> 8) as f32 / 8388608.0 - 1.0
+                })
+                .collect();
+            assert!(
+                yin_aperiodicity(&f, 11_025.0, 65.0, 1100.0, 0.15).is_none(),
+                "white noise read as voiced"
+            );
         }
     }
 
@@ -838,12 +866,30 @@ mod tests {
         let src: Vec<f32> = (0..n)
             .map(|i| {
                 let t = i as f32 / SR;
-                if i < 2000 { ((i * 7919) % 101) as f32 / 50.0 - 1.0 } else if t < 1.5 { 0.3 * (TAU * 330.0 * t).sin() } else { 0.0 }
+                if i < 2000 {
+                    ((i * 7919) % 101) as f32 / 50.0 - 1.0
+                } else if t < 1.5 {
+                    0.3 * (TAU * 330.0 * t).sin()
+                } else {
+                    0.0
+                }
             })
             .collect();
-        let p = FdnParams { decay_s: 3.0, size: 0.6, damping_hz: 9000.0, diffusion: 0.7, predelay_ms: 30.0, width: 1.2, low_cut_hz: 120.0, mix: 0.35 };
+        let p = FdnParams {
+            decay_s: 3.0,
+            size: 0.6,
+            damping_hz: 9000.0,
+            diffusion: 0.7,
+            predelay_ms: 30.0,
+            width: 1.2,
+            low_cut_hz: 120.0,
+            mix: 0.35,
+        };
         let off = 123_457;
-        let (mut wl, mut wr) = (src.clone(), src.iter().map(|x| -0.8 * x).collect::<Vec<f32>>());
+        let (mut wl, mut wr) = (
+            src.clone(),
+            src.iter().map(|x| -0.8 * x).collect::<Vec<f32>>(),
+        );
         let (sl, sr) = (wl.clone(), wr.clone());
         fdn_reverb(&HALL, &p, &mut wl, &mut wr, off);
         for bs in [1usize, 7, 64, 127, 512] {
@@ -855,7 +901,10 @@ mod tests {
                 f.process(&mut l[i..j], &mut r[i..j]);
                 i = j;
             }
-            assert!(l == wl && r == wr, "block size {bs}: not bit-identical to one call");
+            assert!(
+                l == wl && r == wr,
+                "block size {bs}: not bit-identical to one call"
+            );
         }
     }
 

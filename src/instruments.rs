@@ -597,9 +597,15 @@ impl Instrument {
     /// slice kits do not.
     pub fn follows_tuning(&self) -> bool {
         match self {
-            Instrument::Multisample(p) => !p.zones.iter().all(|z| z.lo_note == z.root && z.hi_note == z.root),
+            Instrument::Multisample(p) => !p
+                .zones
+                .iter()
+                .all(|z| z.lo_note == z.root && z.hi_note == z.root),
             Instrument::Sampler(p) => p.slices.is_empty() || p.reverse,
-            Instrument::Layer(l) => l.layers.first().map_or(true, |x| x.instrument.follows_tuning()),
+            Instrument::Layer(l) => l
+                .layers
+                .first()
+                .is_none_or(|x| x.instrument.follows_tuning()),
             _ => !self.is_drum(),
         }
     }
@@ -1864,7 +1870,15 @@ fn pluck_kind(p: &PluckParams) -> &str {
 /// One Karplus-Strong string, tuned exactly (two-tap loss filter + allpass
 /// fractional delay), excited by a shaped pick/hammer burst. Returns the
 /// string's output (the loop signal).
-fn ks_string(fs: f32, vel: f32, kind: &str, p: &PluckParams, n: usize, t60: f32, rng: &mut Rng) -> Vec<f32> {
+fn ks_string(
+    fs: f32,
+    vel: f32,
+    kind: &str,
+    p: &PluckParams,
+    n: usize,
+    t60: f32,
+    rng: &mut Rng,
+) -> Vec<f32> {
     let period = (SR / fs).max(4.0);
     // loss filter H = (1-s) + s z^-1: darker = larger s (its delay is ~s samples)
     let bright = p.brightness.clamp(0.0, 1.0);
@@ -1872,7 +1886,11 @@ fn ks_string(fs: f32, vel: f32, kind: &str, p: &PluckParams, n: usize, t60: f32,
     // santoor: thin steel strings struck by light mallets keep their upper
     // partials ringing (the shimmer); the loop low-pass loses half as much
     // per pass, so the 2-6 kHz partials live about twice as long
-    let s = if kind == "santoor" { (s * 0.5).max(0.02) } else { s };
+    let s = if kind == "santoor" {
+        (s * 0.5).max(0.02)
+    } else {
+        s
+    };
     let nd = ((period - s - 0.15).floor() as usize).max(2);
     let d = (period - nd as f32 - s).clamp(0.05, 1.2);
     let c = (1.0 - d) / (1.0 + d);
@@ -1901,7 +1919,11 @@ fn ks_string(fs: f32, vel: f32, kind: &str, p: &PluckParams, n: usize, t60: f32,
         }
     }
     // soften the burst: harder playing = brighter
-    let fc = if kind == "santoor" { 3000.0 + 9000.0 * bright * (0.4 + 0.6 * vel) } else { 900.0 + 7000.0 * bright * (0.35 + 0.65 * vel) };
+    let fc = if kind == "santoor" {
+        3000.0 + 9000.0 * bright * (0.4 + 0.6 * vel)
+    } else {
+        900.0 + 7000.0 * bright * (0.35 + 0.65 * vel)
+    };
     let a = (-2.0 * std::f32::consts::PI * fc / SR).exp();
     let mut z = 0.0;
     for _ in 0..(if kind == "santoor" { 1 } else { 2 }) {
@@ -1931,7 +1953,10 @@ fn ks_string(fs: f32, vel: f32, kind: &str, p: &PluckParams, n: usize, t60: f32,
         *v = y;
     }
     let mean = ex.iter().sum::<f32>() / nd as f32;
-    let pk = ex.iter().fold(0.0f32, |m, v| m.max((v - mean).abs())).max(1e-6);
+    let pk = ex
+        .iter()
+        .fold(0.0f32, |m, v| m.max((v - mean).abs()))
+        .max(1e-6);
     let mut buf: Vec<f32> = ex.iter().map(|v| (v - mean) / pk).collect();
     let mut out = vec![0.0f32; n];
     let (mut idx, mut prev, mut ax1, mut ay1) = (0usize, 0.0f32, 0.0f32, 0.0f32);
@@ -2020,7 +2045,10 @@ fn render_pluck(p: &PluckParams, pitch: f32, vel: f32, gate: f32, rng: &mut Rng)
         "santoor" => &[(260.0, 4.0, 0.35), (640.0, 5.0, 0.3), (1700.0, 6.0, 0.15)],
         _ => &[(105.0, 3.0, 0.5), (210.0, 4.0, 0.4), (470.0, 5.0, 0.2)],
     };
-    let mut bands: Vec<(Biquad, f32)> = body.iter().map(|&(fr, q, g)| (Biquad::new(BiquadKind::Bandpass, fr, q, 0.0), g)).collect();
+    let mut bands: Vec<(Biquad, f32)> = body
+        .iter()
+        .map(|&(fr, q, g)| (Biquad::new(BiquadKind::Bandpass, fr, q, 0.0), g))
+        .collect();
     // tone: tame the 2-5 kHz edge and the fizz above
     let (hc, edge) = match kind {
         // santoor: the steel-string edge is the instrument (was -1.5 dB)
@@ -2031,9 +2059,19 @@ fn render_pluck(p: &PluckParams, pitch: f32, vel: f32, gate: f32, rng: &mut Rng)
     let mut cut = Biquad::new(BiquadKind::HighCut, hc, 0.7, 0.0);
     // de-honk: the 800 Hz-1.5 kHz pile-up the critic measured
     let mut honk = Biquad::new(BiquadKind::Bell, 1100.0, 0.8, -2.5);
-    let mut air = Biquad::new(BiquadKind::HighShelf, 7000.0, 0.7, if kind == "santoor" { 4.0 } else { 2.0 });
+    let mut air = Biquad::new(
+        BiquadKind::HighShelf,
+        7000.0,
+        0.7,
+        if kind == "santoor" { 4.0 } else { 2.0 },
+    );
     let mut bell = Biquad::new(BiquadKind::Bell, 3300.0, 0.9, edge);
-    let mut shelf = Biquad::new(BiquadKind::HighShelf, 6000.0, 0.7, if kind == "santoor" { 0.0 } else { -2.5 });
+    let mut shelf = Biquad::new(
+        BiquadKind::HighShelf,
+        6000.0,
+        0.7,
+        if kind == "santoor" { 0.0 } else { -2.5 },
+    );
     let mut dc = DcBlock::default();
     let rel_rate = match kind {
         "santoor" => 2.5,
@@ -2049,7 +2087,11 @@ fn render_pluck(p: &PluckParams, pitch: f32, vel: f32, gate: f32, rng: &mut Rng)
         }
         let mut s = 0.8 * *v + b;
         s = air.process(honk.process(shelf.process(bell.process(cut.process(s)))));
-        let rel = if t > gate + 0.05 { (-(t - gate - 0.05) * rel_rate).exp() } else { 1.0 };
+        let rel = if t > gate + 0.05 {
+            (-(t - gate - 0.05) * rel_rate).exp()
+        } else {
+            1.0
+        };
         *v = dc.process(s) * rel;
         peak = peak.max(v.abs());
     }

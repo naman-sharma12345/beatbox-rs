@@ -48,11 +48,22 @@ pub fn measure(l: &[f32], r: &[f32]) -> Timbre {
     let f = frames(&mono);
     let fr = SR / tr::HOP as f32;
     let top = pct(&f.e_db, 0.95);
-    let act: Vec<usize> = (0..f.e_db.len()).filter(|&i| f.e_db[i] > top - 30.0).collect();
+    let act: Vec<usize> = (0..f.e_db.len())
+        .filter(|&i| f.e_db[i] > top - 30.0)
+        .collect();
     let mut oct = [0.0f32; 9];
-    let tot = db(act.iter().map(|&i| 10f32.powf(f.e_db[i] / 10.0)).sum::<f32>() / act.len().max(1) as f32);
+    let tot = db(act
+        .iter()
+        .map(|&i| 10f32.powf(f.e_db[i] / 10.0))
+        .sum::<f32>()
+        / act.len().max(1) as f32);
     for k in 0..9 {
-        oct[k] = db(act.iter().map(|&i| 10f32.powf(f.oct[i][k] / 10.0)).sum::<f32>() / act.len().max(1) as f32) - tot;
+        oct[k] = db(act
+            .iter()
+            .map(|&i| 10f32.powf(f.oct[i][k] / 10.0))
+            .sum::<f32>()
+            / act.len().max(1) as f32)
+            - tot;
     }
     let peaks = tr::pick_peaks(&f.flux, 0.6, 4);
     let mut att = Vec::new();
@@ -62,7 +73,10 @@ pub fn measure(l: &[f32], r: &[f32]) -> Timbre {
             continue;
         }
         let z = (o + (0.1 * fr) as usize).min(f.e_db.len().saturating_sub(1));
-        let (p, pv) = (o..=z).map(|i| (i, f.e_db[i])).fold((o, f32::MIN), |m, c| if c.1 > m.1 { c } else { m });
+        let (p, pv) =
+            (o..=z)
+                .map(|i| (i, f.e_db[i]))
+                .fold((o, f32::MIN), |m, c| if c.1 > m.1 { c } else { m });
         att.push((p - o) as f32 / fr * 1000.0 + 5.0);
         let q = p + (0.15 * fr) as usize;
         if q < f.e_db.len() {
@@ -87,7 +101,17 @@ pub fn measure(l: &[f32], r: &[f32]) -> Timbre {
             }
         }
     }
-    Timbre { oct, attack_ms: pct(&att, 0.5), sustain_db: if sus.is_empty() { 0.0 } else { pct(&sus, 0.5) }, width_db: db(s2) - db(m2), tail_db: if tails.is_empty() { -60.0 } else { pct(&tails, 0.5).max(-60.0) } }
+    Timbre {
+        oct,
+        attack_ms: pct(&att, 0.5),
+        sustain_db: if sus.is_empty() { 0.0 } else { pct(&sus, 0.5) },
+        width_db: db(s2) - db(m2),
+        tail_db: if tails.is_empty() {
+            -60.0
+        } else {
+            pct(&tails, 0.5).max(-60.0)
+        },
+    }
 }
 
 /// Distance between two timbres (lower = closer) and its parts.
@@ -95,8 +119,15 @@ pub fn distance(t: &Timbre, c: &Timbre) -> (f32, f32) {
     // tonal balance over the octaves where the target has energy (within 40 dB of its strongest band)
     let mx = t.oct.iter().cloned().fold(f32::MIN, f32::max);
     let ks: Vec<usize> = (0..9).filter(|&k| t.oct[k] > mx - 40.0).collect();
-    let tone = (ks.iter().map(|&k| (t.oct[k] - c.oct[k]).clamp(-30.0, 30.0).powi(2)).sum::<f32>() / ks.len().max(1) as f32).sqrt();
-    let d = tone + 0.03 * (t.attack_ms - c.attack_ms).abs() + 0.25 * (t.sustain_db - c.sustain_db).abs().min(30.0);
+    let tone = (ks
+        .iter()
+        .map(|&k| (t.oct[k] - c.oct[k]).clamp(-30.0, 30.0).powi(2))
+        .sum::<f32>()
+        / ks.len().max(1) as f32)
+        .sqrt();
+    let d = tone
+        + 0.03 * (t.attack_ms - c.attack_ms).abs()
+        + 0.25 * (t.sustain_db - c.sustain_db).abs().min(30.0);
     (d, tone)
 }
 
@@ -111,7 +142,11 @@ pub fn finishing(t: &Timbre, c: &Timbre) -> Value {
         .map(|(k, g)| json!({"freq_hz": ((OCT_EDGES[k] * OCT_EDGES[k + 1]).sqrt()).round(), "gain_db": r1(g), "q": 1.0}))
         .collect();
     let dt = t.tail_db - c.tail_db;
-    let send = if dt > 3.0 { ((dt - 3.0) / 30.0).clamp(0.05, 0.5) } else { 0.0 };
+    let send = if dt > 3.0 {
+        ((dt - 3.0) / 30.0).clamp(0.05, 0.5)
+    } else {
+        0.0
+    };
     json!({"eq": eq, "reverb_send": r1(send * 10.0) / 10.0, "width_change_db": r1(t.width_db - c.width_db),
         "attack_diff_ms": r1(t.attack_ms - c.attack_ms), "sustain_diff_db": r1(t.sustain_db - c.sustain_db)})
 }
@@ -126,19 +161,42 @@ fn parse_cand(s: &str) -> Result<Cand> {
     let (k, v) = s.split_once(':').unwrap_or(("catalog", s));
     let v = v.trim().to_string();
     Ok(match k.trim() {
-        "catalog" => Cand { label: s.to_string(), args: json!({"catalog_id": v}), preset: None },
-        "font" | "instrument" => Cand { label: s.to_string(), args: json!({"instrument": v}), preset: None },
-        "preset" => Cand { label: s.to_string(), args: Value::Null, preset: Some(v) },
-        other => bail!("candidate '{s}': use catalog:<id>, font:<name> or preset:<name> (got '{other}')"),
+        "catalog" => Cand {
+            label: s.to_string(),
+            args: json!({"catalog_id": v}),
+            preset: None,
+        },
+        "font" | "instrument" => Cand {
+            label: s.to_string(),
+            args: json!({"instrument": v}),
+            preset: None,
+        },
+        "preset" => Cand {
+            label: s.to_string(),
+            args: Value::Null,
+            preset: Some(v),
+        },
+        other => {
+            bail!("candidate '{s}': use catalog:<id>, font:<name> or preset:<name> (got '{other}')")
+        }
     })
 }
 
 /// Render one candidate playing `notes` (start step, len steps, pitch, vel 0-1) in a scratch engine.
-fn render_cand(dir: &std::path::Path, c: &Cand, notes: &[Value], bpm: f32, bars: usize) -> Result<(Vec<f32>, Vec<f32>)> {
+fn render_cand(
+    dir: &std::path::Path,
+    c: &Cand,
+    notes: &[Value],
+    bpm: f32,
+    bars: usize,
+) -> Result<(Vec<f32>, Vec<f32>)> {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir)?;
     let mut s = Engine::new(dir.to_path_buf());
-    s.call("new_project", &json!({"patterns": [{"name": "A", "bars": bars.clamp(1, 16)}]}))?;
+    s.call(
+        "new_project",
+        &json!({"patterns": [{"name": "A", "bars": bars.clamp(1, 16)}]}),
+    )?;
     s.call("set_tempo", &json!({"bpm": bpm}))?;
     match &c.preset {
         Some(p) => {
@@ -150,9 +208,15 @@ fn render_cand(dir: &std::path::Path, c: &Cand, notes: &[Value], bpm: f32, bars:
             s.call("load_instrument", &a)?;
         }
     }
-    s.call("add_notes", &json!({"track": "part", "notes": notes, "replace": true}))?;
+    s.call(
+        "add_notes",
+        &json!({"track": "part", "notes": notes, "replace": true}),
+    )?;
     let out = dir.join("cand.wav");
-    s.call("render", &json!({"path": out.to_string_lossy(), "tail": 0.8}))?;
+    s.call(
+        "render",
+        &json!({"path": out.to_string_lossy(), "tail": 0.8}),
+    )?;
     let st = crate::samples::decode_stereo(&out)?;
     let _ = std::fs::remove_file(&out);
     Ok(st)
@@ -177,15 +241,38 @@ fn match_timbre(e: &mut Engine, a: &Value) -> Result<Value> {
     let (bpm, notes_abs): (f32, Vec<(f32, f32, u8, u8)>) = match s_opt(a, "notes_file") {
         Some(nf) => {
             let v: Value = serde_json::from_str(&std::fs::read_to_string(e.resolve(&nf))?)?;
-            let bpm = v["grid"]["bpm"].as_f64().ok_or_else(|| anyhow!("notes_file has no grid.bpm (use a transcribe_* JSON)"))? as f32;
-            let ns: Vec<(f32, f32, u8, u8)> = v["notes"].as_array().cloned().unwrap_or_default().iter().filter_map(|n| Some((n["t0"].as_f64()? as f32, n["t1"].as_f64()? as f32, n["midi"].as_u64()? as u8, n["vel"].as_u64().unwrap_or(90) as u8))).collect();
+            let bpm = v["grid"]["bpm"]
+                .as_f64()
+                .ok_or_else(|| anyhow!("notes_file has no grid.bpm (use a transcribe_* JSON)"))?
+                as f32;
+            let ns: Vec<(f32, f32, u8, u8)> = v["notes"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|n| {
+                    Some((
+                        n["t0"].as_f64()? as f32,
+                        n["t1"].as_f64()? as f32,
+                        n["midi"].as_u64()? as u8,
+                        n["vel"].as_u64().unwrap_or(90) as u8,
+                    ))
+                })
+                .collect();
             (bpm, ns)
         }
         None => {
             let mono: Vec<f32> = l.iter().zip(r.iter()).map(|(x, y)| 0.5 * (x + y)).collect();
             let (g, _) = crate::tools_transcribe::grid_for(e, a, &path, &mono)?;
-            let ns = if role.contains("bass") { tr::transcribe_bass(&mono, g, 16) } else { tr::transcribe_top_line(&mono, g, 16, 80.0, 2000.0) };
-            (g.bpm, ns.iter().map(|n| (n.t0, n.t1, n.pitch, n.vel)).collect())
+            let ns = if role.contains("bass") {
+                tr::transcribe_bass(&mono, g, 16)
+            } else {
+                tr::transcribe_top_line(&mono, g, 16, 80.0, 2000.0)
+            };
+            (
+                g.bpm,
+                ns.iter().map(|n| (n.t0, n.t1, n.pitch, n.vel)).collect(),
+            )
         }
     };
     let step_s = 60.0 / bpm / 4.0;
@@ -203,13 +290,20 @@ fn match_timbre(e: &mut Engine, a: &Value) -> Result<Value> {
     let mut cands: Vec<Cand> = Vec::new();
     if let Some(arr) = a.get("candidates").and_then(|v| v.as_array()) {
         for c in arr {
-            cands.push(parse_cand(c.as_str().ok_or_else(|| anyhow!("candidates are strings"))?)?);
+            cands.push(parse_cand(
+                c.as_str()
+                    .ok_or_else(|| anyhow!("candidates are strings"))?,
+            )?);
         }
     } else {
         let max_mb = f_opt(a, "max_mb").unwrap_or(40.0) as f64;
         for (_, ent, _) in crate::sound_catalog::pick_for_role(&role, None, Some(max_mb)) {
             if ent.format == "sfz_git" || ent.format == "vsco_pack" {
-                cands.push(Cand { label: format!("catalog:{}", ent.id), args: json!({"catalog_id": ent.id}), preset: None });
+                cands.push(Cand {
+                    label: format!("catalog:{}", ent.id),
+                    args: json!({"catalog_id": ent.id}),
+                    preset: None,
+                });
             }
             if cands.len() >= limit {
                 break;
@@ -217,7 +311,9 @@ fn match_timbre(e: &mut Engine, a: &Value) -> Result<Value> {
         }
     }
     if cands.is_empty() {
-        bail!("no candidates: pass candidates [\"catalog:<id>\", \"font:<name>\", \"preset:<name>\"]");
+        bail!(
+            "no candidates: pass candidates [\"catalog:<id>\", \"font:<name>\", \"preset:<name>\"]"
+        );
     }
     let scratch = e.workdir.join(".beatbox_match");
     let mut rows: Vec<(f32, Value, Option<Timbre>, usize)> = Vec::new();
@@ -228,12 +324,20 @@ fn match_timbre(e: &mut Engine, a: &Value) -> Result<Value> {
                 let (d, tone) = distance(&target, &tm);
                 rows.push((d, json!({"candidate": c.label, "distance": r1(d), "tone_diff_db": r1(tone), "attack_ms": r1(tm.attack_ms), "sustain_db": r1(tm.sustain_db)}), Some(tm), i));
             }
-            Err(err) => rows.push((f32::MAX, json!({"candidate": c.label, "error": format!("{err:#}")}), None, i)),
+            Err(err) => rows.push((
+                f32::MAX,
+                json!({"candidate": c.label, "error": format!("{err:#}")}),
+                None,
+                i,
+            )),
         }
     }
     let _ = std::fs::remove_dir_all(&scratch);
     rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let best = rows.first().filter(|r| r.2.is_some()).map(|r| (r.3, r.2.clone().unwrap()));
+    let best = rows
+        .first()
+        .filter(|r| r.2.is_some())
+        .map(|r| (r.3, r.2.clone().unwrap()));
     let mut applied = Value::Null;
     let finish = best.as_ref().map(|(_, tm)| finishing(&target, tm));
     if let (Some(track), Some((i, _))) = (s_opt(a, "apply_to_track"), best.as_ref()) {
@@ -241,9 +345,17 @@ fn match_timbre(e: &mut Engine, a: &Value) -> Result<Value> {
         let res = match &c.preset {
             Some(p) => {
                 if e.project.track_index(&track).is_ok() {
-                    e.call_from("set_instrument", &json!({"track": track, "preset": p}), "match_timbre")
+                    e.call_from(
+                        "set_instrument",
+                        &json!({"track": track, "preset": p}),
+                        "match_timbre",
+                    )
                 } else {
-                    e.call_from("add_track", &json!({"name": track, "preset": p}), "match_timbre")
+                    e.call_from(
+                        "add_track",
+                        &json!({"name": track, "preset": p}),
+                        "match_timbre",
+                    )
                 }
             }
             None => {
@@ -257,12 +369,14 @@ fn match_timbre(e: &mut Engine, a: &Value) -> Result<Value> {
             Err(err) => json!({"error": format!("{err:#}")}),
         };
     }
-    Ok(json!({"target": {"span_s": [r1(t0), r1(t1)], "attack_ms": r1(target.attack_ms), "sustain_db": r1(target.sustain_db), "width_db": r1(target.width_db), "tail_db": r1(target.tail_db),
+    Ok(
+        json!({"target": {"span_s": [r1(t0), r1(t1)], "attack_ms": r1(target.attack_ms), "sustain_db": r1(target.sustain_db), "width_db": r1(target.width_db), "tail_db": r1(target.tail_db),
             "octaves_db": target.oct.iter().map(|v| r1(*v)).collect::<Vec<_>>()},
         "notes_played": notes.len(), "ranked": rows.iter().map(|r| r.1.clone()).collect::<Vec<_>>(),
         "best": rows.first().map(|r| r.1["candidate"].clone()), "finish_with": finish, "applied": applied,
         "legend": "distance = octave-balance RMS dB + attack and sustain differences; finish_with = EQ moves (dB per octave centre), reverb send 0-0.5, width change, to apply with eq_7band / add_effect / set_send",
-        "next": ["load_instrument", "add_effect", "set_send", "score_sections"]}))
+        "next": ["load_instrument", "add_effect", "set_send", "score_sections"]}),
+    )
 }
 
 pub fn tools() -> Vec<Tool> {
@@ -318,11 +432,23 @@ mod tests {
         // the bright one has more energy above 640 Hz, and decays faster
         let hi = |t: &Timbre| t.oct[4..].iter().map(|v| 10f32.powf(v / 10.0)).sum::<f32>();
         assert!(hi(&tb) > 10.0 * hi(&td), "{:?} {:?}", tb.oct, td.oct);
-        assert!(tb.sustain_db < td.sustain_db - 3.0, "{} {}", tb.sustain_db, td.sustain_db);
+        assert!(
+            tb.sustain_db < td.sustain_db - 3.0,
+            "{} {}",
+            tb.sustain_db,
+            td.sustain_db
+        );
         assert!(distance(&tb, &tb).0 < 0.01);
         assert!(distance(&tb, &td).0 > distance(&tb, &tb).0 + 3.0);
         let f = finishing(&tb, &td);
-        assert!(f["eq"].as_array().unwrap().iter().any(|m| m["gain_db"].as_f64().unwrap() > 1.5), "{f}");
+        assert!(
+            f["eq"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["gain_db"].as_f64().unwrap() > 1.5),
+            "{f}"
+        );
         assert!(td.width_db < -30.0);
     }
 

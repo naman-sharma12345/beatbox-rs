@@ -16,7 +16,10 @@ use std::f32::consts::PI;
 
 pub fn check_vinyl(p: &VinylFx) -> Result<(), String> {
     if !(0.0..=200.0).contains(&p.crackle) {
-        return Err(format!("crackle {} outside 0..200 pops per second", p.crackle));
+        return Err(format!(
+            "crackle {} outside 0..200 pops per second",
+            p.crackle
+        ));
     }
     if !(0.0..=50.0).contains(&p.wow_cents) || !(0.0..=30.0).contains(&p.flutter_cents) {
         return Err("wow_cents 0..50, flutter_cents 0..30".into());
@@ -74,7 +77,11 @@ pub fn vinyl_at(p: &VinylFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     // crackle: a pop is a short decaying noise burst through a band-pass
     let pop_p = p.crackle.clamp(0.0, 200.0) / SR;
     let pop_gain = crate::dsp::db_to_gain(p.crackle_db);
-    let hiss_gain = if p.hiss_db <= -90.0 { 0.0 } else { crate::dsp::db_to_gain(p.hiss_db) };
+    let hiss_gain = if p.hiss_db <= -90.0 {
+        0.0
+    } else {
+        crate::dsp::db_to_gain(p.hiss_db)
+    };
     let mut pop_env = 0.0f32;
     let mut pop_amp = 0.0f32;
     let mut pop_side = 0.0f32;
@@ -97,7 +104,10 @@ pub fn vinyl_at(p: &VinylFx, l: &mut [f32], r: &mut [f32], offset: usize) {
             pop_env *= pop_decay;
         }
         let (hl, hr) = if hiss_gain > 0.0 {
-            (hiss_l.process(rng.bipolar()) * hiss_gain, hiss_r.process(rng.bipolar()) * hiss_gain)
+            (
+                hiss_l.process(rng.bipolar()) * hiss_gain,
+                hiss_r.process(rng.bipolar()) * hiss_gain,
+            )
         } else {
             (0.0, 0.0)
         };
@@ -121,7 +131,10 @@ pub fn vinyl_at(p: &VinylFx, l: &mut [f32], r: &mut [f32], offset: usize) {
         let i1 = (i0 + 1) % size;
         let fr = pos - pos.floor();
         let (mut xl, mut xr) = if i >= base as usize + 2 {
-            (bl[i0] + (bl[i1] - bl[i0]) * fr, br[i0] + (br[i1] - br[i0]) * fr)
+            (
+                bl[i0] + (bl[i1] - bl[i0]) * fr,
+                br[i0] + (br[i1] - br[i0]) * fr,
+            )
         } else {
             (l[i_buf], r[i_buf])
         };
@@ -146,17 +159,62 @@ pub fn vinyl_at(p: &VinylFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     }
 }
 
-pub const WAVESHAPER_PRESETS: &[&str] = &["custom", "soft", "hard", "tube", "fold", "sine", "steps", "crush_curve"];
+pub const WAVESHAPER_PRESETS: &[&str] = &[
+    "custom",
+    "soft",
+    "hard",
+    "tube",
+    "fold",
+    "sine",
+    "steps",
+    "crush_curve",
+];
 
 fn preset_points(name: &str) -> Option<Vec<(f32, f32)>> {
     Some(match name {
-        "soft" => vec![(0.0, 0.0), (0.25, 0.32), (0.5, 0.58), (0.75, 0.8), (1.0, 0.9)],
+        "soft" => vec![
+            (0.0, 0.0),
+            (0.25, 0.32),
+            (0.5, 0.58),
+            (0.75, 0.8),
+            (1.0, 0.9),
+        ],
         "hard" => vec![(0.0, 0.0), (0.6, 0.85), (0.7, 0.9), (1.0, 0.9)],
-        "tube" => vec![(0.0, 0.0), (0.2, 0.3), (0.45, 0.6), (0.7, 0.78), (1.0, 0.85)],
-        "fold" => vec![(0.0, 0.0), (0.35, 0.8), (0.55, 0.3), (0.75, 0.7), (1.0, 0.2)],
-        "sine" => (0..=16).map(|k| { let x = k as f32 / 16.0; (x, (x * PI * 0.75).sin() * 0.9) }).collect(),
-        "steps" => (0..=16).map(|k| { let x = k as f32 / 16.0; (x, (x * 6.0).round() / 6.0 * 0.9) }).collect(),
-        "crush_curve" => vec![(0.0, 0.0), (0.1, 0.3), (0.2, 0.3), (0.4, 0.6), (0.6, 0.6), (0.8, 0.85), (1.0, 0.85)],
+        "tube" => vec![
+            (0.0, 0.0),
+            (0.2, 0.3),
+            (0.45, 0.6),
+            (0.7, 0.78),
+            (1.0, 0.85),
+        ],
+        "fold" => vec![
+            (0.0, 0.0),
+            (0.35, 0.8),
+            (0.55, 0.3),
+            (0.75, 0.7),
+            (1.0, 0.2),
+        ],
+        "sine" => (0..=16)
+            .map(|k| {
+                let x = k as f32 / 16.0;
+                (x, (x * PI * 0.75).sin() * 0.9)
+            })
+            .collect(),
+        "steps" => (0..=16)
+            .map(|k| {
+                let x = k as f32 / 16.0;
+                (x, (x * 6.0).round() / 6.0 * 0.9)
+            })
+            .collect(),
+        "crush_curve" => vec![
+            (0.0, 0.0),
+            (0.1, 0.3),
+            (0.2, 0.3),
+            (0.4, 0.6),
+            (0.6, 0.6),
+            (0.8, 0.85),
+            (1.0, 0.85),
+        ],
         _ => return None,
     })
 }
@@ -165,7 +223,9 @@ fn preset_points(name: &str) -> Option<Vec<(f32, f32)>> {
 pub fn parse_points(s: &str) -> Result<Vec<(f32, f32)>, String> {
     let mut v = Vec::new();
     for part in s.split(',').map(str::trim).filter(|x| !x.is_empty()) {
-        let (a, b) = part.split_once(':').ok_or_else(|| format!("point '{part}' is not x:y"))?;
+        let (a, b) = part
+            .split_once(':')
+            .ok_or_else(|| format!("point '{part}' is not x:y"))?;
         let x: f32 = a.trim().parse().map_err(|_| format!("x in '{part}'"))?;
         let y: f32 = b.trim().parse().map_err(|_| format!("y in '{part}'"))?;
         if !(0.0..=1.0).contains(&x) || !(-1.0..=1.0).contains(&y) {
@@ -196,7 +256,11 @@ pub fn check_waveshaper(p: &WaveshaperFx) -> Result<(), String> {
     if !p.curve.trim().is_empty() {
         parse_points(&p.curve)?;
     } else if preset_points(&p.preset).is_none() {
-        return Err(format!("preset '{}' ({}), or draw curve 'x:y, x:y'", p.preset, WAVESHAPER_PRESETS.join(", ")));
+        return Err(format!(
+            "preset '{}' ({}), or draw curve 'x:y, x:y'",
+            p.preset,
+            WAVESHAPER_PRESETS.join(", ")
+        ));
     }
     if !(-24.0..=36.0).contains(&p.drive_db) {
         return Err(format!("drive_db {} outside -24..36", p.drive_db));
@@ -205,7 +269,11 @@ pub fn check_waveshaper(p: &WaveshaperFx) -> Result<(), String> {
 }
 
 fn shape(c: &[(f32, f32)], x: f32, symmetric: bool) -> f32 {
-    let (s, a) = if x < 0.0 && symmetric { (-1.0, -x) } else { (1.0, x) };
+    let (s, a) = if x < 0.0 && symmetric {
+        (-1.0, -x)
+    } else {
+        (1.0, x)
+    };
     let a = a.clamp(if symmetric { 0.0 } else { -1.0 }, 1.0);
     if !symmetric && a < 0.0 {
         // asymmetric: the negative half passes through softly
@@ -224,7 +292,10 @@ pub fn waveshaper(p: &WaveshaperFx, l: &mut [f32], r: &mut [f32]) {
     let out = crate::dsp::db_to_gain(p.output_db);
     let mix = p.mix.clamp(0.0, 1.0);
     // the curve's DC (asymmetric shapes) is removed with a gentle low cut
-    let mut dc = [Biquad::new(BiquadKind::LowCut, 12.0, 0.707, 0.0), Biquad::new(BiquadKind::LowCut, 12.0, 0.707, 0.0)];
+    let mut dc = [
+        Biquad::new(BiquadKind::LowCut, 12.0, 0.707, 0.0),
+        Biquad::new(BiquadKind::LowCut, 12.0, 0.707, 0.0),
+    ];
     for (ch, buf) in [l, r].into_iter().enumerate() {
         for x in buf.iter_mut() {
             let y = dc[ch].process(shape(&c, *x * g, p.symmetric)) * out;
@@ -238,7 +309,9 @@ mod tests {
     use super::*;
 
     fn tone(f: f32, n: usize) -> Vec<f32> {
-        (0..n).map(|i| (2.0 * PI * f * i as f32 / SR).sin() * 0.5).collect()
+        (0..n)
+            .map(|i| (2.0 * PI * f * i as f32 / SR).sin() * 0.5)
+            .collect()
     }
 
     fn rms(x: &[f32]) -> f32 {
@@ -250,36 +323,80 @@ mod tests {
         let n = SR as usize * 2;
         // silence in: crackle + hiss only
         let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
-        vinyl(&VinylFx { crackle: 20.0, hiss_db: -60.0, wow_cents: 0.0, flutter_cents: 0.0, ..Default::default() }, &mut l, &mut r);
+        vinyl(
+            &VinylFx {
+                crackle: 20.0,
+                hiss_db: -60.0,
+                wow_cents: 0.0,
+                flutter_cents: 0.0,
+                ..Default::default()
+            },
+            &mut l,
+            &mut r,
+        );
         let peaks = l.iter().filter(|x| x.abs() > 0.02).count();
         assert!(peaks > 0, "no pops");
         assert!(rms(&l) < 0.05 && l.iter().all(|x| x.is_finite()));
         // a tone through wow: zero-crossing rate drifts over time
         let mut a = tone(440.0, n);
         let mut b = a.clone();
-        vinyl(&VinylFx { crackle: 0.0, hiss_db: -120.0, wow_cents: 30.0, wow_hz: 1.0, flutter_cents: 0.0, age: 0.0, ..Default::default() }, &mut a, &mut b);
+        vinyl(
+            &VinylFx {
+                crackle: 0.0,
+                hiss_db: -120.0,
+                wow_cents: 30.0,
+                wow_hz: 1.0,
+                flutter_cents: 0.0,
+                age: 0.0,
+                ..Default::default()
+            },
+            &mut a,
+            &mut b,
+        );
         let zc = |s: &[f32]| s.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
         let q = SR as usize / 4;
         let counts: Vec<usize> = (0..8).map(|k| zc(&a[k * q..(k + 1) * q])).collect();
         let (mn, mx) = (*counts.iter().min().unwrap(), *counts.iter().max().unwrap());
         assert!(mx > mn, "wow moved nothing: {counts:?}");
-        assert!(check_vinyl(&VinylFx { age: 2.0, ..Default::default() }).is_err());
+        assert!(check_vinyl(&VinylFx {
+            age: 2.0,
+            ..Default::default()
+        })
+        .is_err());
     }
 
     #[test]
     fn waveshaper_follows_the_drawn_curve() {
         let mut l = vec![0.25f32, 0.5, -0.5, 1.0];
         let mut r = l.clone();
-        let p = WaveshaperFx { curve: "0:0, 0.5:0.8, 1:1".into(), ..Default::default() };
+        let p = WaveshaperFx {
+            curve: "0:0, 0.5:0.8, 1:1".into(),
+            ..Default::default()
+        };
         let c = curve_of(&p);
         assert!((shape(&c, 0.25, true) - 0.4).abs() < 1e-4);
         assert!((shape(&c, -0.5, true) + 0.8).abs() < 1e-4);
         waveshaper(&p, &mut l, &mut r);
         assert!(l.iter().all(|x| x.is_finite()));
-        assert!(check_waveshaper(&WaveshaperFx { curve: "0.5".into(), ..Default::default() }).is_err());
-        assert!(check_waveshaper(&WaveshaperFx { preset: "nope".into(), ..Default::default() }).is_err());
+        assert!(check_waveshaper(&WaveshaperFx {
+            curve: "0.5".into(),
+            ..Default::default()
+        })
+        .is_err());
+        assert!(check_waveshaper(&WaveshaperFx {
+            preset: "nope".into(),
+            ..Default::default()
+        })
+        .is_err());
         for pr in WAVESHAPER_PRESETS.iter().filter(|x| **x != "custom") {
-            assert!(check_waveshaper(&WaveshaperFx { preset: pr.to_string(), ..Default::default() }).is_ok(), "{pr}");
+            assert!(
+                check_waveshaper(&WaveshaperFx {
+                    preset: pr.to_string(),
+                    ..Default::default()
+                })
+                .is_ok(),
+                "{pr}"
+            );
         }
     }
 }

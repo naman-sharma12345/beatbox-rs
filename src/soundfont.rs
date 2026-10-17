@@ -45,7 +45,17 @@ pub struct SoundFontParams {
 
 impl Default for SoundFontParams {
     fn default() -> Self {
-        SoundFontParams { font: "generaluser_gs".into(), bank: 0, program: 0, drums: false, fixed_key: None, gain: 2.0, release_max: 2.5, transpose: 0, preset_name: String::new() }
+        SoundFontParams {
+            font: "generaluser_gs".into(),
+            bank: 0,
+            program: 0,
+            drums: false,
+            fixed_key: None,
+            gain: 2.0,
+            release_max: 2.5,
+            transpose: 0,
+            preset_name: String::new(),
+        }
     }
 }
 
@@ -95,12 +105,20 @@ pub fn installed_path(e: &LibEntry) -> PathBuf {
 
 /// Download (once) and sha256-check a library font. Returns its path.
 pub fn fetch_font(id: &str) -> Result<(PathBuf, bool)> {
-    let e = font_entry(id).ok_or_else(|| anyhow!("unknown library font '{id}'. Known: {}", FONTS.iter().map(|f| f.id).collect::<Vec<_>>().join(", ")))?;
+    let e = font_entry(id).ok_or_else(|| {
+        anyhow!(
+            "unknown library font '{id}'. Known: {}",
+            FONTS.iter().map(|f| f.id).collect::<Vec<_>>().join(", ")
+        )
+    })?;
     let p = installed_path(e);
     if p.is_file() && std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) == e.bytes {
         return Ok((p, false));
     }
-    let resp = ureq::get(e.url).timeout(std::time::Duration::from_secs(600)).call().map_err(|er| anyhow!("download {}: {er}", e.id))?;
+    let resp = ureq::get(e.url)
+        .timeout(std::time::Duration::from_secs(600))
+        .call()
+        .map_err(|er| anyhow!("download {}: {er}", e.id))?;
     let mut buf = Vec::with_capacity(e.bytes as usize);
     std::io::Read::read_to_end(&mut resp.into_reader(), &mut buf)?;
     let got = crate::voice_ai::sha256_hex(&buf);
@@ -131,7 +149,10 @@ pub fn resolve_font(font: &str) -> Result<PathBuf> {
     if p.is_file() {
         return Ok(p);
     }
-    bail!("no soundfont '{font}': give a library id ({}) or a .sf2 path", FONTS.iter().map(|f| f.id).collect::<Vec<_>>().join(", "))
+    bail!(
+        "no soundfont '{font}': give a library id ({}) or a .sf2 path",
+        FONTS.iter().map(|f| f.id).collect::<Vec<_>>().join(", ")
+    )
 }
 
 fn cache() -> &'static Mutex<HashMap<PathBuf, Arc<rustysynth::SoundFont>>> {
@@ -145,7 +166,10 @@ pub fn load_font(font: &str) -> Result<Arc<rustysynth::SoundFont>> {
         return Ok(f.clone());
     }
     let mut r = std::io::BufReader::new(std::fs::File::open(&path)?);
-    let sf = Arc::new(rustysynth::SoundFont::new(&mut r).map_err(|e| anyhow!("reading {}: {e:?}", path.display()))?);
+    let sf = Arc::new(
+        rustysynth::SoundFont::new(&mut r)
+            .map_err(|e| anyhow!("reading {}: {e:?}", path.display()))?,
+    );
     let mut c = cache().lock().unwrap();
     // keep at most 3 fonts resident
     if c.len() >= 3 {
@@ -161,7 +185,17 @@ pub fn load_font(font: &str) -> Result<Arc<rustysynth::SoundFont>> {
 /// (bank, program, name) of every preset in a font, sorted.
 pub fn presets(font: &str) -> Result<Vec<(u16, u8, String)>> {
     let sf = load_font(font)?;
-    let mut v: Vec<(u16, u8, String)> = sf.get_presets().iter().map(|p| (p.get_bank_number() as u16, p.get_patch_number() as u8, p.get_name().trim().to_string())).collect();
+    let mut v: Vec<(u16, u8, String)> = sf
+        .get_presets()
+        .iter()
+        .map(|p| {
+            (
+                p.get_bank_number() as u16,
+                p.get_patch_number() as u8,
+                p.get_name().trim().to_string(),
+            )
+        })
+        .collect();
     v.sort();
     Ok(v)
 }
@@ -176,18 +210,30 @@ pub fn render_note(p: &SoundFontParams, pitch: f32, vel: f32, gate: f32) -> Vec<
 
 /// Render one note in stereo (the font's own panning and stereo samples),
 /// through a fresh synthesizer on the shared font.
-pub fn render_note_stereo(p: &SoundFontParams, pitch: f32, vel: f32, gate: f32) -> (Vec<f32>, Vec<f32>) {
-    let Ok(sf) = load_font(&p.font) else { return (Vec::new(), Vec::new()) };
+pub fn render_note_stereo(
+    p: &SoundFontParams,
+    pitch: f32,
+    vel: f32,
+    gate: f32,
+) -> (Vec<f32>, Vec<f32>) {
+    let Ok(sf) = load_font(&p.font) else {
+        return (Vec::new(), Vec::new());
+    };
     let mut st = rustysynth::SynthesizerSettings::new(SR as i32);
     st.enable_reverb_and_chorus = false;
     st.maximum_polyphony = 16;
-    let Ok(mut syn) = rustysynth::Synthesizer::new(&sf, &st) else { return (Vec::new(), Vec::new()) };
+    let Ok(mut syn) = rustysynth::Synthesizer::new(&sf, &st) else {
+        return (Vec::new(), Vec::new());
+    };
     let ch = if p.drums { 9 } else { 0 };
     if !p.drums {
         syn.process_midi_message(ch, 0xB0, 0, (p.bank & 0x7f) as i32);
     }
     syn.process_midi_message(ch, 0xC0, p.program as i32, 0);
-    let target = p.fixed_key.map(|k| k as f32).unwrap_or(pitch + p.transpose as f32);
+    let target = p
+        .fixed_key
+        .map(|k| k as f32)
+        .unwrap_or(pitch + p.transpose as f32);
     let key = target.round().clamp(0.0, 127.0) as i32;
     let frac = target - key as f32;
     if frac.abs() > 0.01 && !p.drums {
@@ -211,7 +257,11 @@ pub fn render_note_stereo(p: &SoundFontParams, pitch: f32, vel: f32, gate: f32) 
             syn.note_off(ch, key);
             off = true;
         }
-        let len = if !off { block.min(on - n).max(1) } else { block };
+        let len = if !off {
+            block.min(on - n).max(1)
+        } else {
+            block
+        };
         syn.render(&mut l[..len], &mut r[..len]);
         let mut pk = 0.0f32;
         for i in 0..len {
@@ -242,16 +292,58 @@ pub fn render_note_stereo(p: &SoundFontParams, pitch: f32, vel: f32, gate: f32) 
 pub const ALIASES: &[(&str, &str, u16, u8, bool, Option<u8>)] = &[
     ("grand_piano", "Acoustic grand piano", 0, 0, false, None),
     ("bright_piano", "Bright acoustic piano", 0, 1, false, None),
-    ("electric_piano", "Electric piano (Rhodes-style)", 0, 4, false, None),
+    (
+        "electric_piano",
+        "Electric piano (Rhodes-style)",
+        0,
+        4,
+        false,
+        None,
+    ),
     ("organ", "Drawbar organ", 0, 16, false, None),
-    ("nylon_guitar", "Nylon-string acoustic guitar", 0, 24, false, None),
-    ("acoustic_guitar", "Steel-string acoustic guitar", 0, 25, false, None),
+    (
+        "nylon_guitar",
+        "Nylon-string acoustic guitar",
+        0,
+        24,
+        false,
+        None,
+    ),
+    (
+        "acoustic_guitar",
+        "Steel-string acoustic guitar",
+        0,
+        25,
+        false,
+        None,
+    ),
     ("jazz_guitar", "Jazz electric guitar", 0, 26, false, None),
-    ("clean_electric_guitar", "Clean electric guitar", 0, 27, false, None),
-    ("muted_guitar", "Palm-muted electric guitar", 0, 28, false, None),
+    (
+        "clean_electric_guitar",
+        "Clean electric guitar",
+        0,
+        27,
+        false,
+        None,
+    ),
+    (
+        "muted_guitar",
+        "Palm-muted electric guitar",
+        0,
+        28,
+        false,
+        None,
+    ),
     ("overdrive_guitar", "Overdriven guitar", 0, 29, false, None),
     ("distortion_guitar", "Distortion guitar", 0, 30, false, None),
-    ("acoustic_bass", "Acoustic (upright) bass", 0, 32, false, None),
+    (
+        "acoustic_bass",
+        "Acoustic (upright) bass",
+        0,
+        32,
+        false,
+        None,
+    ),
     ("electric_bass", "Electric bass, finger", 0, 33, false, None),
     ("picked_bass", "Electric bass, pick", 0, 34, false, None),
     ("fretless_bass", "Fretless bass", 0, 35, false, None),
@@ -268,7 +360,14 @@ pub const ALIASES: &[(&str, &str, u16, u8, bool, Option<u8>)] = &[
     ("sax", "Tenor sax", 0, 66, false, None),
     ("flute", "Flute", 0, 73, false, None),
     ("warm_pad", "Warm pad", 0, 89, false, None),
-    ("drum_kit", "Acoustic drum kit (GM standard; notes pick the drum)", 0, 0, true, None),
+    (
+        "drum_kit",
+        "Acoustic drum kit (GM standard; notes pick the drum)",
+        0,
+        0,
+        true,
+        None,
+    ),
     ("room_kit", "Room drum kit", 0, 8, true, None),
     ("brush_kit", "Brush drum kit", 0, 40, true, None),
     ("kick", "Acoustic kick (GM 36)", 0, 0, true, Some(36)),
@@ -290,7 +389,14 @@ pub const ALIASES: &[(&str, &str, u16, u8, bool, Option<u8>)] = &[
 
 pub fn alias(name: &str) -> Option<SoundFontParams> {
     let n = name.trim().to_lowercase().replace([' ', '-'], "_");
-    ALIASES.iter().find(|a| a.0 == n).map(|a| SoundFontParams { bank: a.2, program: a.3, drums: a.4, fixed_key: a.5, preset_name: a.1.to_string(), ..Default::default() })
+    ALIASES.iter().find(|a| a.0 == n).map(|a| SoundFontParams {
+        bank: a.2,
+        program: a.3,
+        drums: a.4,
+        fixed_key: a.5,
+        preset_name: a.1.to_string(),
+        ..Default::default()
+    })
 }
 
 #[cfg(test)]
@@ -316,7 +422,8 @@ mod tests {
             let mut v: Vec<f32> = (0..12)
                 .filter_map(|k| {
                     let at = (0.15 * SR) as usize + k * 2048;
-                    crate::sc_dsp::yin_aperiodicity(&y[at..at + 4096], SR, 40.0, 2000.0, 0.3).map(|r| r.0)
+                    crate::sc_dsp::yin_aperiodicity(&y[at..at + 4096], SR, 40.0, 2000.0, 0.3)
+                        .map(|r| r.0)
                 })
                 .collect();
             v.sort_by(|a, b| a.total_cmp(b));
@@ -324,7 +431,10 @@ mod tests {
         };
         let (h0, h1) = (hz(57.0), hz(57.0 - 0.443));
         let c = 1200.0 * (h1 / h0).log2() + 44.3;
-        assert!(c.abs() < 2.0, "grand_piano A3 at -44.3 c: {c:.2} c off ({h0} -> {h1} Hz)");
+        assert!(
+            c.abs() < 2.0,
+            "grand_piano A3 at -44.3 c: {c:.2} c off ({h0} -> {h1} Hz)"
+        );
     }
 
     /// The SoundFont path at -44 c: offset, THD+N against tc=0 (harmonic fit
@@ -347,7 +457,12 @@ mod tests {
                 let mut ts = Vec::new();
                 for k in 0..8 {
                     let s = (0.3 * SR) as usize + k * (0.4 * SR) as usize;
-                    let (ff, t) = crate::render::tests::harmonic_fit(&y[s..s + (0.2 * SR) as usize], SR, f, 8);
+                    let (ff, t) = crate::render::tests::harmonic_fit(
+                        &y[s..s + (0.2 * SR) as usize],
+                        SR,
+                        f,
+                        8,
+                    );
                     fs.push(ff);
                     ts.push(t);
                 }
@@ -357,13 +472,18 @@ mod tests {
             };
             let y0 = {
                 let at = (0.4 * SR) as usize;
-                crate::sc_dsp::yin_aperiodicity(&a[at..at + 4096], SR, 30.0, 2000.0, 0.3).expect("voiced").0
+                crate::sc_dsp::yin_aperiodicity(&a[at..at + 4096], SR, 30.0, 2000.0, 0.3)
+                    .expect("voiced")
+                    .0
             };
             let (fa, ta) = frames(&a, y0);
             let (fb, tb) = frames(&b, y0 * 2f32.powf(-44.0 / 1200.0));
             let off = 1200.0 * (fb / fa).log2();
             let n4 = (4.0 * SR) as usize;
-            let (ja, jb) = (crate::render::tests::max_jump(&a[..n4.min(a.len())]), crate::render::tests::max_jump(&b[..n4.min(b.len())]));
+            let (ja, jb) = (
+                crate::render::tests::max_jump(&a[..n4.min(a.len())]),
+                crate::render::tests::max_jump(&b[..n4.min(b.len())]),
+            );
             eprintln!("sf2 {name}: f0 {fa:.3} -> {fb:.3} Hz = {off:.2} c (want -44); THD+N {ta:.1} -> {tb:.1} dB; max step {ja:.4} -> {jb:.4}");
             assert!((off + 44.0).abs() < 1.0, "{name}: offset {off} c");
             assert!(tb <= ta + 1.0, "{name}: THD+N {ta} -> {tb} dB");
@@ -378,7 +498,15 @@ mod tests {
             eprintln!("generaluser_gs not installed; skipping");
             return;
         }
-        for name in ["clean_electric_guitar", "electric_bass", "kick", "snare", "closed_hat", "strings", "grand_piano"] {
+        for name in [
+            "clean_electric_guitar",
+            "electric_bass",
+            "kick",
+            "snare",
+            "closed_hat",
+            "strings",
+            "grand_piano",
+        ] {
             let p = alias(name).unwrap();
             let y = render_note(&p, 52.0, 0.8, 0.4);
             let pk = y.iter().fold(0.0f32, |m, v| m.max(v.abs()));

@@ -28,7 +28,8 @@ pub fn take_stats(x: &[f32]) -> (f32, f32, usize) {
         return (-120.0, -120.0, 0);
     }
     let peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
-    let rms = (x.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>() / x.len() as f64).sqrt() as f32;
+    let rms =
+        (x.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>() / x.len() as f64).sqrt() as f32;
     let clipped = x.iter().filter(|v| v.abs() >= 0.999).count();
     let db = |g: f32| if g > 1e-6 { 20.0 * g.log10() } else { -120.0 };
     (db(peak), db(rms), clipped)
@@ -49,7 +50,10 @@ pub fn take_to_stereo(t: &Take) -> (Vec<f32>, Vec<f32>) {
     }
     let to = SR as u32;
     if t.rate != to && t.rate > 0 {
-        (crate::resample::resample(&l, t.rate, to), crate::resample::resample(&r, t.rate, to))
+        (
+            crate::resample::resample(&l, t.rate, to),
+            crate::resample::resample(&r, t.rate, to),
+        )
     } else {
         (l, r)
     }
@@ -61,7 +65,10 @@ fn take_path(workdir: &Path, name: Option<&str>) -> PathBuf {
     if let Some(n) = name {
         return dir.join(format!("{}.wav", crate::samples::sample_name(n)));
     }
-    (1..10_000).map(|i| dir.join(format!("take_{i}.wav"))).find(|p| !p.exists()).unwrap_or_else(|| dir.join("take.wav"))
+    (1..10_000)
+        .map(|i| dir.join(format!("take_{i}.wav")))
+        .find(|p| !p.exists())
+        .unwrap_or_else(|| dir.join("take.wav"))
 }
 
 /// Write the take, register it as a sample and optionally place it.
@@ -72,13 +79,28 @@ pub fn finish_take(e: &mut Engine, t: Take, a: &Value) -> Result<Value> {
     }
     // trim the input's latency (or a count-in) from the start
     let trim = (f_opt(a, "trim_start_ms").unwrap_or(0.0).max(0.0) / 1000.0 * SR) as usize;
-    let (l, r) = if trim > 0 && trim < l.len() { (l[trim..].to_vec(), r[trim..].to_vec()) } else { (l, r) };
+    let (l, r) = if trim > 0 && trim < l.len() {
+        (l[trim..].to_vec(), r[trim..].to_vec())
+    } else {
+        (l, r)
+    };
     let path = take_path(&e.workdir, s_opt(a, "name").as_deref());
     crate::render::write_wav(&path, &l, &r)?;
     let (peak, rms, clipped) = take_stats(&t.data);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("take").to_string();
-    let reg = e.call("import_sample", &json!({"path": path.to_string_lossy(), "name": stem}))?;
-    let sample = reg.get("sample").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or(stem);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("take")
+        .to_string();
+    let reg = e.call(
+        "import_sample",
+        &json!({"path": path.to_string_lossy(), "name": stem}),
+    )?;
+    let sample = reg
+        .get("sample")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or(stem);
     let mut out = json!({
         "path": path.to_string_lossy(), "sample": sample, "seconds": (l.len() as f32 / SR * 100.0).round() / 100.0,
         "device": t.device, "device_rate": t.rate, "channels": t.channels,
@@ -91,7 +113,10 @@ pub fn finish_take(e: &mut Engine, t: Take, a: &Value) -> Result<Value> {
     }
     if let Some(track) = s_opt(a, "track") {
         if e.project.track_index(&track).is_err() {
-            e.call("add_sample_track", &json!({"name": track, "sample": sample, "one_shot": true}))?;
+            e.call(
+                "add_sample_track",
+                &json!({"name": track, "sample": sample, "one_shot": true}),
+            )?;
         }
         let clip = e.call("add_audio_clip", &json!({"track": track, "sample": sample, "start_beat": f_opt(a, "start_beat").unwrap_or(0.0)}))?;
         out["clip"] = clip;
@@ -127,7 +152,12 @@ mod live {
         for d in host.input_devices()? {
             let name = d.name().unwrap_or_else(|_| "input".into());
             if let Ok(c) = d.default_input_config() {
-                out.push((name.clone(), c.sample_rate().0, c.channels(), def.as_deref() == Some(name.as_str())));
+                out.push((
+                    name.clone(),
+                    c.sample_rate().0,
+                    c.channels(),
+                    def.as_deref() == Some(name.as_str()),
+                ));
             }
         }
         Ok(out)
@@ -146,7 +176,11 @@ mod live {
     }
 
     pub fn is_recording() -> Option<f32> {
-        CURRENT.lock().unwrap().as_ref().map(|s| s.started.elapsed().as_secs_f32())
+        CURRENT
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.started.elapsed().as_secs_f32())
     }
 
     pub fn start(device: Option<String>, max_seconds: f32) -> Result<(String, u32, u16)> {
@@ -173,15 +207,34 @@ mod live {
                 let stream = match cfg.sample_format() {
                     cpal::SampleFormat::F32 => {
                         let b = b2.clone();
-                        dev.build_input_stream(&sc, move |d: &[f32], _: &_| push(&b, d.iter().copied(), limit), err, None)?
+                        dev.build_input_stream(
+                            &sc,
+                            move |d: &[f32], _: &_| push(&b, d.iter().copied(), limit),
+                            err,
+                            None,
+                        )?
                     }
                     cpal::SampleFormat::I16 => {
                         let b = b2.clone();
-                        dev.build_input_stream(&sc, move |d: &[i16], _: &_| push(&b, d.iter().map(|v| *v as f32 / 32768.0), limit), err, None)?
+                        dev.build_input_stream(
+                            &sc,
+                            move |d: &[i16], _: &_| {
+                                push(&b, d.iter().map(|v| *v as f32 / 32768.0), limit)
+                            },
+                            err,
+                            None,
+                        )?
                     }
                     cpal::SampleFormat::U16 => {
                         let b = b2.clone();
-                        dev.build_input_stream(&sc, move |d: &[u16], _: &_| push(&b, d.iter().map(|v| (*v as f32 - 32768.0) / 32768.0), limit), err, None)?
+                        dev.build_input_stream(
+                            &sc,
+                            move |d: &[u16], _: &_| {
+                                push(&b, d.iter().map(|v| (*v as f32 - 32768.0) / 32768.0), limit)
+                            },
+                            err,
+                            None,
+                        )?
                     }
                     f => bail!("unsupported input sample format {f:?}"),
                 };
@@ -205,8 +258,17 @@ mod live {
                 }
             }
         });
-        let ready = ready_rx.recv_timeout(Duration::from_secs(10)).map_err(|_| anyhow!("the audio input did not open within 10 s"))??;
-        *cur = Some(Session { stop, buf, info, thread: Some(thread), started: Instant::now(), max_seconds });
+        let ready = ready_rx
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|_| anyhow!("the audio input did not open within 10 s"))??;
+        *cur = Some(Session {
+            stop,
+            buf,
+            info,
+            thread: Some(thread),
+            started: Instant::now(),
+            max_seconds,
+        });
         Ok(ready)
     }
 
@@ -222,14 +284,28 @@ mod live {
     }
 
     pub fn stop() -> Result<Take> {
-        let mut s = CURRENT.lock().unwrap().take().ok_or_else(|| anyhow!("not recording (start_recording first)"))?;
+        let mut s = CURRENT
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| anyhow!("not recording (start_recording first)"))?;
         s.stop.store(true, Ordering::Relaxed);
         if let Some(t) = s.thread.take() {
             let _ = t.join();
         }
-        let (rate, channels, device) = s.info.lock().unwrap().clone().unwrap_or((44100, 1, "input".into()));
+        let (rate, channels, device) =
+            s.info
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or((44100, 1, "input".into()));
         let data = std::mem::take(&mut *s.buf.lock().unwrap());
-        Ok(Take { data, channels, rate, device })
+        Ok(Take {
+            data,
+            channels,
+            rate,
+            device,
+        })
     }
 }
 
@@ -238,10 +314,18 @@ mod live {
     use super::Take;
     use anyhow::{bail, Result};
     const NO: &str = "this build has no audio input support (built without the gui feature)";
-    pub fn inputs() -> Result<Vec<(String, u32, u16, bool)>> { bail!(NO) }
-    pub fn is_recording() -> Option<f32> { None }
-    pub fn start(_d: Option<String>, _m: f32) -> Result<(String, u32, u16)> { bail!(NO) }
-    pub fn stop() -> Result<Take> { bail!(NO) }
+    pub fn inputs() -> Result<Vec<(String, u32, u16, bool)>> {
+        bail!(NO)
+    }
+    pub fn is_recording() -> Option<f32> {
+        None
+    }
+    pub fn start(_d: Option<String>, _m: f32) -> Result<(String, u32, u16)> {
+        bail!(NO)
+    }
+    pub fn stop() -> Result<Take> {
+        bail!(NO)
+    }
 }
 
 /// Seconds since the current take started, when one is running (the studio
@@ -307,8 +391,15 @@ mod tests {
     fn take_is_resampled_to_stereo_and_placed() {
         // a 48 kHz mono 440 Hz tone, 0.5 s
         let rate = 48_000u32;
-        let data: Vec<f32> = (0..rate / 2).map(|i| 0.5 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin()).collect();
-        let (l, r) = take_to_stereo(&Take { data: data.clone(), channels: 1, rate, device: "test".into() });
+        let data: Vec<f32> = (0..rate / 2)
+            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin())
+            .collect();
+        let (l, r) = take_to_stereo(&Take {
+            data: data.clone(),
+            channels: 1,
+            rate,
+            device: "test".into(),
+        });
         assert!((l.len() as f32 - SR * 0.5).abs() < 50.0, "{}", l.len());
         assert_eq!(l.len(), r.len());
         let (peak, _, clipped) = take_stats(&data);
@@ -316,13 +407,34 @@ mod tests {
         let dir = std::env::temp_dir().join("bb_recorder_test");
         let _ = std::fs::remove_dir_all(&dir);
         let mut e = Engine::new(dir.clone());
-        let out = finish_take(&mut e, Take { data, channels: 1, rate, device: "test".into() }, &json!({"track": "vox", "start_beat": 4})).unwrap();
-        assert!(out["path"].as_str().unwrap().ends_with("recordings/take_1.wav"), "{out}");
+        let out = finish_take(
+            &mut e,
+            Take {
+                data,
+                channels: 1,
+                rate,
+                device: "test".into(),
+            },
+            &json!({"track": "vox", "start_beat": 4}),
+        )
+        .unwrap();
+        assert!(
+            out["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("recordings/take_1.wav"),
+            "{out}"
+        );
         assert!(e.project.track_index("vox").is_ok());
         assert_eq!(e.project.audio_clips.len(), 1);
         assert_eq!(e.project.audio_clips[0].start_beat, 4.0);
         // stereo interleaved input keeps its sides
-        let (l2, r2) = take_to_stereo(&Take { data: vec![0.1, -0.1, 0.2, -0.2], channels: 2, rate: SR as u32, device: "t".into() });
+        let (l2, r2) = take_to_stereo(&Take {
+            data: vec![0.1, -0.1, 0.2, -0.2],
+            channels: 2,
+            rate: SR as u32,
+            device: "t".into(),
+        });
         assert_eq!((l2, r2), (vec![0.1, 0.2], vec![-0.1, -0.2]));
     }
 }

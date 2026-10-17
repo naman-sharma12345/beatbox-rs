@@ -626,7 +626,6 @@ pub fn compare(mix: &AudioProfile, rf: &AudioProfile) -> (Vec<RefDelta>, u32) {
     (out, score)
 }
 
-
 /// Region of a spectral edit: a time span and a frequency band, with soft
 /// edges so the cut leaves no clicks or ringing walls.
 #[derive(Clone, Copy, Debug)]
@@ -666,17 +665,28 @@ pub fn spectral_edit(x: &[f32], sr: f32, r: &SpectralRegion) -> (Vec<f32>, f32) 
     }
     let mut pad = vec![0.0f32; N];
     pad.extend_from_slice(x);
-    pad.extend(std::iter::repeat(0.0).take(2 * N));
-    let win: Vec<f32> = (0..N).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / N as f32).cos()).collect();
+    pad.extend(std::iter::repeat_n(0.0, 2 * N));
+    let win: Vec<f32> = (0..N)
+        .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / N as f32).cos())
+        .collect();
     let frames = (pad.len() - N) / H + 1;
     let g = crate::dsp::db_to_gain(r.gain_db.clamp(-120.0, 24.0));
     let soft_t = r.soft_ms.max(0.0) / 1000.0;
     let soft_o = r.soft_oct.max(0.0);
-    let (lo, hi) = (r.lo_hz.max(1.0).min(r.hi_hz.max(1.0)), r.hi_hz.max(r.lo_hz).max(1.0));
+    let (lo, hi) = (
+        r.lo_hz.max(1.0).min(r.hi_hz.max(1.0)),
+        r.hi_hz.max(r.lo_hz).max(1.0),
+    );
     let fw: Vec<f32> = (0..=N / 2)
         .map(|k| {
             let f = (k as f32 * sr / N as f32).max(1.0);
-            let d = if f < lo { (lo / f).log2() } else if f > hi { (f / hi).log2() } else { 0.0 };
+            let d = if f < lo {
+                (lo / f).log2()
+            } else if f > hi {
+                (f / hi).log2()
+            } else {
+                0.0
+            };
             ramp_w(d, soft_o)
         })
         .collect();
@@ -684,14 +694,24 @@ pub fn spectral_edit(x: &[f32], sr: f32, r: &SpectralRegion) -> (Vec<f32>, f32) 
     let mut wsum = vec![0.0f32; pad.len()];
     for fr in 0..frames {
         let c = (fr * H + N / 2) as f32 / sr - N as f32 / sr; // frame centre in the clip's time
-        let dt = if c < r.t0 { r.t0 - c } else if c > r.t1 { c - r.t1 } else { 0.0 };
+        let dt = if c < r.t0 {
+            r.t0 - c
+        } else if c > r.t1 {
+            c - r.t1
+        } else {
+            0.0
+        };
         let wt = ramp_w(dt, soft_t);
         let mut re: Vec<f32> = (0..N).map(|i| pad[fr * H + i] * win[i]).collect();
         if wt > 0.0 {
             let mut im = vec![0.0f32; N];
             crate::analysis::fft(&mut re, &mut im);
             for k in 0..=N / 2 {
-                let w = if r.outside { wt * (1.0 - fw[k]) } else { wt * fw[k] };
+                let w = if r.outside {
+                    wt * (1.0 - fw[k])
+                } else {
+                    wt * fw[k]
+                };
                 let v = 1.0 + w * (g - 1.0);
                 re[k] *= v;
                 im[k] *= v;
@@ -719,37 +739,64 @@ pub fn spectral_edit(x: &[f32], sr: f32, r: &SpectralRegion) -> (Vec<f32>, f32) 
     let y: Vec<f32> = out[N..N + x.len()].to_vec();
     let e0: f64 = x.iter().map(|v| (*v as f64) * (*v as f64)).sum();
     let e1: f64 = y.iter().map(|v| (*v as f64) * (*v as f64)).sum();
-    let ch = if e0 > 1e-12 { (10.0 * ((e1 + 1e-12) / e0).log10()) as f32 } else { 0.0 };
+    let ch = if e0 > 1e-12 {
+        (10.0 * ((e1 + 1e-12) / e0).log10()) as f32
+    } else {
+        0.0
+    };
     (y, ch)
 }
-
 
 /// Spectrogram grid for display: `frames` evenly spaced 2048-point Hann
 /// spectra summed into `bands` log-spaced bands between lo and hi Hz.
 /// Returns (band edges, dB per frame per band, peak dB).
-pub fn spectrogram_grid(x: &[f32], sr: f32, frames: usize, bands: usize, lo: f32, hi: f32) -> (Vec<f32>, Vec<Vec<f32>>, f32) {
+pub fn spectrogram_grid(
+    x: &[f32],
+    sr: f32,
+    frames: usize,
+    bands: usize,
+    lo: f32,
+    hi: f32,
+) -> (Vec<f32>, Vec<Vec<f32>>, f32) {
     const N: usize = 2048;
     let frames = frames.clamp(8, 1024);
     let bands = bands.clamp(4, 256);
     let (lo, hi) = (lo.max(10.0), hi.min(sr / 2.0).max(lo.max(10.0) * 2.0));
-    let edges: Vec<f32> = (0..=bands).map(|i| lo * (hi / lo).powf(i as f32 / bands as f32)).collect();
-    let win: Vec<f32> = (0..N).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / N as f32).cos()).collect();
+    let edges: Vec<f32> = (0..=bands)
+        .map(|i| lo * (hi / lo).powf(i as f32 / bands as f32))
+        .collect();
+    let win: Vec<f32> = (0..N)
+        .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / N as f32).cos())
+        .collect();
     let mut grid = Vec::with_capacity(frames);
     let mut peak = -200.0f32;
     for f in 0..frames {
-        let c = if x.is_empty() { 0 } else { (f as f64 + 0.5) as usize * x.len() / frames };
+        let c = if x.is_empty() {
+            0
+        } else {
+            (f as f64 + 0.5) as usize * x.len() / frames
+        };
         let s0 = c as isize - (N / 2) as isize;
-        let mut re: Vec<f32> = (0..N).map(|i| {
-            let j = s0 + i as isize;
-            if j >= 0 && (j as usize) < x.len() { x[j as usize] * win[i] } else { 0.0 }
-        }).collect();
+        let mut re: Vec<f32> = (0..N)
+            .map(|i| {
+                let j = s0 + i as isize;
+                if j >= 0 && (j as usize) < x.len() {
+                    x[j as usize] * win[i]
+                } else {
+                    0.0
+                }
+            })
+            .collect();
         let mut im = vec![0.0f32; N];
         crate::analysis::fft(&mut re, &mut im);
         let mut row = vec![0.0f32; bands];
         for (b, v) in row.iter_mut().enumerate() {
             let k0 = ((edges[b] * N as f32 / sr) as usize).max(1);
-            let k1 = ((edges[b + 1] * N as f32 / sr).ceil() as usize).max(k0 + 1).min(N / 2);
-            let p: f32 = (k0..k1).map(|k| re[k] * re[k] + im[k] * im[k]).sum::<f32>() / (k1 - k0).max(1) as f32;
+            let k1 = ((edges[b + 1] * N as f32 / sr).ceil() as usize)
+                .max(k0 + 1)
+                .min(N / 2);
+            let p: f32 = (k0..k1).map(|k| re[k] * re[k] + im[k] * im[k]).sum::<f32>()
+                / (k1 - k0).max(1) as f32;
             *v = 10.0 * (p + 1e-12).log10();
             peak = peak.max(*v);
         }

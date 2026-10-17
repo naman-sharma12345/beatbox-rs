@@ -98,7 +98,9 @@ pub fn find(x: &[f32], exclude: &[f32]) -> Vec<Resonance> {
             (lo.max(1), hi.min(N / 2).max(lo.max(1) + 1))
         })
         .collect();
-    let win: Vec<f32> = (0..N).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos()).collect();
+    let win: Vec<f32> = (0..N)
+        .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos())
+        .collect();
     let (mut re, mut im) = (vec![0f32; N], vec![0f32; N]);
     let mut frames: Vec<Vec<f32>> = Vec::new();
     let mut tot: Vec<f32> = Vec::new();
@@ -111,7 +113,14 @@ pub fn find(x: &[f32], exclude: &[f32]) -> Vec<Resonance> {
             e += re[i] * re[i];
         }
         fft(&mut re, &mut im);
-        frames.push(edges.iter().map(|&(lo, hi)| (lo..hi).map(|k| re[k] * re[k] + im[k] * im[k]).sum::<f32>() / (hi - lo) as f32).collect());
+        frames.push(
+            edges
+                .iter()
+                .map(|&(lo, hi)| {
+                    (lo..hi).map(|k| re[k] * re[k] + im[k] * im[k]).sum::<f32>() / (hi - lo) as f32
+                })
+                .collect(),
+        );
         tot.push(e);
         start += HOP;
     }
@@ -125,7 +134,9 @@ pub fn find(x: &[f32], exclude: &[f32]) -> Vec<Resonance> {
     let db = |p: f32| 10.0 * p.max(1e-20).log10();
     // long-term spectrum over the active frames, and each band's excess over
     // the median of the third of an octave around it
-    let ltas: Vec<f32> = (0..nb).map(|b| db(act.iter().map(|&i| frames[i][b]).sum::<f32>() / act.len() as f32)).collect();
+    let ltas: Vec<f32> = (0..nb)
+        .map(|b| db(act.iter().map(|&i| frames[i][b]).sum::<f32>() / act.len() as f32))
+        .collect();
     let excess = |lv: &[f32], b: usize| -> f32 {
         let mut w: Vec<f32> = lv[b - ENV_HALF..=b + ENV_HALF].to_vec();
         lv[b] - median(&mut w)
@@ -152,12 +163,20 @@ pub fn find(x: &[f32], exclude: &[f32]) -> Vec<Resonance> {
         if persistence < MIN_PERSIST {
             continue;
         }
-        cands.push(Resonance { hz: c[b], excess_db: ex, persistence, score: ex * persistence });
+        cands.push(Resonance {
+            hz: c[b],
+            excess_db: ex,
+            persistence,
+            score: ex * persistence,
+        });
     }
     cands.sort_by(|a, b| b.score.total_cmp(&a.score));
     let mut out: Vec<Resonance> = Vec::new();
     for r in cands {
-        if out.len() < MAX_BANDS && !exclude.iter().any(|&e| near(e, r.hz)) && out.iter().all(|o| !near(o.hz, r.hz)) {
+        if out.len() < MAX_BANDS
+            && !exclude.iter().any(|&e| near(e, r.hz))
+            && out.iter().all(|o| !near(o.hz, r.hz))
+        {
             out.push(r);
         }
     }
@@ -191,7 +210,12 @@ pub fn band_threshold_db(x: &[f32], hz: f32) -> f32 {
         }
     }
     let top = lv.iter().cloned().fold(f32::MIN, f32::max);
-    let mut on: Vec<f32> = envs.iter().zip(&lv).filter(|(_, l)| **l >= top - ACTIVE_RANGE_DB).map(|(e, _)| *e).collect();
+    let mut on: Vec<f32> = envs
+        .iter()
+        .zip(&lv)
+        .filter(|(_, l)| **l >= top - ACTIVE_RANGE_DB)
+        .map(|(e, _)| *e)
+        .collect();
     let _ = peak;
     median(&mut on) + THRESH_OVER_MEDIAN_DB
 }
@@ -199,7 +223,16 @@ pub fn band_threshold_db(x: &[f32], hz: f32) -> f32 {
 /// The de-esser's bands on a chain: the tamer always stays a third of an
 /// octave away from them (the de-esser already works there).
 pub fn deesser_bands(effects: &[Effect]) -> Vec<f32> {
-    effects.iter().filter_map(|f| if let Effect::Deesser(d) = f { Some(d.freq) } else { None }).collect()
+    effects
+        .iter()
+        .filter_map(|f| {
+            if let Effect::Deesser(d) = f {
+                Some(d.freq)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Where song_create's tamer stays out of: the de-esser's band and every
@@ -210,7 +243,12 @@ pub fn exclusions(effects: &[Effect]) -> Vec<f32> {
     for f in effects {
         match f {
             Effect::Deesser(d) => out.push(d.freq),
-            Effect::ParametricEq(pq) => out.extend(pq.bands.iter().filter(|b| !b.auto && b.enabled && b.gain_db.abs() > 1e-3).map(|b| b.freq)),
+            Effect::ParametricEq(pq) => out.extend(
+                pq.bands
+                    .iter()
+                    .filter(|b| !b.auto && b.enabled && b.gain_db.abs() > 1e-3)
+                    .map(|b| b.freq),
+            ),
             _ => {}
         }
     }
@@ -248,7 +286,12 @@ pub fn strip(effects: &mut Vec<Effect>) -> usize {
 /// and returns what it did: {"bands": [{hz, excess_db, persistence_pct,
 /// threshold_db, max_db, q, attack_ms, release_ms, track}],
 /// "skipped_near_hz": [...]}. Nothing found = the chain is untouched.
-pub fn tame_track(t: &mut crate::project::Track, x: &[f32], exclude: &[f32], log: &mut Vec<String>) -> Value {
+pub fn tame_track(
+    t: &mut crate::project::Track,
+    x: &[f32],
+    exclude: &[f32],
+    log: &mut Vec<String>,
+) -> Value {
     let found = find(x, exclude);
     let r1 = |v: f32| (v * 10.0).round() / 10.0;
     let mut bands = Vec::new();
@@ -268,7 +311,10 @@ pub fn tame_track(t: &mut crate::project::Track, x: &[f32], exclude: &[f32], log
         bands.push(json!({"hz": r.hz.round(), "excess_db": r1(r.excess_db), "persistence_pct": r1(r.persistence * 100.0), "threshold_db": r1(th), "max_db": RES_RANGE_DB, "q": RES_Q, "attack_ms": RES_ATTACK_MS, "release_ms": RES_RELEASE_MS, "track": t.name}));
     }
     if found.is_empty() {
-        log.push(format!("vocal resonance: no lasting resonance found on {}", t.name));
+        log.push(format!(
+            "vocal resonance: no lasting resonance found on {}",
+            t.name
+        ));
     }
     json!({"bands": bands, "skipped_near_hz": exclude.iter().map(|f| f.round()).collect::<Vec<_>>()})
 }
@@ -326,11 +372,17 @@ mod tests {
         let mut bell = Biquad::new(BiquadKind::Bell, 3000.0, 8.0, 8.0);
         let ringing: Vec<f32> = dry.iter().map(|&v| bell.process(v)).collect();
         let r = find(&ringing, &[]);
-        assert!(r.iter().any(|x| (x.hz / 3000.0).log2().abs() < 1.0 / 6.0), "{r:?}");
+        assert!(
+            r.iter().any(|x| (x.hz / 3000.0).log2().abs() < 1.0 / 6.0),
+            "{r:?}"
+        );
         assert!(r.len() <= MAX_BANDS);
         // the de-esser's (or a user's) band nearby blocks it
         let r2 = find(&ringing, &[3150.0]);
-        assert!(r2.iter().all(|x| (x.hz / 3000.0).log2().abs() >= 1.0 / 3.0), "{r2:?}");
+        assert!(
+            r2.iter().all(|x| (x.hz / 3000.0).log2().abs() >= 1.0 / 3.0),
+            "{r2:?}"
+        );
         // the threshold sits over the band's usual level
         let t = band_threshold_db(&ringing, 3000.0);
         assert!(t.is_finite() && t < 0.0, "{t}");
@@ -342,10 +394,23 @@ mod tests {
         let v = tame_track(&mut tr, &ringing, &[], &mut log);
         let bands = v["bands"].as_array().unwrap();
         assert_eq!(bands.len(), r.len());
-        assert_eq!(tr.effects.iter().filter(|f| f.id().starts_with(AUTO_RESONANCE_ID)).count(), r.len());
+        assert_eq!(
+            tr.effects
+                .iter()
+                .filter(|f| f.id().starts_with(AUTO_RESONANCE_ID))
+                .count(),
+            r.len()
+        );
         for f in &tr.effects {
             if let Effect::DynamicEq(d) = f {
-                assert!(d.range_db < 0.0 && d.range_db >= -4.0 && d.q == RES_Q && d.ratio == RES_RATIO && d.source.is_empty(), "{d:?}");
+                assert!(
+                    d.range_db < 0.0
+                        && d.range_db >= -4.0
+                        && d.q == RES_Q
+                        && d.ratio == RES_RATIO
+                        && d.source.is_empty(),
+                    "{d:?}"
+                );
             }
         }
         assert_eq!(strip(&mut tr.effects), r.len());
@@ -361,7 +426,11 @@ mod tests {
         let mut log = Vec::new();
         let v = tame_track(&mut tr, &noise, &[], &mut log);
         assert!(v["bands"].as_array().unwrap().is_empty());
-        assert_eq!(serde_json::to_value(&tr.effects).unwrap(), before, "nothing found: the chain is untouched");
+        assert_eq!(
+            serde_json::to_value(&tr.effects).unwrap(),
+            before,
+            "nothing found: the chain is untouched"
+        );
         // too short to measure: nothing either
         assert!(find(&noise[..2000], &[]).is_empty());
     }
@@ -379,8 +448,12 @@ mod tests {
         use crate::samples::SampleBank;
         let mut p = Project::new("k", 120.0);
         for (n, inst) in [("vox", "sitar"), ("bass", "808")] {
-            p.tracks.push(Track::new(n, crate::instruments::preset(inst).unwrap()));
-            p.patterns[0].clips.insert(n.into(), vec![Note::new(0.0, 6.0, 57, 1.0), Note::new(8.0, 6.0, 60, 0.9)]);
+            p.tracks
+                .push(Track::new(n, crate::instruments::preset(inst).unwrap()));
+            p.patterns[0].clips.insert(
+                n.into(),
+                vec![Note::new(0.0, 6.0, 57, 1.0), Note::new(8.0, 6.0, 60, 0.9)],
+            );
         }
         let bank = SampleBank::default();
         let o = RenderOptions::default();
@@ -418,15 +491,32 @@ mod tests {
         assert_eq!(keys(&off), k0);
         let fresh0 = render(&p0, &bank, &o).unwrap();
         let fresh1 = render(&p, &bank, &o).unwrap();
-        assert_ne!(fresh1.left, fresh0.left, "the band does act on a bright part");
+        assert_ne!(
+            fresh1.left, fresh0.left,
+            "the band does act on a bright part"
+        );
         let mut c = TrackCache::default();
         let a0 = render_cached(&p0, &bank, &o, Some(&mut c)).unwrap();
         let a1 = render_cached(&p, &bank, &o, Some(&mut c)).unwrap();
         let a2 = render_cached(&off, &bank, &o, Some(&mut c)).unwrap();
-        let bits = |m: &crate::render::Mix| m.left.iter().chain(m.right.iter()).map(|x| x.to_bits()).collect::<Vec<u32>>();
+        let bits = |m: &crate::render::Mix| {
+            m.left
+                .iter()
+                .chain(m.right.iter())
+                .map(|x| x.to_bits())
+                .collect::<Vec<u32>>()
+        };
         assert_eq!(bits(&a0), bits(&fresh0));
-        assert_eq!(bits(&a1), bits(&fresh1), "tamer on through the cache == fresh");
-        assert_eq!(bits(&a2), bits(&fresh0), "tamer off through the cache == the render without it");
+        assert_eq!(
+            bits(&a1),
+            bits(&fresh1),
+            "tamer on through the cache == fresh"
+        );
+        assert_eq!(
+            bits(&a2),
+            bits(&fresh0),
+            "tamer off through the cache == the render without it"
+        );
         assert_eq!(bits(&render(&off, &bank, &o).unwrap()), bits(&fresh0));
     }
 }

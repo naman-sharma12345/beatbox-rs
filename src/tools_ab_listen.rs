@@ -19,7 +19,12 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 
 /// Audio of one side: (left, right).
-fn side(e: &mut Engine, what: &str, bars: Option<(f32, f32)>, secs: (f32, Option<f32>)) -> Result<(Vec<f32>, Vec<f32>)> {
+fn side(
+    e: &mut Engine,
+    what: &str,
+    bars: Option<(f32, f32)>,
+    secs: (f32, Option<f32>),
+) -> Result<(Vec<f32>, Vec<f32>)> {
     let path = e.resolve(what);
     let (mut l, mut r) = if what != "current" && path.is_file() {
         let x = crate::samples::decode_file(&path)?;
@@ -27,12 +32,28 @@ fn side(e: &mut Engine, what: &str, bars: Option<(f32, f32)>, secs: (f32, Option
     } else {
         let p = e.version(what)?;
         e.bank.sync(&p.samples);
-        let step_range = bars.map(|(b0, b1)| ((p.beat_at_bar(b0) * 4.0).round() as u32, (p.beat_at_bar(b1) * 4.0).round() as u32));
-        let m = render::render(&p, &e.bank, &RenderOptions { step_range, tail: 1.0, ..Default::default() })?;
+        let step_range = bars.map(|(b0, b1)| {
+            (
+                (p.beat_at_bar(b0) * 4.0).round() as u32,
+                (p.beat_at_bar(b1) * 4.0).round() as u32,
+            )
+        });
+        let m = render::render(
+            &p,
+            &e.bank,
+            &RenderOptions {
+                step_range,
+                tail: 1.0,
+                ..Default::default()
+            },
+        )?;
         (m.left, m.right)
     };
     let s0 = ((secs.0.max(0.0) * SR) as usize).min(l.len());
-    let s1 = secs.1.map(|n| (s0 + (n.max(0.1) * SR) as usize).min(l.len())).unwrap_or(l.len());
+    let s1 = secs
+        .1
+        .map(|n| (s0 + (n.max(0.1) * SR) as usize).min(l.len()))
+        .unwrap_or(l.len());
     l = l[s0..s1].to_vec();
     r = r[s0..s1.min(r.len())].to_vec();
     if l.is_empty() {
@@ -143,25 +164,52 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("bb_ab_listen_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir);
-        e.call("new_project", &json!({"name": "ab", "bpm": 120})).unwrap();
-        e.call("add_track", &json!({"name": "keys", "preset": "pad", "volume_db": 0})).unwrap();
+        e.call("new_project", &json!({"name": "ab", "bpm": 120}))
+            .unwrap();
+        e.call(
+            "add_track",
+            &json!({"name": "keys", "preset": "pad", "volume_db": 0}),
+        )
+        .unwrap();
         e.call("add_notes", &json!({"track": "keys", "notes": [{"start": 0, "len": 16, "pitch": 60}, {"start": 16, "len": 16, "pitch": 67}]})).unwrap();
         e.call("snapshot", &json!({"name": "quiet"})).unwrap();
-        e.call("set_mixer", &json!({"track": "keys", "volume_db": 6})).unwrap();
-        let v = e.call("ab_listen", &json!({"a": "quiet", "b": "current", "length_s": 3})).unwrap();
+        e.call("set_mixer", &json!({"track": "keys", "volume_db": 6}))
+            .unwrap();
+        let v = e
+            .call(
+                "ab_listen",
+                &json!({"a": "quiet", "b": "current", "length_s": 3}),
+            )
+            .unwrap();
         assert!(v["judgement"].is_null(), "{v}");
         assert!(!v.to_string().to_lowercase().contains("wins"));
-        let (la, lb) = (v["facts"]["A"]["lufs"].as_f64().unwrap(), v["facts"]["B"]["lufs"].as_f64().unwrap());
+        let (la, lb) = (
+            v["facts"]["A"]["lufs"].as_f64().unwrap(),
+            v["facts"]["B"]["lufs"].as_f64().unwrap(),
+        );
         assert!((la - lb).abs() < 0.3, "matched: {la} vs {lb}");
-        assert!(v["level_change_db"]["B"].as_f64().unwrap() < -3.0, "the louder one was turned down");
+        assert!(
+            v["level_change_db"]["B"].as_f64().unwrap() < -3.0,
+            "the louder one was turned down"
+        );
         for k in ["A", "B", "A_then_B"] {
             assert!(std::path::Path::new(v["files"][k].as_str().unwrap()).is_file());
         }
         // blind: names hidden until reveal
-        let b = e.call("ab_listen", &json!({"a": "quiet", "b": "current", "length_s": 2, "blind": true})).unwrap();
+        let b = e
+            .call(
+                "ab_listen",
+                &json!({"a": "quiet", "b": "current", "length_s": 2, "blind": true}),
+            )
+            .unwrap();
         assert_eq!(b["A"], "hidden (blind)");
-        let r = e.call("ab_listen", &json!({"reveal": b["session"]})).unwrap();
-        let mut got = vec![r["A"].as_str().unwrap().to_string(), r["B"].as_str().unwrap().to_string()];
+        let r = e
+            .call("ab_listen", &json!({"reveal": b["session"]}))
+            .unwrap();
+        let mut got = vec![
+            r["A"].as_str().unwrap().to_string(),
+            r["B"].as_str().unwrap().to_string(),
+        ];
         got.sort();
         assert_eq!(got, vec!["current", "quiet"]);
     }

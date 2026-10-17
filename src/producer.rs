@@ -1232,10 +1232,15 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
     // beat 9): when a verse follows the only hook, the hook comes back after it
     if a.duration_s.is_none() && tmpl.iter().filter(|s| s.kind == "hook").count() == 1 {
         let h = tmpl.iter().position(|s| s.kind == "hook").unwrap_or(0);
-        if let Some(lv) = tmpl.iter().rposition(|s| s.kind == "verse").filter(|lv| *lv > h) {
+        if let Some(lv) = tmpl
+            .iter()
+            .rposition(|s| s.kind == "verse")
+            .filter(|lv| *lv > h)
+        {
             let again = tmpl[h].clone();
             tmpl.insert(lv + 1, again);
-            thinking.push("The hook comes back after the last verse, so it lands twice.".to_string());
+            thinking
+                .push("The hook comes back after the last verse, so it lands twice.".to_string());
         }
     }
     // a form the words dictate (make_beat with lyrics: one section per stanza,
@@ -1264,7 +1269,10 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
         if out.len() >= 2 {
             thinking.push(format!(
                 "Form from the words: {}.",
-                out.iter().map(|s| format!("{}({})", s.kind, s.bars)).collect::<Vec<_>>().join(" > ")
+                out.iter()
+                    .map(|s| format!("{}({})", s.kind, s.bars))
+                    .collect::<Vec<_>>()
+                    .join(" > ")
             ));
             tmpl = out;
         }
@@ -1404,7 +1412,13 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
             if toks.len() < 2 {
                 break;
             }
-            let rot: Vec<&str> = toks.iter().cycle().skip(r % toks.len()).take(toks.len()).copied().collect();
+            let rot: Vec<&str> = toks
+                .iter()
+                .cycle()
+                .skip(r % toks.len())
+                .take(toks.len())
+                .copied()
+                .collect();
             let s = rot.join(" ");
             if s != ph && s != pv {
                 best = s;
@@ -1419,7 +1433,9 @@ pub fn plan_track(a: &PlanArgs) -> Result<Plan> {
                 &best,
                 "the switched half gets its own chord motion, so it is a new chapter, not only new drums",
             );
-            thinking.push(format!("Beat switch: drums flip to a second groove, chords move to {best}."));
+            thinking.push(format!(
+                "Beat switch: drums flip to a second groove, chords move to {best}."
+            ));
         }
         best
     } else {
@@ -2169,8 +2185,20 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     let mut rng = Rng::new(plan.seed ^ 0x5EC7 ^ plan.knobs.variation_seed.wrapping_mul(0x9E37));
     // R&B with a bright bell/pluck lead: an octave down (critic, beat 8 round 2:
     // the fm_bell lead was over half of all the 2-16 kHz energy in the mix)
-    let bright_lead = plan.palette.get("lead").map(|s| ["bell", "pluck", "glock", "celesta", "music_box"].iter().any(|k| s.contains(k))).unwrap_or(false);
-    let lead_oct = if pb.mix.balance_genre == "rnb" && bright_lead { pb.lead.octave - 1 } else { pb.lead.octave };
+    let bright_lead = plan
+        .palette
+        .get("lead")
+        .map(|s| {
+            ["bell", "pluck", "glock", "celesta", "music_box"]
+                .iter()
+                .any(|k| s.contains(k))
+        })
+        .unwrap_or(false);
+    let lead_oct = if pb.mix.balance_genre == "rnb" && bright_lead {
+        pb.lead.octave - 1
+    } else {
+        pb.lead.octave
+    };
     let ornament = pb.lead.ornament.clone().unwrap_or_default();
     let harmony_style = if plan.harmony_style.is_empty() {
         pb.harmony.style.clone().unwrap_or_else(|| "block".into())
@@ -2598,16 +2626,36 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     e.project.tracks.retain(|t| !silent.contains(&t.name));
     // ---- transition FX that mark the big moments: a downlifter into a quiet
     // section, a reverse cymbal swelling into the beat switch and an impact on its one
-    if let Some(q) = plan.sections.iter().position(|s| s.tags.iter().any(|t| t == "quiet")) {
+    if let Some(q) = plan
+        .sections
+        .iter()
+        .position(|s| s.tags.iter().any(|t| t == "quiet"))
+    {
         if q >= 1 {
-            let _ = e.call_from("add_transition", &json!({"into": plan.sections[q].name, "type": "downlifter"}), "producer");
+            let _ = e.call_from(
+                "add_transition",
+                &json!({"into": plan.sections[q].name, "type": "downlifter"}),
+                "producer",
+            );
         }
     }
-    if let Some(w) = plan.sections.iter().position(|s| s.tags.iter().any(|t| t == "switch")) {
+    if let Some(w) = plan
+        .sections
+        .iter()
+        .position(|s| s.tags.iter().any(|t| t == "switch"))
+    {
         if w >= 1 {
             let name = plan.sections[w].name.clone();
-            let _ = e.call_from("add_transition", &json!({"into": name, "type": "reverse_cymbal", "bars": 1}), "producer");
-            let _ = e.call_from("add_transition", &json!({"into": name, "type": "impact"}), "producer");
+            let _ = e.call_from(
+                "add_transition",
+                &json!({"into": name, "type": "reverse_cymbal", "bars": 1}),
+                "producer",
+            );
+            let _ = e.call_from(
+                "add_transition",
+                &json!({"into": name, "type": "impact"}),
+                "producer",
+            );
         }
     }
     // ---- mix bus architecture
@@ -2685,7 +2733,11 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         .filter(|n| matches!(crate::groove_feel::role_of(n), "keys" | "lead"))
         .collect();
     for t in &melodic {
-        let cut = if crate::groove_feel::role_of(t) == "keys" { -3.0 } else { -2.0 };
+        let cut = if crate::groove_feel::role_of(t) == "keys" {
+            -3.0
+        } else {
+            -2.0
+        };
         e.call_from(
             "add_effect",
             &json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 320.0, "gain_db": cut, "q": 0.9}]}}),
@@ -2729,7 +2781,11 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
             for (k, (b0, b1, s)) in spans.iter().enumerate() {
                 // a quiet section closes right down (~1 kHz): it has to read as quiet
                 let quiet = s.tags.iter().any(|t| t == "quiet");
-                let closed = if quiet { 1000.0 } else { 1400.0 + 4200.0 * s.energy.clamp(0.0, 1.0) };
+                let closed = if quiet {
+                    1000.0
+                } else {
+                    1400.0 + 4200.0 * s.energy.clamp(0.0, 1.0)
+                };
                 let v = if s.kind == "hook" { 18000.0 } else { closed };
                 pts.push(json!({"beat": b0, "value": v, "curve": "step"}));
                 let next_hook = spans
@@ -2765,11 +2821,20 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     // heard them as a narrow point in the middle (pluck A/B, beats 6b, 8).
     // A pseudo-stereo shaper widens them above 250 Hz-ish while the mid stays
     // put, so they sit beside the vocal instead of on top of it.
-    let plucks: Vec<String> = e.project.tracks.iter().filter(|t| matches!(t.instrument, crate::instruments::Instrument::Pluck(_))).map(|t| t.name.clone()).collect();
+    let plucks: Vec<String> = e
+        .project
+        .tracks
+        .iter()
+        .filter(|t| matches!(t.instrument, crate::instruments::Instrument::Pluck(_)))
+        .map(|t| t.name.clone())
+        .collect();
     for t in plucks {
         e.call_from("add_effect", &json!({"track": t, "type": "stereo_shaper", "params": {"preset": "pseudo_stereo", "delay_ms": 9.0, "mix": 0.8}}), "producer")?;
     }
-    let hiphop = matches!(pb.mix.balance_genre.as_str(), "boom_bap" | "hiphop" | "hip_hop");
+    let hiphop = matches!(
+        pb.mix.balance_genre.as_str(),
+        "boom_bap" | "hiphop" | "hip_hop"
+    );
     // hip-hop: hats and noise sit narrow (wide hiss reads as cheap), and the
     // low end of anything stereo stays mono
     let rnb = matches!(pb.mix.balance_genre.as_str(), "rnb");
@@ -2777,7 +2842,11 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     if hiphop || rnb || lofi {
         for t in ["hat", "open_hat"] {
             if have(e, t) {
-                e.call_from("add_effect", &json!({"track": t, "type": "width", "params": {"amount": 0.55}}), "producer")?;
+                e.call_from(
+                    "add_effect",
+                    &json!({"track": t, "type": "width", "params": {"amount": 0.55}}),
+                    "producer",
+                )?;
                 // dark top: the hats' fizz above 10 kHz read as hiss (critic, beats 6b and 8);
                 // a flat Butterworth cut, not a resonant filter (critic, beat 8 r3:
                 // the resonant low-pass rang at 8.3 kHz on every hat, 29 glassy ticks)
@@ -2786,9 +2855,13 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
                     // lo-fi hats are dusty, not crisp: closed above ~5 kHz
                     // (critic, beat 9: 5-16 kHz was all hat streaks; v16: the
                     // 7 kHz cut still left 5-7 kHz, so a 12 dB/oct cut at 5k)
-                    e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                    e.call_from(
+                        "add_effect",
+                        &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
                         {"kind": "high_cut", "freq": 5000.0, "gain_db": 0.0, "q": 0.707},
-                        {"kind": "high_shelf", "freq": 3500.0, "gain_db": -2.0, "q": 0.7}]}}), "producer")?;
+                        {"kind": "high_shelf", "freq": 3500.0, "gain_db": -2.0, "q": 0.7}]}}),
+                        "producer",
+                    )?;
                 }
             }
         }
@@ -2805,47 +2878,73 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
         // dark the snare made 60% of 2-5 kHz and 42% of the air)
         for t in ["snare", "clap", "rim"] {
             if have(e, t) {
-                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                e.call_from(
+                    "add_effect",
+                    &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
                     {"kind": "high_cut", "freq": 4500.0, "gain_db": 0.0, "q": 0.707},
                     // critic v17: once 3-5k was tamed, 2-3 kHz became the
                     // hottest top band (mix share -16.2), so the dip sits at 2.5k
-                    {"kind": "bell", "freq": 2500.0, "gain_db": -4.0, "q": 0.9}]}}), "producer")?;
+                    {"kind": "bell", "freq": 2500.0, "gain_db": -4.0, "q": 0.9}]}}),
+                    "producer",
+                )?;
             }
         }
         // the lead made 38% of 2-5 kHz and climbed in hook 2 (critic v16):
         // a lo-fi lead is a muffled keys line, closed above 3.5 kHz
         for t in ["lead", "counter"] {
             if have(e, t) {
-                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                e.call_from(
+                    "add_effect",
+                    &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
                     {"kind": "high_cut", "freq": 3500.0, "gain_db": 0.0, "q": 0.707},
                     // critic v17: lead/counter still co-own 2-3 kHz with the snare
-                    {"kind": "bell", "freq": 2500.0, "gain_db": -3.0, "q": 1.0}]}}), "producer")?;
+                    {"kind": "bell", "freq": 2500.0, "gain_db": -3.0, "q": 1.0}]}}),
+                    "producer",
+                )?;
             }
         }
         // critic v18 (beat 10 r1): the hook layers (open hat, shaker,
         // counter, texture) added ~6 dB of 2-3 kHz; v19: -2.5 dB at 2.6k did
         // not register on the hat/shaker, so they take -4 dB (Q 1) at 2.4k
-        for (t, f, g, q) in [("open_hat", 2400.0, -4.0, 1.0), ("shaker", 2400.0, -4.0, 1.0), ("perc", 2400.0, -3.0, 1.0), ("counter", 2600.0, -2.5, 0.9), ("texture", 2600.0, -2.5, 0.9)] {
+        for (t, f, g, q) in [
+            ("open_hat", 2400.0, -4.0, 1.0),
+            ("shaker", 2400.0, -4.0, 1.0),
+            ("perc", 2400.0, -3.0, 1.0),
+            ("counter", 2600.0, -2.5, 0.9),
+            ("texture", 2600.0, -2.5, 0.9),
+        ] {
             if have(e, t) {
-                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
-                    {"kind": "bell", "freq": f, "gain_db": g, "q": q}]}}), "producer")?;
+                e.call_from(
+                    "add_effect",
+                    &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                    {"kind": "bell", "freq": f, "gain_db": g, "q": q}]}}),
+                    "producer",
+                )?;
             }
         }
         // critic v18: sub -4.7 dB under the reference, so the low end read as
         // all voice; kick, bass and 808 get +3 dB below ~70 Hz
         for t in ["kick", "bass", "808", "sub"] {
             if have(e, t) {
-                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
-                    {"kind": "low_shelf", "freq": 70.0, "gain_db": LOFI_SUB_LIFT_DB, "q": 0.7}]}}), "producer")?;
+                e.call_from(
+                    "add_effect",
+                    &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                    {"kind": "low_shelf", "freq": 70.0, "gain_db": LOFI_SUB_LIFT_DB, "q": 0.7}]}}),
+                    "producer",
+                )?;
             }
         }
         // the chords made 53% of 250-800 Hz: rootless up top, no mud under
         for t in ["chords", "keys", "pad", "texture", "counter"] {
             if have(e, t) {
-                e.call_from("add_effect", &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
+                e.call_from(
+                    "add_effect",
+                    &json!({"track": t, "type": "parametric_eq", "params": {"bands": [
                     {"kind": "low_cut", "freq": 180.0, "gain_db": 0.0, "q": 0.707},
                     {"kind": "bell", "freq": 350.0, "gain_db": -4.5, "q": 1.0},
-                    {"kind": "bell", "freq": 600.0, "gain_db": -2.5, "q": 0.9}]}}), "producer")?;
+                    {"kind": "bell", "freq": 600.0, "gain_db": -2.5, "q": 0.9}]}}),
+                    "producer",
+                )?;
             }
         }
     }
@@ -2911,13 +3010,19 @@ pub fn compose(e: &mut Engine, plan: &Plan) -> Result<Value> {
     crate::mix_rules::ensure_vocal_pocket(e, "producer")?;
     // R&B and sad/melodic beds: the sustained harmony builds a 300 Hz band
     // under the vocal range (critic, beat 8)
-    let soft = rnb || ["sad", "melancholic", "heartbreak", "romantic", "dreamy"].iter().any(|m| plan.mood.contains(m));
+    let soft = rnb
+        || ["sad", "melancholic", "heartbreak", "romantic", "dreamy"]
+            .iter()
+            .any(|m| plan.mood.contains(m));
     if soft && have(e, "chords") {
         e.call_from("add_effect", &json!({"track": "chords", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 320.0, "gain_db": -5.0, "q": 1.0}]}}), "producer")?;
     }
     // ...and a held pad partial can ring through the whole song: find and notch it
     {
-        let beds: Vec<&str> = ["chords", "texture"].into_iter().filter(|t| have(e, t)).collect();
+        let beds: Vec<&str> = ["chords", "texture"]
+            .into_iter()
+            .filter(|t| have(e, t))
+            .collect();
         if !beds.is_empty() {
             let _ = e.call_from("notch_drones", &json!({"tracks": beds}), "producer");
         }
@@ -4199,23 +4304,50 @@ mod tests {
 
     #[test]
     fn punjabi_party_is_one_word_away_and_plays_dhol_and_tumbi() {
-        for w in ["punjabi_party", "honey_singh", "badshah", "bhangra", "punjabi"] {
+        for w in [
+            "punjabi_party",
+            "honey_singh",
+            "badshah",
+            "bhangra",
+            "punjabi",
+        ] {
             assert_eq!(playbook(w).unwrap().name, "punjabi_party", "{w}");
         }
-        assert_eq!(guess_genre("yo yo honey singh type beat").unwrap().name, "punjabi_party");
-        assert_eq!(guess_genre("badshah party song").unwrap().name, "punjabi_party");
+        assert_eq!(
+            guess_genre("yo yo honey singh type beat").unwrap().name,
+            "punjabi_party"
+        );
+        assert_eq!(
+            guess_genre("badshah party song").unwrap().name,
+            "punjabi_party"
+        );
         assert_eq!(guess_genre("punjabi drill beat").unwrap().name, "drill");
-        assert_eq!(guess_genre("punjabi rap like bohemia").unwrap().name, "desi_hiphop");
+        assert_eq!(
+            guess_genre("punjabi rap like bohemia").unwrap().name,
+            "desi_hiphop"
+        );
         let mut e = engine();
         let plan = plan_track(&args("punjabi party", Some("punjabi_party"), 7)).unwrap();
         assert_eq!(plan.genre, "punjabi_party");
         assert!((96.0..=104.0).contains(&plan.bpm), "bpm {}", plan.bpm);
-        assert_eq!(plan.palette.get("tabla").map(String::as_str), Some("dholak"));
-        assert_eq!(plan.palette.get("bayan").map(String::as_str), Some("dholak_bass"));
+        assert_eq!(
+            plan.palette.get("tabla").map(String::as_str),
+            Some("dholak")
+        );
+        assert_eq!(
+            plan.palette.get("bayan").map(String::as_str),
+            Some("dholak_bass")
+        );
         assert_eq!(plan.palette.get("lead").map(String::as_str), Some("tumbi"));
         compose(&mut e, &plan).unwrap();
-        let count = |r: &str| -> usize { e.project.patterns.iter().map(|p| p.notes(r).len()).sum() };
-        assert!(count("tabla") > 20 && count("bayan") > 10, "dhol {} / {}", count("tabla"), count("bayan"));
+        let count =
+            |r: &str| -> usize { e.project.patterns.iter().map(|p| p.notes(r).len()).sum() };
+        assert!(
+            count("tabla") > 20 && count("bayan") > 10,
+            "dhol {} / {}",
+            count("tabla"),
+            count("bayan")
+        );
         assert!(count("lead") > 8);
     }
 
@@ -4625,9 +4757,16 @@ mod tests {
             ..Default::default()
         };
         let p = plan_track(&a).unwrap();
-        let q = p.sections.iter().position(|s| s.tags.iter().any(|t| t == "quiet")).expect("quiet section");
+        let q = p
+            .sections
+            .iter()
+            .position(|s| s.tags.iter().any(|t| t == "quiet"))
+            .expect("quiet section");
         let quiet = &p.sections[q];
-        assert!(quiet.layers.iter().all(|l| !matches!(l.as_str(), "kick" | "snare" | "hat" | "bass")));
+        assert!(quiet
+            .layers
+            .iter()
+            .all(|l| !matches!(l.as_str(), "kick" | "snare" | "hat" | "bass")));
         assert_eq!(quiet.transition, "silence");
         // the switch comes straight out of the quiet section, with its own chords
         assert!(p.sections[q + 1].tags.iter().any(|t| t == "switch"));
@@ -4636,5 +4775,4 @@ mod tests {
         assert_eq!(p.knobs.target_lufs, -14.0);
         assert!(p.sections[0].bars >= 4);
     }
-
 }

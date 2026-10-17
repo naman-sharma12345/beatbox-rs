@@ -25,7 +25,17 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-pub const SECTION_KINDS: &[&str] = &["intro", "verse", "pre", "hook", "chorus", "drop", "bridge", "breakdown", "outro"];
+pub const SECTION_KINDS: &[&str] = &[
+    "intro",
+    "verse",
+    "pre",
+    "hook",
+    "chorus",
+    "drop",
+    "bridge",
+    "breakdown",
+    "outro",
+];
 const VOCAL_SAMPLE: &str = "song_vocal";
 
 fn d_track() -> String {
@@ -337,14 +347,21 @@ impl PartEq {
     /// adds nothing.
     pub fn bands(&self) -> Vec<Value> {
         let mut out = Vec::new();
-        for (kind, sh) in [("low_shelf", self.low_shelf), ("high_shelf", self.high_shelf)] {
+        for (kind, sh) in [
+            ("low_shelf", self.low_shelf),
+            ("high_shelf", self.high_shelf),
+        ] {
             if let Some(sh) = sh.filter(|x| x.db.abs() > 1e-3) {
-                out.push(json!({"kind": kind, "freq": sh.hz, "gain_db": sh.db, "q": PART_EQ_SHELF_Q}));
+                out.push(
+                    json!({"kind": kind, "freq": sh.hz, "gain_db": sh.db, "q": PART_EQ_SHELF_Q}),
+                );
             }
         }
         for b in self.bells.iter().filter(|b| b.db.abs() > 1e-3) {
             if b.auto {
-                out.push(json!({"kind": "bell", "freq": b.hz, "gain_db": b.db, "q": b.q, "auto": true}));
+                out.push(
+                    json!({"kind": "bell", "freq": b.hz, "gain_db": b.db, "q": b.q, "auto": true}),
+                );
             } else {
                 out.push(json!({"kind": "bell", "freq": b.hz, "gain_db": b.db, "q": b.q}));
             }
@@ -359,28 +376,55 @@ impl PartEq {
         }
         let hz_ok = |hz: f32| hz.is_finite() && (20.0..=20000.0).contains(&hz);
         let db_ok = |db: f32| db.is_finite() && (-12.0..=12.0).contains(&db);
-        for (k, sh) in [("low_shelf", self.low_shelf), ("high_shelf", self.high_shelf)] {
+        for (k, sh) in [
+            ("low_shelf", self.low_shelf),
+            ("high_shelf", self.high_shelf),
+        ] {
             if let Some(sh) = sh {
                 if !hz_ok(sh.hz) {
-                    out.push(p(format!("{base}/{k}/hz"), format!("{} Hz", sh.hz), "a corner in 20..20000 Hz"));
+                    out.push(p(
+                        format!("{base}/{k}/hz"),
+                        format!("{} Hz", sh.hz),
+                        "a corner in 20..20000 Hz",
+                    ));
                 }
                 if !db_ok(sh.db) {
-                    out.push(p(format!("{base}/{k}/db"), format!("{} dB", sh.db), "a gain in -12..12 dB"));
+                    out.push(p(
+                        format!("{base}/{k}/db"),
+                        format!("{} dB", sh.db),
+                        "a gain in -12..12 dB",
+                    ));
                 }
             }
         }
         if self.bells.len() > PART_EQ_MAX_BELLS {
-            out.push(p(format!("{base}/bells"), format!("{} bells", self.bells.len()), format!("at most {PART_EQ_MAX_BELLS} bells per part")));
+            out.push(p(
+                format!("{base}/bells"),
+                format!("{} bells", self.bells.len()),
+                format!("at most {PART_EQ_MAX_BELLS} bells per part"),
+            ));
         }
         for (i, b) in self.bells.iter().enumerate() {
             if !hz_ok(b.hz) {
-                out.push(p(format!("{base}/bells/{i}/hz"), format!("{} Hz", b.hz), "a centre in 20..20000 Hz"));
+                out.push(p(
+                    format!("{base}/bells/{i}/hz"),
+                    format!("{} Hz", b.hz),
+                    "a centre in 20..20000 Hz",
+                ));
             }
             if !db_ok(b.db) {
-                out.push(p(format!("{base}/bells/{i}/db"), format!("{} dB", b.db), "a gain in -12..12 dB"));
+                out.push(p(
+                    format!("{base}/bells/{i}/db"),
+                    format!("{} dB", b.db),
+                    "a gain in -12..12 dB",
+                ));
             }
             if !(b.q.is_finite() && (0.1..=10.0).contains(&b.q)) {
-                out.push(p(format!("{base}/bells/{i}/q"), format!("Q {}", b.q), "a Q in 0.1..10"));
+                out.push(p(
+                    format!("{base}/bells/{i}/q"),
+                    format!("Q {}", b.q),
+                    "a Q in 0.1..10",
+                ));
             }
         }
     }
@@ -389,7 +433,23 @@ impl PartEq {
 impl Default for MixSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MixSpec { vocal_over_beat_db: t.vocal_over_beat_db, vocal_over_beat_max_db: t.vocal_over_beat_max_db, drop_lift_db: t.drop_lift_db[0], balance_passes: 3, levels: BTreeMap::new(), air_floor_db: None, presence_ceiling_db: None, master_lift: None, builds: false, section_gain_db: BTreeMap::new(), part_eq: BTreeMap::new(), auto_eq: false, vocal_duck: false, kick_duck: false, vocal_resonance: false }
+        MixSpec {
+            vocal_over_beat_db: t.vocal_over_beat_db,
+            vocal_over_beat_max_db: t.vocal_over_beat_max_db,
+            drop_lift_db: t.drop_lift_db[0],
+            balance_passes: 3,
+            levels: BTreeMap::new(),
+            air_floor_db: None,
+            presence_ceiling_db: None,
+            master_lift: None,
+            builds: false,
+            section_gain_db: BTreeMap::new(),
+            part_eq: BTreeMap::new(),
+            auto_eq: false,
+            vocal_duck: false,
+            kick_duck: false,
+            vocal_resonance: false,
+        }
     }
 }
 
@@ -404,7 +464,11 @@ pub struct MasterSpec {
 impl Default for MasterSpec {
     fn default() -> Self {
         let t = Targets::default();
-        MasterSpec { lufs: t.lufs, true_peak: t.true_peak_max_db, preserve_dynamics: mix_rules::SONG_PRESERVE_DYNAMICS }
+        MasterSpec {
+            lufs: t.lufs,
+            true_peak: t.true_peak_max_db,
+            preserve_dynamics: mix_rules::SONG_PRESERVE_DYNAMICS,
+        }
     }
 }
 
@@ -421,7 +485,11 @@ pub struct ExportSpec {
 
 impl Default for ExportSpec {
     fn default() -> Self {
-        ExportSpec { path: None, format: "mp3".into(), bitrate_kbps: 320 }
+        ExportSpec {
+            path: None,
+            format: "mp3".into(),
+            bitrate_kbps: 320,
+        }
     }
 }
 
@@ -431,11 +499,17 @@ impl SongSpec {
         Targets {
             vocal_over_beat_db: self.mix.vocal_over_beat_db,
             vocal_over_beat_max_db: self.mix.vocal_over_beat_max_db,
-            drop_lift_db: [self.mix.drop_lift_db, self.mix.drop_lift_db.max(d.drop_lift_db[1])],
+            drop_lift_db: [
+                self.mix.drop_lift_db,
+                self.mix.drop_lift_db.max(d.drop_lift_db[1]),
+            ],
             lufs: self.master.lufs,
             lufs_tolerance: d.lufs_tolerance,
             true_peak_max_db: self.master.true_peak,
-            air_rel_lufs_db: [self.mix.air_floor_db.unwrap_or(d.air_rel_lufs_db[0]), d.air_rel_lufs_db[1]],
+            air_rel_lufs_db: [
+                self.mix.air_floor_db.unwrap_or(d.air_rel_lufs_db[0]),
+                d.air_rel_lufs_db[1],
+            ],
             presence_rel_lufs_db: match self.mix.presence_ceiling_db {
                 Some(hi) => [d.presence_rel_lufs_db[0].min(hi - 1.5), hi],
                 None => d.presence_rel_lufs_db,
@@ -491,7 +565,11 @@ pub struct Problem {
 }
 
 fn p(path: impl Into<String>, problem: impl Into<String>, fix: impl Into<String>) -> Problem {
-    Problem { path: path.into(), problem: problem.into(), fix: fix.into() }
+    Problem {
+        path: path.into(),
+        problem: problem.into(),
+        fix: fix.into(),
+    }
 }
 
 fn lev(a: &str, b: &str) -> usize {
@@ -500,7 +578,11 @@ fn lev(a: &str, b: &str) -> usize {
     for (i, ca) in a.chars().enumerate() {
         let mut cur = vec![i + 1];
         for (j, cb) in b.iter().enumerate() {
-            cur.push((prev[j] + (ca != *cb) as usize).min(prev[j + 1] + 1).min(cur[j] + 1));
+            cur.push(
+                (prev[j] + (ca != *cb) as usize)
+                    .min(prev[j + 1] + 1)
+                    .min(cur[j] + 1),
+            );
         }
         prev = cur;
     }
@@ -528,21 +610,114 @@ fn did_you_mean(w: &str, known: &[&str], alias: &[(&str, &str)]) -> String {
     }
 }
 
-const TOP_KEYS: &[&str] = &["title", "prompt", "genre", "bpm", "key", "scale", "mood", "density", "seed", "structure", "instruments", "vocal", "mix", "master", "export"];
-const TOP_ALIAS: &[(&str, &str)] = &[("tempo", "bpm"), ("sections", "structure"), ("form", "structure"), ("arrangement", "structure"), ("vocals", "vocal"), ("voice", "vocal"), ("instrumentation", "instruments"), ("palette", "instruments"), ("style", "genre"), ("lufs", "master.lufs"), ("name", "title"), ("brief", "prompt")];
-const VOCAL_KEYS: &[&str] = &["file", "track", "phrases", "start_section", "lyrics", "gain_db", "chain", "lock", "flex"];
-const PHRASE_KEYS: &[&str] = &["src_s", "src", "len_s", "len", "end_s", "section", "bar", "beat", "start_beat", "at_s", "start_s", "gain_db", "name", "fade_in_ms", "fade_out_ms"];
+const TOP_KEYS: &[&str] = &[
+    "title",
+    "prompt",
+    "genre",
+    "bpm",
+    "key",
+    "scale",
+    "mood",
+    "density",
+    "seed",
+    "structure",
+    "instruments",
+    "vocal",
+    "mix",
+    "master",
+    "export",
+];
+const TOP_ALIAS: &[(&str, &str)] = &[
+    ("tempo", "bpm"),
+    ("sections", "structure"),
+    ("form", "structure"),
+    ("arrangement", "structure"),
+    ("vocals", "vocal"),
+    ("voice", "vocal"),
+    ("instrumentation", "instruments"),
+    ("palette", "instruments"),
+    ("style", "genre"),
+    ("lufs", "master.lufs"),
+    ("name", "title"),
+    ("brief", "prompt"),
+];
+const VOCAL_KEYS: &[&str] = &[
+    "file",
+    "track",
+    "phrases",
+    "start_section",
+    "lyrics",
+    "gain_db",
+    "chain",
+    "lock",
+    "flex",
+];
+const PHRASE_KEYS: &[&str] = &[
+    "src_s",
+    "src",
+    "len_s",
+    "len",
+    "end_s",
+    "section",
+    "bar",
+    "beat",
+    "start_beat",
+    "at_s",
+    "start_s",
+    "gain_db",
+    "name",
+    "fade_in_ms",
+    "fade_out_ms",
+];
 const SECTION_KEYS: &[&str] = &["kind", "bars", "name", "energy"];
-const MIX_KEYS: &[&str] = &["vocal_over_beat_db", "vocal_over_beat_max_db", "drop_lift_db", "balance_passes", "levels", "air_floor_db", "presence_ceiling_db", "master_lift", "builds", "section_gain_db", "part_eq", "auto_eq", "vocal_duck", "kick_duck", "vocal_resonance"];
+const MIX_KEYS: &[&str] = &[
+    "vocal_over_beat_db",
+    "vocal_over_beat_max_db",
+    "drop_lift_db",
+    "balance_passes",
+    "levels",
+    "air_floor_db",
+    "presence_ceiling_db",
+    "master_lift",
+    "builds",
+    "section_gain_db",
+    "part_eq",
+    "auto_eq",
+    "vocal_duck",
+    "kick_duck",
+    "vocal_resonance",
+];
 const MASTER_KEYS: &[&str] = &["lufs", "true_peak", "preserve_dynamics"];
 const EXPORT_KEYS: &[&str] = &["path", "format", "bitrate_kbps"];
-const CHAIN_KEYS: &[&str] = &["hpf_hz", "deess_freq_hz", "deess_range_db", "comp_ratio", "comp_threshold_db", "comp_makeup_db", "reverb_send_db", "delay_send_db", "brighten", "presence_db", "presence_hz"];
+const CHAIN_KEYS: &[&str] = &[
+    "hpf_hz",
+    "deess_freq_hz",
+    "deess_range_db",
+    "comp_ratio",
+    "comp_threshold_db",
+    "comp_makeup_db",
+    "reverb_send_db",
+    "delay_send_db",
+    "brighten",
+    "presence_db",
+    "presence_hz",
+];
 
-fn unknown_keys(v: &Value, path: &str, known: &[&str], alias: &[(&str, &str)], out: &mut Vec<Problem>) {
+fn unknown_keys(
+    v: &Value,
+    path: &str,
+    known: &[&str],
+    alias: &[(&str, &str)],
+    out: &mut Vec<Problem>,
+) {
     if let Some(m) = v.as_object() {
         for k in m.keys() {
             if !known.contains(&k.as_str()) {
-                out.push(p(format!("{path}/{k}"), format!("'{k}' is not a field here"), did_you_mean(k, known, alias)));
+                out.push(p(
+                    format!("{path}/{k}"),
+                    format!("'{k}' is not a field here"),
+                    did_you_mean(k, known, alias),
+                ));
             }
         }
     }
@@ -552,7 +727,10 @@ fn unknown_keys(v: &Value, path: &str, known: &[&str], alias: &[(&str, &str)], o
 pub fn split_key(k: &str) -> (String, Option<String>) {
     let k = k.trim();
     if let Some((r, s)) = k.split_once(char::is_whitespace) {
-        return (r.trim().to_string(), Some(s.trim().to_lowercase().replace(' ', "_")));
+        return (
+            r.trim().to_string(),
+            Some(s.trim().to_lowercase().replace(' ', "_")),
+        );
     }
     if k.len() >= 2 && k.ends_with('m') && !k.ends_with("dim") {
         return (k[..k.len() - 1].to_string(), Some("minor".into()));
@@ -570,23 +748,85 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
     }
     unknown_keys(v, "", TOP_KEYS, TOP_ALIAS, &mut out);
     for (i, s) in v["structure"].as_array().into_iter().flatten().enumerate() {
-        unknown_keys(s, &format!("/structure/{i}"), SECTION_KEYS, &[("type", "kind"), ("length", "bars"), ("label", "name")], &mut out);
+        unknown_keys(
+            s,
+            &format!("/structure/{i}"),
+            SECTION_KEYS,
+            &[("type", "kind"), ("length", "bars"), ("label", "name")],
+            &mut out,
+        );
     }
-    unknown_keys(&v["vocal"], "/vocal", VOCAL_KEYS, &[("path", "file"), ("take", "file"), ("phrase_map", "phrases"), ("gain", "gain_db")], &mut out);
-    for (i, s) in v["vocal"]["phrases"].as_array().into_iter().flatten().enumerate() {
+    unknown_keys(
+        &v["vocal"],
+        "/vocal",
+        VOCAL_KEYS,
+        &[
+            ("path", "file"),
+            ("take", "file"),
+            ("phrase_map", "phrases"),
+            ("gain", "gain_db"),
+        ],
+        &mut out,
+    );
+    for (i, s) in v["vocal"]["phrases"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
         if let Some(m) = s.as_object() {
             // phrase maps from other tools carry their own notes (err, words...): kept, ignored
             for k in m.keys() {
-                if !PHRASE_KEYS.contains(&k.as_str()) && closest(k, PHRASE_KEYS.iter().copied()).map(|c| lev(k, c) <= 2 && k.len() > 3).unwrap_or(false) {
-                    out.push(p(format!("/vocal/phrases/{i}/{k}"), format!("'{k}' looks like a typo"), did_you_mean(k, PHRASE_KEYS, &[])));
+                if !PHRASE_KEYS.contains(&k.as_str())
+                    && closest(k, PHRASE_KEYS.iter().copied())
+                        .map(|c| lev(k, c) <= 2 && k.len() > 3)
+                        .unwrap_or(false)
+                {
+                    out.push(p(
+                        format!("/vocal/phrases/{i}/{k}"),
+                        format!("'{k}' looks like a typo"),
+                        did_you_mean(k, PHRASE_KEYS, &[]),
+                    ));
                 }
             }
         }
     }
-    unknown_keys(&v["vocal"]["chain"], "/vocal/chain", CHAIN_KEYS, &[], &mut out);
-    unknown_keys(&v["mix"], "/mix", MIX_KEYS, &[("vocal_db", "vocal_over_beat_db")], &mut out);
-    unknown_keys(&v["master"], "/master", MASTER_KEYS, &[("tp", "true_peak"), ("ceiling", "true_peak"), ("loudness", "lufs")], &mut out);
-    unknown_keys(&v["export"], "/export", EXPORT_KEYS, &[("file", "path"), ("out", "path"), ("bitrate", "bitrate_kbps")], &mut out);
+    unknown_keys(
+        &v["vocal"]["chain"],
+        "/vocal/chain",
+        CHAIN_KEYS,
+        &[],
+        &mut out,
+    );
+    unknown_keys(
+        &v["mix"],
+        "/mix",
+        MIX_KEYS,
+        &[("vocal_db", "vocal_over_beat_db")],
+        &mut out,
+    );
+    unknown_keys(
+        &v["master"],
+        "/master",
+        MASTER_KEYS,
+        &[
+            ("tp", "true_peak"),
+            ("ceiling", "true_peak"),
+            ("loudness", "lufs"),
+        ],
+        &mut out,
+    );
+    unknown_keys(
+        &v["export"],
+        "/export",
+        EXPORT_KEYS,
+        &[
+            ("file", "path"),
+            ("out", "path"),
+            ("bitrate", "bitrate_kbps"),
+        ],
+        &mut out,
+    );
     if !out.is_empty() {
         return (None, out);
     }
@@ -600,8 +840,27 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
     // genre
     if let Some(g) = &spec.genre {
         if crate::producer::playbook(g).is_err() {
-            let names: Vec<&str> = crate::producer::playbooks().iter().map(|b| b.name.as_str()).collect();
-            out.push(p("/genre", format!("'{g}' is not a genre this engine knows"), did_you_mean(g, &names, &[("desi", "desi_hiphop"), ("punjabi", "punjabi_party"), ("bhangra", "punjabi_party"), ("honey", "punjabi_party"), ("party", "punjabi_party"), ("hiphop", "boom_bap"), ("hip_hop", "boom_bap")])));
+            let names: Vec<&str> = crate::producer::playbooks()
+                .iter()
+                .map(|b| b.name.as_str())
+                .collect();
+            out.push(p(
+                "/genre",
+                format!("'{g}' is not a genre this engine knows"),
+                did_you_mean(
+                    g,
+                    &names,
+                    &[
+                        ("desi", "desi_hiphop"),
+                        ("punjabi", "punjabi_party"),
+                        ("bhangra", "punjabi_party"),
+                        ("honey", "punjabi_party"),
+                        ("party", "punjabi_party"),
+                        ("hiphop", "boom_bap"),
+                        ("hip_hop", "boom_bap"),
+                    ],
+                ),
+            ));
         }
     }
     if spec.genre.is_none() && spec.prompt.trim().is_empty() {
@@ -609,14 +868,22 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
     }
     if let Some(b) = spec.bpm {
         if !(50.0..=200.0).contains(&b) {
-            out.push(p("/bpm", format!("{b} is outside 50..200"), "use the song's tempo, e.g. 100 for desi hip-hop or 140 for trap"));
+            out.push(p(
+                "/bpm",
+                format!("{b} is outside 50..200"),
+                "use the song's tempo, e.g. 100 for desi hip-hop or 140 for trap",
+            ));
         }
     }
     let mut scale = spec.scale.clone();
     if let Some(k) = &spec.key {
         let (root, sc) = split_key(k);
         if crate::theory::pitch_class(&root).is_err() {
-            out.push(p("/key", format!("'{k}' has no readable root note"), "use a note name: \"D\", \"F#\", \"Bb\", or \"D minor\""));
+            out.push(p(
+                "/key",
+                format!("'{k}' has no readable root note"),
+                "use a note name: \"D\", \"F#\", \"Bb\", or \"D minor\"",
+            ));
         }
         if scale.is_none() {
             scale = sc;
@@ -625,25 +892,58 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
     if let Some(s) = &scale {
         if crate::theory::scale_intervals(s).is_err() {
             let names: Vec<&str> = crate::theory::SCALES.iter().map(|x| x.0).collect();
-            out.push(p(if spec.scale.is_some() { "/scale" } else { "/key" }, format!("'{s}' is not a scale"), did_you_mean(s, &names, &[("min", "minor"), ("maj", "major")])));
+            out.push(p(
+                if spec.scale.is_some() {
+                    "/scale"
+                } else {
+                    "/key"
+                },
+                format!("'{s}' is not a scale"),
+                did_you_mean(s, &names, &[("min", "minor"), ("maj", "major")]),
+            ));
         }
     }
     if let Some(d) = &spec.density {
         if !["sparse", "balanced", "dense"].contains(&d.as_str()) {
-            out.push(p("/density", format!("'{d}' is not a density"), "use sparse, balanced or dense"));
+            out.push(p(
+                "/density",
+                format!("'{d}' is not a density"),
+                "use sparse, balanced or dense",
+            ));
         }
     }
     // structure
     let names = spec.section_names();
     for (i, s) in spec.structure.iter().enumerate() {
         if !SECTION_KINDS.contains(&s.kind.trim().to_lowercase().as_str()) {
-            out.push(p(format!("/structure/{i}/kind"), format!("'{}' is not a section kind", s.kind), did_you_mean(&s.kind, SECTION_KINDS, &[("refrain", "hook"), ("break", "breakdown"), ("end", "outro"), ("start", "intro")])));
+            out.push(p(
+                format!("/structure/{i}/kind"),
+                format!("'{}' is not a section kind", s.kind),
+                did_you_mean(
+                    &s.kind,
+                    SECTION_KINDS,
+                    &[
+                        ("refrain", "hook"),
+                        ("break", "breakdown"),
+                        ("end", "outro"),
+                        ("start", "intro"),
+                    ],
+                ),
+            ));
         }
         if s.bars == 0 || s.bars > 64 {
-            out.push(p(format!("/structure/{i}/bars"), format!("{} bars", s.bars), "use 1..64 (4, 8 or 16 are usual)"));
+            out.push(p(
+                format!("/structure/{i}/bars"),
+                format!("{} bars", s.bars),
+                "use 1..64 (4, 8 or 16 are usual)",
+            ));
         }
         if names.iter().filter(|n| **n == names[i]).count() > 1 {
-            out.push(p(format!("/structure/{i}/name"), format!("the name '{}' is used twice", names[i]), "give each section its own name, or leave names out"));
+            out.push(p(
+                format!("/structure/{i}/name"),
+                format!("the name '{}' is used twice", names[i]),
+                "give each section its own name, or leave names out",
+            ));
         }
     }
     if !spec.structure.is_empty() && spec.structure.len() < 2 {
@@ -652,7 +952,26 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
     // instruments
     for (role, ins) in &spec.instruments {
         if !crate::creative::ROLES.contains(&role.as_str()) {
-            out.push(p(format!("/instruments/{role}"), format!("'{role}' is not a role"), did_you_mean(role, crate::creative::ROLES, &[("melody", "lead"), ("chords", "harmony"), ("keys", "harmony"), ("pad", "texture"), ("808", "bass"), ("hats", "hat"), ("drums", "kick"), ("dhol", "bayan"), ("dagga", "bayan"), ("tilli", "tabla")])));
+            out.push(p(
+                format!("/instruments/{role}"),
+                format!("'{role}' is not a role"),
+                did_you_mean(
+                    role,
+                    crate::creative::ROLES,
+                    &[
+                        ("melody", "lead"),
+                        ("chords", "harmony"),
+                        ("keys", "harmony"),
+                        ("pad", "texture"),
+                        ("808", "bass"),
+                        ("hats", "hat"),
+                        ("drums", "kick"),
+                        ("dhol", "bayan"),
+                        ("dagga", "bayan"),
+                        ("tilli", "tabla"),
+                    ],
+                ),
+            ));
             continue;
         }
         match ins {
@@ -662,21 +981,38 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
                         out.push(p(format!("/instruments/{role}"), format!("no recorded instrument '{id}' in the catalog"), "search_instruments (instrument category) lists the ids, e.g. catalog:euterpea_harmonium"));
                     }
                 } else if crate::instruments::preset(n).is_none() {
-                    let names: Vec<&str> = crate::instruments::PRESETS.iter().map(|x| x.0).collect();
-                    out.push(p(format!("/instruments/{role}"), format!("'{n}' is not an instrument preset"), did_you_mean(n, &names, &[])));
+                    let names: Vec<&str> =
+                        crate::instruments::PRESETS.iter().map(|x| x.0).collect();
+                    out.push(p(
+                        format!("/instruments/{role}"),
+                        format!("'{n}' is not an instrument preset"),
+                        did_you_mean(n, &names, &[]),
+                    ));
                 }
             }
             InstrumentSpec::Samples { samples, gain_db } => {
                 if samples.is_empty() {
-                    out.push(p(format!("/instruments/{role}/samples"), "no files", "give one or more wav/mp3 one-shots (several = round robin)"));
+                    out.push(p(
+                        format!("/instruments/{role}/samples"),
+                        "no files",
+                        "give one or more wav/mp3 one-shots (several = round robin)",
+                    ));
                 }
                 for (i, f) in samples.iter().enumerate() {
                     if !Path::new(f).is_file() {
-                        out.push(p(format!("/instruments/{role}/samples/{i}"), format!("'{f}' is not a file on this machine"), "give the full path of a wav/mp3 one-shot"));
+                        out.push(p(
+                            format!("/instruments/{role}/samples/{i}"),
+                            format!("'{f}' is not a file on this machine"),
+                            "give the full path of a wav/mp3 one-shot",
+                        ));
                     }
                 }
                 if !(-24.0..=24.0).contains(gain_db) {
-                    out.push(p(format!("/instruments/{role}/gain_db"), format!("{gain_db} dB"), "use -24..24"));
+                    out.push(p(
+                        format!("/instruments/{role}/gain_db"),
+                        format!("{gain_db} dB"),
+                        "use -24..24",
+                    ));
                 }
             }
         }
@@ -684,51 +1020,99 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
     // vocal
     if let Some(vs) = &spec.vocal {
         if !Path::new(&vs.file).is_file() {
-            out.push(p("/vocal/file", format!("'{}' is not a file on this machine", vs.file), "give the full path of a wav/mp3/flac take"));
+            out.push(p(
+                "/vocal/file",
+                format!("'{}' is not a file on this machine", vs.file),
+                "give the full path of a wav/mp3/flac take",
+            ));
         }
         if vs.track.trim().is_empty() {
-            out.push(p("/vocal/track", "empty track name", "leave it out (default 'vocal')"));
+            out.push(p(
+                "/vocal/track",
+                "empty track name",
+                "leave it out (default 'vocal')",
+            ));
         }
         for (path, prob, fix) in vs.chain.problems("/vocal/chain") {
             out.push(p(path, prob, fix));
         }
         if !(-24.0..=24.0).contains(&vs.gain_db) {
-            out.push(p("/vocal/gain_db", format!("{} dB", vs.gain_db), "use -24..24; the balance loop already sets the level"));
+            out.push(p(
+                "/vocal/gain_db",
+                format!("{} dB", vs.gain_db),
+                "use -24..24; the balance loop already sets the level",
+            ));
         }
         if let Some(ss) = &vs.start_section {
             if !spec.structure.is_empty() && !names.contains(ss) {
-                out.push(p("/vocal/start_section", format!("no section '{ss}'"), format!("use one of: {}", names.join(", "))));
+                out.push(p(
+                    "/vocal/start_section",
+                    format!("no section '{ss}'"),
+                    format!("use one of: {}", names.join(", ")),
+                ));
             }
         }
         for (i, ph) in vs.phrases.iter().enumerate() {
             let base = format!("/vocal/phrases/{i}");
             if ph.src_s < 0.0 {
-                out.push(p(format!("{base}/src_s"), "negative start in the take", "seconds from the start of the take, >= 0"));
+                out.push(p(
+                    format!("{base}/src_s"),
+                    "negative start in the take",
+                    "seconds from the start of the take, >= 0",
+                ));
             }
             let len = ph.len_s.or(ph.end_s.map(|e| e - ph.src_s));
             match len {
-                None => out.push(p(base.clone(), "no length", "give len_s (seconds) or end_s (seconds in the take)")),
-                Some(l) if l <= 0.05 => out.push(p(format!("{base}/len_s"), format!("{l:.2} s is too short"), "len_s > 0.05, or end_s after src_s")),
+                None => out.push(p(
+                    base.clone(),
+                    "no length",
+                    "give len_s (seconds) or end_s (seconds in the take)",
+                )),
+                Some(l) if l <= 0.05 => out.push(p(
+                    format!("{base}/len_s"),
+                    format!("{l:.2} s is too short"),
+                    "len_s > 0.05, or end_s after src_s",
+                )),
                 _ => {}
             }
             let placed = ph.section.is_some() || ph.start_beat.is_some() || ph.at_s.is_some();
             if !placed {
-                out.push(p(base.clone(), "no position in the song", "give section (+ bar, beat), or start_beat, or at_s"));
+                out.push(p(
+                    base.clone(),
+                    "no position in the song",
+                    "give section (+ bar, beat), or start_beat, or at_s",
+                ));
             }
             if let Some(sec) = &ph.section {
                 if spec.structure.is_empty() {
-                    out.push(p(format!("{base}/section"), "phrases name sections but the spec has no structure", "add \"structure\", or place phrases with start_beat / at_s"));
+                    out.push(p(
+                        format!("{base}/section"),
+                        "phrases name sections but the spec has no structure",
+                        "add \"structure\", or place phrases with start_beat / at_s",
+                    ));
                 } else if let Err(e) = resolve_section(&spec, &names, sec) {
-                    out.push(p(format!("{base}/section"), e.to_string(), format!("use one of: {}", names.join(", "))));
+                    out.push(p(
+                        format!("{base}/section"),
+                        e.to_string(),
+                        format!("use one of: {}", names.join(", ")),
+                    ));
                 } else if let Ok(j) = resolve_section(&spec, &names, sec) {
                     let bars = spec.structure[j].bars as f32;
                     let bar = ph.bar.unwrap_or(1.0);
                     if bar < 0.0 || bar > bars {
-                        out.push(p(format!("{base}/bar"), format!("bar {bar} but '{}' has {bars} bars", names[j]), format!("use 1..{bars} (0 = the bar before, for a pickup)")));
+                        out.push(p(
+                            format!("{base}/bar"),
+                            format!("bar {bar} but '{}' has {bars} bars", names[j]),
+                            format!("use 1..{bars} (0 = the bar before, for a pickup)"),
+                        ));
                     }
                     let beat = ph.beat.unwrap_or(1.0);
                     if !(0.0..5.0).contains(&beat) {
-                        out.push(p(format!("{base}/beat"), format!("beat {beat}"), "use 1..4.99 in 4/4 (1 = the downbeat, 4.5 = the and of 4)"));
+                        out.push(p(
+                            format!("{base}/beat"),
+                            format!("beat {beat}"),
+                            "use 1..4.99 in 4/4 (1 = the downbeat, 4.5 = the and of 4)",
+                        ));
                     }
                 }
             }
@@ -736,31 +1120,68 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
     }
     for (role, db) in &spec.mix.levels {
         if !crate::creative::ROLES.contains(&role.as_str()) {
-            out.push(p(format!("/mix/levels/{role}"), format!("'{role}' is not a role"), did_you_mean(role, crate::creative::ROLES, &[("melody", "lead"), ("chords", "harmony"), ("808", "bass"), ("hats", "hat"), ("dhol", "bayan")])));
+            out.push(p(
+                format!("/mix/levels/{role}"),
+                format!("'{role}' is not a role"),
+                did_you_mean(
+                    role,
+                    crate::creative::ROLES,
+                    &[
+                        ("melody", "lead"),
+                        ("chords", "harmony"),
+                        ("808", "bass"),
+                        ("hats", "hat"),
+                        ("dhol", "bayan"),
+                    ],
+                ),
+            ));
         } else if !(-12.0..=12.0).contains(db) || !db.is_finite() {
-            out.push(p(format!("/mix/levels/{role}"), format!("{db} dB"), "a fader offset in -12..12 dB"));
+            out.push(p(
+                format!("/mix/levels/{role}"),
+                format!("{db} dB"),
+                "a fader offset in -12..12 dB",
+            ));
         }
     }
     // which parts a key names (a track name or a role) is known only once
     // the beat is composed: `apply_part_eq` checks it there
     for (part, pe) in &spec.mix.part_eq {
         if part.trim().is_empty() {
-            out.push(p("/mix/part_eq", "an empty part name", "a track name (e.g. chords) or a role (e.g. harmony), or vocal"));
+            out.push(p(
+                "/mix/part_eq",
+                "an empty part name",
+                "a track name (e.g. chords) or a role (e.g. harmony), or vocal",
+            ));
         } else {
             pe.problems(&format!("/mix/part_eq/{part}"), &mut out);
         }
     }
     for (sec, db) in &spec.mix.section_gain_db {
         if sec.trim().is_empty() {
-            out.push(p("/mix/section_gain_db", "an empty section name", "a section kind (verse, hook, ...) or name (hook2)"));
+            out.push(p(
+                "/mix/section_gain_db",
+                "an empty section name",
+                "a section kind (verse, hook, ...) or name (hook2)",
+            ));
         } else if !(-6.0..=6.0).contains(db) || !db.is_finite() {
-            out.push(p(format!("/mix/section_gain_db/{sec}"), format!("{db} dB"), "a section gain in -6..6 dB"));
+            out.push(p(
+                format!("/mix/section_gain_db/{sec}"),
+                format!("{db} dB"),
+                "a section gain in -6..6 dB",
+            ));
         }
     }
     if let Some(f) = spec.mix.air_floor_db {
         let ceil = Targets::default().air_rel_lufs_db[1];
         if !(-32.0..=ceil - 0.4).contains(&f) {
-            out.push(p("/mix/air_floor_db", format!("{f} dB"), format!("a 5-10 kHz floor in -32..{} dB (minus LUFS; the ceiling is {ceil})", ceil - 0.4)));
+            out.push(p(
+                "/mix/air_floor_db",
+                format!("{f} dB"),
+                format!(
+                    "a 5-10 kHz floor in -32..{} dB (minus LUFS; the ceiling is {ceil})",
+                    ceil - 0.4
+                ),
+            ));
         }
     }
     if let Some(ml) = &spec.mix.master_lift {
@@ -769,28 +1190,56 @@ pub fn validate(v: &Value) -> (Option<SongSpec>, Vec<Problem>) {
         }
     }
     if !(1..=6).contains(&spec.mix.balance_passes) {
-        out.push(p("/mix/balance_passes", format!("{}", spec.mix.balance_passes), "use 1..6"));
+        out.push(p(
+            "/mix/balance_passes",
+            format!("{}", spec.mix.balance_passes),
+            "use 1..6",
+        ));
     }
-    if !(0.0..=20.0).contains(&spec.mix.vocal_over_beat_db) || spec.mix.vocal_over_beat_max_db <= spec.mix.vocal_over_beat_db + 1.0 {
+    if !(0.0..=20.0).contains(&spec.mix.vocal_over_beat_db)
+        || spec.mix.vocal_over_beat_max_db <= spec.mix.vocal_over_beat_db + 1.0
+    {
         out.push(p("/mix/vocal_over_beat_db", format!("{}..{} dB", spec.mix.vocal_over_beat_db, spec.mix.vocal_over_beat_max_db), "a floor in 0..20 and a max at least 2 dB above it (default 11..17: a user vocal sits on top)"));
     }
     if !(-20.0..=-6.0).contains(&spec.master.lufs) {
-        out.push(p("/master/lufs", format!("{} LUFS", spec.master.lufs), "use -20..-6 (-14 streaming-safe, -10 loud rap, -8 very loud)"));
+        out.push(p(
+            "/master/lufs",
+            format!("{} LUFS", spec.master.lufs),
+            "use -20..-6 (-14 streaming-safe, -10 loud rap, -8 very loud)",
+        ));
     }
     if !(-6.0..=-0.1).contains(&spec.master.true_peak) {
-        out.push(p("/master/true_peak", format!("{} dBTP", spec.master.true_peak), "use -6..-0.1 (-1 is the usual delivery ceiling)"));
+        out.push(p(
+            "/master/true_peak",
+            format!("{} dBTP", spec.master.true_peak),
+            "use -6..-0.1 (-1 is the usual delivery ceiling)",
+        ));
     }
     if !(0.0..=1.0).contains(&spec.master.preserve_dynamics) {
-        out.push(p("/master/preserve_dynamics", format!("{}", spec.master.preserve_dynamics), "use 0..1 (0.8 default)"));
+        out.push(p(
+            "/master/preserve_dynamics",
+            format!("{}", spec.master.preserve_dynamics),
+            "use 0..1 (0.8 default)",
+        ));
     }
     if !["mp3", "wav", "flac"].contains(&spec.export.format.as_str()) {
-        out.push(p("/export/format", format!("'{}'", spec.export.format), "use mp3, wav or flac"));
+        out.push(p(
+            "/export/format",
+            format!("'{}'", spec.export.format),
+            "use mp3, wav or flac",
+        ));
     }
     if let Some(path) = &spec.export.path {
-        let parent = Path::new(path).parent().filter(|x| !x.as_os_str().is_empty());
+        let parent = Path::new(path)
+            .parent()
+            .filter(|x| !x.as_os_str().is_empty());
         if let Some(d) = parent {
             if !d.is_dir() {
-                out.push(p("/export/path", format!("the folder {} does not exist", d.display()), "use an existing folder, or leave path out"));
+                out.push(p(
+                    "/export/path",
+                    format!("the folder {} does not exist", d.display()),
+                    "use an existing folder, or leave path out",
+                ));
             }
         }
     }
@@ -803,7 +1252,9 @@ fn resolve_section(spec: &SongSpec, names: &[String], key: &str) -> Result<usize
         return Ok(i);
     }
     let k = canon_kind(key);
-    let idx: Vec<usize> = (0..spec.structure.len()).filter(|&i| canon_kind(&spec.structure[i].kind) == k).collect();
+    let idx: Vec<usize> = (0..spec.structure.len())
+        .filter(|&i| canon_kind(&spec.structure[i].kind) == k)
+        .collect();
     match idx.len() {
         1 => Ok(idx[0]),
         0 => bail!("no section '{key}'"),
@@ -812,8 +1263,22 @@ fn resolve_section(spec: &SongSpec, names: &[String], key: &str) -> Result<usize
 }
 
 fn problems_err(probs: &[Problem]) -> anyhow::Error {
-    let lines: Vec<String> = probs.iter().map(|x| format!("{}: {} -> {}", if x.path.is_empty() { "/" } else { &x.path }, x.problem, x.fix)).collect();
-    anyhow!("the song spec has {} problem(s), nothing was changed:\n- {}", probs.len(), lines.join("\n- "))
+    let lines: Vec<String> = probs
+        .iter()
+        .map(|x| {
+            format!(
+                "{}: {} -> {}",
+                if x.path.is_empty() { "/" } else { &x.path },
+                x.problem,
+                x.fix
+            )
+        })
+        .collect();
+    anyhow!(
+        "the song spec has {} problem(s), nothing was changed:\n- {}",
+        probs.len(),
+        lines.join("\n- ")
+    )
 }
 
 // ------------------------------------------------------------------- building
@@ -834,7 +1299,9 @@ pub fn scope_of(path: &str) -> Scope {
     let head = p.split('/').next().unwrap_or("");
     match head {
         // role levels are set when the beat is composed
-        "mix" if p == "mix/levels" || p.starts_with("mix/levels/") || p == "mix/builds" => Scope::Full,
+        "mix" if p == "mix/levels" || p.starts_with("mix/levels/") || p == "mix/builds" => {
+            Scope::Full
+        }
         // part EQs go on the parts when they are built (the vocal's after its chain)
         "mix" if p == "mix/part_eq" || p.starts_with("mix/part_eq/") => Scope::Full,
         "mix" | "master" | "export" | "title" => Scope::Mix,
@@ -861,16 +1328,31 @@ fn vocal_tempo(spec: &SongSpec, log: &mut Vec<String>) -> Option<f32> {
     let x = crate::samples::decode_file(Path::new(&vs.file)).ok()?;
     // search the wide range (a sung take's real pulse can sit anywhere in
     // it); the genre's own range only decides between half/double-time ties
-    let genre = spec.genre.as_deref().and_then(|g| crate::producer::playbook(g).ok()).map(|pb| (pb.bpm[0], pb.bpm[1]));
+    let genre = spec
+        .genre
+        .as_deref()
+        .and_then(|g| crate::producer::playbook(g).ok())
+        .map(|pb| (pb.bpm[0], pb.bpm[1]));
     let (lo, hi) = crate::vocal_flex::TEMPO_RANGE;
     let pref = genre.map(|(a, b)| (a * b).sqrt()).unwrap_or(96.0);
     let ph = crate::vocal_flex::phrases(&x, 0.3, None);
     let on = crate::vocal_flex::syllable_onsets(&x, 0.5, 0.09);
-    let groups: Vec<Vec<f32>> = ph.iter().map(|p| on.iter().filter(|&&t| t >= p.start_s && t < p.end_s).map(|&t| t - p.start_s).collect()).collect();
-    let (c, folded) = crate::vocal_flex::fold_tempo(crate::vocal_flex::lock_tempo(&groups, lo, hi, 0.25), pref);
+    let groups: Vec<Vec<f32>> = ph
+        .iter()
+        .map(|p| {
+            on.iter()
+                .filter(|&&t| t >= p.start_s && t < p.end_s)
+                .map(|&t| t - p.start_s)
+                .collect()
+        })
+        .collect();
+    let (c, folded) =
+        crate::vocal_flex::fold_tempo(crate::vocal_flex::lock_tempo(&groups, lo, hi, 0.25), pref);
     let (b, s) = *c.first()?;
     let b = (b * 4.0).round() / 4.0;
-    let fold = folded.map(|f| format!("; {f} scored the same, folded to the {pref:.0} bpm side")).unwrap_or_default();
+    let fold = folded
+        .map(|f| format!("; {f} scored the same, folded to the {pref:.0} bpm side"))
+        .unwrap_or_default();
     log.push(format!("tempo {b} bpm picked from the vocal (lock score {:.2} over {} phrases, searched {lo:.0}-{hi:.0}{fold}); give \"bpm\" to override", s, ph.len()));
     Some(b)
 }
@@ -879,7 +1361,14 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
     let names = spec.section_names();
     let mut intent = Map::new();
     if !spec.structure.is_empty() {
-        intent.insert("form".into(), json!(spec.structure.iter().map(|s| json!({"kind": canon_kind(&s.kind), "bars": s.bars})).collect::<Vec<_>>()));
+        intent.insert(
+            "form".into(),
+            json!(spec
+                .structure
+                .iter()
+                .map(|s| json!({"kind": canon_kind(&s.kind), "bars": s.bars}))
+                .collect::<Vec<_>>()),
+        );
     }
     let presets: BTreeMap<&String, &String> = spec
         .instruments
@@ -905,7 +1394,10 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
     intent.insert("target_lufs".into(), json!(spec.master.lufs));
     let (root, kscale) = spec.key.as_deref().map(split_key).unzip();
     let brief = if spec.prompt.trim().is_empty() {
-        format!("{} song", spec.genre.clone().unwrap_or_default().replace('_', " "))
+        format!(
+            "{} song",
+            spec.genre.clone().unwrap_or_default().replace('_', " ")
+        )
     } else {
         spec.prompt.clone()
     };
@@ -940,7 +1432,10 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
                     kept.push(s);
                     j += 1;
                 } else {
-                    log.push(format!("left out a planned extra '{}' section: the structure is the one asked for", s.kind));
+                    log.push(format!(
+                        "left out a planned extra '{}' section: the structure is the one asked for",
+                        s.kind
+                    ));
                 }
             }
             if kept.len() != spec.structure.len() {
@@ -950,7 +1445,10 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
         }
         for (i, s) in plan.sections.iter_mut().enumerate() {
             if s.bars != spec.structure[i].bars {
-                log.push(format!("kept {} at {} bars (a wildcard wanted {})", names[i], spec.structure[i].bars, s.bars));
+                log.push(format!(
+                    "kept {} at {} bars (a wildcard wanted {})",
+                    names[i], spec.structure[i].bars, s.bars
+                ));
                 s.bars = spec.structure[i].bars;
             }
             s.name = names[i].clone();
@@ -972,12 +1470,19 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
     // loudness and peaks belong to delivery: a limiter in the project would
     // flatten the drops before the mix rules see them
     e.project.master_effects.retain(|f| {
-        let t = serde_json::to_value(f).ok().and_then(|v| v["type"].as_str().map(String::from)).unwrap_or_default();
+        let t = serde_json::to_value(f)
+            .ok()
+            .and_then(|v| v["type"].as_str().map(String::from))
+            .unwrap_or_default();
         !["limiter", "gain", "maximizer", "soft_clipper", "clipper"].contains(&t.as_str())
     });
     log.push(format!(
         "beat: {} {} bpm {} {}, {} sections, seed {seed}",
-        plan.genre, plan.bpm, plan.key, plan.scale, plan.sections.len()
+        plan.genre,
+        plan.bpm,
+        plan.key,
+        plan.scale,
+        plan.sections.len()
     ));
     Ok(())
 }
@@ -986,7 +1491,12 @@ fn compose_beat(e: &mut Engine, spec: &SongSpec, seed: u64, log: &mut Vec<String
 /// Pre-delivery lift from the arrangement: verses short of the lift thin
 /// their layers (into `spec`'s energy, which every delivery round re-applies),
 /// down to -6 dB. Nothing is asked of the master's volume.
-fn arrangement_lift(e: &mut Engine, spec: &mut SongSpec, voice: Option<&str>, t: &Targets) -> Result<Value> {
+fn arrangement_lift(
+    e: &mut Engine,
+    spec: &mut SongSpec,
+    voice: Option<&str>,
+    t: &Targets,
+) -> Result<Value> {
     let r1 = |x: f32| (x * 10.0).round() / 10.0;
     let m = mix_rules::measure_sections(e, voice)?;
     let Some(l) = mix_rules::lift_db(&m) else {
@@ -1006,11 +1516,21 @@ fn arrangement_lift(e: &mut Engine, spec: &mut SongSpec, voice: Option<&str>, t:
         spec.structure = structure_from_arrangement(&e.project);
     }
     let from = if derived { "arrangement" } else { "spec" };
-    if !spec.structure.iter().any(|s| canon_kind(&s.kind) == "verse") {
-        return Ok(json!({"lift_db": r1(l), "changed": false, "why": "no verse section to thin", "sections_from": from}));
+    if !spec
+        .structure
+        .iter()
+        .any(|s| canon_kind(&s.kind) == "verse")
+    {
+        return Ok(
+            json!({"lift_db": r1(l), "changed": false, "why": "no verse section to thin", "sections_from": from}),
+        );
     }
     let mut moved = Vec::new();
-    for s in spec.structure.iter_mut().filter(|s| canon_kind(&s.kind) == "verse") {
+    for s in spec
+        .structure
+        .iter_mut()
+        .filter(|s| canon_kind(&s.kind) == "verse")
+    {
         let cur = s.energy.unwrap_or(0.0);
         let next = (cur - need).max(-6.0);
         if next < cur - 0.05 {
@@ -1019,12 +1539,16 @@ fn arrangement_lift(e: &mut Engine, spec: &mut SongSpec, voice: Option<&str>, t:
         }
     }
     if moved.is_empty() {
-        return Ok(json!({"lift_db": r1(l), "changed": false, "why": "the verses are as thin as allowed (-6 dB)", "sections_from": from}));
+        return Ok(
+            json!({"lift_db": r1(l), "changed": false, "why": "the verses are as thin as allowed (-6 dB)", "sections_from": from}),
+        );
     }
     let applied = apply_section_energy(e, spec, voice)?;
     let thinned = applied.as_array().map_or(0, |a| a.len());
     let m2 = mix_rules::measure_sections(e, voice)?;
-    Ok(json!({"lift_db_before": r1(l), "verse_energy_db": moved, "sections_thinned": thinned, "sections_from": from, "lift_db": mix_rules::lift_db(&m2).map(r1), "changed": thinned > 0}))
+    Ok(
+        json!({"lift_db_before": r1(l), "verse_energy_db": moved, "sections_thinned": thinned, "sections_from": from, "lift_db": mix_rules::lift_db(&m2).map(r1), "changed": thinned > 0}),
+    )
 }
 
 /// The song's form as the arrangement plays it (one section per entry,
@@ -1032,7 +1556,12 @@ fn arrangement_lift(e: &mut Engine, spec: &mut SongSpec, voice: Option<&str>, t:
 fn structure_from_arrangement(p: &crate::project::Project) -> Vec<SectionSpec> {
     mix_rules::section_spans(p)
         .into_iter()
-        .map(|sp| SectionSpec { kind: sp.kind.clone(), bars: ((sp.end_beat - sp.start_beat) / 4.0).round().max(1.0) as u32, name: Some(sp.name), energy: None })
+        .map(|sp| SectionSpec {
+            kind: sp.kind.clone(),
+            bars: ((sp.end_beat - sp.start_beat) / 4.0).round().max(1.0) as u32,
+            name: Some(sp.name),
+            energy: None,
+        })
         .collect()
 }
 
@@ -1042,7 +1571,15 @@ fn structure_from_arrangement(p: &crate::project::Project) -> Vec<SectionSpec> {
 /// `state` holds (ride, ride + offset) across calls: a lane still equal to
 /// what we wrote is not offset twice, and a lane the balance re-wrote from
 /// ours has the offset taken out first.
-fn apply_vocal_section_offset(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, state: &mut Option<(Vec<crate::automation::AutoPoint>, Vec<crate::automation::AutoPoint>)>) -> Result<Value> {
+fn apply_vocal_section_offset(
+    e: &mut Engine,
+    spec: &SongSpec,
+    voice: Option<&str>,
+    state: &mut Option<(
+        Vec<crate::automation::AutoPoint>,
+        Vec<crate::automation::AutoPoint>,
+    )>,
+) -> Result<Value> {
     use crate::automation::{AutoPoint, AutomationLane, Curve};
     let Some(v) = voice else { return Ok(json!([])) };
     if spec.mix.section_gain_db.is_empty() {
@@ -1051,28 +1588,81 @@ fn apply_vocal_section_offset(e: &mut Engine, spec: &SongSpec, voice: Option<&st
     let ti = e.project.track_index(v)?;
     let spans = mix_rules::section_spans(&e.project);
     let gain_for = |name: &str, kind: &str| -> f32 {
-        spec.mix.section_gain_db.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).or_else(|| spec.mix.section_gain_db.iter().find(|(k, _)| canon_kind(k) == kind)).map(|(_, g)| g.clamp(-6.0, 6.0)).unwrap_or(0.0)
+        spec.mix
+            .section_gain_db
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .or_else(|| {
+                spec.mix
+                    .section_gain_db
+                    .iter()
+                    .find(|(k, _)| canon_kind(k) == kind)
+            })
+            .map(|(_, g)| g.clamp(-6.0, 6.0))
+            .unwrap_or(0.0)
     };
     // a ride point is stepped one beat before its section
-    let off_at = |beat: f32| -> f32 { spans.iter().filter(|s| s.start_beat <= beat + 1.0 + 1e-3).last().map(|s| gain_for(&s.name, &s.kind)).unwrap_or(0.0) };
-    let cur = e.project.automation.iter().find(|l| l.target == v && l.param == "volume").map(|l| l.points.clone());
+    let off_at = |beat: f32| -> f32 {
+        spans
+            .iter()
+            .rfind(|s| s.start_beat <= beat + 1.0 + 1e-3)
+            .map(|s| gain_for(&s.name, &s.kind))
+            .unwrap_or(0.0)
+    };
+    let cur = e
+        .project
+        .automation
+        .iter()
+        .find(|l| l.target == v && l.param == "volume")
+        .map(|l| l.points.clone());
     let ride: Vec<AutoPoint> = match (cur, state.as_ref()) {
         (Some(c), Some((base, wrote))) if &c == wrote => base.clone(),
-        (Some(c), Some(_)) => c.iter().map(|p| AutoPoint { value: p.value - off_at(p.beat), ..p.clone() }).collect(),
+        (Some(c), Some(_)) => c
+            .iter()
+            .map(|p| AutoPoint {
+                value: p.value - off_at(p.beat),
+                ..p.clone()
+            })
+            .collect(),
         (Some(c), None) => c,
         // no ride (a flat vocal): the fader at every section start
         (None, _) => {
             let f = e.project.tracks[ti].volume_db;
-            spans.iter().enumerate().map(|(i, s)| AutoPoint { beat: if i == 0 { 0.0 } else { (s.start_beat - 1.0).max(0.0) }, value: f, curve: Curve::Step }).collect()
+            spans
+                .iter()
+                .enumerate()
+                .map(|(i, s)| AutoPoint {
+                    beat: if i == 0 {
+                        0.0
+                    } else {
+                        (s.start_beat - 1.0).max(0.0)
+                    },
+                    value: f,
+                    curve: Curve::Step,
+                })
+                .collect()
         }
     };
-    let wrote: Vec<AutoPoint> = ride.iter().map(|p| AutoPoint { value: (p.value + off_at(p.beat)).clamp(-60.0, 24.0), ..p.clone() }).collect();
-    e.project.automation.retain(|l| !(l.target == v && l.param == "volume"));
+    let wrote: Vec<AutoPoint> = ride
+        .iter()
+        .map(|p| AutoPoint {
+            value: (p.value + off_at(p.beat)).clamp(-60.0, 24.0),
+            ..p.clone()
+        })
+        .collect();
+    e.project
+        .automation
+        .retain(|l| !(l.target == v && l.param == "volume"));
     let mut lane = AutomationLane::new(v, "volume");
     lane.points = wrote.clone();
     e.project.automation.push(lane);
     *state = Some((ride, wrote));
-    let done: Vec<Value> = spans.iter().map(|s| (s, gain_for(&s.name, &s.kind))).filter(|(_, g)| g.abs() >= 0.05).map(|(s, g)| json!({"section": s.name, "offset_db": (g * 10.0).round() / 10.0})).collect();
+    let done: Vec<Value> = spans
+        .iter()
+        .map(|s| (s, gain_for(&s.name, &s.kind)))
+        .filter(|(_, g)| g.abs() >= 0.05)
+        .map(|(s, g)| json!({"section": s.name, "offset_db": (g * 10.0).round() / 10.0}))
+        .collect();
     Ok(json!({"track": v, "how": "offset on the vocal's ride lane", "sections": done}))
 }
 
@@ -1085,18 +1675,52 @@ fn apply_section_gain(e: &mut Engine, spec: &SongSpec) -> Result<Value> {
     if spec.mix.section_gain_db.is_empty() {
         return Ok(json!([]));
     }
-    let buses: Vec<String> = e.project.buses.iter().filter(|b| b.output.as_deref().map_or(true, |o| o.is_empty() || o.eq_ignore_ascii_case("master"))).map(|b| b.name.clone()).collect();
+    let buses: Vec<String> = e
+        .project
+        .buses
+        .iter()
+        .filter(|b| {
+            b.output
+                .as_deref()
+                .is_none_or(|o| o.is_empty() || o.eq_ignore_ascii_case("master"))
+        })
+        .map(|b| b.name.clone())
+        .collect();
     if buses.is_empty() {
         return Ok(json!({"skipped": "no bus feeds the master"}));
     }
-    e.project.automation.retain(|l| !(l.param == "volume" && buses.iter().any(|b| b.eq_ignore_ascii_case(&l.target))));
-    let base: Vec<f32> = buses.iter().map(|n| e.project.buses.iter().find(|b| &b.name == n).map(|b| b.volume_db).unwrap_or(0.0)).collect();
+    e.project.automation.retain(|l| {
+        !(l.param == "volume" && buses.iter().any(|b| b.eq_ignore_ascii_case(&l.target)))
+    });
+    let base: Vec<f32> = buses
+        .iter()
+        .map(|n| {
+            e.project
+                .buses
+                .iter()
+                .find(|b| &b.name == n)
+                .map(|b| b.volume_db)
+                .unwrap_or(0.0)
+        })
+        .collect();
     let gain_for = |name: &str, kind: &str| -> Option<f32> {
-        spec.mix.section_gain_db.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).or_else(|| spec.mix.section_gain_db.iter().find(|(k, _)| canon_kind(k) == kind)).map(|(_, g)| g.clamp(-6.0, 6.0))
+        spec.mix
+            .section_gain_db
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .or_else(|| {
+                spec.mix
+                    .section_gain_db
+                    .iter()
+                    .find(|(k, _)| canon_kind(k) == kind)
+            })
+            .map(|(_, g)| g.clamp(-6.0, 6.0))
     };
     let mut done = Vec::new();
     for sp in mix_rules::section_spans(&e.project) {
-        let Some(g) = gain_for(&sp.name, &sp.kind).filter(|g| g.abs() >= 0.05) else { continue };
+        let Some(g) = gain_for(&sp.name, &sp.kind).filter(|g| g.abs() >= 0.05) else {
+            continue;
+        };
         for (b, v) in buses.iter().zip(base.iter()) {
             e.call_nested("set_section_mix", &json!({"section": sp.name, "track": b, "volume_db": v + g, "all_occurrences": false}), "song")?;
         }
@@ -1114,8 +1738,18 @@ fn energy_floor_layer(name: &str) -> bool {
 /// /structure/N/energy: the arrangement layers play `energy` dB softer or
 /// louder in that section (stepped volume lanes built from each track's
 /// current fader, so re-running it after fader moves is exact).
-pub(crate) fn apply_section_energy(e: &mut Engine, spec: &SongSpec, voice: Option<&str>) -> Result<Value> {
-    let want: Vec<(usize, f32)> = spec.structure.iter().enumerate().filter_map(|(i, s)| s.energy.map(|x| (i, x.clamp(-9.0, 6.0)))).filter(|(_, x)| x.abs() >= 0.05).collect();
+pub(crate) fn apply_section_energy(
+    e: &mut Engine,
+    spec: &SongSpec,
+    voice: Option<&str>,
+) -> Result<Value> {
+    let want: Vec<(usize, f32)> = spec
+        .structure
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| s.energy.map(|x| (i, x.clamp(-9.0, 6.0))))
+        .filter(|(_, x)| x.abs() >= 0.05)
+        .collect();
     if want.is_empty() {
         return Ok(json!([]));
     }
@@ -1129,7 +1763,9 @@ pub(crate) fn apply_section_energy(e: &mut Engine, spec: &SongSpec, voice: Optio
         .map(|t| (t.name.clone(), t.volume_db))
         .collect();
     // rebuilt from scratch each time: no lane of ours left over
-    e.project.automation.retain(|l| !(l.param == "volume" && layers.iter().any(|(n, _)| *n == l.target)));
+    e.project
+        .automation
+        .retain(|l| !(l.param == "volume" && layers.iter().any(|(n, _)| *n == l.target)));
     let mut done = Vec::new();
     for (i, en) in want {
         let sec = match spans.iter().find(|x| x.name == names[i]) {
@@ -1149,7 +1785,10 @@ fn apply_role_levels(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     for (role, db) in &spec.mix.levels {
         let track = crate::producer::track_name(role);
         let Ok(ti) = e.project.track_index(&track) else {
-            log.push(format!("{}; its level offset was not applied", no_part(e, role)));
+            log.push(format!(
+                "{}; its level offset was not applied",
+                no_part(e, role)
+            ));
             continue;
         };
         e.project.tracks[ti].volume_db += db;
@@ -1170,14 +1809,20 @@ fn vocal_track_name(spec: &SongSpec) -> Option<&str> {
 /// dropped with a log line. A role this arrangement does not play is
 /// skipped with a log line (as /mix/levels does); a key that is neither a
 /// track nor a role is an error with a did-you-mean.
-fn resolve_part_eq_keys(e: &Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<Vec<(String, String)>> {
+fn resolve_part_eq_keys(
+    e: &Engine,
+    spec: &SongSpec,
+    log: &mut Vec<String>,
+) -> Result<Vec<(String, String)>> {
     let vocal = vocal_track_name(spec);
     let mut by_track: Vec<(String, String, bool)> = Vec::new(); // (track, key, by name)
     for key in spec.mix.part_eq.keys() {
         if key == "vocal" || Some(key.as_str()) == vocal {
             continue;
         }
-        let (track, by_name) = if e.project.track_index(key).is_ok() && e.project.tracks.iter().any(|t| t.name == *key) {
+        let (track, by_name) = if e.project.track_index(key).is_ok()
+            && e.project.tracks.iter().any(|t| t.name == *key)
+        {
             (key.clone(), true)
         } else if crate::creative::ROLES.contains(&key.as_str()) {
             let t = crate::producer::track_name(key);
@@ -1192,8 +1837,23 @@ fn resolve_part_eq_keys(e: &Engine, spec: &SongSpec, log: &mut Vec<String>) -> R
             known.push(vocal.unwrap_or("vocal"));
             return Err(anyhow!(
                 "/mix/part_eq/{key}: '{key}' is neither a track nor a role here ({}); tracks: {}",
-                did_you_mean(key, &known, &[("melody", "lead"), ("808", "bass"), ("hats", "hat"), ("dhol", "bayan"), ("vox", "vocal")]),
-                e.project.tracks.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")
+                did_you_mean(
+                    key,
+                    &known,
+                    &[
+                        ("melody", "lead"),
+                        ("808", "bass"),
+                        ("hats", "hat"),
+                        ("dhol", "bayan"),
+                        ("vox", "vocal")
+                    ]
+                ),
+                e.project
+                    .tracks
+                    .iter()
+                    .map(|t| t.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         };
         match by_track.iter_mut().find(|(t, _, _)| *t == track) {
@@ -1229,21 +1889,43 @@ fn apply_part_eq(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Resu
 /// The vocal's part EQ onto the vocal track, after its vocal chain (so
 /// after /vocal/chain/presence_db's bell): /mix/part_eq/<vocal track name>
 /// if given (the exact track name wins), else /mix/part_eq/vocal.
-fn apply_vocal_part_eq(e: &mut Engine, spec: &SongSpec, track: &str, log: &mut Vec<String>) -> Result<Option<Value>> {
-    match spec.mix.part_eq.get(track).or_else(|| spec.mix.part_eq.get("vocal")) {
+fn apply_vocal_part_eq(
+    e: &mut Engine,
+    spec: &SongSpec,
+    track: &str,
+    log: &mut Vec<String>,
+) -> Result<Option<Value>> {
+    match spec
+        .mix
+        .part_eq
+        .get(track)
+        .or_else(|| spec.mix.part_eq.get("vocal"))
+    {
         Some(pe) => add_part_eq(e, track, pe, log),
         None => Ok(None),
     }
 }
 
 /// One part EQ onto `track` (nothing when every band is 0 dB).
-fn add_part_eq(e: &mut Engine, track: &str, pe: &PartEq, log: &mut Vec<String>) -> Result<Option<Value>> {
+fn add_part_eq(
+    e: &mut Engine,
+    track: &str,
+    pe: &PartEq,
+    log: &mut Vec<String>,
+) -> Result<Option<Value>> {
     let bands = pe.bands();
     if bands.is_empty() {
         return Ok(None);
     }
-    e.call_nested("add_effect", &json!({"track": track, "type": "parametric_eq", "params": {"bands": bands}}), "song")?;
-    log.push(format!("part EQ: {track} {} band(s) (/mix/part_eq)", bands.len()));
+    e.call_nested(
+        "add_effect",
+        &json!({"track": track, "type": "parametric_eq", "params": {"bands": bands}}),
+        "song",
+    )?;
+    log.push(format!(
+        "part EQ: {track} {} band(s) (/mix/part_eq)",
+        bands.len()
+    ));
     Ok(Some(json!({"track": track, "bands": bands})))
 }
 
@@ -1255,7 +1937,12 @@ fn strip_auto_bands(e: &mut Engine) -> usize {
     use crate::fx::Effect;
     let has = |f: &Effect| matches!(f, Effect::ParametricEq(p) if p.bands.iter().any(|b| b.auto));
     let mut n = 0;
-    for t in e.project.tracks.iter_mut().filter(|t| t.effects.iter().any(has)) {
+    for t in e
+        .project
+        .tracks
+        .iter_mut()
+        .filter(|t| t.effects.iter().any(has))
+    {
         t.effects.retain_mut(|f| match f {
             Effect::ParametricEq(p) if p.bands.iter().any(|b| b.auto) => {
                 let all = p.bands.iter().all(|b| b.auto);
@@ -1273,7 +1960,10 @@ fn strip_auto_bands(e: &mut Engine) -> usize {
 /// Bells marked "auto" in a spec's /mix/part_eq (written by an earlier
 /// build's auto-EQ) come out; part EQs left empty go too. Returns how many.
 fn strip_auto_bells(v: &mut Value) -> usize {
-    let Some(pe) = v.pointer_mut("/mix/part_eq").and_then(|x| x.as_object_mut()) else {
+    let Some(pe) = v
+        .pointer_mut("/mix/part_eq")
+        .and_then(|x| x.as_object_mut())
+    else {
         return 0;
     };
     let mut n = 0;
@@ -1290,9 +1980,11 @@ fn strip_auto_bells(v: &mut Value) -> usize {
         }
     }
     if n > 0 {
-        pe.retain(|_, x| x.as_object().map_or(true, |o| !o.is_empty()));
+        pe.retain(|_, x| x.as_object().is_none_or(|o| !o.is_empty()));
         if pe.is_empty() {
-            v.pointer_mut("/mix").and_then(|m| m.as_object_mut()).map(|m| m.remove("part_eq"));
+            v.pointer_mut("/mix")
+                .and_then(|m| m.as_object_mut())
+                .map(|m| m.remove("part_eq"));
         }
     }
     n
@@ -1309,8 +2001,14 @@ fn auto_eq_pairs(e: &Engine, voice: Option<&str>) -> Vec<(String, String, (f32, 
             out.push((v.to_string(), t.name.clone(), ae::VOCAL_RANGE));
         }
     }
-    let (k, b) = (crate::producer::track_name("kick"), crate::producer::track_name("bass"));
-    if e.project.track_index(&k).is_ok() && e.project.track_index(&b).is_ok() && Some(b.as_str()) != voice {
+    let (k, b) = (
+        crate::producer::track_name("kick"),
+        crate::producer::track_name("bass"),
+    );
+    if e.project.track_index(&k).is_ok()
+        && e.project.track_index(&b).is_ok()
+        && Some(b.as_str()) != voice
+    {
         out.push((k, b, ae::LOW_RANGE));
     }
     out
@@ -1322,20 +2020,39 @@ const KICK_BASS_WHY: &str = "the bass is cut, the kick kept: the kick is the sho
 /// Each pair's collision on the stems as the project renders now, and
 /// (with a vocal) the vocal's against the whole beat (every other track
 /// summed): the aggregate.
-fn auto_eq_measure(e: &mut Engine, pairs: &[(String, String, (f32, f32))], voice: Option<&str>) -> Result<(Vec<Option<crate::auto_eq::PairStat>>, Option<crate::auto_eq::PairStat>)> {
+fn auto_eq_measure(
+    e: &mut Engine,
+    pairs: &[(String, String, (f32, f32))],
+    voice: Option<&str>,
+) -> Result<(
+    Vec<Option<crate::auto_eq::PairStat>>,
+    Option<crate::auto_eq::PairStat>,
+)> {
     use crate::auto_eq as ae;
     use rayon::prelude::*;
     let p = e.project.clone();
     let m = e.render_stems_all(&p)?;
-    let want: std::collections::BTreeSet<&str> = pairs.iter().flat_map(|(a, b, _)| [a.as_str(), b.as_str()]).collect();
+    let want: std::collections::BTreeSet<&str> = pairs
+        .iter()
+        .flat_map(|(a, b, _)| [a.as_str(), b.as_str()])
+        .collect();
     let frames: BTreeMap<String, Vec<Vec<f32>>> = m
         .stems
         .par_iter()
         .filter(|s| want.contains(s.name.as_str()) && !s.left.is_empty())
-        .map(|s| (s.name.clone(), ae::band_frames(&ae::mono(&s.left, &s.right))))
+        .map(|s| {
+            (
+                s.name.clone(),
+                ae::band_frames(&ae::mono(&s.left, &s.right)),
+            )
+        })
         .collect();
     let beat = voice.and_then(|v| {
-        let parts: Vec<_> = m.stems.iter().filter(|s| s.name != v && !s.left.is_empty()).collect();
+        let parts: Vec<_> = m
+            .stems
+            .iter()
+            .filter(|s| s.name != v && !s.left.is_empty())
+            .collect();
         let n = parts.iter().map(|s| s.left.len()).max()?;
         let mut sum = vec![0f32; n];
         for s in parts {
@@ -1363,7 +2080,12 @@ fn auto_eq_measure(e: &mut Engine, pairs: &[(String, String, (f32, f32))], voice
 /// /mix/auto_eq: measure, cut, measure again (see `crate::auto_eq`). The
 /// vocal is never cut; a user's part EQ bands are never moved (auto bells
 /// join that EQ after them, in its free slots).
-fn apply_auto_eq(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &mut Vec<String>) -> Result<Value> {
+fn apply_auto_eq(
+    e: &mut Engine,
+    spec: &SongSpec,
+    voice: Option<&str>,
+    log: &mut Vec<String>,
+) -> Result<Value> {
     use crate::auto_eq as ae;
     use crate::fx::{Effect, EqBand, EqBandKind};
     let pairs = auto_eq_pairs(e, voice);
@@ -1379,12 +2101,23 @@ fn apply_auto_eq(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &mut
             continue;
         }
         if let Some(st) = st {
-            let (q, cut) = if *r == ae::LOW_RANGE { (ae::LOW_Q, ae::LOW_RANGE) } else { (ae::AUTO_Q, ae::VOCAL_CUT_RANGE) };
-            cands.entry(b.clone()).or_default().extend(ae::candidates(st, &format!("{a}/{b}"), q, cut));
+            let (q, cut) = if *r == ae::LOW_RANGE {
+                (ae::LOW_Q, ae::LOW_RANGE)
+            } else {
+                (ae::AUTO_Q, ae::VOCAL_CUT_RANGE)
+            };
+            cands.entry(b.clone()).or_default().extend(ae::candidates(
+                st,
+                &format!("{a}/{b}"),
+                q,
+                cut,
+            ));
         }
     }
     let mut scratch = Vec::new();
-    let user_keys: BTreeMap<String, String> = resolve_part_eq_keys(e, spec, &mut scratch)?.into_iter().collect();
+    let user_keys: BTreeMap<String, String> = resolve_part_eq_keys(e, spec, &mut scratch)?
+        .into_iter()
+        .collect();
     let mut cuts = Vec::new();
     for (track, cs) in &cands {
         if cs.is_empty() || Some(track.as_str()) == voice {
@@ -1397,23 +2130,36 @@ fn apply_auto_eq(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &mut
         if bells.is_empty() {
             continue;
         }
-        let bands: Vec<EqBand> = bells.iter().map(|b| EqBand { kind: EqBandKind::Bell, freq: b.hz, gain_db: b.db, q: b.q, auto: true, ..Default::default() }).collect();
+        let bands: Vec<EqBand> = bells
+            .iter()
+            .map(|b| EqBand {
+                kind: EqBandKind::Bell,
+                freq: b.hz,
+                gain_db: b.db,
+                q: b.q,
+                auto: true,
+                ..Default::default()
+            })
+            .collect();
         // the user's own EQ on this part (as `add_part_eq` put it), if any
         let i = e.project.track_index(track)?;
-        let mine = user.map(|u| u.bands()).filter(|b| !b.is_empty()).and_then(|want| {
-            e.project.tracks[i].effects.iter().rposition(|f| match f {
-                Effect::ParametricEq(p) => {
-                    p.bands.len() == want.len()
-                        && p.bands.iter().zip(&want).all(|(b, w)| {
-                            serde_json::to_value(b.kind).ok().as_ref() == w.get("kind")
-                                && Some(b.freq as f64) == w["freq"].as_f64()
-                                && Some(b.gain_db as f64) == w["gain_db"].as_f64()
-                                && Some(b.q as f64) == w["q"].as_f64()
-                        })
-                }
-                _ => false,
-            })
-        });
+        let mine = user
+            .map(|u| u.bands())
+            .filter(|b| !b.is_empty())
+            .and_then(|want| {
+                e.project.tracks[i].effects.iter().rposition(|f| match f {
+                    Effect::ParametricEq(p) => {
+                        p.bands.len() == want.len()
+                            && p.bands.iter().zip(&want).all(|(b, w)| {
+                                serde_json::to_value(b.kind).ok().as_ref() == w.get("kind")
+                                    && Some(b.freq as f64) == w["freq"].as_f64()
+                                    && Some(b.gain_db as f64) == w["gain_db"].as_f64()
+                                    && Some(b.q as f64) == w["q"].as_f64()
+                            })
+                    }
+                    _ => false,
+                })
+            });
         let merged = match mine {
             Some(j) => {
                 if let Effect::ParametricEq(p) = &mut e.project.tracks[i].effects[j] {
@@ -1422,18 +2168,40 @@ fn apply_auto_eq(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &mut
                 true
             }
             None => {
-                e.call_nested("add_effect", &json!({"track": track, "type": "parametric_eq", "params": {"bands": bands}}), "song")?;
+                e.call_nested(
+                    "add_effect",
+                    &json!({"track": track, "type": "parametric_eq", "params": {"bands": bands}}),
+                    "song",
+                )?;
                 false
             }
         };
         for b in &bells {
-            let pair = cs.iter().find(|c| c.hz.round() == b.hz).map(|c| c.pair.clone()).unwrap_or_default();
-            log.push(format!("auto EQ: {track} {:.0} Hz {:+.1} dB Q{} ({pair}){}", b.hz, b.db, b.q, if merged { ", in the user's part EQ after its bands" } else { "" }));
+            let pair = cs
+                .iter()
+                .find(|c| c.hz.round() == b.hz)
+                .map(|c| c.pair.clone())
+                .unwrap_or_default();
+            log.push(format!(
+                "auto EQ: {track} {:.0} Hz {:+.1} dB Q{} ({pair}){}",
+                b.hz,
+                b.db,
+                b.q,
+                if merged {
+                    ", in the user's part EQ after its bands"
+                } else {
+                    ""
+                }
+            ));
             let r1 = |x: f32| (x as f64 * 10.0).round() / 10.0;
             cuts.push(json!({"part": track, "key": key.clone().unwrap_or_else(|| track.clone()), "hz": r1(b.hz), "db": r1(b.db), "q": r1(b.q), "pair": pair, "merged_into_user_eq": merged}));
         }
     }
-    let (after, agg1) = if cuts.is_empty() { (before.clone(), agg0.clone()) } else { auto_eq_measure(e, &pairs, voice)? };
+    let (after, agg1) = if cuts.is_empty() {
+        (before.clone(), agg0.clone())
+    } else {
+        auto_eq_measure(e, &pairs, voice)?
+    };
     let pct = |x: f32| (x * 1000.0).round() / 10.0;
     let mut rows = Vec::new();
     for (((a, b, r), st0), st1) in pairs.iter().zip(&before).zip(&after) {
@@ -1445,14 +2213,29 @@ fn apply_auto_eq(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &mut
             row["why"] = json!(KICK_BASS_WHY);
         }
         if st0.overlap > 0.0 && cuts.iter().any(|c| c["pair"] == row["pair"]) {
-            log.push(format!("auto EQ: {a}/{b} overlap {:.1}% -> {:.1}%", pct(st0.overlap), pct(st1.overlap)));
+            log.push(format!(
+                "auto EQ: {a}/{b} overlap {:.1}% -> {:.1}%",
+                pct(st0.overlap),
+                pct(st1.overlap)
+            ));
         }
         rows.push(row);
     }
-    log.push(format!("auto EQ: {} cut(s) on {} part(s)", cuts.len(), cuts.iter().map(|c| c["part"].as_str().unwrap_or("")).collect::<std::collections::BTreeSet<_>>().len()));
+    log.push(format!(
+        "auto EQ: {} cut(s) on {} part(s)",
+        cuts.len(),
+        cuts.iter()
+            .map(|c| c["part"].as_str().unwrap_or(""))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    ));
     let mut out = json!({"enabled": true, "metric": "overlap = sum(min(La, Lb)) / sum(La): 1/3-octave band loudness (power^0.3) over frames where both parts play; a = the protected part", "min_pair_overlap_pct": pct(ae::MIN_PAIR_OVERLAP), "pairs": rows, "cuts": cuts});
     if let (Some(a0), Some(a1)) = (&agg0, &agg1) {
-        log.push(format!("auto EQ: vocal/beat (every other track summed) overlap {:.1}% -> {:.1}%", pct(a0.overlap), pct(a1.overlap)));
+        log.push(format!(
+            "auto EQ: vocal/beat (every other track summed) overlap {:.1}% -> {:.1}%",
+            pct(a0.overlap),
+            pct(a1.overlap)
+        ));
         out["aggregate"] = json!({"pair": "vocal/beat", "what": "the vocal against every other track summed", "overlap_before_pct": pct(a0.overlap), "overlap_after_pct": pct(a1.overlap)});
     }
     Ok(out)
@@ -1473,7 +2256,12 @@ fn strip_auto_ducks(e: &mut Engine) -> usize {
         id == AUTO_DUCK_VOCAL_ID || id == AUTO_DUCK_KICK_ID || id.starts_with(AUTO_RESONANCE_ID)
     };
     let mut n = 0;
-    for t in e.project.tracks.iter_mut().filter(|t| t.effects.iter().any(is)) {
+    for t in e
+        .project
+        .tracks
+        .iter_mut()
+        .filter(|t| t.effects.iter().any(is))
+    {
         let before = t.effects.len();
         t.effects.retain(|f| !is(f));
         n += before - t.effects.len();
@@ -1490,26 +2278,55 @@ fn vocal_duck_coverage(e: &mut Engine, voice: &str) -> Result<Option<f32>> {
     use crate::dsp::SR;
     let p = e.project.clone();
     let m = e.render_stems_all(&p)?;
-    let Some(v) = m.stems.iter().find(|s| s.name == voice && !s.left.is_empty()) else { return Ok(None) };
+    let Some(v) = m
+        .stems
+        .iter()
+        .find(|s| s.name == voice && !s.left.is_empty())
+    else {
+        return Ok(None);
+    };
     let x = crate::auto_eq::mono(&v.left, &v.right);
     let step = p.step_secs();
     let mut key = vec![0.0f32; x.len()];
-    for c in p.audio_clips.iter().filter(|c| c.track.eq_ignore_ascii_case(voice)) {
-        let Some(data) = e.bank.get(&c.sample) else { continue };
+    for c in p
+        .audio_clips
+        .iter()
+        .filter(|c| c.track.eq_ignore_ascii_case(voice))
+    {
+        let Some(data) = e.bank.get(&c.sample) else {
+            continue;
+        };
         let off = ((c.offset_s.max(0.0) * SR) as usize).min(data.len());
         let avail = data.len() - off;
-        let len = c.length_s.map(|l| ((l.max(0.0) * SR) as usize).min(avail)).unwrap_or(avail);
+        let len = c
+            .length_s
+            .map(|l| ((l.max(0.0) * SR) as usize).min(avail))
+            .unwrap_or(avail);
         let start = (c.start_beat * 4.0 * step * SR).round() as i64;
         for (k, &s) in data[off..off + len].iter().enumerate() {
-            if let Some(slot) = usize::try_from(start + k as i64).ok().and_then(|i| key.get_mut(i)) {
+            if let Some(slot) = usize::try_from(start + k as i64)
+                .ok()
+                .and_then(|i| key.get_mut(i))
+            {
                 *slot += s;
             }
         }
     }
-    let duck = crate::fx::DynamicEqFx { attack_ms: crate::auto_eq::VOCAL_DUCK_ATTACK_MS, release_ms: crate::auto_eq::VOCAL_DUCK_RELEASE_MS, ..Default::default() };
+    let duck = crate::fx::DynamicEqFx {
+        attack_ms: crate::auto_eq::VOCAL_DUCK_ATTACK_MS,
+        release_ms: crate::auto_eq::VOCAL_DUCK_RELEASE_MS,
+        ..Default::default()
+    };
     let env = crate::fx_extra::level_duck_curve(&duck, &key, x.len());
     let hop = (0.01 * SR) as usize;
-    let db: Vec<f32> = x.chunks(hop).map(|s| 10.0 * (s.iter().map(|a| a * a).sum::<f32>() / s.len() as f32).max(1e-12).log10()).collect();
+    let db: Vec<f32> = x
+        .chunks(hop)
+        .map(|s| {
+            10.0 * (s.iter().map(|a| a * a).sum::<f32>() / s.len() as f32)
+                .max(1e-12)
+                .log10()
+        })
+        .collect();
     let top = db.iter().cloned().fold(f32::MIN, f32::max);
     let (mut active, mut held) = (0usize, 0usize);
     for (i, d) in db.iter().enumerate() {
@@ -1531,7 +2348,11 @@ fn vocal_duck_coverage(e: &mut Engine, voice: &str) -> Result<Option<f32>> {
 /// median active level + 2 dB, so it only dips when the ring pokes out.
 /// Bands within a third of an octave of the de-esser or of a non-auto EQ
 /// band on the vocal (the user's) are skipped.
-fn apply_vocal_resonance(e: &mut Engine, voice: Option<&str>, log: &mut Vec<String>) -> Result<Value> {
+fn apply_vocal_resonance(
+    e: &mut Engine,
+    voice: Option<&str>,
+    log: &mut Vec<String>,
+) -> Result<Value> {
     let Some(v) = voice else {
         log.push("vocal resonance: no vocal here".into());
         return Ok(json!({"bands": []}));
@@ -1546,7 +2367,12 @@ fn apply_vocal_resonance(e: &mut Engine, voice: Option<&str>, log: &mut Vec<Stri
     drop(m);
     let vi = e.project.track_index(v)?;
     let exclude = crate::resonance::exclusions(&e.project.tracks[vi].effects);
-    Ok(crate::resonance::tame_track(&mut e.project.tracks[vi], &x, &exclude, log))
+    Ok(crate::resonance::tame_track(
+        &mut e.project.tracks[vi],
+        &x,
+        &exclude,
+        log,
+    ))
 }
 
 /// /mix/vocal_duck and /mix/kick_duck: keyed dynamic EQ bands (the
@@ -1555,13 +2381,24 @@ fn apply_vocal_resonance(e: &mut Engine, voice: Option<&str>, log: &mut Vec<Stri
 /// plays (the vocal's level through an envelope follower, attack 12 ms,
 /// release 100 ms; the kick's note starts), so instrument-only passages and
 /// the gaps between kick hits keep their level.
-fn apply_auto_duck(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &mut Vec<String>) -> Result<Value> {
+fn apply_auto_duck(
+    e: &mut Engine,
+    spec: &SongSpec,
+    voice: Option<&str>,
+    log: &mut Vec<String>,
+) -> Result<Value> {
     use crate::auto_eq as ae;
     use crate::fx::{DynamicEqFx, Effect};
     let kick = crate::producer::track_name("kick");
     let pairs: Vec<(String, String, (f32, f32))> = auto_eq_pairs(e, voice)
         .into_iter()
-        .filter(|(a, _, r)| if *r == ae::LOW_RANGE { spec.mix.kick_duck && *a == kick } else { spec.mix.vocal_duck && Some(a.as_str()) == voice })
+        .filter(|(a, _, r)| {
+            if *r == ae::LOW_RANGE {
+                spec.mix.kick_duck && *a == kick
+            } else {
+                spec.mix.vocal_duck && Some(a.as_str()) == voice
+            }
+        })
         .collect();
     if spec.mix.vocal_duck && voice.is_none() {
         log.push("auto duck: no vocal here, so no vocal duck".into());
@@ -1572,12 +2409,20 @@ fn apply_auto_duck(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &m
     }
     let (before, agg0) = auto_eq_measure(e, &pairs, voice.filter(|_| spec.mix.vocal_duck))?;
     let mut scratch = Vec::new();
-    let user_keys: BTreeMap<String, String> = resolve_part_eq_keys(e, spec, &mut scratch)?.into_iter().collect();
+    let user_keys: BTreeMap<String, String> = resolve_part_eq_keys(e, spec, &mut scratch)?
+        .into_iter()
+        .collect();
     // the kick's hits (for the kick duck's release): onsets in its stem
     let kick_release = if spec.mix.kick_duck && e.project.track_index(&kick).is_ok() {
         let p = e.project.clone();
         let m = e.render_stems_all(&p)?;
-        m.stems.iter().find(|s| s.name == kick && !s.left.is_empty()).map(|s| ae::kick_release_ms(&crate::render::audio_onsets(&ae::mono(&s.left, &s.right)))).unwrap_or(ae::DUCK_RELEASE_MS)
+        m.stems
+            .iter()
+            .find(|s| s.name == kick && !s.left.is_empty())
+            .map(|s| {
+                ae::kick_release_ms(&crate::render::audio_onsets(&ae::mono(&s.left, &s.right)))
+            })
+            .unwrap_or(ae::DUCK_RELEASE_MS)
     } else {
         ae::DUCK_RELEASE_MS
     };
@@ -1588,9 +2433,15 @@ fn apply_auto_duck(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &m
             continue; // never the vocal
         }
         let low = *r == ae::LOW_RANGE;
-        let (q, cut) = if low { (ae::LOW_Q, ae::LOW_RANGE) } else { (ae::AUTO_Q, ae::VOCAL_CUT_RANGE) };
+        let (q, cut) = if low {
+            (ae::LOW_Q, ae::LOW_RANGE)
+        } else {
+            (ae::AUTO_Q, ae::VOCAL_CUT_RANGE)
+        };
         let pair = format!("{a}/{b}");
-        let Some(c) = ae::duck_band(st, &pair, q, cut) else { continue };
+        let Some(c) = ae::duck_band(st, &pair, q, cut) else {
+            continue;
+        };
         let user = user_keys.get(b).and_then(|k| spec.mix.part_eq.get(k));
         if let Some(u) = ae::user_band_near(user, c.hz) {
             log.push(format!("auto duck: skipped {b} {:.0} Hz ({pair}): a user band sits at {u:.0} Hz; the user's band wins", c.hz));
@@ -1598,7 +2449,11 @@ fn apply_auto_duck(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &m
         }
         // the kick duck follows the kick's hits; the vocal duck follows the
         // vocal's level (an envelope follower), so it holds through a vowel
-        let (key_mode, attack, release) = if low { ("hits", ae::DUCK_ATTACK_MS, kick_release) } else { ("level", ae::VOCAL_DUCK_ATTACK_MS, ae::VOCAL_DUCK_RELEASE_MS) };
+        let (key_mode, attack, release) = if low {
+            ("hits", ae::DUCK_ATTACK_MS, kick_release)
+        } else {
+            ("level", ae::VOCAL_DUCK_ATTACK_MS, ae::VOCAL_DUCK_RELEASE_MS)
+        };
         let mut fx = Effect::DynamicEq(DynamicEqFx {
             freq: c.hz,
             q,
@@ -1609,29 +2464,46 @@ fn apply_auto_duck(e: &mut Engine, spec: &SongSpec, voice: Option<&str>, log: &m
             key: if low { String::new() } else { "level".into() },
             ..Default::default()
         });
-        fx.set_id(if low { AUTO_DUCK_KICK_ID } else { AUTO_DUCK_VOCAL_ID });
+        fx.set_id(if low {
+            AUTO_DUCK_KICK_ID
+        } else {
+            AUTO_DUCK_VOCAL_ID
+        });
         let i = e.project.track_index(b)?;
         e.project.tracks[i].effects.push(fx);
         log.push(format!("auto duck: {b} {:.0} Hz -{} dB Q{q} keyed by {a}'s {key_mode}, attack {attack} ms, release {release:.0} ms", c.hz, ae::DUCK_DB));
         let key = user_keys.get(b).cloned().unwrap_or_else(|| b.clone());
         ducks.push(json!({"part": b, "key": key, "source": a, "key_mode": key_mode, "pair": pair, "hz": c.hz.round(), "max_db": -ae::DUCK_DB, "q": q, "attack_ms": attack, "release_ms": (release * 10.0).round() / 10.0}));
     }
-    let (after, agg1) = if ducks.is_empty() { (before.clone(), agg0.clone()) } else { auto_eq_measure(e, &pairs, voice.filter(|_| spec.mix.vocal_duck))? };
+    let (after, agg1) = if ducks.is_empty() {
+        (before.clone(), agg0.clone())
+    } else {
+        auto_eq_measure(e, &pairs, voice.filter(|_| spec.mix.vocal_duck))?
+    };
     let pct = |x: f32| (x * 1000.0).round() / 10.0;
     let mut rows = Vec::new();
     for (((a, b, _), s0), s1) in pairs.iter().zip(&before).zip(&after) {
         if let (Some(s0), Some(s1)) = (s0, s1) {
             let row = json!({"pair": format!("{a}/{b}"), "overlap_before_pct": pct(s0.overlap), "overlap_after_pct": pct(s1.overlap)});
             if ducks.iter().any(|d| d["pair"] == row["pair"]) {
-                log.push(format!("auto duck: {a}/{b} overlap {:.1}% -> {:.1}%", pct(s0.overlap), pct(s1.overlap)));
+                log.push(format!(
+                    "auto duck: {a}/{b} overlap {:.1}% -> {:.1}%",
+                    pct(s0.overlap),
+                    pct(s1.overlap)
+                ));
             }
             rows.push(row);
         }
     }
     let mut out = json!({"pairs": rows, "ducks": ducks, "note": "a duck dips only while its source plays; the overlap is measured on the stems with the ducks working"});
-    if let Some(v) = voice.filter(|v| spec.mix.vocal_duck && ducks.iter().any(|d| d["source"].as_str() == Some(*v))) {
+    if let Some(v) = voice
+        .filter(|v| spec.mix.vocal_duck && ducks.iter().any(|d| d["source"].as_str() == Some(*v)))
+    {
         if let Some(c) = vocal_duck_coverage(e, v)? {
-            log.push(format!("auto duck: the vocal ducks hold over {:.1}% of the vocal's active time", c * 100.0));
+            log.push(format!(
+                "auto duck: the vocal ducks hold over {:.1}% of the vocal's active time",
+                c * 100.0
+            ));
             out["vocal_active_time_covered_pct"] = json!((c as f64 * 1000.0).round() / 10.0);
         }
     }
@@ -1651,7 +2523,10 @@ fn swap_instruments(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> R
                 // a role the arrangement does not play (a perc kit on a beat
                 // with no perc part) is skipped with a note, not a failed song
                 let Ok(ti) = e.project.track_index(&track) else {
-                    log.push(format!("{}; your samples for it were not used", no_part(e, role)));
+                    log.push(format!(
+                        "{}; your samples for it were not used",
+                        no_part(e, role)
+                    ));
                     continue;
                 };
                 // the pitch the part plays: the hits sound at their own pitch there
@@ -1661,7 +2536,11 @@ fn swap_instruments(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> R
                         *count.entry(nt.pitch).or_default() += 1;
                     }
                 }
-                let root = count.iter().max_by_key(|(_, c)| **c).map(|(p, _)| *p).unwrap_or(60);
+                let root = count
+                    .iter()
+                    .max_by_key(|(_, c)| **c)
+                    .map(|(p, _)| *p)
+                    .unwrap_or(60);
                 let mut zones = Vec::new();
                 for (i, f) in samples.iter().enumerate() {
                     let name = format!("song_{role}_{i}");
@@ -1670,19 +2549,32 @@ fn swap_instruments(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> R
                     zones.push(json!({"sample": name, "root": root, "lo_note": 0, "hi_note": 127, "vel_lo": 0.0, "vel_hi": 1.0, "tune_cents": 0.0, "gain_db": gain_db, "rr": i}));
                 }
                 let inst = json!({"type": "multisample", "zones": zones, "attack": 0.002, "release": 0.35, "one_shot": true, "round_robin": samples.len() > 1, "vel_crossfade": true, "vel_to_gain": 0.6, "gain": 0.9, "source": ""});
-                e.project.tracks[ti].instrument = serde_json::from_value(inst).map_err(|err| anyhow!("instrument for {role}: {err}"))?;
+                e.project.tracks[ti].instrument = serde_json::from_value(inst)
+                    .map_err(|err| anyhow!("instrument for {role}: {err}"))?;
                 e.bank.sync(&e.project.samples);
-                log.push(format!("{role}: {} recorded one-shot(s) at the part's pitch", samples.len()));
+                log.push(format!(
+                    "{role}: {} recorded one-shot(s) at the part's pitch",
+                    samples.len()
+                ));
             }
             continue;
         };
-        let Some(id) = n.strip_prefix("catalog:") else { continue };
+        let Some(id) = n.strip_prefix("catalog:") else {
+            continue;
+        };
         let Ok(ti) = e.project.track_index(&track) else {
-            log.push(format!("{}; instrument {id} was not loaded", no_part(e, role)));
+            log.push(format!(
+                "{}; instrument {id} was not loaded",
+                no_part(e, role)
+            ));
             continue;
         };
         let tmp = format!("__song_{role}");
-        e.call_nested("load_instrument", &json!({"track": tmp, "catalog_id": id}), "song")?;
+        e.call_nested(
+            "load_instrument",
+            &json!({"track": tmp, "catalog_id": id}),
+            "song",
+        )?;
         let tj = e.project.track_index(&tmp)?;
         let inst = e.project.tracks[tj].instrument.clone();
         e.project.tracks.remove(tj);
@@ -1716,7 +2608,13 @@ fn apply_builds(e: &mut Engine) -> Result<Value> {
         .filter(|w| w[1].kind == "hook" && w[0].kind != "hook")
         .filter_map(|w| {
             let len = w[0].end_beat - w[0].start_beat;
-            let riser = if len >= 12.0 { BUILD_BARS_BEATS } else if len >= 6.0 { 4.0 } else { return None };
+            let riser = if len >= 12.0 {
+                BUILD_BARS_BEATS
+            } else if len >= 6.0 {
+                4.0
+            } else {
+                return None;
+            };
             Some((w[1].start_beat, riser))
         })
         .collect();
@@ -1728,7 +2626,9 @@ fn apply_builds(e: &mut Engine) -> Result<Value> {
     // 1) risers: the existing cutoff lanes, rewritten over the two bars out
     let mut risers = Vec::new();
     for t in ["chords", "counter", "texture"] {
-        let Ok(ti) = e.project.track_index(t) else { continue };
+        let Ok(ti) = e.project.track_index(t) else {
+            continue;
+        };
         let filt: Vec<usize> = e.project.tracks[ti]
             .effects
             .iter()
@@ -1760,7 +2660,9 @@ fn apply_builds(e: &mut Engine) -> Result<Value> {
     let mut gap = Value::Null;
     if let Ok(bi) = e.project.bus_index("drums") {
         let idx = e.project.buses[bi].effects.len();
-        e.project.buses[bi].effects.push(crate::fx::Effect::Gain(crate::fx::GainFx::default()));
+        e.project.buses[bi]
+            .effects
+            .push(crate::fx::Effect::Gain(crate::fx::GainFx::default()));
         let mut points = vec![pt(0.0, 0.0, Curve::Step)];
         for &s in &hooks {
             points.push(pt(s - 1.05, 0.0, Curve::Linear));
@@ -1779,9 +2681,16 @@ fn apply_builds(e: &mut Engine) -> Result<Value> {
     // over the gap beat and back at the downbeat
     let mut throws = Vec::new();
     for t in ["lead", "chords"] {
-        let Ok(ti) = e.project.track_index(t) else { continue };
+        let Ok(ti) = e.project.track_index(t) else {
+            continue;
+        };
         let send = e.project.tracks[ti].sends.iter().find(|s| {
-            e.project.bus_index(&s.bus).ok().is_some_and(|bi| e.project.buses[bi].effects.iter().any(|f| f.type_name() == "reverb"))
+            e.project.bus_index(&s.bus).ok().is_some_and(|bi| {
+                e.project.buses[bi]
+                    .effects
+                    .iter()
+                    .any(|f| f.type_name() == "reverb")
+            })
         });
         let Some(s) = send.cloned() else { continue };
         let up = (s.db + BUILD_THROW_DB).min(-2.0).max(s.db);
@@ -1793,23 +2702,42 @@ fn apply_builds(e: &mut Engine) -> Result<Value> {
             points.push(pt(h, s.db, Curve::Step));
         }
         let tn = e.project.tracks[ti].name.clone();
-        e.project.automation.retain(|l| !(l.target.eq_ignore_ascii_case(&tn) && l.param == format!("send.{}", s.bus.to_lowercase())));
-        let mut lane = crate::automation::AutomationLane::new(&tn, &format!("send.{}", s.bus.to_lowercase()));
+        e.project.automation.retain(|l| {
+            !(l.target.eq_ignore_ascii_case(&tn)
+                && l.param == format!("send.{}", s.bus.to_lowercase()))
+        });
+        let mut lane =
+            crate::automation::AutomationLane::new(&tn, &format!("send.{}", s.bus.to_lowercase()));
         lane.points = points;
         lane.sort();
         e.project.automation.push(lane);
         throws.push(json!({"track": tn, "bus": s.bus, "from_db": s.db, "to_db": up}));
     }
-    Ok(json!({"hooks": hooks, "riser_beats": built.iter().map(|b| b.1).collect::<Vec<_>>(), "risers": risers, "gap": gap, "throws": throws}))
+    Ok(
+        json!({"hooks": hooks, "riser_beats": built.iter().map(|b| b.1).collect::<Vec<_>>(), "risers": risers, "gap": gap, "throws": throws}),
+    )
 }
 
 fn no_part(e: &Engine, role: &str) -> anyhow::Error {
-    let have: Vec<&str> = crate::creative::ROLES.iter().copied().filter(|r| e.project.track_index(&crate::producer::track_name(r)).is_ok()).collect();
-    anyhow!("/instruments/{role}: this arrangement has no {role} part; roles that play here: {}", have.join(", "))
+    let have: Vec<&str> = crate::creative::ROLES
+        .iter()
+        .copied()
+        .filter(|r| {
+            e.project
+                .track_index(&crate::producer::track_name(r))
+                .is_ok()
+        })
+        .collect();
+    anyhow!(
+        "/instruments/{role}: this arrangement has no {role} part; roles that play here: {}",
+        have.join(", ")
+    )
 }
 
 fn remove_vocal(e: &mut Engine, track: &str) {
-    e.project.audio_clips.retain(|c| !c.track.eq_ignore_ascii_case(track));
+    e.project
+        .audio_clips
+        .retain(|c| !c.track.eq_ignore_ascii_case(track));
     e.project.automation.retain(|l| l.target != track);
     if let Ok(i) = e.project.track_index(track) {
         e.project.tracks.remove(i);
@@ -1817,21 +2745,41 @@ fn remove_vocal(e: &mut Engine, track: &str) {
     for t in e.project.tracks.iter_mut() {
         t.effects.retain(|f| {
             let v = serde_json::to_value(f).unwrap_or(Value::Null);
-            !(v["type"] == "sidechain" && v["source"].as_str().map(|s| s.eq_ignore_ascii_case(track)).unwrap_or(false))
+            !(v["type"] == "sidechain"
+                && v["source"]
+                    .as_str()
+                    .map(|s| s.eq_ignore_ascii_case(track))
+                    .unwrap_or(false))
         });
     }
 }
 
-fn place_vocal(e: &mut Engine, spec: &SongSpec, vs: &VocalSpec, log: &mut Vec<String>) -> Result<Value> {
+fn place_vocal(
+    e: &mut Engine,
+    spec: &SongSpec,
+    vs: &VocalSpec,
+    log: &mut Vec<String>,
+) -> Result<Value> {
     remove_vocal(e, &vs.track);
-    let file = std::fs::canonicalize(&vs.file).map_err(|err| anyhow!("/vocal/file: {} ({err})", vs.file))?;
-    let fresh = e.project.samples.iter().find(|s| s.name == VOCAL_SAMPLE).map(|s| Path::new(&s.path) != file).unwrap_or(true);
+    let file = std::fs::canonicalize(&vs.file)
+        .map_err(|err| anyhow!("/vocal/file: {} ({err})", vs.file))?;
+    let fresh = e
+        .project
+        .samples
+        .iter()
+        .find(|s| s.name == VOCAL_SAMPLE)
+        .map(|s| Path::new(&s.path) != file)
+        .unwrap_or(true);
     if fresh {
         e.project.samples.retain(|s| s.name != VOCAL_SAMPLE);
         e.call_nested("import_sample", &json!({"path": file.to_string_lossy(), "name": VOCAL_SAMPLE, "source": "the song's vocal take"}), "song")?;
     }
     e.bank.sync(&e.project.samples);
-    let take_s = e.bank.get(VOCAL_SAMPLE).map(|d| d.len() as f32 / crate::dsp::SR).unwrap_or(0.0);
+    let take_s = e
+        .bank
+        .get(VOCAL_SAMPLE)
+        .map(|d| d.len() as f32 / crate::dsp::SR)
+        .unwrap_or(0.0);
     e.call_nested("add_track", &json!({"name": vs.track, "instrument": {"type": "sampler", "sample": VOCAL_SAMPLE, "one_shot": true}, "volume_db": vs.gain_db}), "song")?;
     let spans = mix_rules::section_spans(&e.project);
     let names = spec.section_names();
@@ -1840,8 +2788,17 @@ fn place_vocal(e: &mut Engine, spec: &SongSpec, vs: &VocalSpec, log: &mut Vec<St
     let mut lock = Value::Null;
     if vs.phrases.is_empty() {
         let start = match &vs.start_section {
-            Some(s) => spans.iter().find(|x| &x.name == s).map(|x| x.start_beat).ok_or_else(|| anyhow!("/vocal/start_section: no section '{s}'"))?,
-            None => spans.iter().find(|x| x.kind == "verse").or(spans.first()).map(|x| x.start_beat).unwrap_or(0.0),
+            Some(s) => spans
+                .iter()
+                .find(|x| &x.name == s)
+                .map(|x| x.start_beat)
+                .ok_or_else(|| anyhow!("/vocal/start_section: no section '{s}'"))?,
+            None => spans
+                .iter()
+                .find(|x| x.kind == "verse")
+                .or(spans.first())
+                .map(|x| x.start_beat)
+                .unwrap_or(0.0),
         };
         if vs.lock != Some(false) {
             let r = e.call_nested("lock_vocal_to_beat", &json!({"sample": VOCAL_SAMPLE, "track": vs.track, "start_beat": start, "bpm": e.project.bpm, "flex": vs.flex.unwrap_or(0.5)}), "song")?;
@@ -1855,19 +2812,31 @@ fn place_vocal(e: &mut Engine, spec: &SongSpec, vs: &VocalSpec, log: &mut Vec<St
         } else {
             let r = e.call_nested("place_vocal_phrases", &json!({"sample": VOCAL_SAMPLE, "track": vs.track, "start_beat": start, "grid": "beat", "keep_gaps": true}), "song")?;
             placed = r["phrases"].as_u64().unwrap_or(0) as usize;
-            log.push(format!("vocal: {placed} phrases cut at the pauses, in take order from beat {start}"));
+            log.push(format!(
+                "vocal: {placed} phrases cut at the pauses, in take order from beat {start}"
+            ));
         }
     } else {
         let mut problems = Vec::new();
         for (i, ph) in vs.phrases.iter().enumerate() {
             let len = ph.len_s.or(ph.end_s.map(|x| x - ph.src_s)).unwrap_or(0.0);
             if take_s > 0.0 && ph.src_s + len > take_s + 0.05 {
-                problems.push(p(format!("/vocal/phrases/{i}"), format!("{:.2}..{:.2} s runs past the end of the take ({take_s:.2} s)", ph.src_s, ph.src_s + len), "shorten len_s or move src_s"));
+                problems.push(p(
+                    format!("/vocal/phrases/{i}"),
+                    format!(
+                        "{:.2}..{:.2} s runs past the end of the take ({take_s:.2} s)",
+                        ph.src_s,
+                        ph.src_s + len
+                    ),
+                    "shorten len_s or move src_s",
+                ));
                 continue;
             }
             let start_beat = if let Some(sec) = &ph.section {
                 let j = resolve_section(spec, &names, sec)?;
-                let sp = spans.get(j).ok_or_else(|| anyhow!("section {sec} is not in the arrangement"))?;
+                let sp = spans
+                    .get(j)
+                    .ok_or_else(|| anyhow!("section {sec} is not in the arrangement"))?;
                 sp.start_beat + (ph.bar.unwrap_or(1.0) - 1.0) * 4.0 + (ph.beat.unwrap_or(1.0) - 1.0)
             } else if let Some(b) = ph.start_beat {
                 b
@@ -1875,7 +2844,11 @@ fn place_vocal(e: &mut Engine, spec: &SongSpec, vs: &VocalSpec, log: &mut Vec<St
                 ph.at_s.unwrap_or(0.0) / bs
             };
             if start_beat < -0.01 {
-                problems.push(p(format!("/vocal/phrases/{i}"), format!("lands before the song starts (beat {start_beat:.2})"), "move it later"));
+                problems.push(p(
+                    format!("/vocal/phrases/{i}"),
+                    format!("lands before the song starts (beat {start_beat:.2})"),
+                    "move it later",
+                ));
                 continue;
             }
             e.call_nested("add_audio_clip", &json!({
@@ -1887,7 +2860,9 @@ fn place_vocal(e: &mut Engine, spec: &SongSpec, vs: &VocalSpec, log: &mut Vec<St
         if !problems.is_empty() {
             return Err(problems_err(&problems));
         }
-        log.push(format!("vocal: {placed} phrases placed whole (no time-stretch)"));
+        log.push(format!(
+            "vocal: {placed} phrases placed whole (no time-stretch)"
+        ));
     }
     let chain = mix_rules::apply_vocal_chain(e, &vs.track, &vs.chain, "song")?;
     let part_eq = apply_vocal_part_eq(e, spec, &vs.track, log)?;
@@ -1902,7 +2877,11 @@ fn out_path(e: &Engine, spec: &SongSpec) -> PathBuf {
     match &spec.export.path {
         Some(p) => e.resolve(p),
         None => {
-            let t = if spec.title.is_empty() { "song".to_string() } else { crate::samples::sample_name(&spec.title) };
+            let t = if spec.title.is_empty() {
+                "song".to_string()
+            } else {
+                crate::samples::sample_name(&spec.title)
+            };
             e.renders_dir().join(format!("{t}.{}", spec.export.format))
         }
     }
@@ -1910,7 +2889,11 @@ fn out_path(e: &Engine, spec: &SongSpec) -> PathBuf {
 
 /// Mix to the targets, deliver, check. The vocal (if any) is balanced
 /// section by section; hooks are lifted over verses.
-fn mix_deliver(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<(Value, PathBuf, Value)> {
+fn mix_deliver(
+    e: &mut Engine,
+    spec: &SongSpec,
+    log: &mut Vec<String>,
+) -> Result<(Value, PathBuf, Value)> {
     // every mix rule and delivery round after this moves faders, buses,
     // fader lanes or the master only: synthesise each track once and re-sum
     // (dropped when we return)
@@ -1918,7 +2901,10 @@ fn mix_deliver(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result
     let t0 = std::time::Instant::now();
     let r = mix_deliver_inner(e, spec, log);
     e.track_cache = prev;
-    log.push(format!("mix + delivery: {:.0} s", t0.elapsed().as_secs_f32()));
+    log.push(format!(
+        "mix + delivery: {:.0} s",
+        t0.elapsed().as_secs_f32()
+    ));
     r
 }
 
@@ -1932,22 +2918,37 @@ fn lap(log: &mut Vec<String>, t: &mut std::time::Instant, what: &str) {
 /// round from each side.
 const DELIVERY_ROUNDS: usize = 5;
 
-fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> Result<(Value, PathBuf, Value)> {
+fn mix_deliver_inner(
+    e: &mut Engine,
+    spec: &SongSpec,
+    log: &mut Vec<String>,
+) -> Result<(Value, PathBuf, Value)> {
     let t = spec.targets();
     let mut tl = std::time::Instant::now();
-    let voice = spec.vocal.as_ref().map(|v| v.track.clone()).filter(|v| e.project.track_index(v).is_ok());
+    let voice = spec
+        .vocal
+        .as_ref()
+        .map(|v| v.track.clone())
+        .filter(|v| e.project.track_index(v).is_ok());
     let mut mix = Map::new();
     // auto bands an earlier build left are re-measured (or, off, dropped)
     let stale = strip_auto_bands(e);
     if stale > 0 {
-        log.push(format!("auto EQ: took out {stale} auto band(s) from the last build"));
+        log.push(format!(
+            "auto EQ: took out {stale} auto band(s) from the last build"
+        ));
     }
     let stale = strip_auto_ducks(e);
     if stale > 0 {
-        log.push(format!("auto duck: took out {stale} duck(s) from the last build"));
+        log.push(format!(
+            "auto duck: took out {stale} duck(s) from the last build"
+        ));
     }
     // the beat's bright parts are voiced softer before anything is measured
-    mix.insert("source_tone".into(), mix_rules::soften_beat_source_with(e, voice.as_deref(), &spec.mix.levels)?);
+    mix.insert(
+        "source_tone".into(),
+        mix_rules::soften_beat_source_with(e, voice.as_deref(), &spec.mix.levels)?,
+    );
     mix.insert("peaks".into(), mix_rules::tame_peaks(e)?);
     if let Some(v) = &voice {
         let i = e.project.track_index(v)?;
@@ -1960,18 +2961,30 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     // delivery loop (which then hear them)
     // the vocal's own rings first, so the masking measure hears it tamed
     if spec.mix.vocal_resonance {
-        mix.insert("vocal_resonance".into(), apply_vocal_resonance(e, voice.as_deref(), log)?);
+        mix.insert(
+            "vocal_resonance".into(),
+            apply_vocal_resonance(e, voice.as_deref(), log)?,
+        );
         lap(log, &mut tl, "vocal resonance");
     }
     if spec.mix.auto_eq {
-        mix.insert("auto_eq".into(), apply_auto_eq(e, spec, voice.as_deref(), log)?);
+        mix.insert(
+            "auto_eq".into(),
+            apply_auto_eq(e, spec, voice.as_deref(), log)?,
+        );
         lap(log, &mut tl, "auto EQ");
     }
     if spec.mix.vocal_duck || spec.mix.kick_duck {
-        mix.insert("duck".into(), apply_auto_duck(e, spec, voice.as_deref(), log)?);
+        mix.insert(
+            "duck".into(),
+            apply_auto_duck(e, spec, voice.as_deref(), log)?,
+        );
         lap(log, &mut tl, "auto duck");
     }
-    mix.insert("top_end".into(), mix_rules::tame_top(e, voice.as_deref(), &t, 0.0)?);
+    mix.insert(
+        "top_end".into(),
+        mix_rules::tame_top(e, voice.as_deref(), &t, 0.0)?,
+    );
     if let Some(v) = &voice {
         let b = mix_rules::balance_vocal(e, v, &t, spec.mix.balance_passes as usize)?;
         log.push(format!("vocal balance: {}", b["fader_offsets_db"]));
@@ -1980,26 +2993,41 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     mix.insert("glue".into(), mix_rules::set_glue(e)?);
     // the default lift (presence bell + air shelf) after the glue: every
     // tone rule after it only cuts, so a dark song had no way up
-    mix.insert("master_lift".into(), mix_rules::set_master_lift(e, &spec.mix.master_lift.clone().unwrap_or_default())?);
+    mix.insert(
+        "master_lift".into(),
+        mix_rules::set_master_lift(e, &spec.mix.master_lift.clone().unwrap_or_default())?,
+    );
     // the top end: the beat darkens on its own bus first (the vocal keeps
     // its top), the vocal is re-balanced over the darker beat, and the
     // master tone only takes what the beat could not (small, capped)
     lap(log, &mut tl, "peaks, vocal balance, top end, glue");
     let (mut top_p, mut top_a) = (0.0f32, 0.0f32);
     let m0 = mix_rules::TOP_DELIVERY_MARGIN_DB;
-    mix.insert("top_tone".into(), mix_rules::shape_top_with(e, voice.as_deref(), &t, m0, m0)?);
+    mix.insert(
+        "top_tone".into(),
+        mix_rules::shape_top_with(e, voice.as_deref(), &t, m0, m0)?,
+    );
     lap(log, &mut tl, "beat tone");
     // the energy the arrangement plays at: the spec's, plus what the lift rule thins
     let mut spec_e = spec.clone();
-    mix.insert("section_energy".into(), apply_section_energy(e, &spec_e, voice.as_deref())?);
+    mix.insert(
+        "section_energy".into(),
+        apply_section_energy(e, &spec_e, voice.as_deref())?,
+    );
     mix.insert("section_gain".into(), apply_section_gain(e, &spec_e)?);
     let mut vocal_ride = None;
-    mix.insert("vocal_section_offset".into(), apply_vocal_section_offset(e, &spec_e, voice.as_deref(), &mut vocal_ride)?);
+    mix.insert(
+        "vocal_section_offset".into(),
+        apply_vocal_section_offset(e, &spec_e, voice.as_deref(), &mut vocal_ride)?,
+    );
     // the hook's lift comes from the arrangement (verses thin their layers),
     // never the master's volume, which the limiter would give back
     let lift = arrangement_lift(e, &mut spec_e, voice.as_deref(), &t)?;
     mix.insert("drop_lift".into(), lift);
-    mix.insert("quiet_sections".into(), mix_rules::lift_quiet_sections(e, &t)?);
+    mix.insert(
+        "quiet_sections".into(),
+        mix_rules::lift_quiet_sections(e, &t)?,
+    );
     let pre = mix_rules::measure_sections(e, voice.as_deref())?;
     let path = out_path(e, spec);
     if let Some(d) = path.parent() {
@@ -2039,7 +3067,16 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     // give some of it back)
     let mut air_owed: Vec<(String, f32)> = mix["source_tone"]["levels"]
         .as_array()
-        .map(|a| a.iter().filter_map(|x| Some((x["part"].as_str()?.to_string(), x["down_db"].as_f64()? as f32))).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| {
+                    Some((
+                        x["part"].as_str()?.to_string(),
+                        x["down_db"].as_f64()? as f32,
+                    ))
+                })
+                .collect()
+        })
         .unwrap_or_default();
     // preserve_dynamics is searched between where the hook went flat (lift
     // short) and where the lift had room to spare (loudness may take some)
@@ -2053,7 +3090,13 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
         d = crate::tools_delivery::deliver(&full.left, &full.right, &path, &o)?;
         checks = mix_rules::check(&path, &pre, &spans, e.project.bpm, &t)?;
         lap(log, &mut tl, &format!("delivery round {}", round + 1));
-        let get = |name: &str| checks["checks"].as_array().and_then(|c| c.iter().find(|x| x["check"] == name)).cloned().unwrap_or(Value::Null);
+        let get = |name: &str| {
+            checks["checks"]
+                .as_array()
+                .and_then(|c| c.iter().find(|x| x["check"] == name))
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
         let lift = get("drop_lift")["measured"].as_f64().map(|x| x as f32);
         let lufs = get("loudness")["measured"].as_f64().map(|x| x as f32);
         let harsh = get("not_harsh");
@@ -2080,7 +3123,12 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
             let room = l >= t.drop_lift_db[0] + 0.3;
             if lu < t.lufs - t.lufs_tolerance && room && pd > 0.3 {
                 pd_room = Some(pd_room.map_or(pd, |h| h.min(pd)));
-                let next = if pd_flat > 0.0 { 0.5 * (pd + pd_flat) } else { pd - 0.15 }.max(0.3);
+                let next = if pd_flat > 0.0 {
+                    0.5 * (pd + pd_flat)
+                } else {
+                    pd - 0.15
+                }
+                .max(0.3);
                 if next < pd - 0.03 {
                     o.preserve_dynamics = next;
                     lift_log.push(json!({"delivered_lufs": (lu * 10.0).round() / 10.0, "delivered_lift_db": (l * 10.0).round() / 10.0, "preserve_dynamics": (next * 100.0).round() / 100.0}));
@@ -2091,8 +3139,12 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
         if harsh["pass"] == false && tone_rounds < 2 {
             // each band aims at its own window on the delivered file: too
             // bright -> the top rule again aimed lower; too dark -> eased
-            let pr = harsh["measured"]["presence_rel_lufs_db"].as_f64().map(|x| x as f32);
-            let ar = harsh["measured"]["air_rel_lufs_db"].as_f64().map(|x| x as f32);
+            let pr = harsh["measured"]["presence_rel_lufs_db"]
+                .as_f64()
+                .map(|x| x as f32);
+            let ar = harsh["measured"]["air_rel_lufs_db"]
+                .as_f64()
+                .map(|x| x as f32);
             let [lo, hi] = t.presence_rel_lufs_db;
             let mut moved = Vec::new();
             if let Some(pr) = pr.filter(|p| *p > hi + 0.15 || *p < lo - 0.15) {
@@ -2133,11 +3185,21 @@ fn mix_deliver_inner(e: &mut Engine, spec: &SongSpec, log: &mut Vec<String>) -> 
     }
     let pre = mix_rules::measure_sections(e, voice.as_deref())?;
     checks = mix_rules::check(&path, &pre, &spans, e.project.bpm, &t)?;
-    if let Some(c) = checks["checks"].as_array().and_then(|c| c.iter().find(|x| x["check"] == "drop_lift")) {
-        log.push(format!("drop_lift {} dB (delivered): {}", c["measured"], c["note"].as_str().unwrap_or("")));
+    if let Some(c) = checks["checks"]
+        .as_array()
+        .and_then(|c| c.iter().find(|x| x["check"] == "drop_lift"))
+    {
+        log.push(format!(
+            "drop_lift {} dB (delivered): {}",
+            c["measured"],
+            c["note"].as_str().unwrap_or("")
+        ));
     }
     if !lift_log.is_empty() {
-        log.push(format!("delivery loop: {} fix(es) after checking the delivered file", lift_log.len()));
+        log.push(format!(
+            "delivery loop: {} fix(es) after checking the delivered file",
+            lift_log.len()
+        ));
         mix.insert("delivery_fixes".into(), json!(lift_log));
     }
     mix.insert("delivery".into(), json!({"format": spec.export.format, "lufs_before": d.get("before").cloned().unwrap_or(Value::Null), "notes": d.get("notes").cloned().unwrap_or(Value::Null)}));
@@ -2205,7 +3267,12 @@ pub fn resolve_vocal_take(spec_v: &Value, workdir: Option<&Path>) -> (Value, Opt
         Some(found) => {
             let found = found.to_string_lossy().to_string();
             v["vocal"]["file"] = json!(found);
-            (v, Some(format!("vocal take '{file}' is not on this machine; using '{found}'")))
+            (
+                v,
+                Some(format!(
+                    "vocal take '{file}' is not on this machine; using '{found}'"
+                )),
+            )
         }
         None => {
             if let Value::Object(m) = &mut v {
@@ -2243,7 +3310,9 @@ pub fn build(e: &mut Engine, spec_v: &Value, scope: Scope) -> Result<Value> {
     };
     let mut log = Vec::new();
     if stale_bells > 0 {
-        log.push(format!("auto EQ: dropped {stale_bells} auto bell(s) the last build wrote into /mix/part_eq"));
+        log.push(format!(
+            "auto EQ: dropped {stale_bells} auto bell(s) the last build wrote into /mix/part_eq"
+        ));
     }
     if scope == Scope::Full {
         compose_beat(e, &spec, seed, &mut log)?;
@@ -2254,7 +3323,10 @@ pub fn build(e: &mut Engine, spec_v: &Value, scope: Scope) -> Result<Value> {
             vocal = place_vocal(e, &spec, vs, &mut log)?;
         } else if let Some(p) = &prev {
             // a vocal removed from the spec leaves the song
-            if let Some(t) = p.spec["vocal"]["track"].as_str().or(p.spec.get("vocal").map(|_| "vocal")) {
+            if let Some(t) = p.spec["vocal"]["track"]
+                .as_str()
+                .or(p.spec.get("vocal").map(|_| "vocal"))
+            {
                 remove_vocal(e, t);
             }
         }
@@ -2270,7 +3342,13 @@ pub fn build(e: &mut Engine, spec_v: &Value, scope: Scope) -> Result<Value> {
     }
     // the auto cuts go into the stored spec, marked auto
     write_auto_cuts(&mut stored, &mix)?;
-    e.project.song = Some(SongState { spec: stored, seed, sections: spans.clone(), audio: Some(path.to_string_lossy().to_string()), checks: checks.clone() });
+    e.project.song = Some(SongState {
+        spec: stored,
+        seed,
+        sections: spans.clone(),
+        audio: Some(path.to_string_lossy().to_string()),
+        checks: checks.clone(),
+    });
     if !spec.title.is_empty() {
         e.project.name = spec.title.clone();
     }
@@ -2296,7 +3374,11 @@ pub fn build(e: &mut Engine, spec_v: &Value, scope: Scope) -> Result<Value> {
 /// spec's /mix/part_eq, each bell marked "auto": true.
 fn write_auto_cuts(stored: &mut Value, mix: &Value) -> Result<()> {
     for c in mix["auto_eq"]["cuts"].as_array().into_iter().flatten() {
-        let key = c["key"].as_str().unwrap_or_default().replace('~', "~0").replace('/', "~1");
+        let key = c["key"]
+            .as_str()
+            .unwrap_or_default()
+            .replace('~', "~0")
+            .replace('/', "~1");
         let bell = json!({"hz": c["hz"], "db": c["db"], "q": c["q"], "auto": true});
         let bells = format!("/mix/part_eq/{key}/bells");
         if !stored.pointer(&bells).is_some_and(|b| b.is_array()) {
@@ -2305,7 +3387,11 @@ fn write_auto_cuts(stored: &mut Value, mix: &Value) -> Result<()> {
         set_pointer(stored, &format!("{bells}/-"), bell)?;
     }
     for d in mix["duck"]["ducks"].as_array().into_iter().flatten() {
-        let key = d["key"].as_str().unwrap_or_default().replace('~', "~0").replace('/', "~1");
+        let key = d["key"]
+            .as_str()
+            .unwrap_or_default()
+            .replace('~', "~0")
+            .replace('/', "~1");
         let duck = json!({"hz": d["hz"], "max_db": d["max_db"], "q": d["q"], "source": d["source"], "key": d["key_mode"], "attack_ms": d["attack_ms"], "release_ms": d["release_ms"], "auto": true});
         let ducks = format!("/mix/part_eq/{key}/ducks");
         if !stored.pointer(&ducks).is_some_and(|b| b.is_array()) {
@@ -2313,7 +3399,10 @@ fn write_auto_cuts(stored: &mut Value, mix: &Value) -> Result<()> {
         }
         set_pointer(stored, &format!("{ducks}/-"), duck)?;
     }
-    let bands = mix["vocal_resonance"]["bands"].as_array().cloned().unwrap_or_default();
+    let bands = mix["vocal_resonance"]["bands"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     if !bands.is_empty() {
         let ducks = "/mix/part_eq/vocal/ducks";
         if !stored.pointer(ducks).is_some_and(|b| b.is_array()) {
@@ -2336,7 +3425,10 @@ pub fn set_pointer(root: &mut Value, ptr: &str, val: Value) -> Result<()> {
     if !ptr.starts_with('/') {
         bail!("'{ptr}' is not a JSON path: start it with '/', e.g. /vocal/gain_db");
     }
-    let parts: Vec<String> = ptr[1..].split('/').map(|s| s.replace("~1", "/").replace("~0", "~")).collect();
+    let parts: Vec<String> = ptr[1..]
+        .split('/')
+        .map(|s| s.replace("~1", "/").replace("~0", "~"))
+        .collect();
     let mut cur = root;
     for (i, k) in parts.iter().enumerate() {
         let last = i + 1 == parts.len();
@@ -2356,7 +3448,12 @@ pub fn set_pointer(root: &mut Value, ptr: &str, val: Value) -> Result<()> {
                 cur = m.entry(k.clone()).or_insert(Value::Null);
             }
             Value::Array(a) => {
-                let idx = if k == "-" { a.len() } else { k.parse::<usize>().map_err(|_| anyhow!("{ptr}: '{k}' is not a list index"))? };
+                let idx = if k == "-" {
+                    a.len()
+                } else {
+                    k.parse::<usize>()
+                        .map_err(|_| anyhow!("{ptr}: '{k}' is not a list index"))?
+                };
                 if last {
                     if val.is_null() {
                         if idx < a.len() {
@@ -2443,33 +3540,58 @@ pub fn example() -> Value {
 fn create_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     let mut spec = spec_arg(a);
     // {"improve": N} beside the spec: N self-critique rounds after the build
-    let improve = spec.as_object_mut().and_then(|m| m.remove("improve")).or_else(|| a.get("improve").cloned());
+    let improve = spec
+        .as_object_mut()
+        .and_then(|m| m.remove("improve"))
+        .or_else(|| a.get("improve").cloned());
     let mut r = build(e, &spec, Scope::Full)?;
     // {"improve": 2} or {"improve": {"rounds": 2, "reference": "song2.mp3"}}
     let (rounds, reference) = match &improve {
-        Some(Value::Object(o)) => (o.get("rounds").and_then(|v| v.as_u64()).unwrap_or(2), o.get("reference").cloned()),
+        Some(Value::Object(o)) => (
+            o.get("rounds").and_then(|v| v.as_u64()).unwrap_or(2),
+            o.get("reference").cloned(),
+        ),
         Some(v) => (v.as_u64().unwrap_or(0), None),
         None => (0, None),
     };
     if rounds > 0 {
         let rf = crate::song_critic::reference_metrics(e, &json!({"reference": reference}))?;
         let imp = crate::song_critic::improve(e, (rounds as usize).min(4), 3, None, rf)?;
-        r["checks"] = e.project.song.as_ref().map(|s| s.checks.clone()).unwrap_or(Value::Null);
+        r["checks"] = e
+            .project
+            .song
+            .as_ref()
+            .map(|s| s.checks.clone())
+            .unwrap_or(Value::Null);
         r["improve"] = imp;
     }
     Ok(r)
 }
 
 fn patch_tool(e: &mut Engine, a: &Value) -> Result<Value> {
-    let set = a.get("set").and_then(|v| v.as_object()).cloned().unwrap_or_default();
-    let remove: Vec<String> = a.get("remove").and_then(|v| v.as_array()).map(|x| x.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default();
+    let set = a
+        .get("set")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let remove: Vec<String> = a
+        .get("remove")
+        .and_then(|v| v.as_array())
+        .map(|x| {
+            x.iter()
+                .filter_map(|s| s.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
     patch_song(e, &set, &remove)
 }
 
 /// Set / remove spec values by JSON pointer and rebuild only what they touch
 /// (the same seed unless /seed is set).
 pub fn patch_song(e: &mut Engine, set: &Map<String, Value>, remove: &[String]) -> Result<Value> {
-    let st = e.project.song.clone().ok_or_else(|| anyhow!("this project has no song yet: song_create builds one from a spec first"))?;
+    let st = e.project.song.clone().ok_or_else(|| {
+        anyhow!("this project has no song yet: song_create builds one from a spec first")
+    })?;
     if set.is_empty() && remove.is_empty() {
         bail!("nothing to change: give set {{\"/path\": value}} and/or remove [\"/path\"]; song_get shows the spec and its paths");
     }
@@ -2506,14 +3628,22 @@ trait MaxBy {
 }
 impl MaxBy for Scope {
     fn max_by(self, o: Self) -> Self {
-        if o > self { o } else { self }
+        if o > self {
+            o
+        } else {
+            self
+        }
     }
 }
 
 fn get_tool(e: &mut Engine, _a: &Value) -> Result<Value> {
     match &e.project.song {
-        Some(s) => Ok(json!({"spec": s.spec, "seed": s.seed, "sections": s.sections, "audio": s.audio, "checks": s.checks})),
-        None => Ok(json!({"song": null, "note": "no song in this project; song_create builds one", "example": example()})),
+        Some(s) => Ok(
+            json!({"spec": s.spec, "seed": s.seed, "sections": s.sections, "audio": s.audio, "checks": s.checks}),
+        ),
+        None => Ok(
+            json!({"song": null, "note": "no song in this project; song_create builds one", "example": example()}),
+        ),
     }
 }
 
@@ -2530,7 +3660,11 @@ fn validate_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     // say what a genre word resolved to ("honey_singh" -> punjabi_party), and
     // without a structure, the sections the genre's own form names, so
     // phrases can be placed before anything is built
-    if let Some(pb) = s.as_ref().and_then(|s| s.genre.as_deref()).and_then(|g| crate::producer::playbook(g).ok()) {
+    if let Some(pb) = s
+        .as_ref()
+        .and_then(|s| s.genre.as_deref())
+        .and_then(|g| crate::producer::playbook(g).ok())
+    {
         out["genre"] = json!({"asked": s.as_ref().and_then(|s| s.genre.clone()), "resolved": pb.name, "bpm_range": pb.bpm, "about": pb.description});
         if s.as_ref().is_some_and(|s| s.structure.is_empty()) {
             let mut count: BTreeMap<String, usize> = BTreeMap::new();
@@ -2568,14 +3702,18 @@ fn schema_tool(_e: &mut Engine, _a: &Value) -> Result<Value> {
 }
 
 fn render_tool(e: &mut Engine, _a: &Value) -> Result<Value> {
-    let st = e.project.song.clone().ok_or_else(|| anyhow!("this project has no song yet: song_create builds one from a spec first"))?;
+    let st = e.project.song.clone().ok_or_else(|| {
+        anyhow!("this project has no song yet: song_create builds one from a spec first")
+    })?;
     let mut spec = st.spec.clone();
     spec["seed"] = json!(st.seed);
     let mut r = build(e, &spec, Scope::Mix)?;
     if let Some(s) = e.project.song.as_mut() {
         s.spec = st.spec;
     }
-    r["note"] = json!("re-mixed and delivered the project as it is now (edits made with other actions are kept)");
+    r["note"] = json!(
+        "re-mixed and delivered the project as it is now (edits made with other actions are kept)"
+    );
     Ok(r)
 }
 
@@ -2657,15 +3795,25 @@ mod tests {
         std::fs::write(d.join("rel_take.wav"), b"x").unwrap();
         // BEATBOX_VOCAL_PATH: a folder holding the take's file name
         std::env::set_var("BEATBOX_VOCAL_PATH", d.join("takes"));
-        assert_eq!(find_vocal_take("/gone/box/b40_take.wav", None), Some(d.join("takes").join("b40_take.wav")));
+        assert_eq!(
+            find_vocal_take("/gone/box/b40_take.wav", None),
+            Some(d.join("takes").join("b40_take.wav"))
+        );
         std::env::remove_var("BEATBOX_VOCAL_PATH");
         // relative to the working folder, by file name
-        assert_eq!(find_vocal_take("/gone/box/rel_take.wav", Some(&d)), Some(d.join("rel_take.wav")));
+        assert_eq!(
+            find_vocal_take("/gone/box/rel_take.wav", Some(&d)),
+            Some(d.join("rel_take.wav"))
+        );
         assert_eq!(find_vocal_take("/gone/box/never_b40.wav", Some(&d)), None);
         // the d11 preset's take path resolves or is muted, never an error
-        let preset: Value = serde_json::from_str(include_str!("../presets/d11_baseline.json")).unwrap();
+        let preset: Value =
+            serde_json::from_str(include_str!("../presets/d11_baseline.json")).unwrap();
         let (v, w) = resolve_vocal_take(&preset, Some(&d));
-        assert!(v.get("vocal").is_none() == w.as_deref().is_some_and(|w| w.contains("muted")), "{w:?}");
+        assert!(
+            v.get("vocal").is_none() == w.as_deref().is_some_and(|w| w.contains("muted")),
+            "{w:?}"
+        );
         // a song whose take is missing renders, without its vocal, and warns
         let mut e = Engine::new(d.clone());
         let spec = json!({"genre": "boom_bap", "bpm": 90, "seed": 3,
@@ -2675,12 +3823,21 @@ mod tests {
         let r = e.call("song_create", &spec).unwrap();
         assert!(Path::new(r["audio"].as_str().unwrap()).is_file());
         let w = r["warnings"][0].as_str().unwrap();
-        assert!(w.contains("never_b40.wav") && w.contains("vocal muted"), "{w}");
+        assert!(
+            w.contains("never_b40.wav") && w.contains("vocal muted"),
+            "{w}"
+        );
         assert!(e.project.track_index("vocal").is_err(), "no vocal track");
         // the spec as given is kept, so the take is looked for again next time
-        assert_eq!(e.project.song.as_ref().unwrap().spec["vocal"]["file"], "/gone/box/never_b40.wav");
+        assert_eq!(
+            e.project.song.as_ref().unwrap().spec["vocal"]["file"],
+            "/gone/box/never_b40.wav"
+        );
         let v = validate_tool(&mut e, &spec).unwrap();
-        assert!(v["valid"] == true && v["warnings"][0].as_str().unwrap().contains("muted"), "{v}");
+        assert!(
+            v["valid"] == true && v["warnings"][0].as_str().unwrap().contains("muted"),
+            "{v}"
+        );
     }
 
     #[test]
@@ -2688,7 +3845,10 @@ mod tests {
         let v: Value = serde_json::from_str(include_str!("../presets/d11_baseline.json")).unwrap();
         let (spec, probs) = validate(&v);
         // the vocal take and export folder are local paths on the render box
-        let other: Vec<&Problem> = probs.iter().filter(|p| p.path != "/vocal/file" && p.path != "/export/path").collect();
+        let other: Vec<&Problem> = probs
+            .iter()
+            .filter(|p| p.path != "/vocal/file" && p.path != "/export/path")
+            .collect();
         assert!(other.is_empty(), "{other:?}");
         if probs.is_empty() {
             assert!(spec.is_some());
@@ -2696,14 +3856,26 @@ mod tests {
         assert_eq!(v["seed"], json!(6625524094895247u64));
         assert_eq!(v["vocal"]["chain"]["presence_db"], json!(1.2));
         let ml = &v["mix"]["master_lift"];
-        assert_eq!((ml["air_db"].clone(), ml["extra_db"].clone(), ml["presence_db"].clone()), (json!(5.0), json!(0.0), json!(5.5)));
-        assert_eq!(v["mix"]["section_gain_db"], json!({"verse": -1.2, "hook": 1.5}));
+        assert_eq!(
+            (
+                ml["air_db"].clone(),
+                ml["extra_db"].clone(),
+                ml["presence_db"].clone()
+            ),
+            (json!(5.0), json!(0.0), json!(5.5))
+        );
+        assert_eq!(
+            v["mix"]["section_gain_db"],
+            json!({"verse": -1.2, "hook": 1.5})
+        );
     }
 
     #[test]
     fn a_role_the_beat_does_not_play_is_skipped_not_fatal() {
         // the known bug: perc samples on a beat with no perc part failed the song
-        let (spec, probs) = validate(&json!({"genre": "trap", "instruments": {"perc": {"samples": ["/nonexistent/perc.wav"]}, "counter": "catalog:vcsl_pipe_organ_soft"}, "mix": {"levels": {"perc": 2.0}}}));
+        let (spec, probs) = validate(
+            &json!({"genre": "trap", "instruments": {"perc": {"samples": ["/nonexistent/perc.wav"]}, "counter": "catalog:vcsl_pipe_organ_soft"}, "mix": {"levels": {"perc": 2.0}}}),
+        );
         let spec = spec.unwrap_or_else(|| panic!("{probs:?}"));
         let d = std::env::temp_dir().join(format!("song_noperc_{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
@@ -2711,8 +3883,16 @@ mod tests {
         let mut log = Vec::new();
         swap_instruments(&mut e, &spec, &mut log).unwrap();
         apply_role_levels(&mut e, &spec, &mut log).unwrap();
-        assert!(log.iter().any(|l| l.contains("no perc part") && l.contains("not used")), "{log:?}");
-        assert!(log.iter().any(|l| l.contains("level offset was not applied")), "{log:?}");
+        assert!(
+            log.iter()
+                .any(|l| l.contains("no perc part") && l.contains("not used")),
+            "{log:?}"
+        );
+        assert!(
+            log.iter()
+                .any(|l| l.contains("level offset was not applied")),
+            "{log:?}"
+        );
     }
 
     #[test]
@@ -2723,26 +3903,66 @@ mod tests {
         let (spec, probs) = validate(&v);
         let spec = spec.unwrap_or_else(|| panic!("{probs:?}"));
         let h = &spec.mix.part_eq["harmony"];
-        assert_eq!(h.low_shelf, Some(EqShelf { hz: 150.0, db: -2.0 }));
+        assert_eq!(
+            h.low_shelf,
+            Some(EqShelf {
+                hz: 150.0,
+                db: -2.0
+            })
+        );
         assert_eq!(h.bells[1].q, 1.0, "a bell's Q defaults to 1");
         assert_eq!(h.bands().len(), 4);
         let back = serde_json::to_value(&spec.mix).unwrap();
-        assert_eq!(back["part_eq"]["harmony"]["bells"][0], json!({"hz": 3000.0, "db": -1.5, "q": 1.25}));
+        assert_eq!(
+            back["part_eq"]["harmony"]["bells"][0],
+            json!({"hz": 3000.0, "db": -1.5, "q": 1.25})
+        );
         // off by default and not written when empty
         let plain = validate(&json!({"genre": "trap", "seed": 7})).0.unwrap();
         assert!(plain.mix.part_eq.is_empty());
-        assert!(serde_json::to_value(&plain.mix).unwrap().get("part_eq").is_none());
+        assert!(serde_json::to_value(&plain.mix)
+            .unwrap()
+            .get("part_eq")
+            .is_none());
         // a band at 0 dB adds nothing
-        assert!(PartEq { low_shelf: Some(EqShelf { hz: 100.0, db: 0.0 }), high_shelf: None, bells: vec![EqBell { hz: 1000.0, db: 0.0, q: 1.0, auto: false }], ducks: vec![] }.bands().is_empty());
-        let bad = |pe: Value| validate(&json!({"genre": "trap", "mix": {"part_eq": pe}})).1.into_iter().map(|p| p.path).collect::<Vec<_>>();
-        assert!(bad(json!({"": {"bells": [{"hz": 1000, "db": 1}]}})).contains(&"/mix/part_eq".to_string()));
+        assert!(PartEq {
+            low_shelf: Some(EqShelf { hz: 100.0, db: 0.0 }),
+            high_shelf: None,
+            bells: vec![EqBell {
+                hz: 1000.0,
+                db: 0.0,
+                q: 1.0,
+                auto: false
+            }],
+            ducks: vec![]
+        }
+        .bands()
+        .is_empty());
+        let bad = |pe: Value| {
+            validate(&json!({"genre": "trap", "mix": {"part_eq": pe}}))
+                .1
+                .into_iter()
+                .map(|p| p.path)
+                .collect::<Vec<_>>()
+        };
+        assert!(bad(json!({"": {"bells": [{"hz": 1000, "db": 1}]}}))
+            .contains(&"/mix/part_eq".to_string()));
         // which part a key names is checked when the beat exists (track names are known then)
         assert!(bad(json!({"chords": {"bells": [{"hz": 1000, "db": 1}]}})).is_empty());
-        assert!(bad(json!({"bass": {"low_shelf": {"hz": 100, "db": 15}}})).contains(&"/mix/part_eq/bass/low_shelf/db".to_string()));
-        assert!(bad(json!({"bass": {"high_shelf": {"hz": 30000, "db": 1}}})).contains(&"/mix/part_eq/bass/high_shelf/hz".to_string()));
-        assert!(bad(json!({"lead": {"bells": [{"hz": 1000, "db": 1, "q": 0}]}})).contains(&"/mix/part_eq/lead/bells/0/q".to_string()));
-        let seven: Vec<Value> = (0..7).map(|i| json!({"hz": 200 * (i + 1), "db": 1})).collect();
-        assert!(bad(json!({"lead": {"bells": seven}})).contains(&"/mix/part_eq/lead/bells".to_string()));
+        assert!(bad(json!({"bass": {"low_shelf": {"hz": 100, "db": 15}}}))
+            .contains(&"/mix/part_eq/bass/low_shelf/db".to_string()));
+        assert!(bad(json!({"bass": {"high_shelf": {"hz": 30000, "db": 1}}}))
+            .contains(&"/mix/part_eq/bass/high_shelf/hz".to_string()));
+        assert!(
+            bad(json!({"lead": {"bells": [{"hz": 1000, "db": 1, "q": 0}]}}))
+                .contains(&"/mix/part_eq/lead/bells/0/q".to_string())
+        );
+        let seven: Vec<Value> = (0..7)
+            .map(|i| json!({"hz": 200 * (i + 1), "db": 1}))
+            .collect();
+        assert!(
+            bad(json!({"lead": {"bells": seven}})).contains(&"/mix/part_eq/lead/bells".to_string())
+        );
         assert!(!validate(&json!({"genre": "trap", "mix": {"part_eq": {"bass": {"shelf": {"hz": 100, "db": 1}}}}})).1.is_empty(), "unknown keys are refused");
         assert_eq!(scope_of("/mix/part_eq/bass"), Scope::Full);
         assert_eq!(scope_of("/mix/part_eq"), Scope::Full);
@@ -2758,14 +3978,31 @@ mod tests {
             let mut v = base.clone();
             v["mix"] = json!({"part_eq": pe});
             let spec = validate(&v).0.unwrap();
-            let mut e = Engine::new(std::env::temp_dir().join(format!("song_parteq_keys_{tag}_{}", std::process::id())));
+            let mut e = Engine::new(
+                std::env::temp_dir().join(format!("song_parteq_keys_{tag}_{}", std::process::id())),
+            );
             let mut log = Vec::new();
             let r = compose_beat(&mut e, &spec, 7, &mut log);
             (r, e, log)
         };
         let eqs = |e: &Engine, t: &str| -> Vec<Value> {
             let i = e.project.track_index(t).unwrap();
-            serde_json::to_value(&e.project.tracks[i].effects).unwrap().as_array().unwrap().iter().filter(|f| f["type"] == "parametric_eq" && f["bands"].as_array().is_some_and(|b| b.iter().any(|x| (x["freq"].as_f64().unwrap_or(0.0) - 1234.0).abs() < 1.0 || (x["freq"].as_f64().unwrap_or(0.0) - 4321.0).abs() < 1.0))).cloned().collect()
+            serde_json::to_value(&e.project.tracks[i].effects)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|f| {
+                    f["type"] == "parametric_eq"
+                        && f["bands"].as_array().is_some_and(|b| {
+                            b.iter().any(|x| {
+                                (x["freq"].as_f64().unwrap_or(0.0) - 1234.0).abs() < 1.0
+                                    || (x["freq"].as_f64().unwrap_or(0.0) - 4321.0).abs() < 1.0
+                            })
+                        })
+                })
+                .cloned()
+                .collect()
         };
         let by_role = json!({"bells": [{"hz": 1234, "db": 2}]});
         let by_name = json!({"bells": [{"hz": 4321, "db": -2}]});
@@ -2783,15 +4020,25 @@ mod tests {
         let got = eqs(&e, "chords");
         assert_eq!(got.len(), 1, "{got:?}");
         assert_eq!(got[0]["bands"][0]["freq"], 4321.0);
-        assert!(log.iter().any(|l| l.contains("the track name's is used")), "{log:?}");
+        assert!(
+            log.iter().any(|l| l.contains("the track name's is used")),
+            "{log:?}"
+        );
         // a role this beat does not play: skipped, not fatal
         let (r, _, log) = compose(json!({"tabla": by_role}), "noplay");
         r.unwrap();
-        assert!(log.iter().any(|l| l.contains("its part EQ was not applied")), "{log:?}");
+        assert!(
+            log.iter()
+                .any(|l| l.contains("its part EQ was not applied")),
+            "{log:?}"
+        );
         // neither a track nor a role: an error that names the nearest and the tracks
         let (r, _, _) = compose(json!({"chordz": by_role}), "typo");
         let err = r.unwrap_err().to_string();
-        assert!(err.contains("/mix/part_eq/chordz") && err.contains("chords"), "{err}");
+        assert!(
+            err.contains("/mix/part_eq/chordz") && err.contains("chords"),
+            "{err}"
+        );
     }
 
     /// Commit 6: a part EQ is one parametric EQ at the end of that part's
@@ -2807,7 +4054,9 @@ mod tests {
         zero["mix"] = json!({"part_eq": {"bass": {"low_shelf": {"hz": 200, "db": 0}}}});
         let build = |v: &Value, tag: &str| {
             let spec = validate(v).0.unwrap();
-            let mut e = Engine::new(std::env::temp_dir().join(format!("song_parteq_{tag}_{}", std::process::id())));
+            let mut e = Engine::new(
+                std::env::temp_dir().join(format!("song_parteq_{tag}_{}", std::process::id())),
+            );
             let mut log = Vec::new();
             compose_beat(&mut e, &spec, 7, &mut log).unwrap();
             (e, log)
@@ -2815,15 +4064,28 @@ mod tests {
         let (e0, _) = build(&base, "plain");
         let (e1, log1) = build(&with, "eq");
         let (ez, _) = build(&zero, "zero");
-        let fx = |e: &Engine| e.project.tracks.iter().map(|t| (t.name.clone(), serde_json::to_value(&t.effects).unwrap())).collect::<Vec<_>>();
+        let fx = |e: &Engine| {
+            e.project
+                .tracks
+                .iter()
+                .map(|t| (t.name.clone(), serde_json::to_value(&t.effects).unwrap()))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(fx(&e0), fx(&ez), "an all-zero part EQ adds nothing");
-        assert!(log1.iter().any(|l| l.contains("part EQ: bass 2 band(s)")), "{log1:?}");
+        assert!(
+            log1.iter().any(|l| l.contains("part EQ: bass 2 band(s)")),
+            "{log1:?}"
+        );
         for ((n0, f0), (n1, f1)) in fx(&e0).into_iter().zip(fx(&e1)) {
             assert_eq!(n0, n1);
             if n0 == "bass" {
                 let (a, b) = (f0.as_array().unwrap(), f1.as_array().unwrap());
                 assert_eq!(b.len(), a.len() + 1);
-                assert_eq!(&b[..a.len()], &a[..], "the part's own chain is kept, the EQ goes at its end");
+                assert_eq!(
+                    &b[..a.len()],
+                    &a[..],
+                    "the part's own chain is kept, the EQ goes at its end"
+                );
                 let last = &b[a.len()];
                 assert_eq!(last["type"], "parametric_eq");
                 assert_eq!(last["bands"][0]["kind"], "low_shelf");
@@ -2832,10 +4094,23 @@ mod tests {
                 assert_eq!(f0, f1, "{n0}: untouched");
             }
         }
-        let stems = |e: &Engine| crate::render::render(&e.project, &e.bank, &crate::render::RenderOptions { keep_stems: true, ..Default::default() }).unwrap();
+        let stems = |e: &Engine| {
+            crate::render::render(
+                &e.project,
+                &e.bank,
+                &crate::render::RenderOptions {
+                    keep_stems: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
         let (r0, r1) = (stems(&e0), stems(&e1));
         fn stem<'a>(r: &'a crate::render::Mix, n: &str) -> &'a crate::render::Stem {
-            r.stems.iter().find(|s| s.name == n).unwrap_or_else(|| panic!("no {n} stem"))
+            r.stems
+                .iter()
+                .find(|s| s.name == n)
+                .unwrap_or_else(|| panic!("no {n} stem"))
         }
         let (b0, b1) = (stem(&r0, "bass"), stem(&r1, "bass"));
         let low = b1.band_db(30.0, 100.0) - b0.band_db(30.0, 100.0);
@@ -2846,7 +4121,11 @@ mod tests {
         for s in &r0.stems {
             if s.name != "bass" {
                 let o = stem(&r1, &s.name);
-                assert!(s.left == o.left && s.right == o.right, "{}: sample-identical", s.name);
+                assert!(
+                    s.left == o.left && s.right == o.right,
+                    "{}: sample-identical",
+                    s.name
+                );
             }
         }
     }
@@ -2859,66 +4138,155 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let mut e = Engine::new(d);
-        e.call("add_track", &json!({"name": "vocal", "preset": "epiano"})).unwrap();
+        e.call("add_track", &json!({"name": "vocal", "preset": "epiano"}))
+            .unwrap();
         let chain = spec.vocal.as_ref().unwrap().chain.clone();
         mix_rules::apply_vocal_chain(&mut e, "vocal", &chain, "test").unwrap();
-        let before = serde_json::to_value(&e.project.tracks[e.project.track_index("vocal").unwrap()].effects).unwrap();
+        let before = serde_json::to_value(
+            &e.project.tracks[e.project.track_index("vocal").unwrap()].effects,
+        )
+        .unwrap();
         let mut log = Vec::new();
-        let out = apply_vocal_part_eq(&mut e, &spec, "vocal", &mut log).unwrap().expect("applied");
-        let after = serde_json::to_value(&e.project.tracks[e.project.track_index("vocal").unwrap()].effects).unwrap();
+        let out = apply_vocal_part_eq(&mut e, &spec, "vocal", &mut log)
+            .unwrap()
+            .expect("applied");
+        let after = serde_json::to_value(
+            &e.project.tracks[e.project.track_index("vocal").unwrap()].effects,
+        )
+        .unwrap();
         let (a, b) = (before.as_array().unwrap(), after.as_array().unwrap());
-        assert_eq!(&b[..a.len()], &a[..], "the vocal chain, presence bell included, is unchanged: {out}");
+        assert_eq!(
+            &b[..a.len()],
+            &a[..],
+            "the vocal chain, presence bell included, is unchanged: {out}"
+        );
         assert_eq!(b.len(), a.len() + 1);
         let sh = &b[a.len()]["bands"][0];
-        assert_eq!((sh["kind"].as_str(), sh["freq"].as_f64(), sh["gain_db"].as_f64()), (Some("high_shelf"), Some(8000.0), Some(2.0)), "{sh}");
-        let bell = a.iter().any(|f| f["bands"].as_array().is_some_and(|bs| bs.iter().any(|x| x["kind"] == "bell" && (x["freq"].as_f64().unwrap() - 2500.0).abs() < 1.0 && (x["gain_db"].as_f64().unwrap() - 1.2).abs() < 1e-3)));
+        assert_eq!(
+            (
+                sh["kind"].as_str(),
+                sh["freq"].as_f64(),
+                sh["gain_db"].as_f64()
+            ),
+            (Some("high_shelf"), Some(8000.0), Some(2.0)),
+            "{sh}"
+        );
+        let bell = a.iter().any(|f| {
+            f["bands"].as_array().is_some_and(|bs| {
+                bs.iter().any(|x| {
+                    x["kind"] == "bell"
+                        && (x["freq"].as_f64().unwrap() - 2500.0).abs() < 1.0
+                        && (x["gain_db"].as_f64().unwrap() - 1.2).abs() < 1e-3
+                })
+            })
+        });
         assert!(bell, "presence_db is still its own Q1 bell at 2.5 kHz");
         // no vocal part EQ: nothing added
-        let plain = validate(&json!({"genre": "trap", "vocal": {"file": "/tmp/x.wav"}})).0.unwrap();
-        assert!(apply_vocal_part_eq(&mut e, &plain, "vocal", &mut log).unwrap().is_none());
+        let plain = validate(&json!({"genre": "trap", "vocal": {"file": "/tmp/x.wav"}}))
+            .0
+            .unwrap();
+        assert!(apply_vocal_part_eq(&mut e, &plain, "vocal", &mut log)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
     fn the_vocal_chain_takes_a_presence_bell_on_the_vocal_alone() {
-        let (spec, probs) = validate(&json!({"genre": "trap", "vocal": {"file": "/tmp/x.wav", "chain": {"presence_db": 0.7, "brighten": false}}}));
-        assert!(probs.iter().all(|p| !p.path.starts_with("/vocal/chain")), "{probs:?}");
+        let (spec, probs) = validate(
+            &json!({"genre": "trap", "vocal": {"file": "/tmp/x.wav", "chain": {"presence_db": 0.7, "brighten": false}}}),
+        );
+        assert!(
+            probs.iter().all(|p| !p.path.starts_with("/vocal/chain")),
+            "{probs:?}"
+        );
         let chain = spec.unwrap().vocal.unwrap().chain;
         assert_eq!((chain.presence_db, chain.presence_hz), (0.7, 2500.0));
-        let (_, probs) = validate(&json!({"genre": "trap", "vocal": {"file": "/tmp/x.wav", "chain": {"presence_db": 9.0}}}));
-        assert!(probs.iter().any(|p| p.path == "/vocal/chain/presence_db"), "{probs:?}");
+        let (_, probs) = validate(
+            &json!({"genre": "trap", "vocal": {"file": "/tmp/x.wav", "chain": {"presence_db": 9.0}}}),
+        );
+        assert!(
+            probs.iter().any(|p| p.path == "/vocal/chain/presence_db"),
+            "{probs:?}"
+        );
         let d = std::env::temp_dir().join(format!("song_vox_bell_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let mut e = Engine::new(d);
-        e.call("add_track", &json!({"name": "vocal", "preset": "epiano"})).unwrap();
-        e.call("add_track", &json!({"name": "keys", "preset": "epiano"})).unwrap();
+        e.call("add_track", &json!({"name": "vocal", "preset": "epiano"}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "keys", "preset": "epiano"}))
+            .unwrap();
         let out = mix_rules::apply_vocal_chain(&mut e, "vocal", &chain, "test").unwrap();
         let has_bell = |e: &Engine, t: &str| {
             let i = e.project.track_index(t).unwrap();
-            serde_json::to_value(&e.project.tracks[i].effects).unwrap().as_array().unwrap().iter().any(|f| {
-                f["bands"].as_array().is_some_and(|b| b.iter().any(|x| x["kind"] == "bell" && (x["freq"].as_f64().unwrap_or(0.0) - 2500.0).abs() < 1.0 && (x["gain_db"].as_f64().unwrap_or(0.0) - 0.7).abs() < 1e-3))
-            })
+            serde_json::to_value(&e.project.tracks[i].effects)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| {
+                    f["bands"].as_array().is_some_and(|b| {
+                        b.iter().any(|x| {
+                            x["kind"] == "bell"
+                                && (x["freq"].as_f64().unwrap_or(0.0) - 2500.0).abs() < 1.0
+                                && (x["gain_db"].as_f64().unwrap_or(0.0) - 0.7).abs() < 1e-3
+                        })
+                    })
+                })
         };
         assert!(has_bell(&e, "vocal"), "{out}");
         assert!(!has_bell(&e, "keys"), "the beat is untouched");
         // in the render: the vocal stem changes, every other stem is identical
-        let notes: Vec<_> = (0..4).map(|i| json!({"start": i * 16, "len": 16, "pitch": "C5"})).collect();
-        e.call("add_notes", &json!({"track": "vocal", "notes": notes})).unwrap();
-        let notes: Vec<_> = (0..4).map(|i| json!({"start": i * 16, "len": 16, "pitch": "C4"})).collect();
-        e.call("add_notes", &json!({"track": "keys", "notes": notes})).unwrap();
-        let stems = |e: &Engine| crate::render::render(&e.project, &e.bank, &crate::render::RenderOptions { keep_stems: true, ..Default::default() }).unwrap();
+        let notes: Vec<_> = (0..4)
+            .map(|i| json!({"start": i * 16, "len": 16, "pitch": "C5"}))
+            .collect();
+        e.call("add_notes", &json!({"track": "vocal", "notes": notes}))
+            .unwrap();
+        let notes: Vec<_> = (0..4)
+            .map(|i| json!({"start": i * 16, "len": 16, "pitch": "C4"}))
+            .collect();
+        e.call("add_notes", &json!({"track": "keys", "notes": notes}))
+            .unwrap();
+        let stems = |e: &Engine| {
+            crate::render::render(
+                &e.project,
+                &e.bank,
+                &crate::render::RenderOptions {
+                    keep_stems: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
         let with_bell = stems(&e);
         let mut flat = chain.clone();
         flat.presence_db = 0.0;
         mix_rules::apply_vocal_chain(&mut e, "vocal", &flat, "test").unwrap();
         let without = stems(&e);
-        let stem = |m: &crate::render::Mix, t: &str| m.stems.iter().find(|s| s.name == t).map(|s| s.left.clone()).unwrap();
+        let stem = |m: &crate::render::Mix, t: &str| {
+            m.stems
+                .iter()
+                .find(|s| s.name == t)
+                .map(|s| s.left.clone())
+                .unwrap()
+        };
         let (kv, kn) = (stem(&with_bell, "keys"), stem(&without, "keys"));
-        assert!(kv.iter().zip(&kn).all(|(a, b)| (a - b).abs() < 1e-7), "keys stem must be untouched");
+        assert!(
+            kv.iter().zip(&kn).all(|(a, b)| (a - b).abs() < 1e-7),
+            "keys stem must be untouched"
+        );
         let (vv, vn) = (stem(&with_bell, "vocal"), stem(&without, "vocal"));
-        let d: f32 = vv.iter().zip(&vn).map(|(a, b)| (a - b).powi(2)).sum::<f32>().sqrt();
+        let d: f32 = vv
+            .iter()
+            .zip(&vn)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f32>()
+            .sqrt();
         let base: f32 = vn.iter().map(|a| a * a).sum::<f32>().sqrt();
-        assert!(d > base * 1e-3 && d < base * 0.2, "the vocal stem moves a little: diff {d} of {base}");
+        assert!(
+            d > base * 1e-3 && d < base * 0.2,
+            "the vocal stem moves a little: diff {d} of {base}"
+        );
         // 0 dB (the default) adds no bell
         let mut plain = chain.clone();
         plain.presence_db = 0.0;
@@ -2939,38 +4307,89 @@ mod tests {
         let mut e = Engine::new(d);
         let mut log = Vec::new();
         compose_beat(&mut e, &spec, 7, &mut log).unwrap();
-        let built = log.iter().find(|l| l.starts_with("builds:")).unwrap_or_else(|| panic!("{log:?}"));
-        let s = mix_rules::section_spans(&e.project).iter().find(|x| x.kind == "hook").map(|x| x.start_beat).unwrap();
+        let built = log
+            .iter()
+            .find(|l| l.starts_with("builds:"))
+            .unwrap_or_else(|| panic!("{log:?}"));
+        let s = mix_rules::section_spans(&e.project)
+            .iter()
+            .find(|x| x.kind == "hook")
+            .map(|x| x.start_beat)
+            .unwrap();
         assert_eq!(s, 16.0, "{built}");
         // the drum bus: silent through the last beat, back on the downbeat
-        let gap = e.project.automation.iter().find(|l| l.target == "drums" && l.param.ends_with(".db")).unwrap_or_else(|| panic!("{built}"));
+        let gap = e
+            .project
+            .automation
+            .iter()
+            .find(|l| l.target == "drums" && l.param.ends_with(".db"))
+            .unwrap_or_else(|| panic!("{built}"));
         assert_eq!(gap.value_at(s - 2.0), Some(0.0));
         assert_eq!(gap.value_at(s - 0.5), Some(-60.0));
         assert_eq!(gap.value_at(s + 0.5), Some(0.0));
         // the riser: ~500 Hz two bars out, open by the hook
-        let riser = e.project.automation.iter().find(|l| l.target == "chords" && l.param.ends_with(".cutoff")).unwrap_or_else(|| panic!("{built}"));
-        assert!((riser.value_at(s - 8.0).unwrap() - 500.0).abs() < 1.0, "{built}");
+        let riser = e
+            .project
+            .automation
+            .iter()
+            .find(|l| l.target == "chords" && l.param.ends_with(".cutoff"))
+            .unwrap_or_else(|| panic!("{built}"));
+        assert!(
+            (riser.value_at(s - 8.0).unwrap() - 500.0).abs() < 1.0,
+            "{built}"
+        );
         assert!(riser.value_at(s - 0.01).unwrap() >= 16000.0);
         assert!(riser.value_at_in(s - 4.0, true).unwrap() > 1000.0);
         // the throw: a send lane on lead or chords, up over the gap
-        let throw = e.project.automation.iter().find(|l| l.param.starts_with("send.")).unwrap_or_else(|| panic!("{built}"));
-        assert!(throw.value_at(s - 0.5).unwrap() > throw.value_at(s - 2.0).unwrap() + 6.0, "{built}");
-        assert!(crate::validate::structural(&e.project, &e.bank).iter().all(|x| !(x.check == "automation" && x.status == crate::validate::Status::Fail)));
+        let throw = e
+            .project
+            .automation
+            .iter()
+            .find(|l| l.param.starts_with("send."))
+            .unwrap_or_else(|| panic!("{built}"));
+        assert!(
+            throw.value_at(s - 0.5).unwrap() > throw.value_at(s - 2.0).unwrap() + 6.0,
+            "{built}"
+        );
+        assert!(crate::validate::structural(&e.project, &e.bank)
+            .iter()
+            .all(|x| !(x.check == "automation" && x.status == crate::validate::Status::Fail)));
         // a short (2-bar) intro before a hook gets a one-bar riser
-        let (short, _) = validate(&json!({"genre": "trap", "seed": 7, "structure": [{"kind": "intro", "bars": 2}, {"kind": "hook", "bars": 4}], "mix": {"builds": true}}));
-        let mut e3 = Engine::new(std::env::temp_dir().join(format!("song_builds_short_{}", std::process::id())));
+        let (short, _) = validate(
+            &json!({"genre": "trap", "seed": 7, "structure": [{"kind": "intro", "bars": 2}, {"kind": "hook", "bars": 4}], "mix": {"builds": true}}),
+        );
+        let mut e3 = Engine::new(
+            std::env::temp_dir().join(format!("song_builds_short_{}", std::process::id())),
+        );
         let mut log3 = Vec::new();
         compose_beat(&mut e3, &short.unwrap(), 7, &mut log3).unwrap();
-        let r3 = e3.project.automation.iter().find(|l| l.target == "chords" && l.param.ends_with(".cutoff"));
+        let r3 = e3
+            .project
+            .automation
+            .iter()
+            .find(|l| l.target == "chords" && l.param.ends_with(".cutoff"));
         if let Some(r3) = r3 {
             assert!((r3.value_at(4.0).unwrap() - 500.0).abs() < 1.0, "{log3:?}");
         }
-        assert!(e3.project.automation.iter().any(|l| l.target == "drums" && l.value_at(7.5) == Some(-60.0)), "{log3:?}");
+        assert!(
+            e3.project
+                .automation
+                .iter()
+                .any(|l| l.target == "drums" && l.value_at(7.5) == Some(-60.0)),
+            "{log3:?}"
+        );
         // off by default: the same song without builds has none of it
-        let (plain, _) = validate(&json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]}));
-        let mut e2 = Engine::new(std::env::temp_dir().join(format!("song_nobuilds_{}", std::process::id())));
+        let (plain, _) = validate(
+            &json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]}),
+        );
+        let mut e2 =
+            Engine::new(std::env::temp_dir().join(format!("song_nobuilds_{}", std::process::id())));
         compose_beat(&mut e2, &plain.unwrap(), 7, &mut Vec::new()).unwrap();
-        assert!(e2.project.automation.iter().all(|l| l.target != "drums" && !l.param.starts_with("send.")));
+        assert!(e2
+            .project
+            .automation
+            .iter()
+            .all(|l| l.target != "drums" && !l.param.starts_with("send.")));
     }
 
     #[test]
@@ -2979,8 +4398,13 @@ mod tests {
         let (spec, probs) = validate(&v);
         let spec = spec.unwrap_or_else(|| panic!("{probs:?}"));
         assert_eq!(spec.mix.section_gain_db.get("hook"), Some(&1.5));
-        let (_, bad) = validate(&json!({"genre": "trap", "seed": 7, "structure": [{"kind": "hook", "bars": 4}], "mix": {"section_gain_db": {"hook": 9}}}));
-        assert!(bad.iter().any(|p| p.path == "/mix/section_gain_db/hook"), "{bad:?}");
+        let (_, bad) = validate(
+            &json!({"genre": "trap", "seed": 7, "structure": [{"kind": "hook", "bars": 4}], "mix": {"section_gain_db": {"hook": 9}}}),
+        );
+        assert!(
+            bad.iter().any(|p| p.path == "/mix/section_gain_db/hook"),
+            "{bad:?}"
+        );
         let d = std::env::temp_dir().join(format!("song_secgain_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
@@ -2990,8 +4414,15 @@ mod tests {
         mix_rules::route_beat_bus(&mut e, None);
         let rms_db = |m: &crate::render::Mix, b0: f32, b1: f32, bpm: f32| {
             let sr = crate::dsp::SR;
-            let (a, b) = ((b0 * 60.0 / bpm * sr) as usize, ((b1 * 60.0 / bpm * sr) as usize).min(m.left.len()));
-            let s: f32 = m.left[a..b].iter().chain(m.right[a..b].iter()).map(|x| x * x).sum();
+            let (a, b) = (
+                (b0 * 60.0 / bpm * sr) as usize,
+                ((b1 * 60.0 / bpm * sr) as usize).min(m.left.len()),
+            );
+            let s: f32 = m.left[a..b]
+                .iter()
+                .chain(m.right[a..b].iter())
+                .map(|x| x * x)
+                .sum();
             10.0 * (s / (2 * (b - a)).max(1) as f32 + 1e-12).log10()
         };
         let bpm = e.project.bpm;
@@ -2999,26 +4430,62 @@ mod tests {
         let lift0 = rms_db(&before, 17.0, 31.0, bpm) - rms_db(&before, 1.0, 15.0, bpm);
         let out = apply_section_gain(&mut e, &spec).unwrap();
         // the buses that feed the master carry it; tracks and the drum sub-bus do not
-        let beat = e.project.automation.iter().find(|l| l.target == "beat" && l.param == "volume").unwrap_or_else(|| panic!("{out}"));
-        let base = e.project.buses.iter().find(|b| b.name == "beat").unwrap().volume_db;
-        assert!((beat.value_at(8.0).unwrap() - (base - 1.2)).abs() < 0.01, "{out}");
-        assert!((beat.value_at(24.0).unwrap() - (base + 1.5)).abs() < 0.01, "{out}");
-        assert!(e.project.automation.iter().all(|l| !(l.target == "drums" && l.param == "volume")), "{out}");
+        let beat = e
+            .project
+            .automation
+            .iter()
+            .find(|l| l.target == "beat" && l.param == "volume")
+            .unwrap_or_else(|| panic!("{out}"));
+        let base = e
+            .project
+            .buses
+            .iter()
+            .find(|b| b.name == "beat")
+            .unwrap()
+            .volume_db;
+        assert!(
+            (beat.value_at(8.0).unwrap() - (base - 1.2)).abs() < 0.01,
+            "{out}"
+        );
+        assert!(
+            (beat.value_at(24.0).unwrap() - (base + 1.5)).abs() < 0.01,
+            "{out}"
+        );
+        assert!(
+            e.project
+                .automation
+                .iter()
+                .all(|l| !(l.target == "drums" && l.param == "volume")),
+            "{out}"
+        );
         let after = e.mix().unwrap();
         let lift1 = rms_db(&after, 17.0, 31.0, bpm) - rms_db(&after, 1.0, 15.0, bpm);
-        eprintln!("section gain: hook over verse {lift0:.2} -> {lift1:.2} dB (through the master chain)");
-        assert!(lift1 - lift0 > 1.0 && lift1 - lift0 < 3.2, "hook over verse moved {lift0} -> {lift1}");
+        eprintln!(
+            "section gain: hook over verse {lift0:.2} -> {lift1:.2} dB (through the master chain)"
+        );
+        assert!(
+            lift1 - lift0 > 1.0 && lift1 - lift0 < 3.2,
+            "hook over verse moved {lift0} -> {lift1}"
+        );
         // rebuilt, not stacked, on a second call
         let n = e.project.automation.len();
         apply_section_gain(&mut e, &spec).unwrap();
         assert_eq!(e.project.automation.len(), n);
         // off by default: no bus lane
-        let (plain, _) = validate(&json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]}));
-        let mut e2 = Engine::new(std::env::temp_dir().join(format!("song_nosecgain_{}", std::process::id())));
+        let (plain, _) = validate(
+            &json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]}),
+        );
+        let mut e2 = Engine::new(
+            std::env::temp_dir().join(format!("song_nosecgain_{}", std::process::id())),
+        );
         let plain = plain.unwrap();
         compose_beat(&mut e2, &plain, 7, &mut Vec::new()).unwrap();
         assert_eq!(apply_section_gain(&mut e2, &plain).unwrap(), json!([]));
-        assert!(e2.project.automation.iter().all(|l| !(l.target == "beat" && l.param == "volume")));
+        assert!(e2
+            .project
+            .automation
+            .iter()
+            .all(|l| !(l.target == "beat" && l.param == "volume")));
     }
 
     #[test]
@@ -3026,14 +4493,38 @@ mod tests {
         use crate::automation::{AutoPoint, AutomationLane, Curve};
         let v = json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}], "mix": {"section_gain_db": {"verse": -1.2, "hook": 1.5}}});
         let spec = validate(&v).0.unwrap();
-        let mut e = Engine::new(std::env::temp_dir().join(format!("song_vocoff_{}", std::process::id())));
+        let mut e =
+            Engine::new(std::env::temp_dir().join(format!("song_vocoff_{}", std::process::id())));
         compose_beat(&mut e, &spec, 7, &mut Vec::new()).unwrap();
         // "lead" stands in for the vocal: a ride the balance wrote (verse -3, hook -1)
         let mut lane = AutomationLane::new("lead", "volume");
-        lane.points = vec![AutoPoint { beat: 0.0, value: -3.0, curve: Curve::Step }, AutoPoint { beat: 15.0, value: -1.0, curve: Curve::Step }];
+        lane.points = vec![
+            AutoPoint {
+                beat: 0.0,
+                value: -3.0,
+                curve: Curve::Step,
+            },
+            AutoPoint {
+                beat: 15.0,
+                value: -1.0,
+                curve: Curve::Step,
+            },
+        ];
         e.project.automation.push(lane);
-        let vals = |e: &Engine| e.project.automation.iter().find(|l| l.target == "lead" && l.param == "volume").unwrap().points.iter().map(|p| p.value).collect::<Vec<_>>();
-        let close = |a: &[f32], b: &[f32]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+        let vals = |e: &Engine| {
+            e.project
+                .automation
+                .iter()
+                .find(|l| l.target == "lead" && l.param == "volume")
+                .unwrap()
+                .points
+                .iter()
+                .map(|p| p.value)
+                .collect::<Vec<_>>()
+        };
+        let close = |a: &[f32], b: &[f32]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4)
+        };
         let mut st = None;
         let out = apply_vocal_section_offset(&mut e, &spec, Some("lead"), &mut st).unwrap();
         // the ride's shape (hook 2 dB over verse) stays; verse -1.2, hook +1.5 on top
@@ -3042,14 +4533,31 @@ mod tests {
         apply_vocal_section_offset(&mut e, &spec, Some("lead"), &mut st).unwrap();
         assert!(close(&vals(&e), &[-4.2, 0.5]), "{:?}", vals(&e));
         // the balance re-writes the lane from ours (+0.5 in the hook): that move is kept, the offset not doubled
-        e.project.automation.iter_mut().find(|l| l.target == "lead" && l.param == "volume").unwrap().points[1].value += 0.5;
+        e.project
+            .automation
+            .iter_mut()
+            .find(|l| l.target == "lead" && l.param == "volume")
+            .unwrap()
+            .points[1]
+            .value += 0.5;
         apply_vocal_section_offset(&mut e, &spec, Some("lead"), &mut st).unwrap();
         assert!(close(&vals(&e), &[-4.2, 1.0]), "{:?}", vals(&e));
-        assert!(close(&st.as_ref().unwrap().0.iter().map(|p| p.value).collect::<Vec<_>>(), &[-3.0, -0.5]));
+        assert!(close(
+            &st.as_ref()
+                .unwrap()
+                .0
+                .iter()
+                .map(|p| p.value)
+                .collect::<Vec<_>>(),
+            &[-3.0, -0.5]
+        ));
         // off by default: the ride is left alone
         let plain = validate(&json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]})).0.unwrap();
         let mut st2 = None;
-        assert_eq!(apply_vocal_section_offset(&mut e, &plain, Some("lead"), &mut st2).unwrap(), json!([]));
+        assert_eq!(
+            apply_vocal_section_offset(&mut e, &plain, Some("lead"), &mut st2).unwrap(),
+            json!([])
+        );
         assert!(close(&vals(&e), &[-4.2, 1.0]));
     }
 
@@ -3057,7 +4565,8 @@ mod tests {
     fn verse_thinning_works_when_the_form_comes_from_the_arrangement() {
         let v = json!({"genre": "trap", "seed": 7, "structure": [{"kind": "verse", "bars": 4}, {"kind": "hook", "bars": 4}]});
         let spec = validate(&v).0.unwrap();
-        let mut e = Engine::new(std::env::temp_dir().join(format!("song_thin_{}", std::process::id())));
+        let mut e =
+            Engine::new(std::env::temp_dir().join(format!("song_thin_{}", std::process::id())));
         compose_beat(&mut e, &spec, 7, &mut Vec::new()).unwrap();
         // the producer plan's form: no spec structure (as in a song built without one)
         let mut spec_e = spec.clone();
@@ -3068,29 +4577,70 @@ mod tests {
         assert_eq!(out["changed"], true, "{out}");
         assert_eq!(out["sections_from"], "arrangement", "{out}");
         assert!(out["sections_thinned"].as_u64().unwrap() >= 1, "{out}");
-        let verse = spec_e.structure.iter().find(|s| canon_kind(&s.kind) == "verse").unwrap();
+        let verse = spec_e
+            .structure
+            .iter()
+            .find(|s| canon_kind(&s.kind) == "verse")
+            .unwrap();
         assert!(verse.energy.unwrap() <= -3.9, "{out}");
         // a layer actually plays softer in the verse than in the hook
-        let thin = e.project.automation.iter().filter(|l| l.param == "volume" && !energy_floor_layer(&l.target) && e.project.tracks.iter().any(|t| t.name == l.target)).any(|l| l.value_at(8.0).unwrap() < l.value_at(24.0).unwrap() - 3.0);
+        let thin = e
+            .project
+            .automation
+            .iter()
+            .filter(|l| {
+                l.param == "volume"
+                    && !energy_floor_layer(&l.target)
+                    && e.project.tracks.iter().any(|t| t.name == l.target)
+            })
+            .any(|l| l.value_at(8.0).unwrap() < l.value_at(24.0).unwrap() - 3.0);
         assert!(thin, "{out}");
-        assert!(out["lift_db"].as_f64().unwrap() > out["lift_db_before"].as_f64().unwrap(), "{out}");
+        assert!(
+            out["lift_db"].as_f64().unwrap() > out["lift_db_before"].as_f64().unwrap(),
+            "{out}"
+        );
         // kick and bass are never thinned
-        assert!(e.project.automation.iter().all(|l| !(l.param == "volume" && energy_floor_layer(&l.target))));
+        assert!(e
+            .project
+            .automation
+            .iter()
+            .all(|l| !(l.param == "volume" && energy_floor_layer(&l.target))));
     }
 
     #[test]
     fn every_problem_comes_with_a_path_and_a_fix() {
         let v = json!({"genre": "desi", "tempo": 100, "structure": [{"kind": "hok", "bars": 8}, {"kind": "verse", "bars": 99}], "master": {"lufs": -3}});
         let (_, probs) = validate(&v);
-        assert!(probs.iter().any(|x| x.path == "/tempo" && x.fix.contains("bpm")), "{probs:?}");
+        assert!(
+            probs
+                .iter()
+                .any(|x| x.path == "/tempo" && x.fix.contains("bpm")),
+            "{probs:?}"
+        );
         let v = json!({"genre": "dezi_hiphopp", "bpm": 300, "structure": [{"kind": "hok", "bars": 8}, {"kind": "verse", "bars": 99}], "master": {"lufs": -3}});
         let (_, probs) = validate(&v);
         let paths: Vec<&str> = probs.iter().map(|x| x.path.as_str()).collect();
-        for want in ["/genre", "/bpm", "/structure/0/kind", "/structure/1/bars", "/master/lufs"] {
+        for want in [
+            "/genre",
+            "/bpm",
+            "/structure/0/kind",
+            "/structure/1/bars",
+            "/master/lufs",
+        ] {
             assert!(paths.contains(&want), "{want} missing in {paths:?}");
         }
-        assert!(probs.iter().find(|x| x.path == "/structure/0/kind").unwrap().fix.contains("hook"));
-        assert!(probs.iter().find(|x| x.path == "/genre").unwrap().fix.contains("desi_hiphop"));
+        assert!(probs
+            .iter()
+            .find(|x| x.path == "/structure/0/kind")
+            .unwrap()
+            .fix
+            .contains("hook"));
+        assert!(probs
+            .iter()
+            .find(|x| x.path == "/genre")
+            .unwrap()
+            .fix
+            .contains("desi_hiphop"));
     }
 
     #[test]
@@ -3100,7 +4650,10 @@ mod tests {
         v["export"] = json!({"format": "wav"});
         let (s, probs) = validate(&v);
         assert!(probs.is_empty(), "{probs:?}");
-        assert_eq!(s.unwrap().section_names(), vec!["intro1", "verse1", "hook1", "verse2", "hook2", "outro1"]);
+        assert_eq!(
+            s.unwrap().section_names(),
+            vec!["intro1", "verse1", "hook1", "verse2", "hook2", "outro1"]
+        );
     }
 
     #[test]
@@ -3143,8 +4696,14 @@ mod tests {
 
     #[test]
     fn song_create_takes_improve_beside_the_spec() {
-        let tool = tools().into_iter().find(|t| t.name == "song_create").unwrap();
-        assert!((tool.schema)()["properties"]["improve"].is_object(), "improve must pass the argument check");
+        let tool = tools()
+            .into_iter()
+            .find(|t| t.name == "song_create")
+            .unwrap();
+        assert!(
+            (tool.schema)()["properties"]["improve"].is_object(),
+            "improve must pass the argument check"
+        );
     }
 
     #[test]
@@ -3158,7 +4717,11 @@ mod tests {
         assert!(secs.iter().any(|s| s == "hook2"));
         assert!(v["sections_from"].as_str().unwrap().contains("structure"));
         // a given structure is the contract: its names, no template note
-        let w = validate_tool(&mut e, &json!({"genre": "badshah", "structure": [{"kind": "verse", "bars": 8}]})).unwrap();
+        let w = validate_tool(
+            &mut e,
+            &json!({"genre": "badshah", "structure": [{"kind": "verse", "bars": 8}]}),
+        )
+        .unwrap();
         assert_eq!(w["sections"], json!(["verse1"]));
         assert!(w.get("sections_from").is_none());
     }
@@ -3180,7 +4743,12 @@ mod tests {
         for t in &e.project.tracks {
             for f in &t.effects {
                 if let crate::fx::Effect::ParametricEq(p) = f {
-                    out.extend(p.bands.iter().filter(|b| b.auto).map(|b| (t.name.clone(), b.freq, b.gain_db, b.q)));
+                    out.extend(
+                        p.bands
+                            .iter()
+                            .filter(|b| b.auto)
+                            .map(|b| (t.name.clone(), b.freq, b.gain_db, b.q)),
+                    );
                 }
             }
         }
@@ -3197,20 +4765,64 @@ mod tests {
         let r1 = e1.call("song_create", &auto_spec(&a, json!({}))).unwrap();
         let mut e2 = Engine::new(b.clone());
         let r2 = e2.call("song_create", &auto_spec(&b, json!({"mix": {"auto_eq": false, "vocal_duck": false, "kick_duck": false, "vocal_resonance": false}}))).unwrap();
-        assert_eq!(std::fs::read(r1["audio"].as_str().unwrap()).unwrap(), std::fs::read(r2["audio"].as_str().unwrap()).unwrap(), "auto_eq false renders the same bytes");
-        assert_eq!(serde_json::to_value(&e1.project.tracks).unwrap(), serde_json::to_value(&e2.project.tracks).unwrap());
+        assert_eq!(
+            std::fs::read(r1["audio"].as_str().unwrap()).unwrap(),
+            std::fs::read(r2["audio"].as_str().unwrap()).unwrap(),
+            "auto_eq false renders the same bytes"
+        );
+        assert_eq!(
+            serde_json::to_value(&e1.project.tracks).unwrap(),
+            serde_json::to_value(&e2.project.tracks).unwrap()
+        );
         assert!(r2["mix"].get("auto_eq").is_none());
         assert!(auto_bands(&e2).is_empty());
-        assert!(!r2["log"].as_array().unwrap().iter().any(|l| l.as_str().unwrap_or("").contains("auto EQ")));
-        let sp: SongSpec = serde_json::from_value(json!({"genre": "trap", "mix": {"auto_eq": false}})).unwrap();
-        assert!(serde_json::to_value(&sp.mix).unwrap().get("auto_eq").is_none(), "false is not written back");
+        assert!(!r2["log"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l.as_str().unwrap_or("").contains("auto EQ")));
+        let sp: SongSpec =
+            serde_json::from_value(json!({"genre": "trap", "mix": {"auto_eq": false}})).unwrap();
+        assert!(
+            serde_json::to_value(&sp.mix)
+                .unwrap()
+                .get("auto_eq")
+                .is_none(),
+            "false is not written back"
+        );
         assert!(r2["mix"].get("duck").is_none());
-        assert!(r2["mix"].get("vocal_resonance").is_none(), "off: no resonance bands");
-        let sp: SongSpec = serde_json::from_value(json!({"genre": "trap", "mix": {"vocal_resonance": false}})).unwrap();
-        assert!(serde_json::to_value(&sp.mix).unwrap().get("vocal_resonance").is_none());
-        let sp: SongSpec = serde_json::from_value(json!({"genre": "trap", "mix": {"vocal_duck": false, "kick_duck": false}})).unwrap();
-        assert_eq!(serde_json::to_value(&sp.mix).unwrap().as_object().unwrap().keys().filter(|k| k.contains("duck")).count(), 0);
-        assert!(serde_json::to_value(crate::fx::EqBand::default()).unwrap().get("auto").is_none(), "a band not written by the auto-EQ is stored as before");
+        assert!(
+            r2["mix"].get("vocal_resonance").is_none(),
+            "off: no resonance bands"
+        );
+        let sp: SongSpec =
+            serde_json::from_value(json!({"genre": "trap", "mix": {"vocal_resonance": false}}))
+                .unwrap();
+        assert!(serde_json::to_value(&sp.mix)
+            .unwrap()
+            .get("vocal_resonance")
+            .is_none());
+        let sp: SongSpec = serde_json::from_value(
+            json!({"genre": "trap", "mix": {"vocal_duck": false, "kick_duck": false}}),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&sp.mix)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .keys()
+                .filter(|k| k.contains("duck"))
+                .count(),
+            0
+        );
+        assert!(
+            serde_json::to_value(crate::fx::EqBand::default())
+                .unwrap()
+                .get("auto")
+                .is_none(),
+            "a band not written by the auto-EQ is stored as before"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3219,10 +4831,24 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("bb_autoeq_on_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir.clone());
-        let r = e.call("song_create", &auto_spec(&dir, json!({"mix": {"auto_eq": true}}))).unwrap();
+        let r = e
+            .call(
+                "song_create",
+                &auto_spec(&dir, json!({"mix": {"auto_eq": true}})),
+            )
+            .unwrap();
         let ae = &r["mix"]["auto_eq"];
-        let pair = ae["pairs"].as_array().unwrap().iter().find(|p| p["pair"] == "kick/bass").cloned().expect("kick/bass measured");
-        assert!(pair["why"].as_str().unwrap().contains("the bass is cut"), "{pair}");
+        let pair = ae["pairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["pair"] == "kick/bass")
+            .cloned()
+            .expect("kick/bass measured");
+        assert!(
+            pair["why"].as_str().unwrap().contains("the bass is cut"),
+            "{pair}"
+        );
         let cuts = ae["cuts"].as_array().unwrap().clone();
         assert!(!cuts.is_empty(), "the kick and bass collide here: {ae}");
         assert!(cuts.len() <= crate::auto_eq::MAX_AUTO_BELLS, "{ae}");
@@ -3231,24 +4857,56 @@ mod tests {
             let db = c["db"].as_f64().unwrap();
             assert!((-3.0..=-1.0).contains(&db), "{c}");
         }
-        assert!(pair["overlap_after_pct"].as_f64().unwrap() < pair["overlap_before_pct"].as_f64().unwrap(), "{pair}");
+        assert!(
+            pair["overlap_after_pct"].as_f64().unwrap()
+                < pair["overlap_before_pct"].as_f64().unwrap(),
+            "{pair}"
+        );
         let bands = auto_bands(&e);
         assert_eq!(bands.len(), cuts.len());
-        assert!(bands.iter().all(|b| b.0 == "bass" && b.2 <= -1.0 && b.2 >= -3.0), "{bands:?}");
+        assert!(
+            bands
+                .iter()
+                .all(|b| b.0 == "bass" && b.2 <= -1.0 && b.2 >= -3.0),
+            "{bands:?}"
+        );
         // the delivered spec carries them, marked auto
         let stored = |e: &Engine| e.project.song.as_ref().unwrap().spec.clone();
-        let bells = stored(&e)["mix"]["part_eq"]["bass"]["bells"].as_array().unwrap().clone();
+        let bells = stored(&e)["mix"]["part_eq"]["bass"]["bells"]
+            .as_array()
+            .unwrap()
+            .clone();
         assert_eq!(bells.len(), cuts.len());
         assert!(bells.iter().all(|b| b["auto"] == true), "{bells:?}");
-        assert!(r["log"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().starts_with("auto EQ: bass ")), "listed in the log");
+        assert!(
+            r["log"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l.as_str().unwrap().starts_with("auto EQ: bass ")),
+            "listed in the log"
+        );
         // a mix-only rebuild measures again: no pile-up
-        e.call("song_patch", &json!({"set": {"/master/lufs": -12}})).unwrap();
+        e.call("song_patch", &json!({"set": {"/master/lufs": -12}}))
+            .unwrap();
         assert_eq!(auto_bands(&e).len(), cuts.len());
-        assert_eq!(stored(&e)["mix"]["part_eq"]["bass"]["bells"].as_array().unwrap().len(), cuts.len());
+        assert_eq!(
+            stored(&e)["mix"]["part_eq"]["bass"]["bells"]
+                .as_array()
+                .unwrap()
+                .len(),
+            cuts.len()
+        );
         // switched off: the auto bands and bells go
-        let r3 = e.call("song_patch", &json!({"set": {"/mix/auto_eq": false}})).unwrap();
+        let r3 = e
+            .call("song_patch", &json!({"set": {"/mix/auto_eq": false}}))
+            .unwrap();
         assert!(auto_bands(&e).is_empty(), "{:?}", auto_bands(&e));
-        assert!(stored(&e).pointer("/mix/part_eq").is_none(), "{}", stored(&e));
+        assert!(
+            stored(&e).pointer("/mix/part_eq").is_none(),
+            "{}",
+            stored(&e)
+        );
         assert!(r3["mix"].get("auto_eq").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3258,9 +4916,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("bb_autoeq_user_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir.clone());
-        let spec_v = auto_spec(&dir, json!({"mix": {"part_eq": {"bass": {"bells": [{"hz": 3000, "db": 1.0, "q": 1.0}]}}}}));
+        let spec_v = auto_spec(
+            &dir,
+            json!({"mix": {"part_eq": {"bass": {"bells": [{"hz": 3000, "db": 1.0, "q": 1.0}]}}}}),
+        );
         e.call("song_create", &spec_v).unwrap();
-        let voice = ["chords", "lead", "counter"].into_iter().find(|n| e.project.track_index(n).is_ok()).expect("a melodic part").to_string();
+        let voice = ["chords", "lead", "counter"]
+            .into_iter()
+            .find(|n| e.project.track_index(n).is_ok())
+            .expect("a melodic part")
+            .to_string();
         let vi = e.project.track_index(&voice).unwrap();
         let voice_fx = serde_json::to_value(&e.project.tracks[vi].effects).unwrap();
         let mut spec = validate(&spec_v).0.unwrap();
@@ -3268,27 +4933,60 @@ mod tests {
         let mut log = Vec::new();
         // a melodic part plays the vocal: measured against every part, never cut
         let r = apply_auto_eq(&mut e, &spec, Some(&voice), &mut log).unwrap();
-        assert!(r["pairs"].as_array().unwrap().iter().any(|p| p["pair"].as_str().unwrap().starts_with(&format!("{voice}/"))), "{r}");
+        assert!(
+            r["pairs"].as_array().unwrap().iter().any(|p| p["pair"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("{voice}/"))),
+            "{r}"
+        );
         let cuts = r["cuts"].as_array().unwrap();
         assert!(!cuts.is_empty(), "{r}");
         assert!(cuts.iter().all(|c| c["part"] != voice.as_str()), "{r}");
-        assert_eq!(serde_json::to_value(&e.project.tracks[vi].effects).unwrap(), voice_fx, "the protected part is untouched");
+        assert_eq!(
+            serde_json::to_value(&e.project.tracks[vi].effects).unwrap(),
+            voice_fx,
+            "the protected part is untouched"
+        );
         let mut per: BTreeMap<String, usize> = BTreeMap::new();
         for c in cuts {
-            *per.entry(c["part"].as_str().unwrap().to_string()).or_default() += 1;
+            *per.entry(c["part"].as_str().unwrap().to_string())
+                .or_default() += 1;
             assert!((-3.0..=-1.0).contains(&c["db"].as_f64().unwrap()), "{c}");
         }
         assert!(per.values().all(|n| *n <= 2), "{per:?}");
         // the user's bass bell keeps its place and values; auto bells follow it in the same EQ
         if cuts.iter().any(|c| c["part"] == "bass") {
             let bi = e.project.track_index("bass").unwrap();
-            let eq = e.project.tracks[bi].effects.iter().rev().find_map(|f| match f {
-                crate::fx::Effect::ParametricEq(p) if p.bands.iter().any(|b| b.auto) => Some(p.clone()),
-                _ => None,
-            }).unwrap();
-            assert_eq!((eq.bands[0].freq, eq.bands[0].gain_db, eq.bands[0].q, eq.bands[0].auto), (3000.0, 1.0, 1.0, false), "{eq:?}");
-            assert!(eq.bands[1..].iter().all(|b| b.auto) && eq.bands.len() <= 7, "{eq:?}");
-            assert!(cuts.iter().filter(|c| c["part"] == "bass").all(|c| c["merged_into_user_eq"] == true && c["key"] == "bass"));
+            let eq = e.project.tracks[bi]
+                .effects
+                .iter()
+                .rev()
+                .find_map(|f| match f {
+                    crate::fx::Effect::ParametricEq(p) if p.bands.iter().any(|b| b.auto) => {
+                        Some(p.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                (
+                    eq.bands[0].freq,
+                    eq.bands[0].gain_db,
+                    eq.bands[0].q,
+                    eq.bands[0].auto
+                ),
+                (3000.0, 1.0, 1.0, false),
+                "{eq:?}"
+            );
+            assert!(
+                eq.bands[1..].iter().all(|b| b.auto) && eq.bands.len() <= 7,
+                "{eq:?}"
+            );
+            assert!(cuts
+                .iter()
+                .filter(|c| c["part"] == "bass")
+                .all(|c| c["merged_into_user_eq"] == true && c["key"] == "bass"));
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3299,7 +4997,11 @@ mod tests {
             for f in &t.effects {
                 if f.id().starts_with("auto_duck") {
                     let v = serde_json::to_value(f).unwrap();
-                    out.push((t.name.clone(), f.id().to_string(), v["source"].as_str().unwrap_or("").to_string()));
+                    out.push((
+                        t.name.clone(),
+                        f.id().to_string(),
+                        v["source"].as_str().unwrap_or("").to_string(),
+                    ));
                 }
             }
         }
@@ -3311,32 +5013,83 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("bb_kickduck_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir.clone());
-        let r = e.call("song_create", &auto_spec(&dir, json!({"mix": {"kick_duck": true}}))).unwrap();
+        let r = e
+            .call(
+                "song_create",
+                &auto_spec(&dir, json!({"mix": {"kick_duck": true}})),
+            )
+            .unwrap();
         let d = &r["mix"]["duck"];
         let ducks = d["ducks"].as_array().unwrap().clone();
         assert_eq!(ducks.len(), 1, "{d}");
-        assert_eq!((ducks[0]["part"].as_str(), ducks[0]["source"].as_str()), (Some("bass"), Some("kick")), "{d}");
+        assert_eq!(
+            (ducks[0]["part"].as_str(), ducks[0]["source"].as_str()),
+            (Some("bass"), Some("kick")),
+            "{d}"
+        );
         assert_eq!(ducks[0]["max_db"], -4.0);
-        assert!(ducks[0]["release_ms"].as_f64().unwrap() <= 120.0 && ducks[0]["attack_ms"] == 10.0, "{d}");
-        let row = d["pairs"].as_array().unwrap().iter().find(|p| p["pair"] == "kick/bass").unwrap().clone();
-        assert!(row["overlap_after_pct"].as_f64().unwrap() < row["overlap_before_pct"].as_f64().unwrap(), "{row}");
-        assert_eq!(duck_ids(&e), vec![("bass".to_string(), AUTO_DUCK_KICK_ID.to_string(), "kick".to_string())]);
-        assert!(auto_bands(&e).is_empty(), "the duck alone adds no static bells");
+        assert!(
+            ducks[0]["release_ms"].as_f64().unwrap() <= 120.0 && ducks[0]["attack_ms"] == 10.0,
+            "{d}"
+        );
+        let row = d["pairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["pair"] == "kick/bass")
+            .unwrap()
+            .clone();
+        assert!(
+            row["overlap_after_pct"].as_f64().unwrap()
+                < row["overlap_before_pct"].as_f64().unwrap(),
+            "{row}"
+        );
+        assert_eq!(
+            duck_ids(&e),
+            vec![(
+                "bass".to_string(),
+                AUTO_DUCK_KICK_ID.to_string(),
+                "kick".to_string()
+            )]
+        );
+        assert!(
+            auto_bands(&e).is_empty(),
+            "the duck alone adds no static bells"
+        );
         assert_eq!(ducks[0]["key_mode"], "hits");
         let stored = |e: &Engine| e.project.song.as_ref().unwrap().spec.clone();
         // visible in the stored spec, marked auto, and no pile-up on a rebuild
         let sd = stored(&e)["mix"]["part_eq"]["bass"]["ducks"].clone();
         assert_eq!(sd.as_array().map(|a| a.len()), Some(1), "{sd}");
-        assert_eq!((sd[0]["auto"].clone(), sd[0]["source"].clone(), sd[0]["max_db"].clone()), (json!(true), json!("kick"), json!(-4.0)), "{sd}");
-        e.call("song_patch", &json!({"set": {"/master/lufs": -12}})).unwrap();
+        assert_eq!(
+            (
+                sd[0]["auto"].clone(),
+                sd[0]["source"].clone(),
+                sd[0]["max_db"].clone()
+            ),
+            (json!(true), json!("kick"), json!(-4.0)),
+            "{sd}"
+        );
+        e.call("song_patch", &json!({"set": {"/master/lufs": -12}}))
+            .unwrap();
         assert_eq!(duck_ids(&e).len(), 1, "no pile-up");
-        assert_eq!(stored(&e)["mix"]["part_eq"]["bass"]["ducks"].as_array().map(|a| a.len()), Some(1));
-        e.call("song_patch", &json!({"set": {"/mix/kick_duck": false}})).unwrap();
+        assert_eq!(
+            stored(&e)["mix"]["part_eq"]["bass"]["ducks"]
+                .as_array()
+                .map(|a| a.len()),
+            Some(1)
+        );
+        e.call("song_patch", &json!({"set": {"/mix/kick_duck": false}}))
+            .unwrap();
         assert!(duck_ids(&e).is_empty());
-        assert!(stored(&e).pointer("/mix/part_eq/bass/ducks").is_none(), "off: the stored ducks go too");
+        assert!(
+            stored(&e).pointer("/mix/part_eq/bass/ducks").is_none(),
+            "off: the stored ducks go too"
+        );
         // a duck written by hand is refused with the fix
         let mut hand = auto_spec(&dir, json!({}));
-        hand["mix"]["part_eq"] = json!({"bass": {"ducks": [{"hz": 60.0, "max_db": -3.0, "q": 2.0, "source": "kick"}]}});
+        hand["mix"]["part_eq"] =
+            json!({"bass": {"ducks": [{"hz": 60.0, "max_db": -3.0, "q": 2.0, "source": "kick"}]}});
         let err = e.call("song_create", &hand).unwrap_err().to_string();
         assert!(err.contains("ducks are placed by the build"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -3349,7 +5102,11 @@ mod tests {
         let mut e = Engine::new(dir.clone());
         let spec_v = auto_spec(&dir, json!({}));
         e.call("song_create", &spec_v).unwrap();
-        let voice = ["chords", "lead", "counter"].into_iter().find(|n| e.project.track_index(n).is_ok()).unwrap().to_string();
+        let voice = ["chords", "lead", "counter"]
+            .into_iter()
+            .find(|n| e.project.track_index(n).is_ok())
+            .unwrap()
+            .to_string();
         let vi = e.project.track_index(&voice).unwrap();
         let voice_fx = serde_json::to_value(&e.project.tracks[vi].effects).unwrap();
         let mut spec = validate(&spec_v).0.unwrap();
@@ -3362,18 +5119,43 @@ mod tests {
             assert_ne!(d["part"], voice.as_str());
             assert_eq!(d["source"], voice.as_str());
             let hz = d["hz"].as_f64().unwrap();
-            assert!((150.0..=1000.0).contains(&hz) && d["max_db"] == -4.0 && d["release_ms"] == 100.0 && d["attack_ms"] == 12.0 && d["key_mode"] == "level", "{d}");
-            let row = r["pairs"].as_array().unwrap().iter().find(|p| p["pair"] == d["pair"]).unwrap();
-            assert!(row["overlap_after_pct"].as_f64().unwrap() <= row["overlap_before_pct"].as_f64().unwrap(), "{row}");
+            assert!(
+                (150.0..=1000.0).contains(&hz)
+                    && d["max_db"] == -4.0
+                    && d["release_ms"] == 100.0
+                    && d["attack_ms"] == 12.0
+                    && d["key_mode"] == "level",
+                "{d}"
+            );
+            let row = r["pairs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["pair"] == d["pair"])
+                .unwrap();
+            assert!(
+                row["overlap_after_pct"].as_f64().unwrap()
+                    <= row["overlap_before_pct"].as_f64().unwrap(),
+                "{row}"
+            );
         }
-        assert_eq!(serde_json::to_value(&e.project.tracks[vi].effects).unwrap(), voice_fx, "the protected part is untouched");
-        assert!(duck_ids(&e).iter().all(|(t, id, src)| *t != voice && id == AUTO_DUCK_VOCAL_ID && *src == voice));
+        assert_eq!(
+            serde_json::to_value(&e.project.tracks[vi].effects).unwrap(),
+            voice_fx,
+            "the protected part is untouched"
+        );
+        assert!(duck_ids(&e)
+            .iter()
+            .all(|(t, id, src)| *t != voice && id == AUTO_DUCK_VOCAL_ID && *src == voice));
         // the vocal ducks follow the vocal's level (an envelope follower)
         for t in &e.project.tracks {
             for f in &t.effects {
                 if let crate::fx::Effect::DynamicEq(d) = f {
                     if f.id() == AUTO_DUCK_VOCAL_ID {
-                        assert_eq!((d.key.as_str(), d.attack_ms, d.release_ms), ("level", 12.0, 100.0));
+                        assert_eq!(
+                            (d.key.as_str(), d.attack_ms, d.release_ms),
+                            ("level", 12.0, 100.0)
+                        );
                     }
                 }
             }
@@ -3387,24 +5169,50 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir.clone());
         e.call("song_create", &auto_spec(&dir, json!({}))).unwrap();
-        let voice = ["chords", "lead", "counter"].into_iter().find(|n| e.project.track_index(n).is_ok()).unwrap().to_string();
-        let others: Vec<Value> = e.project.tracks.iter().filter(|t| t.name != voice).map(|t| serde_json::to_value(&t.effects).unwrap()).collect();
+        let voice = ["chords", "lead", "counter"]
+            .into_iter()
+            .find(|n| e.project.track_index(n).is_ok())
+            .unwrap()
+            .to_string();
+        let others: Vec<Value> = e
+            .project
+            .tracks
+            .iter()
+            .filter(|t| t.name != voice)
+            .map(|t| serde_json::to_value(&t.effects).unwrap())
+            .collect();
         let mut log = Vec::new();
         let r = apply_vocal_resonance(&mut e, Some(&voice), &mut log).unwrap();
         let bands = r["bands"].as_array().unwrap();
         assert!(bands.len() <= crate::resonance::MAX_BANDS, "{r}");
         for b in bands {
-            assert!(b["max_db"].as_f64().unwrap() < 0.0 && b["max_db"].as_f64().unwrap() >= -4.0, "cuts only, at most 4 dB: {b}");
+            assert!(
+                b["max_db"].as_f64().unwrap() < 0.0 && b["max_db"].as_f64().unwrap() >= -4.0,
+                "cuts only, at most 4 dB: {b}"
+            );
             assert_eq!(b["track"], voice.as_str());
         }
         let vi = e.project.track_index(&voice).unwrap();
-        let n = e.project.tracks[vi].effects.iter().filter(|f| f.id().starts_with(AUTO_RESONANCE_ID)).count();
+        let n = e.project.tracks[vi]
+            .effects
+            .iter()
+            .filter(|f| f.id().starts_with(AUTO_RESONANCE_ID))
+            .count();
         assert_eq!(n, bands.len());
-        let now: Vec<Value> = e.project.tracks.iter().filter(|t| t.name != voice).map(|t| serde_json::to_value(&t.effects).unwrap()).collect();
+        let now: Vec<Value> = e
+            .project
+            .tracks
+            .iter()
+            .filter(|t| t.name != voice)
+            .map(|t| serde_json::to_value(&t.effects).unwrap())
+            .collect();
         assert_eq!(now, others, "the beat is untouched by the resonance tamer");
         // a rebuild takes every auto band out again
         strip_auto_ducks(&mut e);
-        assert!(e.project.tracks.iter().all(|t| t.effects.iter().all(|f| !f.id().starts_with(AUTO_RESONANCE_ID))));
+        assert!(e.project.tracks.iter().all(|t| t
+            .effects
+            .iter()
+            .all(|f| !f.id().starts_with(AUTO_RESONANCE_ID))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3418,18 +5226,33 @@ mod tests {
             "export": {"path": dir.join("t.wav").to_string_lossy(), "format": "wav"}});
         let r = e.call("song_create", &spec).unwrap();
         assert!(std::path::Path::new(r["audio"].as_str().unwrap()).is_file());
-        let names: Vec<&str> = r["sections"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = r["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
         assert_eq!(names, vec!["intro1", "verse1", "hook1"]);
         assert_eq!(r["sections"][1]["bars"], 4.0);
         let checks = r["checks"]["checks"].as_array().unwrap();
         assert!(checks.iter().any(|c| c["check"] == "loudness"));
-        assert!(checks.iter().any(|c| c["check"] == "true_peak" && c["pass"] == true), "{checks:?}");
+        assert!(
+            checks
+                .iter()
+                .any(|c| c["check"] == "true_peak" && c["pass"] == true),
+            "{checks:?}"
+        );
         // a mix-only patch keeps the beat
         let before = e.project.patterns.clone();
-        let r2 = e.call("song_patch", &json!({"set": {"/master/lufs": -12}})).unwrap();
+        let r2 = e
+            .call("song_patch", &json!({"set": {"/master/lufs": -12}}))
+            .unwrap();
         assert_eq!(r2["scope"], "mix");
         assert_eq!(e.project.patterns, before);
-        assert_eq!(e.call("song_get", &json!({})).unwrap()["spec"]["master"]["lufs"], -12);
+        assert_eq!(
+            e.call("song_get", &json!({})).unwrap()["spec"]["master"]["lufs"],
+            -12
+        );
         // one undo step back to the first song
         e.call("undo", &json!({})).unwrap();
         assert_ne!(e.project.song.as_ref().unwrap().spec["master"]["lufs"], -12);

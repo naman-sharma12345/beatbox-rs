@@ -46,7 +46,9 @@ pub fn role_of(track: &str) -> &'static str {
         "perc"
     } else if has(&["808", "bass", "sub"]) {
         "bass"
-    } else if has(&["harmony", "pad", "keys", "chord", "piano", "rhodes", "organ", "string"]) {
+    } else if has(&[
+        "harmony", "pad", "keys", "chord", "piano", "rhodes", "organ", "string",
+    ]) {
         "keys"
     } else {
         "lead"
@@ -57,20 +59,77 @@ pub fn role_of(track: &str) -> &'static str {
 /// so 0.08 is about 9 ms.
 pub fn feel_for(role: &str) -> Feel {
     match role {
-        "kick" => Feel { lean: 0.0, swing: 0.0, spread: 0.012, accents: [1.0, 0.86, 0.92, 0.86], vel_spread: 0.03, phrase: 0.3 },
-        "snare" => Feel { lean: 0.07, swing: 0.4, spread: 0.02, accents: [1.0, 0.8, 0.88, 0.8], vel_spread: 0.04, phrase: 0.4 },
-        "hat" => Feel { lean: 0.02, swing: 1.0, spread: 0.03, accents: [1.0, 0.62, 0.8, 0.66], vel_spread: 0.07, phrase: 1.0 },
-        "perc" => Feel { lean: 0.04, swing: 0.8, spread: 0.035, accents: [1.0, 0.7, 0.85, 0.72], vel_spread: 0.08, phrase: 0.8 },
-        "bass" => Feel { lean: 0.0, swing: 0.3, spread: 0.008, accents: [1.0, 0.9, 0.94, 0.9], vel_spread: 0.03, phrase: 0.35 },
-        "keys" => Feel { lean: 0.06, swing: 0.6, spread: 0.025, accents: [1.0, 0.88, 0.93, 0.88], vel_spread: 0.05, phrase: 0.7 },
-        "lead" => Feel { lean: 0.03, swing: 0.7, spread: 0.03, accents: [1.0, 0.88, 0.94, 0.88], vel_spread: 0.06, phrase: 0.8 },
-        _ => Feel { lean: 0.0, swing: 0.0, spread: 0.0, accents: [1.0; 4], vel_spread: 0.0, phrase: 0.0 },
+        "kick" => Feel {
+            lean: 0.0,
+            swing: 0.0,
+            spread: 0.012,
+            accents: [1.0, 0.86, 0.92, 0.86],
+            vel_spread: 0.03,
+            phrase: 0.3,
+        },
+        "snare" => Feel {
+            lean: 0.07,
+            swing: 0.4,
+            spread: 0.02,
+            accents: [1.0, 0.8, 0.88, 0.8],
+            vel_spread: 0.04,
+            phrase: 0.4,
+        },
+        "hat" => Feel {
+            lean: 0.02,
+            swing: 1.0,
+            spread: 0.03,
+            accents: [1.0, 0.62, 0.8, 0.66],
+            vel_spread: 0.07,
+            phrase: 1.0,
+        },
+        "perc" => Feel {
+            lean: 0.04,
+            swing: 0.8,
+            spread: 0.035,
+            accents: [1.0, 0.7, 0.85, 0.72],
+            vel_spread: 0.08,
+            phrase: 0.8,
+        },
+        "bass" => Feel {
+            lean: 0.0,
+            swing: 0.3,
+            spread: 0.008,
+            accents: [1.0, 0.9, 0.94, 0.9],
+            vel_spread: 0.03,
+            phrase: 0.35,
+        },
+        "keys" => Feel {
+            lean: 0.06,
+            swing: 0.6,
+            spread: 0.025,
+            accents: [1.0, 0.88, 0.93, 0.88],
+            vel_spread: 0.05,
+            phrase: 0.7,
+        },
+        "lead" => Feel {
+            lean: 0.03,
+            swing: 0.7,
+            spread: 0.03,
+            accents: [1.0, 0.88, 0.94, 0.88],
+            vel_spread: 0.06,
+            phrase: 0.8,
+        },
+        _ => Feel {
+            lean: 0.0,
+            swing: 0.0,
+            spread: 0.0,
+            accents: [1.0; 4],
+            vel_spread: 0.0,
+            phrase: 0.0,
+        },
     }
 }
 
 /// Deterministic noise in -1..1 from a seed and two indices.
 fn noise(seed: u64, a: u64, b: u64) -> f32 {
-    let mut x = seed ^ a.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ b.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    let mut x =
+        seed ^ a.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ b.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
     x ^= x >> 30;
     x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
     x ^= x >> 27;
@@ -88,7 +147,11 @@ fn phrase_gain(bar: u32, step_in_bar: f32, steps_per_bar: f32, amount: f32) -> f
         2 => 0.96,
         _ => 0.98,
     };
-    let build = if bar % 8 == 7 { 0.9 + 0.14 * (step_in_bar / steps_per_bar).clamp(0.0, 1.0) } else { 1.0 };
+    let build = if bar % 8 == 7 {
+        0.9 + 0.14 * (step_in_bar / steps_per_bar).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
     1.0 + (arc * build - 1.0) * amount
 }
 
@@ -106,12 +169,16 @@ pub struct FeelReport {
 pub fn apply(p: &mut Project, seed: u64, amount: f32) -> FeelReport {
     let amount = amount.clamp(0.0, 1.5);
     let swing_steps = p.swing.clamp(0.0, 1.0) * 0.5;
-    let mut rep = FeelReport { swing_baked: p.swing, ..Default::default() };
+    let mut rep = FeelReport {
+        swing_baked: p.swing,
+        ..Default::default()
+    };
     if amount <= 0.0 {
         return rep;
     }
     for t in &p.tracks {
-        rep.roles.push((t.name.clone(), role_of(&t.name).to_string()));
+        rep.roles
+            .push((t.name.clone(), role_of(&t.name).to_string()));
     }
     for (pi, pat) in p.patterns.iter_mut().enumerate() {
         let spb = pat.steps_per_bar() as f32;
@@ -121,7 +188,15 @@ pub fn apply(p: &mut Project, seed: u64, amount: f32) -> FeelReport {
                 continue;
             }
             let f = feel_for(role);
-            shape(notes, &f, role, seed ^ (pi as u64) << 20 ^ (ti as u64) << 40, swing_steps, spb, amount);
+            shape(
+                notes,
+                &f,
+                role,
+                seed ^ (pi as u64) << 20 ^ (ti as u64) << 40,
+                swing_steps,
+                spb,
+                amount,
+            );
             rep.notes += notes.len();
         }
     }
@@ -129,18 +204,34 @@ pub fn apply(p: &mut Project, seed: u64, amount: f32) -> FeelReport {
     rep
 }
 
-fn shape(notes: &mut [Note], f: &Feel, role: &str, seed: u64, swing_steps: f32, spb: f32, amount: f32) {
+fn shape(
+    notes: &mut [Note],
+    f: &Feel,
+    role: &str,
+    seed: u64,
+    swing_steps: f32,
+    spb: f32,
+    amount: f32,
+) {
     // chord strum: notes sharing a start, low to high, a few ms apart; the
     // top voice sings a little over the inner ones
     let mut order: Vec<usize> = (0..notes.len()).collect();
-    order.sort_by(|&a, &b| notes[a].start.partial_cmp(&notes[b].start).unwrap().then(notes[a].pitch.cmp(&notes[b].pitch)));
+    order.sort_by(|&a, &b| {
+        notes[a]
+            .start
+            .partial_cmp(&notes[b].start)
+            .unwrap()
+            .then(notes[a].pitch.cmp(&notes[b].pitch))
+    });
     let mut strum_idx = vec![0usize; notes.len()];
     let mut top = vec![false; notes.len()];
     let mut stack = vec![1usize; notes.len()];
     let mut i = 0;
     while i < order.len() {
         let mut j = i;
-        while j + 1 < order.len() && (notes[order[j + 1]].start - notes[order[i]].start).abs() < 1e-3 {
+        while j + 1 < order.len()
+            && (notes[order[j + 1]].start - notes[order[i]].start).abs() < 1e-3
+        {
             j += 1;
         }
         for (k, &ix) in order[i..=j].iter().enumerate() {
@@ -169,17 +260,29 @@ fn shape(notes: &mut [Note], f: &Feel, role: &str, seed: u64, swing_steps: f32, 
         n.offset = (n.offset + off * amount).clamp(-0.5, 0.5);
         // velocity
         let ghost = n.vel < 0.4;
-        let acc = if on_grid { f.accents[in_beat] } else { (f.accents[1] + f.accents[3]) * 0.5 };
+        let acc = if on_grid {
+            f.accents[in_beat]
+        } else {
+            (f.accents[1] + f.accents[3]) * 0.5
+        };
         // the snare's backbeat is its downbeat: accents follow the beat it
         // lands on, not only the 16th inside it
-        let acc = if role == "snare" && on_grid && in_beat == 0 && (step.rem_euclid(8) == 4) { 1.0 } else { acc };
+        let acc = if role == "snare" && on_grid && in_beat == 0 && (step.rem_euclid(8) == 4) {
+            1.0
+        } else {
+            acc
+        };
         let mut v = n.vel * (1.0 + (acc - 1.0) * amount);
         v *= phrase_gain(bar, in_bar, spb, f.phrase * amount);
         if role == "keys" && stack[ni] > 1 {
             v *= if top[ni] { 1.06 } else { 0.94 };
         }
         v *= 1.0 + f.vel_spread * amount * noise(seed, ni as u64, 2);
-        n.vel = if ghost { v.clamp(0.05, 0.39) } else { v.clamp(0.12, 1.0) };
+        n.vel = if ghost {
+            v.clamp(0.05, 0.39)
+        } else {
+            v.clamp(0.12, 1.0)
+        };
     }
 }
 
@@ -199,7 +302,15 @@ mod tests {
     use crate::project::{Pattern, Project};
 
     fn grid(n: usize, vel: f32) -> Vec<Note> {
-        (0..n).map(|i| Note { start: i as f32, len: 1.0, pitch: 60, vel, ..Default::default() }).collect()
+        (0..n)
+            .map(|i| Note {
+                start: i as f32,
+                len: 1.0,
+                pitch: 60,
+                vel,
+                ..Default::default()
+            })
+            .collect()
     }
 
     fn proj() -> Project {
@@ -208,8 +319,31 @@ mod tests {
         let mut pat = Pattern::new("a", 8);
         pat.clips.insert("kick".into(), grid(128, 0.9));
         pat.clips.insert("hat".into(), grid(128, 0.8));
-        pat.clips.insert("snare".into(), (0..16).map(|b| Note { start: (b * 8 + 4) as f32, len: 1.0, pitch: 60, vel: 0.9, ..Default::default() }).collect());
-        pat.clips.insert("harmony".into(), [60u8, 64, 67].iter().map(|&k| Note { start: 0.0, len: 16.0, pitch: k, vel: 0.7, ..Default::default() }).collect());
+        pat.clips.insert(
+            "snare".into(),
+            (0..16)
+                .map(|b| Note {
+                    start: (b * 8 + 4) as f32,
+                    len: 1.0,
+                    pitch: 60,
+                    vel: 0.9,
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        pat.clips.insert(
+            "harmony".into(),
+            [60u8, 64, 67]
+                .iter()
+                .map(|&k| Note {
+                    start: 0.0,
+                    len: 16.0,
+                    pitch: k,
+                    vel: 0.7,
+                    ..Default::default()
+                })
+                .collect(),
+        );
         p.patterns.push(pat);
         p.swing = 0.3;
         p
@@ -231,21 +365,43 @@ mod tests {
         let mut b = proj();
         let r = apply(&mut a, 7, 1.0);
         apply(&mut b, 7, 1.0);
-        assert_eq!(serde_json::to_string(&a).unwrap(), serde_json::to_string(&b).unwrap());
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
         assert!(r.notes > 0);
         assert_eq!(a.swing, 0.0, "the swing is baked once");
         let pat = &a.patterns[0];
         // starts stay on the grid
         assert!(pat.notes("hat").iter().all(|n| n.start.fract() == 0.0));
         // hats take the swing on the off 16ths, the kick does not
-        let hat_off: f32 = pat.notes("hat").iter().filter(|n| n.start as i64 % 2 == 1).map(|n| n.offset).sum::<f32>() / 64.0;
-        let kick_off: f32 = pat.notes("kick").iter().filter(|n| n.start as i64 % 2 == 1).map(|n| n.offset).sum::<f32>() / 64.0;
-        assert!(hat_off > 0.12 && kick_off.abs() < 0.02, "hat {hat_off} kick {kick_off}");
+        let hat_off: f32 = pat
+            .notes("hat")
+            .iter()
+            .filter(|n| n.start as i64 % 2 == 1)
+            .map(|n| n.offset)
+            .sum::<f32>()
+            / 64.0;
+        let kick_off: f32 = pat
+            .notes("kick")
+            .iter()
+            .filter(|n| n.start as i64 % 2 == 1)
+            .map(|n| n.offset)
+            .sum::<f32>()
+            / 64.0;
+        assert!(
+            hat_off > 0.12 && kick_off.abs() < 0.02,
+            "hat {hat_off} kick {kick_off}"
+        );
         // the snare lays back
         let sn: f32 = pat.notes("snare").iter().map(|n| n.offset).sum::<f32>() / 16.0;
         assert!(sn > 0.04, "{sn}");
         // no flat velocities: hats get an accent cycle
-        assert!(vel_sd(pat.notes("hat")) > 0.08, "{}", vel_sd(pat.notes("hat")));
+        assert!(
+            vel_sd(pat.notes("hat")) > 0.08,
+            "{}",
+            vel_sd(pat.notes("hat"))
+        );
         let h = pat.notes("hat");
         assert!(h[0].vel > h[1].vel && h[2].vel > h[1].vel);
         // chords strum low to high
@@ -258,7 +414,16 @@ mod tests {
     #[test]
     fn ghosts_stay_ghosts_and_amount_zero_is_identity() {
         let mut p = proj();
-        p.patterns[0].clips.insert("snare".into(), vec![Note { start: 3.0, len: 1.0, pitch: 60, vel: 0.3, ..Default::default() }]);
+        p.patterns[0].clips.insert(
+            "snare".into(),
+            vec![Note {
+                start: 3.0,
+                len: 1.0,
+                pitch: 60,
+                vel: 0.3,
+                ..Default::default()
+            }],
+        );
         let before = serde_json::to_value(&p.patterns).unwrap();
         let mut q = p.clone();
         apply(&mut q, 1, 0.0);

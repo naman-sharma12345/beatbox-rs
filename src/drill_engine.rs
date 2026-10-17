@@ -28,16 +28,21 @@ pub enum Kind {
 impl Kind {
     fn parse(s: &str) -> Option<Kind> {
         let s = s.trim().to_lowercase();
-        Some(match s.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end_matches('_') {
-            "intro" => Kind::Intro,
-            "hook" | "chorus" => Kind::Hook,
-            "verse" => Kind::Verse,
-            "switch" | "beat_switch" | "beatswitch" => Kind::Switch,
-            "bridge" | "melodic" => Kind::Bridge,
-            "outro" | "end" => Kind::Outro,
-            "break" | "drop" => Kind::Break,
-            _ => return None,
-        })
+        Some(
+            match s
+                .trim_end_matches(|c: char| c.is_ascii_digit())
+                .trim_end_matches('_')
+            {
+                "intro" => Kind::Intro,
+                "hook" | "chorus" => Kind::Hook,
+                "verse" => Kind::Verse,
+                "switch" | "beat_switch" | "beatswitch" => Kind::Switch,
+                "bridge" | "melodic" => Kind::Bridge,
+                "outro" | "end" => Kind::Outro,
+                "break" | "drop" => Kind::Break,
+                _ => return None,
+            },
+        )
     }
     fn word(self) -> &'static str {
         match self {
@@ -73,10 +78,22 @@ pub type Loop = Vec<(i32, bool)>;
 pub fn progression(name: &str) -> Option<(Loop, &'static str)> {
     Some(match name {
         "phrygian" => (vec![(0, true), (1, false)], "i - bII (Phrygian menace)"),
-        "harmonic" => (vec![(0, true), (8, false), (10, false), (7, false)], "i - bVI - bVII - V (harmonic minor)"),
-        "dark" => (vec![(0, true), (5, true), (8, false), (7, false)], "i - iv - bVI - V"),
-        "two" => (vec![(0, true), (8, false)], "i - bVI (two-chord melodic drill)"),
-        "switch" => (vec![(5, true), (1, false), (8, false), (7, false)], "iv - bII - bVI - V (beat switch)"),
+        "harmonic" => (
+            vec![(0, true), (8, false), (10, false), (7, false)],
+            "i - bVI - bVII - V (harmonic minor)",
+        ),
+        "dark" => (
+            vec![(0, true), (5, true), (8, false), (7, false)],
+            "i - iv - bVI - V",
+        ),
+        "two" => (
+            vec![(0, true), (8, false)],
+            "i - bVI (two-chord melodic drill)",
+        ),
+        "switch" => (
+            vec![(5, true), (1, false), (8, false), (7, false)],
+            "iv - bII - bVI - V (beat switch)",
+        ),
         _ => return None,
     })
 }
@@ -85,7 +102,13 @@ pub fn progression(name: &str) -> Option<(Loop, &'static str)> {
 /// switch, melodic bridge 8, hook 8, outro 4.
 pub fn template(name: &str, switch: bool) -> Vec<Sec> {
     let raw: &[(Kind, u32)] = match name {
-        "short" => &[(Kind::Intro, 4), (Kind::Hook, 8), (Kind::Verse, 16), (Kind::Hook, 8), (Kind::Outro, 4)],
+        "short" => &[
+            (Kind::Intro, 4),
+            (Kind::Hook, 8),
+            (Kind::Verse, 16),
+            (Kind::Hook, 8),
+            (Kind::Outro, 4),
+        ],
         "loop" => &[(Kind::Hook, 8)],
         _ => &[
             (Kind::Intro, 4),
@@ -98,21 +121,44 @@ pub fn template(name: &str, switch: bool) -> Vec<Sec> {
             (Kind::Outro, 4),
         ],
     };
-    name_secs(raw.iter().map(|&(k, b)| (if !switch && k == Kind::Switch { Kind::Verse } else { k }, b)).collect())
+    name_secs(
+        raw.iter()
+            .map(|&(k, b)| {
+                (
+                    if !switch && k == Kind::Switch {
+                        Kind::Verse
+                    } else {
+                        k
+                    },
+                    b,
+                )
+            })
+            .collect(),
+    )
 }
 
 fn name_secs(v: Vec<(Kind, u32)>) -> Vec<Sec> {
     let mut count = std::collections::HashMap::new();
-    let total: std::collections::HashMap<&str, usize> = v.iter().fold(std::collections::HashMap::new(), |mut m, (k, _)| {
-        *m.entry(k.word()).or_insert(0) += 1;
-        m
-    });
+    let total: std::collections::HashMap<&str, usize> =
+        v.iter()
+            .fold(std::collections::HashMap::new(), |mut m, (k, _)| {
+                *m.entry(k.word()).or_insert(0) += 1;
+                m
+            });
     v.into_iter()
         .map(|(k, b)| {
             let c = count.entry(k.word()).or_insert(0usize);
             *c += 1;
-            let name = if total[k.word()] > 1 { format!("{}{}", k.word(), c) } else { k.word().to_string() };
-            Sec { kind: k, bars: b.clamp(1, 64), name }
+            let name = if total[k.word()] > 1 {
+                format!("{}{}", k.word(), c)
+            } else {
+                k.word().to_string()
+            };
+            Sec {
+                kind: k,
+                bars: b.clamp(1, 64),
+                name,
+            }
         })
         .collect()
 }
@@ -125,14 +171,23 @@ pub fn parse_sections(v: &Value) -> Result<Vec<Sec>> {
         if t.is_empty() {
             return Ok(());
         }
-        let mut it = t.split(|c: char| c.is_whitespace() || c == ':' || c == '=' || c == 'x').filter(|s| !s.is_empty());
+        let mut it = t
+            .split(|c: char| c.is_whitespace() || c == ':' || c == '=' || c == 'x')
+            .filter(|s| !s.is_empty());
         let k = it.next().unwrap_or("");
-        let kind = Kind::parse(k).ok_or_else(|| anyhow::anyhow!("unknown section '{k}' (intro, hook, verse, switch, bridge, break, outro)"))?;
-        let bars = it.next().and_then(|b| b.parse::<u32>().ok()).unwrap_or(match kind {
-            Kind::Verse | Kind::Switch => 16,
-            Kind::Intro | Kind::Outro | Kind::Break => 4,
-            _ => 8,
-        });
+        let kind = Kind::parse(k).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown section '{k}' (intro, hook, verse, switch, bridge, break, outro)"
+            )
+        })?;
+        let bars = it
+            .next()
+            .and_then(|b| b.parse::<u32>().ok())
+            .unwrap_or(match kind {
+                Kind::Verse | Kind::Switch => 16,
+                Kind::Intro | Kind::Outro | Kind::Break => 4,
+                _ => 8,
+            });
         out.push((kind, bars));
         Ok(())
     };
@@ -147,7 +202,12 @@ pub fn parse_sections(v: &Value) -> Result<Vec<Sec>> {
                 match x {
                     Value::String(s) => push(s)?,
                     Value::Object(o) => {
-                        let k = o.get("type").or_else(|| o.get("kind")).or_else(|| o.get("name")).and_then(|v| v.as_str()).unwrap_or("");
+                        let k = o
+                            .get("type")
+                            .or_else(|| o.get("kind"))
+                            .or_else(|| o.get("name"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         let b = o.get("bars").and_then(|v| v.as_u64()).unwrap_or(0);
                         if b > 0 {
                             push(&format!("{k} {b}"))?;
@@ -245,7 +305,15 @@ fn hum(ctx: &Ctx, rng: &mut Rng, n: &mut Note, ms: f32, vel_pct: f32) {
 }
 
 /// One bar of drums (kick, snare, clap, hat, rim) at step offset `o`.
-fn drums_bar(p: &mut Pattern, ctx: &Ctx, kind: Kind, bi: u32, bars: u32, rng: &mut Rng, st: &mut Stats) {
+fn drums_bar(
+    p: &mut Pattern,
+    ctx: &Ctx,
+    kind: Kind,
+    bi: u32,
+    bars: u32,
+    rng: &mut Rng,
+    st: &mut Stats,
+) {
     let o = (bi * 16) as f32;
     let b_bar = bi % 2 == 1;
     let bridge = kind == Kind::Bridge;
@@ -261,12 +329,20 @@ fn drums_bar(p: &mut Pattern, ctx: &Ctx, kind: Kind, bi: u32, bars: u32, rng: &m
             (_, false, true) => KICK_B.to_vec(),
         };
         for s in steps {
-            push(p, "kick", note(o + s as f32, 1.0, 60, if s == 0 { 1.0 } else { 0.92 }));
+            push(
+                p,
+                "kick",
+                note(o + s as f32, 1.0, 60, if s == 0 { 1.0 } else { 0.92 }),
+            );
         }
     }
     // snare (+ clap)
     if !bridge && kind != Kind::Intro && kind != Kind::Outro {
-        let drag = if ctx.style == Style::Uk && ctx.humanize { 0.06 } else { 0.0 };
+        let drag = if ctx.style == Style::Uk && ctx.humanize {
+            0.06
+        } else {
+            0.0
+        };
         let mut sn = note(o + 8.0, 1.0, 60, 0.95);
         sn.offset = drag;
         push(p, "snare", sn);
@@ -276,7 +352,11 @@ fn drums_bar(p: &mut Pattern, ctx: &Ctx, kind: Kind, bi: u32, bars: u32, rng: &m
             push(p, "snare", late);
         }
         if melodic || ctx.style == Style::Ny || kind == Kind::Switch {
-            push(p, "clap", note(o + 8.0, 1.0, 60, if melodic { 0.9 } else { 0.7 }));
+            push(
+                p,
+                "clap",
+                note(o + 8.0, 1.0, 60, if melodic { 0.9 } else { 0.7 }),
+            );
         }
     }
     // hats
@@ -284,7 +364,12 @@ fn drums_bar(p: &mut Pattern, ctx: &Ctx, kind: Kind, bi: u32, bars: u32, rng: &m
         let mut hats: Vec<Note> = Vec::new();
         if melodic {
             for s in (0..16).step_by(2) {
-                hats.push(note(o + s as f32, 0.5, 60, if s % 4 == 0 { 0.8 } else { 0.62 }));
+                hats.push(note(
+                    o + s as f32,
+                    0.5,
+                    60,
+                    if s % 4 == 0 { 0.8 } else { 0.62 },
+                ));
             }
         } else if bridge {
             for s in [0u32, 4, 8, 12] {
@@ -292,7 +377,12 @@ fn drums_bar(p: &mut Pattern, ctx: &Ctx, kind: Kind, bi: u32, bars: u32, rng: &m
             }
         } else {
             for s in HAT_X {
-                hats.push(note(o + s as f32, 0.5, 60, if s % 4 == 0 { 0.82 } else { 0.7 }));
+                hats.push(note(
+                    o + s as f32,
+                    0.5,
+                    60,
+                    if s % 4 == 0 { 0.82 } else { 0.7 },
+                ));
             }
             for s in HAT_GHOST {
                 hats.push(note(o + s as f32, 0.5, 60, rng.range(0.35, 0.5)));
@@ -301,7 +391,11 @@ fn drums_bar(p: &mut Pattern, ctx: &Ctx, kind: Kind, bi: u32, bars: u32, rng: &m
         // one roll per 2 bars (beat 4 or the and-of-4); hooks 2+ get an extra short one
         let extra = kind == Kind::Hook && !b_bar && rng.chance(0.35);
         if (b_bar || extra) && !bridge && kind != Kind::Intro {
-            let (rs, span) = if extra || rng.chance(0.4) { (14.0f32, 2.0f32) } else { (12.0, 4.0) };
+            let (rs, span) = if extra || rng.chance(0.4) {
+                (14.0f32, 2.0f32)
+            } else {
+                (12.0, 4.0)
+            };
             let r = rng.f32();
             let (spacing, trip) = match ctx.style {
                 Style::Ny if r < 0.25 => (1.0 / 3.0, true),
@@ -314,8 +408,17 @@ fn drums_bar(p: &mut Pattern, ctx: &Ctx, kind: Kind, bi: u32, bars: u32, rng: &m
             let ramp_pitch = st.rolls % 4 == 3;
             for k in 0..count {
                 let f = k as f32 / (count - 1).max(1) as f32;
-                let pitch = if ramp_pitch { 60 + (5.0 * f).round() as i32 } else { 60 };
-                hats.push(note(o + rs + k as f32 * spacing, spacing.min(0.5), pitch, 0.6 + 0.4 * f));
+                let pitch = if ramp_pitch {
+                    60 + (5.0 * f).round() as i32
+                } else {
+                    60
+                };
+                hats.push(note(
+                    o + rs + k as f32 * spacing,
+                    spacing.min(0.5),
+                    pitch,
+                    0.6 + 0.4 * f,
+                ));
             }
             st.rolls += 1;
             st.roll_notes += count;
@@ -332,7 +435,10 @@ fn drums_bar(p: &mut Pattern, ctx: &Ctx, kind: Kind, bi: u32, bars: u32, rng: &m
         }
     }
     // rim: one dark rim per bar on beat 4
-    if (bridge || matches!(ctx.style, Style::Ny | Style::Desi) || (kind == Kind::Switch)) && kind != Kind::Intro && kind != Kind::Outro {
+    if (bridge || matches!(ctx.style, Style::Ny | Style::Desi) || (kind == Kind::Switch))
+        && kind != Kind::Intro
+        && kind != Kind::Outro
+    {
         push(p, "rim", note(o + 12.0, 1.0, 60, 0.55));
         if ctx.style == Style::Desi && b_bar {
             push(p, "rim", note(o + 7.0, 1.0, 62, 0.45));
@@ -342,17 +448,36 @@ fn drums_bar(p: &mut Pattern, ctx: &Ctx, kind: Kind, bi: u32, bars: u32, rng: &m
 
 /// Two bars of 808 (bar `bi` and `bi + 1`): root on the downbeat, space,
 /// slides into the kick holes (1-3 glides per 2 bars).
-fn bass_cycle(p: &mut Pattern, ctx: &Ctx, chords: &Loop, kind: Kind, bi: u32, bars: u32, rng: &mut Rng, st: &mut Stats) {
-    let pick_iv = |rng: &mut Rng| -> i32 { [12, 7, 3, -5, -12, 1][rng.weighted(&[0.3, 0.2, 0.2, 0.1, 0.1, 0.1])] };
+fn bass_cycle(
+    p: &mut Pattern,
+    ctx: &Ctx,
+    chords: &Loop,
+    kind: Kind,
+    bi: u32,
+    bars: u32,
+    rng: &mut Rng,
+    st: &mut Stats,
+) {
+    let pick_iv = |rng: &mut Rng| -> i32 {
+        [12, 7, 3, -5, -12, 1][rng.weighted(&[0.3, 0.2, 0.2, 0.1, 0.1, 0.1])]
+    };
     let ny = ctx.style == Style::Ny;
-    let k = 1 + rng.weighted(if ny { &[0.25, 0.45, 0.3] } else { &[0.4, 0.4, 0.2] }) as u32;
+    let k = 1 + rng.weighted(if ny {
+        &[0.25, 0.45, 0.3]
+    } else {
+        &[0.4, 0.4, 0.2]
+    }) as u32;
     let mut slots = vec![0u32, 1, 2];
     // choose k distinct slots: 0 = bar A into beat 4, 1 = bar B stair-step, 2 = bar B octave flick
     while slots.len() > k as usize {
         let i = rng.below(slots.len());
         slots.remove(i);
     }
-    let up = if kind == Kind::Switch && bi % 4 >= 2 { 12 } else { 0 };
+    let up = if kind == Kind::Switch && bi % 4 >= 2 {
+        12
+    } else {
+        0
+    };
     let mut slides = 0u32;
     for half in 0..2u32 {
         let b = bi + half;
@@ -365,7 +490,15 @@ fn bass_cycle(p: &mut Pattern, ctx: &Ctx, chords: &Loop, kind: Kind, bi: u32, ba
         if r > 55 {
             r -= 12;
         }
-        let clampt = |t: i32| if t > 55 { t - 12 } else if t < 24 { t + 12 } else { t };
+        let clampt = |t: i32| {
+            if t > 55 {
+                t - 12
+            } else if t < 24 {
+                t + 12
+            } else {
+                t
+            }
+        };
         if half == 0 {
             push(p, "b808", note(o, 3.0, r, 1.0));
             push(p, "b808", note(o + 3.0, 3.0, r, 0.88));
@@ -441,7 +574,12 @@ pub fn motif(ctx: &Ctx, chords: &Loop, rng: &mut Rng) -> Vec<(f32, f32, i32)> {
     let chord_deg = |bar: u32| -> Vec<i32> {
         let (off, _) = chord_at(chords, bar);
         // scale degree nearest the chord root, plus its 3rd and 5th in the scale
-        let root = (0..7).min_by_key(|&d| ((sc[d] - off.rem_euclid(12)).rem_euclid(12)).min((off.rem_euclid(12) - sc[d]).rem_euclid(12))).unwrap_or(0) as i32;
+        let root = (0..7)
+            .min_by_key(|&d| {
+                ((sc[d] - off.rem_euclid(12)).rem_euclid(12))
+                    .min((off.rem_euclid(12) - sc[d]).rem_euclid(12))
+            })
+            .unwrap_or(0) as i32;
         vec![root, root + 2, root + 4]
     };
     let rhythm: [(f32, f32); 4] = [(0.0, 6.0), (6.0, 10.0), (16.0, 6.0), (22.0, 10.0)];
@@ -449,7 +587,11 @@ pub fn motif(ctx: &Ctx, chords: &Loop, rng: &mut Rng) -> Vec<(f32, f32, i32)> {
     let mut last = 4;
     for (i, _) in rhythm.iter().enumerate() {
         let cd = chord_deg(i as u32 / 2);
-        let pick = cd.iter().copied().min_by_key(|&d| ((d - last).abs() * 10) as i64 + (rng.below(7) as i64)).unwrap_or(0);
+        let pick = cd
+            .iter()
+            .copied()
+            .min_by_key(|&d| ((d - last).abs() * 10) as i64 + (rng.below(7) as i64))
+            .unwrap_or(0);
         let pick = if rng.chance(0.25) { pick + 1 } else { pick };
         call.push(pick);
         last = pick;
@@ -478,7 +620,16 @@ pub fn motif(ctx: &Ctx, chords: &Loop, rng: &mut Rng) -> Vec<(f32, f32, i32)> {
     out
 }
 
-fn melody_section(p: &mut Pattern, ctx: &Ctx, chords: &Loop, kind: Kind, bars: u32, mot: &[(f32, f32, i32)], rng: &mut Rng, desi_lead: bool) {
+fn melody_section(
+    p: &mut Pattern,
+    ctx: &Ctx,
+    chords: &Loop,
+    kind: Kind,
+    bars: u32,
+    mot: &[(f32, f32, i32)],
+    rng: &mut Rng,
+    desi_lead: bool,
+) {
     let (piano_vel, bell, stacc, choir, lead) = match kind {
         Kind::Intro => (0.55, false, false, true, desi_lead),
         Kind::Hook => (0.7, !desi_lead, true, true, desi_lead),
@@ -498,9 +649,17 @@ fn melody_section(p: &mut Pattern, ctx: &Ctx, chords: &Loop, kind: Kind, bars: u
                 continue;
             }
             // switch: the motif moves an octave down with a pushed rhythm
-            let (m2, s2) = if kind == Kind::Switch { (m - 12, at + if i % 2 == 1 { -2.0 } else { 0.0 }) } else { (m, at) };
+            let (m2, s2) = if kind == Kind::Switch {
+                (m - 12, at + if i % 2 == 1 { -2.0 } else { 0.0 })
+            } else {
+                (m, at)
+            };
             let len = l.min((bars * 16) as f32 - s2);
-            push(p, "piano", note(s2.max(0.0), len, m2, piano_vel + rng.bipolar() * 0.04));
+            push(
+                p,
+                "piano",
+                note(s2.max(0.0), len, m2, piano_vel + rng.bipolar() * 0.04),
+            );
             if bell && i % 2 == 0 {
                 push(p, "bell", note(s2.max(0.0), len.min(4.0), m2 + 12, 0.42));
             }
@@ -520,24 +679,51 @@ fn melody_section(p: &mut Pattern, ctx: &Ctx, chords: &Loop, kind: Kind, bars: u
         let root = 48 + (ctx.tonic as i32 + off).rem_euclid(12);
         let third = if minor { 3 } else { 4 };
         if stacc {
-            let tones = [root + 12, root + 7 + 12, root + 24, root + third + 12, root + 7 + 12];
+            let tones = [
+                root + 12,
+                root + 7 + 12,
+                root + 24,
+                root + third + 12,
+                root + 7 + 12,
+            ];
             for (k, s) in [0u32, 3, 6, 10, 12].iter().enumerate() {
                 push(p, "stacc", note(o + *s as f32, 1.0, tones[k], 0.48));
             }
         }
         if choir && (kind != Kind::Hook || b % 2 == 0) {
-            let len = if kind == Kind::Hook { 32.0f32.min((bars * 16) as f32 - o) } else { 16.0 };
+            let len = if kind == Kind::Hook {
+                32.0f32.min((bars * 16) as f32 - o)
+            } else {
+                16.0
+            };
             for t in [root + 12, root + 12 + third, root + 19] {
-                push(p, "choir", note(o, len, t, if kind == Kind::Bridge { 0.55 } else { 0.38 }));
+                push(
+                    p,
+                    "choir",
+                    note(o, len, t, if kind == Kind::Bridge { 0.55 } else { 0.38 }),
+                );
             }
         }
     }
 }
 
 /// Fill one section's pattern.
-pub fn fill(p: &mut Pattern, ctx: &Ctx, sec: &Sec, mot: &[(f32, f32, i32)], mot_switch: &[(f32, f32, i32)], rng: &mut Rng, st: &mut Stats, desi_lead: bool) {
+pub fn fill(
+    p: &mut Pattern,
+    ctx: &Ctx,
+    sec: &Sec,
+    mot: &[(f32, f32, i32)],
+    mot_switch: &[(f32, f32, i32)],
+    rng: &mut Rng,
+    st: &mut Stats,
+    desi_lead: bool,
+) {
     let bars = sec.bars;
-    let chords = if sec.kind == Kind::Switch { ctx.switch_chords.clone() } else { ctx.chords.clone() };
+    let chords = if sec.kind == Kind::Switch {
+        ctx.switch_chords.clone()
+    } else {
+        ctx.chords.clone()
+    };
     for bi in 0..bars {
         drums_bar(p, ctx, sec.kind, bi, bars, rng, st);
     }
@@ -584,15 +770,28 @@ pub fn fill(p: &mut Pattern, ctx: &Ctx, sec: &Sec, mot: &[(f32, f32, i32)], mot_
     if matches!(sec.kind, Kind::Verse | Kind::Switch) {
         let mut b = 3;
         while b + 1 < bars {
-            drop_window(p, (b * 16 + 12) as f32, (b * 16 + 16) as f32, &["kick", "snare", "clap", "hat", "rim", "b808"]);
+            drop_window(
+                p,
+                (b * 16 + 12) as f32,
+                (b * 16 + 16) as f32,
+                &["kick", "snare", "clap", "hat", "rim", "b808"],
+            );
             st.phrase_drops += 1;
             b += 8;
         }
     }
-    let m = if sec.kind == Kind::Switch { mot_switch } else { mot };
+    let m = if sec.kind == Kind::Switch {
+        mot_switch
+    } else {
+        mot
+    };
     melody_section(p, ctx, &chords, sec.kind, bars, m, rng, desi_lead);
     for v in p.clips.values_mut() {
-        v.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+        v.sort_by(|a, b| {
+            a.start
+                .partial_cmp(&b.start)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 }
 
@@ -615,19 +814,27 @@ pub fn drop_window(p: &mut Pattern, a: f32, b: f32, tracks: &[&str]) -> u32 {
 }
 
 fn style_of(s: &str) -> Result<Style> {
-    Ok(match s.trim().to_lowercase().replace([' ', '-'], "_").as_str() {
-        "uk" | "uk_drill" | "drill" | "" => Style::Uk,
-        "ny" | "ny_drill" | "brooklyn" => Style::Ny,
-        "melodic" | "melodic_drill" | "melodic_trap" => Style::Melodic,
-        "desi" | "desi_drill" | "punjabi" | "hindi" => Style::Desi,
-        o => bail!("style '{o}': uk, ny, melodic or desi"),
-    })
+    Ok(
+        match s.trim().to_lowercase().replace([' ', '-'], "_").as_str() {
+            "uk" | "uk_drill" | "drill" | "" => Style::Uk,
+            "ny" | "ny_drill" | "brooklyn" => Style::Ny,
+            "melodic" | "melodic_drill" | "melodic_trap" => Style::Melodic,
+            "desi" | "desi_drill" | "punjabi" | "hindi" => Style::Desi,
+            o => bail!("style '{o}': uk, ny, melodic or desi"),
+        },
+    )
 }
 
 fn num_list(v: Option<&Value>) -> Vec<f32> {
     match v {
-        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect(),
-        Some(Value::String(s)) => s.split([',', ' ']).filter_map(|t| t.trim().parse::<f32>().ok()).collect(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| x.as_f64().map(|f| f as f32))
+            .collect(),
+        Some(Value::String(s)) => s
+            .split([',', ' '])
+            .filter_map(|t| t.trim().parse::<f32>().ok())
+            .collect(),
         Some(x) => x.as_f64().map(|f| vec![f as f32]).unwrap_or_default(),
         None => Vec::new(),
     }
@@ -638,7 +845,9 @@ pub fn make_drill_beat(e: &mut Engine, a: &Value) -> Result<Value> {
     let bpm = f_or(a, "bpm", 142.0).clamp(60.0, 200.0);
     let (tonic, key_name) = parse_key(&s_opt(a, "key").unwrap_or_else(|| "F#".into()))?;
     let mut rng = Rng::new(seed_of(a));
-    let prog_name = s_opt(a, "progression").unwrap_or_else(|| "auto".into()).to_lowercase();
+    let prog_name = s_opt(a, "progression")
+        .unwrap_or_else(|| "auto".into())
+        .to_lowercase();
     let prog_name = if prog_name == "auto" {
         match style {
             Style::Melodic => "two".to_string(),
@@ -648,23 +857,38 @@ pub fn make_drill_beat(e: &mut Engine, a: &Value) -> Result<Value> {
     } else {
         prog_name
     };
-    let (chords, prog_label) = progression(&prog_name).ok_or_else(|| anyhow::anyhow!("progression '{prog_name}': auto, phrygian, harmonic, dark, two, switch"))?;
+    let (chords, prog_label) = progression(&prog_name).ok_or_else(|| {
+        anyhow::anyhow!("progression '{prog_name}': auto, phrygian, harmonic, dark, two, switch")
+    })?;
     let (switch_chords, switch_label) = progression("switch").unwrap();
     let switch = b_or(a, "switch", true);
     let mut secs = match a.get("sections") {
         Some(v) if !v.is_null() => parse_sections(v)?,
-        _ => template(&s_opt(a, "template").unwrap_or_else(|| "std".into()), switch),
+        _ => template(
+            &s_opt(a, "template").unwrap_or_else(|| "std".into()),
+            switch,
+        ),
     };
     // fit a requested length by stretching the verses (multiples of 4 bars, 8..32)
     let mut length_note = Value::Null;
     if let Some(len_s) = f_opt(a, "length_s").filter(|x| *x > 5.0) {
         let target = (len_s * bpm / 240.0).round() as i64;
-        let fixed: i64 = secs.iter().filter(|s| !matches!(s.kind, Kind::Verse | Kind::Switch)).map(|s| s.bars as i64).sum();
-        let nv = secs.iter().filter(|s| matches!(s.kind, Kind::Verse | Kind::Switch)).count() as i64;
+        let fixed: i64 = secs
+            .iter()
+            .filter(|s| !matches!(s.kind, Kind::Verse | Kind::Switch))
+            .map(|s| s.bars as i64)
+            .sum();
+        let nv = secs
+            .iter()
+            .filter(|s| matches!(s.kind, Kind::Verse | Kind::Switch))
+            .count() as i64;
         if nv > 0 {
             let per = (((target - fixed) as f32 / nv as f32) / 4.0).round() as i64 * 4;
             let per = per.clamp(8, 32) as u32;
-            for s in secs.iter_mut().filter(|s| matches!(s.kind, Kind::Verse | Kind::Switch)) {
+            for s in secs
+                .iter_mut()
+                .filter(|s| matches!(s.kind, Kind::Verse | Kind::Switch))
+            {
                 s.bars = per;
             }
         }
@@ -739,14 +963,27 @@ pub fn make_drill_beat(e: &mut Engine, a: &Value) -> Result<Value> {
             b.sustain = true;
         }
     }
-    let mut st = Stats { slides: 0, cycles: 0, rolls: 0, roll_notes: 0, triplet_roll_notes: 0, hat_notes: 0, phrase_drops: 0 };
+    let mut st = Stats {
+        slides: 0,
+        cycles: 0,
+        rolls: 0,
+        roll_notes: 0,
+        triplet_roll_notes: 0,
+        hat_notes: 0,
+        phrase_drops: 0,
+    };
     let mot = motif(&ctx, &chords, &mut rng);
     let mot_sw = motif(&ctx, &switch_chords, &mut rng);
     for s in &secs {
         let mut pat = Pattern::new(&s.name, s.bars);
-        fill(&mut pat, &ctx, s, &mot, &mot_sw, &mut rng, &mut st, desi_lead);
+        fill(
+            &mut pat, &ctx, s, &mot, &mot_sw, &mut rng, &mut st, desi_lead,
+        );
         p.patterns.push(pat);
-        p.arrangement.push(Section { pattern: s.name.clone(), repeats: 1 });
+        p.arrangement.push(Section {
+            pattern: s.name.clone(),
+            repeats: 1,
+        });
     }
     // drop-out: the last half beat before each hook belongs to the pickup line
     let mut dropouts = Vec::new();
@@ -754,7 +991,12 @@ pub fn make_drill_beat(e: &mut Engine, a: &Value) -> Result<Value> {
         if secs[i].kind == Kind::Hook {
             let steps = (secs[i - 1].bars * 16) as f32;
             let pi = p.pattern_index(&secs[i - 1].name)?;
-            drop_window(&mut p.patterns[pi], steps - 2.0, steps, &["kick", "snare", "clap", "hat", "rim", "b808"]);
+            drop_window(
+                &mut p.patterns[pi],
+                steps - 2.0,
+                steps,
+                &["kick", "snare", "clap", "hat", "rim", "b808"],
+            );
             dropouts.push(secs[i].name.clone());
         }
     }
@@ -809,12 +1051,24 @@ pub fn make_drill_beat(e: &mut Engine, a: &Value) -> Result<Value> {
             };
             // idempotent on re-runs: one effect of each type per track from here
             let ty = f["type"].as_str().unwrap_or("");
-            let has = serde_json::to_value(&e.project.tracks[ti].effects).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default().iter().any(|x| x.get("type").and_then(|t| t.as_str()) == Some(ty));
+            let has = serde_json::to_value(&e.project.tracks[ti].effects)
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default()
+                .iter()
+                .any(|x| x.get("type").and_then(|t| t.as_str()) == Some(ty));
             if !has && e.call_from("add_effect", &f, "drill").is_ok() {
                 fx_added += 1;
             }
         }
-        for (t, db) in [("piano", -5.0f32), ("stacc", -11.0), ("choir", -13.0), ("bell", -10.0), ("lead", -6.0), ("rim", -9.0)] {
+        for (t, db) in [
+            ("piano", -5.0f32),
+            ("stacc", -11.0),
+            ("choir", -13.0),
+            ("bell", -10.0),
+            ("lead", -6.0),
+            ("rim", -9.0),
+        ] {
             if created.iter().any(|c| c == t) {
                 if let Ok(i) = e.project.track_index(t) {
                     e.project.tracks[i].volume_db += db;
@@ -827,7 +1081,13 @@ pub fn make_drill_beat(e: &mut Engine, a: &Value) -> Result<Value> {
     if b_or(a, "transitions", true) {
         for (i, s) in secs.iter().enumerate().skip(1) {
             let mut add = |ty: &str, bars: f32| {
-                if e.call_from("add_transition", &json!({"into": s.name, "type": ty, "bars": bars}), "drill").is_ok() {
+                if e.call_from(
+                    "add_transition",
+                    &json!({"into": s.name, "type": ty, "bars": bars}),
+                    "drill",
+                )
+                .is_ok()
+                {
                     transitions.push(format!("{ty} into {}", s.name));
                 }
             };
@@ -851,7 +1111,11 @@ pub fn make_drill_beat(e: &mut Engine, a: &Value) -> Result<Value> {
             v
         })
         .collect();
-    let trip_share = if st.hat_notes > 0 { st.triplet_roll_notes as f32 / st.hat_notes as f32 } else { 0.0 };
+    let trip_share = if st.hat_notes > 0 {
+        st.triplet_roll_notes as f32 / st.hat_notes as f32
+    } else {
+        0.0
+    };
     let style_word = match style {
         Style::Uk => "uk",
         Style::Ny => "ny",
@@ -921,13 +1185,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("beatbox_drill_{tag}"));
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir);
-        e.call("new_project", &json!({"name": "drill", "bpm": 120})).unwrap();
+        e.call("new_project", &json!({"name": "drill", "bpm": 120}))
+            .unwrap();
         e
     }
 
     fn starts(p: &Pattern, t: &str, bar: u32) -> Vec<u32> {
         let o = (bar * 16) as f32;
-        let mut v: Vec<u32> = p.notes(t).iter().filter(|n| n.start >= o && n.start < o + 16.0).map(|n| (n.start - o).round() as u32).collect();
+        let mut v: Vec<u32> = p
+            .notes(t)
+            .iter()
+            .filter(|n| n.start >= o && n.start < o + 16.0)
+            .map(|n| (n.start - o).round() as u32)
+            .collect();
         v.sort();
         v.dedup();
         v
@@ -936,7 +1206,12 @@ mod tests {
     #[test]
     fn grid_follows_the_drill_rules() {
         let mut e = eng("grid");
-        let r = e.call("make_drill_beat", &json!({"key": "C", "bpm": 142, "seed": 3, "transitions": false})).unwrap();
+        let r = e
+            .call(
+                "make_drill_beat",
+                &json!({"key": "C", "bpm": 142, "seed": 3, "transitions": false}),
+            )
+            .unwrap();
         assert_eq!(e.project.bpm, 142.0);
         assert_eq!(e.project.key_root, "C");
         assert_eq!(r["sections"].as_array().unwrap().len(), 8, "{r}");
@@ -952,13 +1227,22 @@ mod tests {
         // 808 is mono: no overlaps
         let b = hook.notes("b808");
         for w in b.windows(2) {
-            assert!(w[0].end() <= w[1].start + 1e-3, "808 overlap {:?} {:?}", w[0], w[1]);
+            assert!(
+                w[0].end() <= w[1].start + 1e-3,
+                "808 overlap {:?} {:?}",
+                w[0],
+                w[1]
+            );
         }
         let per = r["808"]["per_2_bars"].as_f64().unwrap();
         assert!((1.0..=3.0).contains(&per), "{r}");
         // every slide lands on a note at its target pitch right where it ends
         for n in b.iter().filter(|n| n.slide_to.is_some()) {
-            assert!(b.iter().any(|m| (m.start - n.end()).abs() < 1e-3 && Some(m.pitch) == n.slide_to), "slide without a landing {n:?}");
+            assert!(
+                b.iter()
+                    .any(|m| (m.start - n.end()).abs() < 1e-3 && Some(m.pitch) == n.slide_to),
+                "slide without a landing {n:?}"
+            );
         }
         let trip = r["hats"]["triplet_share"].as_f64().unwrap();
         assert!(trip > 0.02 && trip < 0.4, "{r}");
@@ -986,7 +1270,11 @@ mod tests {
         let (b0, _) = e.project.section_beats(sec).unwrap();
         let pat = &e.project.patterns[e.project.pattern_index(sec).unwrap()];
         let a0 = (beat - b0) * 4.0;
-        assert!(!pat.notes("kick").iter().chain(pat.notes("b808").iter()).any(|n| n.start >= a0 && n.start < a0 + 4.0));
+        assert!(!pat
+            .notes("kick")
+            .iter()
+            .chain(pat.notes("b808").iter())
+            .any(|n| n.start >= a0 && n.start < a0 + 4.0));
         // the bar before each hook ends with a drop-out (no drums or 808 in its last 2 steps)
         let intro = &e.project.patterns[e.project.pattern_index("intro").unwrap()];
         let end = intro.steps() as f32;
@@ -996,13 +1284,27 @@ mod tests {
     #[test]
     fn custom_sections_melodic_and_desi() {
         let mut e = eng("custom");
-        let r = e.call("make_drill_beat", &json!({"style": "melodic", "sections": "intro 2, hook 4, bridge 4", "seed": 1})).unwrap();
+        let r = e
+            .call(
+                "make_drill_beat",
+                &json!({"style": "melodic", "sections": "intro 2, hook 4, bridge 4", "seed": 1}),
+            )
+            .unwrap();
         assert_eq!(r["sections"].as_array().unwrap().len(), 3);
         let hook = &e.project.patterns[e.project.pattern_index("hook").unwrap()];
         assert_eq!(starts(hook, "kick", 0), vec![0, 6]);
-        let r2 = e.call("make_drill_beat", &json!({"style": "desi", "template": "short", "seed": 2})).unwrap();
+        let r2 = e
+            .call(
+                "make_drill_beat",
+                &json!({"style": "desi", "template": "short", "seed": 2}),
+            )
+            .unwrap();
         assert!(e.project.track_index("lead").is_ok(), "{r2}");
-        assert!(e.call("make_drill_beat", &json!({"style": "polka"})).is_err());
-        assert!(e.call("make_drill_beat", &json!({"sections": "verse 8, waltz 4"})).is_err());
+        assert!(e
+            .call("make_drill_beat", &json!({"style": "polka"}))
+            .is_err());
+        assert!(e
+            .call("make_drill_beat", &json!({"sections": "verse 8, waltz 4"}))
+            .is_err());
     }
 }

@@ -19,13 +19,47 @@ pub fn cab_chain(cab: &str, mic: &str) -> Vec<Bq> {
     let room = mic.eq_ignore_ascii_case("room");
     let lp = |f: f32| if room { f * 0.85 } else { f };
     let v: Vec<(FilterType, f32, f32, f32)> = match cab {
-        "1x12" | "1x12_open" => vec![(HighPass, 80.0, 0.9, 0.0), (Peak, 120.0, 1.2, 3.0), (Peak, 2200.0, 1.5, 3.0), (Peak, 3600.0, 3.0, -3.0), (LowPass, lp(5500.0), 0.7, 0.0), (LowPass, lp(5500.0), 0.7, 0.0), (LowPass, 9000.0, 0.7, 0.0)],
-        "2x12" => vec![(HighPass, 75.0, 0.9, 0.0), (Peak, 110.0, 1.3, 3.5), (Peak, 400.0, 1.0, -1.5), (Peak, 2500.0, 1.4, 2.5), (LowPass, lp(5000.0), 0.7, 0.0), (LowPass, lp(5000.0), 0.7, 0.0), (LowPass, 8500.0, 0.7, 0.0)],
-        "4x12" => vec![(HighPass, 70.0, 1.0, 0.0), (Peak, 100.0, 1.4, 4.0), (Peak, 500.0, 1.0, -2.0), (Peak, 1800.0, 1.2, 2.0), (Peak, 3000.0, 2.0, 1.5), (LowPass, lp(4500.0), 0.7, 0.0), (LowPass, lp(4500.0), 0.7, 0.0), (LowPass, 8000.0, 0.7, 0.0)],
-        "bass_4x10" | "bass" => vec![(HighPass, 40.0, 0.8, 0.0), (Peak, 80.0, 1.0, 3.0), (Peak, 700.0, 1.0, -2.0), (Peak, 2500.0, 1.5, 3.0), (LowPass, lp(4000.0), 0.7, 0.0), (LowPass, lp(4000.0), 0.7, 0.0)],
+        "1x12" | "1x12_open" => vec![
+            (HighPass, 80.0, 0.9, 0.0),
+            (Peak, 120.0, 1.2, 3.0),
+            (Peak, 2200.0, 1.5, 3.0),
+            (Peak, 3600.0, 3.0, -3.0),
+            (LowPass, lp(5500.0), 0.7, 0.0),
+            (LowPass, lp(5500.0), 0.7, 0.0),
+            (LowPass, 9000.0, 0.7, 0.0),
+        ],
+        "2x12" => vec![
+            (HighPass, 75.0, 0.9, 0.0),
+            (Peak, 110.0, 1.3, 3.5),
+            (Peak, 400.0, 1.0, -1.5),
+            (Peak, 2500.0, 1.4, 2.5),
+            (LowPass, lp(5000.0), 0.7, 0.0),
+            (LowPass, lp(5000.0), 0.7, 0.0),
+            (LowPass, 8500.0, 0.7, 0.0),
+        ],
+        "4x12" => vec![
+            (HighPass, 70.0, 1.0, 0.0),
+            (Peak, 100.0, 1.4, 4.0),
+            (Peak, 500.0, 1.0, -2.0),
+            (Peak, 1800.0, 1.2, 2.0),
+            (Peak, 3000.0, 2.0, 1.5),
+            (LowPass, lp(4500.0), 0.7, 0.0),
+            (LowPass, lp(4500.0), 0.7, 0.0),
+            (LowPass, 8000.0, 0.7, 0.0),
+        ],
+        "bass_4x10" | "bass" => vec![
+            (HighPass, 40.0, 0.8, 0.0),
+            (Peak, 80.0, 1.0, 3.0),
+            (Peak, 700.0, 1.0, -2.0),
+            (Peak, 2500.0, 1.5, 3.0),
+            (LowPass, lp(4000.0), 0.7, 0.0),
+            (LowPass, lp(4000.0), 0.7, 0.0),
+        ],
         _ => vec![],
     };
-    v.into_iter().map(|(k, f, q, g)| bq(k, f, q, g, SR)).collect()
+    v.into_iter()
+        .map(|(k, f, q, g)| bq(k, f, q, g, SR))
+        .collect()
 }
 
 fn shaper(x: f32, bias: f32) -> f32 {
@@ -54,8 +88,14 @@ fn amp_channel(p: &AmpSimFx, x: &mut [f32]) {
         bq(HighShelf, 3000.0, 0.7, (p.treble - 0.5) * 16.0, SR),
         bq(HighShelf, 4500.0, 0.7, (p.presence - 0.5) * 10.0, SR),
     ];
-    let mut aa = [bq(LowPass, 20000.0, 0.54, 0.0, sr2), bq(LowPass, 20000.0, 1.31, 0.0, sr2)];
-    let mut aa2 = [bq(LowPass, 20000.0, 0.54, 0.0, sr2), bq(LowPass, 20000.0, 1.31, 0.0, sr2)];
+    let mut aa = [
+        bq(LowPass, 20000.0, 0.54, 0.0, sr2),
+        bq(LowPass, 20000.0, 1.31, 0.0, sr2),
+    ];
+    let mut aa2 = [
+        bq(LowPass, 20000.0, 0.54, 0.0, sr2),
+        bq(LowPass, 20000.0, 1.31, 0.0, sr2),
+    ];
     let mut dc = (0.0f32, 0.0f32);
     let mut prev = 0.0f32;
     let lowsplit = model == "bass";
@@ -69,7 +109,8 @@ fn amp_channel(p: &AmpSimFx, x: &mut [f32]) {
             let t0 = aa[0].run(*u * 2.0);
             let mut y = aa[1].run(t0) * 0.5;
             for st in 0..stages {
-                y = shaper(y * if st == 0 { k } else { 2.5 }, bias) / if st == 0 { k.max(1.0).sqrt() } else { 1.6 };
+                y = shaper(y * if st == 0 { k } else { 2.5 }, bias)
+                    / if st == 0 { k.max(1.0).sqrt() } else { 1.6 };
             }
             let t1 = aa2[0].run(y);
             outs[j] = aa2[1].run(t1);
@@ -114,7 +155,11 @@ pub fn amp_sim(p: &AmpSimFx, l: &mut [f32], r: &mut [f32]) {
     amp_channel(p, r);
     // level-matched to the input, then master
     let out_rms = (rms(l) + rms(r)) * 0.5;
-    let g = if out_rms > 1e-9 && in_rms > 1e-9 { in_rms / out_rms } else { 1.0 } * db_to_gain(p.master_db);
+    let g = if out_rms > 1e-9 && in_rms > 1e-9 {
+        in_rms / out_rms
+    } else {
+        1.0
+    } * db_to_gain(p.master_db);
     for i in 0..l.len() {
         l[i] = l[i] * g * mix + dl[i] * (1.0 - mix);
         r[i] = r[i] * g * mix + dr[i] * (1.0 - mix);
@@ -140,7 +185,9 @@ pub fn load_ir(path: &str, max_s: f32) -> Option<Arc<(Vec<f32>, Vec<f32>)>> {
     let n = ((max_s.clamp(0.01, 12.0)) * SR) as usize;
     l.truncate(n);
     r.truncate(n);
-    let e = (l.iter().chain(r.iter()).map(|v| v * v).sum::<f32>() * 0.5).sqrt().max(1e-9);
+    let e = (l.iter().chain(r.iter()).map(|v| v * v).sum::<f32>() * 0.5)
+        .sqrt()
+        .max(1e-9);
     l.iter_mut().for_each(|v| *v /= e);
     r.iter_mut().for_each(|v| *v /= e);
     let a = Arc::new((l, r));
@@ -154,7 +201,9 @@ pub fn load_ir(path: &str, max_s: f32) -> Option<Arc<(Vec<f32>, Vec<f32>)>> {
 
 /// Cabinet IR (or any short IR) as an insert: convolve each side, wet/dry.
 pub fn cab_ir(p: &CabIrFx, l: &mut [f32], r: &mut [f32]) {
-    let Some(ir) = load_ir(&p.path, p.max_ms / 1000.0) else { return };
+    let Some(ir) = load_ir(&p.path, p.max_ms / 1000.0) else {
+        return;
+    };
     let mix = p.mix.clamp(0.0, 1.0);
     let g = db_to_gain(p.gain_db);
     let wl = crate::fx_extra::convolve(l, &ir.0);
@@ -170,7 +219,9 @@ mod tests {
     use super::*;
 
     fn sine(f: f32, s: f32, a: f32) -> Vec<f32> {
-        (0..(s * SR) as usize).map(|i| a * (2.0 * std::f32::consts::PI * f * i as f32 / SR).sin()).collect()
+        (0..(s * SR) as usize)
+            .map(|i| a * (2.0 * std::f32::consts::PI * f * i as f32 / SR).sin())
+            .collect()
     }
 
     fn harmonics(x: &[f32], f: f32) -> f32 {
@@ -193,8 +244,24 @@ mod tests {
         let x = sine(220.0, 0.5, 0.5);
         let mut cl = (x.clone(), x.clone());
         let mut cr = (x.clone(), x.clone());
-        amp_sim(&AmpSimFx { cab: "none".into(), ..Default::default() }, &mut cl.0, &mut cl.1);
-        amp_sim(&AmpSimFx { model: "crunch".into(), gain_db: 12.0, cab: "none".into(), ..Default::default() }, &mut cr.0, &mut cr.1);
+        amp_sim(
+            &AmpSimFx {
+                cab: "none".into(),
+                ..Default::default()
+            },
+            &mut cl.0,
+            &mut cl.1,
+        );
+        amp_sim(
+            &AmpSimFx {
+                model: "crunch".into(),
+                gain_db: 12.0,
+                cab: "none".into(),
+                ..Default::default()
+            },
+            &mut cr.0,
+            &mut cr.1,
+        );
         let (hc, hr) = (harmonics(&cl.0, 220.0), harmonics(&cr.0, 220.0));
         assert!(hr > hc * 1.5, "clean {hc} crunch {hr}");
         assert!((rms(&cl.0) - rms(&x)).abs() < 0.05, "level matched");

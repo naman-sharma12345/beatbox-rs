@@ -35,7 +35,9 @@ pub fn fps() -> f32 {
 }
 
 fn hann(n: usize) -> Vec<f32> {
-    (0..n).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / n as f32).cos()).collect()
+    (0..n)
+        .map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / n as f32).cos())
+        .collect()
 }
 
 fn bin_of(hz: f32) -> usize {
@@ -79,7 +81,9 @@ pub struct Features {
 }
 
 /// Octave band edges (Hz) of `Features::tone`.
-pub const TONE_EDGES: [f32; 10] = [40.0, 80.0, 160.0, 320.0, 640.0, 1250.0, 2500.0, 5000.0, 10000.0, 16000.0];
+pub const TONE_EDGES: [f32; 10] = [
+    40.0, 80.0, 160.0, 320.0, 640.0, 1250.0, 2500.0, 5000.0, 10000.0, 16000.0,
+];
 
 /// Magnitude STFT (mono) -> harmonic/percussive band features. Memory is one
 /// magnitude matrix plus its two median-filtered copies, built bin-band by
@@ -95,7 +99,11 @@ pub fn features(x: &[f32]) -> Features {
     for f in 0..frames {
         for k in 0..NFFT {
             let i = (f * HOP + k) as isize - (NFFT / 2) as isize;
-            re[k] = if i >= 0 && (i as usize) < x.len() { x[i as usize] * w[k] } else { 0.0 };
+            re[k] = if i >= 0 && (i as usize) < x.len() {
+                x[i as usize] * w[k]
+            } else {
+                0.0
+            };
             im[k] = 0.0;
         }
         fft.forward(&mut re, &mut im);
@@ -107,7 +115,10 @@ pub fn features(x: &[f32]) -> Features {
     // onset: log flux
     let mut onset = vec![0.0f32; frames];
     for f in 1..frames {
-        let (a, b) = (&mag[(f - 1) * bins..f * bins], &mag[f * bins..(f + 1) * bins]);
+        let (a, b) = (
+            &mag[(f - 1) * bins..f * bins],
+            &mag[f * bins..(f + 1) * bins],
+        );
         let mut s = 0.0;
         for k in 2..bins.min(bin_of(12000.0)) {
             let d = (1.0 + 100.0 * b[k]).ln() - (1.0 + 100.0 * a[k]).ln();
@@ -132,12 +143,20 @@ pub fn features(x: &[f32]) -> Features {
                 win.push(mag[g * bins + k]);
             }
             let m = win.len() / 2;
-            win.select_nth_unstable_by(m, |p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
+            win.select_nth_unstable_by(m, |p, q| {
+                p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal)
+            });
             harm[f * bins + k] = win[m];
         }
     }
     let b30 = bin_of(30.0).max(1);
-    let (b120, b150, b200, b250, b300) = (bin_of(120.0), bin_of(150.0), bin_of(200.0), bin_of(250.0), bin_of(300.0));
+    let (b120, b150, b200, b250, b300) = (
+        bin_of(120.0),
+        bin_of(150.0),
+        bin_of(200.0),
+        bin_of(250.0),
+        bin_of(300.0),
+    );
     let (b1500, b5000, b6000) = (bin_of(1500.0), bin_of(5000.0), bin_of(6000.0));
     let (b400, b700, b2000) = (bin_of(400.0), bin_of(700.0), bin_of(2000.0));
     let _ = (b150, b300, b1500);
@@ -159,7 +178,10 @@ pub fn features(x: &[f32]) -> Features {
     let tone_band: Vec<i32> = (0..bins)
         .map(|k| {
             let hz = k as f32 * SR / NFFT as f32;
-            (0..9).find(|&i| hz >= TONE_EDGES[i] && hz < TONE_EDGES[i + 1]).map(|i| i as i32).unwrap_or(-1)
+            (0..9)
+                .find(|&i| hz >= TONE_EDGES[i] && hz < TONE_EDGES[i + 1])
+                .map(|i| i as i32)
+                .unwrap_or(-1)
         })
         .collect();
     let mut perc = vec![0.0f32; bins];
@@ -179,7 +201,9 @@ pub fn features(x: &[f32]) -> Features {
                 win.push(row[j]);
             }
             let m = win.len() / 2;
-            win.select_nth_unstable_by(m, |p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
+            win.select_nth_unstable_by(m, |p, q| {
+                p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal)
+            });
             perc[k] = win[m];
         }
         let hrow = &harm[f * bins..(f + 1) * bins];
@@ -225,7 +249,11 @@ pub fn features(x: &[f32]) -> Features {
         let pc2: Vec<i32> = (0..N2 / 2)
             .map(|k| {
                 let hz = k as f32 * SR / N2 as f32;
-                if hz < 40.0 { -1 } else { ((69.0 + 12.0 * (hz / 440.0).log2()).round() as i32).rem_euclid(12) }
+                if hz < 40.0 {
+                    -1
+                } else {
+                    ((69.0 + 12.0 * (hz / 440.0).log2()).round() as i32).rem_euclid(12)
+                }
             })
             .collect();
         let g_frames = frames / 4 + 1;
@@ -233,7 +261,11 @@ pub fn features(x: &[f32]) -> Features {
             let centre = (g * 4 * HOP + 2 * HOP) as isize;
             for k in 0..N2 {
                 let i = centre + k as isize - (N2 / 2) as isize;
-                re2[k] = if i >= 0 && (i as usize) < x.len() { x[i as usize] * w2[k] } else { 0.0 };
+                re2[k] = if i >= 0 && (i as usize) < x.len() {
+                    x[i as usize] * w2[k]
+                } else {
+                    0.0
+                };
                 im2[k] = 0.0;
             }
             fft2.forward(&mut re2, &mut im2);
@@ -318,13 +350,19 @@ pub fn beat_grid(onset: &[f32], bpm_lo: f32, bpm_hi: f32, prior_bpm: f32) -> (f3
     let mut cands: Vec<(f32, f32)> = Vec::new();
     let mut bpm = bpm_lo;
     while bpm <= bpm_hi {
-        let s = ac(lag_for(bpm)) + 0.5 * ac(lag_for(bpm / 2.0)) + 0.5 * ac(2.0 * lag_for(bpm)) + 0.25 * ac(lag_for(bpm * 2.0));
+        let s = ac(lag_for(bpm))
+            + 0.5 * ac(lag_for(bpm / 2.0))
+            + 0.5 * ac(2.0 * lag_for(bpm))
+            + 0.25 * ac(lag_for(bpm * 2.0));
         let w = (-0.5 * ((bpm / prior_bpm).log2() / 0.8).powi(2)).exp();
         cands.push((bpm, s * w));
         bpm += 0.5;
     }
     let mean_sc = cands.iter().map(|c| c.1).sum::<f32>() / cands.len() as f32;
-    let best = cands.iter().cloned().fold((120.0, f32::MIN), |a, b| if b.1 > a.1 { b } else { a });
+    let best = cands
+        .iter()
+        .cloned()
+        .fold((120.0, f32::MIN), |a, b| if b.1 > a.1 { b } else { a });
     let conf = ((best.1 - mean_sc) / best.1.abs().max(1e-9)).clamp(0.0, 1.0);
     // fine tempo + phase: comb sum over the whole curve
     let mut top = (best.0, 0.0f32, f32::MIN);
@@ -399,7 +437,9 @@ pub struct SongAnalysis {
     pub comp_pluck: f32,
 }
 
-const PCN: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const PCN: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
 
 pub fn pc_name(pc: u8) -> &'static str {
     PCN[(pc % 12) as usize]
@@ -446,7 +486,10 @@ pub fn best_triad(c: &[f32; 12], bass: &[f32; 12], key: Option<(u8, bool)>) -> (
                 // diatonic triads of the key (relative major)
                 let rel = if kmin { (kpc + 3) % 12 } else { kpc };
                 let deg = (r + 12 - rel) % 12;
-                let diatonic = matches!((deg, minor), (0, false) | (5, false) | (7, false) | (2, true) | (4, true) | (9, true));
+                let diatonic = matches!(
+                    (deg, minor),
+                    (0, false) | (5, false) | (7, false) | (2, true) | (4, true) | (9, true)
+                );
                 if diatonic {
                     s += 0.06;
                 }
@@ -478,7 +521,9 @@ fn median(mut v: Vec<f32>) -> f32 {
         return 0.0;
     }
     let m = v.len() / 2;
-    v.select_nth_unstable_by(m, |a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    v.select_nth_unstable_by(m, |a, b| {
+        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+    });
     v[m]
 }
 
@@ -510,16 +555,32 @@ pub fn analyze_song(x: &[f32], source: &str) -> Result<SongAnalysis> {
     // downbeat phase: chord changes and kicks on beat 1, snares on 2 and 4
     let mut chg = vec![0.0f32; nbeats];
     for k in 1..nbeats {
-        let a = sum_chroma(&fe.chroma, (beat_t(k - 1) * fps) as usize, (beat_t(k) * fps) as usize);
-        let b = sum_chroma(&fe.chroma, (beat_t(k) * fps) as usize, (beat_t(k + 1) * fps) as usize);
+        let a = sum_chroma(
+            &fe.chroma,
+            (beat_t(k - 1) * fps) as usize,
+            (beat_t(k) * fps) as usize,
+        );
+        let b = sum_chroma(
+            &fe.chroma,
+            (beat_t(k) * fps) as usize,
+            (beat_t(k + 1) * fps) as usize,
+        );
         chg[k] = 1.0 - cos12(&a, &b);
     }
     let norm = |v: Vec<f32>| -> Vec<f32> {
         let m = mean(&v).max(1e-9);
         v.iter().map(|x| x / m).collect()
     };
-    let kb = norm((0..nbeats).map(|k| peak_near(&kflux, beat_t(k) * fps, 2)).collect());
-    let sb = norm((0..nbeats).map(|k| peak_near(&sflux, beat_t(k) * fps, 2)).collect());
+    let kb = norm(
+        (0..nbeats)
+            .map(|k| peak_near(&kflux, beat_t(k) * fps, 2))
+            .collect(),
+    );
+    let sb = norm(
+        (0..nbeats)
+            .map(|k| peak_near(&sflux, beat_t(k) * fps, 2))
+            .collect(),
+    );
     let cb = norm(chg);
     let mut best_o = (0usize, f32::MIN);
     for o in 0..4usize {
@@ -571,7 +632,11 @@ pub fn analyze_song(x: &[f32], source: &str) -> Result<SongAnalysis> {
         if errs.len() >= 16 {
             let d = median(errs).clamp(-0.06, 0.06);
             let f = first_db + d;
-            if f < 0.0 { f + bar_s } else { f }
+            if f < 0.0 {
+                f + bar_s
+            } else {
+                f
+            }
         } else {
             first_db
         }
@@ -582,9 +647,7 @@ pub fn analyze_song(x: &[f32], source: &str) -> Result<SongAnalysis> {
     // key
     let mut tot = [0.0f32; 12];
     let all = sum_chroma(&fe.chroma, 0, fe.frames);
-    for i in 0..12 {
-        tot[i] = all[i];
-    }
+    tot.copy_from_slice(&all);
     let keys = crate::midi_ops::key_from_chroma(&tot);
     let (kpc, kscale, kconf) = keys.first().copied().unwrap_or((0, "major", 0.0));
     let kmin = kscale == "minor";
@@ -634,9 +697,19 @@ pub fn analyze_song(x: &[f32], source: &str) -> Result<SongAnalysis> {
     while b < nbars {
         let n = 4.min(nbars - b);
         let tot = mean(&(b..b + n).map(|i| bar_db(&fe.total, i)).collect::<Vec<_>>());
-        let perc = mean(&(b..b + n).map(|i| bar_db(&fe.p_full, i)).collect::<Vec<_>>());
+        let perc = mean(
+            &(b..b + n)
+                .map(|i| bar_db(&fe.p_full, i))
+                .collect::<Vec<_>>(),
+        );
         let sig = (b..b + n).map(|i| chords[i][0].clone()).collect();
-        blocks.push(Blk { b0: b, n, tot, perc, sig });
+        blocks.push(Blk {
+            b0: b,
+            n,
+            tot,
+            perc,
+            sig,
+        });
         b += n;
     }
     let sim = |a: &Vec<String>, b: &Vec<String>| -> f32 {
@@ -649,7 +722,10 @@ pub fn analyze_song(x: &[f32], source: &str) -> Result<SongAnalysis> {
             Some(g) => {
                 let last = g.last().unwrap();
                 let len: usize = g.iter().map(|x| x.n).sum();
-                (bl.tot - last.tot).abs() < 2.5 && (bl.perc - last.perc).abs() < 3.0 && (sim(&bl.sig, &last.sig) >= 0.5 || bl.n < 4) && len < 16
+                (bl.tot - last.tot).abs() < 2.5
+                    && (bl.perc - last.perc).abs() < 3.0
+                    && (sim(&bl.sig, &last.sig) >= 0.5 || bl.n < 4)
+                    && len < 16
             }
             None => false,
         };
@@ -659,9 +735,18 @@ pub fn analyze_song(x: &[f32], source: &str) -> Result<SongAnalysis> {
             groups.push(vec![bl]);
         }
     }
-    let max_tot = groups.iter().map(|g| mean(&g.iter().map(|x| x.tot).collect::<Vec<_>>())).fold(f32::MIN, f32::max);
-    let max_perc = groups.iter().map(|g| mean(&g.iter().map(|x| x.perc).collect::<Vec<_>>())).fold(f32::MIN, f32::max);
-    let tots: Vec<f32> = groups.iter().map(|g| mean(&g.iter().map(|x| x.tot).collect::<Vec<_>>())).collect();
+    let max_tot = groups
+        .iter()
+        .map(|g| mean(&g.iter().map(|x| x.tot).collect::<Vec<_>>()))
+        .fold(f32::MIN, f32::max);
+    let max_perc = groups
+        .iter()
+        .map(|g| mean(&g.iter().map(|x| x.perc).collect::<Vec<_>>()))
+        .fold(f32::MIN, f32::max);
+    let tots: Vec<f32> = groups
+        .iter()
+        .map(|g| mean(&g.iter().map(|x| x.tot).collect::<Vec<_>>()))
+        .collect();
     let med_tot = median(tots.clone());
     let ng = groups.len();
     let mut sections: Vec<RefSection> = Vec::new();
@@ -707,7 +792,11 @@ pub fn analyze_song(x: &[f32], source: &str) -> Result<SongAnalysis> {
         };
         let gc = global_step_peak(&cflux, &bar_times, bar_s, fps);
         let gb = global_step_peak(&bflux, &bar_times, bar_s, fps);
-        let presence = if drums_on { ((perc - (max_perc - 12.0)) / 12.0).clamp(0.2, 1.0) } else { 0.0 };
+        let presence = if drums_on {
+            ((perc - (max_perc - 12.0)) / 12.0).clamp(0.2, 1.0)
+        } else {
+            0.0
+        };
         // the record's own pattern: per 16th, the mean onset strength over the
         // section's bars, as a z-score against the section's other steps; a step
         // plays when it stands out (no genre priors). Snare and hat are read
@@ -717,7 +806,11 @@ pub fn analyze_song(x: &[f32], source: &str) -> Result<SongAnalysis> {
             let s0 = avg(&sflux);
             let h0 = avg(&hflux);
             let s: Vec<f32> = s0.iter().zip(k.iter()).map(|(a, b)| a - 0.5 * b).collect();
-            let h: Vec<f32> = h0.iter().zip(s.iter()).map(|(a, b)| a - 0.3 * b.max(0.0)).collect();
+            let h: Vec<f32> = h0
+                .iter()
+                .zip(s.iter())
+                .map(|(a, b)| a - 0.3 * b.max(0.0))
+                .collect();
             (zhits(&k, 1.0), zhits(&s, 0.7), zhits(&h, 0.45))
         } else {
             (vec![0.0; 16], vec![0.0; 16], vec![0.0; 16])
@@ -732,10 +825,16 @@ pub fn analyze_song(x: &[f32], source: &str) -> Result<SongAnalysis> {
                 }
             }
         }
-        let drums = DrumPattern { kick, snare, hat, presence: r2(presence) };
+        let drums = DrumPattern {
+            kick,
+            snare,
+            hat,
+            presence: r2(presence),
+        };
         let comp_steps = normed(avg(&cflux), gc);
         let comp_density = comp_steps.iter().filter(|v| **v >= 0.5).count() as f32;
-        let lvl = |v: &[f32]| mean(&(b0..b0 + bars).map(|i| bar_db(v, i)).collect::<Vec<_>>()) - tot;
+        let lvl =
+            |v: &[f32]| mean(&(b0..b0 + bars).map(|i| bar_db(v, i)).collect::<Vec<_>>()) - tot;
         sections.push(RefSection {
             name: format!("{}{}", kind, c),
             kind: kind.to_string(),
@@ -743,7 +842,14 @@ pub fn analyze_song(x: &[f32], source: &str) -> Result<SongAnalysis> {
             bars,
             energy_db: r1(tot),
             drums,
-            bass_steps: { let b = zhits(&avg(&bflux), 0.8); if normed(avg(&bflux), gb).iter().all(|v| *v == 0.0) { vec![0.0; 16] } else { b } },
+            bass_steps: {
+                let b = zhits(&avg(&bflux), 0.8);
+                if normed(avg(&bflux), gb).iter().all(|v| *v == 0.0) {
+                    vec![0.0; 16]
+                } else {
+                    b
+                }
+            },
             comp_steps,
             comp_density,
             perc_db: r1(lvl(&fe.p_full)),
@@ -753,7 +859,8 @@ pub fn analyze_song(x: &[f32], source: &str) -> Result<SongAnalysis> {
     }
     // comping timbre: centroid of the harmonic 250-5k band is not kept per bin,
     // so use the pluck ratio (comp-band flux vs level) and the comp/bass balance
-    let pluck = mean(&cflux) / (mean(&fe.h_comp.iter().map(|v| v.sqrt()).collect::<Vec<_>>()).max(1e-9)).max(1e-9);
+    let pluck = mean(&cflux)
+        / (mean(&fe.h_comp.iter().map(|v| v.sqrt()).collect::<Vec<_>>()).max(1e-9)).max(1e-9);
     let pluck = r2(pluck.min(99.0));
     let centroid = 0.0;
     let comp_timbre = "guitar".to_string();
@@ -763,7 +870,10 @@ pub fn analyze_song(x: &[f32], source: &str) -> Result<SongAnalysis> {
         bpm: r2(bpm),
         tempo_confidence: r2(tconf),
         downbeat_s: (first_db * 1000.0).round() / 1000.0,
-        bar_times: bar_times.iter().map(|t| (t * 1000.0).round() / 1000.0).collect(),
+        bar_times: bar_times
+            .iter()
+            .map(|t| (t * 1000.0).round() / 1000.0)
+            .collect(),
         key_root: pc_name(kpc).to_string(),
         scale: kscale.to_string(),
         key_confidence: r2(kconf),
@@ -783,8 +893,19 @@ pub fn zhits(m: &[f32], thr: f32) -> Vec<f32> {
     s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let med = s[s.len() / 2];
     let mu = m.iter().sum::<f32>() / n;
-    let sd = (m.iter().map(|x| (x - mu) * (x - mu)).sum::<f32>() / n).sqrt().max(1e-9);
-    m.iter().map(|x| { let z = (x - med) / sd; if z >= thr { r2((0.5 + (z - thr) / 4.0).min(1.0)) } else { 0.0 } }).collect()
+    let sd = (m.iter().map(|x| (x - mu) * (x - mu)).sum::<f32>() / n)
+        .sqrt()
+        .max(1e-9);
+    m.iter()
+        .map(|x| {
+            let z = (x - med) / sd;
+            if z >= thr {
+                r2((0.5 + (z - thr) / 4.0).min(1.0))
+            } else {
+                0.0
+            }
+        })
+        .collect()
 }
 
 #[allow(dead_code)]
@@ -795,7 +916,11 @@ fn drum_prior(v: &[f32], expected: &[usize], other_thr: f32) -> Vec<f32> {
         .enumerate()
         .map(|(i, x)| {
             if expected.contains(&i) {
-                if *x >= 0.4 { x.max(0.65) } else { 0.0 }
+                if *x >= 0.4 {
+                    x.max(0.65)
+                } else {
+                    0.0
+                }
             } else if *x >= other_thr {
                 *x
             } else {
@@ -845,9 +970,14 @@ pub fn align_take(take: &Features, rec: &Features) -> Alignment {
     const D: usize = 4;
     let ct = coarse_chroma(&take.chroma, D);
     let cr = coarse_chroma(&rec.chroma, D);
-    let et: Vec<f32> = (0..ct.len()).map(|i| mean(&take.h_full[i * D..(i * D + D).min(take.frames)])).collect();
+    let et: Vec<f32> = (0..ct.len())
+        .map(|i| mean(&take.h_full[i * D..(i * D + D).min(take.frames)]))
+        .collect();
     let thr = median(et.clone()) * 1.0 + 1e-12;
-    let w: Vec<f32> = et.iter().map(|e| if *e > thr { 1.0 } else { 0.0 }).collect();
+    let w: Vec<f32> = et
+        .iter()
+        .map(|e| if *e > thr { 1.0 } else { 0.0 })
+        .collect();
     let nt = ct.len() as isize;
     let nr = cr.len() as isize;
     let score = |lag: isize, a: isize, b: isize| -> f32 {
@@ -879,12 +1009,22 @@ pub fn align_take(take: &Features, rec: &Features) -> Alignment {
         lag += 1;
     }
     if curve.len() < 10 {
-        return Alignment { lag_s: 0.0, z: 0.0, halves_agree: false, synced: false };
+        return Alignment {
+            lag_s: 0.0,
+            z: 0.0,
+            halves_agree: false,
+            synced: false,
+        };
     }
     let vals: Vec<f32> = curve.iter().map(|c| c.1).collect();
     let m = mean(&vals);
-    let sd = (vals.iter().map(|v| (v - m).powi(2)).sum::<f32>() / vals.len() as f32).sqrt().max(1e-6);
-    let best = curve.iter().cloned().fold((0isize, f32::MIN), |a, b| if b.1 > a.1 { b } else { a });
+    let sd = (vals.iter().map(|v| (v - m).powi(2)).sum::<f32>() / vals.len() as f32)
+        .sqrt()
+        .max(1e-6);
+    let best = curve
+        .iter()
+        .cloned()
+        .fold((0isize, f32::MIN), |a, b| if b.1 > a.1 { b } else { a });
     let z = (best.1 - m) / sd;
     // halves: best lag of each half within +-40 coarse frames of the global one
     let half_best = |a: isize, b: isize| -> isize {
@@ -913,7 +1053,11 @@ pub fn align_take(take: &Features, rec: &Features) -> Alignment {
             }
             i += 2;
         }
-        if n > 0.0 { s / n } else { f32::MIN }
+        if n > 0.0 {
+            s / n
+        } else {
+            f32::MIN
+        }
     };
     let c = best.0 * D as isize;
     let mut fb = (c, f32::MIN);
@@ -924,7 +1068,12 @@ pub fn align_take(take: &Features, rec: &Features) -> Alignment {
         }
     }
     let lag_s = fb.0 as f32 / fps();
-    Alignment { lag_s: (lag_s * 1000.0).round() / 1000.0, z: r2(z), halves_agree: agree, synced: z >= 4.5 && agree }
+    Alignment {
+        lag_s: (lag_s * 1000.0).round() / 1000.0,
+        z: r2(z),
+        halves_agree: agree,
+        synced: z >= 4.5 && agree,
+    }
 }
 
 /// Seconds of the take where he actually sings: (first, last) above -40 dB of its loudest frames.
@@ -934,7 +1083,11 @@ pub fn sung_span(take: &Features) -> (f32, f32) {
     let loud = v[(v.len() * 98 / 100).min(v.len() - 1)];
     let thr = loud * 1e-4;
     let first = take.total.iter().position(|e| *e > thr).unwrap_or(0);
-    let last = take.total.iter().rposition(|e| *e > thr).unwrap_or(take.frames.saturating_sub(1));
+    let last = take
+        .total
+        .iter()
+        .rposition(|e| *e > thr)
+        .unwrap_or(take.frames.saturating_sub(1));
     (first as f32 / fps(), last as f32 / fps())
 }
 
@@ -989,29 +1142,106 @@ fn steps_from(v: &[usize]) -> Vec<f32> {
 pub fn style_pattern(style: &str, kind: &str) -> (DrumPattern, Vec<f32>, Vec<f32>, bool) {
     let s = style.to_lowercase();
     let quiet = matches!(kind, "intro" | "outro" | "break");
-    let (k, sn, h, bass, comp, arp): (Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, bool) = if s.contains("hip") || s.contains("boom") || s.contains("rap") || s.contains("trap") {
-        (vec![0, 7, 10], vec![4, 12], vec![0, 2, 4, 6, 8, 10, 12, 14], vec![0, 7, 10], vec![0, 8], false)
+    let (k, sn, h, bass, comp, arp): (
+        Vec<usize>,
+        Vec<usize>,
+        Vec<usize>,
+        Vec<usize>,
+        Vec<usize>,
+        bool,
+    ) = if s.contains("hip") || s.contains("boom") || s.contains("rap") || s.contains("trap") {
+        (
+            vec![0, 7, 10],
+            vec![4, 12],
+            vec![0, 2, 4, 6, 8, 10, 12, 14],
+            vec![0, 7, 10],
+            vec![0, 8],
+            false,
+        )
     } else if s.contains("lofi") || s.contains("lo-fi") || s.contains("chill") {
-        (vec![0, 10], vec![4, 12], vec![0, 2, 4, 6, 8, 10, 12, 14], vec![0, 10], vec![0, 6, 8], false)
-    } else if s.contains("acoustic") || s.contains("ballad") || s.contains("slow") || s.contains("sad") || s.contains("romantic") {
-        (vec![0, 10], vec![8], vec![0, 4, 8, 12], vec![0, 8], vec![0, 3, 6, 8, 11, 14], true)
+        (
+            vec![0, 10],
+            vec![4, 12],
+            vec![0, 2, 4, 6, 8, 10, 12, 14],
+            vec![0, 10],
+            vec![0, 6, 8],
+            false,
+        )
+    } else if s.contains("acoustic")
+        || s.contains("ballad")
+        || s.contains("slow")
+        || s.contains("sad")
+        || s.contains("romantic")
+    {
+        (
+            vec![0, 10],
+            vec![8],
+            vec![0, 4, 8, 12],
+            vec![0, 8],
+            vec![0, 3, 6, 8, 11, 14],
+            true,
+        )
     } else if s.contains("dance") || s.contains("house") || s.contains("edm") {
-        (vec![0, 4, 8, 12], vec![4, 12], vec![2, 6, 10, 14], vec![2, 6, 10, 14], vec![0, 3, 6, 10], false)
+        (
+            vec![0, 4, 8, 12],
+            vec![4, 12],
+            vec![2, 6, 10, 14],
+            vec![2, 6, 10, 14],
+            vec![0, 3, 6, 10],
+            false,
+        )
     } else {
         // pop / rock default
-        (vec![0, 8, 10], vec![4, 12], vec![0, 2, 4, 6, 8, 10, 12, 14], vec![0, 6, 8, 14], vec![0, 3, 6, 8, 11, 14], true)
+        (
+            vec![0, 8, 10],
+            vec![4, 12],
+            vec![0, 2, 4, 6, 8, 10, 12, 14],
+            vec![0, 6, 8, 14],
+            vec![0, 3, 6, 8, 11, 14],
+            true,
+        )
     };
     let drums = if quiet {
-        DrumPattern { kick: steps_from(&[0]), snare: vec![0.0; 16], hat: steps_from(&[0, 4, 8, 12]), presence: 0.5 }
+        DrumPattern {
+            kick: steps_from(&[0]),
+            snare: vec![0.0; 16],
+            hat: steps_from(&[0, 4, 8, 12]),
+            presence: 0.5,
+        }
     } else {
-        DrumPattern { kick: steps_from(&k), snare: steps_from(&sn), hat: steps_from(&h), presence: if kind == "hook" || kind == "chorus" { 1.0 } else { 0.8 } }
+        DrumPattern {
+            kick: steps_from(&k),
+            snare: steps_from(&sn),
+            hat: steps_from(&h),
+            presence: if kind == "hook" || kind == "chorus" {
+                1.0
+            } else {
+                0.8
+            },
+        }
     };
-    (drums, if quiet { steps_from(&[0]) } else { steps_from(&bass) }, steps_from(&comp), arp)
+    (
+        drums,
+        if quiet {
+            steps_from(&[0])
+        } else {
+            steps_from(&bass)
+        },
+        steps_from(&comp),
+        arp,
+    )
 }
 
 /// The smallest repeating chord loop (in half-bar slots) of a bar range.
 pub fn chord_loop(chords: &[[String; 2]], b0: usize, bars: usize) -> Vec<Ch> {
-    let slots: Vec<Ch> = (b0..(b0 + bars).min(chords.len())).flat_map(|b| [parse_chord_name(&chords[b][0]), parse_chord_name(&chords[b][1])]).collect();
+    let slots: Vec<Ch> = (b0..(b0 + bars).min(chords.len()))
+        .flat_map(|b| {
+            [
+                parse_chord_name(&chords[b][0]),
+                parse_chord_name(&chords[b][1]),
+            ]
+        })
+        .collect();
     if slots.is_empty() {
         return vec![None];
     }
@@ -1019,7 +1249,10 @@ pub fn chord_loop(chords: &[[String; 2]], b0: usize, bars: usize) -> Vec<Ch> {
         if p > slots.len() {
             break;
         }
-        let ok = (0..slots.len()).filter(|&i| slots[i] == slots[i % p]).count() as f32 / slots.len() as f32;
+        let ok = (0..slots.len())
+            .filter(|&i| slots[i] == slots[i % p])
+            .count() as f32
+            / slots.len() as f32;
         if ok >= 0.75 {
             return slots[..p].to_vec();
         }
@@ -1032,7 +1265,11 @@ pub fn transpose_ch(c: Ch, shift: i32) -> Ch {
 }
 
 fn rel_major(pc: u8, scale: &str) -> u8 {
-    if scale == "minor" { (pc + 3) % 12 } else { pc }
+    if scale == "minor" {
+        (pc + 3) % 12
+    } else {
+        pc
+    }
 }
 
 /// Semitones to move a record's chords into the singer's key (-5..=6).
@@ -1040,7 +1277,11 @@ pub fn key_shift(rec_root: &str, rec_scale: &str, his_root: &str, his_scale: &st
     let a = crate::theory::pitch_class(rec_root).unwrap_or(0);
     let b = crate::theory::pitch_class(his_root).unwrap_or(0);
     let d = (rel_major(b, his_scale) as i32 - rel_major(a, rec_scale) as i32).rem_euclid(12);
-    if d > 6 { d - 12 } else { d }
+    if d > 6 {
+        d - 12
+    } else {
+        d
+    }
 }
 
 fn chord_has(c: Ch, pc: u8) -> bool {
@@ -1062,13 +1303,19 @@ pub fn fit_loop(lp: &[Ch], bars: usize, sung: &[(f32, f32, u8)]) -> Vec<[Ch; 2]>
         for &(b, len, p) in sung {
             let slot = (b / 2.0).floor().max(0.0) as usize;
             let c = lp[(slot + rot) % n];
-            s += if chord_has(c, p % 12) { len.min(2.0) } else { -0.5 * len.min(2.0) };
+            s += if chord_has(c, p % 12) {
+                len.min(2.0)
+            } else {
+                -0.5 * len.min(2.0)
+            };
         }
         if s > best.1 {
             best = (rot, s);
         }
     }
-    (0..bars).map(|b| [lp[(2 * b + best.0) % n], lp[(2 * b + 1 + best.0) % n]]).collect()
+    (0..bars)
+        .map(|b| [lp[(2 * b + best.0) % n], lp[(2 * b + 1 + best.0) % n]])
+        .collect()
 }
 
 // ------------------------------------------------------------------ notes
@@ -1109,14 +1356,20 @@ fn voicing(c: (u8, bool), prev_center: f32) -> Vec<u8> {
         }
     }
     if best.0.is_empty() {
-        vec![60 + pcs[0], 60 + pcs[1] + if pcs[1] < pcs[0] { 12 } else { 0 }, 60 + pcs[2] + if pcs[2] < pcs[0] { 12 } else { 0 }]
+        vec![
+            60 + pcs[0],
+            60 + pcs[1] + if pcs[1] < pcs[0] { 12 } else { 0 },
+            60 + pcs[2] + if pcs[2] < pcs[0] { 12 } else { 0 },
+        ]
     } else {
         best.0
     }
 }
 
 fn hits(steps: &[f32], thr: f32) -> Vec<usize> {
-    (0..16).filter(|&i| steps.get(i).copied().unwrap_or(0.0) >= thr).collect()
+    (0..16)
+        .filter(|&i| steps.get(i).copied().unwrap_or(0.0) >= thr)
+        .collect()
 }
 
 /// Notes for one section: (drums, bass, comp), steps within the section.
@@ -1129,33 +1382,64 @@ pub fn section_notes(s: &PlanSection) -> (Vec<NoteOut>, Vec<NoteOut>, Vec<NoteOu
     if pres > 0.0 {
         for bar in 0..s.bars {
             let o = (bar * 16) as f32;
-            for (steps, pitch, thr, base) in [(&s.drums.kick, 36u8, 0.5f32, 0.62f32), (&s.drums.snare, 38u8, 0.5, 0.62), (&s.drums.hat, 42u8, 0.4, 0.4)] {
+            for (steps, pitch, thr, base) in [
+                (&s.drums.kick, 36u8, 0.5f32, 0.62f32),
+                (&s.drums.snare, 38u8, 0.5, 0.62),
+                (&s.drums.hat, 42u8, 0.4, 0.4),
+            ] {
                 for i in hits(steps, thr) {
                     let v = (base + 0.38 * steps[i]) * e * (0.75 + 0.25 * pres);
-                    drums.push(NoteOut { start: o + i as f32, len: 1.0, pitch, vel: v.clamp(0.2, 1.0) });
+                    drums.push(NoteOut {
+                        start: o + i as f32,
+                        len: 1.0,
+                        pitch,
+                        vel: v.clamp(0.2, 1.0),
+                    });
                 }
             }
         }
         if s.kind == "chorus" || s.kind == "hook" {
-            drums.push(NoteOut { start: 0.0, len: 4.0, pitch: 49, vel: 0.8 * e });
+            drums.push(NoteOut {
+                start: 0.0,
+                len: 4.0,
+                pitch: 49,
+                vel: 0.8 * e,
+            });
         }
     }
     let mut center = 62.0f32;
     let bh = {
         let h = hits(&s.bass, 0.5);
-        if h.is_empty() { vec![0usize, 8] } else { h }
+        if h.is_empty() {
+            vec![0usize, 8]
+        } else {
+            h
+        }
     };
     let ch = {
         let h = hits(&s.comp, 0.5);
-        if h.is_empty() { vec![0usize, 8] } else { h }
+        if h.is_empty() {
+            vec![0usize, 8]
+        } else {
+            h
+        }
     };
     // a half bar the chroma could not name keeps the chord around it (an unnamed
     // half bar left the guitar silent: 0.6 s holes in Sweater Weather's intro)
-    let first_ch: Ch = s.chords.iter().flat_map(|c| c.iter().copied()).flatten().next();
+    let first_ch: Ch = s
+        .chords
+        .iter()
+        .flat_map(|c| c.iter().copied())
+        .flatten()
+        .next();
     let mut last_ch: Ch = first_ch;
     for bar in 0..s.bars {
         let o = (bar * 16) as f32;
-        let chord_at = |step: usize| -> Ch { s.chords.get(bar).map(|c| c[if step < 8 { 0 } else { 1 }]).flatten() };
+        let chord_at = |step: usize| -> Ch {
+            s.chords
+                .get(bar)
+                .and_then(|c| c[if step < 8 { 0 } else { 1 }])
+        };
         // bass: chord root, low register, held to the next hit
         for (k, &i) in bh.iter().enumerate() {
             if let Some(c) = chord_at(i) {
@@ -1168,7 +1452,12 @@ pub fn section_notes(s: &PlanSection) -> (Vec<NoteOut>, Vec<NoteOut>, Vec<NoteOu
                 }
                 let next = bh.get(k + 1).copied().unwrap_or(16);
                 let len = ((next - i) as f32 - 0.25).max(0.75);
-                bass.push(NoteOut { start: o + i as f32, len, pitch: p, vel: (0.82 * e).clamp(0.3, 1.0) });
+                bass.push(NoteOut {
+                    start: o + i as f32,
+                    len,
+                    pitch: p,
+                    vel: (0.82 * e).clamp(0.3, 1.0),
+                });
             }
         }
         // comping: arpeggio over the hits, or block chords held to the next hit
@@ -1182,16 +1471,31 @@ pub fn section_notes(s: &PlanSection) -> (Vec<NoteOut>, Vec<NoteOut>, Vec<NoteOu
             let v = voicing(c, center);
             center = v.iter().map(|x| *x as f32).sum::<f32>() / 3.0;
             let next = ch.get(k + 1).copied().unwrap_or(16);
-            let next = if i < 8 && next > 8 && s.chords.get(bar).map(|c| c[0] != c[1]).unwrap_or(false) { 8 } else { next };
+            let next =
+                if i < 8 && next > 8 && s.chords.get(bar).map(|c| c[0] != c[1]).unwrap_or(false) {
+                    8
+                } else {
+                    next
+                };
             let len = ((next - i) as f32 - 0.1).max(0.5);
             if s.comp_arp {
                 let order = [v[0], v[1], v[2], v[0] + 12, v[2], v[1]];
                 let p = order[arp_i % order.len()];
                 arp_i += 1;
-                comp.push(NoteOut { start: o + i as f32, len: len.max(1.5), pitch: p, vel: (0.7 * e).clamp(0.3, 1.0) });
+                comp.push(NoteOut {
+                    start: o + i as f32,
+                    len: len.max(1.5),
+                    pitch: p,
+                    vel: (0.7 * e).clamp(0.3, 1.0),
+                });
             } else {
                 for (j, p) in v.iter().enumerate() {
-                    comp.push(NoteOut { start: o + i as f32 + 0.04 * j as f32, len, pitch: *p, vel: (0.66 * e).clamp(0.3, 1.0) });
+                    comp.push(NoteOut {
+                        start: o + i as f32 + 0.04 * j as f32,
+                        len,
+                        pitch: *p,
+                        vel: (0.66 * e).clamp(0.3, 1.0),
+                    });
                 }
             }
         }
@@ -1204,7 +1508,12 @@ pub fn section_notes(s: &PlanSection) -> (Vec<NoteOut>, Vec<NoteOut>, Vec<NoteOu
 pub fn word_recall(take: &str, mix: &str) -> f32 {
     let norm = |s: &str| -> Vec<String> {
         s.split_whitespace()
-            .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase())
+            .map(|w| {
+                w.chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .collect::<String>()
+                    .to_lowercase()
+            })
             .filter(|w| !w.is_empty())
             .collect()
     };
@@ -1232,14 +1541,32 @@ pub fn word_recall(take: &str, mix: &str) -> f32 {
 /// Normalised "artist - title" key of a video title, for agreeing across searches.
 pub fn title_key(t: &str) -> String {
     let mut s = t.to_lowercase();
-    for cut in ["(", "[", "|", " ft.", " feat", " official", " lyrics", " lyric", " audio", " video", " full song", " hd"] {
+    for cut in [
+        "(",
+        "[",
+        "|",
+        " ft.",
+        " feat",
+        " official",
+        " lyrics",
+        " lyric",
+        " audio",
+        " video",
+        " full song",
+        " hd",
+    ] {
         if let Some(i) = s.find(cut) {
             if i > 3 {
                 s.truncate(i);
             }
         }
     }
-    s.chars().filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-').collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -1260,7 +1587,11 @@ mod tests {
             // kick on 1 and 3, snare-ish noise burst on 2 and 4, plus a C-major / A-minor pad
             for j in 0..2000 {
                 let env = (-(j as f32) / 300.0).exp();
-                let v = if k % 2 == 0 { (2.0 * PI * 60.0 * j as f32 / SR).sin() } else { ((j * 7919 % 101) as f32 / 50.0 - 1.0) * 0.6 };
+                let v = if k % 2 == 0 {
+                    (2.0 * PI * 60.0 * j as f32 / SR).sin()
+                } else {
+                    ((j * 7919 % 101) as f32 / 50.0 - 1.0) * 0.6
+                };
                 x[i + j] += 0.6 * env * v;
             }
             k += 1;
@@ -1268,7 +1599,11 @@ mod tests {
         for i in 0..n {
             let t = i as f32 / SR;
             let bar = ((t - 0.25) / (4.0 * beat)).floor() as i64;
-            let f: [f32; 3] = if bar.rem_euclid(2) == 0 { [261.6, 329.6, 392.0] } else { [220.0, 261.6, 329.6] };
+            let f: [f32; 3] = if bar.rem_euclid(2) == 0 {
+                [261.6, 329.6, 392.0]
+            } else {
+                [220.0, 261.6, 329.6]
+            };
             for hz in f {
                 x[i] += 0.05 * (2.0 * PI * hz * t).sin();
             }
@@ -1282,7 +1617,10 @@ mod tests {
         let a = analyze_song(&x, "synthetic").unwrap();
         assert!((a.bpm - 120.0).abs() < 1.5, "bpm {}", a.bpm);
         let names: Vec<String> = a.chords.iter().map(|c| c[0].clone()).collect();
-        assert!(names.iter().filter(|c| *c == "C" || *c == "Am").count() >= names.len() / 2, "{names:?}");
+        assert!(
+            names.iter().filter(|c| *c == "C" || *c == "Am").count() >= names.len() / 2,
+            "{names:?}"
+        );
         assert!(!a.sections.is_empty());
         let s = &a.sections[a.sections.len() / 2];
         assert!(s.drums.kick.iter().any(|v| *v > 0.5), "{:?}", s.drums);
@@ -1290,7 +1628,12 @@ mod tests {
 
     #[test]
     fn loops_transpose_and_fit() {
-        let ch: Vec<[String; 2]> = (0..8).map(|b| { let n = ["D#", "Cm", "Gm", "A#"][b % 4]; [n.to_string(), n.to_string()] }).collect();
+        let ch: Vec<[String; 2]> = (0..8)
+            .map(|b| {
+                let n = ["D#", "Cm", "Gm", "A#"][b % 4];
+                [n.to_string(), n.to_string()]
+            })
+            .collect();
         let lp = chord_loop(&ch, 0, 8);
         assert_eq!(lp.len(), 8);
         assert_eq!(key_shift("D#", "major", "C", "minor"), 0);
@@ -1305,16 +1648,28 @@ mod tests {
     #[test]
     fn notes_for_a_section() {
         let (d, b, c, arp) = style_pattern("pop", "chorus");
-        let s = PlanSection { name: "chorus1".into(), kind: "chorus".into(), bars: 2, chords: vec![[Some((0, false)), Some((9, true))]; 2], drums: d, bass: b, comp: c, comp_arp: arp, energy: 1.0 };
+        let s = PlanSection {
+            name: "chorus1".into(),
+            kind: "chorus".into(),
+            bars: 2,
+            chords: vec![[Some((0, false)), Some((9, true))]; 2],
+            drums: d,
+            bass: b,
+            comp: c,
+            comp_arp: arp,
+            energy: 1.0,
+        };
         let (dn, bn, cn) = section_notes(&s);
         assert!(dn.iter().any(|n| n.pitch == 36) && dn.iter().any(|n| n.pitch == 38));
         assert!(bn.iter().all(|n| n.pitch >= 32 && n.pitch <= 44), "{bn:?}");
         assert!(cn.iter().all(|n| n.pitch >= 48 && n.pitch <= 86));
         assert!(word_recall("one love two mouth", "one love two mouths") >= 0.74);
-        assert_eq!(title_key("The Neighbourhood - Sweater Weather (Official Video)"), "the neighbourhood - sweater weather");
+        assert_eq!(
+            title_key("The Neighbourhood - Sweater Weather (Official Video)"),
+            "the neighbourhood - sweater weather"
+        );
     }
 }
-
 
 // ------------------------------------------------------------------ snare check
 
@@ -1324,7 +1679,11 @@ pub fn snare_onsets(fe: &Features, t0: f32, t1: f32, rel: f32) -> Vec<f32> {
     let fps = fps();
     let kf = flux(&fe.p_kick);
     let sf = flux(&fe.p_snare);
-    let sc: Vec<f32> = sf.iter().zip(kf.iter()).map(|(s, k)| (s - 0.5 * k).max(0.0)).collect();
+    let sc: Vec<f32> = sf
+        .iter()
+        .zip(kf.iter())
+        .map(|(s, k)| (s - 0.5 * k).max(0.0))
+        .collect();
     let a = ((t0 * fps).max(0.0) as usize).min(sc.len());
     let b = ((t1 * fps).max(0.0) as usize).min(sc.len());
     let mut pk: Vec<(usize, f32)> = Vec::new();
@@ -1340,7 +1699,10 @@ pub fn snare_onsets(fe: &Features, t0: f32, t1: f32, rel: f32) -> Vec<f32> {
     let mut vals: Vec<f32> = pk.iter().map(|p| p.1).collect();
     vals.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
     let thr = rel * vals[(vals.len() * 9 / 10).min(vals.len() - 1)];
-    pk.into_iter().filter(|p| p.1 >= thr).map(|p| p.0 as f32 / fps).collect()
+    pk.into_iter()
+        .filter(|p| p.1 >= thr)
+        .map(|p| p.0 as f32 / fps)
+        .collect()
 }
 
 /// Share of `want` times that have a `got` time within `tol` s.
@@ -1348,7 +1710,10 @@ pub fn onset_recall(want: &[f32], got: &[f32], tol: f32) -> f32 {
     if want.is_empty() {
         return 0.0;
     }
-    let hit = want.iter().filter(|w| got.iter().any(|g| (g - *w).abs() <= tol)).count();
+    let hit = want
+        .iter()
+        .filter(|w| got.iter().any(|g| (g - *w).abs() <= tol))
+        .count();
     hit as f32 / want.len() as f32
 }
 
@@ -1357,7 +1722,10 @@ pub fn onset_recall(want: &[f32], got: &[f32], tol: f32) -> f32 {
 pub fn perc_share_db(fe: &Features, t0: f32, t1: f32) -> f32 {
     let fps = fps();
     let a = ((t0 * fps).max(0.0) as usize).min(fe.frames);
-    let b = ((t1 * fps).max(0.0) as usize).min(fe.frames).max(a + 1).min(fe.frames);
+    let b = ((t1 * fps).max(0.0) as usize)
+        .min(fe.frames)
+        .max(a + 1)
+        .min(fe.frames);
     if b <= a {
         return 0.0;
     }
@@ -1385,7 +1753,6 @@ pub fn tone_db(fe: &Features, t0: f32, t1: f32) -> [f32; 9] {
     out
 }
 
-
 /// One phrase of a take and where it lands on the reference's clock.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PhraseMap {
@@ -1406,7 +1773,12 @@ pub struct PhraseMap {
 /// candidates picks one position per phrase, so a singer who skipped an
 /// instrumental gap or drifted against the record lands each line where the
 /// record sings it.
-pub fn align_phrases(take: &Features, refv: &Features, min_pause_s: f32, max_phrase_s: f32) -> Vec<PhraseMap> {
+pub fn align_phrases(
+    take: &Features,
+    refv: &Features,
+    min_pause_s: f32,
+    max_phrase_s: f32,
+) -> Vec<PhraseMap> {
     const D: usize = 2;
     let fr = SR / HOP as f32;
     let cfr = fr / D as f32;
@@ -1419,7 +1791,11 @@ pub fn align_phrases(take: &Features, refv: &Features, min_pause_s: f32, max_phr
         let thr = (p95 - 28.0).max(p20 + 6.0);
         db.iter().map(|d| *d > thr).collect()
     };
-    let coarse_e = |e: &[f32]| -> Vec<f32> { (0..e.len() / D).map(|i| mean(&e[i * D..i * D + D])).collect() };
+    let coarse_e = |e: &[f32]| -> Vec<f32> {
+        (0..e.len() / D)
+            .map(|i| mean(&e[i * D..i * D + D]))
+            .collect()
+    };
     let et = coarse_e(&take.h_full);
     let er = coarse_e(&refv.h_full);
     let vt = voiced(&et);
@@ -1436,12 +1812,17 @@ pub fn align_phrases(take: &Features, refv: &Features, min_pause_s: f32, max_phr
     let mut phrases: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
     while i < nt {
-        if !vt[i] { i += 1; continue; }
+        if !vt[i] {
+            i += 1;
+            continue;
+        }
         let s = i;
         let mut last = i;
         let mut k = i;
         while k < nt && k - last <= gap {
-            if vt[k] { last = k; }
+            if vt[k] {
+                last = k;
+            }
             k += 1;
         }
         phrases.push((s, last + 1));
@@ -1461,7 +1842,9 @@ pub fn align_phrases(take: &Features, refv: &Features, min_pause_s: f32, max_phr
                 let lo = c.saturating_sub(w);
                 let hi = (c + w).min(nt);
                 let m = mean(&et[lo..hi]);
-                if m < best.1 { best = (c, m); }
+                if m < best.1 {
+                    best = (c, m);
+                }
             }
             phrases[q] = (a, best.0);
             phrases.insert(q + 1, (best.0, b));
@@ -1479,16 +1862,25 @@ pub fn align_phrases(take: &Features, refv: &Features, min_pause_s: f32, max_phr
         let mut mis = 0.0;
         for i in p.0..p.1 {
             let j = r0 + (i - p.0) as isize;
-            if j < 0 || j as usize >= nr { mis += 1.0; continue; }
+            if j < 0 || j as usize >= nr {
+                mis += 1.0;
+                continue;
+            }
             let j = j as usize;
-            if vt[i] != vr[j] { mis += 1.0; }
+            if vt[i] != vr[j] {
+                mis += 1.0;
+            }
             if vt[i] {
                 n += 1.0;
-                if vr[j] { s += cos12(&ct[i], &cr[j]); }
+                if vr[j] {
+                    s += cos12(&ct[i], &cr[j]);
+                }
             }
         }
         let len = (p.1 - p.0) as f32;
-        if n < 1.0 { return 0.0; }
+        if n < 1.0 {
+            return 0.0;
+        }
         (s / n) * (1.0 - mis / len).max(0.0)
     };
     let k_best = 8usize;
@@ -1505,8 +1897,12 @@ pub fn align_phrases(take: &Features, refv: &Features, min_pause_s: f32, max_phr
         curve.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         let mut picked: Vec<(isize, f32)> = Vec::new();
         for c in curve {
-            if picked.len() >= k_best { break; }
-            if picked.iter().all(|x| (x.0 - c.0).abs() > sup) { picked.push(c); }
+            if picked.len() >= k_best {
+                break;
+            }
+            if picked.iter().all(|x| (x.0 - c.0).abs() > sup) {
+                picked.push(c);
+            }
         }
         cands.push(picked);
     }
@@ -1519,7 +1915,9 @@ pub fn align_phrases(take: &Features, refv: &Features, min_pause_s: f32, max_phr
         let mut row: Vec<(f32, usize, isize)> = Vec::new();
         let opts: Vec<(isize, f32, bool)> = cands[pi].iter().map(|c| (c.0, c.1, false)).collect();
         if pi == 0 {
-            for o in &opts { row.push((o.1, usize::MAX, o.0)); }
+            for o in &opts {
+                row.push((o.1, usize::MAX, o.0));
+            }
         } else {
             let prev = &best[pi - 1];
             let (ta, tb) = (phrases[pi - 1], phrases[pi]);
@@ -1527,33 +1925,54 @@ pub fn align_phrases(take: &Features, refv: &Features, min_pause_s: f32, max_phr
             for o in &opts {
                 let mut bb = (f32::MIN, usize::MAX);
                 for (k, pr) in prev.iter().enumerate() {
-                    if pr.0 == f32::MIN { continue; }
+                    if pr.0 == f32::MIN {
+                        continue;
+                    }
                     let need = ((ta.1 - ta.0) as f32 * 0.85) as isize;
-                    if o.0 < pr.2 + need { continue; }
+                    if o.0 < pr.2 + need {
+                        continue;
+                    }
                     let dev = ((o.0 - pr.2 - my_gap).abs() as f32 / cfr).min(8.0) / 8.0;
                     let v = pr.0 + o.1 - lam * dev;
-                    if v > bb.0 { bb = (v, k); }
+                    if v > bb.0 {
+                        bb = (v, k);
+                    }
                 }
                 row.push((bb.0, bb.1, o.0));
             }
             // follow option from every previous state
             let mut bf = (f32::MIN, usize::MAX, 0isize);
             for (k, pr) in prev.iter().enumerate() {
-                if pr.0 == f32::MIN { continue; }
+                if pr.0 == f32::MIN {
+                    continue;
+                }
                 let r0 = pr.2 + my_gap;
                 let v = pr.0 + 0.5 * score_at(tb, r0);
-                if v > bf.0 { bf = (v, k, r0); }
+                if v > bf.0 {
+                    bf = (v, k, r0);
+                }
             }
             row.push(bf);
         }
         if row.iter().all(|x| x.0 == f32::MIN) {
             // nothing reachable: restart the path at this phrase's best candidate
             row = opts.iter().map(|o| (o.1, usize::MAX, o.0)).collect();
-            if pi > 0 { row.push((f32::MIN, usize::MAX, 0)); }
+            if pi > 0 {
+                row.push((f32::MIN, usize::MAX, 0));
+            }
         }
         best.push(row);
     }
-    let mut out: Vec<PhraseMap> = vec![PhraseMap { from_s: 0.0, to_s: 0.0, at_s: 0.0, score: 0.0, followed: false }; np];
+    let mut out: Vec<PhraseMap> = vec![
+        PhraseMap {
+            from_s: 0.0,
+            to_s: 0.0,
+            at_s: 0.0,
+            score: 0.0,
+            followed: false
+        };
+        np
+    ];
     let last = &best[np - 1];
     let mut k = (0..last.len()).fold(0usize, |a, b| if last[b].0 > last[a].0 { b } else { a });
     for pi in (0..np).rev() {
@@ -1561,8 +1980,26 @@ pub fn align_phrases(take: &Features, refv: &Features, min_pause_s: f32, max_phr
         let followed = pi > 0 && k == best[pi].len() - 1 && best[pi].len() > cands[pi].len();
         let p = phrases[pi];
         let sc = score_at(p, st.2);
-        out[pi] = PhraseMap { from_s: p.0 as f32 / cfr, to_s: p.1 as f32 / cfr, at_s: st.2 as f32 / cfr, score: (sc * 1000.0).round() / 1000.0, followed };
-        if st.1 == usize::MAX { if pi > 0 { k = (0..best[pi - 1].len()).fold(0usize, |a, b| if best[pi - 1][b].0 > best[pi - 1][a].0 { b } else { a }); } } else { k = st.1; }
+        out[pi] = PhraseMap {
+            from_s: p.0 as f32 / cfr,
+            to_s: p.1 as f32 / cfr,
+            at_s: st.2 as f32 / cfr,
+            score: (sc * 1000.0).round() / 1000.0,
+            followed,
+        };
+        if st.1 == usize::MAX {
+            if pi > 0 {
+                k = (0..best[pi - 1].len()).fold(0usize, |a, b| {
+                    if best[pi - 1][b].0 > best[pi - 1][a].0 {
+                        b
+                    } else {
+                        a
+                    }
+                });
+            }
+        } else {
+            k = st.1;
+        }
     }
     out
 }
@@ -1580,7 +2017,10 @@ mod align_phrases_tests {
             for i in a..b.min(n) {
                 let t = (i - a) as f32 / SR;
                 let env = (0.5 + 0.5 * (2.0 * std::f32::consts::PI * 4.0 * t).sin()).powf(0.5);
-                x[i] = 0.3 * env * ((2.0 * std::f32::consts::PI * hz * t).sin() + 0.4 * (2.0 * std::f32::consts::PI * 2.0 * hz * t).sin());
+                x[i] = 0.3
+                    * env
+                    * ((2.0 * std::f32::consts::PI * hz * t).sin()
+                        + 0.4 * (2.0 * std::f32::consts::PI * 2.0 * hz * t).sin());
             }
         }
         x
@@ -1588,8 +2028,14 @@ mod align_phrases_tests {
     #[test]
     fn phrases_land_where_the_record_sings_them() {
         // the take sings three lines back to back; the record spreads them out with an instrumental gap
-        let take = tone_phrases(&[(0.5, 2.0, 220.0), (3.2, 2.0, 330.0), (5.9, 2.0, 262.0)], 9.0);
-        let rec = tone_phrases(&[(2.0, 2.0, 220.0), (4.6, 2.0, 330.0), (12.0, 2.0, 262.0)], 16.0);
+        let take = tone_phrases(
+            &[(0.5, 2.0, 220.0), (3.2, 2.0, 330.0), (5.9, 2.0, 262.0)],
+            9.0,
+        );
+        let rec = tone_phrases(
+            &[(2.0, 2.0, 220.0), (4.6, 2.0, 330.0), (12.0, 2.0, 262.0)],
+            16.0,
+        );
         let ph = align_phrases(&features(&take), &features(&rec), 0.35, 6.0);
         assert_eq!(ph.len(), 3, "{ph:?}");
         let want = [2.0, 4.6, 12.0];

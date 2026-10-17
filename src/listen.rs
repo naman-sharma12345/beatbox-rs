@@ -108,7 +108,10 @@ pub fn section_samples(p: &Project, s: &crate::ears::Span) -> (usize, usize) {
     if crate::tempo_curve::TempoCurve::new(p).is_constant() {
         ((s.start_s * SR) as usize, (s.end_s * SR) as usize)
     } else {
-        (crate::tempo_curve::sample_index_at_beat(p, s.start_beat as f64), crate::tempo_curve::sample_index_at_beat(p, s.end_beat as f64))
+        (
+            crate::tempo_curve::sample_index_at_beat(p, s.start_beat as f64),
+            crate::tempo_curve::sample_index_at_beat(p, s.end_beat as f64),
+        )
     }
 }
 
@@ -836,7 +839,11 @@ pub fn ears_report_mode(e: &mut Engine, focus_track: Option<&str>, fast: bool) -
 /// `ears_report_mode` plus the summary it stored, straight from this call
 /// (the shared store is keyed by the project's hash, so two engines with the
 /// same project in one process can overwrite each other's entry).
-pub fn ears_report_summary(e: &mut Engine, focus_track: Option<&str>, fast: bool) -> Result<(Value, RenderSummary)> {
+pub fn ears_report_summary(
+    e: &mut Engine,
+    focus_track: Option<&str>,
+    fast: bool,
+) -> Result<(Value, RenderSummary)> {
     use crate::producer::prof;
     let t = std::time::Instant::now();
     let rid = project_hash(&e.project);
@@ -1253,12 +1260,25 @@ mod tests {
     fn loudness_sections_follow_the_tempo_map() {
         use crate::project::{Pattern, Section, TempoPoint, Track};
         let mut p = Project::new("t", 90.0);
-        p.tracks.push(Track::new("keys", crate::instruments::preset("piano").unwrap()));
+        p.tracks.push(Track::new(
+            "keys",
+            crate::instruments::preset("piano").unwrap(),
+        ));
         let mut a = Pattern::new("A", 8);
         a.notes_mut("keys").push(Note::new(0.0, 4.0, 60, 0.8));
         p.patterns = vec![a];
-        p.arrangement = vec![Section { pattern: "A".into(), repeats: 1 }; 9];
-        p.tempo_points.push(TempoPoint { beat: 160.0, bpm: 74.0, ramp: false });
+        p.arrangement = vec![
+            Section {
+                pattern: "A".into(),
+                repeats: 1
+            };
+            9
+        ];
+        p.tempo_points.push(TempoPoint {
+            beat: 160.0,
+            bpm: 74.0,
+            ramp: false,
+        });
         let spans = crate::ears::spans(&p);
         assert_eq!(spans.len(), 9);
         // exact: floor(SR * 60 * (min(b, 160) / 90 + max(b - 160, 0) / 74))
@@ -1283,14 +1303,21 @@ mod tests {
             } else {
                 // the renderer's 1/64-beat table can truncate a whole-number
                 // boundary one sample early (float drift)
-                assert!((a as i64 - onsets[k] as i64).abs() <= 1, "section {k}: {a} vs onset {}", onsets[k]);
+                assert!(
+                    (a as i64 - onsets[k] as i64).abs() <= 1,
+                    "section {k}: {a} vs onset {}",
+                    onsets[k]
+                );
             }
         }
         // without tempo points the windows are the fixed-bpm ones, as before
         let mut c = p.clone();
         c.tempo_points.clear();
         for s in crate::ears::spans(&c) {
-            assert_eq!(section_samples(&c, &s), ((s.start_s * SR) as usize, (s.end_s * SR) as usize));
+            assert_eq!(
+                section_samples(&c, &s),
+                ((s.start_s * SR) as usize, (s.end_s * SR) as usize)
+            );
         }
     }
 
@@ -1304,43 +1331,93 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let mut e = Engine::new(d);
         let mut p = Project::new("t", 90.0);
-        p.tracks.push(Track::new("keys", crate::instruments::preset("piano").unwrap()));
+        p.tracks.push(Track::new(
+            "keys",
+            crate::instruments::preset("piano").unwrap(),
+        ));
         let mut loud = Pattern::new("loud", 1);
         for k in 0..3 {
-            loud.notes_mut("keys").push(Note::new(k as f32 * 4.0, 3.0, 60 + 4 * k as u8, 1.0));
+            loud.notes_mut("keys")
+                .push(Note::new(k as f32 * 4.0, 3.0, 60 + 4 * k as u8, 1.0));
         }
         p.patterns = vec![loud, Pattern::new("quiet", 1)];
-        let sec = |n: &str| Section { pattern: n.into(), repeats: 1 };
-        p.arrangement = vec![sec("loud"), sec("loud"), sec("quiet"), sec("loud"), sec("quiet")];
-        p.tempo_points.push(TempoPoint { beat: 8.0, bpm: 60.0, ramp: false });
+        let sec = |n: &str| Section {
+            pattern: n.into(),
+            repeats: 1,
+        };
+        p.arrangement = vec![
+            sec("loud"),
+            sec("loud"),
+            sec("quiet"),
+            sec("loud"),
+            sec("quiet"),
+        ];
+        p.tempo_points.push(TempoPoint {
+            beat: 8.0,
+            bpm: 60.0,
+            ramp: false,
+        });
         e.project = p;
         e.revision += 1;
         let r = loudness_report(&mut e, false).unwrap();
         let per = r["per_section"].as_array().unwrap().clone();
-        let lufs = |i: u64| per.iter().find(|s| s["index"] == i).map(|s| s["integrated_lufs"].as_f64().unwrap()).unwrap();
+        let lufs = |i: u64| {
+            per.iter()
+                .find(|s| s["index"] == i)
+                .map(|s| s["integrated_lufs"].as_f64().unwrap())
+                .unwrap()
+        };
         let m = e.mix().unwrap();
         let old: Vec<f32> = crate::ears::spans(&e.project)
             .iter()
             .map(|s| {
-                let (a, b) = ((s.start_s * SR) as usize, ((s.end_s * SR) as usize).min(m.left.len()));
+                let (a, b) = (
+                    (s.start_s * SR) as usize,
+                    ((s.end_s * SR) as usize).min(m.left.len()),
+                );
                 analysis::loudness(&m.left[a..b], &m.right[a..b]).integrated_lufs
             })
             .collect();
-        eprintln!("per-section LUFS through the tempo map {:?}; fixed-bpm windows {old:?}", (0..5).map(lufs).collect::<Vec<_>>());
-        assert!(lufs(3) > -40.0, "the loud section after the switch: {}", lufs(3));
-        assert!(lufs(4) < lufs(3) - 30.0, "the silent last section: {} vs {}", lufs(4), lufs(3));
-        assert!(old[4] > -40.0, "the fixed-bpm window of the last section lands on the loud one: {}", old[4]);
+        eprintln!(
+            "per-section LUFS through the tempo map {:?}; fixed-bpm windows {old:?}",
+            (0..5).map(lufs).collect::<Vec<_>>()
+        );
+        assert!(
+            lufs(3) > -40.0,
+            "the loud section after the switch: {}",
+            lufs(3)
+        );
+        assert!(
+            lufs(4) < lufs(3) - 30.0,
+            "the silent last section: {} vs {}",
+            lufs(4),
+            lufs(3)
+        );
+        assert!(
+            old[4] > -40.0,
+            "the fixed-bpm window of the last section lands on the loud one: {}",
+            old[4]
+        );
     }
 
     /// A project of `n` 8-bar sections, each opening on one piano note.
     fn eight_bar_sections(bpm: f32, n: usize) -> Project {
         use crate::project::{Pattern, Section, Track};
         let mut p = Project::new("t", bpm);
-        p.tracks.push(Track::new("keys", crate::instruments::preset("piano").unwrap()));
+        p.tracks.push(Track::new(
+            "keys",
+            crate::instruments::preset("piano").unwrap(),
+        ));
         let mut a = Pattern::new("A", 8);
         a.notes_mut("keys").push(Note::new(0.0, 4.0, 60, 0.8));
         p.patterns = vec![a];
-        p.arrangement = vec![Section { pattern: "A".into(), repeats: 1 }; n];
+        p.arrangement = vec![
+            Section {
+                pattern: "A".into(),
+                repeats: 1
+            };
+            n
+        ];
         p
     }
 
@@ -1356,7 +1433,12 @@ mod tests {
             assert_eq!(spans.len(), 9);
             for s in &spans {
                 let old = ((s.start_s * SR) as usize, (s.end_s * SR) as usize);
-                assert_eq!(section_samples(&p, s), old, "{bpm} bpm, section {}", s.index);
+                assert_eq!(
+                    section_samples(&p, s),
+                    old,
+                    "{bpm} bpm, section {}",
+                    s.index
+                );
             }
         }
     }
@@ -1371,7 +1453,11 @@ mod tests {
     fn loudness_sections_follow_a_continuous_tempo_ramp() {
         use crate::project::TempoPoint;
         let mut p = eight_bar_sections(90.0, 6);
-        p.tempo_points.push(TempoPoint { beat: 96.0, bpm: 140.0, ramp: true });
+        p.tempo_points.push(TempoPoint {
+            beat: 96.0,
+            bpm: 140.0,
+            ramp: true,
+        });
         let k = 60.0 * 44_100.0f64;
         let slope = (140.0 - 90.0) / 96.0;
         let closed = |b: f64| -> f64 {
@@ -1393,8 +1479,15 @@ mod tests {
             let want = ((x0 + 1e-6).floor() as usize, (x1 + 1e-6).floor() as usize);
             eprintln!("ramp section {i} beats {}-{}: {a}..{b}, closed form {x0:.4}..{x1:.4}, renderer onset {}", s.start_beat, s.end_beat, onsets[i]);
             assert_eq!((a, b), want, "section {i}");
-            assert!(b > a && last.map_or(true, |l| a == l), "section {i} monotonic and contiguous");
-            assert!((a as i64 - onsets[i] as i64).abs() <= 1, "section {i}: {a} vs onset {}", onsets[i]);
+            assert!(
+                b > a && last.is_none_or(|l| a == l),
+                "section {i} monotonic and contiguous"
+            );
+            assert!(
+                (a as i64 - onsets[i] as i64).abs() <= 1,
+                "section {i}: {a} vs onset {}",
+                onsets[i]
+            );
             last = Some(b);
         }
     }
@@ -1408,8 +1501,16 @@ mod tests {
     fn loudness_sections_exact_after_half_and_double_time_switches() {
         use crate::project::TempoPoint;
         let mut p = eight_bar_sections(140.0, 6);
-        p.tempo_points.push(TempoPoint { beat: 64.0, bpm: 70.0, ramp: false });
-        p.tempo_points.push(TempoPoint { beat: 128.0, bpm: 140.0, ramp: false });
+        p.tempo_points.push(TempoPoint {
+            beat: 64.0,
+            bpm: 70.0,
+            ramp: false,
+        });
+        p.tempo_points.push(TempoPoint {
+            beat: 128.0,
+            bpm: 140.0,
+            ramp: false,
+        });
         let exact = |b: usize| -> usize {
             let half = b.clamp(64, 128) - 64;
             (b - half) * 18_900 + half * 37_800
@@ -1424,7 +1525,11 @@ mod tests {
             let old = ((s.start_s * SR) as usize, (s.end_s * SR) as usize);
             eprintln!("half/double section {i} beats {b0}-{b1}: {a}..{b} (exact {}..{}), renderer onset {}, fixed-bpm window {}..{}", exact(b0), exact(b1), onsets[i], old.0, old.1);
             assert_eq!((a, b), (exact(b0), exact(b1)), "section {i}");
-            assert!((a as i64 - onsets[i] as i64).abs() <= 1, "section {i}: {a} vs onset {}", onsets[i]);
+            assert!(
+                (a as i64 - onsets[i] as i64).abs() <= 1,
+                "section {i}: {a} vs onset {}",
+                onsets[i]
+            );
         }
     }
 }

@@ -51,21 +51,33 @@ fn type_untyped(mut props: Value) -> Value {
     if let Value::Object(m) = &mut props {
         for (k, p) in m.iter_mut() {
             let Value::Object(o) = p else { continue };
-            if ["type", "enum", "oneOf", "anyOf", "$ref", "const"].iter().any(|f| o.contains_key(*f)) {
+            if ["type", "enum", "oneOf", "anyOf", "$ref", "const"]
+                .iter()
+                .any(|f| o.contains_key(*f))
+            {
                 continue;
             }
             let (ty, desc): (Value, &str) = match k.as_str() {
-                "pitch" | "pitch_min" | "pitch_max" | "pitch_from" | "pitch_to" | "key_min" | "key_max" | "root" | "register" => {
-                    (json!(["integer", "string"]), "MIDI number or note name (C4 = 60)")
-                }
-                "rate" | "grid" | "every" => (json!(["number", "string"]), "16th steps, or a note value like '1/16', '1/8t', '1/4'"),
-                "patterns" | "to_patterns" | "track" => (json!(["string", "array"]), "a name, 'a,b', or a list of names"),
+                "pitch" | "pitch_min" | "pitch_max" | "pitch_from" | "pitch_to" | "key_min"
+                | "key_max" | "root" | "register" => (
+                    json!(["integer", "string"]),
+                    "MIDI number or note name (C4 = 60)",
+                ),
+                "rate" | "grid" | "every" => (
+                    json!(["number", "string"]),
+                    "16th steps, or a note value like '1/16', '1/8t', '1/4'",
+                ),
+                "patterns" | "to_patterns" | "track" => (
+                    json!(["string", "array"]),
+                    "a name, 'a,b', or a list of names",
+                ),
                 "sections" => (json!(["array", "string"]), "list of sections"),
                 _ => continue,
             };
             o.insert("type".into(), ty);
             if k == "patterns" || k == "to_patterns" || k == "track" || k == "sections" {
-                o.entry("items").or_insert(json!({"type": ["string", "object"]}));
+                o.entry("items")
+                    .or_insert(json!({"type": ["string", "object"]}));
             }
             o.entry("description").or_insert(Value::String(desc.into()));
         }

@@ -134,7 +134,8 @@ pub fn decode_stereo_native(path: &Path) -> Result<(Vec<f32>, Vec<f32>, u32)> {
         // some sample libraries (e.g. VCSL) write PCM WAVs whose fmt chunk
         // carries extra bytes; the decoder only takes 16 or 18
         Err(e) => match std::fs::read(path).ok().and_then(|b| wav_fmt_fixed(&b)) {
-            Some(fixed) => probe(Box::new(std::io::Cursor::new(fixed))).context("unsupported or corrupt audio file")?,
+            Some(fixed) => probe(Box::new(std::io::Cursor::new(fixed)))
+                .context("unsupported or corrupt audio file")?,
             None => return Err(anyhow::Error::new(e).context("unsupported or corrupt audio file")),
         },
     };
