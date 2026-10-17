@@ -1672,9 +1672,9 @@ mod tests {
                                 + 0.25 * (3.0 * phase).sin()),
                     );
                 }
-                x.extend(std::iter::repeat(0.0).take((0.12 * sr) as usize));
+                x.extend(std::iter::repeat_n(0.0, (0.12 * sr) as usize));
             }
-            x.extend(std::iter::repeat(0.0).take((0.5 * sr) as usize));
+            x.extend(std::iter::repeat_n(0.0, (0.5 * sr) as usize));
         }
         for v in x.iter_mut() {
             *v += 0.003 * noise();
@@ -1768,9 +1768,9 @@ mod tests {
                                 + 0.25 * (3.0 * phase).sin()),
                     );
                 }
-                x.extend(std::iter::repeat(0.0).take((0.15 * sr) as usize));
+                x.extend(std::iter::repeat_n(0.0, (0.15 * sr) as usize));
             }
-            x.extend(std::iter::repeat(0.0).take((0.5 * sr) as usize));
+            x.extend(std::iter::repeat_n(0.0, (0.5 * sr) as usize));
         }
         for v in x.iter_mut() {
             *v += 0.003 * noise();
@@ -1902,9 +1902,9 @@ mod tests {
                                 + 0.25 * (3.0 * phase).sin()),
                     );
                 }
-                x.extend(std::iter::repeat(0.0).take((0.12 * sr) as usize));
+                x.extend(std::iter::repeat_n(0.0, (0.12 * sr) as usize));
             }
-            x.extend(std::iter::repeat(0.0).take((0.5 * sr) as usize));
+            x.extend(std::iter::repeat_n(0.0, (0.5 * sr) as usize));
         }
         for v in x.iter_mut() {
             *v += 0.003 * noise();

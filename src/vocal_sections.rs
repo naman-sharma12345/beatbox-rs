@@ -500,9 +500,9 @@ mod tests {
                 );
             }
             let _ = k;
-            x.extend(std::iter::repeat(0.0).take((0.45 * SR) as usize));
+            x.extend(std::iter::repeat_n(0.0, (0.45 * SR) as usize));
         }
-        x.extend(std::iter::repeat(0.0).take((0.3 * SR) as usize));
+        x.extend(std::iter::repeat_n(0.0, (0.3 * SR) as usize));
         let mut rng = crate::dsp::Rng::new(4);
         for p in 0..3 {
             for s in 0..8 {
@@ -519,9 +519,9 @@ mod tests {
                             * ((ph * std::f32::consts::TAU).sin() * 0.6 + 0.4 * rng.bipolar()),
                     );
                 }
-                x.extend(std::iter::repeat(0.0).take((0.03 * SR) as usize));
+                x.extend(std::iter::repeat_n(0.0, (0.03 * SR) as usize));
             }
-            x.extend(std::iter::repeat(0.0).take((0.45 * SR) as usize));
+            x.extend(std::iter::repeat_n(0.0, (0.45 * SR) as usize));
         }
         x
     }
