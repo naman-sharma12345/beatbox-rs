@@ -634,7 +634,7 @@ mod tests {
         assert_eq!(got[1].0, 16.0);
         assert!(got[1].1 > -2.0, "{got:?}");
         let after = e.mix().unwrap();
-        let sr = crate::dsp::SR as f32;
+        let sr = crate::dsp::SR;
         let beat_s = 60.0 / e.project.bpm;
         let seg = |a: f32, b: f32| ((a * beat_s * sr) as usize, (b * beat_s * sr) as usize);
         let n = before.left.len().min(after.left.len());

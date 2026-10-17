@@ -652,7 +652,7 @@ mod tests {
         .unwrap();
         let kick = e.project.track_index("kick").unwrap();
         let rms_at = |m: &crate::render::Mix, beat0: f32, beat1: f32, bpm: f32| {
-            let sr = crate::dsp::SR as f32;
+            let sr = crate::dsp::SR;
             let (a, b) = (
                 (beat0 * 60.0 / bpm * sr) as usize,
                 (beat1 * 60.0 / bpm * sr) as usize,
