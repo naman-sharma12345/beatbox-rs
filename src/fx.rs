@@ -122,7 +122,10 @@ fx_struct!(SidechainFx {
     release_ms: f32 = 180.0,
     attack_ms: f32 = 3.0
 });
-fx_struct!(WidthFx { amount: f32 = 1.4, low_mono_hz: f32 = 0.0 });
+fx_struct!(WidthFx {
+    amount: f32 = 1.4,
+    low_mono_hz: f32 = 0.0
+});
 fx_struct!(GainFx { db: f32 = 0.0 });
 fx_struct!(LimiterFx {
     ceiling_db: f32 = -1.0,
@@ -635,7 +638,11 @@ impl Effect {
             Effect::DynamicEq(p) => {
                 if p.source.is_empty() {
                     x::dynamic_eq(p, l, r)
-                } else if let Some(key) = ctx.levels.filter(|_| p.key == "level").and_then(|m| m.get(&p.source.to_lowercase())) {
+                } else if let Some(key) = ctx
+                    .levels
+                    .filter(|_| p.key == "level")
+                    .and_then(|m| m.get(&p.source.to_lowercase()))
+                {
                     x::level_keyed_dynamic_eq(p, key, l, r)
                 } else if let Some(trig) = ctx.triggers.get(&p.source.to_lowercase()) {
                     x::keyed_dynamic_eq(p, trig, l, r)
@@ -652,7 +659,9 @@ impl Effect {
             Effect::Autopan(p) => x::autopan(p, l, r, ctx.step_secs, ctx.offset),
             Effect::Saturator(p) => crate::fx_sat::saturator(p, l, r),
             Effect::Haas(p) => crate::fx_sat::haas(p, l, r),
-            Effect::GrossBeat(p) => crate::fx_time::gross_beat_at(p, l, r, ctx.step_secs, ctx.offset),
+            Effect::GrossBeat(p) => {
+                crate::fx_time::gross_beat_at(p, l, r, ctx.step_secs, ctx.offset)
+            }
             Effect::Vocoder(p) => crate::fx_vocoder::vocoder_at(p, l, r, ctx.offset),
             Effect::FreqShift(p) => crate::fx_mod::freq_shift_at(p, l, r, ctx.offset),
             Effect::RingMod(p) => crate::fx_mod::ring_mod_at(p, l, r, ctx.offset),
@@ -894,21 +903,24 @@ impl Effect {
     }
 }
 
-struct Comb {
+#[doc(hidden)]
+pub struct Comb {
     buf: Vec<f32>,
     idx: usize,
     store: f32,
 }
 
 impl Comb {
-    fn new(n: usize) -> Self {
+    #[doc(hidden)]
+    pub fn new(n: usize) -> Self {
         Comb {
             buf: vec![0.0; n.max(1)],
             idx: 0,
             store: 0.0,
         }
     }
-    fn process(&mut self, x: f32, fb: f32, damp: f32) -> f32 {
+    #[doc(hidden)]
+    pub fn process(&mut self, x: f32, fb: f32, damp: f32) -> f32 {
         let out = self.buf[self.idx];
         self.store = out * (1.0 - damp) + self.store * damp;
         self.buf[self.idx] = x + self.store * fb;
@@ -917,19 +929,22 @@ impl Comb {
     }
 }
 
-struct Allpass {
+#[doc(hidden)]
+pub struct Allpass {
     buf: Vec<f32>,
     idx: usize,
 }
 
 impl Allpass {
-    fn new(n: usize) -> Self {
+    #[doc(hidden)]
+    pub fn new(n: usize) -> Self {
         Allpass {
             buf: vec![0.0; n.max(1)],
             idx: 0,
         }
     }
-    fn process(&mut self, x: f32) -> f32 {
+    #[doc(hidden)]
+    pub fn process(&mut self, x: f32) -> f32 {
         let b = self.buf[self.idx];
         let out = -x + b;
         self.buf[self.idx] = x + b * 0.5;
@@ -1102,7 +1117,10 @@ fn limiter_pass_impl(p: &LimiterFx, ceiling_db: f32, l: &mut [f32], r: &mut [f32
     // 16-sample blocks). Besides quiet passages this skips decaying tails,
     // where subnormal floats made every tap ~100x slower (B40 profile: 209 of
     // a window render's 237 ms master time).
-    let kabs = kernels.iter().map(|h| h.iter().map(|c| c.abs()).sum::<f32>()).fold(1.0f32, f32::max);
+    let kabs = kernels
+        .iter()
+        .map(|h| h.iter().map(|c| c.abs()).sum::<f32>())
+        .fold(1.0f32, f32::max);
     let skip_under = ceiling / (1.06 * kabs * (1.0 + 1e-4));
     let block_max: Vec<f32> = if p.true_peak && skip {
         (0..n.div_ceil(SKIP_BLOCK))
@@ -1223,6 +1241,7 @@ pub fn find(chain: &[Effect], key: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::TAU;
 
     fn ctx(t: &HashMap<String, Vec<usize>>) -> FxContext<'_> {
         FxContext {
@@ -1244,14 +1263,24 @@ mod tests {
         let a: Vec<f32> = (0..n)
             .map(|i| {
                 let t = i as f32 / 44100.0;
-                let env = if t < 2.0 { 1.0 } else { (-(t - 2.0) * 50.0).exp() };
-                ((t * 55.0 * 6.283).sin() * 0.8 + 0.4 * rng.bipolar()) * 1.4 * env
+                let env = if t < 2.0 {
+                    1.0
+                } else {
+                    (-(t - 2.0) * 50.0).exp()
+                };
+                ((t * 55.0 * TAU).sin() * 0.8 + 0.4 * rng.bipolar()) * 1.4 * env
             })
             .collect();
-        assert!(a.iter().any(|v| *v != 0.0 && v.abs() < f32::MIN_POSITIVE), "the tail reaches subnormals");
+        assert!(
+            a.iter().any(|v| *v != 0.0 && v.abs() < f32::MIN_POSITIVE),
+            "the tail reaches subnormals"
+        );
         let ceiling = db_to_gain(-1.0);
         let mut b = vec![0.0f32; 44100];
-        for (k, g) in [0.80f32, 0.88, 0.89, 0.8913, 0.9, 0.95, 1.2].iter().enumerate() {
+        for (k, g) in [0.80f32, 0.88, 0.89, 0.8913, 0.9, 0.95, 1.2]
+            .iter()
+            .enumerate()
+        {
             let at = 2000 + k * 5000;
             b[at] = *g;
             b[at + 1] = -*g * 0.97;
@@ -1259,7 +1288,11 @@ mod tests {
         }
         // a click right at the bound's level
         b[40000] = ceiling / 1.06;
-        let p = LimiterFx { ceiling_db: -1.0, release_ms: 80.0, ..Default::default() };
+        let p = LimiterFx {
+            ceiling_db: -1.0,
+            release_ms: 80.0,
+            ..Default::default()
+        };
         assert!(p.true_peak, "the default limiter is true-peak");
         for (name, x) in [("d11_style", &a), ("near_ceiling", &b)] {
             for ceil_db in [-1.0f32, -1.6, -3.0] {
@@ -1267,7 +1300,11 @@ mod tests {
                 let (mut l1, mut r1) = (l0.clone(), r0.clone());
                 limiter_pass_impl(&p, ceil_db, &mut l0, &mut r0, false);
                 limiter_pass_impl(&p, ceil_db, &mut l1, &mut r1, true);
-                let same = l0.iter().zip(&l1).chain(r0.iter().zip(&r1)).all(|(u, v)| u.to_bits() == v.to_bits());
+                let same = l0
+                    .iter()
+                    .zip(&l1)
+                    .chain(r0.iter().zip(&r1))
+                    .all(|(u, v)| u.to_bits() == v.to_bits());
                 assert!(same, "{name} at {ceil_db} dB: skip changed the output");
             }
         }
@@ -1283,14 +1320,25 @@ mod tests {
         let song: Vec<f32> = (0..n)
             .map(|i| {
                 let t = i as f32 / 44100.0;
-                let env = if t < 16.0 { 1.0 } else { (-(t - 16.0) * 30.0).exp() };
-                ((t * 55.0 * 6.283).sin() * 0.7 + 0.3 * rng.bipolar()) * 1.3 * env
+                let env = if t < 16.0 {
+                    1.0
+                } else {
+                    (-(t - 16.0) * 30.0).exp()
+                };
+                ((t * 55.0 * TAU).sin() * 0.7 + 0.3 * rng.bipolar()) * 1.3 * env
             })
             .collect();
         // worst case for the skip: loud everywhere, nothing to skip
         let loud: Vec<f32> = (0..n).map(|i| (i as f32 * 0.05).sin() * 1.3).collect();
-        let p = LimiterFx { ceiling_db: -1.0, release_ms: 80.0, ..Default::default() };
-        for (name, x) in [("loud 16 s + subnormal tail", &song), ("loud throughout (no skip possible)", &loud)] {
+        let p = LimiterFx {
+            ceiling_db: -1.0,
+            release_ms: 80.0,
+            ..Default::default()
+        };
+        for (name, x) in [
+            ("loud 16 s + subnormal tail", &song),
+            ("loud throughout (no skip possible)", &loud),
+        ] {
             let mut row = Vec::new();
             for skip in [false, true] {
                 let mut best = f64::MAX;
@@ -1422,21 +1470,41 @@ mod tests {
         // a 500 Hz tone; the vocal key plays from sample 20000
         let t = HashMap::from([("vocal".to_string(), vec![20000usize, 24000])]);
         let n = 60000;
-        let mut l: Vec<f32> = (0..n).map(|i| (2.0 * std::f32::consts::PI * 500.0 * i as f32 / SR).sin() * 0.5).collect();
+        let mut l: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * 500.0 * i as f32 / SR).sin() * 0.5)
+            .collect();
         let mut r = l.clone();
-        let fx = Effect::DynamicEq(DynamicEqFx { freq: 520.0, q: 0.85, range_db: -6.0, source: "vocal".into(), release_ms: 300.0, attack_ms: 10.0, ..Default::default() });
+        let fx = Effect::DynamicEq(DynamicEqFx {
+            freq: 520.0,
+            q: 0.85,
+            range_db: -6.0,
+            source: "vocal".into(),
+            release_ms: 300.0,
+            attack_ms: 10.0,
+            ..Default::default()
+        });
         fx.process(&mut l, &mut r, &ctx(&t));
         let rms = |a: &[f32]| (a.iter().map(|x| x * x).sum::<f32>() / a.len() as f32).sqrt();
         let before = rms(&l[10000..19000]);
         let during = rms(&l[26000..34000]);
         let after = rms(&l[54000..60000]);
-        assert!((before - 0.3535).abs() < 0.02, "untouched before the key: {before}");
-        assert!(during < before * 0.65, "dips under the key: {during} vs {before}");
+        assert!(
+            (before - 0.3535).abs() < 0.02,
+            "untouched before the key: {before}"
+        );
+        assert!(
+            during < before * 0.65,
+            "dips under the key: {during} vs {before}"
+        );
         assert!(after > before * 0.95, "recovers after: {after}");
         // no key track: untouched
         let mut l2 = vec![0.3f32; 1000];
         let mut r2 = l2.clone();
-        Effect::DynamicEq(DynamicEqFx { source: "nobody".into(), ..Default::default() }).process(&mut l2, &mut r2, &ctx(&t));
+        Effect::DynamicEq(DynamicEqFx {
+            source: "nobody".into(),
+            ..Default::default()
+        })
+        .process(&mut l2, &mut r2, &ctx(&t));
         assert_eq!(l2[999], 0.3);
     }
 }

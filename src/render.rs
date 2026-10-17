@@ -41,10 +41,20 @@ impl Stem {
     /// kept, else from the summary (one of STEM_BANDS; -200 for another).
     pub fn band_db(&self, lo: f32, hi: f32) -> f32 {
         if !self.left.is_empty() {
-            let m: Vec<f32> = self.left.iter().zip(self.right.iter()).map(|(a, b)| 0.5 * (a + b)).collect();
+            let m: Vec<f32> = self
+                .left
+                .iter()
+                .zip(self.right.iter())
+                .map(|(a, b)| 0.5 * (a + b))
+                .collect();
             return crate::mix_rules::band_energy_db(&m, lo, hi);
         }
-        match (self.bands, STEM_BANDS.iter().position(|b| (b.0 - lo).abs() < 0.5 && (b.1 - hi).abs() < 0.5)) {
+        match (
+            self.bands,
+            STEM_BANDS
+                .iter()
+                .position(|b| (b.0 - lo).abs() < 0.5 && (b.1 - hi).abs() < 0.5),
+        ) {
             (Some(b), Some(i)) => b[i],
             _ => -200.0,
         }
@@ -53,7 +63,12 @@ impl Stem {
     fn summarize(name: String, l: &[f32], r: &[f32]) -> Stem {
         let m: Vec<f32> = l.iter().zip(r.iter()).map(|(a, b)| 0.5 * (a + b)).collect();
         let b = STEM_BANDS.map(|(lo, hi)| crate::mix_rules::band_energy_db(&m, lo, hi));
-        Stem { name, left: Vec::new(), right: Vec::new(), bands: Some(b) }
+        Stem {
+            name,
+            left: Vec::new(),
+            right: Vec::new(),
+            bands: Some(b),
+        }
     }
 }
 
@@ -66,12 +81,19 @@ pub const RENDER_BATCH_MB: f32 = 700.0;
 /// The stems a voice-aware mix rule reads sample by sample: voice-named
 /// tracks and tracks that play audio clips (a recorded take).
 pub fn voice_stem(p: &Project, name: &str) -> bool {
-    crate::mix_rules::is_voice_name(name) || p.audio_clips.iter().any(|c| c.track.eq_ignore_ascii_case(name))
+    crate::mix_rules::is_voice_name(name)
+        || p.audio_clips
+            .iter()
+            .any(|c| c.track.eq_ignore_ascii_case(name))
 }
 pub const TRACK_CACHE_MB: f32 = 900.0;
 
 fn budget_mb(var: &str, default: f32) -> f32 {
-    std::env::var(var).ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| *v > 0.0).unwrap_or(default)
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(default)
 }
 
 /// Per-track measurements taken during the render (no audio kept), so the
@@ -225,16 +247,27 @@ pub fn missing_clip_samples(p: &Project, bank: &SampleBank) -> Vec<String> {
     p.audio_clips
         .iter()
         .enumerate()
-        .filter(|(_, c)| p.tracks.iter().any(|t| t.name.eq_ignore_ascii_case(&c.track)))
+        .filter(|(_, c)| {
+            p.tracks
+                .iter()
+                .any(|t| t.name.eq_ignore_ascii_case(&c.track))
+        })
         .filter(|(_, c)| bank.get(&c.sample).is_none())
         .map(|(i, c)| {
-            let known = p.samples.iter().any(|s| s.name.eq_ignore_ascii_case(&c.sample));
+            let known = p
+                .samples
+                .iter()
+                .any(|s| s.name.eq_ignore_ascii_case(&c.sample));
             format!(
                 "'{}' on track '{}' (clip {i}, beat {}){}",
                 c.sample,
                 c.track,
                 (c.start_beat * 100.0).round() / 100.0,
-                if known { ": registered but its file could not be read" } else { ": no such sample" }
+                if known {
+                    ": registered but its file could not be read"
+                } else {
+                    ": no such sample"
+                }
             )
         })
         .collect()
@@ -255,7 +288,11 @@ pub fn chance_hit(track: usize, note: usize, pass_offset: u32, p: f32) -> bool {
 /// Build the event list for every track (index aligned with project.tracks).
 /// Seconds from song start to an absolute step of a (possibly looped) render:
 /// each loop replays the tempo curve from the top.
-pub fn song_secs_at_step(curve: &crate::tempo_curve::TempoCurve, song_steps: f64, abs_step: f64) -> f64 {
+pub fn song_secs_at_step(
+    curve: &crate::tempo_curve::TempoCurve,
+    song_steps: f64,
+    abs_step: f64,
+) -> f64 {
     if song_steps <= 0.0 || abs_step < song_steps {
         return curve.secs_at_step(abs_step);
     }
@@ -277,7 +314,13 @@ pub fn schedule(p: &Project, opts: &RenderOptions) -> (Vec<Vec<Event>>, usize) {
     let tunes: Vec<f32> = p
         .tracks
         .iter()
-        .map(|t| if p.tuning_cents != 0.0 && t.instrument.follows_tuning() { p.tuning_cents / 100.0 } else { 0.0 })
+        .map(|t| {
+            if p.tuning_cents != 0.0 && t.instrument.follows_tuning() {
+                p.tuning_cents / 100.0
+            } else {
+                0.0
+            }
+        })
         .collect();
     let mut offset: u32 = 0;
     let (r0, r1) = opts.step_range.unwrap_or((0, u32::MAX));
@@ -308,14 +351,23 @@ pub fn schedule(p: &Project, opts: &RenderOptions) -> (Vec<Vec<Event>>, usize) {
                             ((rel * step * SR) as usize, (n.len * step).max(0.01))
                         } else {
                             let t = tsec(abs);
-                            (((t - tsec(r0 as f32)) * SR as f64) as usize, ((tsec(abs + n.len) - t) as f32).max(0.01))
+                            (
+                                ((t - tsec(r0 as f32)) * SR as f64) as usize,
+                                ((tsec(abs + n.len) - t) as f32).max(0.01),
+                            )
                         };
                         let (pitch, slide_to) = if tune != 0.0 {
                             (n.pitch as f32 + tune, n.slide_to.map(|x| x as f32 + tune))
                         } else {
                             (n.pitch as f32, n.slide_to.map(|x| x as f32))
                         };
-                        events[ti].push(Event { start, gate, pitch, vel: n.vel, slide_to });
+                        events[ti].push(Event {
+                            start,
+                            gate,
+                            pitch,
+                            vel: n.vel,
+                            slide_to,
+                        });
                     }
                 }
                 offset += pat.steps();
@@ -394,7 +446,11 @@ impl Timeline {
     pub fn beat_at(&self, sample: usize) -> f32 {
         if let Some((curve, t0, loop_secs)) = &self.tempo {
             let t = t0 + sample as f64 / SR as f64;
-            let lp = if *loop_secs > 0.0 { (t / loop_secs).floor() } else { 0.0 };
+            let lp = if *loop_secs > 0.0 {
+                (t / loop_secs).floor()
+            } else {
+                0.0
+            };
             if lp >= self.loops as f64 {
                 return self.song_beats;
             }
@@ -423,7 +479,7 @@ pub(crate) fn owner_lanes<'a>(p: &'a Project, owner: &str) -> Vec<&'a Automation
 }
 
 /// Per-sample values of a lane (block-evaluated, linearly smoothed).
-fn lane_curve(
+pub(crate) fn lane_curve(
     lane: &AutomationLane,
     n: usize,
     tl: &Timeline,
@@ -437,7 +493,11 @@ fn lane_curve(
     let s0 = tl.sample0;
     let k0 = s0 / AUTO_BLOCK;
     let blocks: Vec<f32> = (k0..=(s0 + n) / AUTO_BLOCK + 1)
-        .map(|k| map(lane.value_at_in(tl.song_beat_at(k * AUTO_BLOCK), log).unwrap_or(0.0)))
+        .map(|k| {
+            map(lane
+                .value_at_in(tl.song_beat_at(k * AUTO_BLOCK), log)
+                .unwrap_or(0.0))
+        })
         .collect();
     let mut out: Vec<f32> = (0..n)
         .map(|i| {
@@ -450,7 +510,7 @@ fn lane_curve(
     // a one-pole smoother on top of the per-block ramps: a step point (or a
     // jump faster than a block) lands over a few ms instead of 64 samples,
     // so step corners do not click; sweeps lag by ~AUTO_SMOOTH_MS at most
-    let a = 1.0 - (-1.0 / (AUTO_SMOOTH_MS * 0.001 * SR)).exp();
+    let a = auto_smooth_coeff(SR);
     let mut y = out.first().copied().unwrap_or(0.0);
     for v in out.iter_mut() {
         y += a * (*v - y);
@@ -461,6 +521,39 @@ fn lane_curve(
 
 /// Time constant of the automation smoother (ms).
 pub const AUTO_SMOOTH_MS: f32 = 3.0;
+
+/// The one-pole automation-smoother coefficient for a given sample rate,
+/// computed in f32 exactly as lane_curve has always computed it:
+/// tau_samples = AUTO_SMOOTH_MS * 0.001 * sr; a = 1 - exp(-1/tau_samples).
+/// Single source shared by the offline renderer and the RT engine/oracle
+/// (milestone-1 determinism contract). Block size never enters here.
+pub fn auto_smooth_coeff(sr: f32) -> f32 {
+    1.0 - (-1.0 / (AUTO_SMOOTH_MS * 0.001 * sr)).exp()
+}
+
+/// Raw (pre-smoother) lane-curve value at absolute song sample `a`,
+/// computed with lane_curve's exact ops at s0 = 0: song-absolute
+/// AUTO_BLOCK grid, `map` applied at grid points, f32 lerp. The RT
+/// engine's smoothed lanes (rt::MixNode) carry the one-pole state across
+/// blocks on top of this.
+pub(crate) fn lane_raw_at(
+    lane: &AutomationLane,
+    tl: &Timeline,
+    a: usize,
+    map: impl Fn(f32) -> f32,
+) -> f32 {
+    let log = automation::is_log_param(&lane.param);
+    let k = a / AUTO_BLOCK;
+    let f = (a % AUTO_BLOCK) as f32 / AUTO_BLOCK as f32;
+    let at = |k: usize| {
+        map(lane
+            .value_at_in(tl.song_beat_at(k * AUTO_BLOCK), log)
+            .unwrap_or(0.0))
+    };
+    let b0 = at(k);
+    let b1 = at(k + 1);
+    b0 + (b1 - b0) * f
+}
 
 /// Run an effect chain, honouring `fx.<i>.<param>` automation lanes.
 ///
@@ -745,7 +838,12 @@ impl std::fmt::Debug for TrackKey {
         let mut h: u64 = 0xcbf29ce484222325;
         fnv(&mut h, &self.shared);
         fnv(&mut h, &self.own);
-        write!(f, "TrackKey({} + {} bytes, fnv {h:016x})", self.shared.len(), self.own.len())
+        write!(
+            f,
+            "TrackKey({} + {} bytes, fnv {h:016x})",
+            self.shared.len(),
+            self.own.len()
+        )
     }
 }
 
@@ -854,19 +952,36 @@ impl TrackCache {
         let lanes: Vec<&AutomationLane> = p
             .automation
             .iter()
-            .filter(|l| l.target.eq_ignore_ascii_case(name) && parse_target(&l.param) != Some(Target::Volume))
+            .filter(|l| {
+                l.target.eq_ignore_ascii_case(name)
+                    && parse_target(&l.param) != Some(Target::Volume)
+            })
             .collect();
         let ev: Vec<(usize, u32, u32, u32, Option<u32>)> = events[ti]
             .iter()
-            .map(|e| (e.start, e.gate.to_bits(), e.pitch.to_bits(), e.vel.to_bits(), e.slide_to.map(f32::to_bits)))
+            .map(|e| {
+                (
+                    e.start,
+                    e.gate.to_bits(),
+                    e.pitch.to_bits(),
+                    e.vel.to_bits(),
+                    e.slide_to.map(f32::to_bits),
+                )
+            })
             .collect();
-        let clips: Vec<&crate::project::AudioClip> =
-            p.audio_clips.iter().filter(|c| c.track.eq_ignore_ascii_case(name)).collect();
+        let clips: Vec<&crate::project::AudioClip> = p
+            .audio_clips
+            .iter()
+            .filter(|c| c.track.eq_ignore_ascii_case(name))
+            .collect();
         let deps: Vec<Value> = chain_sources(&t.effects)
             .into_iter()
             .map(|s| {
-                let on: Vec<&crate::project::AudioClip> =
-                    p.audio_clips.iter().filter(|c| c.track.to_lowercase() == s).collect();
+                let on: Vec<&crate::project::AudioClip> = p
+                    .audio_clips
+                    .iter()
+                    .filter(|c| c.track.to_lowercase() == s)
+                    .collect();
                 serde_json::json!({ "source": s, "triggers": triggers.get(&s), "clips": on })
             })
             .collect();
@@ -879,7 +994,10 @@ impl TrackCache {
             "chokers": hat_chokers(p, events, ti),
             "deps": deps,
         });
-        TrackKey { shared: shared.clone(), own: own.to_string() }
+        TrackKey {
+            shared: shared.clone(),
+            own: own.to_string(),
+        }
     }
 
     /// Key spec, bus part (the DAG's second level; the master, which every
@@ -896,11 +1014,16 @@ impl TrackCache {
     ///   the send lane that drives it;
     /// - "buses": in processing order, the full key of each bus routed into
     ///   it.
+    ///
     /// So an edit dirties exactly the buses downstream of the tracks it
     /// re-synthesises or whose fader/send it moves (a sidechain target's
     /// buses included); a send added to one bus leaves every other bus's
     /// key alone. The shared part is the tracks' shared part.
-    fn bus_keys(p: &Project, track_keys: &[TrackKey], triggers: &HashMap<String, Vec<usize>>) -> Vec<Option<TrackKey>> {
+    fn bus_keys(
+        p: &Project,
+        track_keys: &[TrackKey],
+        triggers: &HashMap<String, Vec<usize>>,
+    ) -> Vec<Option<TrackKey>> {
         let Some(shared) = track_keys.first().map(|k| k.shared.clone()) else {
             return vec![None; p.buses.len()];
         };
@@ -919,7 +1042,12 @@ impl TrackCache {
             if b.mute {
                 continue;
             }
-            if let Some(d) = b.output.as_deref().and_then(|o| p.bus_index(o).ok()).filter(|d| !taken[*d]) {
+            if let Some(d) = b
+                .output
+                .as_deref()
+                .and_then(|o| p.bus_index(o).ok())
+                .filter(|d| !taken[*d])
+            {
                 feeders[d].push(bi);
             }
         }
@@ -935,8 +1063,11 @@ impl TrackCache {
             let deps: Vec<Value> = chain_sources(&bus.effects)
                 .into_iter()
                 .map(|s| {
-                    let on: Vec<&crate::project::AudioClip> =
-                        p.audio_clips.iter().filter(|c| c.track.to_lowercase() == s).collect();
+                    let on: Vec<&crate::project::AudioClip> = p
+                        .audio_clips
+                        .iter()
+                        .filter(|c| c.track.to_lowercase() == s)
+                        .collect();
                     serde_json::json!({ "source": s, "triggers": triggers.get(&s), "clips": on })
                 })
                 .collect();
@@ -963,7 +1094,10 @@ impl TrackCache {
                 if !here && sends.is_empty() {
                     continue;
                 }
-                let vol: Vec<&&AutomationLane> = tl_lanes.iter().filter(|x| parse_target(&x.param) == Some(Target::Volume)).collect();
+                let vol: Vec<&&AutomationLane> = tl_lanes
+                    .iter()
+                    .filter(|x| parse_target(&x.param) == Some(Target::Volume))
+                    .collect();
                 tracks.push(serde_json::json!({
                     "ti": ti,
                     "own": track_keys[ti].own,
@@ -973,7 +1107,10 @@ impl TrackCache {
                     "sends": sends,
                 }));
             }
-            let buses: Vec<&str> = feeders[bi].iter().filter_map(|&f| out[f].as_ref().map(|k| k.own.as_str())).collect();
+            let buses: Vec<&str> = feeders[bi]
+                .iter()
+                .filter_map(|&f| out[f].as_ref().map(|k| k.own.as_str()))
+                .collect();
             let own = serde_json::json!({
                 "bi": bi,
                 "bus": bus,
@@ -982,7 +1119,10 @@ impl TrackCache {
                 "tracks": tracks,
                 "buses": buses,
             });
-            out[bi] = Some(TrackKey { shared: shared.clone(), own: own.to_string() });
+            out[bi] = Some(TrackKey {
+                shared: shared.clone(),
+                own: own.to_string(),
+            });
         }
         out
     }
@@ -1004,7 +1144,9 @@ impl TrackCache {
         triggers: &HashMap<String, Vec<usize>>,
     ) -> Vec<TrackKey> {
         let g = Self::shared_key(p, opts, total);
-        (0..p.tracks.len()).map(|ti| Self::track_key(&g, p, ti, events, triggers)).collect()
+        (0..p.tracks.len())
+            .map(|ti| Self::track_key(&g, p, ti, events, triggers))
+            .collect()
     }
 
     pub fn len(&self) -> usize {
@@ -1042,7 +1184,7 @@ fn hat_chokers(p: &Project, events: &[Vec<Event>], ti: usize) -> Vec<usize> {
 /// chain (FxContext): note-on positions per track name (lowercase) plus the
 /// onsets of the audio clips on it, and the clip audio of each track a
 /// level-keyed dynamic EQ follows.
-fn sidechain_inputs(
+pub(crate) fn sidechain_inputs(
     p: &Project,
     bank: &SampleBank,
     opts: &RenderOptions,
@@ -1063,7 +1205,11 @@ fn sidechain_inputs(
         .iter()
         .flat_map(|t| t.effects.iter())
         .filter_map(|f| match f {
-            crate::fx::Effect::DynamicEq(d) if d.key == "level" && !d.source.is_empty() && !d.bypass => Some(d.source.to_lowercase()),
+            crate::fx::Effect::DynamicEq(d)
+                if d.key == "level" && !d.source.is_empty() && !d.bypass =>
+            {
+                Some(d.source.to_lowercase())
+            }
             _ => None,
         })
         .collect();
@@ -1072,20 +1218,29 @@ fn sidechain_inputs(
     // so "duck the pads under the vocal" follows the words, not just the
     // clip's first sample
     for c in &p.audio_clips {
-        let Some(data) = bank.get(&c.sample) else { continue };
+        let Some(data) = bank.get(&c.sample) else {
+            continue;
+        };
         let r0 = opts.step_range.map(|r| r.0).unwrap_or(0) as f32;
         let off = ((c.offset_s.max(0.0) * SR) as usize).min(data.len());
         let avail = data.len() - off;
-        let len = c.length_s.map(|l| ((l.max(0.0) * SR) as usize).min(avail)).unwrap_or(avail);
+        let len = c
+            .length_s
+            .map(|l| ((l.max(0.0) * SR) as usize).min(avail))
+            .unwrap_or(avail);
         let song_steps = p.song_steps() as f32;
         let ons = audio_onsets(&data[off..off + len]);
         let tr = triggers.entry(c.track.to_lowercase()).or_default();
         for lp in 0..opts.loops.max(1) {
             let start = if tcurve.is_constant() {
-                ((c.start_beat * 4.0 + lp as f32 * song_steps - r0) * p.step_secs() * SR).round() as i64
+                ((c.start_beat * 4.0 + lp as f32 * song_steps - r0) * p.step_secs() * SR).round()
+                    as i64
             } else {
                 let abs = (c.start_beat * 4.0 + lp as f32 * song_steps) as f64;
-                ((song_secs_at_step(&tcurve, song_steps as f64, abs) - song_secs_at_step(&tcurve, song_steps as f64, r0 as f64)) * SR as f64).round() as i64
+                ((song_secs_at_step(&tcurve, song_steps as f64, abs)
+                    - song_secs_at_step(&tcurve, song_steps as f64, r0 as f64))
+                    * SR as f64)
+                    .round() as i64
             };
             for &o in &ons {
                 let at = start + o as i64;
@@ -1094,7 +1249,9 @@ fn sidechain_inputs(
                 }
             }
             if level_srcs.contains(&c.track.to_lowercase()) {
-                let buf = levels.entry(c.track.to_lowercase()).or_insert_with(|| vec![0.0; total]);
+                let buf = levels
+                    .entry(c.track.to_lowercase())
+                    .or_insert_with(|| vec![0.0; total]);
                 for (k, &v) in data[off..off + len].iter().enumerate() {
                     let at = start + k as i64;
                     if at >= 0 && (at as usize) < total {
@@ -1128,7 +1285,10 @@ pub fn audio_onsets(x: &[f32]) -> Vec<usize> {
         if db[i] < -45.0 {
             continue;
         }
-        let lo = db[i.saturating_sub(6)..i].iter().copied().fold(f32::INFINITY, f32::min);
+        let lo = db[i.saturating_sub(6)..i]
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
         let jump = i == 0 || db[i] - lo > 6.0;
         let gap = i as i64 - last;
         if (jump && gap >= 9) || gap >= 12 {
@@ -1157,7 +1317,12 @@ pub fn render_cached(
 /// index they have in the whole song: `index_base[track]` is how many of
 /// that track's notes sound before the range. A window rendered this way
 /// matches the same bars of a full render (crate::live_splice).
-pub fn render_window(p: &Project, bank: &SampleBank, opts: &RenderOptions, index_base: &[usize]) -> Result<Mix> {
+pub fn render_window(
+    p: &Project,
+    bank: &SampleBank,
+    opts: &RenderOptions,
+    index_base: &[usize],
+) -> Result<Mix> {
     render_impl(p, bank, opts, None, Some(index_base))
 }
 
@@ -1201,7 +1366,13 @@ pub(crate) fn master_inputs(p: &Project, bank: &SampleBank, opts: &RenderOptions
     let total = body_len + (opts.tail.max(0.0) * SR) as usize;
     let (triggers, levels) = sidechain_inputs(p, bank, opts, &events, total);
     let (tl, offset) = render_timeline(p, opts);
-    MasterInputs { triggers, levels, tl, offset, total }
+    MasterInputs {
+        triggers,
+        levels,
+        tl,
+        offset,
+        total,
+    }
 }
 
 /// The master section, in render order: master fader (with its `volume`
@@ -1209,30 +1380,22 @@ pub(crate) fn master_inputs(p: &Project, bank: &SampleBank, opts: &RenderOptions
 /// effect chain (with its automation lanes and the render's sidechain
 /// context), then non-finite samples to zero. render() runs it on the
 /// master sum; post_master stem export runs it on each stem.
-pub(crate) fn master_section(p: &Project, ml: &mut Vec<f32>, mr: &mut Vec<f32>, ctx: &FxContext, tl: &Timeline) {
+pub(crate) fn master_section(
+    p: &Project,
+    ml: &mut Vec<f32>,
+    mr: &mut Vec<f32>,
+    ctx: &FxContext,
+    tl: &Timeline,
+) {
     let master_lanes = owner_lanes(p, "master");
-    apply_fader(
-        ml,
-        mr,
-        p.master_volume_db,
-        &master_lanes,
-        tl,
-        None,
-    );
+    apply_fader(ml, mr, p.master_volume_db, &master_lanes, tl, None);
     // DC block before the master chain so the limiter has the last word
     let (mut dl, mut dr) = (DcBlock::default(), DcBlock::default());
     for (a, b) in ml.iter_mut().zip(mr.iter_mut()) {
         *a = dl.process(*a);
         *b = dr.process(*b);
     }
-    process_chain(
-        &p.master_effects,
-        &master_lanes,
-        ml,
-        mr,
-        ctx,
-        tl,
-    );
+    process_chain(&p.master_effects, &master_lanes, ml, mr, ctx, tl);
     for (a, b) in ml.iter_mut().zip(mr.iter_mut()) {
         if !a.is_finite() {
             *a = 0.0;
@@ -1241,6 +1404,453 @@ pub(crate) fn master_section(p: &Project, ml: &mut Vec<f32>, mr: &mut Vec<f32>, 
             *b = 0.0;
         }
     }
+}
+
+/// Track synthesis for one track, before the fader: voices, audio clips,
+/// pan/spread and the track's effect chain. Extracted verbatim from
+/// render_impl's per-track closure so the RT engine's MixNode (rt.rs) and
+/// mix() run the SAME code bit-for-bit. Pure move - no math, order or
+/// value changes.
+pub(crate) struct TrackSynth<'a> {
+    pub p: &'a Project,
+    pub bank: &'a SampleBank,
+    pub opts: &'a RenderOptions,
+    pub events: &'a [Vec<Event>],
+    pub total: usize,
+    pub tl: &'a Timeline,
+    pub tcurve: &'a crate::tempo_curve::TempoCurve,
+    pub ctx: &'a FxContext<'a>,
+    pub index_base: Option<&'a [usize]>,
+}
+
+/// Pre-chain track synthesis: voices (mono/mono2 with stereo-spread
+/// second set), audio clips, pan/spread into (l, r) - everything before
+/// the track FX chain. Factored out of render_track_synth so the RT
+/// engine's chunked voice streamer (rt.rs) can be tested bit-identically
+/// against this exact pre-chain output. Pure refactor, no behavior change.
+pub(crate) struct PlannedVoice {
+    pub start: usize,
+    pub audio: std::sync::Arc<(Vec<f32>, Vec<f32>)>,
+    pub choke_after: Option<usize>,
+    pub xfade_in: bool,
+    pub start_fade: usize,
+}
+
+/// Voice schedule for one track: every note as a separately-owned buffer
+/// with its fade/choke parameters, in onset order. Pure extraction of the
+/// render_track_synth voice loop - same renders, same cache keys, same
+/// order - so both the one-shot renderer and the RT engine's chunked
+/// streamer build on one source (bit-identity by construction).
+pub(crate) fn plan_track_voices(
+    p: &Project,
+    bank: &SampleBank,
+    events: &[Vec<Event>],
+    total: usize,
+    tl: &Timeline,
+    index_base: Option<&[usize]>,
+    ti: usize,
+) -> Vec<PlannedVoice> {
+    let track = &p.tracks[ti];
+    let lanes = owner_lanes(p, &track.name);
+    let inst_lanes: Vec<(&AutomationLane, Vec<String>)> = lanes
+        .iter()
+        .filter_map(|l| match parse_target(&l.param) {
+            Some(Target::Instrument(path)) => Some((*l, path)),
+            _ => None,
+        })
+        .collect();
+    let base_inst = if inst_lanes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::to_value(&track.instrument).unwrap_or_default()
+    };
+    let spread = track.instrument.stereo_spread().clamp(0.0, 1.0);
+    let open_hat = matches!(&track.instrument,
+        Instrument::Drum(d) if d.kind == crate::instruments::DrumKind::OpenHat);
+    // mono voices choke themselves: 808s, and open hats (which
+    // the closed hats of any other track also choke)
+    // a kick chokes its own previous hit too (critic v17: a long
+    // lo-fi kick still rang at 0.6 full scale when the syncopated
+    // kick on step 7 landed, and the two summed into a ~200 Hz
+    // step every 2 bars, the "x.32" events)
+    let kick = matches!(&track.instrument,
+        Instrument::Drum(d) if d.kind == crate::instruments::DrumKind::Kick);
+    let mono_voice = matches!(track.instrument, Instrument::Bass808(_)) || open_hat || kick;
+    let hat_chokers = hat_chokers(p, events, ti);
+    // phase / time a slid-into 808 note continues from (legato)
+    let legato_of = |k: usize| -> Option<crate::instruments::Legato808> {
+        let Instrument::Bass808(b) = &track.instrument else {
+            return None;
+        };
+        let e = &events[ti][k];
+        let prev = events[ti][..k].iter().rev().find(|x| x.start < e.start)?;
+        let target = prev.slide_to?;
+        let off = e.start - prev.start;
+        // the previous voice glided into this pitch and is still
+        // held (its gate runs up to this onset) when it is choked
+        let held = (off as f32) <= (prev.gate * SR) + 0.01 * SR;
+        let next_of_prev = events[ti][..=k]
+            .iter()
+            .map(|x| x.start)
+            .find(|&s| s > prev.start);
+        ((target - e.pitch).abs() < 0.5 && held && next_of_prev == Some(e.start)).then(|| {
+            crate::instruments::Legato808 {
+                phase: crate::instruments::phase_808_after(
+                    b,
+                    prev.pitch,
+                    prev.gate,
+                    prev.slide_to,
+                    off,
+                ),
+                elapsed_s: off as f32 / SR,
+            }
+        })
+    };
+    // round-robin: drum hits cycle through 4 renders (each with
+    // its own micro-variation) instead of one cached buffer
+    let round_robin = track.instrument.is_drum();
+    let mut cache: HashMap<
+        (i32, u8, u32, Vec<i64>, i32, u8),
+        std::sync::Arc<(Vec<f32>, Vec<f32>)>,
+    > = HashMap::new();
+    let mut voices = Vec::new();
+    // sample-cut voices get a longer fade-in than synthesized ones
+    let start_fade = if matches!(
+        track.instrument,
+        Instrument::Sampler(_) | Instrument::Multisample(_) | Instrument::Granular(_)
+    ) || matches!(&track.instrument, Instrument::Drum(d) if matches!(d.kind,
+        crate::instruments::DrumKind::Crash
+            | crate::instruments::DrumKind::Shaker
+            | crate::instruments::DrumKind::Cowbell
+            | crate::instruments::DrumKind::Tom
+            | crate::instruments::DrumKind::Kick))
+    {
+        // noise cymbals/perc and the kick's attack start at full
+        // scale: 6-7 kHz / 1 kHz edges on the downbeats (critic v16)
+        SAMPLE_START_FADE
+    } else {
+        START_FADE
+    };
+    // where the previous mono voice (808) would still be ringing:
+    // a retrigger over a ringing 808 crossfades in with the exact
+    // complement of the choke instead of stepping in at phase 0
+    // (critic v15: a low kink at every 808 retrigger)
+    let mut prev_voice_end = 0usize;
+    for (k, e) in events[ti].iter().enumerate() {
+        if e.start >= total {
+            continue;
+        }
+        // instrument automation is sampled at note-on
+        let beat = tl.beat_at(e.start);
+        let vals: Vec<f32> = inst_lanes
+            .iter()
+            .map(|(l, _)| {
+                l.value_at_in(beat, automation::is_log_param(&l.param))
+                    .unwrap_or(0.0)
+            })
+            .collect();
+        // the note's index in the whole song (a window render
+        // starts later in the track's notes)
+        let kr = k + index_base.and_then(|b| b.get(ti).copied()).unwrap_or(0);
+        let key = (
+            (e.pitch * 10.0) as i32,
+            (e.vel * 127.0) as u8,
+            (e.gate * 1000.0) as u32,
+            vals.iter().map(|v| (v * 1000.0).round() as i64).collect(),
+            e.slide_to.map(|x| (x * 10.0) as i32).unwrap_or(-1),
+            if round_robin { (kr % 4) as u8 } else { 0 },
+        );
+        let seed = if round_robin {
+            (ti as u64) << 32 | (kr as u64 % 4)
+        } else {
+            (ti as u64) << 32 | (kr as u64 % 7)
+        };
+        let legato = if mono_voice { legato_of(k) } else { None };
+        let audio: std::sync::Arc<(Vec<f32>, Vec<f32>)> =
+            if let (Some(lg), Instrument::Bass808(b)) = (legato, &track.instrument) {
+                // legato voices depend on the hand-off phase: not cached
+                std::sync::Arc::new((
+                    crate::instruments::render_808_voice(
+                        b,
+                        e.pitch,
+                        e.vel.clamp(0.0, 1.0),
+                        e.gate,
+                        e.slide_to,
+                        Some(lg),
+                    ),
+                    Vec::new(),
+                ))
+            } else {
+                cache
+                    .entry(key)
+                    .or_insert_with(|| {
+                        let inst: Instrument = if inst_lanes.is_empty() {
+                            track.instrument.clone()
+                        } else {
+                            let mut v = base_inst.clone();
+                            for ((_, path), x) in inst_lanes.iter().zip(vals.iter()) {
+                                automation::set_path(&mut v, path, *x);
+                            }
+                            serde_json::from_value(v).unwrap_or_else(|_| track.instrument.clone())
+                        };
+                        if let Instrument::SoundFont(sp) = &inst {
+                            // recorded instruments render in stereo
+                            return std::sync::Arc::new(crate::soundfont::render_note_stereo(
+                                sp, e.pitch, e.vel, e.gate,
+                            ));
+                        }
+                        let a = render_note_slide(
+                            &inst, e.pitch, e.vel, e.gate, bank, seed, e.slide_to,
+                        );
+                        let b = if spread > 0.0 {
+                            render_note_slide(
+                                &inst,
+                                e.pitch,
+                                e.vel,
+                                e.gate,
+                                bank,
+                                seed ^ 0xA5A5_5A5A,
+                                e.slide_to,
+                            )
+                        } else {
+                            Vec::new()
+                        };
+                        std::sync::Arc::new((a, b))
+                    })
+                    .clone()
+            };
+        // mono voices (808s) choke the previous note at the next onset
+        let choke_at = if mono_voice {
+            let own = events[ti][k + 1..]
+                .iter()
+                .map(|x| x.start)
+                .find(|&s| s > e.start);
+            let hat = hat_chokers
+                .get(hat_chokers.partition_point(|&s| s <= e.start))
+                .copied();
+            match (own, hat) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            }
+            .map(|s| s - e.start)
+        } else {
+            None
+        };
+        let retrig =
+            matches!(track.instrument, Instrument::Bass808(_)) && k > 0 && prev_voice_end > e.start;
+        let xf = legato.is_some() || retrig;
+        // the unchoked length: was it still ringing when the next onset choked it?
+        prev_voice_end = e.start + audio.0.len();
+        voices.push(PlannedVoice {
+            start: e.start,
+            audio,
+            choke_after: choke_at,
+            xfade_in: xf,
+            start_fade,
+        });
+    }
+    voices
+}
+
+pub(crate) struct PlannedClip<'a> {
+    pub start: i64,
+    pub data: &'a [f32],
+    pub off: usize,
+    pub len: usize,
+    pub gain: f32,
+    pub fade_in_ms: Option<f32>,
+    pub fade_out_ms: Option<f32>,
+}
+
+/// Audio-clip schedule for one track: one entry per (clip, loop pass), in
+/// the one-shot renderer's iteration order, with the same start-sample
+/// arithmetic (tempo curve or constant steps). Pure extraction.
+pub(crate) fn plan_track_clips<'a>(
+    p: &'a Project,
+    bank: &'a SampleBank,
+    opts: &RenderOptions,
+    tcurve: &crate::tempo_curve::TempoCurve,
+    ti: usize,
+) -> Vec<PlannedClip<'a>> {
+    let track = &p.tracks[ti];
+    // audio clips on this track's channel (a vocal take, a long sample)
+    let mut out = Vec::new();
+    for c in p
+        .audio_clips
+        .iter()
+        .filter(|c| c.track.eq_ignore_ascii_case(&track.name))
+    {
+        let Some(data) = bank.get(&c.sample) else {
+            continue;
+        };
+        let step = p.step_secs();
+        let r0 = opts.step_range.map(|r| r.0).unwrap_or(0) as f32;
+        let song_steps = p.song_steps() as f32;
+        let off = ((c.offset_s.max(0.0) * SR) as usize).min(data.len());
+        let avail = data.len() - off;
+        let len = c
+            .length_s
+            .map(|l| ((l.max(0.0) * SR) as usize).min(avail))
+            .unwrap_or(avail);
+        let g = crate::dsp::db_to_gain(c.gain_db);
+        for lp in 0..opts.loops.max(1) {
+            let start_step = c.start_beat * 4.0 + lp as f32 * song_steps - r0;
+            let start = if tcurve.is_constant() {
+                (start_step * step * SR).round() as i64
+            } else {
+                let abs = (c.start_beat * 4.0 + lp as f32 * song_steps) as f64;
+                ((song_secs_at_step(tcurve, song_steps as f64, abs)
+                    - song_secs_at_step(tcurve, song_steps as f64, r0 as f64))
+                    * SR as f64)
+                    .round() as i64
+            };
+            out.push(PlannedClip {
+                start,
+                data,
+                off,
+                len,
+                gain: g,
+                fade_in_ms: c.fade_in_ms,
+                fade_out_ms: c.fade_out_ms,
+            });
+        }
+    }
+    out
+}
+
+/// Pre-chain track synthesis: voices (mono/mono2 with stereo-spread
+pub(crate) fn render_track_prechain(args: &TrackSynth<'_>, ti: usize) -> (Vec<f32>, Vec<f32>) {
+    let TrackSynth {
+        p,
+        total,
+        tl,
+        bank: _,
+        opts: _,
+        events: _,
+        tcurve: _,
+        ctx: _,
+        index_base: _,
+    } = *args;
+    let track = &p.tracks[ti];
+    let lanes = owner_lanes(p, &track.name);
+    let spread = track.instrument.stereo_spread().clamp(0.0, 1.0);
+    let TrackSynth {
+        bank,
+        opts,
+        events,
+        tcurve,
+        index_base,
+        ..
+    } = *args;
+    let voices = plan_track_voices(p, bank, events, total, tl, index_base, ti);
+    let clips = plan_track_clips(p, bank, opts, tcurve, ti);
+    let mut mono = vec![0.0f32; total];
+    // decorrelated second render for stereo unison spread
+    let mut mono2 = if spread > 0.0 {
+        vec![0.0f32; total]
+    } else {
+        Vec::new()
+    };
+    for v in &voices {
+        add_voice_faded(
+            &mut mono,
+            v.start,
+            &v.audio.0,
+            v.choke_after,
+            v.xfade_in,
+            v.start_fade,
+        );
+        if spread > 0.0 && !v.audio.1.is_empty() {
+            add_voice_faded(
+                &mut mono2,
+                v.start,
+                &v.audio.1,
+                v.choke_after,
+                v.xfade_in,
+                v.start_fade,
+            );
+        }
+    }
+    let fade = (0.004 * SR) as usize;
+    for c in &clips {
+        for i in 0..c.len {
+            let o = c.start + i as i64;
+            if o < 0 {
+                continue;
+            }
+            let o = o as usize;
+            if o >= total {
+                break;
+            }
+            let env = if c.fade_in_ms.is_some() || c.fade_out_ms.is_some() {
+                // equal-power edges (seamless edits)
+                let fi = (c.fade_in_ms.unwrap_or(4.0).max(0.5) / 1000.0 * SR).max(1.0);
+                let fo = (c.fade_out_ms.unwrap_or(4.0).max(0.5) / 1000.0 * SR).max(1.0);
+                let a = (i as f32 / fi).min(1.0);
+                let b = ((c.len - i) as f32 / fo).min(1.0);
+                (a * std::f32::consts::FRAC_PI_2).sin() * (b * std::f32::consts::FRAC_PI_2).sin()
+            } else {
+                (i as f32 / fade as f32)
+                    .min((c.len - i) as f32 / fade as f32)
+                    .min(1.0)
+            };
+            let v = c.data[c.off + i] * c.gain * env;
+            mono[o] += v;
+            if spread > 0.0 {
+                mono2[o] += v;
+            }
+        }
+    }
+    // pan (equal power), optionally automated
+    let pan_lane = lanes
+        .iter()
+        .find(|x| parse_target(&x.param) == Some(Target::Pan));
+    let pan_curve = pan_lane.map(|lane| lane_curve(lane, total, tl, |v| v.clamp(-1.0, 1.0)));
+    let gains = |pan: f32| {
+        let angle = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+        (
+            angle.cos() * std::f32::consts::SQRT_2,
+            angle.sin() * std::f32::consts::SQRT_2,
+        )
+    };
+    let (gl, gr) = gains(track.pan);
+    let mut l = Vec::with_capacity(total);
+    let mut r = Vec::with_capacity(total);
+    for (i, x) in mono.iter().enumerate() {
+        let (a, b) = match &pan_curve {
+            Some(c) => gains(c[i]),
+            None => (gl, gr),
+        };
+        let xr = if spread > 0.0 {
+            // left = voice set A, right = blend toward the independent set B
+            x * (1.0 - spread) + mono2[i] * spread
+        } else {
+            *x
+        };
+        l.push(x * a);
+        r.push(xr * b);
+    }
+    drop(mono);
+    drop(mono2);
+    (l, r)
+}
+
+pub(crate) fn render_track_synth(
+    args: &TrackSynth<'_>,
+    ti: usize,
+    cache_ok: bool,
+) -> (
+    Vec<f32>,
+    Vec<f32>,
+    Option<std::sync::Arc<(Vec<f32>, Vec<f32>)>>,
+) {
+    let TrackSynth { p, ctx, tl, .. } = *args;
+    let track = &p.tracks[ti];
+    let lanes = owner_lanes(p, &track.name);
+    let (mut l, mut r) = render_track_prechain(args, ti);
+    process_chain(&track.effects, &lanes, &mut l, &mut r, ctx, tl);
+    let fresh = cache_ok.then(|| std::sync::Arc::new((l.clone(), r.clone())));
+    (l, r, fresh)
 }
 
 fn render_impl(
@@ -1275,7 +1885,11 @@ fn render_impl(
     // a cache over its budget first lets go of buffers no track can use
     // any more (their track changed since)
     if let Some(c) = cache.as_deref_mut() {
-        let est_mb = ((p.song_steps() as f32 * p.step_secs() * opts.loops.max(1) as f32 + opts.tail.max(0.0)) * SR * 8.0) / 1_048_576.0;
+        let est_mb = ((p.song_steps() as f32 * p.step_secs() * opts.loops.max(1) as f32
+            + opts.tail.max(0.0))
+            * SR
+            * 8.0)
+            / 1_048_576.0;
         if c.tracks.len() as f32 * est_mb > budget_mb("BEATBOX_TRACK_CACHE_MB", TRACK_CACHE_MB) {
             c.tracks.retain(|ti, (k, _)| track_keys.get(*ti) == Some(k));
         }
@@ -1296,7 +1910,8 @@ fn render_impl(
     // their slot, new ones are cached in track order while room is left
     // (the rest re-synthesise on the next render: slower, never OOM)
     let cache_ok: Vec<bool> = {
-        let slots = (budget_mb("BEATBOX_TRACK_CACHE_MB", TRACK_CACHE_MB) / buf_mb.max(1e-3)).floor() as usize;
+        let slots = (budget_mb("BEATBOX_TRACK_CACHE_MB", TRACK_CACHE_MB) / buf_mb.max(1e-3)).floor()
+            as usize;
         let mut used = cached.len();
         (0..p.tracks.len())
             .map(|ti| {
@@ -1319,7 +1934,14 @@ fn render_impl(
         }
     };
     let any_solo = p.tracks.iter().any(|t| t.solo);
-    crate::dsp::memtrace(&format!("render start: {} tracks, {} buses, {:.0} s, stems {}, cached {}", p.tracks.len(), p.buses.len(), total as f32 / SR, opts.keep_stems, cached.len()));
+    crate::dsp::memtrace(&format!(
+        "render start: {} tracks, {} buses, {:.0} s, stems {}, cached {}",
+        p.tracks.len(),
+        p.buses.len(),
+        total as f32 / SR,
+        opts.keep_stems,
+        cached.len()
+    ));
     let (tl, offset) = render_timeline(p, opts);
     let tcurve = crate::tempo_curve::TempoCurve::new(p);
     let ctx = FxContext {
@@ -1361,293 +1983,21 @@ fn render_impl(
         let lanes = owner_lanes(p, &track.name);
         let (mut l, mut r, fresh) = match cached.get(&ti) {
             Some(b) => (b.0.clone(), b.1.clone(), None),
-            None => {
-                let inst_lanes: Vec<(&AutomationLane, Vec<String>)> = lanes
-                    .iter()
-                    .filter_map(|l| match parse_target(&l.param) {
-                        Some(Target::Instrument(path)) => Some((*l, path)),
-                        _ => None,
-                    })
-                    .collect();
-                let base_inst = if inst_lanes.is_empty() {
-                    Value::Null
-                } else {
-                    serde_json::to_value(&track.instrument).unwrap_or_default()
-                };
-                let spread = track.instrument.stereo_spread().clamp(0.0, 1.0);
-                let mut mono = vec![0.0f32; total];
-                // decorrelated second render for stereo unison spread
-                let mut mono2 = if spread > 0.0 {
-                    vec![0.0f32; total]
-                } else {
-                    Vec::new()
-                };
-                let open_hat = matches!(&track.instrument,
-                    Instrument::Drum(d) if d.kind == crate::instruments::DrumKind::OpenHat);
-                // mono voices choke themselves: 808s, and open hats (which
-                // the closed hats of any other track also choke)
-                // a kick chokes its own previous hit too (critic v17: a long
-                // lo-fi kick still rang at 0.6 full scale when the syncopated
-                // kick on step 7 landed, and the two summed into a ~200 Hz
-                // step every 2 bars, the "x.32" events)
-                let kick = matches!(&track.instrument,
-                    Instrument::Drum(d) if d.kind == crate::instruments::DrumKind::Kick);
-                let mono_voice = matches!(track.instrument, Instrument::Bass808(_)) || open_hat || kick;
-                let hat_chokers = hat_chokers(p, &events, ti);
-                // phase / time a slid-into 808 note continues from (legato)
-                let legato_of = |k: usize| -> Option<crate::instruments::Legato808> {
-                    let Instrument::Bass808(b) = &track.instrument else {
-                        return None;
-                    };
-                    let e = &events[ti][k];
-                    let prev = events[ti][..k].iter().rev().find(|x| x.start < e.start)?;
-                    let target = prev.slide_to?;
-                    let off = e.start - prev.start;
-                    // the previous voice glided into this pitch and is still
-                    // held (its gate runs up to this onset) when it is choked
-                    let held = (off as f32) <= (prev.gate * SR) + 0.01 * SR;
-                    let next_of_prev = events[ti][..=k]
-                        .iter()
-                        .map(|x| x.start)
-                        .find(|&s| s > prev.start);
-                    ((target - e.pitch).abs() < 0.5 && held && next_of_prev == Some(e.start)).then(
-                        || crate::instruments::Legato808 {
-                            phase: crate::instruments::phase_808_after(
-                                b,
-                                prev.pitch,
-                                prev.gate,
-                                prev.slide_to,
-                                off,
-                            ),
-                            elapsed_s: off as f32 / SR,
-                        },
-                    )
-                };
-                // round-robin: drum hits cycle through 4 renders (each with
-                // its own micro-variation) instead of one cached buffer
-                let round_robin = track.instrument.is_drum();
-                let mut cache: HashMap<(i32, u8, u32, Vec<i64>, i32, u8), (Vec<f32>, Vec<f32>)> =
-                    HashMap::new();
-                // sample-cut voices get a longer fade-in than synthesized ones
-                let start_fade = if matches!(
-                    track.instrument,
-                    Instrument::Sampler(_) | Instrument::Multisample(_) | Instrument::Granular(_)
-                ) || matches!(&track.instrument, Instrument::Drum(d) if matches!(d.kind,
-                    crate::instruments::DrumKind::Crash
-                        | crate::instruments::DrumKind::Shaker
-                        | crate::instruments::DrumKind::Cowbell
-                        | crate::instruments::DrumKind::Tom
-                        | crate::instruments::DrumKind::Kick))
-                {
-                    // noise cymbals/perc and the kick's attack start at full
-                    // scale: 6-7 kHz / 1 kHz edges on the downbeats (critic v16)
-                    SAMPLE_START_FADE
-                } else {
-                    START_FADE
-                };
-                // where the previous mono voice (808) would still be ringing:
-                // a retrigger over a ringing 808 crossfades in with the exact
-                // complement of the choke instead of stepping in at phase 0
-                // (critic v15: a low kink at every 808 retrigger)
-                let mut prev_voice_end = 0usize;
-                for (k, e) in events[ti].iter().enumerate() {
-                    if e.start >= total {
-                        continue;
-                    }
-                    // instrument automation is sampled at note-on
-                    let beat = tl.beat_at(e.start);
-                    let vals: Vec<f32> = inst_lanes
-                        .iter()
-                        .map(|(l, _)| l.value_at_in(beat, automation::is_log_param(&l.param)).unwrap_or(0.0))
-                        .collect();
-                    // the note's index in the whole song (a window render
-                    // starts later in the track's notes)
-                    let kr = k + index_base.and_then(|b| b.get(ti).copied()).unwrap_or(0);
-                    let key = (
-                        (e.pitch * 10.0) as i32,
-                        (e.vel * 127.0) as u8,
-                        (e.gate * 1000.0) as u32,
-                        vals.iter().map(|v| (v * 1000.0).round() as i64).collect(),
-                        e.slide_to.map(|x| (x * 10.0) as i32).unwrap_or(-1),
-                        if round_robin { (kr % 4) as u8 } else { 0 },
-                    );
-                    let seed = if round_robin {
-                        (ti as u64) << 32 | (kr as u64 % 4)
-                    } else {
-                        (ti as u64) << 32 | (kr as u64 % 7)
-                    };
-                    let legato = if mono_voice { legato_of(k) } else { None };
-                    let legato_buf;
-                    let (buf, buf2) =
-                        if let (Some(lg), Instrument::Bass808(b)) = (legato, &track.instrument) {
-                            // legato voices depend on the hand-off phase: not cached
-                            legato_buf = (
-                                crate::instruments::render_808_voice(
-                                    b,
-                                    e.pitch,
-                                    e.vel.clamp(0.0, 1.0),
-                                    e.gate,
-                                    e.slide_to,
-                                    Some(lg),
-                                ),
-                                Vec::new(),
-                            );
-                            (&legato_buf.0, &legato_buf.1)
-                        } else {
-                            let (a, b) = cache.entry(key).or_insert_with(|| {
-                                let inst: Instrument = if inst_lanes.is_empty() {
-                                    track.instrument.clone()
-                                } else {
-                                    let mut v = base_inst.clone();
-                                    for ((_, path), x) in inst_lanes.iter().zip(vals.iter()) {
-                                        automation::set_path(&mut v, path, *x);
-                                    }
-                                    serde_json::from_value(v)
-                                        .unwrap_or_else(|_| track.instrument.clone())
-                                };
-                                if let Instrument::SoundFont(sp) = &inst {
-                                    // recorded instruments render in stereo
-                                    return crate::soundfont::render_note_stereo(sp, e.pitch, e.vel, e.gate);
-                                }
-                                let a = render_note_slide(
-                                    &inst, e.pitch, e.vel, e.gate, bank, seed, e.slide_to,
-                                );
-                                let b = if spread > 0.0 {
-                                    render_note_slide(
-                                        &inst,
-                                        e.pitch,
-                                        e.vel,
-                                        e.gate,
-                                        bank,
-                                        seed ^ 0xA5A5_5A5A,
-                                        e.slide_to,
-                                    )
-                                } else {
-                                    Vec::new()
-                                };
-                                (a, b)
-                            });
-                            (&*a, &*b)
-                        };
-                    // mono voices (808s) choke the previous note at the next onset
-                    let choke_at = if mono_voice {
-                        let own = events[ti][k + 1..]
-                            .iter()
-                            .map(|x| x.start)
-                            .find(|&s| s > e.start);
-                        let hat = hat_chokers
-                            .get(hat_chokers.partition_point(|&s| s <= e.start))
-                            .copied();
-                        match (own, hat) {
-                            (Some(a), Some(b)) => Some(a.min(b)),
-                            (a, b) => a.or(b),
-                        }
-                        .map(|s| s - e.start)
-                    } else {
-                        None
-                    };
-                    let retrig = matches!(track.instrument, Instrument::Bass808(_))
-                        && k > 0
-                        && prev_voice_end > e.start;
-                    let xf = legato.is_some() || retrig;
-                    add_voice_faded(&mut mono, e.start, buf, choke_at, xf, start_fade);
-                    if spread > 0.0 && !buf2.is_empty() {
-                        add_voice_faded(&mut mono2, e.start, buf2, choke_at, xf, start_fade);
-                    }
-                    // the unchoked length: was it still ringing when the next onset choked it?
-                    prev_voice_end = e.start + buf.len();
-                }
-                // audio clips on this track's channel (a vocal take, a long sample)
-                for c in p
-                    .audio_clips
-                    .iter()
-                    .filter(|c| c.track.eq_ignore_ascii_case(&track.name))
-                {
-                    let Some(data) = bank.get(&c.sample) else {
-                        continue;
-                    };
-                    let step = p.step_secs();
-                    let r0 = opts.step_range.map(|r| r.0).unwrap_or(0) as f32;
-                    let song_steps = p.song_steps() as f32;
-                    let off = ((c.offset_s.max(0.0) * SR) as usize).min(data.len());
-                    let avail = data.len() - off;
-                    let len = c
-                        .length_s
-                        .map(|l| ((l.max(0.0) * SR) as usize).min(avail))
-                        .unwrap_or(avail);
-                    let g = crate::dsp::db_to_gain(c.gain_db);
-                    let fade = (0.004 * SR) as usize;
-                    for lp in 0..opts.loops.max(1) {
-                        let start_step = c.start_beat * 4.0 + lp as f32 * song_steps - r0;
-                        let start = if tcurve.is_constant() {
-                            (start_step * step * SR).round() as i64
-                        } else {
-                            let abs = (c.start_beat * 4.0 + lp as f32 * song_steps) as f64;
-                            ((song_secs_at_step(&tcurve, song_steps as f64, abs) - song_secs_at_step(&tcurve, song_steps as f64, r0 as f64)) * SR as f64).round() as i64
-                        };
-                        for i in 0..len {
-                            let o = start + i as i64;
-                            if o < 0 {
-                                continue;
-                            }
-                            let o = o as usize;
-                            if o >= total {
-                                break;
-                            }
-                            let env = if c.fade_in_ms.is_some() || c.fade_out_ms.is_some() {
-                                // equal-power edges (seamless edits)
-                                let fi = (c.fade_in_ms.unwrap_or(4.0).max(0.5) / 1000.0 * SR).max(1.0);
-                                let fo = (c.fade_out_ms.unwrap_or(4.0).max(0.5) / 1000.0 * SR).max(1.0);
-                                let a = (i as f32 / fi).min(1.0);
-                                let b = ((len - i) as f32 / fo).min(1.0);
-                                (a * std::f32::consts::FRAC_PI_2).sin() * (b * std::f32::consts::FRAC_PI_2).sin()
-                            } else {
-                                (i as f32 / fade as f32).min((len - i) as f32 / fade as f32).min(1.0)
-                            };
-                            let v = data[off + i] * g * env;
-                            mono[o] += v;
-                            if spread > 0.0 {
-                                mono2[o] += v;
-                            }
-                        }
-                    }
-                }
-                // pan (equal power), optionally automated
-                let pan_lane = lanes
-                    .iter()
-                    .find(|x| parse_target(&x.param) == Some(Target::Pan));
-                let pan_curve =
-                    pan_lane.map(|lane| lane_curve(lane, total, &tl, |v| v.clamp(-1.0, 1.0)));
-                let gains = |pan: f32| {
-                    let angle = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
-                    (
-                        angle.cos() * std::f32::consts::SQRT_2,
-                        angle.sin() * std::f32::consts::SQRT_2,
-                    )
-                };
-                let (gl, gr) = gains(track.pan);
-                let mut l = Vec::with_capacity(total);
-                let mut r = Vec::with_capacity(total);
-                for (i, x) in mono.iter().enumerate() {
-                    let (a, b) = match &pan_curve {
-                        Some(c) => gains(c[i]),
-                        None => (gl, gr),
-                    };
-                    let xr = if spread > 0.0 {
-                        // left = voice set A, right = blend toward the independent set B
-                        x * (1.0 - spread) + mono2[i] * spread
-                    } else {
-                        *x
-                    };
-                    l.push(x * a);
-                    r.push(xr * b);
-                }
-                drop(mono);
-                drop(mono2);
-                process_chain(&track.effects, &lanes, &mut l, &mut r, &ctx, &tl);
-                let fresh = cache_ok[ti].then(|| std::sync::Arc::new((l.clone(), r.clone())));
-                (l, r, fresh)
-            }
+            None => render_track_synth(
+                &TrackSynth {
+                    p,
+                    bank,
+                    opts,
+                    events: &events,
+                    total,
+                    tl: &tl,
+                    tcurve: &tcurve,
+                    ctx: &ctx,
+                    index_base,
+                },
+                ti,
+                cache_ok[ti],
+            ),
         };
         let pre: Option<(Vec<f32>, Vec<f32>)> =
             if audible && track.sends.iter().any(|s| s.pre_fader) {
@@ -1670,7 +2020,11 @@ fn render_impl(
     let t_tracks = std::time::Instant::now();
     // tracks in flight at once: each holds up to ~4 stereo buffers (its
     // voices, the panned pair, a pre-fader copy, the cache copy)
-    let batch = rayon::current_num_threads().clamp(1, 4).min(((budget_mb("BEATBOX_RENDER_BATCH_MB", RENDER_BATCH_MB) / (4.0 * buf_mb).max(1e-3)).floor() as usize).max(1));
+    let batch = rayon::current_num_threads().clamp(1, 4).min(
+        ((budget_mb("BEATBOX_RENDER_BATCH_MB", RENDER_BATCH_MB) / (4.0 * buf_mb).max(1e-3)).floor()
+            as usize)
+            .max(1),
+    );
     let order: Vec<usize> = (0..p.tracks.len()).collect();
     for chunk in order.chunks(batch) {
         use rayon::prelude::*;
@@ -1703,13 +2057,18 @@ fn render_impl(
                     };
                     // a `send.<bus>` lane drives the level per sample
                     let lane = send_lanes.iter().find(|x| match parse_target(&x.param) {
-                        Some(Target::Send(b)) => s.bus.eq_ignore_ascii_case(&b) || (!s.id.is_empty() && s.id.eq_ignore_ascii_case(&b)),
+                        Some(Target::Send(b)) => {
+                            s.bus.eq_ignore_ascii_case(&b)
+                                || (!s.id.is_empty() && s.id.eq_ignore_ascii_case(&b))
+                        }
                         _ => false,
                     });
                     let (bl, br) = &mut bus_in[bi];
                     match lane {
                         Some(lane) => {
-                            let g = lane_curve(lane, total, &tl, |db| db_to_gain(db.clamp(-120.0, 12.0)));
+                            let g = lane_curve(lane, total, &tl, |db| {
+                                db_to_gain(db.clamp(-120.0, 12.0))
+                            });
                             for i in 0..total {
                                 bl[i] += sl[i] * g[i];
                                 br[i] += sr[i] * g[i];
@@ -1742,7 +2101,12 @@ fn render_impl(
             }
             if opts.keep_stems {
                 if full_stem(&track.name) {
-                    stems.push(Stem { name: track.name.clone(), left: l, right: r, bands: None });
+                    stems.push(Stem {
+                        name: track.name.clone(),
+                        left: l,
+                        right: r,
+                        bands: None,
+                    });
                 } else {
                     stems.push(Stem::summarize(track.name.clone(), &l, &r));
                 }
@@ -1759,7 +2123,11 @@ fn render_impl(
     }
     // bus outputs reused when the bus's key (its state, its sidechain
     // inputs and everything that feeds it) is unchanged
-    let bus_keys: Vec<Option<TrackKey>> = if keep { TrackCache::bus_keys(p, &track_keys, &triggers) } else { Vec::new() };
+    let bus_keys: Vec<Option<TrackKey>> = if keep {
+        TrackCache::bus_keys(p, &track_keys, &triggers)
+    } else {
+        Vec::new()
+    };
     let mut fresh_buses: Vec<(usize, std::sync::Arc<(Vec<f32>, Vec<f32>)>)> = Vec::new();
     crate::producer::prof("render.tracks", t_tracks);
     let t_bus = std::time::Instant::now();
@@ -1774,7 +2142,11 @@ fn render_impl(
         };
         let key = bus_keys.get(bi).and_then(|k| k.as_ref());
         let hit = match (cache.as_deref(), key) {
-            (Some(c), Some(k)) => c.buses.get(&bi).filter(|(ck, _)| ck == k).map(|(_, b)| b.clone()),
+            (Some(c), Some(k)) => c
+                .buses
+                .get(&bi)
+                .filter(|(ck, _)| ck == k)
+                .map(|(_, b)| b.clone()),
             _ => None,
         };
         match hit {
@@ -1810,13 +2182,19 @@ fn render_impl(
             }
         }
         if opts.keep_stems {
-            bus_stems.push(Stem { name: bus.name.clone(), left: l, right: r, bands: None });
+            bus_stems.push(Stem {
+                name: bus.name.clone(),
+                left: l,
+                right: r,
+                bands: None,
+            });
         }
     }
 
-    if let Some(c) = cache.as_deref_mut() {
+    if let Some(c) = cache {
         // buses share the track cache's budget
-        let slots = (budget_mb("BEATBOX_TRACK_CACHE_MB", TRACK_CACHE_MB) / buf_mb.max(1e-3)).floor() as usize;
+        let slots = (budget_mb("BEATBOX_TRACK_CACHE_MB", TRACK_CACHE_MB) / buf_mb.max(1e-3)).floor()
+            as usize;
         for (bi, b) in fresh_buses {
             if c.buses.contains_key(&bi) || c.tracks.len() + c.buses.len() < slots {
                 if let Some(Some(k)) = bus_keys.get(bi) {
@@ -1930,7 +2308,9 @@ pub(crate) mod tests {
     /// Fundamental of a rendered note (YIN on a 4096-sample frame 0.25 s in).
     fn note_hz(y: &[f32]) -> f32 {
         let at = (0.25 * SR) as usize;
-        crate::sc_dsp::yin_aperiodicity(&y[at..at + 4096], SR, 40.0, 2000.0, 0.2).expect("voiced").0
+        crate::sc_dsp::yin_aperiodicity(&y[at..at + 4096], SR, 40.0, 2000.0, 0.2)
+            .expect("voiced")
+            .0
     }
 
     fn cents(hz: f32, want: f32) -> f32 {
@@ -1942,14 +2322,32 @@ pub(crate) mod tests {
         let d = std::env::temp_dir().join("beatbox_render_tuning_tests");
         std::fs::create_dir_all(&d).unwrap();
         let mut e = crate::engine::Engine::new(d);
-        e.call("generate_beat", &serde_json::json!({"style": "trap", "seed": 9})).unwrap();
+        e.call(
+            "generate_beat",
+            &serde_json::json!({"style": "trap", "seed": 9}),
+        )
+        .unwrap();
         let p0 = e.project.clone();
         // 0 is not written and schedules exactly as before
         assert!(!serde_json::to_string(&p0).unwrap().contains("tuning_cents"));
         let mut z = p0.clone();
         z.tuning_cents = 0.0;
         let bits = |ev: &Vec<Vec<Event>>| -> Vec<Vec<(usize, u32, u32, u32, Option<u32>)>> {
-            ev.iter().map(|t| t.iter().map(|x| (x.start, x.gate.to_bits(), x.pitch.to_bits(), x.vel.to_bits(), x.slide_to.map(f32::to_bits))).collect()).collect()
+            ev.iter()
+                .map(|t| {
+                    t.iter()
+                        .map(|x| {
+                            (
+                                x.start,
+                                x.gate.to_bits(),
+                                x.pitch.to_bits(),
+                                x.vel.to_bits(),
+                                x.slide_to.map(f32::to_bits),
+                            )
+                        })
+                        .collect()
+                })
+                .collect()
         };
         let (a, _) = schedule(&p0, &RenderOptions::default());
         let (b, _) = schedule(&z, &RenderOptions::default());
@@ -1957,14 +2355,25 @@ pub(crate) mod tests {
         // -44.3 c moves every pitched note by exactly that; drums stay put
         let mut t = p0.clone();
         t.tuning_cents = -44.3;
-        assert!(serde_json::to_string(&t).unwrap().contains("\"tuning_cents\":-44.3"));
+        assert!(serde_json::to_string(&t)
+            .unwrap()
+            .contains("\"tuning_cents\":-44.3"));
         let (c, _) = schedule(&t, &RenderOptions::default());
         let (mut moved, mut kept) = (0, 0);
         for (ti, tr) in p0.tracks.iter().enumerate() {
             for (x, y) in a[ti].iter().zip(c[ti].iter()) {
-                assert_eq!((x.start, x.gate.to_bits(), x.vel.to_bits()), (y.start, y.gate.to_bits(), y.vel.to_bits()));
+                assert_eq!(
+                    (x.start, x.gate.to_bits(), x.vel.to_bits()),
+                    (y.start, y.gate.to_bits(), y.vel.to_bits())
+                );
                 if tr.instrument.follows_tuning() {
-                    assert!((y.pitch - (x.pitch - 0.443)).abs() < 1e-4, "{}: {} -> {}", tr.name, x.pitch, y.pitch);
+                    assert!(
+                        (y.pitch - (x.pitch - 0.443)).abs() < 1e-4,
+                        "{}: {} -> {}",
+                        tr.name,
+                        x.pitch,
+                        y.pitch
+                    );
                     moved += 1;
                 } else {
                     assert_eq!(x.pitch.to_bits(), y.pitch.to_bits(), "{} moved", tr.name);
@@ -2006,7 +2415,9 @@ pub(crate) mod tests {
             let mut x = aty.clone();
             let mut g = ata.clone();
             for c in 0..m {
-                let p = (c..m).max_by(|&i, &j| g[i * m + c].abs().total_cmp(&g[j * m + c].abs())).unwrap();
+                let p = (c..m)
+                    .max_by(|&i, &j| g[i * m + c].abs().total_cmp(&g[j * m + c].abs()))
+                    .unwrap();
                 if p != c {
                     for k in 0..m {
                         g.swap(c * m + k, p * m + k);
@@ -2057,7 +2468,10 @@ pub(crate) mod tests {
     /// Largest sample-to-sample step relative to the signal's peak.
     pub(crate) fn max_jump(y: &[f32]) -> f32 {
         let pk = y.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-12);
-        y.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max) / pk
+        y.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max)
+            / pk
     }
 
     #[test]
@@ -2068,14 +2482,32 @@ pub(crate) mod tests {
         let src: Vec<f32> = (0..n)
             .map(|i| {
                 let t = i as f32 / SR;
-                (1..=6).map(|k| (std::f32::consts::TAU * 220.0 * k as f32 * t).sin() * 0.4 / k as f32).sum::<f32>()
+                (1..=6)
+                    .map(|k| (std::f32::consts::TAU * 220.0 * k as f32 * t).sin() * 0.4 / k as f32)
+                    .sum::<f32>()
             })
             .collect();
         let mut bank = SampleBank::default();
         bank.insert("harm_a3", src);
-        let zone = crate::multisample::Zone { sample: "harm_a3".into(), root: 57, lo_note: 0, hi_note: 127, vel_lo: 0.0, vel_hi: 1.0, tune_cents: 0.0, gain_db: 0.0, rr: 0 };
-        let ms = Instrument::Multisample(crate::multisample::MultisampleParams { zones: vec![zone], ..Default::default() });
-        for (note, label) in [(57.0f32, "A3 (rate 1 vs resampled)"), (60.0, "C4 (both resampled)")] {
+        let zone = crate::multisample::Zone {
+            sample: "harm_a3".into(),
+            root: 57,
+            lo_note: 0,
+            hi_note: 127,
+            vel_lo: 0.0,
+            vel_hi: 1.0,
+            tune_cents: 0.0,
+            gain_db: 0.0,
+            rr: 0,
+        };
+        let ms = Instrument::Multisample(crate::multisample::MultisampleParams {
+            zones: vec![zone],
+            ..Default::default()
+        });
+        for (note, label) in [
+            (57.0f32, "A3 (rate 1 vs resampled)"),
+            (60.0, "C4 (both resampled)"),
+        ] {
             let a = crate::instruments::render_note(&ms, note, 0.8, 4.0, &bank, 1);
             let b = crate::instruments::render_note(&ms, note - 0.44, 0.8, 4.0, &bank, 1);
             let (s0, s1) = ((0.5 * SR) as usize, (1.5 * SR) as usize);
@@ -2083,12 +2515,18 @@ pub(crate) mod tests {
             let (fa, ta) = harmonic_fit(&a[s0..s1], SR, f_nom, 6);
             let (fb, tb) = harmonic_fit(&b[s0..s1], SR, f_nom * 2f32.powf(-44.0 / 1200.0), 6);
             let off = 1200.0 * (fb / fa).log2();
-            let (ja, jb) = (max_jump(&a[..(4.0 * SR) as usize]), max_jump(&b[..(4.0 * SR) as usize]));
+            let (ja, jb) = (
+                max_jump(&a[..(4.0 * SR) as usize]),
+                max_jump(&b[..(4.0 * SR) as usize]),
+            );
             eprintln!("zone {label}: f0 {fa:.3} -> {fb:.3} Hz = {off:.3} c (want -44); THD+N {ta:.1} -> {tb:.1} dB; max step {ja:.4} -> {jb:.4}");
             assert!((off + 44.0).abs() < 0.5, "{label}: offset {off} c");
             // within 1 dB of tc=0, or under -70 dB outright (at A3 tc=0 is
             // rate 1, a pass-through, so its floor is the fit's own)
-            assert!(tb <= ta + 1.0 || tb < -70.0, "{label}: THD+N {ta} -> {tb} dB");
+            assert!(
+                tb <= ta + 1.0 || tb < -70.0,
+                "{label}: THD+N {ta} -> {tb} dB"
+            );
             assert!(jb <= ja * 1.1 + 1e-3, "{label}: max step {ja} -> {jb}");
         }
     }
@@ -2097,22 +2535,57 @@ pub(crate) mod tests {
     fn tuning_offset_lands_synth_and_pitched_samples_on_the_offset() {
         let want = 440.0 * 2f32.powf(-44.3 / 1200.0); // 428.98 Hz
         let bank_empty = SampleBank::default();
-        let synth = Instrument::Synth(crate::instruments::SynthParams { osc2_cents: 0.0, osc_mix: 0.0, ..Default::default() });
+        let synth = Instrument::Synth(crate::instruments::SynthParams {
+            osc2_cents: 0.0,
+            osc_mix: 0.0,
+            ..Default::default()
+        });
         let y = crate::instruments::render_note(&synth, 69.0 - 0.443, 0.8, 1.0, &bank_empty, 1);
         let c = cents(note_hz(&y), want);
         assert!(c.abs() < 2.0, "synth A4 at -44.3 c: {c:.2} c off");
         // a pitched multisample (one zone stretched over the keyboard)
         let mut bank = SampleBank::default();
-        bank.insert("sine_a3", (0..(2.0 * SR) as usize).map(|i| (std::f32::consts::TAU * 220.0 * i as f32 / SR).sin() * 0.5).collect());
-        let zone = crate::multisample::Zone { sample: "sine_a3".into(), root: 57, lo_note: 0, hi_note: 127, vel_lo: 0.0, vel_hi: 1.0, tune_cents: 0.0, gain_db: 0.0, rr: 0 };
-        let ms = Instrument::Multisample(crate::multisample::MultisampleParams { zones: vec![zone.clone()], ..Default::default() });
+        bank.insert(
+            "sine_a3",
+            (0..(2.0 * SR) as usize)
+                .map(|i| (std::f32::consts::TAU * 220.0 * i as f32 / SR).sin() * 0.5)
+                .collect(),
+        );
+        let zone = crate::multisample::Zone {
+            sample: "sine_a3".into(),
+            root: 57,
+            lo_note: 0,
+            hi_note: 127,
+            vel_lo: 0.0,
+            vel_hi: 1.0,
+            tune_cents: 0.0,
+            gain_db: 0.0,
+            rr: 0,
+        };
+        let ms = Instrument::Multisample(crate::multisample::MultisampleParams {
+            zones: vec![zone.clone()],
+            ..Default::default()
+        });
         assert!(ms.follows_tuning());
         let y = crate::instruments::render_note(&ms, 64.0 - 0.443, 0.8, 1.0, &bank, 1);
         let c = cents(note_hz(&y), 440.0 * 2f32.powf((64.0 - 69.0 - 0.443) / 12.0));
         assert!(c.abs() < 2.0, "multisample E4 at -44.3 c: {c:.2} c off");
         // a kit (each zone one key at its own root) and drums never follow
         let kit = Instrument::Multisample(crate::multisample::MultisampleParams {
-            zones: vec![crate::multisample::Zone { lo_note: 36, hi_note: 36, root: 36, ..zone.clone() }, crate::multisample::Zone { lo_note: 38, hi_note: 38, root: 38, ..zone }],
+            zones: vec![
+                crate::multisample::Zone {
+                    lo_note: 36,
+                    hi_note: 36,
+                    root: 36,
+                    ..zone.clone()
+                },
+                crate::multisample::Zone {
+                    lo_note: 38,
+                    hi_note: 38,
+                    root: 38,
+                    ..zone
+                },
+            ],
             ..Default::default()
         });
         assert!(!kit.follows_tuning());
@@ -2128,18 +2601,38 @@ pub(crate) mod tests {
         let d = std::env::temp_dir().join("beatbox_render_cache_bus_tests");
         std::fs::create_dir_all(&d).unwrap();
         let mut e = crate::engine::Engine::new(d);
-        e.call("generate_beat", &serde_json::json!({"style": "trap", "seed": 9})).unwrap();
+        e.call(
+            "generate_beat",
+            &serde_json::json!({"style": "trap", "seed": 9}),
+        )
+        .unwrap();
         e.bank.sync(&e.project.samples);
-        let o = RenderOptions { keep_stems: true, ..Default::default() };
+        let o = RenderOptions {
+            keep_stems: true,
+            ..Default::default()
+        };
         let mut cache = TrackCache::default();
         render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
-        let keys0: Vec<TrackKey> = (0..e.project.tracks.len()).map(|i| cache.tracks[&i].0.clone()).collect();
+        let keys0: Vec<TrackKey> = (0..e.project.tracks.len())
+            .map(|i| cache.tracks[&i].0.clone())
+            .collect();
         let first = e.project.tracks[0].name.clone();
-        e.call("add_bus", &serde_json::json!({"name": "air_t", "preset": "none"})).unwrap();
+        e.call(
+            "add_bus",
+            &serde_json::json!({"name": "air_t", "preset": "none"}),
+        )
+        .unwrap();
         e.call("add_effect", &serde_json::json!({"track": "air_t", "type": "saturator", "params": {"mode": "exciter", "mix": 1.0}})).unwrap();
-        e.call("set_send", &serde_json::json!({"track": first, "bus": "air_t", "db": -6.0})).unwrap();
+        e.call(
+            "set_send",
+            &serde_json::json!({"track": first, "bus": "air_t", "db": -6.0}),
+        )
+        .unwrap();
         let keys1 = TrackCache::keys(&e.project, &e.bank, &o);
-        assert_eq!(keys0, keys1, "a new bus/send must not invalidate the tracks");
+        assert_eq!(
+            keys0, keys1,
+            "a new bus/send must not invalidate the tracks"
+        );
         let cached = render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
         let fresh = render(&e.project, &e.bank, &o).unwrap();
         assert_eq!(cached.left, fresh.left);
@@ -2170,13 +2663,28 @@ pub(crate) mod tests {
         let d = std::env::temp_dir().join("beatbox_render_cache_own_tests");
         std::fs::create_dir_all(&d).unwrap();
         let mut e = crate::engine::Engine::new(d);
-        e.call("generate_beat", &serde_json::json!({"style": "trap", "seed": 5, "bars": 2})).unwrap();
+        e.call(
+            "generate_beat",
+            &serde_json::json!({"style": "trap", "seed": 5, "bars": 2}),
+        )
+        .unwrap();
         // a group bus with its own EQ, chords routed into it
-        e.call("add_bus", &serde_json::json!({"name": "grp", "preset": "none"})).unwrap();
+        e.call(
+            "add_bus",
+            &serde_json::json!({"name": "grp", "preset": "none"}),
+        )
+        .unwrap();
         e.call("add_effect", &serde_json::json!({"track": "grp", "type": "parametric_eq", "params": {"bands": [{"kind": "high_shelf", "freq": 6000.0, "gain_db": -6.0, "q": 0.7}]}})).unwrap();
-        e.call("route_track", &serde_json::json!({"track": "chords", "bus": "grp"})).unwrap();
+        e.call(
+            "route_track",
+            &serde_json::json!({"track": "chords", "bus": "grp"}),
+        )
+        .unwrap();
         e.bank.sync(&e.project.samples);
-        let o = RenderOptions { keep_stems: true, ..Default::default() };
+        let o = RenderOptions {
+            keep_stems: true,
+            ..Default::default()
+        };
         let mut cache = TrackCache::default();
         let mut last = render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
         let ti = |e: &crate::engine::Engine, n: &str| e.project.track_index(n).unwrap();
@@ -2187,54 +2695,209 @@ pub(crate) mod tests {
             All,
             None,
         }
-        let (snare, hat, chords, lead) = (ti(&e, "snare"), ti(&e, "hat"), ti(&e, "chords"), ti(&e, "lead"));
+        let (snare, hat, chords, lead) = (
+            ti(&e, "snare"),
+            ti(&e, "hat"),
+            ti(&e, "chords"),
+            ti(&e, "lead"),
+        );
         let (bass, open_hat) = (ti(&e, "bass"), ti(&e, "open_hat"));
         let pts = |a: f32, b: f32| serde_json::json!([{"beat": 0.0, "value": a}, {"beat": 8.0, "value": b}]);
         let muts: Vec<(&str, &str, serde_json::Value, Resynth)> = vec![
-            ("add_effect on the track's own chain", "add_effect", serde_json::json!({"track": "snare", "type": "saturator", "params": {"mode": "tube", "drive_db": 6.0}}), Resynth::Only(snare)),
-            ("effect param: saturator drive", "tweak_effect", serde_json::json!({"track": "snare", "index": 1, "params": {"drive_db": 18.0}}), Resynth::Only(snare)),
-            ("effect param: reverb wet/dry mix", "tweak_effect", serde_json::json!({"track": "chords", "index": 0, "params": {"mix": 0.6}}), Resynth::Only(chords)),
-            ("effect param: EQ band", "tweak_effect", serde_json::json!({"track": "hat", "index": 0, "params": {"bands": [{"kind": "bell", "freq": 6000.0, "gain_db": -6.0, "q": 1.0}]}}), Resynth::Only(hat)),
-            ("effect param: delay time", "tweak_effect", serde_json::json!({"track": "lead", "index": 0, "params": {"steps": 2.0}}), Resynth::Only(lead)),
-            ("automation: effect param lane (fx.0.mix)", "add_automation", serde_json::json!({"track": "lead", "param": "fx.0.mix", "points": pts(0.0, 0.5)}), Resynth::Only(lead)),
-            ("automation: pan lane", "add_automation", serde_json::json!({"track": "hat", "param": "pan", "points": pts(-0.8, 0.8)}), Resynth::Only(hat)),
-            ("automation curve change (fx.0.mix points)", "set_automation_points", serde_json::json!({"track": "lead", "param": "fx.0.mix", "points": pts(0.5, 0.0)}), Resynth::Only(lead)),
-            ("instrument param: synth cutoff/resonance", "tweak_instrument", serde_json::json!({"track": "chords", "params": {"cutoff": 900.0, "resonance": 0.5}}), Resynth::Only(chords)),
-            ("instrument param: 808 drive/decay", "tweak_instrument", serde_json::json!({"track": "bass", "params": {"drive": 0.6, "decay": 0.3}}), Resynth::Only(bass)),
-            ("note pitch (transpose)", "transpose", serde_json::json!({"track": "lead", "semitones": 2}), Resynth::Only(lead)),
-            ("note start time (edit_notes move)", "edit_notes", serde_json::json!({"track": "bass", "move": 1}), Resynth::Only(bass)),
-            ("note velocity (edit_notes)", "edit_notes", serde_json::json!({"track": "bass", "vel_scale": 0.6}), Resynth::Only(bass)),
-            ("track pan", "set_mixer", serde_json::json!({"track": "open_hat", "pan": -0.4}), Resynth::Only(open_hat)),
-            ("track gain, routed into a bus", "set_mixer", serde_json::json!({"track": "chords", "volume_db": -9.0}), Resynth::None),
-            ("automation: volume lane", "add_automation", serde_json::json!({"track": "snare", "param": "volume", "points": pts(-12.0, 0.0)}), Resynth::None),
-            ("automation curve change (volume points)", "set_automation_points", serde_json::json!({"track": "snare", "param": "volume", "points": pts(0.0, -12.0)}), Resynth::None),
-            ("bus gain", "set_mixer", serde_json::json!({"track": "grp", "volume_db": -4.0}), Resynth::None),
-            ("send into the bus (new)", "set_send", serde_json::json!({"track": "snare", "bus": "grp", "db": -6.0}), Resynth::None),
-            ("send level change", "set_send", serde_json::json!({"track": "snare", "bus": "grp", "db": 0.0}), Resynth::None),
-            ("track mute", "set_mixer", serde_json::json!({"track": "kick", "mute": true}), Resynth::None),
-            ("track unmute", "set_mixer", serde_json::json!({"track": "kick", "mute": false}), Resynth::None),
-            ("track gain near -inf (-150 dB)", "set_mixer", serde_json::json!({"track": "kick", "volume_db": -150.0}), Resynth::None),
-            ("track gain 0 dB", "set_mixer", serde_json::json!({"track": "kick", "volume_db": 0.0}), Resynth::None),
-            ("track gain +6 dB (headroom boost)", "set_mixer", serde_json::json!({"track": "kick", "volume_db": 6.0}), Resynth::None),
-            ("tempo", "set_tempo", serde_json::json!({"bpm": 132.0}), Resynth::All),
-            ("tuning_cents", "", serde_json::json!(-44.0), Resynth::Set({ let mut v = vec![bass, chords, lead]; v.sort(); v })),
+            (
+                "add_effect on the track's own chain",
+                "add_effect",
+                serde_json::json!({"track": "snare", "type": "saturator", "params": {"mode": "tube", "drive_db": 6.0}}),
+                Resynth::Only(snare),
+            ),
+            (
+                "effect param: saturator drive",
+                "tweak_effect",
+                serde_json::json!({"track": "snare", "index": 1, "params": {"drive_db": 18.0}}),
+                Resynth::Only(snare),
+            ),
+            (
+                "effect param: reverb wet/dry mix",
+                "tweak_effect",
+                serde_json::json!({"track": "chords", "index": 0, "params": {"mix": 0.6}}),
+                Resynth::Only(chords),
+            ),
+            (
+                "effect param: EQ band",
+                "tweak_effect",
+                serde_json::json!({"track": "hat", "index": 0, "params": {"bands": [{"kind": "bell", "freq": 6000.0, "gain_db": -6.0, "q": 1.0}]}}),
+                Resynth::Only(hat),
+            ),
+            (
+                "effect param: delay time",
+                "tweak_effect",
+                serde_json::json!({"track": "lead", "index": 0, "params": {"steps": 2.0}}),
+                Resynth::Only(lead),
+            ),
+            (
+                "automation: effect param lane (fx.0.mix)",
+                "add_automation",
+                serde_json::json!({"track": "lead", "param": "fx.0.mix", "points": pts(0.0, 0.5)}),
+                Resynth::Only(lead),
+            ),
+            (
+                "automation: pan lane",
+                "add_automation",
+                serde_json::json!({"track": "hat", "param": "pan", "points": pts(-0.8, 0.8)}),
+                Resynth::Only(hat),
+            ),
+            (
+                "automation curve change (fx.0.mix points)",
+                "set_automation_points",
+                serde_json::json!({"track": "lead", "param": "fx.0.mix", "points": pts(0.5, 0.0)}),
+                Resynth::Only(lead),
+            ),
+            (
+                "instrument param: synth cutoff/resonance",
+                "tweak_instrument",
+                serde_json::json!({"track": "chords", "params": {"cutoff": 900.0, "resonance": 0.5}}),
+                Resynth::Only(chords),
+            ),
+            (
+                "instrument param: 808 drive/decay",
+                "tweak_instrument",
+                serde_json::json!({"track": "bass", "params": {"drive": 0.6, "decay": 0.3}}),
+                Resynth::Only(bass),
+            ),
+            (
+                "note pitch (transpose)",
+                "transpose",
+                serde_json::json!({"track": "lead", "semitones": 2}),
+                Resynth::Only(lead),
+            ),
+            (
+                "note start time (edit_notes move)",
+                "edit_notes",
+                serde_json::json!({"track": "bass", "move": 1}),
+                Resynth::Only(bass),
+            ),
+            (
+                "note velocity (edit_notes)",
+                "edit_notes",
+                serde_json::json!({"track": "bass", "vel_scale": 0.6}),
+                Resynth::Only(bass),
+            ),
+            (
+                "track pan",
+                "set_mixer",
+                serde_json::json!({"track": "open_hat", "pan": -0.4}),
+                Resynth::Only(open_hat),
+            ),
+            (
+                "track gain, routed into a bus",
+                "set_mixer",
+                serde_json::json!({"track": "chords", "volume_db": -9.0}),
+                Resynth::None,
+            ),
+            (
+                "automation: volume lane",
+                "add_automation",
+                serde_json::json!({"track": "snare", "param": "volume", "points": pts(-12.0, 0.0)}),
+                Resynth::None,
+            ),
+            (
+                "automation curve change (volume points)",
+                "set_automation_points",
+                serde_json::json!({"track": "snare", "param": "volume", "points": pts(0.0, -12.0)}),
+                Resynth::None,
+            ),
+            (
+                "bus gain",
+                "set_mixer",
+                serde_json::json!({"track": "grp", "volume_db": -4.0}),
+                Resynth::None,
+            ),
+            (
+                "send into the bus (new)",
+                "set_send",
+                serde_json::json!({"track": "snare", "bus": "grp", "db": -6.0}),
+                Resynth::None,
+            ),
+            (
+                "send level change",
+                "set_send",
+                serde_json::json!({"track": "snare", "bus": "grp", "db": 0.0}),
+                Resynth::None,
+            ),
+            (
+                "track mute",
+                "set_mixer",
+                serde_json::json!({"track": "kick", "mute": true}),
+                Resynth::None,
+            ),
+            (
+                "track unmute",
+                "set_mixer",
+                serde_json::json!({"track": "kick", "mute": false}),
+                Resynth::None,
+            ),
+            (
+                "track gain near -inf (-150 dB)",
+                "set_mixer",
+                serde_json::json!({"track": "kick", "volume_db": -150.0}),
+                Resynth::None,
+            ),
+            (
+                "track gain 0 dB",
+                "set_mixer",
+                serde_json::json!({"track": "kick", "volume_db": 0.0}),
+                Resynth::None,
+            ),
+            (
+                "track gain +6 dB (headroom boost)",
+                "set_mixer",
+                serde_json::json!({"track": "kick", "volume_db": 6.0}),
+                Resynth::None,
+            ),
+            (
+                "tempo",
+                "set_tempo",
+                serde_json::json!({"bpm": 132.0}),
+                Resynth::All,
+            ),
+            (
+                "tuning_cents",
+                "",
+                serde_json::json!(-44.0),
+                Resynth::Set({
+                    let mut v = vec![bass, chords, lead];
+                    v.sort();
+                    v
+                }),
+            ),
         ];
         for (what, tool, args, want) in muts {
             let n = e.project.tracks.len();
-            let p0: Vec<_> = (0..n).map(|i| std::sync::Arc::as_ptr(&cache.tracks[&i].1)).collect();
+            let p0: Vec<_> = (0..n)
+                .map(|i| std::sync::Arc::as_ptr(&cache.tracks[&i].1))
+                .collect();
             let k0: Vec<TrackKey> = (0..n).map(|i| cache.tracks[&i].0.clone()).collect();
             if tool.is_empty() {
                 // cover_song's match_tuning sets the field directly
                 e.project.tuning_cents = args.as_f64().unwrap() as f32;
             } else {
-                e.call(tool, &args).unwrap_or_else(|err| panic!("{what}: {err}"));
+                e.call(tool, &args)
+                    .unwrap_or_else(|err| panic!("{what}: {err}"));
             }
             e.bank.sync(&e.project.samples);
             let cached = render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
             let fresh = render(&e.project, &e.bank, &o).unwrap();
-            assert!(cached.left == fresh.left && cached.right == fresh.right, "{what}: cached render differs from a fresh one");
-            assert!(cached.left != last.left || cached.right != last.right, "{what}: the render did not change");
-            let redone: Vec<usize> = (0..n).filter(|&i| !std::ptr::eq(p0[i], std::sync::Arc::as_ptr(&cache.tracks[&i].1))).collect();
+            assert!(
+                cached.left == fresh.left && cached.right == fresh.right,
+                "{what}: cached render differs from a fresh one"
+            );
+            assert!(
+                cached.left != last.left || cached.right != last.right,
+                "{what}: the render did not change"
+            );
+            let redone: Vec<usize> = (0..n)
+                .filter(|&i| !std::ptr::eq(p0[i], std::sync::Arc::as_ptr(&cache.tracks[&i].1)))
+                .collect();
             match &want {
                 Resynth::Only(t) => {
                     assert_eq!(redone, vec![*t], "{what}");
@@ -2253,7 +2916,9 @@ pub(crate) mod tests {
         // render options are in the key too
         let o2 = RenderOptions { tail: 3.0, ..o };
         let n = e.project.tracks.len();
-        let p0: Vec<_> = (0..n).map(|i| std::sync::Arc::as_ptr(&cache.tracks[&i].1)).collect();
+        let p0: Vec<_> = (0..n)
+            .map(|i| std::sync::Arc::as_ptr(&cache.tracks[&i].1))
+            .collect();
         let cached = render_cached(&e.project, &e.bank, &o2, Some(&mut cache)).unwrap();
         let fresh = render(&e.project, &e.bank, &o2).unwrap();
         assert!(cached.left == fresh.left && cached.right == fresh.right);
@@ -2272,44 +2937,113 @@ pub(crate) mod tests {
         let d = std::env::temp_dir().join("beatbox_render_cache_c7_tests");
         std::fs::create_dir_all(&d).unwrap();
         let mut e = crate::engine::Engine::new(d);
-        e.call("generate_beat", &serde_json::json!({"style": "trap", "seed": 5, "bars": 2})).unwrap();
+        e.call(
+            "generate_beat",
+            &serde_json::json!({"style": "trap", "seed": 5, "bars": 2}),
+        )
+        .unwrap();
         e.bank.sync(&e.project.samples);
-        let o = RenderOptions { keep_stems: true, ..Default::default() };
+        let o = RenderOptions {
+            keep_stems: true,
+            ..Default::default()
+        };
         let mut cache = TrackCache::default();
         let mut last = render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
         let n = e.project.tracks.len();
         assert_eq!(cache.len(), n);
         let ti = |e: &crate::engine::Engine, x: &str| e.project.track_index(x).unwrap();
-        let (kick, snare, hat, open_hat) = (ti(&e, "kick"), ti(&e, "snare"), ti(&e, "hat"), ti(&e, "open_hat"));
+        let (kick, snare, hat, open_hat) = (
+            ti(&e, "kick"),
+            ti(&e, "snare"),
+            ti(&e, "hat"),
+            ti(&e, "open_hat"),
+        );
         let (bass, chords, lead) = (ti(&e, "bass"), ti(&e, "chords"), ti(&e, "lead"));
         let set = |mut v: Vec<usize>| {
             v.sort();
             v
         };
         let muts: Vec<(&str, &str, serde_json::Value, Vec<usize>)> = vec![
-            ("notes: chords moved a step", "edit_notes", serde_json::json!({"track": "chords", "move": 1}), vec![chords]),
-            ("notes: lead velocity", "edit_notes", serde_json::json!({"track": "lead", "vel_scale": 0.7}), vec![lead]),
-            ("notes: kick moved a step (the bass ducks to the kick)", "edit_notes", serde_json::json!({"track": "kick", "move": 1}), set(vec![kick, bass])),
-            ("notes: closed hat moved two steps (it chokes the open hat)", "edit_notes", serde_json::json!({"track": "hat", "move": 2}), set(vec![hat, open_hat])),
-            ("instrument: lead FM index", "tweak_instrument", serde_json::json!({"track": "lead", "params": {"index": 3.0}}), vec![lead]),
-            ("instrument: 808 decay", "tweak_instrument", serde_json::json!({"track": "bass", "params": {"decay": 0.4}}), vec![bass]),
-            ("pan: snare", "set_mixer", serde_json::json!({"track": "snare", "pan": 0.3}), vec![snare]),
-            ("pan: chords", "set_mixer", serde_json::json!({"track": "chords", "pan": -0.2}), vec![chords]),
-            ("mute the closed hat (its chokes leave the open hat)", "set_mixer", serde_json::json!({"track": "hat", "mute": true}), vec![open_hat]),
+            (
+                "notes: chords moved a step",
+                "edit_notes",
+                serde_json::json!({"track": "chords", "move": 1}),
+                vec![chords],
+            ),
+            (
+                "notes: lead velocity",
+                "edit_notes",
+                serde_json::json!({"track": "lead", "vel_scale": 0.7}),
+                vec![lead],
+            ),
+            (
+                "notes: kick moved a step (the bass ducks to the kick)",
+                "edit_notes",
+                serde_json::json!({"track": "kick", "move": 1}),
+                set(vec![kick, bass]),
+            ),
+            (
+                "notes: closed hat moved two steps (it chokes the open hat)",
+                "edit_notes",
+                serde_json::json!({"track": "hat", "move": 2}),
+                set(vec![hat, open_hat]),
+            ),
+            (
+                "instrument: lead FM index",
+                "tweak_instrument",
+                serde_json::json!({"track": "lead", "params": {"index": 3.0}}),
+                vec![lead],
+            ),
+            (
+                "instrument: 808 decay",
+                "tweak_instrument",
+                serde_json::json!({"track": "bass", "params": {"decay": 0.4}}),
+                vec![bass],
+            ),
+            (
+                "pan: snare",
+                "set_mixer",
+                serde_json::json!({"track": "snare", "pan": 0.3}),
+                vec![snare],
+            ),
+            (
+                "pan: chords",
+                "set_mixer",
+                serde_json::json!({"track": "chords", "pan": -0.2}),
+                vec![chords],
+            ),
+            (
+                "mute the closed hat (its chokes leave the open hat)",
+                "set_mixer",
+                serde_json::json!({"track": "hat", "mute": true}),
+                vec![open_hat],
+            ),
         ];
         for (what, tool, args, want) in muts {
             let p0: Vec<_> = (0..n).map(|i| cache.tracks[&i].1.clone()).collect();
-            e.call(tool, &args).unwrap_or_else(|err| panic!("{what}: {err}"));
+            e.call(tool, &args)
+                .unwrap_or_else(|err| panic!("{what}: {err}"));
             e.bank.sync(&e.project.samples);
             let cached = render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
             let fresh = render(&e.project, &e.bank, &o).unwrap();
-            assert!(cached.left == fresh.left && cached.right == fresh.right, "{what}: cached render differs from a fresh one");
-            assert!(cached.left != last.left || cached.right != last.right, "{what}: the render did not change");
-            let redone: Vec<usize> = (0..n).filter(|&i| !std::sync::Arc::ptr_eq(&p0[i], &cache.tracks[&i].1)).collect();
+            assert!(
+                cached.left == fresh.left && cached.right == fresh.right,
+                "{what}: cached render differs from a fresh one"
+            );
+            assert!(
+                cached.left != last.left || cached.right != last.right,
+                "{what}: the render did not change"
+            );
+            let redone: Vec<usize> = (0..n)
+                .filter(|&i| !std::sync::Arc::ptr_eq(&p0[i], &cache.tracks[&i].1))
+                .collect();
             assert_eq!(redone, want, "{what}");
             // every re-synthesised buffer really changed (no wasted re-render)
             for &t in &redone {
-                assert!(*p0[t] != *cache.tracks[&t].1, "{what}: track {t} re-rendered to the same audio");
+                assert!(
+                    *p0[t] != *cache.tracks[&t].1,
+                    "{what}: track {t} re-rendered to the same audio"
+                );
             }
             println!("C7 cache: {what} -> re-rendered {} of {n} tracks {:?}, {} served from cache, cached == fresh", redone.len(), redone.iter().map(|&i| e.project.tracks[i].name.as_str()).collect::<Vec<_>>(), n - redone.len());
             last = cached;
@@ -2327,20 +3061,48 @@ pub(crate) mod tests {
         let d = std::env::temp_dir().join("beatbox_render_cache_dag_tests");
         std::fs::create_dir_all(&d).unwrap();
         let mut e = crate::engine::Engine::new(d);
-        e.call("generate_beat", &serde_json::json!({"style": "trap", "seed": 5, "bars": 2})).unwrap();
+        e.call(
+            "generate_beat",
+            &serde_json::json!({"style": "trap", "seed": 5, "bars": 2}),
+        )
+        .unwrap();
         for b in ["drums", "low", "verb"] {
-            e.call("add_bus", &serde_json::json!({"name": b, "preset": "none"})).unwrap();
+            e.call("add_bus", &serde_json::json!({"name": b, "preset": "none"}))
+                .unwrap();
         }
         e.call("add_effect", &serde_json::json!({"track": "drums", "type": "parametric_eq", "params": {"bands": [{"kind": "high_shelf", "freq": 6000.0, "gain_db": -3.0, "q": 0.7}]}})).unwrap();
-        e.call("add_effect", &serde_json::json!({"track": "verb", "type": "reverb", "params": {"mix": 1.0}})).unwrap();
+        e.call(
+            "add_effect",
+            &serde_json::json!({"track": "verb", "type": "reverb", "params": {"mix": 1.0}}),
+        )
+        .unwrap();
         for t in ["kick", "snare", "hat", "open_hat"] {
-            e.call("route_track", &serde_json::json!({"track": t, "bus": "drums"})).unwrap();
+            e.call(
+                "route_track",
+                &serde_json::json!({"track": t, "bus": "drums"}),
+            )
+            .unwrap();
         }
-        e.call("route_track", &serde_json::json!({"track": "bass", "bus": "low"})).unwrap();
-        e.call("set_send", &serde_json::json!({"track": "chords", "bus": "verb", "db": -8.0})).unwrap();
-        e.call("set_send", &serde_json::json!({"track": "lead", "bus": "verb", "db": -10.0})).unwrap();
+        e.call(
+            "route_track",
+            &serde_json::json!({"track": "bass", "bus": "low"}),
+        )
+        .unwrap();
+        e.call(
+            "set_send",
+            &serde_json::json!({"track": "chords", "bus": "verb", "db": -8.0}),
+        )
+        .unwrap();
+        e.call(
+            "set_send",
+            &serde_json::json!({"track": "lead", "bus": "verb", "db": -10.0}),
+        )
+        .unwrap();
         e.bank.sync(&e.project.samples);
-        let o = RenderOptions { keep_stems: true, ..Default::default() };
+        let o = RenderOptions {
+            keep_stems: true,
+            ..Default::default()
+        };
         let mut cache = TrackCache::default();
         let mut last = render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
         let (n, nb) = (e.project.tracks.len(), e.project.buses.len());
@@ -2354,29 +3116,92 @@ pub(crate) mod tests {
             v
         };
         let muts: Vec<(&str, &str, serde_json::Value, Vec<usize>, Vec<usize>)> = vec![
-            ("sidechain trigger: kick notes moved (the bass ducks to the kick)", "edit_notes", serde_json::json!({"track": "kick", "move": 1}), set(vec![kick, bass]), set(vec![drums, low])),
-            ("send routing: new send snare -> verb", "set_send", serde_json::json!({"track": "snare", "bus": "verb", "db": -12.0}), vec![], vec![verb]),
-            ("send level: snare -> verb", "set_send", serde_json::json!({"track": "snare", "bus": "verb", "db": -4.0}), vec![], vec![verb]),
-            ("output routing: lead into the low bus (its send to verb unchanged)", "route_track", serde_json::json!({"track": "lead", "bus": "low"}), vec![], vec![low]),
-            ("track fader: kick -3 dB", "set_mixer", serde_json::json!({"track": "kick", "volume_db": -3.0}), vec![], vec![drums]),
-            ("bus fader: low -2 dB", "set_mixer", serde_json::json!({"track": "low", "volume_db": -2.0}), vec![], vec![low]),
-            ("bus effect param: drums EQ", "tweak_effect", serde_json::json!({"track": "drums", "index": 0, "params": {"bands": [{"kind": "bell", "freq": 3000.0, "gain_db": -4.0, "q": 1.0}]}}), vec![], vec![drums]),
-            ("track pan: chords (it sends to verb)", "set_mixer", serde_json::json!({"track": "chords", "pan": 0.4}), vec![chords], vec![verb]),
+            (
+                "sidechain trigger: kick notes moved (the bass ducks to the kick)",
+                "edit_notes",
+                serde_json::json!({"track": "kick", "move": 1}),
+                set(vec![kick, bass]),
+                set(vec![drums, low]),
+            ),
+            (
+                "send routing: new send snare -> verb",
+                "set_send",
+                serde_json::json!({"track": "snare", "bus": "verb", "db": -12.0}),
+                vec![],
+                vec![verb],
+            ),
+            (
+                "send level: snare -> verb",
+                "set_send",
+                serde_json::json!({"track": "snare", "bus": "verb", "db": -4.0}),
+                vec![],
+                vec![verb],
+            ),
+            (
+                "output routing: lead into the low bus (its send to verb unchanged)",
+                "route_track",
+                serde_json::json!({"track": "lead", "bus": "low"}),
+                vec![],
+                vec![low],
+            ),
+            (
+                "track fader: kick -3 dB",
+                "set_mixer",
+                serde_json::json!({"track": "kick", "volume_db": -3.0}),
+                vec![],
+                vec![drums],
+            ),
+            (
+                "bus fader: low -2 dB",
+                "set_mixer",
+                serde_json::json!({"track": "low", "volume_db": -2.0}),
+                vec![],
+                vec![low],
+            ),
+            (
+                "bus effect param: drums EQ",
+                "tweak_effect",
+                serde_json::json!({"track": "drums", "index": 0, "params": {"bands": [{"kind": "bell", "freq": 3000.0, "gain_db": -4.0, "q": 1.0}]}}),
+                vec![],
+                vec![drums],
+            ),
+            (
+                "track pan: chords (it sends to verb)",
+                "set_mixer",
+                serde_json::json!({"track": "chords", "pan": 0.4}),
+                vec![chords],
+                vec![verb],
+            ),
         ];
         for (what, tool, args, want_t, want_b) in muts {
             let t0: Vec<_> = (0..n).map(|i| cache.tracks[&i].1.clone()).collect();
             let b0: Vec<_> = (0..nb).map(|i| cache.buses[&i].1.clone()).collect();
-            e.call(tool, &args).unwrap_or_else(|err| panic!("{what}: {err}"));
+            e.call(tool, &args)
+                .unwrap_or_else(|err| panic!("{what}: {err}"));
             e.bank.sync(&e.project.samples);
             let cached = render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
             let fresh = render(&e.project, &e.bank, &o).unwrap();
-            assert!(cached.left == fresh.left && cached.right == fresh.right, "{what}: cached render differs from a fresh one");
-            assert!(cached.left != last.left || cached.right != last.right, "{what}: the render did not change");
+            assert!(
+                cached.left == fresh.left && cached.right == fresh.right,
+                "{what}: cached render differs from a fresh one"
+            );
+            assert!(
+                cached.left != last.left || cached.right != last.right,
+                "{what}: the render did not change"
+            );
             for (a, b) in cached.bus_stems.iter().zip(fresh.bus_stems.iter()) {
-                assert!(a.left == b.left && a.right == b.right, "{what}: bus {} differs", a.name);
+                assert!(
+                    a.left == b.left && a.right == b.right,
+                    "{what}: bus {} differs",
+                    a.name
+                );
             }
-            let rt: Vec<usize> = (0..n).filter(|&i| !std::sync::Arc::ptr_eq(&t0[i], &cache.tracks[&i].1)).collect();
-            let rb: Vec<usize> = (0..nb).filter(|&i| !std::sync::Arc::ptr_eq(&b0[i], &cache.buses[&i].1)).collect();
+            let rt: Vec<usize> = (0..n)
+                .filter(|&i| !std::sync::Arc::ptr_eq(&t0[i], &cache.tracks[&i].1))
+                .collect();
+            let rb: Vec<usize> = (0..nb)
+                .filter(|&i| !std::sync::Arc::ptr_eq(&b0[i], &cache.buses[&i].1))
+                .collect();
             assert_eq!((&rt, &rb), (&want_t, &want_b), "{what}: (tracks, buses)");
             println!(
                 "C7 DAG: {what} -> re-rendered tracks {:?} ({} of {n}), buses {:?} ({} of {nb}), master re-mixed, cached == fresh",
@@ -2401,30 +3226,70 @@ pub(crate) mod tests {
         let d = std::env::temp_dir().join("beatbox_render_cache_c9_tests");
         std::fs::create_dir_all(&d).unwrap();
         let mut e = crate::engine::Engine::new(d);
-        e.call("generate_beat", &serde_json::json!({"style": "trap", "seed": 5, "bars": 2})).unwrap();
+        e.call(
+            "generate_beat",
+            &serde_json::json!({"style": "trap", "seed": 5, "bars": 2}),
+        )
+        .unwrap();
         for b in ["drums", "vbus", "verb"] {
-            e.call("add_bus", &serde_json::json!({"name": b, "preset": "none"})).unwrap();
+            e.call("add_bus", &serde_json::json!({"name": b, "preset": "none"}))
+                .unwrap();
         }
-        e.call("add_effect", &serde_json::json!({"track": "verb", "type": "reverb", "params": {"mix": 1.0}})).unwrap();
+        e.call(
+            "add_effect",
+            &serde_json::json!({"track": "verb", "type": "reverb", "params": {"mix": 1.0}}),
+        )
+        .unwrap();
         for t in ["kick", "snare", "hat", "open_hat"] {
-            e.call("route_track", &serde_json::json!({"track": t, "bus": "drums"})).unwrap();
+            e.call(
+                "route_track",
+                &serde_json::json!({"track": t, "bus": "drums"}),
+            )
+            .unwrap();
         }
         // "lead" stands in for the vocal: its own bus plus a reverb send
-        e.call("route_track", &serde_json::json!({"track": "lead", "bus": "vbus"})).unwrap();
-        e.call("set_send", &serde_json::json!({"track": "lead", "bus": "verb", "db": -10.0})).unwrap();
-        e.call("set_send", &serde_json::json!({"track": "chords", "bus": "verb", "db": -8.0})).unwrap();
+        e.call(
+            "route_track",
+            &serde_json::json!({"track": "lead", "bus": "vbus"}),
+        )
+        .unwrap();
+        e.call(
+            "set_send",
+            &serde_json::json!({"track": "lead", "bus": "verb", "db": -10.0}),
+        )
+        .unwrap();
+        e.call(
+            "set_send",
+            &serde_json::json!({"track": "chords", "bus": "verb", "db": -8.0}),
+        )
+        .unwrap();
         e.bank.sync(&e.project.samples);
-        let o = RenderOptions { keep_stems: true, ..Default::default() };
+        let o = RenderOptions {
+            keep_stems: true,
+            ..Default::default()
+        };
         let mut cache = TrackCache::default();
         let base = render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
         let mut last = (base.left.clone(), base.right.clone());
         let (n, nb) = (e.project.tracks.len(), e.project.buses.len());
         let lead = e.project.track_index("lead").unwrap();
-        let (vbus, verb) = (e.project.bus_index("vbus").unwrap(), e.project.bus_index("verb").unwrap());
+        let (vbus, verb) = (
+            e.project.bus_index("vbus").unwrap(),
+            e.project.bus_index("verb").unwrap(),
+        );
         let mut tamed = vec![vbus, verb];
         tamed.sort();
-        fn dyn_eq(e: &mut crate::engine::Engine, lead: usize, k: usize) -> &mut crate::fx::DynamicEqFx {
-            match e.project.tracks[lead].effects.iter_mut().filter(|f| f.id().starts_with(crate::resonance::AUTO_RESONANCE_ID)).nth(k) {
+        fn dyn_eq(
+            e: &mut crate::engine::Engine,
+            lead: usize,
+            k: usize,
+        ) -> &mut crate::fx::DynamicEqFx {
+            match e.project.tracks[lead]
+                .effects
+                .iter_mut()
+                .filter(|f| f.id().starts_with(crate::resonance::AUTO_RESONANCE_ID))
+                .nth(k)
+            {
                 Some(crate::fx::Effect::DynamicEq(x)) => x,
                 _ => panic!("no tamer band {k}"),
             }
@@ -2443,8 +3308,12 @@ pub(crate) mod tests {
             let b0: Vec<_> = (0..nb).map(|i| cache.buses[&i].1.clone()).collect();
             match edit {
                 0 => {
-                    e.project.tracks[lead].effects.push(band_effect(2500.0, -60.0, 1));
-                    e.project.tracks[lead].effects.push(band_effect(5000.0, -60.0, 2));
+                    e.project.tracks[lead]
+                        .effects
+                        .push(band_effect(2500.0, -60.0, 1));
+                    e.project.tracks[lead]
+                        .effects
+                        .push(band_effect(5000.0, -60.0, 2));
                 }
                 2 => dyn_eq(&mut e, lead, 0).threshold_db = -50.0,
                 3 => dyn_eq(&mut e, lead, 1).range_db = -3.0,
@@ -2454,12 +3323,31 @@ pub(crate) mod tests {
             }
             let cached = render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
             let fresh = render(&e.project, &e.bank, &o).unwrap();
-            assert!(cached.left == fresh.left && cached.right == fresh.right, "{what}: cached render differs from a fresh one");
-            assert_eq!(cached.left != last.0 || cached.right != last.1, changes, "{what}: did the render change");
-            let rt: Vec<usize> = (0..n).filter(|&i| !std::sync::Arc::ptr_eq(&t0[i], &cache.tracks[&i].1)).collect();
-            let rb: Vec<usize> = (0..nb).filter(|&i| !std::sync::Arc::ptr_eq(&b0[i], &cache.buses[&i].1)).collect();
-            let want: (Vec<usize>, Vec<usize>) = if changes { (vec![lead], tamed.clone()) } else { (vec![], vec![]) };
-            assert_eq!((rt.clone(), rb.clone()), want, "{what}: (tracks, buses) re-rendered");
+            assert!(
+                cached.left == fresh.left && cached.right == fresh.right,
+                "{what}: cached render differs from a fresh one"
+            );
+            assert_eq!(
+                cached.left != last.0 || cached.right != last.1,
+                changes,
+                "{what}: did the render change"
+            );
+            let rt: Vec<usize> = (0..n)
+                .filter(|&i| !std::sync::Arc::ptr_eq(&t0[i], &cache.tracks[&i].1))
+                .collect();
+            let rb: Vec<usize> = (0..nb)
+                .filter(|&i| !std::sync::Arc::ptr_eq(&b0[i], &cache.buses[&i].1))
+                .collect();
+            let want: (Vec<usize>, Vec<usize>) = if changes {
+                (vec![lead], tamed.clone())
+            } else {
+                (vec![], vec![])
+            };
+            assert_eq!(
+                (rt.clone(), rb.clone()),
+                want,
+                "{what}: (tracks, buses) re-rendered"
+            );
             println!(
                 "C9 cache: {what} -> re-rendered tracks {:?} ({} of {n}), buses {:?} ({} of {nb}), cached == fresh",
                 rt.iter().map(|&i| e.project.tracks[i].name.as_str()).collect::<Vec<_>>(),
@@ -2469,8 +3357,17 @@ pub(crate) mod tests {
             );
             last = (cached.left, cached.right);
         }
-        let bits = |l: &[f32], r: &[f32]| l.iter().chain(r.iter()).map(|x| x.to_bits()).collect::<Vec<u32>>();
-        assert_eq!(bits(&last.0, &last.1), bits(&base.left, &base.right), "off == the untamed render, bit for bit");
+        let bits = |l: &[f32], r: &[f32]| {
+            l.iter()
+                .chain(r.iter())
+                .map(|x| x.to_bits())
+                .collect::<Vec<u32>>()
+        };
+        assert_eq!(
+            bits(&last.0, &last.1),
+            bits(&base.left, &base.right),
+            "off == the untamed render, bit for bit"
+        );
     }
 
     #[test]
@@ -2478,12 +3375,23 @@ pub(crate) mod tests {
         let d = std::env::temp_dir().join("beatbox_render_cache_bus_tests");
         std::fs::create_dir_all(&d).unwrap();
         let mut e = crate::engine::Engine::new(d);
-        e.call("generate_beat", &serde_json::json!({"style": "trap", "seed": 3, "bars": 2})).unwrap();
+        e.call(
+            "generate_beat",
+            &serde_json::json!({"style": "trap", "seed": 3, "bars": 2}),
+        )
+        .unwrap();
         e.bank.sync(&e.project.samples);
-        let o = RenderOptions { keep_stems: true, ..Default::default() };
+        let o = RenderOptions {
+            keep_stems: true,
+            ..Default::default()
+        };
         let mut cache = TrackCache::default();
         render_cached(&e.project, &e.bank, &o, Some(&mut cache)).unwrap();
-        let before: Vec<(usize, *const (Vec<f32>, Vec<f32>))> = cache.tracks.iter().map(|(k, (_, b))| (*k, std::sync::Arc::as_ptr(b))).collect();
+        let before: Vec<(usize, *const (Vec<f32>, Vec<f32>))> = cache
+            .tracks
+            .iter()
+            .map(|(k, (_, b))| (*k, std::sync::Arc::as_ptr(b)))
+            .collect();
         // a new bus with an EQ, every track routed into it, a fader lane
         let mut q = e.project.clone();
         let mut b = crate::project::Bus::new("beat");
@@ -2499,7 +3407,10 @@ pub(crate) mod tests {
         assert_eq!(cached.left, fresh.left);
         assert_eq!(cached.right, fresh.right);
         for (k, p) in before {
-            assert!(std::ptr::eq(std::sync::Arc::as_ptr(&cache.tracks[&k].1), p), "track {k} was re-synthesised by a mixer-only change");
+            assert!(
+                std::ptr::eq(std::sync::Arc::as_ptr(&cache.tracks[&k].1), p),
+                "track {k} was re-synthesised by a mixer-only change"
+            );
         }
         // a track's own chain change re-synthesises that track only
         let mut c = q.clone();
@@ -2508,7 +3419,10 @@ pub(crate) mod tests {
         let n = render_cached(&c, &e.bank, &o, Some(&mut cache)).unwrap();
         assert_eq!(n.left, render(&c, &e.bank, &o).unwrap().left);
         if let Some(p1) = ptr1 {
-            assert!(std::ptr::eq(std::sync::Arc::as_ptr(&cache.tracks[&1].1), p1));
+            assert!(std::ptr::eq(
+                std::sync::Arc::as_ptr(&cache.tracks[&1].1),
+                p1
+            ));
         }
     }
 
@@ -2519,18 +3433,27 @@ pub(crate) mod tests {
         let mut p = Project::new("c", 120.0);
         let inst = crate::instruments::preset("808").unwrap();
         p.tracks.push(Track::new("bass", inst));
-        p.patterns[0].clips.insert("bass".into(), vec![Note::new(0.0, 16.0, 36, 1.0), Note::new(8.0, 8.0, 36, 1.0)]);
+        p.patterns[0].clips.insert(
+            "bass".into(),
+            vec![Note::new(0.0, 16.0, 36, 1.0), Note::new(8.0, 8.0, 36, 1.0)],
+        );
         p.master_effects.clear();
         let bank = SampleBank::default();
         let m = render(&p, &bank, &RenderOptions::default()).unwrap();
         let d2 = |a: usize, b: usize| -> f32 {
-            m.left[a..b].windows(3).map(|w| (w[2] - 2.0 * w[1] + w[0]).abs()).fold(0.0, f32::max)
+            m.left[a..b]
+                .windows(3)
+                .map(|w| (w[2] - 2.0 * w[1] + w[0]).abs())
+                .fold(0.0, f32::max)
         };
         let at = (8.0 * p.step_secs() * SR) as usize;
         let w = (0.01 * SR) as usize;
         let first = d2(0, w);
         let retrig = d2(at - w, at + w);
-        assert!(retrig < first, "retrigger kink {retrig} vs first onset {first}");
+        assert!(
+            retrig < first,
+            "retrigger kink {retrig} vs first onset {first}"
+        );
     }
 
     #[test]
@@ -2580,7 +3503,14 @@ pub(crate) mod tests {
         let mut p = Project::new("k", 80.0);
         let inst = crate::instruments::preset("kick").unwrap();
         p.tracks.push(Track::new("kick", inst));
-        p.patterns[0].clips.insert("kick".into(), vec![Note::new(0.0, 1.0, 60, 0.9), Note::new(3.0, 1.0, 60, 0.9), Note::new(4.0, 1.0, 60, 0.9)]);
+        p.patterns[0].clips.insert(
+            "kick".into(),
+            vec![
+                Note::new(0.0, 1.0, 60, 0.9),
+                Note::new(3.0, 1.0, 60, 0.9),
+                Note::new(4.0, 1.0, 60, 0.9),
+            ],
+        );
         p.master_effects.clear();
         let m = render(&p, &SampleBank::default(), &RenderOptions::default()).unwrap();
         let c = crate::ears::clicks(&m.left, 50);
