@@ -2678,6 +2678,10 @@ mod tests {
             .unwrap();
         }
         e.bank.sync(&e.project.samples);
+        // Engine-vs-oracle identity: MixNode's master section is fader +
+        // DcBlock only, so the fixture deliberately drops the default
+        // master compressor+limiter until master-chain streaming lands.
+        e.project.master_effects.clear();
         if let Some(name) = solo {
             for t in &mut e.project.tracks {
                 t.solo = t.name == name;
