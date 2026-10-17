@@ -57,8 +57,15 @@ fn processing_never_allocates() {
     };
     // setup (allocates) outside the counted region
     let big: Vec<f32> = (0..20_000).map(|_| noise()).collect();
-    for (sr, nch, look) in [(44_100.0f32, 2usize, 3.0f32), (48_000.0, 1, 5.0), (96_000.0, 6, 2.0)] {
-        let p = TruePeakLimiterParams { lookahead_ms: look, ..Default::default() };
+    for (sr, nch, look) in [
+        (44_100.0f32, 2usize, 3.0f32),
+        (48_000.0, 1, 5.0),
+        (96_000.0, 6, 2.0),
+    ] {
+        let p = TruePeakLimiterParams {
+            lookahead_ms: look,
+            ..Default::default()
+        };
         let mut lim = TruePeakLimiter::new(sr, nch, p);
         let mut bufs: Vec<Vec<f32>> = (0..nch).map(|_| big.clone()).collect();
         let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(|b| b.as_mut_slice()).collect();
@@ -80,7 +87,10 @@ fn processing_never_allocates() {
             }
             lim.process(&mut parts[..nch]);
         });
-        assert_eq!(n, 0, "{n} heap allocations while processing ({sr} Hz, {nch} ch)");
+        assert_eq!(
+            n, 0,
+            "{n} heap allocations while processing ({sr} Hz, {nch} ch)"
+        );
         drop(refs);
         assert!(bufs.iter().flatten().all(|v| v.is_finite()));
     }

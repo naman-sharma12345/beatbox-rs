@@ -57,9 +57,26 @@ fn processing_never_allocates() {
     };
     // setup (allocates) outside the counted region
     let big: Vec<f32> = (0..20_000).map(|_| noise()).collect();
-    let key: Vec<f32> = (0..20_000).map(|i| if (i / 3000) % 2 == 0 { noise() * 0.2 } else { 0.0 }).collect();
-    for (sr, nch, band) in [(44_100.0f32, 2usize, (150.0f32, 400.0f32)), (48_000.0, 1, (2000.0, 4000.0)), (96_000.0, 6, (500.0, 900.0))] {
-        let p = CarveParams { low_hz: band.0, high_hz: band.1, threshold_db: -50.0, ..Default::default() };
+    let key: Vec<f32> = (0..20_000)
+        .map(|i| {
+            if (i / 3000) % 2 == 0 {
+                noise() * 0.2
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    for (sr, nch, band) in [
+        (44_100.0f32, 2usize, (150.0f32, 400.0f32)),
+        (48_000.0, 1, (2000.0, 4000.0)),
+        (96_000.0, 6, (500.0, 900.0)),
+    ] {
+        let p = CarveParams {
+            low_hz: band.0,
+            high_hz: band.1,
+            threshold_db: -50.0,
+            ..Default::default()
+        };
         let mut c = Carver::new(sr, p);
         let mut bufs: Vec<Vec<f32>> = (0..nch).map(|_| big.clone()).collect();
         let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(|b| b.as_mut_slice()).collect();
@@ -75,8 +92,14 @@ fn processing_never_allocates() {
             }
             let _ = c.stats();
         });
-        assert_eq!(n, 0, "{n} heap allocations while processing ({sr} Hz, {nch} ch)");
-        assert!(c.stats().0 > 0.0, "the key never carved: the test would prove nothing");
+        assert_eq!(
+            n, 0,
+            "{n} heap allocations while processing ({sr} Hz, {nch} ch)"
+        );
+        assert!(
+            c.stats().0 > 0.0,
+            "the key never carved: the test would prove nothing"
+        );
         drop(refs);
         assert!(bufs.iter().flatten().all(|v| v.is_finite()));
     }

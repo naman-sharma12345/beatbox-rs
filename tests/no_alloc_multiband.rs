@@ -57,8 +57,16 @@ fn processing_never_allocates() {
     };
     // setup (allocates) outside the counted region
     let big: Vec<f32> = (0..20_000).map(|_| noise()).collect();
-    let hot = BandParams { threshold_db: -30.0, ratio: 8.0, ..Default::default() };
-    for (sr, nch, xo) in [(44_100.0f32, 2usize, vec![150.0f32, 2500.0]), (48_000.0, 1, vec![1000.0]), (96_000.0, 6, vec![80.0, 400.0, 3000.0, 9000.0])] {
+    let hot = BandParams {
+        threshold_db: -30.0,
+        ratio: 8.0,
+        ..Default::default()
+    };
+    for (sr, nch, xo) in [
+        (44_100.0f32, 2usize, vec![150.0f32, 2500.0]),
+        (48_000.0, 1, vec![1000.0]),
+        (96_000.0, 6, vec![80.0, 400.0, 3000.0, 9000.0]),
+    ] {
         let mut m = MultibandDynamics::new(sr, nch, &xo, &[hot; 5]);
         let mut bufs: Vec<Vec<f32>> = (0..nch).map(|_| big.clone()).collect();
         let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(|b| b.as_mut_slice()).collect();
@@ -71,7 +79,14 @@ fn processing_never_allocates() {
                 m.process(&mut parts[..nch]);
             }
             m.set_band(0, BandParams { solo: true, ..hot });
-            m.set_band(1, BandParams { bypass: true, makeup_db: 3.0, ..hot });
+            m.set_band(
+                1,
+                BandParams {
+                    bypass: true,
+                    makeup_db: 3.0,
+                    ..hot
+                },
+            );
             let _ = m.take_max_gain_reduction_db();
             m.reset();
             let mut parts: [&mut [f32]; 6] = Default::default();
@@ -80,7 +95,10 @@ fn processing_never_allocates() {
             }
             m.process(&mut parts[..nch]);
         });
-        assert_eq!(n, 0, "{n} heap allocations while processing ({sr} Hz, {nch} ch)");
+        assert_eq!(
+            n, 0,
+            "{n} heap allocations while processing ({sr} Hz, {nch} ch)"
+        );
         drop(refs);
         assert!(bufs.iter().flatten().all(|v| v.is_finite()));
     }
