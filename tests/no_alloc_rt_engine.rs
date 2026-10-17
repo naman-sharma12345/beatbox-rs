@@ -259,6 +259,76 @@ fn mix_node_with_pdc_allocates_nothing() {
     }
 }
 
+/// RT5: a streamed master chain (lookahead compressor + non-true-peak
+/// limiter) on the master bus must not allocate in process() either -
+/// the limiter's sliding-min window is a fixed-capacity ring.
+#[test]
+fn mix_node_with_master_chain_allocates_nothing() {
+    use beatbox::rt::MixNode;
+    let d = std::env::temp_dir().join("beatbox_noalloc_master");
+    std::fs::create_dir_all(&d).unwrap();
+    let mut e = beatbox::engine::Engine::new(d);
+    e.call(
+        "generate_beat",
+        &serde_json::json!({"style": "trap", "seed": 9, "bars": 1}),
+    )
+    .unwrap();
+    e.call("set_tempo", &serde_json::json!({"bpm": 200.0}))
+        .unwrap();
+    e.bank.sync(&e.project.samples);
+    e.project.arrangement = vec![beatbox::project::Section {
+        pattern: "main".into(),
+        repeats: 1,
+    }];
+    // streamed master chain: 2ms lookahead compressor + non-TP limiter
+    // (the default true-peak limiter would keep the one-shot fallback)
+    e.project.master_effects = vec![
+        serde_json::from_value(serde_json::json!({
+            "type": "compressor", "threshold_db": -14.0, "ratio": 3.0,
+            "knee_db": 6.0, "lookahead_ms": 2.0
+        }))
+        .unwrap(),
+        serde_json::from_value(serde_json::json!({
+            "type": "limiter", "ceiling_db": -1.0, "release_ms": 80.0,
+            "true_peak": false
+        }))
+        .unwrap(),
+    ];
+    let opts = beatbox::render::RenderOptions {
+        tail: 0.03,
+        ..Default::default()
+    };
+    for block in [512usize, 256, 63] {
+        let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
+        assert_eq!(
+            node.latency(),
+            88 + 88,
+            "master chain latency (block {block})"
+        );
+        let total = node.total_samples() + node.latency(); // include flush
+        let mut l = vec![0.0f32; block];
+        let mut r = vec![0.0f32; block];
+        let before = ALLOCS.with(|c| c.get());
+        let mut pos = 0u64;
+        while (pos as usize) < total {
+            let n = block.min(total - pos as usize);
+            let ctx = BlockCtx {
+                sample_rate: 44_100.0,
+                block_len: n,
+                frame_offset: pos,
+            };
+            let mut outs: [&mut [f32]; 2] = [&mut l[..n], &mut r[..n]];
+            node.process(&ctx, &[], &mut outs);
+            pos += n as u64;
+        }
+        assert_eq!(
+            ALLOCS.with(|c| c.get()),
+            before,
+            "MixNode::process with a streamed master chain must not allocate (block {block})"
+        );
+    }
+}
+
 /// RT3 relay item 4: an Engine graph swap landing mid-run is pointer
 /// moves only - the payload Vec is built control-side before the window,
 /// old nodes return through the trash ring and are dropped control-side
