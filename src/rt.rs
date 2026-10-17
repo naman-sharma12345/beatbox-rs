@@ -1079,6 +1079,33 @@ pub enum StreamFx {
         g: f32,
         in_pos: usize,
     },
+    /// Loudness maximizer (RT6): fx_sc::maximizer chunked. Drive into
+    /// an la = 66-sample lookahead: required gain over the last `la`
+    /// inputs (fixed ring, exact min), instant-attack / exp-release
+    /// hold, box average over `la` with an f64 accumulator and the
+    /// same resync on idx wrap, audio delayed la - 1 = 65 samples.
+    /// Silence past the render end flushes the tail, matching the
+    /// offline la - 1 silent frames.
+    Maximizer {
+        drive: f32,
+        ceil: f32,
+        rel: f32,
+        la: usize,
+        dl: Vec<f32>,
+        dr: Vec<f32>,
+        dw: usize,
+        req: Vec<f32>,
+        /// Fixed-capacity ring (la + 1 slots) of min candidates - the
+        /// window never holds more than `la`, so process() never
+        /// allocates.
+        dq: Vec<usize>,
+        dq_head: usize,
+        dq_len: usize,
+        held: f32,
+        sum: f64,
+        smooth: Vec<f32>,
+        in_pos: usize,
+    },
     Sidechain {
         trig: std::sync::Arc<Vec<usize>>,
         ti: usize,
@@ -1117,6 +1144,7 @@ impl StreamFx {
         match self {
             StreamFx::CompressorLa { la, .. } => *la,
             StreamFx::Limiter { look, .. } => *look,
+            StreamFx::Maximizer { la, .. } => la - 1,
             _ => 0,
         }
     }
@@ -1435,6 +1463,87 @@ impl StreamFx {
                     *in_pos += 1;
                 }
             }
+            StreamFx::Maximizer {
+                drive,
+                ceil,
+                rel,
+                la,
+                dl,
+                dr,
+                dw,
+                req,
+                dq,
+                dq_head,
+                dq_len,
+                held,
+                sum,
+                smooth,
+                in_pos,
+            } => {
+                // fx_sc::maximizer per sample, verbatim: drive into
+                // peak, req = ceiling / peak where over, exact min of
+                // the last la req values, hold smoother (instant
+                // attack, exp release), f64 box average with the
+                // resync on idx wrap, g clamped to [0, 1], output
+                // la - 1 samples late and clamped to the ceiling.
+                let dly = *la - 1;
+                let cap = *la + 1;
+                for i in 0..l.len() {
+                    let j = *in_pos;
+                    let xl = (if l[i].is_finite() { l[i] } else { 0.0 }) * *drive;
+                    let xr = (if r[i].is_finite() { r[i] } else { 0.0 }) * *drive;
+                    let (yl, yr) = if dly == 0 {
+                        (xl, xr)
+                    } else {
+                        let y = (dl[*dw], dr[*dw]);
+                        dl[*dw] = xl;
+                        dr[*dw] = xr;
+                        *dw += 1;
+                        if *dw == dly {
+                            *dw = 0;
+                        }
+                        y
+                    };
+                    let peak = xl.abs().max(xr.abs());
+                    let rq = if peak > *ceil { *ceil / peak } else { 1.0 };
+                    req[j % *la] = rq;
+                    while *dq_len > 0 && req[dq[(*dq_head + *dq_len - 1) % cap] % *la] >= rq {
+                        *dq_len -= 1;
+                    }
+                    dq[(*dq_head + *dq_len) % cap] = j;
+                    *dq_len += 1;
+                    debug_assert!(*dq_len <= *la, "maximizer min-window ring overflow");
+                    while *dq_len > 0 && dq[*dq_head] + *la <= j {
+                        *dq_head = (*dq_head + 1) % cap;
+                        *dq_len -= 1;
+                    }
+                    let hold = if *dq_len > 0 {
+                        req[dq[*dq_head] % *la]
+                    } else {
+                        1.0
+                    };
+                    *held = if hold < *held {
+                        hold
+                    } else {
+                        hold + (*held - hold) * *rel
+                    };
+                    let idx = j % *la;
+                    *sum += f64::from(*held) - f64::from(smooth[idx]);
+                    smooth[idx] = *held;
+                    if idx + 1 == *la {
+                        *sum = smooth.iter().map(|&v| f64::from(v)).sum();
+                    }
+                    let g = ((*sum / *la as f64) as f32).clamp(0.0, 1.0);
+                    if j + 1 >= *la {
+                        l[i] = (yl * g).clamp(-*ceil, *ceil);
+                        r[i] = (yr * g).clamp(-*ceil, *ceil);
+                    } else {
+                        l[i] = 0.0;
+                        r[i] = 0.0;
+                    }
+                    *in_pos += 1;
+                }
+            }
             StreamFx::Sidechain {
                 trig,
                 ti,
@@ -1573,7 +1682,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Reverb(_) => OneShot("FDN reverb modes unverified for chunking"),
         Effect::Limiter(p) if !p.true_peak => Streamable,
         Effect::Limiter(_) => OneShot("true-peak limiter: whole-buffer iterative passes"),
-        Effect::Maximizer(_) => OneShot("sc_dsp maximizer: unverified, likely lookahead"),
+        Effect::Maximizer(_) => Streamable,
         Effect::Convolution(_) => OneShot("IR convolution: block processing"),
         Effect::CabIr(_) => OneShot("cabinet IR: block processing"),
         Effect::PitchShift(_) => OneShot("pitch shift: time-windowed"),
@@ -1798,6 +1907,32 @@ impl ChainStreamer {
                         held: vec![0.0; look + 2],
                         acc: 0.0,
                         g: 1.0,
+                        in_pos: 0,
+                    }
+                }
+                Effect::Maximizer(p) => {
+                    // fx_sc::maximizer, chunked. Constants verbatim:
+                    // lookahead 1.5 ms -> la = 66 at 44.1 kHz, drive
+                    // from -threshold_db, ceiling clamped to <= 0 dB,
+                    // release in samples.
+                    let la = ((1.5f32 * 0.001 * SR).max(0.0).round() as usize).max(1);
+                    let rn = (p.release_ms.clamp(1.0, 1000.0) * 0.001 * SR).max(0.0);
+                    let rel = if rn < 1.0e-3 { 0.0 } else { (-1.0 / rn).exp() };
+                    StreamFx::Maximizer {
+                        drive: db_to_gain(-p.threshold_db.clamp(-30.0, 0.0)),
+                        ceil: db_to_gain(p.ceiling_db.clamp(-30.0, 0.0)),
+                        rel,
+                        la,
+                        dl: vec![0.0; la - 1],
+                        dr: vec![0.0; la - 1],
+                        dw: 0,
+                        req: vec![1.0; la],
+                        dq: vec![0; la + 1],
+                        dq_head: 0,
+                        dq_len: 0,
+                        held: 1.0,
+                        sum: la as f64,
+                        smooth: vec![1.0; la],
                         in_pos: 0,
                     }
                 }
@@ -2638,6 +2773,7 @@ mod tests {
                 "eq",
                 "filter",
                 "gain",
+                "maximizer",
                 "parametric_eq",
                 "reverb",
                 "sidechain",
@@ -2900,6 +3036,85 @@ mod tests {
                 assert_eq!(
                     fr[i].to_bits(),
                     or_[n - look + i].to_bits(),
+                    "flush right block {block} i {i}"
+                );
+            }
+        }
+    }
+
+    /// RT6: the streamed maximizer is bit-identical to the offline
+    /// fx_sc::maximizer pass once its lookahead latency (la - 1 = 65)
+    /// is accounted for: streamed[lat..n] == offline[0..n-lat], and
+    /// `lat` extra silent input samples flush the delay line so the
+    /// tail matches offline[n-lat..n] (the offline pass runs the same
+    /// la - 1 silent frames). All 8 test-0 block sizes.
+    #[test]
+    fn stream_fx_maximizer_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+            "type":"maximizer","threshold_db":-6.0,"ceiling_db":-0.3,"release_ms":50.0
+        }))
+        .unwrap();
+        let la = ((1.5f32 * 0.001 * SR).max(0.0).round() as usize).max(1);
+        let lat = la - 1;
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+            let mut ol = sig.clone();
+            let mut or_ = sig.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let mut l = sig.clone();
+            let mut r = sig.clone();
+            let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                .expect("maximizer streams");
+            assert_eq!(cs.latency_samples(), lat);
+            let mut pos = 0usize;
+            while pos < n {
+                let k = block.min(n - pos);
+                cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                pos += k;
+            }
+            // flush: lat extra silent samples push the tail through
+            let mut fl = vec![0.0f32; lat];
+            let mut fr = vec![0.0f32; lat];
+            cs.process_block(&mut fl, &mut fr);
+            for i in lat..n {
+                assert_eq!(
+                    l[i].to_bits(),
+                    ol[i - lat].to_bits(),
+                    "left block {block} i {i}"
+                );
+                assert_eq!(
+                    r[i].to_bits(),
+                    or_[i - lat].to_bits(),
+                    "right block {block} i {i}"
+                );
+            }
+            for i in 0..lat {
+                assert_eq!(
+                    fl[i].to_bits(),
+                    ol[n - lat + i].to_bits(),
+                    "flush left block {block} i {i}"
+                );
+                assert_eq!(
+                    fr[i].to_bits(),
+                    or_[n - lat + i].to_bits(),
                     "flush right block {block} i {i}"
                 );
             }
