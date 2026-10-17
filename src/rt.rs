@@ -1068,7 +1068,12 @@ pub enum StreamFx {
         dr: Vec<f32>,
         dw: usize,
         need: Vec<f32>,
-        dq: std::collections::VecDeque<usize>,
+        /// Sliding-min candidate indices as a fixed-capacity ring
+        /// (look + 2 slots, head + len): the window never holds more
+        /// than look + 1 candidates, so process() never allocates.
+        dq: Vec<usize>,
+        dq_head: usize,
+        dq_len: usize,
         held: Vec<f32>,
         acc: f64,
         g: f32,
@@ -1364,6 +1369,8 @@ impl StreamFx {
                 dw,
                 need,
                 dq,
+                dq_head,
+                dq_len,
                 held,
                 acc,
                 g,
@@ -1382,10 +1389,12 @@ impl StreamFx {
                     let x = l[i].abs().max(r[i].abs());
                     let nd = if x > *ceiling { *ceiling / x } else { 1.0 };
                     need[j % size] = nd;
-                    while dq.back().map(|&b| need[b % size] >= nd).unwrap_or(false) {
-                        dq.pop_back();
+                    while *dq_len > 0 && need[dq[(*dq_head + *dq_len - 1) % size] % size] >= nd {
+                        *dq_len -= 1;
                     }
-                    dq.push_back(j);
+                    dq[(*dq_head + *dq_len) % size] = j;
+                    *dq_len += 1;
+                    debug_assert!(*dq_len <= *look + 1, "limiter min-window ring overflow");
                     let (y_l, y_r) = if *look == 0 {
                         (l[i], r[i])
                     } else {
@@ -1400,10 +1409,11 @@ impl StreamFx {
                     };
                     if j >= *look {
                         let o = j - *look;
-                        while dq.front().map(|&f| f < o).unwrap_or(false) {
-                            dq.pop_front();
+                        while *dq_len > 0 && dq[*dq_head] < o {
+                            *dq_head = (*dq_head + 1) % size;
+                            *dq_len -= 1;
                         }
-                        let h = need[*dq.front().unwrap() % size];
+                        let h = need[dq[*dq_head] % size];
                         held[o % size] = h;
                         *acc += h as f64;
                         if o > *look {
@@ -1782,7 +1792,9 @@ impl ChainStreamer {
                         dr: vec![0.0; look],
                         dw: 0,
                         need: vec![0.0; look + 2],
-                        dq: std::collections::VecDeque::new(),
+                        dq: vec![0; look + 2],
+                        dq_head: 0,
+                        dq_len: 0,
                         held: vec![0.0; look + 2],
                         acc: 0.0,
                         g: 1.0,
