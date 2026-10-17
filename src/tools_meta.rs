@@ -609,6 +609,6 @@ mod tests {
             .unwrap();
         assert_eq!(s["tools"][0]["name"], "export_audio");
         let ps = e.call("get_project_summary", &json!({})).unwrap();
-        assert!(ps["next"].as_array().unwrap().len() >= 1);
+        assert!(!ps["next"].as_array().unwrap().is_empty());
     }
 }
