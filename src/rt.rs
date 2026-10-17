@@ -1003,6 +1003,28 @@ pub enum StreamFx {
         total: usize,
         in_pos: usize,
     },
+    /// Brickwall limiter with true_peak = false (RT5): the offline
+    /// limiter_pass chunked. The per-sample required gain feeds an
+    /// 88-sample lookahead sliding minimum (monotonic deque) and the
+    /// box-ramp f64 accumulator, both carried across blocks; the audio
+    /// rides a `look`-sample delay line, so the limiter adds exactly
+    /// `look` samples of latency. Silent input past the render end
+    /// flushes the tail: need = 1.0 there never lowers the window min,
+    /// which matches the offline clamped window bit for bit.
+    Limiter {
+        ceiling: f32,
+        rel: f32,
+        look: usize,
+        dl: Vec<f32>,
+        dr: Vec<f32>,
+        dw: usize,
+        need: Vec<f32>,
+        dq: std::collections::VecDeque<usize>,
+        held: Vec<f32>,
+        acc: f64,
+        g: f32,
+        in_pos: usize,
+    },
     Sidechain {
         trig: std::sync::Arc<Vec<usize>>,
         ti: usize,
@@ -1040,6 +1062,7 @@ impl StreamFx {
     pub(crate) fn latency(&self) -> usize {
         match self {
             StreamFx::CompressorLa { la, .. } => *la,
+            StreamFx::Limiter { look, .. } => *look,
             _ => 0,
         }
     }
@@ -1283,6 +1306,76 @@ impl StreamFx {
                     *in_pos += 1;
                 }
             }
+            StreamFx::Limiter {
+                ceiling,
+                rel,
+                look,
+                dl,
+                dr,
+                dw,
+                need,
+                dq,
+                held,
+                acc,
+                g,
+                in_pos,
+            } => {
+                // limiter_pass_impl (true_peak = false) per sample,
+                // verbatim: need = ceiling / peak where over, 1.0 else;
+                // held = exact sliding min over the next `look` samples;
+                // box-average over the previous `look`; instant attack,
+                // exponential release; clamp. The deque window is complete
+                // once input j = o + look arrives, so output o is emitted
+                // `look` samples late and the audio rides the delay line.
+                let size = *look + 2;
+                for i in 0..l.len() {
+                    let j = *in_pos;
+                    let x = l[i].abs().max(r[i].abs());
+                    let nd = if x > *ceiling { *ceiling / x } else { 1.0 };
+                    need[j % size] = nd;
+                    while dq.back().map(|&b| need[b % size] >= nd).unwrap_or(false) {
+                        dq.pop_back();
+                    }
+                    dq.push_back(j);
+                    let (y_l, y_r) = if *look == 0 {
+                        (l[i], r[i])
+                    } else {
+                        let y = (dl[*dw], dr[*dw]);
+                        dl[*dw] = l[i];
+                        dr[*dw] = r[i];
+                        *dw += 1;
+                        if *dw == *look {
+                            *dw = 0;
+                        }
+                        y
+                    };
+                    if j >= *look {
+                        let o = j - *look;
+                        while dq.front().map(|&f| f < o).unwrap_or(false) {
+                            dq.pop_front();
+                        }
+                        let h = need[*dq.front().unwrap() % size];
+                        held[o % size] = h;
+                        *acc += h as f64;
+                        if o > *look {
+                            *acc -= held[(o - *look - 1) % size] as f64;
+                        }
+                        let cnt = (o.min(*look) + 1) as f64;
+                        let target = (*acc / cnt) as f32;
+                        *g = if target < *g {
+                            target
+                        } else {
+                            *rel * *g + (1.0 - *rel) * target
+                        };
+                        l[i] = (y_l * *g).clamp(-*ceiling, *ceiling);
+                        r[i] = (y_r * *g).clamp(-*ceiling, *ceiling);
+                    } else {
+                        l[i] = 0.0;
+                        r[i] = 0.0;
+                    }
+                    *in_pos += 1;
+                }
+            }
             StreamFx::Sidechain {
                 trig,
                 ti,
@@ -1419,7 +1512,8 @@ pub fn classify(fx: &Effect) -> FxClass {
         // comes from oneshot_latency_samples):
         Effect::Compressor(_) => Streamable,
         Effect::Reverb(_) => OneShot("FDN reverb modes unverified for chunking"),
-        Effect::Limiter(_) => OneShot("brickwall limiter: multi-pass / true-peak re-reads"),
+        Effect::Limiter(p) if !p.true_peak => Streamable,
+        Effect::Limiter(_) => OneShot("true-peak limiter: whole-buffer iterative passes"),
         Effect::Maximizer(_) => OneShot("sc_dsp maximizer: unverified, likely lookahead"),
         Effect::Convolution(_) => OneShot("IR convolution: block processing"),
         Effect::CabIr(_) => OneShot("cabinet IR: block processing"),
@@ -1623,6 +1717,26 @@ impl ChainStreamer {
                         dw: 0,
                         la,
                         total,
+                        in_pos: 0,
+                    }
+                }
+                Effect::Limiter(p) => {
+                    // limiter_pass (true_peak = false), chunked. Constants
+                    // verbatim from fx.rs: look = 0.002 * SR, ceiling
+                    // clamped to <= 0 dB, release from max(1 ms).
+                    let look = (0.002 * SR) as usize;
+                    StreamFx::Limiter {
+                        ceiling: db_to_gain(p.ceiling_db.min(0.0)),
+                        rel: (-1.0 / (p.release_ms.max(1.0) * 0.001 * SR)).exp(),
+                        look,
+                        dl: vec![0.0; look],
+                        dr: vec![0.0; look],
+                        dw: 0,
+                        need: vec![0.0; look + 2],
+                        dq: std::collections::VecDeque::new(),
+                        held: vec![0.0; look + 2],
+                        acc: 0.0,
+                        g: 1.0,
                         in_pos: 0,
                     }
                 }
@@ -2647,6 +2761,84 @@ mod tests {
                 assert_eq!(
                     fr[i].to_bits(),
                     or_[n - la + i].to_bits(),
+                    "flush right block {block} i {i}"
+                );
+            }
+        }
+    }
+
+    /// RT5: the streamed brickwall limiter (true_peak = false) is
+    /// bit-identical to the offline limiter pass once its lookahead
+    /// latency is accounted for: streamed[look..n] == offline[0..n-look],
+    /// and `look` extra silent input samples flush the delay line so the
+    /// tail matches offline[n-look..n]. Same driving pattern as the
+    /// lookahead-compressor identity test, at all 8 test-0 block sizes.
+    #[test]
+    fn stream_fx_limiter_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+            "type":"limiter","ceiling_db":-1.0,"release_ms":80.0,"true_peak":false
+        }))
+        .unwrap();
+        let look = (0.002 * SR) as usize;
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+            let mut ol = sig.clone();
+            let mut or_ = sig.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let mut l = sig.clone();
+            let mut r = sig.clone();
+            let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                .expect("non-true-peak limiter streams");
+            assert_eq!(cs.latency_samples(), look);
+            let mut pos = 0usize;
+            while pos < n {
+                let k = block.min(n - pos);
+                cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                pos += k;
+            }
+            // flush: look extra silent samples push the tail through
+            let mut fl = vec![0.0f32; look];
+            let mut fr = vec![0.0f32; look];
+            cs.process_block(&mut fl, &mut fr);
+            for i in look..n {
+                assert_eq!(
+                    l[i].to_bits(),
+                    ol[i - look].to_bits(),
+                    "left block {block} i {i}"
+                );
+                assert_eq!(
+                    r[i].to_bits(),
+                    or_[i - look].to_bits(),
+                    "right block {block} i {i}"
+                );
+            }
+            for i in 0..look {
+                assert_eq!(
+                    fl[i].to_bits(),
+                    ol[n - look + i].to_bits(),
+                    "flush left block {block} i {i}"
+                );
+                assert_eq!(
+                    fr[i].to_bits(),
+                    or_[n - look + i].to_bits(),
                     "flush right block {block} i {i}"
                 );
             }
