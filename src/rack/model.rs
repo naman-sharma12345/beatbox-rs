@@ -142,7 +142,10 @@ pub enum RackErrorCode {
 impl RackErrorCode {
     /// The stable string ("ParamOutOfRange").
     pub fn as_str(&self) -> String {
-        serde_json::to_value(self).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
     }
 }
 
@@ -176,7 +179,9 @@ impl Param {
                 m
             }
             "bool" => serde_json::json!({"type": "boolean"}),
-            "enum" => serde_json::json!({"type": "string", "enum": self.options.clone().unwrap_or_default()}),
+            "enum" => {
+                serde_json::json!({"type": "string", "enum": self.options.clone().unwrap_or_default()})
+            }
             "array" => serde_json::json!({"type": "array"}),
             _ => serde_json::json!({"type": "string"}),
         };
@@ -204,7 +209,14 @@ impl Param {
                 if !x.is_finite() || x < lo || x > hi {
                     return Err(ParamMismatch {
                         code: RackErrorCode::ParamOutOfRange,
-                        message: format!("{} = {x} is outside {lo}..{hi}{}", self.id, self.unit.as_deref().map(|u| format!(" {u}")).unwrap_or_default()),
+                        message: format!(
+                            "{} = {x} is outside {lo}..{hi}{}",
+                            self.id,
+                            self.unit
+                                .as_deref()
+                                .map(|u| format!(" {u}"))
+                                .unwrap_or_default()
+                        ),
                         expected: serde_json::json!({"min": lo, "max": hi, "unit": self.unit}),
                     });
                 }
@@ -240,15 +252,27 @@ pub enum Route {
     /// The strip's whole post-fader signal goes to `to`.
     Output { from: String, to: String },
     /// An aux send (`id` is the send's stable id).
-    Send { id: String, from: String, to: String, db: f32, pre_fader: bool },
+    Send {
+        id: String,
+        from: String,
+        to: String,
+        db: f32,
+        pre_fader: bool,
+    },
     /// A device on `to` listens to `from` as its key (a sidechain).
-    Sidechain { from: String, to: String, device: String },
+    Sidechain {
+        from: String,
+        to: String,
+        device: String,
+    },
 }
 
 impl Route {
     pub fn from(&self) -> &str {
         match self {
-            Route::Output { from, .. } | Route::Send { from, .. } | Route::Sidechain { from, .. } => from,
+            Route::Output { from, .. }
+            | Route::Send { from, .. }
+            | Route::Sidechain { from, .. } => from,
         }
     }
     pub fn to(&self) -> &str {
@@ -305,21 +329,38 @@ fn sources(v: &Value, out: &mut Vec<String>) {
     }
 }
 
-fn param_from_desc(strip: &str, owner: &str, prefix: &str, d: &Value, defaults: &[Value], p: &Project) -> Option<Param> {
+fn param_from_desc(
+    strip: &str,
+    owner: &str,
+    prefix: &str,
+    d: &Value,
+    defaults: &[Value],
+    p: &Project,
+) -> Option<Param> {
     let rel = d["param"].as_str()?;
     if rel == "id" || rel == "bypass" {
         return None;
     }
-    let path = if prefix.is_empty() { rel.to_string() } else { format!("{prefix}.{rel}") };
+    let path = if prefix.is_empty() {
+        rel.to_string()
+    } else {
+        format!("{prefix}.{rel}")
+    };
     let kind = d["type"].as_str().unwrap_or("number").to_string();
     let f = |k: &str| d.get(k).and_then(|x| x.as_f64()).map(|x| x as f32);
     let value = d.get("value").cloned().unwrap_or(Value::Null);
-    let default = defaults.iter().find(|x| x["param"].as_str() == Some(rel)).and_then(|x| x.get("value").cloned());
+    let default = defaults
+        .iter()
+        .find(|x| x["param"].as_str() == Some(rel))
+        .and_then(|x| x.get("value").cloned());
     let number = kind == "number";
     // the range always holds the current and the default value
     let widen = |r: Option<f32>, lo: bool| {
         r.map(|mut b| {
-            for v in [value.as_f64(), default.as_ref().and_then(|x| x.as_f64())].into_iter().flatten() {
+            for v in [value.as_f64(), default.as_ref().and_then(|x| x.as_f64())]
+                .into_iter()
+                .flatten()
+            {
                 b = if lo { b.min(v as f32) } else { b.max(v as f32) };
             }
             b
@@ -332,11 +373,31 @@ fn param_from_desc(strip: &str, owner: &str, prefix: &str, d: &Value, defaults: 
         max: widen(f("max"), false),
         value,
         default,
-        unit: d.get("unit").and_then(|x| x.as_str()).filter(|u| !u.is_empty()).map(String::from),
-        scale: number.then(|| if d.get("log_scale").and_then(|x| x.as_bool()).unwrap_or(false) { "log".to_string() } else { "linear".to_string() }),
+        unit: d
+            .get("unit")
+            .and_then(|x| x.as_str())
+            .filter(|u| !u.is_empty())
+            .map(String::from),
+        scale: number.then(|| {
+            if d.get("log_scale")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false)
+            {
+                "log".to_string()
+            } else {
+                "linear".to_string()
+            }
+        }),
         kind,
-        options: d.get("options").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()),
-        automatable: d.get("automatable").and_then(|x| x.as_bool()).unwrap_or(false),
+        options: d.get("options").and_then(|x| x.as_array()).map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(String::from))
+                .collect()
+        }),
+        automatable: d
+            .get("automatable")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
         path,
     })
 }
@@ -347,13 +408,24 @@ fn lanes_of(p: &Project, owner: &str, path: &str) -> Vec<String> {
         .iter()
         .filter(|l| {
             l.target.eq_ignore_ascii_case(owner)
-                && crate::automation::canonical(&l.param).unwrap_or_else(|| l.param.clone()).eq_ignore_ascii_case(&canon)
+                && crate::automation::canonical(&l.param)
+                    .unwrap_or_else(|| l.param.clone())
+                    .eq_ignore_ascii_case(&canon)
         })
         .map(|l| l.id.clone())
         .collect()
 }
 
-fn number_param(strip: &str, owner: &str, path: &str, value: f32, range: (f32, f32), default: f32, unit: &str, p: &Project) -> Param {
+fn number_param(
+    strip: &str,
+    owner: &str,
+    path: &str,
+    value: f32,
+    range: (f32, f32),
+    default: f32,
+    unit: &str,
+    p: &Project,
+) -> Param {
     Param {
         id: format!("{strip}:{path}"),
         path: path.to_string(),
@@ -370,7 +442,13 @@ fn number_param(strip: &str, owner: &str, path: &str, value: f32, range: (f32, f
     }
 }
 
-fn devices_of(p: &Project, strip: &str, owner: &str, instrument: Option<&crate::instruments::Instrument>, chain: &[crate::fx::Effect]) -> Vec<Device> {
+fn devices_of(
+    p: &Project,
+    strip: &str,
+    owner: &str,
+    instrument: Option<&crate::instruments::Instrument>,
+    chain: &[crate::fx::Effect],
+) -> Vec<Device> {
     let mut out = Vec::new();
     if let Some(inst) = instrument {
         let kind = inst.kind_name();
@@ -379,7 +457,9 @@ fn devices_of(p: &Project, strip: &str, owner: &str, instrument: Option<&crate::
             crate::tools_sound::describe_value(kind, "", &v, &mut desc);
         }
         let mut defaults = Vec::new();
-        if let Ok(fresh) = serde_json::from_value::<crate::instruments::Instrument>(serde_json::json!({"type": kind})) {
+        if let Ok(fresh) = serde_json::from_value::<crate::instruments::Instrument>(
+            serde_json::json!({"type": kind}),
+        ) {
             if let Ok(v) = serde_json::to_value(&fresh) {
                 crate::tools_sound::describe_value(kind, "", &v, &mut defaults);
             }
@@ -390,7 +470,10 @@ fn devices_of(p: &Project, strip: &str, owner: &str, instrument: Option<&crate::
             type_name: kind.to_string(),
             slot: None,
             bypassed: false,
-            params: desc.iter().filter_map(|d| param_from_desc(strip, owner, "instrument", d, &defaults, p)).collect(),
+            params: desc
+                .iter()
+                .filter_map(|d| param_from_desc(strip, owner, "instrument", d, &defaults, p))
+                .collect(),
         });
     }
     for (i, fx) in chain.iter().enumerate() {
@@ -405,14 +488,21 @@ fn devices_of(p: &Project, strip: &str, owner: &str, instrument: Option<&crate::
                 crate::tools_sound::describe_value(&kind, "", &v, &mut defaults);
             }
         }
-        let fid = if fx.id().is_empty() { format!("{kind}@{i}") } else { fx.id().to_string() };
+        let fid = if fx.id().is_empty() {
+            format!("{kind}@{i}")
+        } else {
+            fx.id().to_string()
+        };
         out.push(Device {
             id: format!("{strip}/{fid}"),
             kind: DeviceKind::Effect,
             type_name: kind,
             slot: Some(i),
             bypassed: fx.bypassed(),
-            params: desc.iter().filter_map(|d| param_from_desc(strip, owner, &format!("fx.{i}"), d, &defaults, p)).collect(),
+            params: desc
+                .iter()
+                .filter_map(|d| param_from_desc(strip, owner, &format!("fx.{i}"), d, &defaults, p))
+                .collect(),
         });
     }
     out
@@ -433,7 +523,9 @@ impl RackState {
             ];
             for s in &t.sends {
                 let path = format!("send.{}", s.bus.to_lowercase());
-                mixer.push(number_param(&sid, &t.name, &path, s.db, vol, -12.0, "dB", p));
+                mixer.push(number_param(
+                    &sid, &t.name, &path, s.db, vol, -12.0, "dB", p,
+                ));
                 routes.push(Route::Send {
                     id: s.id.clone(),
                     from: sid.clone(),
@@ -443,7 +535,10 @@ impl RackState {
                 });
             }
             let output = resolve_strip(p, t.output.as_deref());
-            routes.push(Route::Output { from: sid.clone(), to: output.clone() });
+            routes.push(Route::Output {
+                from: sid.clone(),
+                to: output.clone(),
+            });
             strips.push(Strip {
                 devices: devices_of(p, &sid, &t.name, Some(&t.instrument), &t.effects),
                 id: sid,
@@ -458,7 +553,10 @@ impl RackState {
         for b in &p.buses {
             let sid = strip_id(&b.id, "bus", &b.name);
             let output = resolve_strip(p, b.output.as_deref());
-            routes.push(Route::Output { from: sid.clone(), to: output.clone() });
+            routes.push(Route::Output {
+                from: sid.clone(),
+                to: output.clone(),
+            });
             strips.push(Strip {
                 devices: devices_of(p, &sid, &b.name, None, &b.effects),
                 mixer: vec![
@@ -478,7 +576,16 @@ impl RackState {
             kind: StripKind::Master,
             name: "master".into(),
             devices: devices_of(p, "master", "master", None, &p.master_effects),
-            mixer: vec![number_param("master", "master", "volume", p.master_volume_db, vol, 0.0, "dB", p)],
+            mixer: vec![number_param(
+                "master",
+                "master",
+                "volume",
+                p.master_volume_db,
+                vol,
+                0.0,
+                "dB",
+                p,
+            )],
             mute: false,
             solo: false,
             output: None,
@@ -493,7 +600,9 @@ impl RackState {
                 StripKind::Bus => &p.buses[si - nt].effects,
             };
             for d in &s.devices {
-                let Some(fx) = d.slot.and_then(|i| chain.get(i)) else { continue };
+                let Some(fx) = d.slot.and_then(|i| chain.get(i)) else {
+                    continue;
+                };
                 let mut src = Vec::new();
                 if let Ok(v) = serde_json::to_value(fx) {
                     sources(&v, &mut src);
@@ -510,20 +619,31 @@ impl RackState {
             }
         }
         routes.extend(keyed);
-        RackState { schema: RACK_SCHEMA, strips, routes }
+        RackState {
+            schema: RACK_SCHEMA,
+            strips,
+            routes,
+        }
     }
 
     pub fn strip(&self, key: &str) -> Option<&Strip> {
         self.strips
             .iter()
             .find(|s| s.id.eq_ignore_ascii_case(key))
-            .or_else(|| self.strips.iter().find(|s| s.name.eq_ignore_ascii_case(key)))
+            .or_else(|| {
+                self.strips
+                    .iter()
+                    .find(|s| s.name.eq_ignore_ascii_case(key))
+            })
     }
 
     pub fn device(&self, id: &str) -> Option<(&Strip, &Device)> {
-        self.strips
-            .iter()
-            .find_map(|s| s.devices.iter().find(|d| d.id.eq_ignore_ascii_case(id)).map(|d| (s, d)))
+        self.strips.iter().find_map(|s| {
+            s.devices
+                .iter()
+                .find(|d| d.id.eq_ignore_ascii_case(id))
+                .map(|d| (s, d))
+        })
     }
 
     /// A parameter by its rack id ("trk3:fx.1.mix").
@@ -541,7 +661,11 @@ impl RackState {
     pub fn param_ids(&self) -> Vec<&str> {
         self.strips
             .iter()
-            .flat_map(|s| s.mixer.iter().chain(s.devices.iter().flat_map(|d| d.params.iter())))
+            .flat_map(|s| {
+                s.mixer
+                    .iter()
+                    .chain(s.devices.iter().flat_map(|d| d.params.iter()))
+            })
             .map(|x| x.id.as_str())
             .collect()
     }

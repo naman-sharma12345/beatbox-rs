@@ -31,25 +31,54 @@ pub enum RackErrorKind {
     /// No parameter by that id (or device + name) on the strip.
     ParamNotFound { node_id: String, param_id: String },
     /// A number outside the parameter's range.
-    ParamOutOfRange { param_id: String, val: f64, min: f64, max: f64 },
+    ParamOutOfRange {
+        param_id: String,
+        val: f64,
+        min: f64,
+        max: f64,
+    },
     /// A value of the wrong JSON type: `expected` and `received` are type
     /// names ("number", "string", "bool", "array", "object", "null").
-    ParamWrongType { param_id: String, expected: String, received: String },
+    ParamWrongType {
+        param_id: String,
+        expected: String,
+        received: String,
+    },
     /// A string that is not one of an enum parameter's options.
-    ParamNotAnOption { param_id: String, received: String, options: Vec<String> },
+    ParamNotAnOption {
+        param_id: String,
+        received: String,
+        options: Vec<String>,
+    },
     /// No effect type by that name.
-    DeviceTypeNotFound { type_name: String, options: Vec<String> },
+    DeviceTypeNotFound {
+        type_name: String,
+        options: Vec<String>,
+    },
     /// The device is an instrument; only inserts move, go or bypass.
     NotAnInsert { node_id: String, device_id: String },
     /// A route the graph does not allow (into a track, out of the master).
-    InvalidRouting { source: String, target: String, reason: String },
+    InvalidRouting {
+        source: String,
+        target: String,
+        reason: String,
+    },
     /// A route that would feed a bus back into itself: the strip ids
     /// around the loop, starting and ending at the strip being routed.
     RoutingCycle { cycle_path: Vec<String> },
     /// A send that does not go from a track to a bus.
-    InvalidSend { source: String, target: String, reason: String },
+    InvalidSend {
+        source: String,
+        target: String,
+        reason: String,
+    },
     /// A chain position past its end (`min..=max` are the valid ones).
-    PositionOutOfRange { node_id: String, position: usize, min: usize, max: usize },
+    PositionOutOfRange {
+        node_id: String,
+        position: usize,
+        min: usize,
+        max: usize,
+    },
     /// The project changed since the revision the caller read.
     StaleRevision { expected: u64, actual: u64 },
     /// A command that does not parse, or asks for something the strip
@@ -134,14 +163,25 @@ impl RackError {
 
 impl std::fmt::Display for RackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", serde_json::to_string(&json!({"rack_error": self})).unwrap_or_else(|_| self.message.clone()))
+        write!(
+            f,
+            "{}",
+            serde_json::to_string(&json!({"rack_error": self}))
+                .unwrap_or_else(|_| self.message.clone())
+        )
     }
 }
 
 impl std::error::Error for RackError {}
 
 fn err(kind: RackErrorKind, field: &str, message: String) -> RackError {
-    RackError { kind, path: field.into(), message, index: None, accepts: Value::Null }
+    RackError {
+        kind,
+        path: field.into(),
+        message,
+        index: None,
+        accepts: Value::Null,
+    }
 }
 
 fn fail<T>(e: RackError) -> Result<T> {
@@ -175,7 +215,11 @@ fn mismatch(p: &Param, m: ParamMismatch, v: &Value, field: &str) -> RackError {
             received: v.as_str().unwrap_or_default().to_string(),
             options: p.options.clone().unwrap_or_default(),
         },
-        _ => RackErrorKind::ParamWrongType { param_id: p.id.clone(), expected: p.kind.clone(), received: json_type(v) },
+        _ => RackErrorKind::ParamWrongType {
+            param_id: p.id.clone(),
+            expected: p.kind.clone(),
+            received: json_type(v),
+        },
     };
     let accepts = match m.code {
         RackErrorCode::ParamOutOfRange => json!({"unit": p.unit, "scale": p.scale}),
@@ -199,7 +243,10 @@ fn node_of_param(id: &str) -> String {
 pub fn parse_error(text: &str) -> Option<RackError> {
     let start = text.find("{\"rack_error\"")?;
     // the object may be followed by more text (an error chain)
-    let v: Value = serde_json::Deserializer::from_str(&text[start..]).into_iter::<Value>().next()?.ok()?;
+    let v: Value = serde_json::Deserializer::from_str(&text[start..])
+        .into_iter::<Value>()
+        .next()?
+        .ok()?;
     serde_json::from_value(v["rack_error"].clone()).ok()
 }
 
@@ -218,9 +265,14 @@ pub enum RackCommand {
         position: Option<usize>,
     },
     /// Remove an insert ("trk3/reverb1").
-    RemoveDevice { device: String },
+    RemoveDevice {
+        device: String,
+    },
     /// Move an insert to `position` in its chain.
-    MoveDevice { device: String, position: usize },
+    MoveDevice {
+        device: String,
+        position: usize,
+    },
     /// Bypass (true), enable (false) or toggle (omitted) an insert.
     Bypass {
         device: String,
@@ -247,7 +299,10 @@ pub enum RackCommand {
         solo: Option<bool>,
     },
     /// Send a track's or bus's output to a bus or "master".
-    Route { strip: String, to: String },
+    Route {
+        strip: String,
+        to: String,
+    },
     /// Create, change or (remove: true) delete an aux send.
     Send {
         strip: String,
@@ -265,7 +320,9 @@ pub enum RackCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preset: Option<String>,
     },
-    RemoveBus { strip: String },
+    RemoveBus {
+        strip: String,
+    },
 }
 
 impl RackCommand {
@@ -296,7 +353,9 @@ fn strip_name(r: &RackState, key: &str, field: &str) -> Result<(String, StripKin
 
 /// The rack id of a strip key (the key itself when nothing matches).
 fn sid_of(r: &RackState, key: &str) -> String {
-    r.strip(key).map(|s| s.id.clone()).unwrap_or_else(|| key.to_string())
+    r.strip(key)
+        .map(|s| s.id.clone())
+        .unwrap_or_else(|| key.to_string())
 }
 
 fn device_ids(r: &RackState) -> Value {
@@ -304,14 +363,36 @@ fn device_ids(r: &RackState) -> Value {
 }
 
 fn device_not_found(r: &RackState, device: &str, field: &str) -> RackError {
-    err(RackErrorKind::DeviceNotFound { node_id: node_of_device(device), device_id: device.to_string() }, field, format!("no device '{device}'")).accepts(device_ids(r))
+    err(
+        RackErrorKind::DeviceNotFound {
+            node_id: node_of_device(device),
+            device_id: device.to_string(),
+        },
+        field,
+        format!("no device '{device}'"),
+    )
+    .accepts(device_ids(r))
 }
 
 /// An insert by device id -> (strip name, effect id, slot).
 fn insert(r: &RackState, device: &str) -> Result<(String, String, usize)> {
-    let (s, d) = r.device(device).ok_or_else(|| device_not_found(r, device, "device"))?;
+    let (s, d) = r
+        .device(device)
+        .ok_or_else(|| device_not_found(r, device, "device"))?;
     if d.kind != DeviceKind::Effect {
-        return fail(err(RackErrorKind::NotAnInsert { node_id: s.id.clone(), device_id: device.to_string() }, "device", format!("'{device}' is an instrument; only inserts can be moved, removed or bypassed")).accepts(json!({"kind": "effect"})));
+        return fail(
+            err(
+                RackErrorKind::NotAnInsert {
+                    node_id: s.id.clone(),
+                    device_id: device.to_string(),
+                },
+                "device",
+                format!(
+                    "'{device}' is an instrument; only inserts can be moved, removed or bypassed"
+                ),
+            )
+            .accepts(json!({"kind": "effect"})),
+        );
     }
     let slot = d.slot.unwrap_or(0);
     let fx = d.id.rsplit('/').next().unwrap_or_default().to_string();
@@ -319,7 +400,10 @@ fn insert(r: &RackState, device: &str) -> Result<(String, String, usize)> {
 }
 
 fn chain_ids(e: &Engine, owner: &str) -> Vec<String> {
-    crate::tools_studio::chain_of(&e.project, owner).iter().map(|f| f.id().to_string()).collect()
+    crate::tools_studio::chain_of(&e.project, owner)
+        .iter()
+        .map(|f| f.id().to_string())
+        .collect()
 }
 
 /// Apply one command. Returns what it did (with the new device id for
@@ -328,12 +412,23 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
     let r = RackState::from_project(&e.project);
     let call = |e: &mut Engine, t: &str, a: Value| e.call_nested(t, &a, source);
     match c {
-        RackCommand::AddDevice { strip, type_name, params, position } => {
+        RackCommand::AddDevice {
+            strip,
+            type_name,
+            params,
+            position,
+        } => {
             let (owner, _) = strip_name(&r, strip, "strip")?;
             let sid = r.strip(strip).map(|x| x.id.clone()).unwrap_or_default();
             let Some(fresh) = crate::fx::Effect::from_type(type_name) else {
                 return fail(err(
-                    RackErrorKind::DeviceTypeNotFound { type_name: type_name.clone(), options: crate::fx::EFFECT_TYPES.iter().map(|t| t.0.to_string()).collect() },
+                    RackErrorKind::DeviceTypeNotFound {
+                        type_name: type_name.clone(),
+                        options: crate::fx::EFFECT_TYPES
+                            .iter()
+                            .map(|t| t.0.to_string())
+                            .collect(),
+                    },
                     "type",
                     format!("no effect type '{type_name}'"),
                 ));
@@ -341,7 +436,19 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
             let before = chain_ids(e, &owner);
             if let Some(pos) = position {
                 if *pos > before.len() {
-                    return fail(err(RackErrorKind::PositionOutOfRange { node_id: sid.clone(), position: *pos, min: 0, max: before.len() }, "position", format!("position {pos} is past the end of '{owner}' ({} inserts)", before.len())));
+                    return fail(err(
+                        RackErrorKind::PositionOutOfRange {
+                            node_id: sid.clone(),
+                            position: *pos,
+                            min: 0,
+                            max: before.len(),
+                        },
+                        "position",
+                        format!(
+                            "position {pos} is past the end of '{owner}' ({} inserts)",
+                            before.len()
+                        ),
+                    ));
                 }
             }
             if let Some(Value::Object(pm)) = params {
@@ -349,15 +456,27 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
                 let mut probe = crate::project::Project::new("probe", 120.0);
                 probe.master_effects = vec![fresh];
                 let spec = RackState::from_project(&probe);
-                let dev = &spec.strips.last().map(|s| s.devices.clone()).unwrap_or_default();
+                let dev = &spec
+                    .strips
+                    .last()
+                    .map(|s| s.devices.clone())
+                    .unwrap_or_default();
                 for (k, v) in pm {
-                    if let Some(p) = dev.first().and_then(|d| d.params.iter().find(|p| p.path == format!("fx.0.{k}"))) {
+                    if let Some(p) = dev
+                        .first()
+                        .and_then(|d| d.params.iter().find(|p| p.path == format!("fx.0.{k}")))
+                    {
                         p.check(v).map_err(|m| {
                             let mut x = mismatch(p, m, v, &format!("params.{k}"));
                             x.message = x.message.replace("master:fx.0.", "");
                             // the spec came from a probe on the master: name the new device's param by its strip
                             match &mut x.kind {
-                                RackErrorKind::ParamOutOfRange { param_id, .. } | RackErrorKind::ParamWrongType { param_id, .. } | RackErrorKind::ParamNotAnOption { param_id, .. } => *param_id = format!("{sid}:fx.{}.{k}", position.unwrap_or(before.len())),
+                                RackErrorKind::ParamOutOfRange { param_id, .. }
+                                | RackErrorKind::ParamWrongType { param_id, .. }
+                                | RackErrorKind::ParamNotAnOption { param_id, .. } => {
+                                    *param_id =
+                                        format!("{sid}:fx.{}.{k}", position.unwrap_or(before.len()))
+                                }
                                 _ => {}
                             }
                             x
@@ -365,8 +484,22 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
                     }
                 }
             } else if params.as_ref().is_some_and(|p| !p.is_null()) {
-                let reason = format!("params must be an object {{name: value}}, got {}", json_type(params.as_ref().unwrap_or(&Value::Null)));
-                return fail(err(RackErrorKind::InvalidCommand { node_id: Some(sid.clone()), field: Some("params".into()), reason: reason.clone() }, "params", reason).accepts(json!({"type": "object"})));
+                let reason = format!(
+                    "params must be an object {{name: value}}, got {}",
+                    json_type(params.as_ref().unwrap_or(&Value::Null))
+                );
+                return fail(
+                    err(
+                        RackErrorKind::InvalidCommand {
+                            node_id: Some(sid.clone()),
+                            field: Some("params".into()),
+                            reason: reason.clone(),
+                        },
+                        "params",
+                        reason,
+                    )
+                    .accepts(json!({"type": "object"})),
+                );
             }
             let mut a = json!({"track": owner, "type": type_name});
             if let Some(p) = params {
@@ -374,14 +507,25 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
             }
             call(e, "add_effect", a)?;
             let after = chain_ids(e, &owner);
-            let new = after.iter().find(|i| !before.contains(i)).cloned().ok_or_else(|| anyhow!("add_effect added nothing"))?;
+            let new = after
+                .iter()
+                .find(|i| !before.contains(i))
+                .cloned()
+                .ok_or_else(|| anyhow!("add_effect added nothing"))?;
             if let Some(pos) = position {
                 if *pos + 1 < after.len() {
                     // reorder_effects keeps automation lanes on their effects
-                    call(e, "reorder_effects", json!({"track": owner, "from": after.len() - 1, "to": *pos}))?;
+                    call(
+                        e,
+                        "reorder_effects",
+                        json!({"track": owner, "from": after.len() - 1, "to": *pos}),
+                    )?;
                 }
             }
-            let sid = RackState::from_project(&e.project).strip(&owner).map(|s| s.id.clone()).unwrap_or_default();
+            let sid = RackState::from_project(&e.project)
+                .strip(&owner)
+                .map(|s| s.id.clone())
+                .unwrap_or_default();
             Ok(json!({"op": c.op(), "device": format!("{sid}/{new}")}))
         }
         RackCommand::RemoveDevice { device } => {
@@ -393,11 +537,27 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
             let (owner, _, slot) = insert(&r, device)?;
             let n = chain_ids(e, &owner).len();
             if *position >= n {
-                return fail(err(RackErrorKind::PositionOutOfRange { node_id: node_of_device(device), position: *position, min: 0, max: n.saturating_sub(1) }, "position", format!("position {position} is past the end of '{owner}' ({n} inserts)")).accepts(json!({"device": device})));
+                return fail(
+                    err(
+                        RackErrorKind::PositionOutOfRange {
+                            node_id: node_of_device(device),
+                            position: *position,
+                            min: 0,
+                            max: n.saturating_sub(1),
+                        },
+                        "position",
+                        format!("position {position} is past the end of '{owner}' ({n} inserts)"),
+                    )
+                    .accepts(json!({"device": device})),
+                );
             }
             if slot != *position {
                 // reorder_effects keeps automation lanes on their effects
-                call(e, "reorder_effects", json!({"track": owner, "from": slot, "to": *position}))?;
+                call(
+                    e,
+                    "reorder_effects",
+                    json!({"track": owner, "from": slot, "to": *position}),
+                )?;
             }
             Ok(json!({"op": c.op(), "device": device, "position": position}))
         }
@@ -410,7 +570,12 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
             call(e, "bypass_effect", a)?;
             Ok(json!({"op": c.op(), "device": device}))
         }
-        RackCommand::SetParam { param, device, name, value } => {
+        RackCommand::SetParam {
+            param,
+            device,
+            name,
+            value,
+        } => {
             let (field, spec) = match (param, device, name) {
                 (Some(pid), _, _) => {
                     let found = r.param(pid).ok_or_else(|| {
@@ -420,7 +585,9 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
                     ("param", found)
                 }
                 (None, Some(dev), Some(n)) => {
-                    let (s, d) = r.device(dev).ok_or_else(|| device_not_found(&r, dev, "device"))?;
+                    let (s, d) = r
+                        .device(dev)
+                        .ok_or_else(|| device_not_found(&r, dev, "device"))?;
                     let prefix = match d.slot {
                         Some(i) => format!("fx.{i}."),
                         None => "instrument.".into(),
@@ -432,17 +599,34 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
                     })?;
                     ("name", (s, p))
                 }
-                _ => return fail(err(RackErrorKind::InvalidCommand { node_id: None, field: Some("param".into()), reason: "set_param needs `param` (a rack parameter id) or `device` + `name`".into() }, "param", "set_param needs `param` (a rack parameter id) or `device` + `name`".into()).accepts(json!({"one_of": ["param", "device+name"]}))),
+                _ => return fail(
+                    err(
+                        RackErrorKind::InvalidCommand {
+                            node_id: None,
+                            field: Some("param".into()),
+                            reason:
+                                "set_param needs `param` (a rack parameter id) or `device` + `name`"
+                                    .into(),
+                        },
+                        "param",
+                        "set_param needs `param` (a rack parameter id) or `device` + `name`".into(),
+                    )
+                    .accepts(json!({"one_of": ["param", "device+name"]})),
+                ),
             };
             let (s, p) = spec;
             let _ = field;
             p.check(value).map_err(|m| mismatch(p, m, value, "value"))?;
             let (owner, path) = (s.name.clone(), p.path.clone());
             if let Some(bus) = path.strip_prefix("send.") {
-                let db = value.as_f64().ok_or_else(|| anyhow!("a send level is a number in dB"))?;
+                let db = value
+                    .as_f64()
+                    .ok_or_else(|| anyhow!("a send level is a number in dB"))?;
                 call(e, "set_send", json!({"track": owner, "bus": bus, "db": db}))?;
             } else if owner.eq_ignore_ascii_case("master") && path == "volume" {
-                let db = value.as_f64().ok_or_else(|| anyhow!("volume is a number in dB"))?;
+                let db = value
+                    .as_f64()
+                    .ok_or_else(|| anyhow!("volume is a number in dB"))?;
                 call(e, "set_mixer", json!({"track": "master", "volume_db": db}))?;
             } else {
                 let mut ch = Map::new();
@@ -454,10 +638,32 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
         RackCommand::SetStrip { strip, mute, solo } => {
             let (owner, kind) = strip_name(&r, strip, "strip")?;
             if kind == StripKind::Master {
-                return fail(err(RackErrorKind::InvalidCommand { node_id: Some("master".into()), field: Some("strip".into()), reason: "the master has no mute or solo".into() }, "strip", "the master has no mute or solo".into()).accepts(json!({"kind": ["track", "bus"]})));
+                return fail(
+                    err(
+                        RackErrorKind::InvalidCommand {
+                            node_id: Some("master".into()),
+                            field: Some("strip".into()),
+                            reason: "the master has no mute or solo".into(),
+                        },
+                        "strip",
+                        "the master has no mute or solo".into(),
+                    )
+                    .accepts(json!({"kind": ["track", "bus"]})),
+                );
             }
             if solo.is_some() && kind == StripKind::Bus {
-                return fail(err(RackErrorKind::InvalidCommand { node_id: Some(sid_of(&r, &owner)), field: Some("solo".into()), reason: "buses have no solo; solo a track".into() }, "solo", "buses have no solo; solo a track".into()).accepts(json!({"kind": "track"})));
+                return fail(
+                    err(
+                        RackErrorKind::InvalidCommand {
+                            node_id: Some(sid_of(&r, &owner)),
+                            field: Some("solo".into()),
+                            reason: "buses have no solo; solo a track".into(),
+                        },
+                        "solo",
+                        "buses have no solo; solo a track".into(),
+                    )
+                    .accepts(json!({"kind": "track"})),
+                );
             }
             let mut a = json!({"track": owner});
             if let Some(m) = mute {
@@ -475,7 +681,18 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
             let buses = || json!({"one_of": r.strips.iter().filter(|s| s.kind != StripKind::Track).map(|s| s.id.clone()).collect::<Vec<_>>()});
             if dkind == StripKind::Track {
                 let reason = format!("'{dest}' is a track; route to a bus or the master");
-                return fail(err(RackErrorKind::InvalidRouting { source: sid_of(&r, &owner), target: sid_of(&r, &dest), reason: reason.clone() }, "to", reason).accepts(buses()));
+                return fail(
+                    err(
+                        RackErrorKind::InvalidRouting {
+                            source: sid_of(&r, &owner),
+                            target: sid_of(&r, &dest),
+                            reason: reason.clone(),
+                        },
+                        "to",
+                        reason,
+                    )
+                    .accepts(buses()),
+                );
             }
             match kind {
                 StripKind::Track => call(e, "route_track", json!({"track": owner, "bus": dest}))?,
@@ -492,31 +709,93 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
                                 return fail(err(RackErrorKind::RoutingCycle { cycle_path: cycle }, "to", format!("routing '{owner}' into '{dest}' makes a loop ('{dest}' already reaches '{owner}')")).accepts(json!({"not": [sid_of(&r, &dest)]})));
                             }
                             hops += 1;
-                            cur = if hops > r.strips.len() { None } else { e.project.bus_index(&c).ok().and_then(|i| e.project.buses[i].output.clone()) };
+                            cur = if hops > r.strips.len() {
+                                None
+                            } else {
+                                e.project
+                                    .bus_index(&c)
+                                    .ok()
+                                    .and_then(|i| e.project.buses[i].output.clone())
+                            };
                         }
                     }
                     call(e, "route_bus", json!({"bus": owner, "destination": dest}))?
                 }
                 StripKind::Master => {
-                    return fail(err(RackErrorKind::InvalidRouting { source: "master".into(), target: sid_of(&r, &dest), reason: "the master is the end of the graph".into() }, "strip", "the master is the end of the graph".into()).accepts(json!({"kind": ["track", "bus"]})))
+                    return fail(
+                        err(
+                            RackErrorKind::InvalidRouting {
+                                source: "master".into(),
+                                target: sid_of(&r, &dest),
+                                reason: "the master is the end of the graph".into(),
+                            },
+                            "strip",
+                            "the master is the end of the graph".into(),
+                        )
+                        .accepts(json!({"kind": ["track", "bus"]})),
+                    )
                 }
             };
             Ok(json!({"op": c.op(), "strip": owner, "to": dest}))
         }
-        RackCommand::Send { strip, to, db, pre_fader, remove } => {
+        RackCommand::Send {
+            strip,
+            to,
+            db,
+            pre_fader,
+            remove,
+        } => {
             let (owner, kind) = strip_name(&r, strip, "strip")?;
             if kind != StripKind::Track {
                 let reason = format!("sends start on a track ('{owner}' is not one)");
-                return fail(err(RackErrorKind::InvalidSend { source: sid_of(&r, &owner), target: sid_of(&r, to), reason: reason.clone() }, "strip", reason).accepts(json!({"kind": "track"})));
+                return fail(
+                    err(
+                        RackErrorKind::InvalidSend {
+                            source: sid_of(&r, &owner),
+                            target: sid_of(&r, to),
+                            reason: reason.clone(),
+                        },
+                        "strip",
+                        reason,
+                    )
+                    .accepts(json!({"kind": "track"})),
+                );
             }
             let (bus, bkind) = strip_name(&r, to, "to")?;
             if bkind != StripKind::Bus {
                 let reason = format!("a send goes to a bus ('{bus}' is not one)");
-                return fail(err(RackErrorKind::InvalidSend { source: sid_of(&r, &owner), target: sid_of(&r, &bus), reason: reason.clone() }, "to", reason).accepts(json!({"kind": "bus"})));
+                return fail(
+                    err(
+                        RackErrorKind::InvalidSend {
+                            source: sid_of(&r, &owner),
+                            target: sid_of(&r, &bus),
+                            reason: reason.clone(),
+                        },
+                        "to",
+                        reason,
+                    )
+                    .accepts(json!({"kind": "bus"})),
+                );
             }
             if let Some(d) = db {
                 if !(-60.0..=12.0).contains(d) {
-                    return fail(err(RackErrorKind::ParamOutOfRange { param_id: format!("{}:send.{}", sid_of(&r, &owner), bus.to_lowercase()), val: *d as f64, min: -60.0, max: 12.0 }, "db", format!("send level {d} dB is outside -60..12 dB")).accepts(json!({"unit": "dB"})));
+                    return fail(
+                        err(
+                            RackErrorKind::ParamOutOfRange {
+                                param_id: format!(
+                                    "{}:send.{}",
+                                    sid_of(&r, &owner),
+                                    bus.to_lowercase()
+                                ),
+                                val: *d as f64,
+                                min: -60.0,
+                                max: 12.0,
+                            },
+                            "db",
+                            format!("send level {d} dB is outside -60..12 dB"),
+                        )
+                        .accepts(json!({"unit": "dB"})),
+                    );
                 }
             }
             let mut a = json!({"track": owner, "bus": bus});
@@ -533,15 +812,33 @@ pub fn apply_one(e: &mut Engine, c: &RackCommand, source: &str) -> Result<Value>
             Ok(json!({"op": c.op(), "strip": owner, "to": bus}))
         }
         RackCommand::AddBus { name, preset } => {
-            call(e, "add_bus", json!({"name": name, "preset": preset.clone().unwrap_or_else(|| "none".into())}))?;
-            let sid = RackState::from_project(&e.project).strip(name).map(|s| s.id.clone()).unwrap_or_default();
+            call(
+                e,
+                "add_bus",
+                json!({"name": name, "preset": preset.clone().unwrap_or_else(|| "none".into())}),
+            )?;
+            let sid = RackState::from_project(&e.project)
+                .strip(name)
+                .map(|s| s.id.clone())
+                .unwrap_or_default();
             Ok(json!({"op": c.op(), "strip": sid}))
         }
         RackCommand::RemoveBus { strip } => {
             let (name, kind) = strip_name(&r, strip, "strip")?;
             if kind != StripKind::Bus {
                 let reason = format!("'{name}' is not a bus");
-                return fail(err(RackErrorKind::InvalidCommand { node_id: Some(sid_of(&r, &name)), field: Some("strip".into()), reason: reason.clone() }, "strip", reason).accepts(json!({"kind": "bus"})));
+                return fail(
+                    err(
+                        RackErrorKind::InvalidCommand {
+                            node_id: Some(sid_of(&r, &name)),
+                            field: Some("strip".into()),
+                            reason: reason.clone(),
+                        },
+                        "strip",
+                        reason,
+                    )
+                    .accepts(json!({"kind": "bus"})),
+                );
             }
             call(e, "remove_bus", json!({"name": name}))?;
             Ok(json!({"op": c.op(), "strip": strip}))
@@ -565,26 +862,50 @@ fn run_batch(e: &mut Engine, parsed: &[RackCommand], source: &str) -> Result<Vec
                         let r = RackState::from_project(&e.project);
                         let (mut node_id, mut device_id, mut param_id) = (None, None, None);
                         match c {
-                            RackCommand::RemoveDevice { device } | RackCommand::MoveDevice { device, .. } | RackCommand::Bypass { device, .. } => {
+                            RackCommand::RemoveDevice { device }
+                            | RackCommand::MoveDevice { device, .. }
+                            | RackCommand::Bypass { device, .. } => {
                                 node_id = Some(node_of_device(device));
                                 device_id = Some(device.clone());
                             }
                             RackCommand::SetParam { param, device, .. } => {
-                                node_id = param.as_deref().map(node_of_param).or_else(|| device.as_deref().map(node_of_device));
+                                node_id = param
+                                    .as_deref()
+                                    .map(node_of_param)
+                                    .or_else(|| device.as_deref().map(node_of_device));
                                 param_id = param.clone();
                                 device_id = device.clone();
                             }
-                            RackCommand::AddDevice { strip, .. } | RackCommand::SetStrip { strip, .. } | RackCommand::Route { strip, .. } | RackCommand::Send { strip, .. } | RackCommand::RemoveBus { strip } => {
-                                node_id = Some(sid_of(&r, strip))
-                            }
+                            RackCommand::AddDevice { strip, .. }
+                            | RackCommand::SetStrip { strip, .. }
+                            | RackCommand::Route { strip, .. }
+                            | RackCommand::Send { strip, .. }
+                            | RackCommand::RemoveBus { strip } => node_id = Some(sid_of(&r, strip)),
                             RackCommand::AddBus { .. } => {}
                         }
-                        err(RackErrorKind::EngineRejected { node_id, device_id, param_id, reason: format!("{x:#}") }, "", format!("{x:#}"))
+                        err(
+                            RackErrorKind::EngineRejected {
+                                node_id,
+                                device_id,
+                                param_id,
+                                reason: format!("{x:#}"),
+                            },
+                            "",
+                            format!("{x:#}"),
+                        )
                     }
                 };
-                re.path = if re.path.is_empty() { format!("commands[{i}]") } else { format!("commands[{i}].{}", re.path) };
+                re.path = if re.path.is_empty() {
+                    format!("commands[{i}]")
+                } else {
+                    format!("commands[{i}].{}", re.path)
+                };
                 re.index = Some(i);
-                re.message = format!("command {i} ({}): {}. Nothing was changed.", c.op(), re.message);
+                re.message = format!(
+                    "command {i} ({}): {}. Nothing was changed.",
+                    c.op(),
+                    re.message
+                );
                 return fail(re);
             }
         }
@@ -604,8 +925,27 @@ fn run_batch(e: &mut Engine, parsed: &[RackCommand], source: &str) -> Result<Vec
 /// were; pass 2 runs the same commands on the same state, and if the
 /// engine still refused one the project is restored as well.
 pub fn apply(e: &mut Engine, commands: &Value, source: &str) -> Result<Vec<Value>> {
-    let invalid = |field: &str, reason: String| err(RackErrorKind::InvalidCommand { node_id: None, field: Some(field.into()), reason: reason.clone() }, field, reason);
-    let list = commands.as_array().ok_or_else(|| invalid("commands", format!("commands must be an array of {{op, ...}}, got {}", json_type(commands))).accepts(json!({"type": "array"})))?;
+    let invalid = |field: &str, reason: String| {
+        err(
+            RackErrorKind::InvalidCommand {
+                node_id: None,
+                field: Some(field.into()),
+                reason: reason.clone(),
+            },
+            field,
+            reason,
+        )
+    };
+    let list = commands.as_array().ok_or_else(|| {
+        invalid(
+            "commands",
+            format!(
+                "commands must be an array of {{op, ...}}, got {}",
+                json_type(commands)
+            ),
+        )
+        .accepts(json!({"type": "array"}))
+    })?;
     if list.is_empty() {
         return fail(invalid("commands", "no commands".into()).accepts(json!({"min_items": 1})));
     }
@@ -613,7 +953,16 @@ pub fn apply(e: &mut Engine, commands: &Value, source: &str) -> Result<Vec<Value
     let mut parsed = Vec::with_capacity(list.len());
     for (i, raw) in list.iter().enumerate() {
         let c: RackCommand = serde_json::from_value(raw.clone()).map_err(|x| {
-            let mut re = err(RackErrorKind::InvalidCommand { node_id: None, field: None, reason: format!("{x}") }, "", format!("{x}")).accepts(json!({"op": OPS}));
+            let mut re = err(
+                RackErrorKind::InvalidCommand {
+                    node_id: None,
+                    field: None,
+                    reason: format!("{x}"),
+                },
+                "",
+                format!("{x}"),
+            )
+            .accepts(json!({"op": OPS}));
             re.path = format!("commands[{i}]");
             re.index = Some(i);
             re
@@ -633,7 +982,18 @@ pub fn apply(e: &mut Engine, commands: &Value, source: &str) -> Result<Vec<Value
     run_batch(e, &parsed, source).inspect_err(|_| e.project = before)
 }
 
-const OPS: [&str; 10] = ["add_device", "remove_device", "move_device", "bypass", "set_param", "set_strip", "route", "send", "add_bus", "remove_bus"];
+const OPS: [&str; 10] = [
+    "add_device",
+    "remove_device",
+    "move_device",
+    "bypass",
+    "set_param",
+    "set_strip",
+    "route",
+    "send",
+    "add_bus",
+    "remove_bus",
+];
 
 fn rack_json(e: &Engine, strip: Option<&str>, plan: bool) -> Result<Value> {
     let r = RackState::from_project(&e.project);
@@ -642,7 +1002,11 @@ fn rack_json(e: &Engine, strip: Option<&str>, plan: bool) -> Result<Value> {
         Some(k) => {
             let s = r.strip(k).ok_or_else(|| anyhow!("no strip '{k}'"))?;
             v["strips"] = json!([s]);
-            v["routes"] = json!(r.routes.iter().filter(|x| x.from() == s.id || x.to() == s.id).collect::<Vec<_>>());
+            v["routes"] = json!(r
+                .routes
+                .iter()
+                .filter(|x| x.from() == s.id || x.to() == s.id)
+                .collect::<Vec<_>>());
         }
         None => {
             v["strips"] = serde_json::to_value(&r.strips)?;
@@ -736,17 +1100,40 @@ mod tests {
         assert_eq!(e.revision, rev0 + 1, "one revision");
         let r = RackState::from_project(&e.project);
         let s = r.strip("bass").unwrap();
-        assert_eq!(s.devices.iter().map(|d| d.type_name.as_str()).collect::<Vec<_>>(), vec!["bass808", "compressor", "filter", "sidechain"]);
-        assert_eq!(r.param(&format!("{bass}:fx.0.ratio")).unwrap().1.value, json!(4.0));
-        assert_eq!(r.param(&format!("{bass}:fx.1.cutoff")).unwrap().1.value, json!(1200.0));
+        assert_eq!(
+            s.devices
+                .iter()
+                .map(|d| d.type_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["bass808", "compressor", "filter", "sidechain"]
+        );
+        assert_eq!(
+            r.param(&format!("{bass}:fx.0.ratio")).unwrap().1.value,
+            json!(4.0)
+        );
+        assert_eq!(
+            r.param(&format!("{bass}:fx.1.cutoff")).unwrap().1.value,
+            json!(1200.0)
+        );
         // the filter's sweep lane moved with it (fx.0 -> fx.1)
-        assert_eq!(r.param(&format!("{bass}:fx.1.cutoff")).unwrap().1.lanes.len(), 1);
+        assert_eq!(
+            r.param(&format!("{bass}:fx.1.cutoff"))
+                .unwrap()
+                .1
+                .lanes
+                .len(),
+            1
+        );
         assert_eq!(e.project.tracks[1].volume_db, -3.0);
         assert_eq!(e.project.tracks[1].sends[0].db, -18.0);
         assert!(s.devices[3].bypassed);
         assert!(r.strip("kick").unwrap().mute);
         e.call("undo", &json!({})).unwrap();
-        assert_eq!(RackState::from_project(&e.project), r0, "one undo restores the whole rack");
+        assert_eq!(
+            RackState::from_project(&e.project),
+            r0,
+            "one undo restores the whole rack"
+        );
     }
 
     #[test]
@@ -754,7 +1141,11 @@ mod tests {
         let mut e = studio("atomic");
         let before = e.project.clone();
         let rev = e.revision;
-        let bass = RackState::from_project(&e.project).strip("bass").unwrap().id.clone();
+        let bass = RackState::from_project(&e.project)
+            .strip("bass")
+            .unwrap()
+            .id
+            .clone();
         let x = rack_err(e.call(
             "rack_apply",
             &json!({"commands": [
@@ -762,9 +1153,26 @@ mod tests {
                 {"op": "remove_device", "device": "nope/reverb9"}
             ]}),
         ));
-        assert_eq!((x.code(), x.path.as_str(), x.index), (RackErrorCode::DeviceNotFound, "commands[1].device", Some(1)));
-        assert_eq!(x.kind, RackErrorKind::DeviceNotFound { node_id: "nope".into(), device_id: "nope/reverb9".into() });
-        assert!(x.accepts["one_of"].as_array().unwrap().iter().any(|d| d == &json!(format!("{bass}/filter1"))), "{:?}", x.accepts);
+        assert_eq!(
+            (x.code(), x.path.as_str(), x.index),
+            (RackErrorCode::DeviceNotFound, "commands[1].device", Some(1))
+        );
+        assert_eq!(
+            x.kind,
+            RackErrorKind::DeviceNotFound {
+                node_id: "nope".into(),
+                device_id: "nope/reverb9".into()
+            }
+        );
+        assert!(
+            x.accepts["one_of"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d == &json!(format!("{bass}/filter1"))),
+            "{:?}",
+            x.accepts
+        );
         assert_eq!(e.project, before, "the first command was rolled back too");
         assert_eq!(e.revision, rev);
     }
@@ -775,7 +1183,11 @@ mod tests {
         let before = e.project.clone();
         let rev = e.revision;
         let (undo0, _) = e.history();
-        let bass = RackState::from_project(&e.project).strip("bass").unwrap().id.clone();
+        let bass = RackState::from_project(&e.project)
+            .strip("bass")
+            .unwrap()
+            .id
+            .clone();
         // three good edits (params, a device, a bus), then a routing cycle
         let x = rack_err(e.call(
             "rack_apply",
@@ -786,9 +1198,23 @@ mod tests {
                 {"op": "route", "strip": "beat", "to": "drums"}
             ]}),
         ));
-        assert_eq!((x.code(), x.path.as_str(), x.index), (RackErrorCode::RoutingCycle, "commands[3].to", Some(3)));
-        let id = |n: &str| RackState::from_project(&e.project).strip(n).unwrap().id.clone();
-        assert_eq!(x.kind, RackErrorKind::RoutingCycle { cycle_path: vec![id("beat"), id("drums"), id("beat")] });
+        assert_eq!(
+            (x.code(), x.path.as_str(), x.index),
+            (RackErrorCode::RoutingCycle, "commands[3].to", Some(3))
+        );
+        let id = |n: &str| {
+            RackState::from_project(&e.project)
+                .strip(n)
+                .unwrap()
+                .id
+                .clone()
+        };
+        assert_eq!(
+            x.kind,
+            RackErrorKind::RoutingCycle {
+                cycle_path: vec![id("beat"), id("drums"), id("beat")]
+            }
+        );
         assert_eq!(e.project, before, "no partial mutation");
         assert_eq!(e.revision, rev, "no revision bump");
         assert_eq!(e.history().0, undo0, "no undo step");
@@ -801,29 +1227,58 @@ mod tests {
             ]}),
         ));
         assert_eq!(x.code(), RackErrorCode::ParamOutOfRange);
-        assert_eq!(x.kind, RackErrorKind::ParamOutOfRange { param_id: format!("{bass}:fx.0.resonance"), val: 7.5, min: 0.0, max: 1.0 });
+        assert_eq!(
+            x.kind,
+            RackErrorKind::ParamOutOfRange {
+                param_id: format!("{bass}:fx.0.resonance"),
+                val: 7.5,
+                min: 0.0,
+                max: 1.0
+            }
+        );
         assert_eq!(e.project, before);
         assert_eq!(e.revision, rev);
         // a command that does not parse stops the batch before anything runs
         let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "set_strip", "strip": "kick", "mute": true}, {"op": "set_param", "value": 1, "colour": "red"}]})));
-        assert_eq!((x.code(), x.index), (RackErrorCode::InvalidCommand, Some(1)));
+        assert_eq!(
+            (x.code(), x.index),
+            (RackErrorCode::InvalidCommand, Some(1))
+        );
         assert_eq!(e.project, before);
     }
 
     #[test]
     fn two_applies_on_one_base_revision_the_second_is_stale() {
         let mut e = studio("stale");
-        let base = e.call("rack_get", &json!({})).unwrap()["revision"].as_u64().unwrap();
-        let bass = RackState::from_project(&e.project).strip("bass").unwrap().id.clone();
+        let base = e.call("rack_get", &json!({})).unwrap()["revision"]
+            .as_u64()
+            .unwrap();
+        let bass = RackState::from_project(&e.project)
+            .strip("bass")
+            .unwrap()
+            .id
+            .clone();
         // back to back through Engine::call, the way the studio and a remote client both arrive
         e.call_from("rack_apply", &json!({"expected_revision": base, "commands": [{"op": "set_param", "param": format!("{bass}:volume"), "value": -4.0}]}), "you").unwrap();
         assert_eq!(e.revision, base + 1);
         let after_first = e.project.clone();
         let (undo1, _) = e.history();
         let x = rack_err(e.call_from("rack_apply", &json!({"expected_revision": base, "commands": [{"op": "set_param", "param": format!("{bass}:volume"), "value": -9.0}]}), "mcp"));
-        assert_eq!((x.code(), x.path.as_str()), (RackErrorCode::StaleRevision, "expected_revision"));
-        assert_eq!(x.kind, RackErrorKind::StaleRevision { expected: base, actual: base + 1 });
-        assert_eq!(e.project, after_first, "the stale edit is not applied: state intact");
+        assert_eq!(
+            (x.code(), x.path.as_str()),
+            (RackErrorCode::StaleRevision, "expected_revision")
+        );
+        assert_eq!(
+            x.kind,
+            RackErrorKind::StaleRevision {
+                expected: base,
+                actual: base + 1
+            }
+        );
+        assert_eq!(
+            e.project, after_first,
+            "the stale edit is not applied: state intact"
+        );
         assert_eq!(e.revision, base + 1, "no revision bump");
         assert_eq!(e.history().0, undo1, "no undo step");
         // re-read, retry: accepted
@@ -834,33 +1289,92 @@ mod tests {
     #[test]
     fn values_are_checked_against_the_param_spec() {
         let mut e = studio("range");
-        let bass = RackState::from_project(&e.project).strip("bass").unwrap().id.clone();
+        let bass = RackState::from_project(&e.project)
+            .strip("bass")
+            .unwrap()
+            .id
+            .clone();
         let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "set_param", "param": format!("{bass}:fx.0.cutoff"), "value": 99999.0}]})));
-        assert_eq!((x.code(), x.path.as_str()), (RackErrorCode::ParamOutOfRange, "commands[0].value"));
-        assert_eq!(x.kind, RackErrorKind::ParamOutOfRange { param_id: format!("{bass}:fx.0.cutoff"), val: 99999.0, min: 20.0, max: 20000.0 });
+        assert_eq!(
+            (x.code(), x.path.as_str()),
+            (RackErrorCode::ParamOutOfRange, "commands[0].value")
+        );
+        assert_eq!(
+            x.kind,
+            RackErrorKind::ParamOutOfRange {
+                param_id: format!("{bass}:fx.0.cutoff"),
+                val: 99999.0,
+                min: 20.0,
+                max: 20000.0
+            }
+        );
         assert_eq!(x.accepts["unit"], json!("Hz"));
         // on the wire the code is its stable name
         let wire = format!("{:#}", e.call("rack_apply", &json!({"commands": [{"op": "set_param", "param": format!("{bass}:fx.0.cutoff"), "value": 99999.0}]})).unwrap_err());
         assert!(wire.contains("\"code\":\"ParamOutOfRange\""), "{wire}");
         let v: Value = serde_json::from_str(&wire[wire.find('{').unwrap()..]).unwrap();
         let w = &v["rack_error"];
-        assert_eq!((w["param_id"].as_str(), w["val"].as_f64(), w["min"].as_f64(), w["max"].as_f64()), (Some(format!("{bass}:fx.0.cutoff").as_str()), Some(99999.0), Some(20.0), Some(20000.0)), "{wire}");
+        assert_eq!(
+            (
+                w["param_id"].as_str(),
+                w["val"].as_f64(),
+                w["min"].as_f64(),
+                w["max"].as_f64()
+            ),
+            (
+                Some(format!("{bass}:fx.0.cutoff").as_str()),
+                Some(99999.0),
+                Some(20.0),
+                Some(20000.0)
+            ),
+            "{wire}"
+        );
         let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "set_param", "param": format!("{bass}:fx.0.cutoff"), "value": "loud"}]})));
-        assert_eq!(x.kind, RackErrorKind::ParamWrongType { param_id: format!("{bass}:fx.0.cutoff"), expected: "number".into(), received: "string".into() });
+        assert_eq!(
+            x.kind,
+            RackErrorKind::ParamWrongType {
+                param_id: format!("{bass}:fx.0.cutoff"),
+                expected: "number".into(),
+                received: "string".into()
+            }
+        );
         let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "set_param", "param": format!("{bass}:fx.0.mode"), "value": "wobble"}]})));
         assert_eq!(x.code(), RackErrorCode::ParamNotAnOption);
         match &x.kind {
-            RackErrorKind::ParamNotAnOption { received, options, .. } => assert!(received == "wobble" && options.iter().any(|o| o == "lowpass"), "{x:?}"),
+            RackErrorKind::ParamNotAnOption {
+                received, options, ..
+            } => assert!(
+                received == "wobble" && options.iter().any(|o| o == "lowpass"),
+                "{x:?}"
+            ),
             k => panic!("{k:?}"),
         }
         let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "set_param", "param": format!("{bass}:fx.0.cutof"), "value": 1.0}]})));
-        assert_eq!((x.code(), x.path.as_str()), (RackErrorCode::ParamNotFound, "commands[0].param"));
-        assert_eq!(x.kind, RackErrorKind::ParamNotFound { node_id: bass.clone(), param_id: format!("{bass}:fx.0.cutof") });
+        assert_eq!(
+            (x.code(), x.path.as_str()),
+            (RackErrorCode::ParamNotFound, "commands[0].param")
+        );
+        assert_eq!(
+            x.kind,
+            RackErrorKind::ParamNotFound {
+                node_id: bass.clone(),
+                param_id: format!("{bass}:fx.0.cutof")
+            }
+        );
         let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "add_device", "strip": "bass", "type": "filter", "params": {"cutoff": -5.0}}]})));
-        assert_eq!((x.code(), x.path.as_str()), (RackErrorCode::ParamOutOfRange, "commands[0].params.cutoff"));
-        let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "add_device", "strip": "bass", "type": "flanger9000"}]})));
+        assert_eq!(
+            (x.code(), x.path.as_str()),
+            (RackErrorCode::ParamOutOfRange, "commands[0].params.cutoff")
+        );
+        let x = rack_err(e.call(
+            "rack_apply",
+            &json!({"commands": [{"op": "add_device", "strip": "bass", "type": "flanger9000"}]}),
+        ));
         assert_eq!(x.code(), RackErrorCode::DeviceTypeNotFound);
-        assert!(matches!(&x.kind, RackErrorKind::DeviceTypeNotFound { type_name, options } if type_name == "flanger9000" && options.iter().any(|o| o == "compressor")), "{x:?}");
+        assert!(
+            matches!(&x.kind, RackErrorKind::DeviceTypeNotFound { type_name, options } if type_name == "flanger9000" && options.iter().any(|o| o == "compressor")),
+            "{x:?}"
+        );
         let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "set_param", "param": format!("{bass}:send.verb"), "value": 40.0}]})));
         assert_eq!(x.code(), RackErrorCode::ParamOutOfRange);
     }
@@ -869,20 +1383,58 @@ mod tests {
     fn routing_errors_are_structured() {
         let mut e = studio("route");
         // drums -> beat exists; beat -> drums would loop
-        let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "route", "strip": "beat", "to": "drums"}]})));
-        assert_eq!((x.code(), x.path.as_str()), (RackErrorCode::RoutingCycle, "commands[0].to"));
-        let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "route", "strip": "kick", "to": "bass"}]})));
-        assert!(matches!(&x.kind, RackErrorKind::InvalidRouting { source, target, .. } if *source == RackState::from_project(&e.project).strip("kick").unwrap().id && *target == RackState::from_project(&e.project).strip("bass").unwrap().id), "{x:?}");
-        let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "route", "strip": "ghost", "to": "master"}]})));
-        assert_eq!((x.code(), x.path.as_str()), (RackErrorCode::NodeNotFound, "commands[0].strip"));
-        assert_eq!(x.kind, RackErrorKind::NodeNotFound { node_id: "ghost".into() });
-        let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "send", "strip": "beat", "to": "verb"}]})));
+        let x = rack_err(e.call(
+            "rack_apply",
+            &json!({"commands": [{"op": "route", "strip": "beat", "to": "drums"}]}),
+        ));
+        assert_eq!(
+            (x.code(), x.path.as_str()),
+            (RackErrorCode::RoutingCycle, "commands[0].to")
+        );
+        let x = rack_err(e.call(
+            "rack_apply",
+            &json!({"commands": [{"op": "route", "strip": "kick", "to": "bass"}]}),
+        ));
+        assert!(
+            matches!(&x.kind, RackErrorKind::InvalidRouting { source, target, .. } if *source == RackState::from_project(&e.project).strip("kick").unwrap().id && *target == RackState::from_project(&e.project).strip("bass").unwrap().id),
+            "{x:?}"
+        );
+        let x = rack_err(e.call(
+            "rack_apply",
+            &json!({"commands": [{"op": "route", "strip": "ghost", "to": "master"}]}),
+        ));
+        assert_eq!(
+            (x.code(), x.path.as_str()),
+            (RackErrorCode::NodeNotFound, "commands[0].strip")
+        );
+        assert_eq!(
+            x.kind,
+            RackErrorKind::NodeNotFound {
+                node_id: "ghost".into()
+            }
+        );
+        let x = rack_err(e.call(
+            "rack_apply",
+            &json!({"commands": [{"op": "send", "strip": "beat", "to": "verb"}]}),
+        ));
         assert_eq!(x.code(), RackErrorCode::InvalidSend);
         let x = rack_err(e.call("rack_apply", &json!({"commands": [{"op": "explode"}]})));
-        assert_eq!((x.code(), x.path.as_str()), (RackErrorCode::InvalidCommand, "commands[0]"));
+        assert_eq!(
+            (x.code(), x.path.as_str()),
+            (RackErrorCode::InvalidCommand, "commands[0]")
+        );
         let x = rack_err(e.call("rack_apply", &json!({"expected_revision": 0, "commands": [{"op": "set_strip", "strip": "kick", "mute": true}]})));
-        assert_eq!((x.code(), x.path.as_str()), (RackErrorCode::StaleRevision, "expected_revision"));
-        assert_eq!(x.kind, RackErrorKind::StaleRevision { expected: 0, actual: e.revision });
+        assert_eq!(
+            (x.code(), x.path.as_str()),
+            (RackErrorCode::StaleRevision, "expected_revision")
+        );
+        assert_eq!(
+            x.kind,
+            RackErrorKind::StaleRevision {
+                expected: 0,
+                actual: e.revision
+            }
+        );
         // valid routing through the API: a new bus, kick into it, a send from bass
         e.call(
             "rack_apply",
@@ -897,17 +1449,40 @@ mod tests {
         let r = RackState::from_project(&e.project);
         let glue = r.strip("glue").unwrap();
         assert_eq!(glue.devices.len(), 1);
-        assert!(r.routes.contains(&crate::rack::Route::Output { from: r.strip("drums").unwrap().id.clone(), to: glue.id.clone() }));
+        assert!(r.routes.contains(&crate::rack::Route::Output {
+            from: r.strip("drums").unwrap().id.clone(),
+            to: glue.id.clone()
+        }));
         let plan = crate::rack::compile(&e.project);
-        let pos = |n: &str| plan.nodes.iter().position(|x| x.strip == r.strip(n).unwrap().id).unwrap();
+        let pos = |n: &str| {
+            plan.nodes
+                .iter()
+                .position(|x| x.strip == r.strip(n).unwrap().id)
+                .unwrap()
+        };
         assert!(pos("drums") < pos("glue"));
         // moving and removing devices by id
         let bass = r.strip("bass").unwrap().id.clone();
         e.call("rack_apply", &json!({"commands": [{"op": "move_device", "device": format!("{bass}/sidechain1"), "position": 0}, {"op": "remove_device", "device": format!("{bass}/filter1")}]})).unwrap();
         let r = RackState::from_project(&e.project);
-        assert_eq!(r.strip("bass").unwrap().devices.iter().map(|d| d.type_name.as_str()).collect::<Vec<_>>(), vec!["bass808", "sidechain"]);
+        assert_eq!(
+            r.strip("bass")
+                .unwrap()
+                .devices
+                .iter()
+                .map(|d| d.type_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["bass808", "sidechain"]
+        );
         // the filter's lane went with the filter
-        assert!(e.project.automation.iter().all(|l| !l.param.starts_with("fx.")), "{:?}", e.project.automation);
+        assert!(
+            e.project
+                .automation
+                .iter()
+                .all(|l| !l.param.starts_with("fx.")),
+            "{:?}",
+            e.project.automation
+        );
     }
 
     #[test]
@@ -920,7 +1495,24 @@ mod tests {
         // the same strips, devices and parameter ids as the state (values are
         // float-cleaned on the way out, like every tool result)
         let back: Vec<crate::rack::Strip> = serde_json::from_value(v["strips"].clone()).unwrap();
-        let ids = |s: &[crate::rack::Strip]| s.iter().map(|x| (x.id.clone(), x.devices.iter().map(|d| (d.id.clone(), d.params.iter().map(|p| p.id.clone()).collect::<Vec<_>>())).collect::<Vec<_>>())).collect::<Vec<_>>();
+        let ids = |s: &[crate::rack::Strip]| {
+            s.iter()
+                .map(|x| {
+                    (
+                        x.id.clone(),
+                        x.devices
+                            .iter()
+                            .map(|d| {
+                                (
+                                    d.id.clone(),
+                                    d.params.iter().map(|p| p.id.clone()).collect::<Vec<_>>(),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
         assert_eq!(ids(&back), ids(&RackState::from_project(&e.project).strips));
         let one = e.call("rack_get", &json!({"strip": "bass"})).unwrap();
         assert_eq!(one["strips"].as_array().unwrap().len(), 1);

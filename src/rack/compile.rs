@@ -83,7 +83,11 @@ pub struct ProcessPlan {
 impl ProcessPlan {
     /// Bus indices in processing order (what the renderer iterates).
     pub fn bus_indices(&self) -> Vec<usize> {
-        self.nodes.iter().filter(|n| n.kind == StripKind::Bus).filter_map(|n| n.index).collect()
+        self.nodes
+            .iter()
+            .filter(|n| n.kind == StripKind::Bus)
+            .filter_map(|n| n.index)
+            .collect()
     }
 }
 
@@ -104,7 +108,9 @@ pub fn compile_state(p: &Project, rack: &RackState) -> ProcessPlan {
             inputs: rack
                 .routes
                 .iter()
-                .filter(|r| matches!(r, Route::Output { .. } | Route::Send { .. }) && r.to() == s.id)
+                .filter(|r| {
+                    matches!(r, Route::Output { .. } | Route::Send { .. }) && r.to() == s.id
+                })
                 .map(|r| r.from().to_string())
                 .collect(),
             keys: rack
@@ -126,6 +132,9 @@ pub fn compile_state(p: &Project, rack: &RackState) -> ProcessPlan {
         nodes.push(node(nt + bi, Some(bi)));
     }
     nodes.push(node(rack.strips.len() - 1, None));
-    let cycles = bus_cycles(p).into_iter().map(|bi| rack.strips[nt + bi].id.clone()).collect();
+    let cycles = bus_cycles(p)
+        .into_iter()
+        .map(|bi| rack.strips[nt + bi].id.clone())
+        .collect();
     ProcessPlan { nodes, cycles }
 }
