@@ -18,7 +18,9 @@ fn r2(v: f32) -> f32 {
 
 /// The values a 16-bit write stores (what the written file measures).
 fn quantized(x: &[f32]) -> Vec<f32> {
-    x.iter().map(|s| ((s.clamp(-1.0, 1.0) * 32767.0) as i16) as f32 / 32767.0).collect()
+    x.iter()
+        .map(|s| ((s.clamp(-1.0, 1.0) * 32767.0) as i16) as f32 / 32767.0)
+        .collect()
 }
 
 fn run(e: &mut crate::engine::Engine, a: &Value) -> Result<Value> {
@@ -30,13 +32,25 @@ fn run(e: &mut crate::engine::Engine, a: &Value) -> Result<Value> {
         release_slow_ms: f_opt(a, "release_slow_ms").unwrap_or(d.release_slow_ms),
     };
     if !(-24.0..=0.0).contains(&p.ceiling_dbtp) {
-        bail!("ceiling_dbtp must be between -24 and 0 dBTP (got {})", p.ceiling_dbtp);
+        bail!(
+            "ceiling_dbtp must be between -24 and 0 dBTP (got {})",
+            p.ceiling_dbtp
+        );
     }
     if !(2.0..=5.0).contains(&p.lookahead_ms) {
-        bail!("lookahead_ms must be between 2 and 5 (got {})", p.lookahead_ms);
+        bail!(
+            "lookahead_ms must be between 2 and 5 (got {})",
+            p.lookahead_ms
+        );
     }
-    if !(1.0..=1000.0).contains(&p.release_fast_ms) || !(p.release_fast_ms..=5000.0).contains(&p.release_slow_ms) {
-        bail!("release_fast_ms must be 1..1000 and release_slow_ms between it and 5000 (got {} / {})", p.release_fast_ms, p.release_slow_ms);
+    if !(1.0..=1000.0).contains(&p.release_fast_ms)
+        || !(p.release_fast_ms..=5000.0).contains(&p.release_slow_ms)
+    {
+        bail!(
+            "release_fast_ms must be 1..1000 and release_slow_ms between it and 5000 (got {} / {})",
+            p.release_fast_ms,
+            p.release_slow_ms
+        );
     }
     let (name, l, r) = audio_for(e, a)?;
     let tp_in = true_peak_dbtp(&[&l, &r]);
@@ -108,7 +122,14 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let src = dir.join("hot.wav");
         // a +2 dBTP-ish file: a near full-scale fs/4 sine at 45 degrees (16-bit clamps the samples at 0.999)
-        let x: Vec<f32> = (0..22050).map(|i| 0.999 * (std::f32::consts::FRAC_PI_2 * i as f32 + std::f32::consts::FRAC_PI_4).sin().signum()).collect();
+        let x: Vec<f32> = (0..22050)
+            .map(|i| {
+                0.999
+                    * (std::f32::consts::FRAC_PI_2 * i as f32 + std::f32::consts::FRAC_PI_4)
+                        .sin()
+                        .signum()
+            })
+            .collect();
         crate::render::write_wav(&src, &x, &x).unwrap();
         let mut e = Engine::new(dir.clone());
         let out = dir.join("lim.wav");
@@ -121,7 +142,12 @@ mod tests {
         assert_eq!(v["latency_samples"].as_u64().unwrap(), 132 + 10, "{v}");
         let (l, _r) = crate::samples::decode_stereo(&out).unwrap();
         assert_eq!(l.len(), 22050);
-        assert!(e.call("true_peak_limit", &json!({"path": src.display().to_string(), "ceiling_dbtp": 3.0})).is_err());
+        assert!(e
+            .call(
+                "true_peak_limit",
+                &json!({"path": src.display().to_string(), "ceiling_dbtp": 3.0})
+            )
+            .is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

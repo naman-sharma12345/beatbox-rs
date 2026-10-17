@@ -41,9 +41,15 @@ pub fn melodic_score(x: &[f32]) -> (f32, f32, f32) {
     if loud.len() < 4 {
         return (0.0, 0.0, 0.0);
     }
-    let dt = if fr.len() > 1 { (fr[1].t - fr[0].t).max(1e-3) } else { 0.01 };
+    let dt = if fr.len() > 1 {
+        (fr[1].t - fr[0].t).max(1e-3)
+    } else {
+        0.01
+    };
     let lag = ((0.06 / dt).round() as usize).max(1);
-    let voiced: Vec<usize> = (0..fr.len()).filter(|&i| fr[i].midi > 0.0 && fr[i].rms > 0.0).collect();
+    let voiced: Vec<usize> = (0..fr.len())
+        .filter(|&i| fr[i].midi > 0.0 && fr[i].rms > 0.0)
+        .collect();
     let v = voiced.len() as f32 / loud.len().max(1) as f32;
     let mut held = 0usize;
     let mut run = 0usize;
@@ -62,7 +68,10 @@ pub fn melodic_score(x: &[f32]) -> (f32, f32, f32) {
     // sung: mostly voiced, mostly held, notes that last
     // voicing only counts when notes are held (a gliding rap line is voiced too)
     let gate = (h / 0.25).clamp(0.0, 1.0);
-    let score = (0.35 * gate * ((v - 0.45) / 0.35).clamp(0.0, 1.0) + 0.45 * ((h - 0.35) / 0.35).clamp(0.0, 1.0) + 0.2 * ((longest - 0.12) / 0.3).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+    let score = (0.35 * gate * ((v - 0.45) / 0.35).clamp(0.0, 1.0)
+        + 0.45 * ((h - 0.35) / 0.35).clamp(0.0, 1.0)
+        + 0.2 * ((longest - 0.12) / 0.3).clamp(0.0, 1.0))
+    .clamp(0.0, 1.0);
     (score, v.min(1.0), h)
 }
 
@@ -73,15 +82,35 @@ pub fn styles(x: &[f32], min_pause_s: f32, threshold: f32, min_s: f32) -> Vec<St
     let mut v: Vec<Styled> = ph
         .iter()
         .map(|p| {
-            let (s0, s1) = ((p.start_s * SR) as usize, ((p.end_s * SR) as usize).min(x.len()));
+            let (s0, s1) = (
+                (p.start_s * SR) as usize,
+                ((p.end_s * SR) as usize).min(x.len()),
+            );
             let (m, vo, h) = melodic_score(&x[s0..s1]);
-            Styled { start_s: p.start_s, end_s: p.end_s, style: if m >= threshold { "melodic".into() } else { "rap".into() }, melodic: m, voiced_pct: vo * 100.0, held_pct: h * 100.0, phrases: 1 }
+            Styled {
+                start_s: p.start_s,
+                end_s: p.end_s,
+                style: if m >= threshold {
+                    "melodic".into()
+                } else {
+                    "rap".into()
+                },
+                melodic: m,
+                voiced_pct: vo * 100.0,
+                held_pct: h * 100.0,
+                phrases: 1,
+            }
         })
         .collect();
     // short islands take their neighbours' style
     let n = v.len();
     for i in 0..n {
-        if v[i].end_s - v[i].start_s < min_s * 0.5 && i > 0 && i + 1 < n && v[i - 1].style == v[i + 1].style && v[i].style != v[i - 1].style {
+        if v[i].end_s - v[i].start_s < min_s * 0.5
+            && i > 0
+            && i + 1 < n
+            && v[i - 1].style == v[i + 1].style
+            && v[i].style != v[i - 1].style
+        {
             v[i].style = v[i - 1].style.clone();
         }
     }
@@ -117,7 +146,12 @@ fn detect_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         bail!("give the vocal: sample or path");
     }
     let x: Vec<f32> = l.iter().zip(r.iter()).map(|(p, q)| 0.5 * (p + q)).collect();
-    let st = styles(&x, f_or(a, "min_pause_s", 0.35), f_or(a, "threshold", 0.3), f_or(a, "min_section_s", 2.0));
+    let st = styles(
+        &x,
+        f_or(a, "min_pause_s", 0.35),
+        f_or(a, "threshold", 0.3),
+        f_or(a, "min_section_s", 2.0),
+    );
     let bpm = e.project.bpm;
     let sb = f_opt(a, "start_beat");
     let rows: Vec<Value> = st
@@ -131,13 +165,30 @@ fn detect_tool(e: &mut Engine, a: &Value) -> Result<Value> {
             v
         })
         .collect();
-    let sung: f32 = st.iter().filter(|s| s.style == "melodic").map(|s| s.end_s - s.start_s).sum();
-    let all: f32 = st.iter().map(|s| s.end_s - s.start_s).sum::<f32>().max(1e-3);
-    Ok(json!({"source": name, "sections": rows, "melodic_share_pct": (sung / all * 100.0).round(), "note": "melodic = voiced and held on notes (sung); rap = short, gliding or unvoiced syllables. threshold (default 0.3) moves the line."}))
+    let sung: f32 = st
+        .iter()
+        .filter(|s| s.style == "melodic")
+        .map(|s| s.end_s - s.start_s)
+        .sum();
+    let all: f32 = st
+        .iter()
+        .map(|s| s.end_s - s.start_s)
+        .sum::<f32>()
+        .max(1e-3);
+    Ok(
+        json!({"source": name, "sections": rows, "melodic_share_pct": (sung / all * 100.0).round(), "note": "melodic = voiced and held on notes (sung); rap = short, gliding or unvoiced syllables. threshold (default 0.3) moves the line."}),
+    )
 }
 
 /// Tune only inside `ranges` (seconds), with 30 ms crossfades at the edges.
-pub fn tune_ranges(x: &[f32], ranges: &[(f32, f32)], key_pc: u8, scale: &[u8], amount: f32, speed_ms: f32) -> (Vec<f32>, usize) {
+pub fn tune_ranges(
+    x: &[f32],
+    ranges: &[(f32, f32)],
+    key_pc: u8,
+    scale: &[u8],
+    amount: f32,
+    speed_ms: f32,
+) -> (Vec<f32>, usize) {
     let (tuned, stats) = crate::vocal::autotune(x, SR, key_pc, scale, amount, 0.0, speed_ms);
     let n = x.len().min(tuned.len());
     let mut w = vec![0.0f32; n];
@@ -160,7 +211,11 @@ pub fn tune_ranges(x: &[f32], ranges: &[(f32, f32)], key_pc: u8, scale: &[u8], a
 }
 
 fn ensure_bus(e: &mut Engine, name: &str, effects: &[Value]) -> Result<bool> {
-    if e.project.buses.iter().any(|b| b.name.eq_ignore_ascii_case(name)) {
+    if e.project
+        .buses
+        .iter()
+        .any(|b| b.name.eq_ignore_ascii_case(name))
+    {
         return Ok(false);
     }
     e.call("add_bus", &json!({"name": name, "preset": "none"}))?;
@@ -176,7 +231,10 @@ fn ensure_audio_track(e: &mut Engine, name: &str, like: usize, volume_db: f32) -
     if let Ok(i) = e.project.track_index(name) {
         return Ok(e.project.tracks[i].name.clone());
     }
-    e.call("add_track", &json!({"name": name, "preset": "pad", "volume_db": volume_db}))?;
+    e.call(
+        "add_track",
+        &json!({"name": name, "preset": "pad", "volume_db": volume_db}),
+    )?;
     let ni = e.project.track_index(name)?;
     // the same channel as the lead vocal (its EQ / compression / de-ess)
     let fx = e.project.tracks[like].effects.clone();
@@ -191,25 +249,60 @@ fn chain_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     let ti = e.project.track_index(&track)?;
     let tname = e.project.tracks[ti].name.clone();
     let bpm = e.project.bpm;
-    let clips: Vec<usize> = (0..e.project.audio_clips.len()).filter(|&i| e.project.audio_clips[i].track.eq_ignore_ascii_case(&tname) && e.project.audio_clips[i].sample.eq_ignore_ascii_case(&info.name)).collect();
+    let clips: Vec<usize> = (0..e.project.audio_clips.len())
+        .filter(|&i| {
+            e.project.audio_clips[i].track.eq_ignore_ascii_case(&tname)
+                && e.project.audio_clips[i]
+                    .sample
+                    .eq_ignore_ascii_case(&info.name)
+        })
+        .collect();
     if clips.is_empty() {
-        bail!("no clip of '{}' on '{tname}': add_audio_clip the take first (or place_vocal_phrases)", info.name);
+        bail!(
+            "no clip of '{}' on '{tname}': add_audio_clip the take first (or place_vocal_phrases)",
+            info.name
+        );
     }
-    let st = styles(&x, f_or(a, "min_pause_s", 0.35), f_or(a, "threshold", 0.3), 2.0);
-    let mel: Vec<(f32, f32)> = st.iter().filter(|s| s.style == "melodic").map(|s| (s.start_s, s.end_s)).collect();
+    let st = styles(
+        &x,
+        f_or(a, "min_pause_s", 0.35),
+        f_or(a, "threshold", 0.3),
+        2.0,
+    );
+    let mel: Vec<(f32, f32)> = st
+        .iter()
+        .filter(|s| s.style == "melodic")
+        .map(|s| (s.start_s, s.end_s))
+        .collect();
     if mel.is_empty() {
-        return Ok(json!({"melodic_sections": 0, "note": "no sung part found in the take (all rap); nothing changed", "sections": st}));
+        return Ok(
+            json!({"melodic_sections": 0, "note": "no sung part found in the take (all rap); nothing changed", "sections": st}),
+        );
     }
     // 1. soft tune, melodic parts only
     let key_pc = crate::tools::key_pc(&e.project);
     let scale = crate::theory::scale_intervals(&e.project.scale)?.to_vec();
     let tune = b_or(a, "tune", true);
     let (tuned_name, moved) = if tune {
-        let (y, moved) = tune_ranges(&x, &mel, key_pc, &scale, f_or(a, "tune_amount", 0.8).clamp(0.0, 1.0), f_or(a, "retune_ms", 15.0).clamp(1.0, 200.0));
+        let (y, moved) = tune_ranges(
+            &x,
+            &mel,
+            key_pc,
+            &scale,
+            f_or(a, "tune_amount", 0.8).clamp(0.0, 1.0),
+            f_or(a, "retune_ms", 15.0).clamp(1.0, 200.0),
+        );
         let nn = crate::samples::sample_name(&format!("{}_mtune", info.name));
         let path = e.samples_dir().join(format!("{nn}.wav"));
         crate::render::write_wav(&path, &y, &y)?;
-        let si = crate::samples::SampleInfo { name: nn, path: path.to_string_lossy().into(), source: format!("{} (soft tune on the sung parts)", info.source), license: info.license.clone(), author: info.author.clone(), duration: 0.0 };
+        let si = crate::samples::SampleInfo {
+            name: nn,
+            path: path.to_string_lossy().into(),
+            source: format!("{} (soft tune on the sung parts)", info.source),
+            license: info.license.clone(),
+            author: info.author.clone(),
+            duration: 0.0,
+        };
         let reg = crate::tools::register_sample(e, si)?;
         (reg["sample"].as_str().unwrap_or("").to_string(), moved)
     } else {
@@ -219,9 +312,29 @@ fn chain_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     let plate = s_opt(a, "plate_bus").unwrap_or_else(|| "vox_plate".into());
     let delay = s_opt(a, "delay_bus").unwrap_or_else(|| "vox_delay".into());
     let delay_steps = f_or(a, "delay_steps", 6.0).clamp(1.0, 16.0);
-    let new_plate = ensure_bus(e, &plate, &[json!({"type": "reverb", "params": {"mode": "fdn_plate", "decay_s": f_or(a, "plate_s", 2.0).clamp(0.6, 5.0), "predelay_ms": 40.0, "mix": 1.0, "low_cut_hz": 250.0}}), json!({"type": "parametric_eq", "params": {"bands": [{"kind": "high_cut", "freq": 9000.0}]}})])?;
-    let mel_track = ensure_audio_track(e, &format!("{tname}_melodic"), ti, e.project.tracks[ti].volume_db)?;
-    let new_delay = ensure_bus(e, &delay, &[json!({"type": "delay", "params": {"steps": delay_steps, "feedback": 0.35, "mix": 1.0, "ping_pong": true, "tone": 4500.0}}), json!({"type": "parametric_eq", "params": {"bands": [{"kind": "low_cut", "freq": 300.0}, {"kind": "high_cut", "freq": 7000.0}]}}), json!({"type": "sidechain", "params": {"source": mel_track.clone(), "amount": 0.5, "release_ms": 180.0}})])?;
+    let new_plate = ensure_bus(
+        e,
+        &plate,
+        &[
+            json!({"type": "reverb", "params": {"mode": "fdn_plate", "decay_s": f_or(a, "plate_s", 2.0).clamp(0.6, 5.0), "predelay_ms": 40.0, "mix": 1.0, "low_cut_hz": 250.0}}),
+            json!({"type": "parametric_eq", "params": {"bands": [{"kind": "high_cut", "freq": 9000.0}]}}),
+        ],
+    )?;
+    let mel_track = ensure_audio_track(
+        e,
+        &format!("{tname}_melodic"),
+        ti,
+        e.project.tracks[ti].volume_db,
+    )?;
+    let new_delay = ensure_bus(
+        e,
+        &delay,
+        &[
+            json!({"type": "delay", "params": {"steps": delay_steps, "feedback": 0.35, "mix": 1.0, "ping_pong": true, "tone": 4500.0}}),
+            json!({"type": "parametric_eq", "params": {"bands": [{"kind": "low_cut", "freq": 300.0}, {"kind": "high_cut", "freq": 7000.0}]}}),
+            json!({"type": "sidechain", "params": {"source": mel_track.clone(), "amount": 0.5, "release_ms": 180.0}}),
+        ],
+    )?;
     // 3. split the take's clips: sung stretches move to the melodic track (tuned)
     let mut moved_clips = 0;
     let mut new_clips: Vec<AudioClip> = Vec::new();
@@ -271,8 +384,14 @@ fn chain_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     keep.extend(new_clips);
     e.project.audio_clips = keep;
     // 4. sends from the sung track
-    e.call("set_send", &json!({"track": mel_track, "bus": plate, "db": f_or(a, "plate_send_db", -9.0)}))?;
-    e.call("set_send", &json!({"track": mel_track, "bus": delay, "db": f_or(a, "delay_send_db", -18.0)}))?;
+    e.call(
+        "set_send",
+        &json!({"track": mel_track, "bus": plate, "db": f_or(a, "plate_send_db", -9.0)}),
+    )?;
+    e.call(
+        "set_send",
+        &json!({"track": mel_track, "bus": delay, "db": f_or(a, "delay_send_db", -18.0)}),
+    )?;
     // 5. throws: the last 350 ms of each sung phrase, heard only in the delay
     let mut throws = 0;
     if b_or(a, "throws", true) {
@@ -293,16 +412,31 @@ fn chain_tool(e: &mut Engine, a: &Value) -> Result<Value> {
             e.project.audio_clips.push(t);
             throws += 1;
         }
-        e.call("set_send", &json!({"track": th, "bus": delay, "db": f_or(a, "throw_db", -4.0), "pre_fader": true}))?;
+        e.call(
+            "set_send",
+            &json!({"track": th, "bus": delay, "db": f_or(a, "throw_db", -4.0), "pre_fader": true}),
+        )?;
     }
     // 6. a double (chorus + haas, -9 dB, 15 ms late) on the sung parts
     let mut doubled = false;
     if b_or(a, "double", true) {
-        let dn = ensure_audio_track(e, &format!("{tname}_double"), ti, e.project.tracks[ti].volume_db - 9.0)?;
+        let dn = ensure_audio_track(
+            e,
+            &format!("{tname}_double"),
+            ti,
+            e.project.tracks[ti].volume_db - 9.0,
+        )?;
         let di = e.project.track_index(&dn)?;
-        if !e.project.tracks[di].effects.iter().any(|f| f.type_name() == "haas") {
+        if !e.project.tracks[di]
+            .effects
+            .iter()
+            .any(|f| f.type_name() == "haas")
+        {
             e.call("add_effect", &json!({"track": dn, "type": "chorus", "params": {"rate_hz": 0.4, "depth_ms": 4.0, "mix": 0.6}}))?;
-            e.call("add_effect", &json!({"track": dn, "type": "haas", "params": {"delay_ms": 14.0, "mix": 1.0}}))?;
+            e.call(
+                "add_effect",
+                &json!({"track": dn, "type": "haas", "params": {"delay_ms": 14.0, "mix": 1.0}}),
+            )?;
         }
         for c in &sung_clips {
             let mut d = c.clone();
@@ -359,7 +493,11 @@ mod tests {
             for i in 0..(0.9 * SR) as usize {
                 let t = i as f32 / SR;
                 let env = (t / 0.02).min(1.0) * ((0.9 - t) / 0.05).min(1.0);
-                x.push(0.3 * env * ((t * f * std::f32::consts::TAU).sin() + 0.4 * (t * 2.0 * f * std::f32::consts::TAU).sin()));
+                x.push(
+                    0.3 * env
+                        * ((t * f * std::f32::consts::TAU).sin()
+                            + 0.4 * (t * 2.0 * f * std::f32::consts::TAU).sin()),
+                );
             }
             let _ = k;
             x.extend(std::iter::repeat(0.0).take((0.45 * SR) as usize));
@@ -376,7 +514,10 @@ mod tests {
                     let f = f0 * (1.0 + 2.5 * t);
                     ph += f / SR;
                     let env = (t / 0.01).min(1.0) * ((0.09 - t) / 0.02).min(1.0);
-                    x.push(0.3 * env * ((ph * std::f32::consts::TAU).sin() * 0.6 + 0.4 * rng.bipolar()));
+                    x.push(
+                        0.3 * env
+                            * ((ph * std::f32::consts::TAU).sin() * 0.6 + 0.4 * rng.bipolar()),
+                    );
                 }
                 x.extend(std::iter::repeat(0.0).take((0.03 * SR) as usize));
             }
@@ -400,17 +541,36 @@ mod tests {
         let dir = std::env::temp_dir().join("beatbox_vocal_styles_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir.clone());
-        e.call("new_project", &json!({"name": "mel", "bpm": 90})).unwrap();
+        e.call("new_project", &json!({"name": "mel", "bpm": 90}))
+            .unwrap();
         let x = sung_then_rap();
         let wav = dir.join("take.wav");
         crate::render::write_wav(&wav, &x, &x).unwrap();
-        e.call("import_sample", &json!({"path": wav.to_string_lossy(), "name": "take"})).unwrap();
-        e.call("add_track", &json!({"name": "vocal", "preset": "pad"})).unwrap();
-        e.call("add_audio_clip", &json!({"track": "vocal", "sample": "take", "start_beat": 0})).unwrap();
-        let r = e.call("melodic_vocal_chain", &json!({"sample": "take"})).unwrap();
+        e.call(
+            "import_sample",
+            &json!({"path": wav.to_string_lossy(), "name": "take"}),
+        )
+        .unwrap();
+        e.call("add_track", &json!({"name": "vocal", "preset": "pad"}))
+            .unwrap();
+        e.call(
+            "add_audio_clip",
+            &json!({"track": "vocal", "sample": "take", "start_beat": 0}),
+        )
+        .unwrap();
+        let r = e
+            .call("melodic_vocal_chain", &json!({"sample": "take"}))
+            .unwrap();
         assert!(r["clips_moved_to_melodic"].as_u64().unwrap() >= 1, "{r}");
-        assert!(e.project.audio_clips.iter().any(|c| c.track == "vocal_melodic"));
-        assert!(e.project.audio_clips.iter().any(|c| c.track == "vocal"), "rap stays on vocal");
+        assert!(e
+            .project
+            .audio_clips
+            .iter()
+            .any(|c| c.track == "vocal_melodic"));
+        assert!(
+            e.project.audio_clips.iter().any(|c| c.track == "vocal"),
+            "rap stays on vocal"
+        );
         assert!(e.project.buses.iter().any(|b| b.name == "vox_plate"));
         let m = e.mix().unwrap();
         assert!(m.left.iter().all(|v| v.is_finite()));

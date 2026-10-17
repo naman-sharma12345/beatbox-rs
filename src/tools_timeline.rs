@@ -33,7 +33,10 @@ fn clip_len(e: &mut Engine, i: usize) -> Result<(f32, f32)> {
     let c = e.project.audio_clips[i].clone();
     let total = sample_secs(e, &c.sample)?;
     let avail = (total - c.offset_s.max(0.0)).max(0.0);
-    Ok((c.length_s.map(|l| l.clamp(0.0, avail)).unwrap_or(avail), total))
+    Ok((
+        c.length_s.map(|l| l.clamp(0.0, avail)).unwrap_or(avail),
+        total,
+    ))
 }
 
 fn secs_at(p: &Project, beat: f32) -> f64 {
@@ -76,7 +79,12 @@ pub fn split(e: &mut Engine, i: usize, at: f32) -> Result<(String, String)> {
     let c = e.project.audio_clips[i].clone();
     let t = (secs_at(&e.project, at) - secs_at(&e.project, c.start_beat)) as f32;
     if t < MIN_LEN_S || t > len - MIN_LEN_S {
-        bail!("beat {at} is not inside clip '{}' (beats {} to {:.3})", c.id, c.start_beat, end_beat(&e.project, &c, len));
+        bail!(
+            "beat {at} is not inside clip '{}' (beats {} to {:.3})",
+            c.id,
+            c.start_beat,
+            end_beat(&e.project, &c, len)
+        );
     }
     let rid = crate::ids::next_id(&mut e.project, "clip");
     let mut right = c.clone();
@@ -100,7 +108,10 @@ fn trim_start(e: &mut Engine, i: usize, new_start: f32) -> Result<()> {
     let d = (secs_at(&e.project, new_start) - secs_at(&e.project, c.start_beat)) as f32;
     let d = d.max(-c.offset_s.max(0.0));
     if d > len - MIN_LEN_S {
-        bail!("trimming clip '{}' to start at beat {new_start} would leave nothing", c.id);
+        bail!(
+            "trimming clip '{}' to start at beat {new_start} would leave nothing",
+            c.id
+        );
     }
     let start_s = secs_at(&e.project, c.start_beat) + d as f64;
     let start = beat_at(&e.project, start_s);
@@ -117,7 +128,11 @@ fn trim_end(e: &mut Engine, i: usize, new_end: f32) -> Result<()> {
     let want = (secs_at(&e.project, new_end) - secs_at(&e.project, c.start_beat)) as f32;
     let avail = (total - c.offset_s.max(0.0)).max(0.0);
     if want < MIN_LEN_S {
-        bail!("beat {new_end} is before clip '{}' starts (beat {})", c.id, c.start_beat);
+        bail!(
+            "beat {new_end} is before clip '{}' starts (beat {})",
+            c.id,
+            c.start_beat
+        );
     }
     e.project.audio_clips[i].length_s = Some(want.min(avail));
     Ok(())
@@ -126,13 +141,23 @@ fn trim_end(e: &mut Engine, i: usize, new_end: f32) -> Result<()> {
 /// Indices of the clips a range edit touches on the chosen tracks.
 fn clips_on(p: &Project, tracks: &Option<Vec<String>>) -> Vec<usize> {
     (0..p.audio_clips.len())
-        .filter(|&i| tracks.as_ref().is_none_or(|t| t.iter().any(|n| n.eq_ignore_ascii_case(&p.audio_clips[i].track))))
+        .filter(|&i| {
+            tracks.as_ref().is_none_or(|t| {
+                t.iter()
+                    .any(|n| n.eq_ignore_ascii_case(&p.audio_clips[i].track))
+            })
+        })
         .collect()
 }
 
 /// Remove [from, to) (song beats) from the chosen tracks' clips and pull
 /// everything after it earlier by the gap. Returns (removed, trimmed, moved).
-fn ripple(e: &mut Engine, tracks: Option<Vec<String>>, from: f32, to: f32) -> Result<(usize, usize, usize)> {
+fn ripple(
+    e: &mut Engine,
+    tracks: Option<Vec<String>>,
+    from: f32,
+    to: f32,
+) -> Result<(usize, usize, usize)> {
     if to <= from {
         bail!("ripple range is empty (from {from} to {to})");
     }
@@ -194,7 +219,10 @@ fn mixdown(e: &mut Engine, idx: &[usize], from: f32, to: f32) -> Result<Vec<f32>
     for &i in idx {
         let (len_s, _) = clip_len(e, i)?;
         let c = e.project.audio_clips[i].clone();
-        let data = e.bank.get(&c.sample).ok_or_else(|| anyhow!("sample '{}' not loaded", c.sample))?;
+        let data = e
+            .bank
+            .get(&c.sample)
+            .ok_or_else(|| anyhow!("sample '{}' not loaded", c.sample))?;
         let off = ((c.offset_s.max(0.0) * SR) as usize).min(data.len());
         let len = ((len_s * SR) as usize).min(data.len() - off);
         let g = crate::dsp::db_to_gain(c.gain_db);
@@ -511,32 +539,78 @@ pub fn tools() -> Vec<Tool> {
 mod tests {
     use super::*;
 
+    /// A per-test directory, removed when the test ends (std only).
+    struct TestDir(std::path::PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// 2 s of a ramp so positions in the take are measurable; 120 BPM => 1 beat = 0.5 s.
-    fn eng() -> (Engine, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("beatbox_timeline_{}", std::process::id()));
+    ///
+    /// Each call gets its own directory (pid + test name + counter): the tests
+    /// run in parallel inside one process, and a shared per-pid directory let
+    /// them overwrite each other's take.wav and consolidated clips.
+    fn eng() -> (Engine, TestDir) {
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let test: String = std::thread::current()
+            .name()
+            .unwrap_or("test")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let dir = std::env::temp_dir().join(format!(
+            "beatbox_timeline_{}_{}_{}",
+            std::process::id(),
+            test,
+            n
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir.clone());
-        e.call("new_project", &json!({"name": "tl", "bpm": 120})).unwrap();
-        let tone: Vec<f32> = (0..(2.0 * SR) as usize).map(|i| 0.5 * (i as f32 * 220.0 / SR * std::f32::consts::TAU).sin()).collect();
+        e.call("new_project", &json!({"name": "tl", "bpm": 120}))
+            .unwrap();
+        let tone: Vec<f32> = (0..(2.0 * SR) as usize)
+            .map(|i| 0.5 * (i as f32 * 220.0 / SR * std::f32::consts::TAU).sin())
+            .collect();
         let wav = dir.join("take.wav");
         crate::render::write_wav(&wav, &tone, &tone).unwrap();
-        e.call("import_sample", &json!({"path": wav.to_string_lossy(), "name": "take"})).unwrap();
-        e.call("add_track", &json!({"name": "vox", "preset": "pad"})).unwrap();
-        e.call("add_audio_clip", &json!({"track": "vox", "sample": "take", "start_beat": 0.0})).unwrap();
-        (e, dir)
+        e.call(
+            "import_sample",
+            &json!({"path": wav.to_string_lossy(), "name": "take"}),
+        )
+        .unwrap();
+        e.call("add_track", &json!({"name": "vox", "preset": "pad"}))
+            .unwrap();
+        e.call(
+            "add_audio_clip",
+            &json!({"track": "vox", "sample": "take", "start_beat": 0.0}),
+        )
+        .unwrap();
+        (e, TestDir(dir))
     }
 
     #[test]
     fn split_trim_move_duplicate_slip_fade_keep_ids() {
-        let (mut e, _) = eng();
+        let (mut e, _dir) = eng(); // keep the directory until the test ends
         let id = e.project.audio_clips[0].id.clone();
         assert!(id.starts_with("clip"), "{id}");
         // split at beat 2 (1.0 s)
-        let v = e.call("split_clip", &json!({"id": id, "at_beat": 2.0})).unwrap();
+        let v = e
+            .call("split_clip", &json!({"id": id, "at_beat": 2.0}))
+            .unwrap();
         let right = v["right_id"].as_str().unwrap().to_string();
         assert_ne!(right, id);
         assert_eq!(e.project.audio_clips.len(), 2);
-        let r = e.project.audio_clips.iter().find(|c| c.id == right).unwrap();
+        let r = e
+            .project
+            .audio_clips
+            .iter()
+            .find(|c| c.id == right)
+            .unwrap();
         assert!((r.offset_s - 1.0).abs() < 1e-3 && (r.length_s.unwrap() - 1.0).abs() < 1e-3);
         assert!((e.project.audio_clips[0].length_s.unwrap() - 1.0).abs() < 1e-3);
         // undo restores one clip with the original id; redo brings the same right id back
@@ -546,41 +620,122 @@ mod tests {
         e.call("redo", &json!({})).unwrap();
         assert!(e.project.audio_clips.iter().any(|c| c.id == right));
         // trim the right part's start to beat 2.5 (0.25 s in)
-        e.call("trim_clip", &json!({"id": right, "start_beat": 2.5})).unwrap();
-        let r = e.project.audio_clips.iter().find(|c| c.id == right).unwrap().clone();
-        assert!((r.start_beat - 2.5).abs() < 1e-3 && (r.offset_s - 1.25).abs() < 1e-3 && (r.length_s.unwrap() - 0.75).abs() < 1e-3);
+        e.call("trim_clip", &json!({"id": right, "start_beat": 2.5}))
+            .unwrap();
+        let r = e
+            .project
+            .audio_clips
+            .iter()
+            .find(|c| c.id == right)
+            .unwrap()
+            .clone();
+        assert!(
+            (r.start_beat - 2.5).abs() < 1e-3
+                && (r.offset_s - 1.25).abs() < 1e-3
+                && (r.length_s.unwrap() - 0.75).abs() < 1e-3
+        );
         // move it
-        e.call("move_clip", &json!({"id": right, "by_beats": 1.5})).unwrap();
-        assert!((e.project.audio_clips.iter().find(|c| c.id == right).unwrap().start_beat - 4.0).abs() < 1e-4);
+        e.call("move_clip", &json!({"id": right, "by_beats": 1.5}))
+            .unwrap();
+        assert!(
+            (e.project
+                .audio_clips
+                .iter()
+                .find(|c| c.id == right)
+                .unwrap()
+                .start_beat
+                - 4.0)
+                .abs()
+                < 1e-4
+        );
         // duplicate twice: two new ids, back to back
-        let d = e.call("duplicate_clip", &json!({"id": right, "count": 2})).unwrap();
-        let copies: Vec<String> = d["copies"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+        let d = e
+            .call("duplicate_clip", &json!({"id": right, "count": 2}))
+            .unwrap();
+        let copies: Vec<String> = d["copies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
         assert_eq!(copies.len(), 2);
-        let c0 = e.project.audio_clips.iter().find(|c| c.id == copies[0]).unwrap();
+        let c0 = e
+            .project
+            .audio_clips
+            .iter()
+            .find(|c| c.id == copies[0])
+            .unwrap();
         assert!((c0.start_beat - 5.5).abs() < 1e-3, "{}", c0.start_beat);
         // slip: offset moves, start does not
-        let before = e.project.audio_clips.iter().find(|c| c.id == right).unwrap().clone();
-        e.call("slip_clip", &json!({"id": right, "by_s": -0.5})).unwrap();
-        let after = e.project.audio_clips.iter().find(|c| c.id == right).unwrap().clone();
+        let before = e
+            .project
+            .audio_clips
+            .iter()
+            .find(|c| c.id == right)
+            .unwrap()
+            .clone();
+        e.call("slip_clip", &json!({"id": right, "by_s": -0.5}))
+            .unwrap();
+        let after = e
+            .project
+            .audio_clips
+            .iter()
+            .find(|c| c.id == right)
+            .unwrap()
+            .clone();
         assert_eq!(after.start_beat, before.start_beat);
         assert!((after.offset_s - 0.75).abs() < 1e-3);
         // fade
-        e.call("fade_clip", &json!({"id": right, "fade_in_ms": 300, "fade_out_ms": 10000})).unwrap();
-        let f = e.project.audio_clips.iter().find(|c| c.id == right).unwrap();
+        e.call(
+            "fade_clip",
+            &json!({"id": right, "fade_in_ms": 300, "fade_out_ms": 10000}),
+        )
+        .unwrap();
+        let f = e
+            .project
+            .audio_clips
+            .iter()
+            .find(|c| c.id == right)
+            .unwrap();
         assert_eq!(f.fade_in_ms, Some(300.0));
-        assert!((f.fade_out_ms.unwrap() - 750.0).abs() < 1.0, "fade capped at the clip length");
+        assert!(
+            (f.fade_out_ms.unwrap() - 750.0).abs() < 1.0,
+            "fade capped at the clip length"
+        );
     }
 
     #[test]
     fn crossfade_consolidate_and_ripple() {
-        let (mut e, _) = eng();
+        let (mut e, _dir) = eng(); // keep the directory until the test ends
         let id = e.project.audio_clips[0].id.clone();
-        let v = e.call("split_clip", &json!({"id": id, "at_beat": 2.0})).unwrap();
+        let v = e
+            .call("split_clip", &json!({"id": id, "at_beat": 2.0}))
+            .unwrap();
         let right = v["right_id"].as_str().unwrap().to_string();
-        let x = e.call("crossfade_clips", &json!({"first": id, "second": right, "ms": 40})).unwrap();
-        assert!((x["overlap_ms"].as_f64().unwrap() - 40.0).abs() < 1.0, "{x}");
-        let a = e.project.audio_clips.iter().find(|c| c.id == id).unwrap().clone();
-        let b = e.project.audio_clips.iter().find(|c| c.id == right).unwrap().clone();
+        let x = e
+            .call(
+                "crossfade_clips",
+                &json!({"first": id, "second": right, "ms": 40}),
+            )
+            .unwrap();
+        assert!(
+            (x["overlap_ms"].as_f64().unwrap() - 40.0).abs() < 1.0,
+            "{x}"
+        );
+        let a = e
+            .project
+            .audio_clips
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap()
+            .clone();
+        let b = e
+            .project
+            .audio_clips
+            .iter()
+            .find(|c| c.id == right)
+            .unwrap()
+            .clone();
         assert!((a.length_s.unwrap() - 1.02).abs() < 2e-3 && (b.offset_s - 0.98).abs() < 2e-3);
         // the crossfaded pair renders without a dip or a bump at the joint
         let mix = e.mix().unwrap();
@@ -589,19 +744,38 @@ mod tests {
             (mix.left[i0..i0 + 2000].iter().map(|x| x * x).sum::<f32>() / 2000.0).sqrt()
         };
         let (mid, joint) = (rms(0.5), rms(0.99));
-        assert!((joint / mid - 1.0).abs() < 0.25, "joint {joint} vs body {mid}");
+        assert!(
+            (joint / mid - 1.0).abs() < 0.25,
+            "joint {joint} vs body {mid}"
+        );
         // consolidate both into one new clip
-        let c = e.call("consolidate_clips", &json!({"track": "vox"})).unwrap();
+        let c = e
+            .call("consolidate_clips", &json!({"track": "vox"}))
+            .unwrap();
         assert_eq!(e.project.audio_clips.len(), 1);
         let nid = c["id"].as_str().unwrap().to_string();
         assert!(nid != id && nid != right);
         assert!((c["seconds"].as_f64().unwrap() - 2.0).abs() < 0.01, "{c}");
         // ripple delete a range in the middle: the tail moves earlier
-        e.call("add_audio_clip", &json!({"track": "vox", "sample": "take", "start_beat": 8.0})).unwrap();
+        e.call(
+            "add_audio_clip",
+            &json!({"track": "vox", "sample": "take", "start_beat": 8.0}),
+        )
+        .unwrap();
         let later = e.project.audio_clips[1].id.clone();
-        let r = e.call("ripple_delete", &json!({"track": "vox", "from_beat": 1.0, "to_beat": 2.0})).unwrap();
+        let r = e
+            .call(
+                "ripple_delete",
+                &json!({"track": "vox", "from_beat": 1.0, "to_beat": 2.0}),
+            )
+            .unwrap();
         assert_eq!(r["split_at_edges"], 2, "{r}");
-        let l = e.project.audio_clips.iter().find(|c| c.id == later).unwrap();
+        let l = e
+            .project
+            .audio_clips
+            .iter()
+            .find(|c| c.id == later)
+            .unwrap();
         assert!((l.start_beat - 7.0).abs() < 1e-4);
         // ripple delete a whole clip by id
         e.call("ripple_delete", &json!({"id": later})).unwrap();

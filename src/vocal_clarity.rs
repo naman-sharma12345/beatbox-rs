@@ -17,17 +17,29 @@ pub fn ltas(x: &[f32]) -> Vec<f32> {
         return vec![1e-9; N / 2 + 1];
     }
     // loud frames only: silence would drag the voice's spectrum toward the noise
-    let e: Vec<f32> = ms.iter().map(|m| m.iter().map(|v| v * v).sum::<f32>()).collect();
+    let e: Vec<f32> = ms
+        .iter()
+        .map(|m| m.iter().map(|v| v * v).sum::<f32>())
+        .collect();
     let mut s = e.clone();
     s.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let thr = s[s.len() / 2];
     let keep: Vec<usize> = (0..ms.len()).filter(|&i| e[i] >= thr).collect();
-    (0..=N / 2).map(|k| (keep.iter().map(|&i| ms[i][k] * ms[i][k]).sum::<f32>() / keep.len().max(1) as f32).sqrt().max(1e-9)).collect()
+    (0..=N / 2)
+        .map(|k| {
+            (keep.iter().map(|&i| ms[i][k] * ms[i][k]).sum::<f32>() / keep.len().max(1) as f32)
+                .sqrt()
+                .max(1e-9)
+        })
+        .collect()
 }
 
 fn band_db(spec: &[f32], lo: f32, hi: f32) -> f32 {
     let hz = SR / N as f32;
-    let (a, b) = (((lo / hz) as usize).max(1), ((hi / hz) as usize).min(spec.len() - 1));
+    let (a, b) = (
+        ((lo / hz) as usize).max(1),
+        ((hi / hz) as usize).min(spec.len() - 1),
+    );
     let m = spec[a..=b].iter().map(|v| v * v).sum::<f32>() / (b - a + 1).max(1) as f32;
     10.0 * m.max(1e-18).log10()
 }
@@ -74,27 +86,40 @@ pub fn extend_bandwidth(x: &[f32], cutoff_hz: f32, amount: f32) -> Vec<f32> {
     let src: Vec<f32> = x.iter().map(|v| lp1.process(hp1.process(*v))).collect();
     // full-wave rectify (even harmonics) + a little odd from tanh
     let mut env = 0.0f32;
-    let gen: Vec<f32> = src.iter().map(|v| {
-        env = env.max(v.abs()) * 0.9995 + v.abs() * 0.0005;
-        let n = v / env.max(1e-4);
-        (n.abs() - 0.63) * env + 0.3 * (2.0 * n).tanh() * env
-    }).collect();
+    let gen: Vec<f32> = src
+        .iter()
+        .map(|v| {
+            env = env.max(v.abs()) * 0.9995 + v.abs() * 0.0005;
+            let n = v / env.max(1e-4);
+            (n.abs() - 0.63) * env + 0.3 * (2.0 * n).tanh() * env
+        })
+        .collect();
     let mut hp2 = Biquad::new(BiquadKind::LowCut, fc, 0.707, 0.0);
     let mut hp3 = Biquad::new(BiquadKind::LowCut, fc, 0.707, 0.0);
     let mut tilt = Biquad::new(BiquadKind::HighShelf, fc * 2.0, 0.707, -6.0);
     let mut top = Biquad::new(BiquadKind::HighCut, 17000.0, 0.707, 0.0);
-    let hi: Vec<f32> = gen.iter().map(|v| top.process(tilt.process(hp3.process(hp2.process(*v))))).collect();
+    let hi: Vec<f32> = gen
+        .iter()
+        .map(|v| top.process(tilt.process(hp3.process(hp2.process(*v)))))
+        .collect();
     // only where the voice is: the generator is faded out where the source
     // band sits near its own noise floor, so hiss between words is not
     // turned into fizz (that fizz is what made a dark take sound phasey)
     let att = (-1.0 / (0.005 * SR)).exp();
     let rel = (-1.0 / (0.08 * SR)).exp();
     let mut e = 0.0f32;
-    let env: Vec<f32> = src.iter().map(|v| {
-        let a = v.abs();
-        e = if a > e { a + (e - a) * att } else { a + (e - a) * rel };
-        20.0 * e.max(1e-7).log10()
-    }).collect();
+    let env: Vec<f32> = src
+        .iter()
+        .map(|v| {
+            let a = v.abs();
+            e = if a > e {
+                a + (e - a) * att
+            } else {
+                a + (e - a) * rel
+            };
+            20.0 * e.max(1e-7).log10()
+        })
+        .collect();
     let mut sorted: Vec<f32> = env.iter().step_by(64).copied().collect();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let p10 = sorted.get(sorted.len() / 10).copied().unwrap_or(-140.0);
@@ -102,11 +127,18 @@ pub fn extend_bandwidth(x: &[f32], cutoff_hz: f32, amount: f32) -> Vec<f32> {
     // a take with no gaps (or a steady test tone) has p10 ~ p90: then the
     // floor is taken 20 dB under the voice so nothing is gated out
     let floor = p10.min(p90 - 20.0);
-    let gate: Vec<f32> = env.iter().map(|d| ((d - floor - 8.0) / 10.0).clamp(0.0, 1.0)).collect();
+    let gate: Vec<f32> = env
+        .iter()
+        .map(|d| ((d - floor - 8.0) / 10.0).clamp(0.0, 1.0))
+        .collect();
     // level: the new band starts ~6 dB under the octave it continues
     let rms = |v: &[f32]| (v.iter().map(|s| s * s).sum::<f32>() / v.len().max(1) as f32).sqrt();
     let k = rms(&src) / rms(&hi).max(1e-9) * 0.5 * amount.clamp(0.0, 1.0);
-    x.iter().zip(hi.iter()).zip(gate.iter()).map(|((a, b), g)| a + k * g * b).collect()
+    x.iter()
+        .zip(hi.iter())
+        .zip(gate.iter())
+        .map(|((a, b), g)| a + k * g * b)
+        .collect()
 }
 
 /// Harmonic exciter: the band over `freq` is saturated and blended back.
@@ -114,11 +146,13 @@ pub fn excite(x: &[f32], freq: f32, drive: f32, mix: f32) -> Vec<f32> {
     let mut hp = Biquad::new(BiquadKind::LowCut, freq, 0.707, 0.0);
     let mut hp2 = Biquad::new(BiquadKind::LowCut, freq, 0.707, 0.0);
     let d = 1.0 + drive.clamp(0.0, 1.0) * 9.0;
-    x.iter().map(|v| {
-        let h = hp.process(*v);
-        let s = hp2.process((h * d).tanh() / d.sqrt());
-        v + mix.clamp(0.0, 1.0) * s
-    }).collect()
+    x.iter()
+        .map(|v| {
+            let h = hp.process(*v);
+            let s = hp2.process((h * d).tanh() / d.sqrt());
+            v + mix.clamp(0.0, 1.0) * s
+        })
+        .collect()
 }
 
 /// Clarity EQ: per frame, the 200-500 Hz body is cut by as much as it
@@ -128,23 +162,39 @@ pub fn clarity(x: &[f32], box_db: f32, presence_db: f32, air_db: f32) -> Vec<f32
     let hz = SR / N as f32;
     let s = ltas(x);
     let target = band_db(&s, 200.0, 500.0) - band_db(&s, 500.0, 2000.0) - 2.0;
-    let (b0, b1, c0, c1) = ((200.0 / hz) as usize, (500.0 / hz) as usize, (500.0 / hz) as usize, (2000.0 / hz) as usize);
-    let stat: Vec<f32> = (0..=N / 2).map(|k| {
-        let f = k as f32 * hz;
-        // presence bell centred 4.2 kHz (~1.2 oct), air shelf from 10 kHz
-        let p = presence_db * (-0.5 * ((f / 4200.0).max(1e-3).log2() / 0.6).powi(2)).exp();
-        let a = air_db * (1.0 / (1.0 + (10000.0 / f.max(1.0)).powi(4)));
-        10f32.powf((p + a) / 20.0)
-    }).collect();
+    let (b0, b1, c0, c1) = (
+        (200.0 / hz) as usize,
+        (500.0 / hz) as usize,
+        (500.0 / hz) as usize,
+        (2000.0 / hz) as usize,
+    );
+    let stat: Vec<f32> = (0..=N / 2)
+        .map(|k| {
+            let f = k as f32 * hz;
+            // presence bell centred 4.2 kHz (~1.2 oct), air shelf from 10 kHz
+            let p = presence_db * (-0.5 * ((f / 4200.0).max(1e-3).log2() / 0.6).powi(2)).exp();
+            let a = air_db * (1.0 / (1.0 + (10000.0 / f.max(1.0)).powi(4)));
+            10f32.powf((p + a) / 20.0)
+        })
+        .collect();
     let mut prev = 1.0f32;
     let bw = 0.7f32;
     spectral(x, |_, m, g| {
-        let e = |a: usize, b: usize| m[a..=b].iter().map(|v| v * v).sum::<f32>() / (b - a + 1) as f32;
+        let e =
+            |a: usize, b: usize| m[a..=b].iter().map(|v| v * v).sum::<f32>() / (b - a + 1) as f32;
         let (eb, ec) = (e(b0, b1), e(c0, c1));
-        let over = if eb > 1e-12 && ec > 1e-12 { 10.0 * (eb / ec).log10() - target } else { 0.0 };
+        let over = if eb > 1e-12 && ec > 1e-12 {
+            10.0 * (eb / ec).log10() - target
+        } else {
+            0.0
+        };
         let cut = over.clamp(0.0, box_db.abs());
         let gb = 10f32.powf(-cut / 20.0);
-        let gs = if gb < prev { 0.5 * prev + 0.5 * gb } else { 0.85 * prev + 0.15 * gb };
+        let gs = if gb < prev {
+            0.5 * prev + 0.5 * gb
+        } else {
+            0.85 * prev + 0.15 * gb
+        };
         prev = gs;
         for k in 0..=N / 2 {
             let f = k as f32 * hz;
@@ -162,15 +212,23 @@ pub fn match_curve(x: &[f32], reference: &[f32], amount: f32, max_db: f32) -> Ve
     let hz = SR / N as f32;
     // overall level does not count: align on 500 Hz-2 kHz
     let off = band_db(&b, 500.0, 2000.0) - band_db(&a, 500.0, 2000.0);
-    (0..=N / 2).map(|k| {
-        let f = (k as f32 * hz).max(20.0);
-        let d = band_db(&b, f / 1.12, f * 1.12) - off - band_db(&a, f / 1.12, f * 1.12);
-        let d = if f < 40.0 || f > 18000.0 { 0.0 } else { d };
-        10f32.powf((d * amount).clamp(-max_db, max_db) / 20.0)
-    }).collect()
+    (0..=N / 2)
+        .map(|k| {
+            let f = (k as f32 * hz).max(20.0);
+            let d = band_db(&b, f / 1.12, f * 1.12) - off - band_db(&a, f / 1.12, f * 1.12);
+            let d = if f < 40.0 || f > 18000.0 { 0.0 } else { d };
+            10f32.powf((d * amount).clamp(-max_db, max_db) / 20.0)
+        })
+        .collect()
 }
 
-fn save(e: &mut Engine, base: &crate::samples::SampleInfo, nn: &str, y: &[f32], what: &str) -> Result<String> {
+fn save(
+    e: &mut Engine,
+    base: &crate::samples::SampleInfo,
+    nn: &str,
+    y: &[f32],
+    what: &str,
+) -> Result<String> {
     let mut y = y.to_vec();
     // never hand back a clipped file
     let pk = y.iter().fold(0.0f32, |m, v| m.max(v.abs()));
@@ -182,7 +240,14 @@ fn save(e: &mut Engine, base: &crate::samples::SampleInfo, nn: &str, y: &[f32], 
     std::fs::create_dir_all(e.samples_dir())?;
     let path = e.samples_dir().join(format!("{name}.wav"));
     crate::render::write_wav(&path, &y, &y)?;
-    let info = crate::samples::SampleInfo { name, path: path.to_string_lossy().into(), source: format!("{} ({what})", base.source), license: base.license.clone(), author: base.author.clone(), duration: 0.0 };
+    let info = crate::samples::SampleInfo {
+        name,
+        path: path.to_string_lossy().into(),
+        source: format!("{} ({what})", base.source),
+        license: base.license.clone(),
+        author: base.author.clone(),
+        duration: 0.0,
+    };
     let r = crate::tools::register_sample(e, info)?;
     e.revision += 1;
     Ok(r["sample"].as_str().unwrap_or(nn).to_string())
@@ -288,10 +353,15 @@ mod tests {
     fn phone_voice() -> Vec<f32> {
         // a buzzy voice-like tone, then a 3.5 kHz brickwall (a phone)
         let n = (2.0 * SR) as usize;
-        let mut x: Vec<f32> = (0..n).map(|i| {
-            let t = i as f32 / SR;
-            (1..40).map(|h| (t * 150.0 * h as f32 * std::f32::consts::TAU).sin() / h as f32).sum::<f32>() * 0.1
-        }).collect();
+        let mut x: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                (1..40)
+                    .map(|h| (t * 150.0 * h as f32 * std::f32::consts::TAU).sin() / h as f32)
+                    .sum::<f32>()
+                    * 0.1
+            })
+            .collect();
         for _ in 0..4 {
             let mut lp = Biquad::new(BiquadKind::HighCut, 3500.0, 0.707, 0.0);
             x.iter_mut().for_each(|v| *v = lp.process(*v));
@@ -306,7 +376,10 @@ mod tests {
         assert!(t0["top_hz"].as_f64().unwrap() < 9000.0, "{t0}");
         let y = extend_bandwidth(&x, 3500.0, 0.8);
         let t1 = tone(&y);
-        assert!(t1["air_8k_16k"].as_f64().unwrap() > t0["air_8k_16k"].as_f64().unwrap() + 10.0, "{t0} -> {t1}");
+        assert!(
+            t1["air_8k_16k"].as_f64().unwrap() > t0["air_8k_16k"].as_f64().unwrap() + 10.0,
+            "{t0} -> {t1}"
+        );
         assert!(t1["top_hz"].as_f64().unwrap() > t0["top_hz"].as_f64().unwrap());
     }
 
@@ -315,14 +388,24 @@ mod tests {
         let x = phone_voice();
         let y = clarity(&x, 6.0, 4.0, 3.0);
         let (t0, t1) = (tone(&x), tone(&y));
-        assert!(t1["presence_2k_5k"].as_f64().unwrap() > t0["presence_2k_5k"].as_f64().unwrap() + 1.5, "{t0} -> {t1}");
+        assert!(
+            t1["presence_2k_5k"].as_f64().unwrap() > t0["presence_2k_5k"].as_f64().unwrap() + 1.5,
+            "{t0} -> {t1}"
+        );
         let ex = excite(&x, 2000.0, 0.6, 0.4);
-        assert!(tone(&ex)["brilliance_5k_8k"].as_f64().unwrap() > t0["brilliance_5k_8k"].as_f64().unwrap());
+        assert!(
+            tone(&ex)["brilliance_5k_8k"].as_f64().unwrap()
+                > t0["brilliance_5k_8k"].as_f64().unwrap()
+        );
         // match a dark take to a brighter reference
         let bright = extend_bandwidth(&x, 3500.0, 1.0);
         let c = match_curve(&x, &bright, 1.0, 12.0);
         let hz = SR / N as f32;
-        assert!(c[(10000.0 / hz) as usize] > 1.5, "boost at 10k: {}", c[(10000.0 / hz) as usize]);
+        assert!(
+            c[(10000.0 / hz) as usize] > 1.5,
+            "boost at 10k: {}",
+            c[(10000.0 / hz) as usize]
+        );
     }
     #[test]
     fn bandwidth_extension_leaves_the_hiss_between_words_alone() {
@@ -344,6 +427,9 @@ mod tests {
         let gap_y = hp(&y[n / 2 + 4800..]);
         let voice_add = hp(&y[4800..n / 2 - 4800]) / hp(&x[4800..n / 2 - 4800]).max(1e-9);
         assert!(voice_add > 1.4, "the voice gains air: {voice_add}");
-        assert!(gap_y < gap_x * 2.0 + 1e-5, "hiss not excited: {gap_x} -> {gap_y}");
+        assert!(
+            gap_y < gap_x * 2.0 + 1e-5,
+            "hiss not excited: {gap_x} -> {gap_y}"
+        );
     }
 }

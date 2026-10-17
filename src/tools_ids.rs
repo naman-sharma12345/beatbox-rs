@@ -5,7 +5,11 @@ use crate::tools::{obj, s_opt, s_req, Tool};
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
-fn list_ids(p: &crate::project::Project, kind: Option<&str>, pattern: Option<&str>) -> Result<Value> {
+fn list_ids(
+    p: &crate::project::Project,
+    kind: Option<&str>,
+    pattern: Option<&str>,
+) -> Result<Value> {
     let want = |k: &str| kind.is_none_or(|w| w == k || w.trim_end_matches('s') == k);
     let mut out = serde_json::Map::new();
     if want("track") {
@@ -15,7 +19,10 @@ fn list_ids(p: &crate::project::Project, kind: Option<&str>, pattern: Option<&st
     }
     if want("bus") {
         out.insert("buses".into(), json!(p.buses.iter().map(|b| json!({"id": b.id, "name": b.name, "inserts": b.effects.iter().map(|e| e.id()).collect::<Vec<_>>()})).collect::<Vec<_>>()));
-        out.insert("master_inserts".into(), json!(p.master_effects.iter().map(|e| e.id()).collect::<Vec<_>>()));
+        out.insert(
+            "master_inserts".into(),
+            json!(p.master_effects.iter().map(|e| e.id()).collect::<Vec<_>>()),
+        );
     }
     if want("pattern") {
         out.insert("patterns".into(), json!(p.patterns.iter().map(|x| json!({"id": x.id, "name": x.name,
@@ -35,7 +42,10 @@ fn list_ids(p: &crate::project::Project, kind: Option<&str>, pattern: Option<&st
             }
         }
         if notes.len() > 2000 {
-            return Err(anyhow!("{} notes; pass pattern to list one pattern's note ids", notes.len()));
+            return Err(anyhow!(
+                "{} notes; pass pattern to list one pattern's note ids",
+                notes.len()
+            ));
         }
         out.insert("notes".into(), json!(notes));
     }
@@ -46,8 +56,22 @@ fn list_ids(p: &crate::project::Project, kind: Option<&str>, pattern: Option<&st
         out.insert("audio_clips".into(), json!(p.audio_clips.iter().map(|c| json!({"id": c.id, "track": c.track, "sample": c.sample, "start_beat": c.start_beat})).collect::<Vec<_>>()));
     }
     if want("automation_lane") || want("lane") {
-        out.insert("automation_lanes".into(), json!(p.automation.iter().map(|l| json!({"id": l.id, "target": l.target, "param": l.param})).collect::<Vec<_>>()));
-        out.insert("automation_clips".into(), json!(p.automation_clips.iter().map(|c| json!({"id": c.id, "name": c.name})).collect::<Vec<_>>()));
+        out.insert(
+            "automation_lanes".into(),
+            json!(p
+                .automation
+                .iter()
+                .map(|l| json!({"id": l.id, "target": l.target, "param": l.param}))
+                .collect::<Vec<_>>()),
+        );
+        out.insert(
+            "automation_clips".into(),
+            json!(p
+                .automation_clips
+                .iter()
+                .map(|c| json!({"id": c.id, "name": c.name}))
+                .collect::<Vec<_>>()),
+        );
     }
     out.insert("schema_version".into(), json!(p.schema_version));
     Ok(Value::Object(out))
@@ -101,16 +125,35 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("beatbox_tools_ids_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir);
-        e.call("new_project", &json!({"name": "x", "bpm": 120})).unwrap();
-        e.call("add_track", &json!({"name": "keys", "preset": "pad"})).unwrap();
-        e.call("add_notes", &json!({"track": "keys", "notes": [{"start": 0, "len": 4, "pitch": 60}]})).unwrap();
-        e.call("place_pattern", &json!({"pattern": "A", "start_bar": 0, "bars": 4})).unwrap();
-        e.call("add_automation", &json!({"track": "keys", "param": "volume", "points": [[0, -6.0], [4, 0.0]]})).ok();
+        e.call("new_project", &json!({"name": "x", "bpm": 120}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "keys", "preset": "pad"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track": "keys", "notes": [{"start": 0, "len": 4, "pitch": 60}]}),
+        )
+        .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern": "A", "start_bar": 0, "bars": 4}),
+        )
+        .unwrap();
+        e.call(
+            "add_automation",
+            &json!({"track": "keys", "param": "volume", "points": [[0, -6.0], [4, 0.0]]}),
+        )
+        .ok();
         let v = e.call("list_ids", &json!({})).unwrap();
         let pl = v["playlist"][0]["id"].as_str().unwrap().to_string();
         assert!(pl.starts_with("pl"), "{v}");
-        assert_eq!(e.call("lookup_id", &json!({"id": pl})).unwrap()["kind"], "playlist_clip");
-        let n = e.call("list_ids", &json!({"kind": "note", "pattern": "A"})).unwrap();
+        assert_eq!(
+            e.call("lookup_id", &json!({"id": pl})).unwrap()["kind"],
+            "playlist_clip"
+        );
+        let n = e
+            .call("list_ids", &json!({"kind": "note", "pattern": "A"}))
+            .unwrap();
         assert_eq!(n["notes"].as_array().unwrap().len(), 1);
         // remove a playlist clip by its id
         e.call("remove_clip", &json!({"id": pl})).unwrap();

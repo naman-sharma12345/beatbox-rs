@@ -90,7 +90,11 @@ pub fn swing_of(on: &[f32], bpm: f32, _phase_s: f32) -> f32 {
         on.windows(3)
             .filter_map(|w| {
                 let (i1, i2) = (w[1] - w[0], w[2] - w[1]);
-                let ok = (i1 + i2 - b).abs() < 0.15 * b && i1 > 0.2 * b && i2 > 0.2 * b && i1 < 0.8 * b && i2 < 0.8 * b;
+                let ok = (i1 + i2 - b).abs() < 0.15 * b
+                    && i1 > 0.2 * b
+                    && i2 > 0.2 * b
+                    && i1 < 0.8 * b
+                    && i2 < 0.8 * b;
                 ok.then(|| if i1 > i2 { i1 / i2 } else { i2 / i1 })
             })
             .collect()
@@ -122,9 +126,15 @@ fn beat_phase(on: &[f32], bpm: f32) -> f32 {
     (s.atan2(c) / TAU).rem_euclid(1.0) * b
 }
 
-const MAJOR: [f32; 12] = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
-const MINOR: [f32; 12] = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
-const NAMES: [&str; 12] = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+const MAJOR: [f32; 12] = [
+    6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
+];
+const MINOR: [f32; 12] = [
+    6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
+];
+const NAMES: [&str; 12] = [
+    "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
+];
 
 fn corr(a: &[f32; 12], b: &[f32]) -> f32 {
     let ma = a.iter().sum::<f32>() / 12.0;
@@ -174,7 +184,9 @@ fn stresses(x: &[f32], on: &[f32]) -> Vec<f32> {
     let lvl = |t: f32| -> f32 {
         let a = (t / HOP) as usize;
         let b = (a + (0.08 / HOP) as usize).min(db.len());
-        db.get(a..b).map(|s| s.iter().cloned().fold(-200.0f32, f32::max)).unwrap_or(-200.0)
+        db.get(a..b)
+            .map(|s| s.iter().cloned().fold(-200.0f32, f32::max))
+            .unwrap_or(-200.0)
     };
     let v: Vec<f32> = on.iter().map(|t| lvl(*t)).collect();
     if v.is_empty() {
@@ -183,7 +195,11 @@ fn stresses(x: &[f32], on: &[f32]) -> Vec<f32> {
     let mut s = v.clone();
     s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let med = s[s.len() / 2];
-    on.iter().zip(v.iter()).filter(|(_, l)| **l >= med + 3.0).map(|(t, _)| *t).collect()
+    on.iter()
+        .zip(v.iter())
+        .filter(|(_, l)| **l >= med + 3.0)
+        .map(|(t, _)| *t)
+        .collect()
 }
 
 pub struct Style {
@@ -204,8 +220,16 @@ pub fn analyze(x: &[f32]) -> Style {
     let swing = swing_of(&on, bpm, phase);
     let (tonic, minor, kconf, cents, _) = key_of(x);
     let styles = crate::vocal_sections::styles(x, 0.35, 0.3, 2.0);
-    let sung_s: f32 = styles.iter().filter(|s| s.style == "melodic").map(|s| s.end_s - s.start_s).sum();
-    let all_s: f32 = styles.iter().map(|s| s.end_s - s.start_s).sum::<f32>().max(1e-3);
+    let sung_s: f32 = styles
+        .iter()
+        .filter(|s| s.style == "melodic")
+        .map(|s| s.end_s - s.start_s)
+        .sum();
+    let all_s: f32 = styles
+        .iter()
+        .map(|s| s.end_s - s.start_s)
+        .sum::<f32>()
+        .max(1e-3);
     let sung = sung_s / all_s;
     // legato: share of each phrase that is voiced (held) vs gaps between syllables
     let db = band_db(x);
@@ -223,15 +247,28 @@ pub fn analyze(x: &[f32]) -> Style {
     }
     let legato = voiced as f32 / inside.max(1) as f32;
     let dur = x.len() as f32 / SR;
-    let rate = on.len() as f32 / ph.iter().map(|p| p.end_s - p.start_s).sum::<f32>().max(1e-3);
+    let rate = on.len() as f32
+        / ph.iter()
+            .map(|p| p.end_s - p.start_s)
+            .sum::<f32>()
+            .max(1e-3);
     // tone
     let t = crate::vocal_clarity::tone(x);
     let g = |k: &str| t[k].as_f64().unwrap_or(0.0) as f32;
-    let (body, pres, bril, air) = (g("body_200_500"), g("presence_2k_5k"), g("brilliance_5k_8k"), g("air_8k_16k"));
+    let (body, pres, bril, air) = (
+        g("body_200_500"),
+        g("presence_2k_5k"),
+        g("brilliance_5k_8k"),
+        g("air_8k_16k"),
+    );
     let fr: Vec<f32> = db.iter().copied().filter(|d| *d >= thr).collect();
     let mut sorted = fr.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let dyn_db = if sorted.len() > 10 { sorted[sorted.len() * 95 / 100] - sorted[sorted.len() / 10] } else { 0.0 };
+    let dyn_db = if sorted.len() > 10 {
+        sorted[sorted.len() * 95 / 100] - sorted[sorted.len() / 10]
+    } else {
+        0.0
+    };
     let mut tone = Vec::new();
     if pres < -15.0 || g("top_hz") < 6000.0 {
         tone.push("dark");
@@ -255,67 +292,185 @@ pub fn analyze(x: &[f32]) -> Style {
     let half = (bpm / 2.0).max(1.0);
     let fast = if bpm < 100.0 { bpm * 2.0 } else { bpm };
     let slow = if bpm >= 120.0 { half } else { bpm };
-    let delivery = if sung > 0.6 { "sung" } else if sung > 0.25 { "mixed sung + rap" } else { "rap" };
-    let articulation = if legato > 0.65 { "legato" } else if legato < 0.45 { "staccato" } else { "mixed" };
+    let delivery = if sung > 0.6 {
+        "sung"
+    } else if sung > 0.25 {
+        "mixed sung + rap"
+    } else {
+        "rap"
+    };
+    let articulation = if legato > 0.65 {
+        "legato"
+    } else if legato < 0.45 {
+        "staccato"
+    } else {
+        "mixed"
+    };
     // ranked suggestions
     let mut sug: Vec<(f32, Value)> = Vec::new();
-    let mut add = |score: f32, genre: &str, bpm_use: f32, groove: &str, feel: &str, palette: &[&str], why: String| {
+    let mut add = |score: f32,
+                   genre: &str,
+                   bpm_use: f32,
+                   groove: &str,
+                   feel: &str,
+                   palette: &[&str],
+                   why: String| {
         sug.push((score, json!({"genre": genre, "score": r2(score), "bpm": r2(bpm_use), "drum_groove": groove, "feel": feel, "palette": palette, "why": why})));
     };
     let swingy = swing > 0.3;
     add(
-        (1.0 - sung) * if (130.0..=150.0).contains(&fast) || (65.0..=75.0).contains(&slow) { 1.0 } else { 0.4 } * if minor { 1.0 } else { 0.7 },
+        (1.0 - sung)
+            * if (130.0..=150.0).contains(&fast) || (65.0..=75.0).contains(&slow) {
+                1.0
+            } else {
+                0.4
+            }
+            * if minor { 1.0 } else { 0.7 },
         "drill",
-        if (130.0..=150.0).contains(&fast) { fast } else { 142.0 },
+        if (130.0..=150.0).contains(&fast) {
+            fast
+        } else {
+            142.0
+        },
         "drill",
         "half-time drill (kick 1/4/7/11, snare on 3), sliding 808",
-        &["kick_tight", "snare_drill", "hat_drill", "808_slide", "felt_piano", "choir_ooh", "bell_dark"],
-        format!("{delivery}, flow fits {fast:.0}/{slow:.0} bpm{}", if minor { ", minor" } else { "" }),
+        &[
+            "kick_tight",
+            "snare_drill",
+            "hat_drill",
+            "808_slide",
+            "felt_piano",
+            "choir_ooh",
+            "bell_dark",
+        ],
+        format!(
+            "{delivery}, flow fits {fast:.0}/{slow:.0} bpm{}",
+            if minor { ", minor" } else { "" }
+        ),
     );
     add(
-        (1.0 - sung * 0.5) * if (125.0..=170.0).contains(&fast) { 0.9 } else { 0.4 } * if swingy { 0.6 } else { 1.0 },
+        (1.0 - sung * 0.5)
+            * if (125.0..=170.0).contains(&fast) {
+                0.9
+            } else {
+                0.4
+            }
+            * if swingy { 0.6 } else { 1.0 },
         "trap",
         fast.clamp(130.0, 160.0),
         "trap",
         "half-time, 16th hats with rolls",
-        &["kick_punchy", "snare_crack", "hat_crisp", "808_grit", "dark_keys", "pad_dusty"],
+        &[
+            "kick_punchy",
+            "snare_crack",
+            "hat_crisp",
+            "808_grit",
+            "dark_keys",
+            "pad_dusty",
+        ],
         format!("{delivery} at {fast:.0} double-time"),
     );
     add(
-        (1.0 - sung) * if (82.0..=100.0).contains(&bpm) { 1.0 } else { 0.35 } * if swingy { 1.2 } else { 0.8 },
+        (1.0 - sung)
+            * if (82.0..=100.0).contains(&bpm) {
+                1.0
+            } else {
+                0.35
+            }
+            * if swingy { 1.2 } else { 0.8 },
         "boom_bap",
         bpm.clamp(82.0, 100.0),
         "boom_bap",
-        if swingy { "swung 16ths, laid-back snare" } else { "straight, laid-back snare" },
-        &["kick_dusty", "snare_dusty", "hat_dusty", "bass_round", "keys_dusty"],
+        if swingy {
+            "swung 16ths, laid-back snare"
+        } else {
+            "straight, laid-back snare"
+        },
+        &[
+            "kick_dusty",
+            "snare_dusty",
+            "hat_dusty",
+            "bass_round",
+            "keys_dusty",
+        ],
         format!("rap at {bpm:.0} bpm, swing {swing:.2}"),
     );
     add(
-        sung * if (60.0..=80.0).contains(&slow) || (120.0..=160.0).contains(&fast) { 1.0 } else { 0.5 } * if minor { 1.0 } else { 0.8 },
+        sung * if (60.0..=80.0).contains(&slow) || (120.0..=160.0).contains(&fast) {
+            1.0
+        } else {
+            0.5
+        } * if minor { 1.0 } else { 0.8 },
         "melodic_rap",
-        if (60.0..=80.0).contains(&slow) { slow * 2.0 } else { fast },
+        if (60.0..=80.0).contains(&slow) {
+            slow * 2.0
+        } else {
+            fast
+        },
         "trap",
         "half-time, sparse kick, 8th hats",
-        &["kick_deep", "snare_soft", "hat_crisp", "808_clean", "bell_glass", "pad_airy", "keys_airy"],
-        format!("{delivery}, {articulation}, {}", if minor { "minor" } else { "major" }),
+        &[
+            "kick_deep",
+            "snare_soft",
+            "hat_crisp",
+            "808_clean",
+            "bell_glass",
+            "pad_airy",
+            "keys_airy",
+        ],
+        format!(
+            "{delivery}, {articulation}, {}",
+            if minor { "minor" } else { "major" }
+        ),
     );
     add(
-        sung * legato * if (60.0..=95.0).contains(&bpm) || (60.0..=95.0).contains(&half) { 1.0 } else { 0.4 },
+        sung * legato
+            * if (60.0..=95.0).contains(&bpm) || (60.0..=95.0).contains(&half) {
+                1.0
+            } else {
+                0.4
+            },
         "rnb",
         if bpm <= 95.0 { bpm } else { half },
         "rnb",
-        if swingy { "swung, lazy" } else { "straight, lazy" },
-        &["kick_deep", "snare_soft", "hat_crisp", "808_clean", "epiano", "pad_airy"],
+        if swingy {
+            "swung, lazy"
+        } else {
+            "straight, lazy"
+        },
+        &[
+            "kick_deep",
+            "snare_soft",
+            "hat_crisp",
+            "808_clean",
+            "epiano",
+            "pad_airy",
+        ],
         format!("sung {articulation}, {}", tone.join("/")),
     );
     add(
-        sung * if (95.0..=130.0).contains(&bpm) { 1.0 } else { 0.4 } * if minor { 0.8 } else { 1.0 },
+        sung * if (95.0..=130.0).contains(&bpm) {
+            1.0
+        } else {
+            0.4
+        } * if minor { 0.8 } else { 1.0 },
         "pop / indie",
         bpm.clamp(95.0, 130.0),
         "pop",
         "straight four, big chorus lift",
-        &["kick", "snare", "hat", "sub_bass", "guitar_pluck", "warm_pad", "strings"],
-        format!("sung at {bpm:.0} bpm, {}", if minor { "minor" } else { "major" }),
+        &[
+            "kick",
+            "snare",
+            "hat",
+            "sub_bass",
+            "guitar_pluck",
+            "warm_pad",
+            "strings",
+        ],
+        format!(
+            "sung at {bpm:.0} bpm, {}",
+            if minor { "minor" } else { "major" }
+        ),
     );
     add(
         if swingy { 0.9 } else { 0.3 } * if bpm < 95.0 { 1.0 } else { 0.5 },
@@ -323,14 +478,25 @@ pub fn analyze(x: &[f32]) -> Style {
         bpm.clamp(70.0, 92.0),
         "lofi",
         "swung, dusty",
-        &["kick_dusty", "snare_dusty", "hat_dusty", "keys_dusty", "pad_dusty"],
+        &[
+            "kick_dusty",
+            "snare_dusty",
+            "hat_dusty",
+            "keys_dusty",
+            "pad_dusty",
+        ],
         format!("swing {swing:.2}, {}", tone.join("/")),
     );
     sug.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let phrases_v: Vec<Value> = ph
         .iter()
         .map(|p| {
-            let s: Vec<f32> = st.iter().copied().filter(|t| *t >= p.start_s && *t <= p.end_s).map(r2).collect();
+            let s: Vec<f32> = st
+                .iter()
+                .copied()
+                .filter(|t| *t >= p.start_s && *t <= p.end_s)
+                .map(r2)
+                .collect();
             json!({"start_s": r2(p.start_s), "end_s": r2(p.end_s), "stress_s": s})
         })
         .collect();
@@ -345,7 +511,14 @@ pub fn analyze(x: &[f32]) -> Style {
         "tone": {"words": tone, "body_db": body, "presence_db": pres, "brilliance_db": bril, "air_db": air, "dynamics_db": r2(dyn_db)},
         "suggestions": sug.iter().map(|s| s.1.clone()).collect::<Vec<_>>(),
     });
-    Style { bpm, phase_s: phase, swing, onsets: on, stress: st, report }
+    Style {
+        bpm,
+        phase_s: phase,
+        swing,
+        onsets: on,
+        stress: st,
+        report,
+    }
 }
 
 fn audio(e: &mut Engine, a: &Value) -> Result<(String, Vec<f32>)> {
@@ -355,7 +528,10 @@ fn audio(e: &mut Engine, a: &Value) -> Result<(String, Vec<f32>)> {
     }
     if s_opt(a, "path").is_some() {
         let (name, l, r) = crate::tools_sound::audio_for(e, a)?;
-        return Ok((name, l.iter().zip(r.iter()).map(|(x, y)| 0.5 * (x + y)).collect()));
+        return Ok((
+            name,
+            l.iter().zip(r.iter()).map(|(x, y)| 0.5 * (x + y)).collect(),
+        ));
     }
     bail!("give sample (or path)")
 }
@@ -391,19 +567,36 @@ fn fit_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     let to_step = |t: f32| (start_beat + t / bs) * 4.0;
     let stress_steps: Vec<f32> = s.stress.iter().map(|t| to_step(*t)).collect();
     let syl_steps: Vec<f32> = s.onsets.iter().map(|t| to_step(*t)).collect();
-    let phr: Vec<(f32, f32)> = phrases(&x, 0.3, None).iter().map(|p| (to_step(p.start_s), to_step(p.end_s))).collect();
+    let phr: Vec<(f32, f32)> = phrases(&x, 0.3, None)
+        .iter()
+        .map(|p| (to_step(p.start_s), to_step(p.end_s)))
+        .collect();
     // per pattern: votes per step position
-    let mut placed: std::collections::BTreeMap<String, Vec<f32>> = std::collections::BTreeMap::new();
+    let mut placed: std::collections::BTreeMap<String, Vec<f32>> =
+        std::collections::BTreeMap::new();
     let mut acc = 0.0f32;
     for sec in &e.project.arrangement {
         let pi = e.project.pattern_index(&sec.pattern)?;
         let len = e.project.patterns[pi].steps() as f32;
         for _ in 0..sec.repeats.max(1) {
-            placed.entry(sec.pattern.to_lowercase()).or_default().push(acc);
+            placed
+                .entry(sec.pattern.to_lowercase())
+                .or_default()
+                .push(acc);
             acc += len;
         }
     }
-    let roles: Vec<(String, &'static str)> = e.project.tracks.iter().map(|t| (t.name.to_lowercase(), crate::tools_mix::role_of(&t.name, &t.instrument))).collect();
+    let roles: Vec<(String, &'static str)> = e
+        .project
+        .tracks
+        .iter()
+        .map(|t| {
+            (
+                t.name.to_lowercase(),
+                crate::tools_mix::role_of(&t.name, &t.instrument),
+            )
+        })
+        .collect();
     let (mut accented, mut softened, mut kicks_added) = (0usize, 0usize, 0usize);
     let mut touched = Vec::new();
     for (pname, starts) in &placed {
@@ -442,7 +635,11 @@ fn fit_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         let pat = &mut e.project.patterns[pi];
         let mut kick_track: Option<String> = None;
         for (tn, notes) in pat.clips.iter_mut() {
-            let role = roles.iter().find(|(n, _)| n == tn).map(|(_, r)| *r).unwrap_or("other");
+            let role = roles
+                .iter()
+                .find(|(n, _)| n == tn)
+                .map(|(_, r)| *r)
+                .unwrap_or("other");
             if !matches!(role, "kick" | "snare" | "hats" | "perc" | "bass") {
                 continue;
             }
@@ -451,7 +648,10 @@ fn fit_tool(e: &mut Engine, a: &Value) -> Result<Value> {
             }
             for n in notes.iter_mut() {
                 let k = (n.start.round() as usize).min(len - 1);
-                let near = (k.saturating_sub(1)..=(k + 1).min(len - 1)).map(|j| stress_votes[j]).fold(0.0f32, f32::max) / plays;
+                let near = (k.saturating_sub(1)..=(k + 1).min(len - 1))
+                    .map(|j| stress_votes[j])
+                    .fold(0.0f32, f32::max)
+                    / plays;
                 if near >= 0.5 && matches!(role, "kick" | "snare" | "bass" | "hats") {
                     n.vel = (n.vel * (1.0 + 0.2 * strength)).min(1.0);
                     accented += 1;
@@ -466,7 +666,9 @@ fn fit_tool(e: &mut Engine, a: &Value) -> Result<Value> {
                 let notes = pat.notes_mut(&kt);
                 let mut per_bar = std::collections::HashMap::new();
                 for k in (0..len).step_by(2) {
-                    if stress_votes[k] / plays >= 0.6 && !notes.iter().any(|n| (n.start - k as f32).abs() <= 2.0) {
+                    if stress_votes[k] / plays >= 0.6
+                        && !notes.iter().any(|n| (n.start - k as f32).abs() <= 2.0)
+                    {
                         let bar = k / 16;
                         let c = per_bar.entry(bar).or_insert(0);
                         if *c < 1 {
@@ -476,7 +678,11 @@ fn fit_tool(e: &mut Engine, a: &Value) -> Result<Value> {
                         }
                     }
                 }
-                notes.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+                notes.sort_by(|a, b| {
+                    a.start
+                        .partial_cmp(&b.start)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
             }
         }
         touched.push(pname.clone());
@@ -489,14 +695,22 @@ fn fit_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     }
     // how the vocal's own tempo reading relates to the project
     let ratio = s.bpm / bpm;
-    let rel = [0.5f32, 1.0, 2.0, 2.0 / 3.0, 1.5].iter().map(|f| (f, (ratio / f - 1.0).abs())).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
+    let rel = [0.5f32, 1.0, 2.0, 2.0 / 3.0, 1.5]
+        .iter()
+        .map(|f| (f, (ratio / f - 1.0).abs()))
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap();
     let mut warn = Vec::new();
     if rel.1 > 0.04 {
         warn.push(format!("the flow reads {:.1} bpm, which does not fit the project's {bpm:.1} (or its half/double): set_tempo first, or align_vocal_to_grid", s.bpm));
     }
     let on_grid = {
         let tol = (0.25 * bs * 0.25).min(0.03);
-        s.onsets.iter().filter(|t| nearest_grid(**t, bpm, start_beat, 0.25).0.abs() <= tol).count() as f32 / s.onsets.len().max(1) as f32
+        s.onsets
+            .iter()
+            .filter(|t| nearest_grid(**t, bpm, start_beat, 0.25).0.abs() <= tol)
+            .count() as f32
+            / s.onsets.len().max(1) as f32
     };
     Ok(json!({
         "source": name,
@@ -539,7 +753,9 @@ mod tests {
     fn take(bpm: f32, swing: f32, secs: f32) -> Vec<f32> {
         let mut x = vec![0.0f32; (secs * SR) as usize];
         let b = 60.0 / bpm;
-        let scale = [57.0f32, 60.0, 62.0, 64.0, 65.0, 67.0, 69.0, 57.0, 64.0, 60.0];
+        let scale = [
+            57.0f32, 60.0, 62.0, 64.0, 65.0, 67.0, 69.0, 57.0, 64.0, 60.0,
+        ];
         let mut k = 0usize;
         let mut beat = 0.5f32;
         while (beat + 1.0) * b < secs - 0.3 {
@@ -548,14 +764,21 @@ mod tests {
                 for (half, off) in [(0usize, 0.0f32), (1, 0.5 + swing / 6.0)] {
                     let t0 = (beat + off) * b;
                     let f = 440.0 * 2f32.powf((scale[k % scale.len()] - 69.0) / 12.0);
-                    let accent = if half == 0 && (beat as usize) % 2 == 0 { 1.0 } else { 0.45 };
+                    let accent = if half == 0 && (beat as usize) % 2 == 0 {
+                        1.0
+                    } else {
+                        0.45
+                    };
                     let n = (0.14 * SR) as usize;
                     let i0 = (t0 * SR) as usize;
                     for i in 0..n {
                         let t = i as f32 / SR;
                         let env = (t / 0.008).min(1.0) * (-t / 0.09).exp();
                         if i0 + i < x.len() {
-                            x[i0 + i] += accent * 0.4 * env * ((TAU * f * t).sin() + 0.4 * (TAU * 2.0 * f * t).sin());
+                            x[i0 + i] += accent
+                                * 0.4
+                                * env
+                                * ((TAU * f * t).sin() + 0.4 * (TAU * 2.0 * f * t).sin());
                         }
                     }
                     k += 1;
@@ -571,17 +794,27 @@ mod tests {
         let x = take(92.0, 0.0, 16.0);
         let s = analyze(&x);
         let b = s.bpm;
-        let ok = [92.0f32, 46.0, 184.0, 138.0, 61.33].iter().any(|c| (b / c - 1.0).abs() < 0.03);
+        let ok = [92.0f32, 46.0, 184.0, 138.0, 61.33]
+            .iter()
+            .any(|c| (b / c - 1.0).abs() < 0.03);
         assert!(ok, "bpm {b}: {}", s.report["tempo"]);
         assert!(s.swing < 0.3, "straight take reads swing {}", s.swing);
         assert!(!s.report["phrases"].as_array().unwrap().is_empty());
         let key = &s.report["key"];
         let t = key["tonic"].as_str().unwrap();
-        assert!((t == "A" && key["mode"] == "minor") || (t == "C" && key["mode"] == "major"), "{key}");
+        assert!(
+            (t == "A" && key["mode"] == "minor") || (t == "C" && key["mode"] == "major"),
+            "{key}"
+        );
         assert!(!s.stress.is_empty(), "accented syllables found");
         assert!(s.report["suggestions"].as_array().unwrap().len() >= 5);
         let sw = analyze(&take(92.0, 1.0, 16.0));
-        assert!(sw.swing > s.swing + 0.3, "swung take {} vs straight {}", sw.swing, s.swing);
+        assert!(
+            sw.swing > s.swing + 0.3,
+            "swung take {} vs straight {}",
+            sw.swing,
+            s.swing
+        );
     }
 
     #[test]
@@ -589,18 +822,37 @@ mod tests {
         let dir = std::env::temp_dir().join("beatbox_vocal_style_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir.clone());
-        e.call("new_project", &json!({"name": "fit", "bpm": 92})).unwrap();
+        e.call("new_project", &json!({"name": "fit", "bpm": 92}))
+            .unwrap();
         let x = take(92.0, 1.0, 12.0);
         let wav = dir.join("take.wav");
         crate::render::write_wav(&wav, &x, &x).unwrap();
-        e.call("import_sample", &json!({"path": wav.to_string_lossy(), "name": "take"})).unwrap();
-        e.call("generate_drums", &json!({"style": "boom_bap"})).unwrap();
+        e.call(
+            "import_sample",
+            &json!({"path": wav.to_string_lossy(), "name": "take"}),
+        )
+        .unwrap();
+        e.call("generate_drums", &json!({"style": "boom_bap"}))
+            .unwrap();
         e.project.bpm = 92.0;
-        let a = e.call("analyze_vocal_style", &json!({"sample": "take"})).unwrap();
-        assert!(a["tempo"]["swing"].as_f64().unwrap() > 0.3, "{}", a["tempo"]);
+        let a = e
+            .call("analyze_vocal_style", &json!({"sample": "take"}))
+            .unwrap();
+        assert!(
+            a["tempo"]["swing"].as_f64().unwrap() > 0.3,
+            "{}",
+            a["tempo"]
+        );
         let before = e.project.patterns.clone();
-        let r = e.call("fit_beat_to_vocal", &json!({"sample": "take"})).unwrap();
-        assert!(r["accented_hits"].as_u64().unwrap() + r["softened_hits_inside_phrases"].as_u64().unwrap() > 0, "{r}");
+        let r = e
+            .call("fit_beat_to_vocal", &json!({"sample": "take"}))
+            .unwrap();
+        assert!(
+            r["accented_hits"].as_u64().unwrap()
+                + r["softened_hits_inside_phrases"].as_u64().unwrap()
+                > 0,
+            "{r}"
+        );
         assert!(r["swing_set"].as_f64().unwrap() > 0.1, "{r}");
         assert_ne!(before, e.project.patterns);
     }

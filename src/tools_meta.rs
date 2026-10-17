@@ -52,12 +52,28 @@ fn cat_index() -> &'static BTreeMap<&'static str, &'static str> {
 /// group only); tools no module maps yet are listed under "other".
 pub fn groups() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
     // the MCP category tools are the groups (tools_categories.rs)
-    let mut out: Vec<(&'static str, &'static str, Vec<&'static str>)> = crate::tools_categories::CATEGORIES
+    let mut out: Vec<(&'static str, &'static str, Vec<&'static str>)> =
+        crate::tools_categories::CATEGORIES
+            .iter()
+            .map(|c| {
+                (
+                    c.name,
+                    c.description,
+                    c.actions
+                        .iter()
+                        .copied()
+                        .filter(|a| tools::find(a).is_some())
+                        .collect(),
+                )
+            })
+            .collect();
+    let known: std::collections::HashSet<&str> =
+        out.iter().flat_map(|g| g.2.iter().copied()).collect();
+    let other: Vec<&'static str> = tools::registry()
         .iter()
-        .map(|c| (c.name, c.description, c.actions.iter().copied().filter(|a| tools::find(a).is_some()).collect()))
+        .map(|t| t.name)
+        .filter(|n| !known.contains(n))
         .collect();
-    let known: std::collections::HashSet<&str> = out.iter().flat_map(|g| g.2.iter().copied()).collect();
-    let other: Vec<&'static str> = tools::registry().iter().map(|t| t.name).filter(|n| !known.contains(n)).collect();
     if !other.is_empty() {
         out.push(("other", "not grouped yet", other));
     }
@@ -70,9 +86,22 @@ fn module_groups() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
     let mut seen = std::collections::HashSet::new();
     let mut out: Vec<(&'static str, &'static str, Vec<&'static str>)> = modules()
         .into_iter()
-        .map(|(c, p, ts)| (c, p, ts.iter().map(|t| t.name).filter(|n| seen.insert(*n)).collect()))
+        .map(|(c, p, ts)| {
+            (
+                c,
+                p,
+                ts.iter()
+                    .map(|t| t.name)
+                    .filter(|n| seen.insert(*n))
+                    .collect(),
+            )
+        })
         .collect();
-    let other: Vec<&'static str> = tools::registry().iter().map(|t| t.name).filter(|n| !seen.contains(n)).collect();
+    let other: Vec<&'static str> = tools::registry()
+        .iter()
+        .map(|t| t.name)
+        .filter(|n| !seen.contains(n))
+        .collect();
     if !other.is_empty() {
         out.push(("other", "not grouped yet", other));
     }
@@ -82,7 +111,10 @@ fn module_groups() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
 
 /// The category a tool belongs to ("other" when a module is not mapped yet).
 pub fn category(name: &str) -> &'static str {
-    crate::tools_categories::category_of(name).map(|c| c.name).or_else(|| cat_index().get(name).copied()).unwrap_or("other")
+    crate::tools_categories::category_of(name)
+        .map(|c| c.name)
+        .or_else(|| cat_index().get(name).copied())
+        .unwrap_or("other")
 }
 
 /// First sentence of a description, at most ~110 chars (compact listings).
@@ -139,7 +171,11 @@ fn example_for(key: &str, p: &Value) -> Value {
     if let Some(d) = p.get("default") {
         return d.clone();
     }
-    if let Some(e) = p.get("enum").and_then(|e| e.as_array()).and_then(|e| e.first()) {
+    if let Some(e) = p
+        .get("enum")
+        .and_then(|e| e.as_array())
+        .and_then(|e| e.first())
+    {
         return e.clone();
     }
     if let Some(Value::Array(ex)) = p.get("examples") {
@@ -149,8 +185,13 @@ fn example_for(key: &str, p: &Value) -> Value {
     }
     let ty = match p.get("type") {
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str()).find(|s| *s != "null").unwrap_or("string").to_string(),
-        _ => if p.get("oneOf").is_some() || p.get("anyOf").is_some() { "string".into() } else { "string".into() },
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| x.as_str())
+            .find(|s| *s != "null")
+            .unwrap_or("string")
+            .to_string(),
+        _ => "string".into(),
     };
     match ty.as_str() {
         "integer" | "number" => {
@@ -168,7 +209,11 @@ fn example_for(key: &str, p: &Value) -> Value {
                     _ => 1.0,
                 },
             };
-            if ty == "integer" { json!(v.round() as i64) } else { json!(v) }
+            if ty == "integer" {
+                json!(v.round() as i64)
+            } else {
+                json!(v)
+            }
         }
         "boolean" => json!(true),
         "array" => json!([]),
@@ -191,7 +236,14 @@ fn example_for(key: &str, p: &Value) -> Value {
 pub fn example_call(t: &Tool) -> Value {
     let s = (t.schema)();
     let props = s["properties"].as_object().cloned().unwrap_or_default();
-    let req: Vec<String> = s["required"].as_array().map(|r| r.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+    let req: Vec<String> = s["required"]
+        .as_array()
+        .map(|r| {
+            r.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut args = Map::new();
     for k in &req {
         if let Some(p) = props.get(k) {
@@ -212,7 +264,9 @@ pub fn example_call(t: &Tool) -> Value {
 /// What a caller usually does next after a tool (compact hints, never required).
 pub fn next_steps(name: &str) -> &'static [&'static str] {
     match name {
-        "make_beat" | "produce_track" | "produce_song" | "generate_beat" => &["critique_track", "export_audio", "get_project_summary"],
+        "make_beat" | "produce_track" | "produce_song" | "generate_beat" => {
+            &["critique_track", "export_audio", "get_project_summary"]
+        }
         "new_project" => &["make_beat", "generate_drums", "set_tempo"],
         "load_project" => &["get_project_summary", "render"],
         "generate_drums" => &["generate_bassline", "generate_chords"],
@@ -221,7 +275,9 @@ pub fn next_steps(name: &str) -> &'static [&'static str] {
         "generate_melody" => &["build_structure", "render"],
         "build_structure" | "set_arrangement" => &["render", "analyze_mix"],
         "render" => &["analyze_mix", "export_audio"],
-        "analyze_mix" | "ears_report" | "critique_track" => &["revise_track", "balance_mix", "export_audio"],
+        "analyze_mix" | "ears_report" | "critique_track" => {
+            &["revise_track", "balance_mix", "export_audio"]
+        }
         "add_effect" | "tweak_effect" => &["render_preview", "ab_compare"],
         "tune_vocal" | "transcribe_lyrics" | "analyze_vocal" => &["vocal_to_song"],
         "vocal_to_song" => &["critique_track", "export_audio"],
@@ -250,12 +306,21 @@ pub fn list(a: &Value) -> Result<Value> {
         }
         n += 1;
         let e = cats.entry(c.to_string()).or_insert_with(|| json!([]));
-        e.as_array_mut().unwrap().push(json!({"name": t.name, "does": short(t.description)}));
+        e.as_array_mut()
+            .unwrap()
+            .push(json!({"name": t.name, "does": short(t.description)}));
     }
     if let Some(w) = &want {
         if n == 0 {
             let names: Vec<&String> = about.keys().collect();
-            return Err(anyhow!("no category '{w}'. Categories: {}", names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
+            return Err(anyhow!(
+                "no category '{w}'. Categories: {}",
+                names
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
     }
     Ok(json!({
@@ -269,16 +334,29 @@ pub fn list(a: &Value) -> Result<Value> {
 
 pub fn describe(name: &str) -> Result<Value> {
     let t = tools::find(name).ok_or_else(|| {
-        anyhow!("unknown tool '{name}'. Did you mean: {}? (list_tools shows all)", suggest(name, 3).join(", "))
+        anyhow!(
+            "unknown tool '{name}'. Did you mean: {}? (list_tools shows all)",
+            suggest(name, 3).join(", ")
+        )
     })?;
     let s = (t.schema)();
     let props = s["properties"].as_object().cloned().unwrap_or_default();
-    let req: Vec<&str> = s["required"].as_array().map(|r| r.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let req: Vec<&str> = s["required"]
+        .as_array()
+        .map(|r| r.iter().filter_map(|x| x.as_str()).collect())
+        .unwrap_or_default();
     let args: Vec<Value> = props
         .iter()
         .map(|(k, p)| {
             let mut o = json!({"name": k, "required": req.contains(&k.as_str())});
-            let ty = p.get("type").cloned().unwrap_or(json!(if p.get("enum").is_some() { "enum" } else { "any" }));
+            let ty = p
+                .get("type")
+                .cloned()
+                .unwrap_or(json!(if p.get("enum").is_some() {
+                    "enum"
+                } else {
+                    "any"
+                }));
             o["type"] = ty;
             for f in ["description", "enum", "default", "minimum", "maximum"] {
                 if let Some(v) = p.get(f) {
@@ -289,7 +367,12 @@ pub fn describe(name: &str) -> Result<Value> {
         })
         .collect();
     let c = category(t.name);
-    let related: Vec<&str> = tools::registry().iter().filter(|x| x.name != t.name && category(x.name) == c).take(6).map(|x| x.name).collect();
+    let related: Vec<&str> = tools::registry()
+        .iter()
+        .filter(|x| x.name != t.name && category(x.name) == c)
+        .take(6)
+        .map(|x| x.name)
+        .collect();
     Ok(json!({
         "name": t.name,
         "category": c,
@@ -305,12 +388,21 @@ pub fn describe(name: &str) -> Result<Value> {
 
 pub fn project_summary(e: &Engine) -> Value {
     let p = &e.project;
-    let notes: usize = p.patterns.iter().map(|pt| pt.clips.values().map(|v| v.len()).sum::<usize>()).sum();
+    let notes: usize = p
+        .patterns
+        .iter()
+        .map(|pt| pt.clips.values().map(|v| v.len()).sum::<usize>())
+        .sum();
     let tracks: Vec<String> = p
         .tracks
         .iter()
         .map(|t| {
-            let mut s = format!("{} ({}, {:+.1} dB", t.name, t.instrument.kind_name(), t.volume_db);
+            let mut s = format!(
+                "{} ({}, {:+.1} dB",
+                t.name,
+                t.instrument.kind_name(),
+                t.volume_db
+            );
             if !t.effects.is_empty() {
                 s.push_str(&format!(", {} fx", t.effects.len()));
             }
@@ -410,28 +502,60 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         let mut bad = Vec::new();
         for t in tools::registry() {
-            if !seen.insert(t.name) { bad.push(format!("{}: duplicate name", t.name)); }
-            if !t.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            if !seen.insert(t.name) {
+                bad.push(format!("{}: duplicate name", t.name));
+            }
+            if !t
+                .name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
                 bad.push(format!("{}: name not snake_case", t.name));
             }
-            if t.description.trim().len() < 15 { bad.push(format!("{}: description too short", t.name)); }
-            if t.description.len() > 1200 { bad.push(format!("{}: description over 1200 chars ({})", t.name, t.description.len())); }
+            if t.description.trim().len() < 15 {
+                bad.push(format!("{}: description too short", t.name));
+            }
+            if t.description.len() > 1200 {
+                bad.push(format!(
+                    "{}: description over 1200 chars ({})",
+                    t.name,
+                    t.description.len()
+                ));
+            }
             let s = (t.schema)();
-            if s["type"] != "object" { bad.push(format!("{}: schema type is not object", t.name)); }
+            if s["type"] != "object" {
+                bad.push(format!("{}: schema type is not object", t.name));
+            }
             let props = s["properties"].as_object().cloned().unwrap_or_default();
             if let Some(req) = s["required"].as_array() {
                 for r in req {
                     let r = r.as_str().unwrap_or("");
-                    if !props.contains_key(r) { bad.push(format!("{}: required '{r}' is not a property", t.name)); }
+                    if !props.contains_key(r) {
+                        bad.push(format!("{}: required '{r}' is not a property", t.name));
+                    }
                 }
             }
             for (k, p) in &props {
-                let typed = ["type", "enum", "oneOf", "anyOf", "$ref", "const"].iter().any(|f| p.get(*f).is_some());
-                if !typed { bad.push(format!("{}.{k}: no type", t.name)); }
+                let typed = ["type", "enum", "oneOf", "anyOf", "$ref", "const"]
+                    .iter()
+                    .any(|f| p.get(*f).is_some());
+                if !typed {
+                    bad.push(format!("{}.{k}: no type", t.name));
+                }
             }
-            if category(t.name) == "other" { bad.push(format!("{}: no category (add its module to tools_meta::modules)", t.name)); }
+            if category(t.name) == "other" {
+                bad.push(format!(
+                    "{}: no category (add its module to tools_meta::modules)",
+                    t.name
+                ));
+            }
         }
-        assert!(bad.is_empty(), "schema lint: {} problems:\n{}", bad.len(), bad.join("\n"));
+        assert!(
+            bad.is_empty(),
+            "schema lint: {} problems:\n{}",
+            bad.len(),
+            bad.join("\n")
+        );
     }
 
     #[test]
@@ -443,10 +567,16 @@ mod tests {
             let args = &ex["args"];
             let s = (t.schema)();
             for k in args.as_object().unwrap().keys() {
-                assert!(s["properties"].get(k).is_some(), "{}: example uses unknown '{k}'", t.name);
+                assert!(
+                    s["properties"].get(k).is_some(),
+                    "{}: example uses unknown '{k}'",
+                    t.name
+                );
             }
         }
-        let d = e.call("describe_tool", &json!({"name": "make_beat"})).unwrap();
+        let d = e
+            .call("describe_tool", &json!({"name": "make_beat"}))
+            .unwrap();
         assert_eq!(d["category"], "generate");
         assert!(d["example"]["args"]["prompt"].is_string());
     }
@@ -456,15 +586,27 @@ mod tests {
         let mut e = Engine::new(std::env::temp_dir().join("bb_meta_ls"));
         let l = e.call("list_tools", &json!({})).unwrap();
         assert_eq!(l["count"], l["total_tools"]);
-        assert!(l["tools"]["generate"].as_array().unwrap().iter().any(|t| t["name"] == "make_beat"));
-        let v = e.call("list_tools", &json!({"category": "vocals"})).unwrap();
+        assert!(l["tools"]["generate"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "make_beat"));
+        let v = e
+            .call("list_tools", &json!({"category": "vocals"}))
+            .unwrap();
         assert!(v["count"].as_u64().unwrap() > 2);
         assert!(e.call("list_tools", &json!({"category": "nope"})).is_err());
         let err = format!("{:#}", e.call("make_song", &json!({})).unwrap_err());
         assert!(err.contains("Did you mean"), "{err}");
-        let err = format!("{:#}", e.call("describe_tool", &json!({"name": "add_efect"})).unwrap_err());
+        let err = format!(
+            "{:#}",
+            e.call("describe_tool", &json!({"name": "add_efect"}))
+                .unwrap_err()
+        );
         assert!(err.contains("add_effect"), "{err}");
-        let s = e.call("suggest_tools", &json!({"goal": "export an mp3"})).unwrap();
+        let s = e
+            .call("suggest_tools", &json!({"goal": "export an mp3"}))
+            .unwrap();
         assert_eq!(s["tools"][0]["name"], "export_audio");
         let ps = e.call("get_project_summary", &json!({})).unwrap();
         assert!(ps["next"].as_array().unwrap().len() >= 1);

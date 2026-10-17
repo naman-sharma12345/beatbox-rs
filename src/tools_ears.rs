@@ -11,6 +11,7 @@ use crate::media;
 use crate::project::Project;
 use crate::render::{self, Mix, RenderOptions};
 use crate::tools::{b_or, f_opt, obj, s_opt, u_or, Tool};
+use crate::waveform_png;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -143,6 +144,37 @@ fn spectrogram_png(
     }
     std::fs::write(&path, &png)?;
     Ok((png, path))
+}
+
+/// Waveform image options from tool arguments (shared with the CLI path).
+fn waveform_style(a: &Value) -> Result<waveform_png::WaveStyle> {
+    let d = waveform_png::WaveStyle::default();
+    let colour = |k: &str, def: [u8; 3]| -> Result<[u8; 3]> {
+        match s_opt(a, k) {
+            None => Ok(def),
+            Some(s) => waveform_png::parse_color(&s)
+                .ok_or_else(|| anyhow!("{k} must be #rrggbb, got '{s}'")),
+        }
+    };
+    let lanes = match s_opt(a, "lanes") {
+        None => waveform_png::Lanes::Mono,
+        Some(s) => waveform_png::Lanes::parse(&s)
+            .ok_or_else(|| anyhow!("lanes must be 'mono', 'stereo' or 'channels', not '{s}'"))?,
+    };
+    let center = match s_opt(a, "center") {
+        Some(s) if s.eq_ignore_ascii_case("none") => None,
+        _ => Some(colour("center", d.center.unwrap_or(d.background))?),
+    };
+    Ok(waveform_png::WaveStyle {
+        width: (u_or(a, "width", d.width as u64) as usize).clamp(16, 8192),
+        height: (u_or(a, "height", d.height as u64) as usize).clamp(16, 4096),
+        lanes,
+        rms: b_or(a, "rms", false),
+        background: colour("background", d.background)?,
+        wave: colour("wave", d.wave)?,
+        rms_color: colour("rms_color", d.rms_color)?,
+        center,
+    })
 }
 
 fn slug(s: &str) -> String {
@@ -400,6 +432,70 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "render_waveform_png",
+            description: "Draw a waveform image of the mix, one track, a sample or an audio file (optionally a window) and write it as a PNG, with no GUI. Each column shows the min/max peaks; rms adds the column's RMS as an inner band. lanes 'mono' downmixes into one lane, 'stereo' draws left on top and right below, 'channels' gives every channel of a multichannel file its own lane. A WAV file is scanned from disk in chunks (memory grows with width, not length). Colours are #rrggbb; the default is a dark background with a bright wave. The PNG is written by Beatbox's own encoder (CRC-32, zlib/Adler-32, DEFLATE fixed-Huffman or stored blocks), so the same audio and options always give the same bytes; the result carries the byte count and CRC-32. Returns the path plus the image inline (inline false = link only). Same as the CLI `beatbox waveform`.",
+            mutates: false,
+            schema: || obj(with_props(with_props(source_props(), region_props()), json!({
+                "width": {"type": "integer", "description": "Pixels, default 1200 (16-8192)"},
+                "height": {"type": "integer", "description": "Pixels, default 300 (16-4096)"},
+                "lanes": {"type": "string", "enum": ["mono", "stereo", "channels"], "description": "mono (default) downmixes; stereo = L over R; channels = one lane per file channel"},
+                "rms": {"type": "boolean", "description": "Overlay the RMS band inside the peaks (default false)"},
+                "background": {"type": "string", "description": "#rrggbb, default #121418"},
+                "wave": {"type": "string", "description": "Peak colour, default #5ac8fa"},
+                "rms_color": {"type": "string", "description": "RMS band colour, default #d2f0ff"},
+                "center": {"type": "string", "description": "Zero-line colour, default #2e343c; 'none' hides it"},
+                "compression": {"type": "string", "enum": ["fixed", "stored"], "description": "DEFLATE mode: fixed Huffman (default, smaller) or stored blocks"},
+                "out": {"type": "string", "description": "PNG path (default renders/waveform_<source>.png)"},
+                "inline": {"type": "boolean", "description": "Embed the image (default true)"},
+            })), &[]),
+            run: |e, a| {
+                let st = waveform_style(a)?;
+                let comp = match s_opt(a, "compression").as_deref() {
+                    None | Some("fixed") => waveform_png::Compression::Fixed,
+                    Some("stored") => waveform_png::Compression::Stored,
+                    Some(o) => bail!("compression must be 'fixed' or 'stored', not '{o}'"),
+                };
+                // a WAV file is read from disk in chunks (memory O(width)); anything
+                // else (mix, track, sample, mp3/flac, beat or section windows) is drawn
+                // from its decoded buffer in one pass
+                let wav = s_opt(a, "path").filter(|p| p.to_ascii_lowercase().ends_with(".wav") && s_opt(a, "track").is_none() && s_opt(a, "sample").is_none() && a.get("section").is_none() && a.get("start_beat").is_none() && a.get("end_beat").is_none());
+                let streamed = match wav {
+                    Some(p) => {
+                        let window = if a.get("start_s").is_some() || a.get("end_s").is_some() { Some((f_opt(a, "start_s").unwrap_or(0.0) as f64, f_opt(a, "end_s").map(|x| x as f64).unwrap_or(f64::MAX))) } else { None };
+                        waveform_png::wav_file_png(&e.resolve(&p), &st, comp, window).ok().map(|(png, info)| {
+                            let name = std::path::Path::new(&p).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or(p.clone());
+                            let label = if window.is_some() { format!("{:.2}-{:.2} s", info.start_frame as f64 / info.sample_rate as f64, (info.start_frame + info.drawn) as f64 / info.sample_rate as f64) } else { "whole".to_string() };
+                            (png, name, label, info.drawn as f64 / info.sample_rate as f64, info.channels)
+                        })
+                    }
+                    None => None,
+                };
+                let was_streamed = streamed.is_some();
+                let (png, name, label, seconds, channels) = match streamed {
+                    Some(x) => x,
+                    None => {
+                        let (name, l, r, is_mix) = source(e, a)?;
+                        let p = e.project.clone();
+                        let (s0, s1, label) = if is_mix || has_region(a) { region(&p, a, l.len().min(r.len()))? } else { (0, l.len().min(r.len()), "whole".into()) };
+                        (waveform_png::waveform_png(&l[s0..s1], &r[s0..s1], &st, comp), name, label, (s1 - s0) as f64 / SR as f64, 2)
+                    }
+                };
+                let path = match s_opt(a, "out") { Some(o) => e.resolve(&o), None => e.renders_dir().join(format!("waveform_{}.png", slug(&name))) };
+                if let Some(d) = path.parent() { std::fs::create_dir_all(d)?; }
+                std::fs::write(&path, &png)?;
+                let mut v = json!({"path": path, "source": name, "window": label, "width": st.width, "height": st.height,
+                    "lanes": st.lanes.name(), "lane_count": st.lanes.count(channels), "rms": st.rms, "seconds": (seconds * 100.0).round() / 100.0,
+                    "streamed_from_disk": was_streamed,
+                    "compression": if comp == waveform_png::Compression::Fixed { "fixed" } else { "stored" },
+                    "bytes": png.len(), "crc32": format!("{:08x}", waveform_png::crc32(&png)),
+                    "axis": "x = time, y = amplitude (+1 top, -1 bottom of each lane)"});
+                let mut blocks = vec![media::link_block(&path, "image/png")];
+                if b_or(a, "inline", true) { blocks.insert(0, media::image_block(&png)); }
+                media::attach(&mut v, blocks);
+                Ok(v)
+            },
+        },
+        Tool {
             name: "spectrum",
             description: "Average log-spaced spectrum (dB, 20 Hz-20 kHz) of the mix, a track, a sample or a file (optionally a window), plus band shares and centroid. Use to compare tonal balance between sections or against a reference.",
             mutates: false,
@@ -494,6 +590,67 @@ mod tests {
         assert!(art["events"].is_array());
         let w = e.call("analyze_mix", &json!({"section": 0})).unwrap();
         assert!(w["window"].is_object(), "{w}");
+    }
+
+    #[test]
+    fn waveform_png_tool_mix_and_file() {
+        // the project's mix (one section), stereo lanes with the RMS band
+        let mut e = eng();
+        let v = e.call("render_waveform_png", &json!({"section": 0, "width": 320, "height": 120, "lanes": "stereo", "rms": true, "wave": "#ff8800"})).unwrap();
+        let png = std::fs::read(v["path"].as_str().unwrap()).unwrap();
+        assert_eq!(&png[..8], &waveform_png::PNG_SIGNATURE);
+        assert_eq!(media::png_dims(&png).unwrap(), (320, 120));
+        assert_eq!(v["bytes"].as_u64().unwrap() as usize, png.len());
+        assert_eq!(v["crc32"], format!("{:08x}", waveform_png::crc32(&png)));
+        assert_eq!(v["_content"][0]["type"], "image");
+        assert_eq!(v["lanes"], "stereo");
+        // the peak colour is really drawn
+        assert!(png_pixels(&png).chunks(3).any(|p| p == [0xFF, 0x88, 0x00]));
+
+        // an audio file: a 0.5-amplitude 441 Hz sine, mono lane, stored blocks
+        let dir = std::env::temp_dir().join("beatbox_waveform_png_tool");
+        std::fs::create_dir_all(&dir).unwrap();
+        let s: Vec<f32> = (0..44_100)
+            .map(|i| 0.5 * (std::f32::consts::TAU * 441.0 * i as f32 / 44_100.0).sin())
+            .collect();
+        let wav = dir.join("sine.wav");
+        std::fs::write(&wav, media::wav_bytes(&s, &s, 44_100)).unwrap();
+        let out = dir.join("sine.png");
+        let args = json!({"path": wav, "width": 200, "height": 101, "compression": "stored", "center": "none", "background": "#000000", "wave": "#ffffff", "out": out, "inline": false});
+        let a = e.call("render_waveform_png", &args).unwrap();
+        assert_eq!(a["_content"][0]["type"], "resource_link");
+        let png = std::fs::read(&out).unwrap();
+        let px = png_pixels(&png);
+        // every column spans rows 25..=75 (0.5 peaks); row 0 and row 100 stay black
+        for x in 0..200 {
+            assert_eq!(&px[(25 * 200 + x) * 3..][..3], &[255, 255, 255]);
+            assert_eq!(&px[(75 * 200 + x) * 3..][..3], &[255, 255, 255]);
+            assert_eq!(&px[x * 3..][..3], &[0, 0, 0]);
+            assert_eq!(&px[(100 * 200 + x) * 3..][..3], &[0, 0, 0]);
+        }
+        // same input, same bytes
+        let b = e.call("render_waveform_png", &args).unwrap();
+        assert_eq!(a["crc32"], b["crc32"]);
+        assert_eq!(std::fs::read(&out).unwrap(), png);
+        assert!(e
+            .call(
+                "render_waveform_png",
+                &json!({"path": wav, "lanes": "quad"})
+            )
+            .is_err());
+        assert!(e
+            .call("render_waveform_png", &json!({"path": wav, "wave": "red"}))
+            .is_err());
+    }
+
+    fn png_pixels(png: &[u8]) -> Vec<u8> {
+        let mut rd = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .unwrap();
+        let mut buf = vec![0u8; rd.output_buffer_size().unwrap()];
+        let info = rd.next_frame(&mut buf).unwrap();
+        buf.truncate(info.buffer_size());
+        buf
     }
 
     #[test]

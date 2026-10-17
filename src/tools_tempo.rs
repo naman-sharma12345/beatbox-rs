@@ -29,7 +29,11 @@ fn put(e: &mut Engine, beat: f32, bpm: f32, ramp: bool) -> Result<()> {
     let pts = &mut e.project.tempo_points;
     pts.retain(|p| (p.beat - beat).abs() > 1e-4);
     pts.push(TempoPoint { beat, bpm, ramp });
-    pts.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(std::cmp::Ordering::Equal));
+    pts.sort_by(|a, b| {
+        a.beat
+            .partial_cmp(&b.beat)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     Ok(())
 }
 
@@ -44,7 +48,12 @@ fn summary(e: &Engine) -> Value {
     let mut beat = 0.0f32;
     let mut secs = Vec::new();
     for s in &p.arrangement {
-        let beats = p.patterns.iter().find(|x| x.name == s.pattern).map(|x| x.steps() as f32 / 4.0).unwrap_or(16.0);
+        let beats = p
+            .patterns
+            .iter()
+            .find(|x| x.name == s.pattern)
+            .map(|x| x.steps() as f32 / 4.0)
+            .unwrap_or(16.0);
         secs.push(json!({"section": s.pattern, "bar": p.bar_at_beat(beat), "bpm": (bpm_at(p.bpm, &p.tempo_points, beat) * 10.0).round() / 10.0, "seconds": (curve.secs_at_beat(beat as f64) * 100.0).round() / 100.0}));
         beat += beats * s.repeats.max(1) as f32;
     }
@@ -65,7 +74,11 @@ fn refit(notes: &mut Vec<crate::project::Note>, old_spb: f32, new_spb: f32) -> u
             return false;
         }
         n.start = bar * new_spb + inb;
-        n.len = if n.len <= old_spb - inb + 1e-4 { n.len.min(new_spb - inb) } else { n.len * new_spb / old_spb };
+        n.len = if n.len <= old_spb - inb + 1e-4 {
+            n.len.min(new_spb - inb)
+        } else {
+            n.len * new_spb / old_spb
+        };
         true
     });
     before - notes.len()
@@ -73,7 +86,9 @@ fn refit(notes: &mut Vec<crate::project::Note>, old_spb: f32, new_spb: f32) -> u
 
 fn set_time_signature(e: &mut Engine, a: &Value) -> Result<Value> {
     let ts = crate::tools::s_req(a, "time_signature")?;
-    let Some(m) = crate::project::parse_meter(&ts) else { bail!("time_signature '{ts}' (like 4/4, 3/4, 6/8, 7/8, 5/4)") };
+    let Some(m) = crate::project::parse_meter(&ts) else {
+        bail!("time_signature '{ts}' (like 4/4, 3/4, 6/8, 7/8, 5/4)")
+    };
     let which = crate::tools::s_opt(a, "pattern").unwrap_or_else(|| "all".into());
     let do_refit = a.get("refit").and_then(|v| v.as_bool()).unwrap_or(true);
     let new_spb = crate::project::meter_steps(m);
@@ -93,7 +108,15 @@ fn set_time_signature(e: &mut Engine, a: &Value) -> Result<Value> {
         changed.push(pat.name.clone());
     }
     if changed.is_empty() {
-        bail!("no pattern '{which}' (patterns: {})", e.project.patterns.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
+        bail!(
+            "no pattern '{which}' (patterns: {})",
+            e.project
+                .patterns
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     let p = &e.project;
     let curve = TempoCurve::new(p);
@@ -198,30 +221,45 @@ mod tests {
         let dir = std::env::temp_dir().join("bb_tempo_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir);
-        e.call("new_project", &json!({"name": "t", "bpm": 120})).unwrap();
-        e.call("add_track", &json!({"name": "keys", "preset": "piano"})).unwrap();
+        e.call("new_project", &json!({"name": "t", "bpm": 120}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "keys", "preset": "piano"}))
+            .unwrap();
         // a note on beat 0 and one on beat 8 (step 32, bar 3)
         e.call("add_notes", &json!({"track": "keys", "notes": [{"start": 0, "pitch": 60, "len": 2}, {"start": 32, "pitch": 64, "len": 2}]})).unwrap();
-        e.call("set_pattern_length", &json!({"pattern": "A", "bars": 4})).ok();
+        e.call("set_pattern_length", &json!({"pattern": "A", "bars": 4}))
+            .ok();
         let flat = crate::render::schedule(&e.project, &crate::render::RenderOptions::default());
         let at = flat.0[0][1].start as f32 / crate::dsp::SR;
         assert!((at - 4.0).abs() < 0.01, "beat 8 at 120 bpm is 4 s: {at}");
         // half time from bar 2 (beat 4): beat 8 now lands at 2 s + 4 beats at 60 = 6 s
-        let r = e.call("add_tempo_point", &json!({"bar": 2, "bpm": 60})).unwrap();
+        let r = e
+            .call("add_tempo_point", &json!({"bar": 2, "bpm": 60}))
+            .unwrap();
         assert_eq!(r["points"][0]["beat"], 4.0);
         let slow = crate::render::schedule(&e.project, &crate::render::RenderOptions::default());
         let at = slow.0[0][1].start as f32 / crate::dsp::SR;
         assert!((at - 6.0).abs() < 0.01, "after the jump: {at}");
         assert!(slow.1 > flat.1, "the song got longer");
         // a ramp and the list
-        e.call("tempo_ramp", &json!({"from_bar": 2, "to_bar": 3, "from_bpm": 120, "to_bpm": 90})).unwrap();
+        e.call(
+            "tempo_ramp",
+            &json!({"from_bar": 2, "to_bar": 3, "from_bpm": 120, "to_bpm": 90}),
+        )
+        .unwrap();
         let l = e.call("list_tempo", &json!({})).unwrap();
         assert_eq!(l["points"].as_array().unwrap().len(), 2);
-        assert!(e.call("add_tempo_point", &json!({"bar": 2, "bpm": 900})).is_err());
+        assert!(e
+            .call("add_tempo_point", &json!({"bar": 2, "bpm": 900}))
+            .is_err());
         e.call("remove_tempo_point", &json!({"all": true})).unwrap();
         assert!(e.project.tempo_points.is_empty());
         // automation follows the curve: the render still runs end to end
-        e.call("add_tempo_point", &json!({"bar": 2, "bpm": 100, "ramp": true})).unwrap();
+        e.call(
+            "add_tempo_point",
+            &json!({"bar": 2, "bpm": 100, "ramp": true}),
+        )
+        .unwrap();
         let m = e.mix().unwrap();
         assert!(m.left.iter().any(|v| v.abs() > 0.01));
     }
@@ -231,12 +269,19 @@ mod tests {
         let dir = std::env::temp_dir().join("bb_meter_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir);
-        e.call("new_project", &json!({"name": "w", "bpm": 120})).unwrap();
-        e.call("add_track", &json!({"name": "keys", "preset": "piano"})).unwrap();
+        e.call("new_project", &json!({"name": "w", "bpm": 120}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "keys", "preset": "piano"}))
+            .unwrap();
         // one note per beat over 2 bars of 4/4
-        let notes: Vec<Value> = (0..8).map(|k| json!({"start": k * 4, "pitch": 60, "len": 2})).collect();
-        e.call("add_notes", &json!({"track": "keys", "notes": notes})).unwrap();
-        let r = e.call("set_time_signature", &json!({"time_signature": "3/4"})).unwrap();
+        let notes: Vec<Value> = (0..8)
+            .map(|k| json!({"start": k * 4, "pitch": 60, "len": 2}))
+            .collect();
+        e.call("add_notes", &json!({"track": "keys", "notes": notes}))
+            .unwrap();
+        let r = e
+            .call("set_time_signature", &json!({"time_signature": "3/4"}))
+            .unwrap();
         assert_eq!(r["steps_per_bar"], 12);
         assert_eq!(r["notes_dropped"], 2, "beat 4 of each bar goes");
         let pat = &e.project.patterns[0];
@@ -244,12 +289,23 @@ mod tests {
         let starts: Vec<f32> = pat.clips["keys"].iter().map(|n| n.start).collect();
         assert_eq!(&starts[..4], &[0.0, 4.0, 8.0, 12.0]);
         // a 4-bar song in 3/4 at 120 bpm lasts 4 * 3 beats = 6 s
-        let (_, len) = crate::render::schedule(&e.project, &crate::render::RenderOptions::default());
+        let (_, len) =
+            crate::render::schedule(&e.project, &crate::render::RenderOptions::default());
         assert!((len as f32 / crate::dsp::SR - 6.0).abs() < 0.01);
-        assert_eq!(crate::project::meter_clicks((6, 8)).len(), 2, "6/8 clicks dotted quarters");
+        assert_eq!(
+            crate::project::meter_clicks((6, 8)).len(),
+            2,
+            "6/8 clicks dotted quarters"
+        );
         assert_eq!(crate::project::meter_steps((7, 8)), 14);
-        assert!(e.call("set_time_signature", &json!({"time_signature": "3/5"})).is_err());
-        e.call("set_time_signature", &json!({"time_signature": "4/4", "refit": false})).unwrap();
+        assert!(e
+            .call("set_time_signature", &json!({"time_signature": "3/5"}))
+            .is_err());
+        e.call(
+            "set_time_signature",
+            &json!({"time_signature": "4/4", "refit": false}),
+        )
+        .unwrap();
         assert!(e.project.patterns[0].meter.is_none());
     }
 }

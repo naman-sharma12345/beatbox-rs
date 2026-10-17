@@ -20,10 +20,12 @@ use std::path::PathBuf;
 
 /// Where the corpus lives.
 pub fn corpus_dir() -> PathBuf {
-    std::env::var("BEATBOX_VOCAL_CORPUS").map(PathBuf::from).unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join(".beatbox").join("vocal_corpus")
-    })
+    std::env::var("BEATBOX_VOCAL_CORPUS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            PathBuf::from(home).join(".beatbox").join("vocal_corpus")
+        })
 }
 
 /// (name, file, what) for each clip the fetch script wrote.
@@ -41,7 +43,13 @@ pub fn corpus() -> Vec<(String, PathBuf, String)> {
             a.iter()
                 .filter_map(|c| {
                     let f = PathBuf::from(c["file"].as_str()?);
-                    f.is_file().then(|| (c["name"].as_str().unwrap_or("").to_string(), f, c["what"].as_str().unwrap_or("").to_string()))
+                    f.is_file().then(|| {
+                        (
+                            c["name"].as_str().unwrap_or("").to_string(),
+                            f,
+                            c["what"].as_str().unwrap_or("").to_string(),
+                        )
+                    })
                 })
                 .collect()
         })
@@ -58,7 +66,11 @@ pub fn guard_quality(raw: &[f32], processed: &[f32]) -> Result<(Vec<f32>, f32, M
     let n = raw.len().min(processed.len());
     let blends: Vec<Vec<f32>> = GUARD_MIXES
         .iter()
-        .map(|m| (0..n).map(|i| raw[i] * (1.0 - m) + processed[i] * m).collect())
+        .map(|m| {
+            (0..n)
+                .map(|i| raw[i] * (1.0 - m) + processed[i] * m)
+                .collect()
+        })
         .collect();
     let mut bufs: Vec<&[f32]> = vec![raw];
     bufs.extend(blends.iter().map(|b| b.as_slice()));
@@ -97,8 +109,33 @@ mod tests {
         for (name, file, what) in &clips {
             let x = crate::samples::decode_file(file).unwrap();
             let procs: Vec<(&str, Vec<f32>)> = vec![
-                ("denoise_voice", denoise(&x, &DenoiseOpts { atten_lim_db: 15.0, mix: 1.0, backend: "auto".into() }).unwrap().0),
-                ("match_vocal_tone", match_tone(&x, &target, &ToneOpts { amount: 0.7, max_db: 6.0, dyn_max_db: 4.0, dyn_threshold_db: 3.0 }).y),
+                (
+                    "denoise_voice",
+                    denoise(
+                        &x,
+                        &DenoiseOpts {
+                            atten_lim_db: 15.0,
+                            mix: 1.0,
+                            backend: "auto".into(),
+                        },
+                    )
+                    .unwrap()
+                    .0,
+                ),
+                (
+                    "match_vocal_tone",
+                    match_tone(
+                        &x,
+                        &target,
+                        &ToneOpts {
+                            amount: 0.7,
+                            max_db: 6.0,
+                            dyn_max_db: 4.0,
+                            dyn_threshold_db: 3.0,
+                        },
+                    )
+                    .y,
+                ),
             ];
             for (p, y) in procs {
                 let (out, mix, raw, chosen) = guard_quality(&x, &y).unwrap();
@@ -109,13 +146,28 @@ mod tests {
                     "{name:22} {p:17} raw SIG {:.2} OVRL {:.2} | full SIG {:+.2} OVRL {:+.2} | delivered mix {mix:.2} SIG {:+.2} OVRL {:+.2}  ({what})",
                     raw.sig, raw.ovrl, full.sig - raw.sig, full.ovrl - raw.ovrl, again.sig - raw.sig, again.ovrl - raw.ovrl
                 ));
-                if again.sig < raw.sig - 0.02 || again.ovrl < raw.ovrl - 0.02 || chosen.sig < raw.sig || chosen.ovrl < raw.ovrl {
-                    bad.push(format!("{name}/{p}: SIG {:.2}->{:.2}, OVRL {:.2}->{:.2}", raw.sig, again.sig, raw.ovrl, again.ovrl));
+                if again.sig < raw.sig - 0.02
+                    || again.ovrl < raw.ovrl - 0.02
+                    || chosen.sig < raw.sig
+                    || chosen.ovrl < raw.ovrl
+                {
+                    bad.push(format!(
+                        "{name}/{p}: SIG {:.2}->{:.2}, OVRL {:.2}->{:.2}",
+                        raw.sig, again.sig, raw.ovrl, again.ovrl
+                    ));
                 }
             }
         }
-        eprintln!("vocal corpus ({} clips):\n{}", clips.len(), table.join("\n"));
-        assert!(bad.is_empty(), "DNSMOS dropped below the raw take:\n{}", bad.join("\n"));
+        eprintln!(
+            "vocal corpus ({} clips):\n{}",
+            clips.len(),
+            table.join("\n")
+        );
+        assert!(
+            bad.is_empty(),
+            "DNSMOS dropped below the raw take:\n{}",
+            bad.join("\n")
+        );
     }
 
     #[test]
@@ -126,12 +178,16 @@ mod tests {
             .map(|i| {
                 let t = i as f32 / sr;
                 let f0 = 180.0 + 20.0 * (t * 5.0).sin();
-                0.3 * (t * f0 * std::f32::consts::TAU).sin() + 0.1 * (t * f0 * 2.0 * std::f32::consts::TAU).sin()
+                0.3 * (t * f0 * std::f32::consts::TAU).sin()
+                    + 0.1 * (t * f0 * 2.0 * std::f32::consts::TAU).sin()
             })
             .collect();
         // "processing" that is pure damage: hard clipping plus noise
         let mut rng = crate::dsp::Rng::new(7);
-        let y: Vec<f32> = x.iter().map(|v| (v * 8.0).clamp(-0.3, 0.3) + 0.1 * rng.bipolar()).collect();
+        let y: Vec<f32> = x
+            .iter()
+            .map(|v| (v * 8.0).clamp(-0.3, 0.3) + 0.1 * rng.bipolar())
+            .collect();
         match guard_quality(&x, &y) {
             Ok((_, mix, raw, chosen)) => {
                 assert!(chosen.sig >= raw.sig && chosen.ovrl >= raw.ovrl);

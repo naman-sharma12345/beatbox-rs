@@ -62,7 +62,10 @@ fn studio_screenshot(project: &Path, png: &Path, view: &str) -> Result<()> {
 
 fn perf_state(e: &crate::engine::Engine) -> Value {
     let t = &e.transport;
-    let waiting = t.pending_launch.as_ref().map(|l| l.pattern.clone().unwrap_or_else(|| "song".into()));
+    let waiting = t
+        .pending_launch
+        .as_ref()
+        .map(|l| l.pattern.clone().unwrap_or_else(|| "song".into()));
     json!({
         "studio_attached": t.attached, "playing": t.playing,
         "performing": t.perf_playing, "queued": t.perf_queued.clone().or(waiting),
@@ -72,15 +75,18 @@ fn perf_state(e: &crate::engine::Engine) -> Value {
 
 /// A pattern by name, id, or 0-based index.
 fn perf_pattern(p: &crate::project::Project, key: &str) -> Result<usize> {
-    p.pattern_index(key).or_else(|err| match key.trim().parse::<usize>() {
-        Ok(i) if i < p.patterns.len() => Ok(i),
-        _ => Err(err),
-    })
+    p.pattern_index(key)
+        .or_else(|err| match key.trim().parse::<usize>() {
+            Ok(i) if i < p.patterns.len() => Ok(i),
+            _ => Err(err),
+        })
 }
 
 /// Seconds between launch points: one bar of the pattern, one beat, or 0.
 fn perf_quantum(p: &crate::project::Project, pat: Option<usize>, q: &str) -> Result<f32> {
-    let spb = pat.map_or(crate::project::STEPS_PER_BAR, |i| p.patterns[i].steps_per_bar());
+    let spb = pat.map_or(crate::project::STEPS_PER_BAR, |i| {
+        p.patterns[i].steps_per_bar()
+    });
     Ok(match q {
         "bar" => spb as f32 * p.step_secs(),
         "beat" => 4.0 * p.step_secs(),
@@ -240,33 +246,78 @@ mod tests {
     #[test]
     fn perform_launches_a_pattern_loop_on_the_bar_grid() {
         let mut e = Engine::new(std::env::temp_dir().join("beatbox_perform_tests"));
-        e.call("generate_beat", &json!({"style": "house", "seed": 2})).unwrap();
+        e.call("generate_beat", &json!({"style": "house", "seed": 2}))
+            .unwrap();
         let before = serde_json::to_string(&e.project).unwrap();
         let rev = e.revision;
         let pat = e.project.patterns[0].clone();
-        let r = e.call("perform", &json!({"action": "launch", "pattern": pat.name})).unwrap();
+        let r = e
+            .call("perform", &json!({"action": "launch", "pattern": pat.name}))
+            .unwrap();
         assert_eq!(r["launched"], pat.name.as_str());
         assert_eq!(r["studio_attached"], false);
         let l = e.transport.pending_launch.clone().expect("launch queued");
         let bar = pat.steps_per_bar() as f32 * e.project.step_secs();
         assert!((l.quantum_secs - bar).abs() < 1e-4);
-        assert!((l.loop_secs - pat.bars as f32 * bar).abs() < 1e-3, "{} vs {}", l.loop_secs, pat.bars as f32 * bar);
+        assert!(
+            (l.loop_secs - pat.bars as f32 * bar).abs() < 1e-3,
+            "{} vs {}",
+            l.loop_secs,
+            pat.bars as f32 * bar
+        );
         let m = l.mix.unwrap();
         assert!(m.left.len() as f32 >= l.loop_secs * crate::dsp::SR * 0.99);
         assert!(m.left.iter().any(|x| x.abs() > 1e-3), "loop is silent");
         // by id, beat grid, cached second time
-        let r = e.call("perform", &json!({"action": "launch", "pattern": pat.id, "quantize": "beat"})).unwrap();
+        let r = e
+            .call(
+                "perform",
+                &json!({"action": "launch", "pattern": pat.id, "quantize": "beat"}),
+            )
+            .unwrap();
         assert_eq!(r["queued"], pat.name.as_str());
-        assert!((e.transport.pending_launch.as_ref().unwrap().quantum_secs - 4.0 * e.project.step_secs()).abs() < 1e-4);
-        assert!(e.call("perform", &json!({"action": "launch", "pattern": "nope"})).is_err());
-        assert_eq!(e.call("perform", &json!({"action": "launch", "pattern": "0", "quantize": "now"})).unwrap()["launched"], pat.name.as_str());
-        assert!(e.call("perform", &json!({"action": "launch", "pattern": pat.name, "quantize": "2bars"})).is_err());
+        assert!(
+            (e.transport.pending_launch.as_ref().unwrap().quantum_secs
+                - 4.0 * e.project.step_secs())
+            .abs()
+                < 1e-4
+        );
+        assert!(e
+            .call("perform", &json!({"action": "launch", "pattern": "nope"}))
+            .is_err());
+        assert_eq!(
+            e.call(
+                "perform",
+                &json!({"action": "launch", "pattern": "0", "quantize": "now"})
+            )
+            .unwrap()["launched"],
+            pat.name.as_str()
+        );
+        assert!(e
+            .call(
+                "perform",
+                &json!({"action": "launch", "pattern": pat.name, "quantize": "2bars"})
+            )
+            .is_err());
         let x = e.call("perform", &json!({"action": "exit"})).unwrap();
         assert_eq!(x["queued"], "song");
-        assert!(e.transport.pending_launch.as_ref().unwrap().pattern.is_none());
+        assert!(e
+            .transport
+            .pending_launch
+            .as_ref()
+            .unwrap()
+            .pattern
+            .is_none());
         let pr = e.call("perform", &json!({"action": "prepare"})).unwrap();
-        assert_eq!(pr["prepared"].as_array().unwrap().len(), e.project.patterns.len());
-        assert_eq!(serde_json::to_string(&e.project).unwrap(), before, "perform must not edit the project");
+        assert_eq!(
+            pr["prepared"].as_array().unwrap().len(),
+            e.project.patterns.len()
+        );
+        assert_eq!(
+            serde_json::to_string(&e.project).unwrap(),
+            before,
+            "perform must not edit the project"
+        );
         assert_eq!(e.revision, rev);
     }
 

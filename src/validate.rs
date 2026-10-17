@@ -94,14 +94,20 @@ pub(crate) fn nan_fields<T: std::fmt::Debug>(v: &T) -> Vec<String> {
         } else {
             0
         };
-        let end_ok = |n: usize| i + n >= b.len() || !(b[i + n].is_ascii_alphanumeric() || b[i + n] == b'_');
+        let end_ok =
+            |n: usize| i + n >= b.len() || !(b[i + n].is_ascii_alphanumeric() || b[i + n] == b'_');
         let start_ok = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
         if tok > 0 && end_ok(tok) && start_ok {
             // the field name before ": "
             let before = d[..i].trim_end();
             let name = before
                 .strip_suffix(':')
-                .map(|s| s.rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string())
+                .map(|s| {
+                    s.rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .next()
+                        .unwrap_or("")
+                        .to_string()
+                })
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "(list value)".to_string());
             if !out.contains(&name) {
@@ -838,11 +844,36 @@ mod tests {
     fn nan_fields_ignores_unset_options() {
         #[derive(Debug)]
         #[allow(dead_code)]
-        struct I { fixed_key: Option<u8>, gain: f32, tune: f32, list: Vec<f32>, infinite_mode: bool }
-        let ok = I { fixed_key: None, gain: 1.0, tune: 0.0, list: vec![1.0], infinite_mode: true };
-        assert!(super::nan_fields(&ok).is_empty(), "{:?}", super::nan_fields(&ok));
-        let bad = I { fixed_key: None, gain: f32::NAN, tune: f32::INFINITY, list: vec![f32::NAN], infinite_mode: false };
-        assert_eq!(super::nan_fields(&bad), vec!["gain", "tune", "(list value)"]);
+        struct I {
+            fixed_key: Option<u8>,
+            gain: f32,
+            tune: f32,
+            list: Vec<f32>,
+            infinite_mode: bool,
+        }
+        let ok = I {
+            fixed_key: None,
+            gain: 1.0,
+            tune: 0.0,
+            list: vec![1.0],
+            infinite_mode: true,
+        };
+        assert!(
+            super::nan_fields(&ok).is_empty(),
+            "{:?}",
+            super::nan_fields(&ok)
+        );
+        let bad = I {
+            fixed_key: None,
+            gain: f32::NAN,
+            tune: f32::INFINITY,
+            list: vec![f32::NAN],
+            infinite_mode: false,
+        };
+        assert_eq!(
+            super::nan_fields(&bad),
+            vec!["gain", "tune", "(list value)"]
+        );
     }
 
     use super::*;

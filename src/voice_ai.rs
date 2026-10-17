@@ -40,9 +40,21 @@ fn r2(x: f32) -> f32 {
 /// Plain SHA-256 (FIPS 180-4), for checking downloaded helpers.
 pub fn sha256_hex(data: &[u8]) -> String {
     const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
     ];
-    let mut h: [u32; 8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
     let mut msg = data.to_vec();
     let bits = (data.len() as u64).wrapping_mul(8);
     msg.push(0x80);
@@ -53,22 +65,43 @@ pub fn sha256_hex(data: &[u8]) -> String {
     let mut w = [0u32; 64];
     for chunk in msg.chunks(64) {
         for i in 0..16 {
-            w[i] = u32::from_be_bytes([chunk[4 * i], chunk[4 * i + 1], chunk[4 * i + 2], chunk[4 * i + 3]]);
+            w[i] = u32::from_be_bytes([
+                chunk[4 * i],
+                chunk[4 * i + 1],
+                chunk[4 * i + 2],
+                chunk[4 * i + 3],
+            ]);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
             let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
         }
         let mut v = h;
         for i in 0..64 {
             let s1 = v[4].rotate_right(6) ^ v[4].rotate_right(11) ^ v[4].rotate_right(25);
             let ch = (v[4] & v[5]) ^ (!v[4] & v[6]);
-            let t1 = v[7].wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
+            let t1 = v[7]
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
             let s0 = v[0].rotate_right(2) ^ v[0].rotate_right(13) ^ v[0].rotate_right(22);
             let maj = (v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]);
             let t2 = s0.wrapping_add(maj);
-            v = [t1.wrapping_add(t2), v[0], v[1], v[2], v[3].wrapping_add(t1), v[4], v[5], v[6]];
+            v = [
+                t1.wrapping_add(t2),
+                v[0],
+                v[1],
+                v[2],
+                v[3].wrapping_add(t1),
+                v[4],
+                v[5],
+                v[6],
+            ];
         }
         for i in 0..8 {
             h[i] = h[i].wrapping_add(v[i]);
@@ -89,7 +122,9 @@ fn cache_dir() -> PathBuf {
 
 fn which(bin: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(bin)).find(|p| p.is_file())
+    std::env::split_paths(&path)
+        .map(|d| d.join(bin))
+        .find(|p| p.is_file())
 }
 
 /// 16-bit mono WAV at any rate (helpers that want 48 kHz or 16 kHz).
@@ -117,7 +152,14 @@ pub fn write_wav_mono(path: &Path, x: &[f32], rate: u32) -> Result<()> {
 }
 
 fn tmp_dir(tag: &str) -> Result<PathBuf> {
-    let d = std::env::temp_dir().join(format!("beatbox_{tag}_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
+    let d = std::env::temp_dir().join(format!(
+        "beatbox_{tag}_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
     std::fs::create_dir_all(&d)?;
     Ok(d)
 }
@@ -169,7 +211,10 @@ pub fn deepfilter_binary(allow_download: bool) -> Result<PathBuf> {
         if p.is_file() {
             return Ok(p);
         }
-        bail!("BEATBOX_DEEPFILTER points at {}, which is not a file", p.display());
+        bail!(
+            "BEATBOX_DEEPFILTER points at {}, which is not a file",
+            p.display()
+        );
     }
     if let Some(p) = which("deep-filter") {
         return Ok(p);
@@ -184,7 +229,10 @@ pub fn deepfilter_binary(allow_download: bool) -> Result<PathBuf> {
     if !allow_download {
         bail!("deep-filter is not cached yet and download is off");
     }
-    let resp = ureq::get(DFN_URL).timeout(std::time::Duration::from_secs(180)).call().map_err(|e| anyhow!("fetching deep-filter: {e}"))?;
+    let resp = ureq::get(DFN_URL)
+        .timeout(std::time::Duration::from_secs(180))
+        .call()
+        .map_err(|e| anyhow!("fetching deep-filter: {e}"))?;
     let mut buf = Vec::new();
     std::io::Read::read_to_end(&mut resp.into_reader(), &mut buf)?;
     let got = sha256_hex(&buf);
@@ -209,7 +257,10 @@ pub fn deepfilter_full(x: &[f32], bin: &Path) -> Result<Vec<f32>> {
     let d = tmp_dir("dfn")?;
     let pk = x.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
     let g = 0.7 / pk;
-    let x48: Vec<f32> = crate::resample::resample(x, SR as u32, 48_000).iter().map(|v| v * g).collect();
+    let x48: Vec<f32> = crate::resample::resample(x, SR as u32, 48_000)
+        .iter()
+        .map(|v| v * g)
+        .collect();
     let inp = d.join("in.wav");
     write_wav_mono(&inp, &x48, 48_000)?;
     let out_dir = d.join("out");
@@ -224,7 +275,13 @@ pub fn deepfilter_full(x: &[f32], bin: &Path) -> Result<Vec<f32>> {
     let outp = out_dir.join("in.wav");
     if !res.status.success() || !outp.is_file() {
         let _ = std::fs::remove_dir_all(&d);
-        bail!("deep-filter failed: {}", String::from_utf8_lossy(&res.stderr).lines().last().unwrap_or(""));
+        bail!(
+            "deep-filter failed: {}",
+            String::from_utf8_lossy(&res.stderr)
+                .lines()
+                .last()
+                .unwrap_or("")
+        );
     }
     let y = crate::samples::decode_file(&outp);
     let _ = std::fs::remove_dir_all(&d);
@@ -261,7 +318,11 @@ pub fn rnnoise_full(x: &[f32]) -> Vec<f32> {
 /// Apply the attenuation limit and dry/wet mix: the removed part is let back
 /// in at -atten_lim_db, then blended with the take by `mix`.
 pub fn apply_limits(x: &[f32], full: &[f32], atten_lim_db: f32, mix: f32) -> Vec<f32> {
-    let lim = if atten_lim_db >= 100.0 { 0.0 } else { 10f32.powf(-atten_lim_db.max(0.0) / 20.0) };
+    let lim = if atten_lim_db >= 100.0 {
+        0.0
+    } else {
+        10f32.powf(-atten_lim_db.max(0.0) / 20.0)
+    };
     let m = mix.clamp(0.0, 1.0);
     x.iter()
         .zip(full.iter())
@@ -278,15 +339,27 @@ pub fn denoise(x: &[f32], o: &DenoiseOpts) -> Result<(Vec<f32>, String, Option<S
     let mut note = None;
     if want == "auto" || want == "deepfilter" || want == "dfn" {
         match deepfilter_binary(true).and_then(|b| deepfilter_full(x, &b)) {
-            Ok(full) => return Ok((apply_limits(x, &full, o.atten_lim_db, o.mix), "deepfilternet3".into(), None)),
-            Err(e) if want == "auto" => note = Some(format!("DeepFilterNet unavailable ({e}); used RNNoise")),
+            Ok(full) => {
+                return Ok((
+                    apply_limits(x, &full, o.atten_lim_db, o.mix),
+                    "deepfilternet3".into(),
+                    None,
+                ))
+            }
+            Err(e) if want == "auto" => {
+                note = Some(format!("DeepFilterNet unavailable ({e}); used RNNoise"))
+            }
             Err(e) => return Err(e),
         }
     } else if want != "rnnoise" {
         bail!("backend must be auto, deepfilter or rnnoise");
     }
     let full = rnnoise_full(x);
-    Ok((apply_limits(x, &full, o.atten_lim_db, o.mix), "rnnoise".into(), note))
+    Ok((
+        apply_limits(x, &full, o.atten_lim_db, o.mix),
+        "rnnoise".into(),
+        note,
+    ))
 }
 
 // ------------------------------------------------------------ DNSMOS
@@ -316,10 +389,24 @@ pub fn dnsmos(bufs: &[&[f32]]) -> Result<Vec<Mos>> {
         files.push(p);
     }
     let models = cache_dir().join("dnsmos");
-    let out = std::process::Command::new(python()).arg(&script).args(&files).arg("--models").arg(&models).stdin(std::process::Stdio::null()).output();
+    let out = std::process::Command::new(python())
+        .arg(&script)
+        .args(&files)
+        .arg("--models")
+        .arg(&models)
+        .stdin(std::process::Stdio::null())
+        .output();
     let _ = std::fs::remove_dir_all(&d);
     let out = out.map_err(|e| anyhow!("DNSMOS needs python (BEATBOX_PYTHON): {e}"))?;
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| anyhow!("DNSMOS helper said: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("nothing")))?;
+    let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| {
+        anyhow!(
+            "DNSMOS helper said: {}",
+            String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .last()
+                .unwrap_or("nothing")
+        )
+    })?;
     if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
         bail!("{e}");
     }
@@ -327,7 +414,11 @@ pub fn dnsmos(bufs: &[&[f32]]) -> Result<Vec<Mos>> {
         .iter()
         .map(|f| {
             let s = &v["scores"][f.to_string_lossy().as_ref()];
-            Ok(Mos { sig: s["SIG"].as_f64().ok_or_else(|| anyhow!("no score"))? as f32, bak: s["BAK"].as_f64().unwrap_or(0.0) as f32, ovrl: s["OVRL"].as_f64().unwrap_or(0.0) as f32 })
+            Ok(Mos {
+                sig: s["SIG"].as_f64().ok_or_else(|| anyhow!("no score"))? as f32,
+                bak: s["BAK"].as_f64().unwrap_or(0.0) as f32,
+                ovrl: s["OVRL"].as_f64().unwrap_or(0.0) as f32,
+            })
         })
         .collect()
 }
@@ -354,7 +445,15 @@ pub fn bands() -> Vec<f32> {
 /// above 10 kHz.
 pub fn clean_vocal_target(f: f32) -> f32 {
     let oct = |a: f32, b: f32| (b / a).log2();
-    let mut db = if f < 140.0 { -12.0 * oct(f, 140.0) } else if f < 500.0 { 0.0 } else if f < 1000.0 { -2.0 * oct(500.0, f) } else { -2.0 - 4.5 * oct(1000.0, f) };
+    let mut db = if f < 140.0 {
+        -12.0 * oct(f, 140.0)
+    } else if f < 500.0 {
+        0.0
+    } else if f < 1000.0 {
+        -2.0 * oct(500.0, f)
+    } else {
+        -2.0 - 4.5 * oct(1000.0, f)
+    };
     if f > 10_000.0 {
         db -= 6.0 * oct(10_000.0, f);
     }
@@ -370,12 +469,21 @@ const N: usize = 4096;
 const HOP: usize = 1024;
 
 fn hann_sqrt() -> Vec<f32> {
-    (0..N).map(|i| (0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos()).sqrt()).collect()
+    (0..N)
+        .map(|i| (0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos()).sqrt())
+        .collect()
 }
 
 fn band_of_bins(fc: &[f32]) -> Vec<(usize, usize)> {
     let bin = |f: f32| ((f / SR * N as f32).round() as usize).clamp(1, N / 2);
-    fc.iter().map(|&c| (bin(c / 2f32.powf(1.0 / 6.0)), bin(c * 2f32.powf(1.0 / 6.0)).max(bin(c / 2f32.powf(1.0 / 6.0)) + 1))).collect()
+    fc.iter()
+        .map(|&c| {
+            (
+                bin(c / 2f32.powf(1.0 / 6.0)),
+                bin(c * 2f32.powf(1.0 / 6.0)).max(bin(c / 2f32.powf(1.0 / 6.0)) + 1),
+            )
+        })
+        .collect()
 }
 
 fn frame_power(x: &[f32], start: usize, win: &[f32]) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
@@ -400,7 +508,11 @@ fn spectrum(x: &[f32], fc: &[f32]) -> Spec {
         let (p, _, _) = frame_power(x, s, &win);
         let tot: f32 = p.iter().sum();
         e.push(10.0 * tot.max(1e-20).log10());
-        frames.push(bb.iter().map(|&(a, b)| p[a..b].iter().sum::<f32>() / (b - a) as f32).collect::<Vec<f32>>());
+        frames.push(
+            bb.iter()
+                .map(|&(a, b)| p[a..b].iter().sum::<f32>() / (b - a) as f32)
+                .collect::<Vec<f32>>(),
+        );
         s += HOP;
         if x.len() < N {
             break;
@@ -422,7 +534,9 @@ fn spectrum(x: &[f32], fc: &[f32]) -> Spec {
                 n += 1;
             }
         }
-        acc.iter().map(|a| 10.0 * ((a / n.max(1) as f64) as f32).max(1e-20).log10()).collect()
+        acc.iter()
+            .map(|a| 10.0 * ((a / n.max(1) as f64) as f32).max(1e-20).log10())
+            .collect()
     };
     let voiced = avg(&|en| en >= thr);
     let noise = avg(&|en| en <= floor + 1.0);
@@ -459,7 +573,12 @@ fn smooth3(v: &[f32]) -> Vec<f32> {
 /// level-aligned on 300 Hz - 3 kHz (positive = the take has too much).
 fn deviation(meas: &[f32], target: &[f32], fc: &[f32]) -> Vec<f32> {
     let mut d: Vec<f32> = meas.iter().zip(target).map(|(m, t)| m - t).collect();
-    let mut mid: Vec<f32> = d.iter().zip(fc).filter(|(_, f)| **f >= 300.0 && **f <= 3000.0).map(|(v, _)| *v).collect();
+    let mut mid: Vec<f32> = d
+        .iter()
+        .zip(fc)
+        .filter(|(_, f)| **f >= 300.0 && **f <= 3000.0)
+        .map(|(v, _)| *v)
+        .collect();
     mid.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let off = mid.get(mid.len() / 2).copied().unwrap_or(0.0);
     d.iter_mut().for_each(|v| *v -= off);
@@ -521,7 +640,12 @@ pub fn match_tone(x: &[f32], target: &[f32], o: &ToneOpts) -> ToneResult {
     // the static EQ moves frame and average alike, so it cancels out
     let lt_ratio = {
         let lin = |lo: f32, hi: f32| {
-            let v: Vec<f32> = fc.iter().zip(&sp.voiced).filter(|(f, _)| **f >= lo && **f <= hi).map(|(_, d)| 10f32.powf(d / 10.0)).collect();
+            let v: Vec<f32> = fc
+                .iter()
+                .zip(&sp.voiced)
+                .filter(|(f, _)| **f >= lo && **f <= hi)
+                .map(|(_, d)| 10f32.powf(d / 10.0))
+                .collect();
             v.iter().sum::<f32>() / v.len().max(1) as f32
         };
         10.0 * (lin(200.0, 500.0).max(1e-20) / lin(501.0, 2000.0).max(1e-20)).log10()
@@ -546,17 +670,31 @@ pub fn match_tone(x: &[f32], target: &[f32], o: &ToneOpts) -> ToneResult {
         let mut en = 0.0f32;
         for i in 0..N {
             let idx = start + i as isize;
-            let v = if idx >= 0 { x.get(idx as usize).copied().unwrap_or(0.0) } else { 0.0 };
+            let v = if idx >= 0 {
+                x.get(idx as usize).copied().unwrap_or(0.0)
+            } else {
+                0.0
+            };
             en += v * v;
             re[i] = v * win[i];
         }
         crate::analysis::fft(&mut re, &mut im);
-        let pw = |a: usize, b: usize| (a..b).map(|k| re[k] * re[k] + im[k] * im[k]).sum::<f32>() / (b - a) as f32;
+        let pw = |a: usize, b: usize| {
+            (a..b).map(|k| re[k] * re[k] + im[k] * im[k]).sum::<f32>() / (b - a) as f32
+        };
         let voiced = en / N as f32 > peak_e * 1e-3;
         let ratio = 10.0 * (pw(b200, b500).max(1e-20) / pw(b500, b2k).max(1e-20)).log10();
         let excess = ratio - lt_ratio - o.dyn_threshold_db;
-        let want = if voiced { (excess * 0.5).clamp(0.0, o.dyn_max_db) } else { 0.0 };
-        cut = if want > cut { cut + (want - cut) * 0.6 } else { cut + (want - cut) * 0.15 };
+        let want = if voiced {
+            (excess * 0.5).clamp(0.0, o.dyn_max_db)
+        } else {
+            0.0
+        };
+        cut = if want > cut {
+            cut + (want - cut) * 0.6
+        } else {
+            cut + (want - cut) * 0.15
+        };
         nfr += 1;
         cut_sum += cut;
         if cut > 0.5 {
@@ -585,23 +723,50 @@ pub fn match_tone(x: &[f32], target: &[f32], o: &ToneOpts) -> ToneResult {
         start += HOP as isize;
     }
     y.truncate(x.len());
-    ToneResult { y, curve: corr, dev_before: dev, dyn_avg_db: if nfr > 0 { cut_sum / nfr as f32 } else { 0.0 }, dyn_active: active as f32 / nfr.max(1) as f32 }
+    ToneResult {
+        y,
+        curve: corr,
+        dev_before: dev,
+        dyn_avg_db: if nfr > 0 { cut_sum / nfr as f32 } else { 0.0 },
+        dyn_active: active as f32 / nfr.max(1) as f32,
+    }
 }
 
 fn rms_dev(dev: &[f32], fc: &[f32]) -> f32 {
-    let v: Vec<f32> = dev.iter().zip(fc).filter(|(_, f)| **f >= 150.0 && **f <= 10_000.0).map(|(d, _)| *d).collect();
+    let v: Vec<f32> = dev
+        .iter()
+        .zip(fc)
+        .filter(|(_, f)| **f >= 150.0 && **f <= 10_000.0)
+        .map(|(d, _)| *d)
+        .collect();
     (v.iter().map(|d| d * d).sum::<f32>() / v.len().max(1) as f32).sqrt()
 }
 
 fn band_map(fc: &[f32], v: &[f32]) -> Value {
-    Value::Object(fc.iter().zip(v).map(|(f, d)| (if *f >= 1000.0 { format!("{:.1}k", f / 1000.0) } else { format!("{f:.0}") }, json!(crate::sc_strip::r1(*d)))).collect())
+    Value::Object(
+        fc.iter()
+            .zip(v)
+            .map(|(f, d)| {
+                (
+                    if *f >= 1000.0 {
+                        format!("{:.1}k", f / 1000.0)
+                    } else {
+                        format!("{f:.0}")
+                    },
+                    json!(crate::sc_strip::r1(*d)),
+                )
+            })
+            .collect(),
+    )
 }
 
 // ------------------------------------------------------------ tools
 
 fn score_pair(x: &[f32], y: &[f32]) -> Value {
     match dnsmos(&[x, y]) {
-        Ok(m) => json!({"raw": mos_json(&m[0]), "processed": mos_json(&m[1]), "better_than_raw": better(&m[1], &m[0]), "rule": "better = SIG and OVRL both above the raw take (DNSMOS P.835)"}),
+        Ok(m) => {
+            json!({"raw": mos_json(&m[0]), "processed": mos_json(&m[1]), "better_than_raw": better(&m[1], &m[0]), "rule": "better = SIG and OVRL both above the raw take (DNSMOS P.835)"})
+        }
         Err(e) => json!({"unavailable": e.to_string()}),
     }
 }
@@ -701,8 +866,14 @@ mod tests {
 
     #[test]
     fn sha256_matches_known_vectors() {
-        assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-        assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     fn voice_and_noise() -> (Vec<f32>, Vec<f32>) {
@@ -720,7 +891,10 @@ mod tests {
             let on = (t * 2.0).fract() < 0.6;
             if on {
                 let f0 = 180.0 + 20.0 * (t * 3.0).sin();
-                v[i] = (1..12).map(|h| (2.0 * std::f32::consts::PI * f0 * h as f32 * t).sin() / h as f32).sum::<f32>() * 0.15;
+                v[i] = (1..12)
+                    .map(|h| (2.0 * std::f32::consts::PI * f0 * h as f32 * t).sin() / h as f32)
+                    .sum::<f32>()
+                    * 0.15;
             }
             z[i] = rnd() * 0.02;
         }
@@ -754,7 +928,12 @@ mod tests {
         }
         let fc = bands();
         let target: Vec<f32> = fc.iter().map(|f| clean_vocal_target(*f)).collect();
-        let o = ToneOpts { amount: 0.7, max_db: 6.0, dyn_max_db: 4.0, dyn_threshold_db: 3.0 };
+        let o = ToneOpts {
+            amount: 0.7,
+            max_db: 6.0,
+            dyn_max_db: 4.0,
+            dyn_threshold_db: 3.0,
+        };
         let r = match_tone(&m, &target, &o);
         let before = rms_dev(&r.dev_before, &fc);
         let after = rms_dev(&deviation(&spectrum(&r.y, &fc).voiced, &target, &fc), &fc);
@@ -762,9 +941,20 @@ mod tests {
         assert!(r.curve.iter().all(|c| c.abs() <= 6.0 + 1e-3));
         // flat target on a flat signal: unity (reconstruction check)
         let flat = vec![0.0f32; fc.len()];
-        let o0 = ToneOpts { amount: 0.0, max_db: 6.0, dyn_max_db: 0.0, dyn_threshold_db: 3.0 };
+        let o0 = ToneOpts {
+            amount: 0.0,
+            max_db: 6.0,
+            dyn_max_db: 0.0,
+            dyn_threshold_db: 3.0,
+        };
         let r0 = match_tone(&v, &flat, &o0);
-        let err: f32 = v.iter().zip(&r0.y).skip(N).take(v.len() - 2 * N).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+        let err: f32 = v
+            .iter()
+            .zip(&r0.y)
+            .skip(N)
+            .take(v.len() - 2 * N)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
         assert!(err < 1e-3, "reconstruction error {err}");
     }
 }

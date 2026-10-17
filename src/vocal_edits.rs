@@ -76,7 +76,10 @@ pub fn click_db(x: &[f32], s: usize) -> f32 {
     let b = (s + (0.02 * SR) as usize).min(x.len());
     let y: Vec<f32> = x[a..b].iter().map(|v| hp.process(*v).abs()).collect();
     let c = s - a;
-    let near = y[c.saturating_sub(16)..(c + 16).min(y.len())].iter().cloned().fold(0.0f32, f32::max);
+    let near = y[c.saturating_sub(16)..(c + 16).min(y.len())]
+        .iter()
+        .cloned()
+        .fold(0.0f32, f32::max);
     let around: f32 = y.iter().sum::<f32>() / y.len() as f32;
     20.0 * (near.max(1e-7) / around.max(1e-7)).log10()
 }
@@ -91,7 +94,10 @@ pub fn check_point(x: &[f32], db: &[f32], thr: f32, t: f32) -> Value {
     let lvl = db.get(h).copied().unwrap_or(-120.0);
     // the loudest the voice gets within 150 ms
     let w = (0.15 / HOP) as usize;
-    let peak = db[h.saturating_sub(w)..(h + w).min(db.len())].iter().cloned().fold(-120.0f32, f32::max);
+    let peak = db[h.saturating_sub(w)..(h + w).min(db.len())]
+        .iter()
+        .cloned()
+        .fold(-120.0f32, f32::max);
     let cdb = click_db(x, (t * SR) as usize);
     let mid_syllable = lvl >= thr && lvl > peak - 10.0;
     let mut issues = Vec::new();
@@ -105,13 +111,21 @@ pub fn check_point(x: &[f32], db: &[f32], thr: f32, t: f32) -> Value {
 }
 
 fn regions(a: &Value, key: &str) -> Result<Vec<(f32, f32)>> {
-    let Some(v) = a.get(key).and_then(|v| v.as_array()) else { return Ok(Vec::new()) };
+    let Some(v) = a.get(key).and_then(|v| v.as_array()) else {
+        return Ok(Vec::new());
+    };
     let mut out = Vec::new();
     for r in v {
         let (f, t) = if let Some(arr) = r.as_array() {
-            (arr.first().and_then(|x| x.as_f64()), arr.get(1).and_then(|x| x.as_f64()))
+            (
+                arr.first().and_then(|x| x.as_f64()),
+                arr.get(1).and_then(|x| x.as_f64()),
+            )
         } else {
-            (r.get("from_s").and_then(|x| x.as_f64()), r.get("to_s").and_then(|x| x.as_f64()))
+            (
+                r.get("from_s").and_then(|x| x.as_f64()),
+                r.get("to_s").and_then(|x| x.as_f64()),
+            )
         };
         match (f, t) {
             (Some(f), Some(t)) if t > f => out.push((f as f32, t as f32)),
@@ -156,8 +170,16 @@ fn edit_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     let mut pieces = Vec::new();
     let mut points = Vec::new();
     for (f, t) in pieces_t {
-        let (sf, lf, vf) = if f <= 0.001 { (0.0, -120.0, false) } else { snap_cut(&x, &db, thr, f, search) };
-        let (st, lt, vt) = if t >= len - 0.001 { (len, -120.0, false) } else { snap_cut(&x, &db, thr, t, search) };
+        let (sf, lf, vf) = if f <= 0.001 {
+            (0.0, -120.0, false)
+        } else {
+            snap_cut(&x, &db, thr, f, search)
+        };
+        let (st, lt, vt) = if t >= len - 0.001 {
+            (len, -120.0, false)
+        } else {
+            snap_cut(&x, &db, thr, t, search)
+        };
         if st <= sf + 0.02 {
             continue;
         }
@@ -175,7 +197,14 @@ fn edit_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     std::fs::create_dir_all(e.samples_dir())?;
     let path = e.samples_dir().join(format!("{name}.wav"));
     crate::render::write_wav(&path, &y, &y)?;
-    let si = crate::samples::SampleInfo { name, path: path.to_string_lossy().into(), source: format!("{} (seamless edit, {} pieces)", info.source, pieces.len()), license: info.license.clone(), author: info.author.clone(), duration: 0.0 };
+    let si = crate::samples::SampleInfo {
+        name,
+        path: path.to_string_lossy().into(),
+        source: format!("{} (seamless edit, {} pieces)", info.source, pieces.len()),
+        license: info.license.clone(),
+        author: info.author.clone(),
+        duration: 0.0,
+    };
     let reg = crate::tools::register_sample(e, si)?;
     e.revision += 1;
     // the joins, checked
@@ -187,8 +216,13 @@ fn edit_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         at += p.len() as f32 / SR - xf as f32 / SR;
         joins.push(check_point(&y, &ydb, ythr, at + 0.5 * xf as f32 / SR));
     }
-    let bad = joins.iter().filter(|j| !j["ok"].as_bool().unwrap_or(true)).count();
-    Ok(json!({"sample": reg["sample"], "pieces": points, "crossfade_ms": xf_ms, "seconds": r3(y.len() as f32 / SR), "joins": joins, "joins_with_issues": bad}))
+    let bad = joins
+        .iter()
+        .filter(|j| !j["ok"].as_bool().unwrap_or(true))
+        .count();
+    Ok(
+        json!({"sample": reg["sample"], "pieces": points, "crossfade_ms": xf_ms, "seconds": r3(y.len() as f32 / SR), "joins": joins, "joins_with_issues": bad}),
+    )
 }
 
 fn check_tool(e: &mut Engine, a: &Value) -> Result<Value> {
@@ -196,7 +230,14 @@ fn check_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         // every clip edge on a track, inside its own sample
         let ti = e.project.track_index(&track)?;
         let tname = e.project.tracks[ti].name.clone();
-        let clips: Vec<(usize, crate::project::AudioClip)> = e.project.audio_clips.iter().cloned().enumerate().filter(|(_, c)| c.track.eq_ignore_ascii_case(&tname)).collect();
+        let clips: Vec<(usize, crate::project::AudioClip)> = e
+            .project
+            .audio_clips
+            .iter()
+            .cloned()
+            .enumerate()
+            .filter(|(_, c)| c.track.eq_ignore_ascii_case(&tname))
+            .collect();
         if clips.is_empty() {
             bail!("no audio clips on '{tname}'");
         }
@@ -216,17 +257,31 @@ fn check_tool(e: &mut Engine, a: &Value) -> Result<Value> {
             if end < len - 0.005 {
                 pts.push(check_point(&x, &db, thr, end));
             }
-            let issues: usize = pts.iter().filter(|p| p["issues"].as_array().map(|v| v.iter().any(|s| s == "cuts into a syllable")).unwrap_or(false)).count();
+            let issues: usize = pts
+                .iter()
+                .filter(|p| {
+                    p["issues"]
+                        .as_array()
+                        .map(|v| v.iter().any(|s| s == "cuts into a syllable"))
+                        .unwrap_or(false)
+                })
+                .count();
             bad += issues;
             out.push(json!({"clip": i, "sample": c.sample, "start_beat": c.start_beat, "edges": pts, "fades_ms": [c.fade_in_ms, c.fade_out_ms]}));
         }
-        return Ok(json!({"track": tname, "clips": out, "edges_cutting_syllables": bad, "fix": if bad > 0 { "snap_clip_edges moves these edges to the quiet between syllables" } else { "all clip edges sit between syllables" }}));
+        return Ok(
+            json!({"track": tname, "clips": out, "edges_cutting_syllables": bad, "fix": if bad > 0 { "snap_clip_edges moves these edges to the quiet between syllables" } else { "all clip edges sit between syllables" }}),
+        );
     }
     let (info, x) = crate::tools_sound::sample_data(e, &s_req(a, "sample")?)?;
     let db = band_db(&x);
     let thr = voice_threshold(&db, None);
     let times: Vec<f32> = match a.get("at_s").and_then(|v| v.as_array()) {
-        Some(v) => v.iter().filter_map(|t| t.as_f64()).map(|t| t as f32).collect(),
+        Some(v) => v
+            .iter()
+            .filter_map(|t| t.as_f64())
+            .map(|t| t as f32)
+            .collect(),
         None => {
             // no list: scan for clicks (sharp jumps) as likely edit points
             let mut v = Vec::new();
@@ -243,8 +298,14 @@ fn check_tool(e: &mut Engine, a: &Value) -> Result<Value> {
             v
         }
     };
-    let pts: Vec<Value> = times.iter().map(|&t| check_point(&x, &db, thr, t)).collect();
-    let bad = pts.iter().filter(|p| !p["ok"].as_bool().unwrap_or(true)).count();
+    let pts: Vec<Value> = times
+        .iter()
+        .map(|&t| check_point(&x, &db, thr, t))
+        .collect();
+    let bad = pts
+        .iter()
+        .filter(|p| !p["ok"].as_bool().unwrap_or(true))
+        .count();
     Ok(json!({"sample": info.name, "points": pts, "with_issues": bad}))
 }
 
@@ -269,8 +330,16 @@ fn snap_clips_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         let len = x.len() as f32 / SR;
         let s = c.offset_s.max(0.0);
         let end = c.length_s.map(|l| s + l).unwrap_or(len).min(len);
-        let (ns, _, _) = if s > 0.005 { snap_cut(&x, &db, thr, s, search) } else { (s, 0.0, false) };
-        let (ne, _, _) = if end < len - 0.005 { snap_cut(&x, &db, thr, end, search) } else { (end, 0.0, false) };
+        let (ns, _, _) = if s > 0.005 {
+            snap_cut(&x, &db, thr, s, search)
+        } else {
+            (s, 0.0, false)
+        };
+        let (ne, _, _) = if end < len - 0.005 {
+            snap_cut(&x, &db, thr, end, search)
+        } else {
+            (end, 0.0, false)
+        };
         if ne <= ns + 0.05 {
             continue;
         }
@@ -280,7 +349,11 @@ fn snap_clips_tool(e: &mut Engine, a: &Value) -> Result<Value> {
             cl.start_beat += (ns - s) * bpm / 60.0;
         }
         cl.offset_s = ns;
-        cl.length_s = if ne < len - 0.001 { Some(ne - ns) } else { None };
+        cl.length_s = if ne < len - 0.001 {
+            Some(ne - ns)
+        } else {
+            None
+        };
         cl.fade_in_ms = Some(fade);
         cl.fade_out_ms = Some(fade);
         moved.push(json!({"clip": i, "start_moved_ms": r3((ns - s) * 1000.0), "end_moved_ms": r3((ne - end) * 1000.0)}));
@@ -289,7 +362,9 @@ fn snap_clips_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         bail!("no audio clips on '{tname}'");
     }
     e.revision += 1;
-    Ok(json!({"track": tname, "clips": moved, "fade_ms": fade, "next": "check_vocal_edits {track} to confirm"}))
+    Ok(
+        json!({"track": tname, "clips": moved, "fade_ms": fade, "next": "check_vocal_edits {track} to confirm"}),
+    )
 }
 
 pub fn tools() -> Vec<Tool> {
@@ -344,7 +419,10 @@ mod tests {
         let thr = voice_threshold(&db, None);
         let (t, _, voiced) = snap_cut(&x, &db, thr, 0.28, 0.06);
         assert!(!voiced && t > 0.30 && t < 0.40, "snapped to {t}");
-        let pieces = vec![x[..(0.33 * SR) as usize].to_vec(), x[(0.63 * SR) as usize..].to_vec()];
+        let pieces = vec![
+            x[..(0.33 * SR) as usize].to_vec(),
+            x[(0.63 * SR) as usize..].to_vec(),
+        ];
         let y = join(&pieces, (0.012 * SR) as usize);
         let ydb = band_db(&y);
         let p = check_point(&y, &ydb, voice_threshold(&ydb, None), 0.33);

@@ -67,11 +67,15 @@ fn builtins() -> Vec<(&'static str, &'static str, Value)> {
 }
 
 fn parse_chain(v: &Value, what: &str) -> Result<Vec<Effect>> {
-    let arr = v.as_array().ok_or_else(|| anyhow!("{what}: a chain is a list of effects"))?;
+    let arr = v
+        .as_array()
+        .ok_or_else(|| anyhow!("{what}: a chain is a list of effects"))?;
     let mut out = Vec::new();
     for (i, x) in arr.iter().enumerate() {
-        let fx: Effect = serde_json::from_value(x.clone()).with_context(|| format!("{what}: effect {i} ({x})"))?;
-        fx.validate().map_err(|m| anyhow!("{what}: effect {i}: {m}"))?;
+        let fx: Effect = serde_json::from_value(x.clone())
+            .with_context(|| format!("{what}: effect {i} ({x})"))?;
+        fx.validate()
+            .map_err(|m| anyhow!("{what}: effect {i}: {m}"))?;
         out.push(fx);
     }
     Ok(out)
@@ -81,7 +85,10 @@ fn chain_by_name(e: &Engine, name: &str) -> Result<Vec<Effect>> {
     if let Some(c) = e.project.fx_chains.get(name) {
         return Ok(c.clone());
     }
-    if let Some((_, _, v)) = builtins().into_iter().find(|b| b.0.eq_ignore_ascii_case(name)) {
+    if let Some((_, _, v)) = builtins()
+        .into_iter()
+        .find(|b| b.0.eq_ignore_ascii_case(name))
+    {
         return parse_chain(&v, name);
     }
     let mut names: Vec<String> = builtins().iter().map(|b| b.0.to_string()).collect();
@@ -277,19 +284,48 @@ mod tests {
     fn soundgoodizer_adds_then_retunes() {
         let mut e = Engine::new(std::env::temp_dir().join("beatbox_chain_tests"));
         e.call("add_track", &json!({"name": "keys"})).unwrap();
-        let r = e.call("soundgoodizer", &json!({"track": "keys", "mode": "b", "amount": 70})).unwrap();
+        let r = e
+            .call(
+                "soundgoodizer",
+                &json!({"track": "keys", "mode": "b", "amount": 70}),
+            )
+            .unwrap();
         assert_eq!(r["chain"], json!(["multiband", "limiter"]), "{r}");
         assert_eq!(r["retuned"], false);
-        let r = e.call("soundgoodizer", &json!({"track": "keys", "mode": "D", "amount": 30})).unwrap();
+        let r = e
+            .call(
+                "soundgoodizer",
+                &json!({"track": "keys", "mode": "D", "amount": 30}),
+            )
+            .unwrap();
         assert_eq!(r["chain"], json!(["multiband", "limiter"]), "{r}");
         assert_eq!(r["retuned"], true);
-        let fx = serde_json::to_value(&e.project.tracks.iter().find(|t| t.name == "keys").unwrap().effects[0]).unwrap();
+        let fx = serde_json::to_value(
+            &e.project
+                .tracks
+                .iter()
+                .find(|t| t.name == "keys")
+                .unwrap()
+                .effects[0],
+        )
+        .unwrap();
         // D at 30%: threshold -26*0.3, ratio 1+3*0.3
-        assert!((fx["low_threshold_db"].as_f64().unwrap() + 7.8).abs() < 1e-3, "{fx}");
-        assert!((fx["low_ratio"].as_f64().unwrap() - 1.9).abs() < 1e-3, "{fx}");
-        assert!(e.call("soundgoodizer", &json!({"track": "keys", "mode": "Z"})).is_err());
-        assert!(e.call("soundgoodizer", &json!({"track": "keys", "amount": 150})).is_err());
-        e.call("soundgoodizer", &json!({"track": "master"})).unwrap();
+        assert!(
+            (fx["low_threshold_db"].as_f64().unwrap() + 7.8).abs() < 1e-3,
+            "{fx}"
+        );
+        assert!(
+            (fx["low_ratio"].as_f64().unwrap() - 1.9).abs() < 1e-3,
+            "{fx}"
+        );
+        assert!(e
+            .call("soundgoodizer", &json!({"track": "keys", "mode": "Z"}))
+            .is_err());
+        assert!(e
+            .call("soundgoodizer", &json!({"track": "keys", "amount": 150}))
+            .is_err());
+        e.call("soundgoodizer", &json!({"track": "master"}))
+            .unwrap();
     }
 
     #[test]
@@ -298,19 +334,53 @@ mod tests {
             parse_chain(&v, n).unwrap_or_else(|err| panic!("{n}: {err:#}"));
         }
         let mut e = Engine::new(std::env::temp_dir().join("bb_chain_test"));
-        e.call("add_track", &json!({"name": "keys", "preset": "piano"})).unwrap();
-        e.call("add_track", &json!({"name": "pad", "preset": "piano"})).unwrap();
-        let r = e.call("apply_fx_chain", &json!({"track": "keys", "chain": "lofi_keys"})).unwrap();
+        e.call("add_track", &json!({"name": "keys", "preset": "piano"}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "pad", "preset": "piano"}))
+            .unwrap();
+        let r = e
+            .call(
+                "apply_fx_chain",
+                &json!({"track": "keys", "chain": "lofi_keys"}),
+            )
+            .unwrap();
         assert_eq!(r["added"], 3);
-        e.call("save_fx_chain", &json!({"track": "keys", "name": "mine"})).unwrap();
-        let r = e.call("apply_fx_chain", &json!({"track": "pad", "chain": "mine", "replace": true})).unwrap();
+        e.call("save_fx_chain", &json!({"track": "keys", "name": "mine"}))
+            .unwrap();
+        let r = e
+            .call(
+                "apply_fx_chain",
+                &json!({"track": "pad", "chain": "mine", "replace": true}),
+            )
+            .unwrap();
         assert_eq!(r["chain"].as_array().unwrap().len(), 3);
-        let r = e.call("apply_fx_chain", &json!({"track": "pad", "effects": [{"type": "reverb", "mix": 0.2}]})).unwrap();
+        let r = e
+            .call(
+                "apply_fx_chain",
+                &json!({"track": "pad", "effects": [{"type": "reverb", "mix": 0.2}]}),
+            )
+            .unwrap();
         assert_eq!(r["chain"].as_array().unwrap().len(), 4);
-        e.call("copy_fx_chain", &json!({"from": "pad", "to": "keys", "replace": true})).unwrap();
+        e.call(
+            "copy_fx_chain",
+            &json!({"from": "pad", "to": "keys", "replace": true}),
+        )
+        .unwrap();
         assert_eq!(e.project.tracks[0].effects.len(), 4);
-        assert!(e.call("apply_fx_chain", &json!({"track": "pad", "chain": "nope"})).is_err());
-        assert!(e.call("apply_fx_chain", &json!({"track": "pad", "effects": [{"type": "vinyl", "age": 3.0}]})).is_err());
-        assert!(e.call("save_fx_chain", &json!({"track": "pad", "name": "lofi_keys"})).is_err());
+        assert!(e
+            .call("apply_fx_chain", &json!({"track": "pad", "chain": "nope"}))
+            .is_err());
+        assert!(e
+            .call(
+                "apply_fx_chain",
+                &json!({"track": "pad", "effects": [{"type": "vinyl", "age": 3.0}]})
+            )
+            .is_err());
+        assert!(e
+            .call(
+                "save_fx_chain",
+                &json!({"track": "pad", "name": "lofi_keys"})
+            )
+            .is_err());
     }
 }

@@ -7,7 +7,10 @@ use crate::engine::Engine;
 use crate::project::{AudioClip, Note, Pattern, Section, VocalMap, STEPS_PER_BAR};
 use crate::samples::{self, SampleInfo};
 use crate::theory::{self, Chord};
-use crate::tools::{b_or, ensure_track, f_opt, find, obj, profile, register_sample, s_opt, s_req, seed_of, u_or, Tool};
+use crate::tools::{
+    b_or, ensure_track, f_opt, find, obj, profile, register_sample, s_opt, s_req, seed_of, u_or,
+    Tool,
+};
 use crate::vocal::{self, Lyrics, VocalAnalysis};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -21,7 +24,13 @@ fn lyrics_for(e: &Engine, path: &std::path::Path, a: &Value) -> (Option<Lyrics>,
         return (None, None);
     }
     let model = s_opt(a, "model").unwrap_or_else(|| "base".into());
-    match vocal::transcribe(path, &e.workdir, &model, s_opt(a, "language").as_deref(), s_opt(a, "known_lyrics").as_deref()) {
+    match vocal::transcribe(
+        path,
+        &e.workdir,
+        &model,
+        s_opt(a, "language").as_deref(),
+        s_opt(a, "known_lyrics").as_deref(),
+    ) {
         Ok(l) => (Some(l), None),
         Err(err) => (None, Some(format!("lyrics skipped: {err}"))),
     }
@@ -88,28 +97,64 @@ pub const VOCAL_HPF_HZ: f32 = 120.0;
 pub fn vocal_chain(e: &mut Engine) -> Result<()> {
     // critic v18 (beat 10 r1): the voice piled up at 150-250 Hz, +11.6 dB over
     // the beat there, so the high-pass sits at 120 Hz (was 95)
-    call(e, "add_effect", json!({"track": "vocal", "type": "filter", "params": {"mode": "highpass", "cutoff": VOCAL_HPF_HZ}}))?;
-    call(e, "add_effect", json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [
+    call(
+        e,
+        "add_effect",
+        json!({"track": "vocal", "type": "filter", "params": {"mode": "highpass", "cutoff": VOCAL_HPF_HZ}}),
+    )?;
+    call(
+        e,
+        "add_effect",
+        json!({"track": "vocal", "type": "parametric_eq", "params": {"bands": [
         {"kind": "bell", "freq": 300.0, "gain_db": -2.5, "q": 1.0},
         {"kind": "bell", "freq": 3200.0, "gain_db": 2.0, "q": 0.9},
-        {"kind": "high_shelf", "freq": 10000.0, "gain_db": 2.5, "q": 0.7}]}}))?;
-    call(e, "add_effect", json!({"track": "vocal", "type": "compressor", "params": {"threshold_db": -20.0, "ratio": 3.5, "attack_ms": 6.0, "release_ms": 160.0, "makeup_db": 4.0}}))?;
+        {"kind": "high_shelf", "freq": 10000.0, "gain_db": 2.5, "q": 0.7}]}}),
+    )?;
+    call(
+        e,
+        "add_effect",
+        json!({"track": "vocal", "type": "compressor", "params": {"threshold_db": -20.0, "ratio": 3.5, "attack_ms": 6.0, "release_ms": 160.0, "makeup_db": 4.0}}),
+    )?;
     // the voice's own dynamics release slowly (critic v19: a ~40 ms duck
     // release made a click at 92.19 s; 120-200 ms): compressor 160 ms (was
     // 90), de-esser 120 ms (was 60).
     // De-esser gentler than before (was -26 dB): the leading s/sh/f/th are now held
     // and lifted on purpose (critic v18), the de-esser only tames the peaks
-    call(e, "add_effect", json!({"track": "vocal", "type": "deesser", "params": {"freq": 6500.0, "threshold_db": -21.0, "range_db": -6.0, "release_ms": 120.0}}))?;
+    call(
+        e,
+        "add_effect",
+        json!({"track": "vocal", "type": "deesser", "params": {"freq": 6500.0, "threshold_db": -21.0, "range_db": -6.0, "release_ms": 120.0}}),
+    )?;
     call(e, "add_bus", json!({"name": "vox_verb"}))?;
-    call(e, "add_effect", json!({"track": "vox_verb", "type": "reverb", "params": {"size": 0.75, "mix": 1.0, "predelay_ms": 40.0, "low_cut_hz": 250.0}}))?;
+    call(
+        e,
+        "add_effect",
+        json!({"track": "vox_verb", "type": "reverb", "params": {"size": 0.75, "mix": 1.0, "predelay_ms": 40.0, "low_cut_hz": 250.0}}),
+    )?;
     call(e, "add_bus", json!({"name": "vox_delay"}))?;
-    call(e, "add_effect", json!({"track": "vox_delay", "type": "delay", "params": {"steps": 3.0, "feedback": 0.3, "mix": 1.0, "ping_pong": true}}))?;
-    call(e, "set_send", json!({"track": "vocal", "bus": "vox_verb", "db": -11.0}))?;
-    call(e, "set_send", json!({"track": "vocal", "bus": "vox_delay", "db": -17.0}))?;
+    call(
+        e,
+        "add_effect",
+        json!({"track": "vox_delay", "type": "delay", "params": {"steps": 3.0, "feedback": 0.3, "mix": 1.0, "ping_pong": true}}),
+    )?;
+    call(
+        e,
+        "set_send",
+        json!({"track": "vocal", "bus": "vox_verb", "db": -11.0}),
+    )?;
+    call(
+        e,
+        "set_send",
+        json!({"track": "vocal", "bus": "vox_delay", "db": -17.0}),
+    )?;
     // carve the vocal's presence range out of the chords/lead
     for t in ["chords", "lead"] {
         if e.project.track_index(t).is_ok() {
-            call(e, "add_effect", json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 2800.0, "gain_db": -3.0, "q": 0.8}]}}))?;
+            call(
+                e,
+                "add_effect",
+                json!({"track": t, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 2800.0, "gain_db": -3.0, "q": 0.8}]}}),
+            )?;
         }
     }
     Ok(())
@@ -129,10 +174,20 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let words = lyrics.as_ref().map(|l| l.words()).unwrap_or_default();
     let an = vocal::analyze(&x, SR, &words, f_opt(a, "bpm"));
     if an.notes.len() < 4 {
-        bail!("could not hear a sung melody in this file (only {} notes); is it a dry vocal?", an.notes.len());
+        bail!(
+            "could not hear a sung melody in this file (only {} notes); is it a dry vocal?",
+            an.notes.len()
+        );
     }
     let style_in = s_opt(a, "style").unwrap_or_else(|| {
-        if an.tempo.bpm >= 125.0 { "house" } else if an.tempo.bpm >= 95.0 { "afrobeats" } else { "boom_bap" }.to_string()
+        if an.tempo.bpm >= 125.0 {
+            "house"
+        } else if an.tempo.bpm >= 95.0 {
+            "afrobeats"
+        } else {
+            "boom_bap"
+        }
+        .to_string()
     });
     let g = theory::groove(&style_in)?;
     let prof = profile(g.name);
@@ -140,7 +195,7 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let mut rng = Rng::new(seed);
     // grid tempo: the singer's tempo (double-time when very slow)
     let mut bpm = an.tempo.bpm;
-        if bpm < 72.0 && f_opt(a, "bpm").is_none() {
+    if bpm < 72.0 && f_opt(a, "bpm").is_none() {
         bpm *= 2.0;
     }
     let key_root = s_opt(a, "key").unwrap_or_else(|| an.key_root.clone());
@@ -158,7 +213,15 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let mut tune_stats = None;
     let x = if tune_amount > 0.0 {
         let ivs = theory::scale_intervals(if scale == "major" { "major" } else { "minor" })?;
-        let (y, st) = vocal::autotune(&x, SR, key_pc, ivs, tune_amount, f_opt(a, "tune_hard").unwrap_or(0.1), 35.0);
+        let (y, st) = vocal::autotune(
+            &x,
+            SR,
+            key_pc,
+            ivs,
+            tune_amount,
+            f_opt(a, "tune_hard").unwrap_or(0.1),
+            35.0,
+        );
         tune_stats = Some(st);
         y
     } else {
@@ -178,7 +241,10 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
         Some(w) => {
             let w2 = w.clone();
             let base = intro_bars as f32 * 4.0;
-            (base + w.beat_at(0.0), Box::new(move |t: f32| base + w2.beat_at(t)))
+            (
+                base + w.beat_at(0.0),
+                Box::new(move |t: f32| base + w2.beat_at(t)),
+            )
         }
         None => {
             let db = an.tempo.downbeat;
@@ -194,12 +260,22 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let vocal_bars = vocal_end_bar.saturating_sub(intro_bars).max(1);
 
     // melody on the song grid
-    let mel: Vec<(f32, f32, u8)> = an.notes.iter().map(|n| (song_beat(n.start), n.dur() / beat_s, n.pitch)).collect();
+    let mel: Vec<(f32, f32, u8)> = an
+        .notes
+        .iter()
+        .map(|n| (song_beat(n.start), n.dur() / beat_s, n.pitch))
+        .collect();
 
     // sections of `section_bars` over the vocal
     let mut secs: Vec<Sec> = Vec::new();
     if intro_bars > 0 {
-        secs.push(Sec { name: "intro".into(), kind: "intro", bar0: 0, bars: intro_bars, lyrics: String::new() });
+        secs.push(Sec {
+            name: "intro".into(),
+            kind: "intro",
+            bar0: 0,
+            bars: intro_bars,
+            lyrics: String::new(),
+        });
     }
     let mut b = intro_bars;
     let end = intro_bars + vocal_bars;
@@ -216,12 +292,22 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
             })
             .map(|w| w.word.clone())
             .collect();
-        let sung = mel.iter().any(|m| m.0 / 4.0 >= b as f32 && m.0 / 4.0 < (b + n) as f32);
-        secs.push(Sec { name: String::new(), kind: if sung { "verse" } else { "break" }, bar0: b, bars: n, lyrics: text.join(" ") });
+        let sung = mel
+            .iter()
+            .any(|m| m.0 / 4.0 >= b as f32 && m.0 / 4.0 < (b + n) as f32);
+        secs.push(Sec {
+            name: String::new(),
+            kind: if sung { "verse" } else { "break" },
+            bar0: b,
+            bars: n,
+            lyrics: text.join(" "),
+        });
         b += n;
     }
     // the hook: the vocal section whose lyrics repeat most (or the highest-sung one)
-    let vidx: Vec<usize> = (0..secs.len()).filter(|&i| secs[i].kind == "verse").collect();
+    let vidx: Vec<usize> = (0..secs.len())
+        .filter(|&i| secs[i].kind == "verse")
+        .collect();
     let mut rep = vec![0.0f32; secs.len()];
     for &i in &vidx {
         for &j in &vidx {
@@ -235,8 +321,16 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     }
     let any_rep = vidx.iter().any(|&i| rep[i] > 0.0);
     let mean_pitch = |s: &Sec| -> f32 {
-        let v: Vec<f32> = mel.iter().filter(|m| m.0 / 4.0 >= s.bar0 as f32 && m.0 / 4.0 < (s.bar0 + s.bars) as f32).map(|m| m.2 as f32).collect();
-        if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 }
+        let v: Vec<f32> = mel
+            .iter()
+            .filter(|m| m.0 / 4.0 >= s.bar0 as f32 && m.0 / 4.0 < (s.bar0 + s.bars) as f32)
+            .map(|m| m.2 as f32)
+            .collect();
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().sum::<f32>() / v.len() as f32
+        }
     };
     if any_rep {
         let best = vidx.iter().map(|&i| rep[i]).fold(0.0f32, f32::max);
@@ -247,7 +341,11 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
         }
     } else if vidx.len() >= 2 {
         let mut mp: Vec<f32> = vidx.iter().map(|&i| mean_pitch(&secs[i])).collect();
-        let med = { let mut m = mp.clone(); m.sort_by(|a, b| a.partial_cmp(b).unwrap()); m[m.len() / 2] };
+        let med = {
+            let mut m = mp.clone();
+            m.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            m[m.len() / 2]
+        };
         for (k, &i) in vidx.iter().enumerate() {
             if mp[k] > med {
                 secs[i].kind = "hook";
@@ -263,7 +361,13 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     }
     let outro_bar0 = intro_bars + vocal_bars;
     if outro_bars > 0 {
-        secs.push(Sec { name: "outro".into(), kind: "outro", bar0: outro_bar0, bars: outro_bars, lyrics: String::new() });
+        secs.push(Sec {
+            name: "outro".into(),
+            kind: "outro",
+            bar0: outro_bar0,
+            bars: outro_bars,
+            lyrics: String::new(),
+        });
     }
     let mut counts = std::collections::BTreeMap::new();
     for s in secs.iter_mut() {
@@ -282,21 +386,29 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let n_slots = vocal_bars as usize * slots_per_bar;
     let vchords = vocal::harmonize(&rel, n_slots, slot_beats, key_pc, &scale)?;
     let tonic = vocal::candidate_chords(key_pc, &scale)?.remove(0);
-    let hook_bar = secs.iter().find(|s| s.kind == "hook").map(|s| s.bar0).unwrap_or(intro_bars);
+    let hook_bar = secs
+        .iter()
+        .find(|s| s.kind == "hook")
+        .map(|s| s.bar0)
+        .unwrap_or(intro_bars);
     let chords_at = |bar: u32, nbars: u32, kind: &str| -> Vec<Chord> {
         let mut out = Vec::new();
         for i in 0..(nbars as usize * slots_per_bar) {
             let c = match kind {
                 // instrumental ends borrow the hook's changes and come home to the tonic
                 "intro" | "outro" => {
-                    let hs = (hook_bar - intro_bars) as usize * slots_per_bar + i % (4 * slots_per_bar);
+                    let hs =
+                        (hook_bar - intro_bars) as usize * slots_per_bar + i % (4 * slots_per_bar);
                     if kind == "outro" && i + slots_per_bar >= nbars as usize * slots_per_bar {
                         tonic.clone()
                     } else {
                         vchords.get(hs).cloned().unwrap_or_else(|| tonic.clone())
                     }
                 }
-                _ => vchords.get((bar - intro_bars) as usize * slots_per_bar + i).cloned().unwrap_or_else(|| tonic.clone()),
+                _ => vchords
+                    .get((bar - intro_bars) as usize * slots_per_bar + i)
+                    .cloned()
+                    .unwrap_or_else(|| tonic.clone()),
             };
             out.push(c);
         }
@@ -304,30 +416,53 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     };
 
     // fresh project
-    let name = s_opt(a, "name").unwrap_or_else(|| format!("{} (vocal song)", path.file_stem().and_then(|s| s.to_str()).unwrap_or("vocal")));
+    let name = s_opt(a, "name").unwrap_or_else(|| {
+        format!(
+            "{} (vocal song)",
+            path.file_stem().and_then(|s| s.to_str()).unwrap_or("vocal")
+        )
+    });
     let mut p = crate::project::Project::new(&name, (bpm * 100.0).round() / 100.0);
     p.key_root = key_root.clone();
-    p.scale = if scale == "major" { "major".into() } else { "minor".into() };
+    p.scale = if scale == "major" {
+        "major".into()
+    } else {
+        "minor".into()
+    };
     p.swing = 0.0;
     p.patterns = secs.iter().map(|s| Pattern::new(&s.name, s.bars)).collect();
-    p.arrangement = secs.iter().map(|s| Section { pattern: s.name.clone(), repeats: 1 }).collect();
+    p.arrangement = secs
+        .iter()
+        .map(|s| Section {
+            pattern: s.name.clone(),
+            repeats: 1,
+        })
+        .collect();
     e.project = p;
 
     // vocal sample + track + clip
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("take").to_string();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("take")
+        .to_string();
     let (sample_path, sample_name) = match &warp {
         Some(w) => {
             let b0 = w.beat_at(0.0);
             let out_len = (w.beat_at(an.duration) - b0) * beat_s;
             let y = vocal::warp_audio(&x, SR, out_len, |o| w.time_at_beat(b0 + o / beat_s));
             std::fs::create_dir_all(e.samples_dir())?;
-            let p = e.samples_dir().join(format!("{}_warped.wav", samples::sample_name(&stem)));
+            let p = e
+                .samples_dir()
+                .join(format!("{}_warped.wav", samples::sample_name(&stem)));
             crate::render::write_wav(&p, &y, &y)?;
             (p, format!("vocal_{stem}_warped"))
         }
         None if tune_amount > 0.0 => {
             std::fs::create_dir_all(e.samples_dir())?;
-            let p = e.samples_dir().join(format!("{}_tuned.wav", samples::sample_name(&stem)));
+            let p = e
+                .samples_dir()
+                .join(format!("{}_tuned.wav", samples::sample_name(&stem)));
             crate::render::write_wav(&p, &x, &x)?;
             (p, format!("vocal_{stem}_tuned"))
         }
@@ -336,28 +471,51 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
     let info = SampleInfo {
         name: samples::sample_name(&sample_name),
         path: sample_path.to_string_lossy().into(),
-        source: if warp.is_some() { "vocal take (auto-warped to the grid)".into() } else { "vocal take".into() },
+        source: if warp.is_some() {
+            "vocal take (auto-warped to the grid)".into()
+        } else {
+            "vocal take".into()
+        },
         license: s_opt(a, "license").unwrap_or_default(),
         author: String::new(),
         duration: 0.0,
     };
     let reg = register_sample(e, info)?;
     let sample = reg["sample"].as_str().unwrap_or("vocal").to_string();
-    let inst = crate::instruments::Instrument::Sampler(crate::instruments::SamplerParams { sample: sample.clone(), one_shot: true, ..Default::default() });
+    let inst = crate::instruments::Instrument::Sampler(crate::instruments::SamplerParams {
+        sample: sample.clone(),
+        one_shot: true,
+        ..Default::default()
+    });
     ensure_track(&mut e.project, "vocal", "pad", Some(inst))?;
-    e.project.audio_clips.push(AudioClip { track: "vocal".into(), sample: sample.clone(), start_beat: clip_start_beat, offset_s: 0.0, length_s: None, gain_db: 0.0, fade_in_ms: None, fade_out_ms: None, id: String::new() });
+    e.project.audio_clips.push(AudioClip {
+        track: "vocal".into(),
+        sample: sample.clone(),
+        start_beat: clip_start_beat,
+        offset_s: 0.0,
+        length_s: None,
+        gain_db: 0.0,
+        fade_in_ms: None,
+        fade_out_ms: None,
+        id: String::new(),
+    });
 
     // per-section parts
     let drums: Vec<&str> = g.parts.iter().map(|p| p.0).collect();
     let hook_melody = {
         let h = secs.iter().find(|s| s.kind == "hook").cloned();
-        h.map(|h| quantize_notes(&mel, h.bar0, h.bars.min(4))).unwrap_or_default()
+        h.map(|h| quantize_notes(&mel, h.bar0, h.bars.min(4)))
+            .unwrap_or_default()
     };
     let lead_preset = s_opt(a, "lead_preset").unwrap_or_else(|| prof.lead_preset.to_string());
     for s in &secs {
         let pi = e.project.pattern_index(&s.name)?;
         let total = e.project.patterns[pi].steps();
-        call(e, "generate_drums", json!({"style": g.name, "pattern": s.name, "set_tempo": false, "fill": s.kind != "outro", "seed": seed ^ (s.bar0 as u64 * 7919)}))?;
+        call(
+            e,
+            "generate_drums",
+            json!({"style": g.name, "pattern": s.name, "set_tempo": false, "fill": s.kind != "outro", "seed": seed ^ (s.bar0 as u64 * 7919)}),
+        )?;
         let keep: &[&str] = match s.kind {
             "intro" => &["hat", "shaker", "rim"],
             "outro" => &["kick", "hat", "shaker"],
@@ -382,12 +540,25 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
             _ => "hold",
         };
         let chord_track = ensure_track(&mut e.project, "chords", prof.chord_preset, None)?;
-        let cn = theory::chord_notes(&voiced, slot_beats / 4.0, total, cstyle, if s.kind == "hook" { 0.72 } else { 0.62 })?;
+        let cn = theory::chord_notes(
+            &voiced,
+            slot_beats / 4.0,
+            total,
+            cstyle,
+            if s.kind == "hook" { 0.72 } else { 0.62 },
+        )?;
         *e.project.patterns[pi].notes_mut(&chord_track) = cn;
         // bass (not in the intro)
         if s.kind != "intro" && s.kind != "break" {
             let bass_track = ensure_track(&mut e.project, "bass", prof.bass_preset, None)?;
-            let bn = theory::bass_notes(&ch, slot_beats / 4.0, total, prof.bass_octave, prof.bass_style, &mut rng)?;
+            let bn = theory::bass_notes(
+                &ch,
+                slot_beats / 4.0,
+                total,
+                prof.bass_octave,
+                prof.bass_style,
+                &mut rng,
+            )?;
             *e.project.patterns[pi].notes_mut(&bass_track) = bn;
         }
         // the hook melody answers in the instrumental parts
@@ -420,23 +591,57 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
 
     // mix: a vocal chain, returns, and a beat that leaves the vocal room
     vocal_chain(e)?;
-    call(e, "add_effect", json!({"track": "chords", "type": "reverb", "params": {"size": 0.7, "mix": 0.25}}))?;
+    call(
+        e,
+        "add_effect",
+        json!({"track": "chords", "type": "reverb", "params": {"size": 0.7, "mix": 0.25}}),
+    )?;
     if e.project.track_index("lead").is_ok() {
-        call(e, "add_effect", json!({"track": "lead", "type": "delay", "params": {"steps": 3.0, "mix": 0.2, "feedback": 0.3}}))?;
+        call(
+            e,
+            "add_effect",
+            json!({"track": "lead", "type": "delay", "params": {"steps": 3.0, "mix": 0.2, "feedback": 0.3}}),
+        )?;
     }
-    if e.project.track_index("bass").is_ok() && (prof.sidechain || matches!(g.name, "trap" | "drill" | "phonk")) {
-        call(e, "add_effect", json!({"track": "bass", "type": "sidechain", "params": {"source": "kick", "amount": 0.5}}))?;
+    if e.project.track_index("bass").is_ok()
+        && (prof.sidechain || matches!(g.name, "trap" | "drill" | "phonk"))
+    {
+        call(
+            e,
+            "add_effect",
+            json!({"track": "bass", "type": "sidechain", "params": {"source": "kick", "amount": 0.5}}),
+        )?;
     }
-    let beat_tracks: Vec<String> = e.project.tracks.iter().map(|t| t.name.clone()).filter(|n| n != "vocal" && n != "vocal_midi").collect();
+    let beat_tracks: Vec<String> = e
+        .project
+        .tracks
+        .iter()
+        .map(|t| t.name.clone())
+        .filter(|n| n != "vocal" && n != "vocal_midi")
+        .collect();
     crate::carve::carve(e, &beat_tracks);
-    call(e, "set_mixer", json!({"track": "chords", "volume_db": -10.0}))?;
+    call(
+        e,
+        "set_mixer",
+        json!({"track": "chords", "volume_db": -10.0}),
+    )?;
     if e.project.track_index("lead").is_ok() {
-        call(e, "set_mixer", json!({"track": "lead", "volume_db": -9.0, "pan": 0.15}))?;
+        call(
+            e,
+            "set_mixer",
+            json!({"track": "lead", "volume_db": -9.0, "pan": 0.15}),
+        )?;
     }
     // drums in the song's key (kick on the root or fifth)
-    let drum_tuning = call(e, "tune_drums_to_key", json!({})).ok().map(|v| v["tuned"].clone());
+    let drum_tuning = call(e, "tune_drums_to_key", json!({}))
+        .ok()
+        .map(|v| v["tuned"].clone());
     let vox_db = f_opt(a, "vocal_db").unwrap_or(0.0);
-    call(e, "set_mixer", json!({"track": "vocal", "volume_db": vox_db}))?;
+    call(
+        e,
+        "set_mixer",
+        json!({"track": "vocal", "volume_db": vox_db}),
+    )?;
 
     // the vocal map: what was heard, on the song grid
     let mut vmap = VocalMap {
@@ -447,14 +652,20 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
         phrases_pinned: warp.as_ref().map(|w| w.anchors.len()).unwrap_or(0),
         ..Default::default()
     };
-    vmap.words = words.iter().map(|w| (song_beat(w.start), song_beat(w.end), w.word.clone())).collect();
+    vmap.words = words
+        .iter()
+        .map(|w| (song_beat(w.start), song_beat(w.end), w.word.clone()))
+        .collect();
     vmap.notes = mel.clone();
     for s in &secs {
-        vmap.sections.push((s.name.clone(), s.kind.to_string(), s.bar0, s.bars));
+        vmap.sections
+            .push((s.name.clone(), s.kind.to_string(), s.bar0, s.bars));
         for (i, c) in chords_at(s.bar0, s.bars, s.kind).iter().enumerate() {
             let b = s.bar0 as f32 * 4.0 + i as f32 * slot_beats;
             match vmap.chords.last_mut() {
-                Some(last) if last.2 == c.label && (last.0 + last.1 - b).abs() < 1e-3 => last.1 += slot_beats,
+                Some(last) if last.2 == c.label && (last.0 + last.1 - b).abs() < 1e-3 => {
+                    last.1 += slot_beats
+                }
                 _ => vmap.chords.push((b, slot_beats, c.label.clone())),
             }
         }
@@ -742,21 +953,46 @@ mod tests {
         let dir = std::env::temp_dir().join("beatbox_audio_clip_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir.clone());
-        e.call("new_project", &json!({"name": "clip", "bpm": 120})).unwrap();
+        e.call("new_project", &json!({"name": "clip", "bpm": 120}))
+            .unwrap();
         // one second of a 220 Hz tone as a sample
-        let tone: Vec<f32> = (0..SR as usize).map(|i| 0.5 * (i as f32 * 220.0 / SR * std::f32::consts::TAU).sin()).collect();
+        let tone: Vec<f32> = (0..SR as usize)
+            .map(|i| 0.5 * (i as f32 * 220.0 / SR * std::f32::consts::TAU).sin())
+            .collect();
         let wav = dir.join("tone.wav");
         crate::render::write_wav(&wav, &tone, &tone).unwrap();
-        e.call("import_sample", &json!({"path": wav.to_string_lossy(), "name": "tone"})).unwrap();
-        e.call("add_track", &json!({"name": "vox", "preset": "pad"})).unwrap();
-        e.call("add_audio_clip", &json!({"track": "vox", "sample": "tone", "start_beat": 2.0})).unwrap();
+        e.call(
+            "import_sample",
+            &json!({"path": wav.to_string_lossy(), "name": "tone"}),
+        )
+        .unwrap();
+        e.call("add_track", &json!({"name": "vox", "preset": "pad"}))
+            .unwrap();
+        e.call(
+            "add_audio_clip",
+            &json!({"track": "vox", "sample": "tone", "start_beat": 2.0}),
+        )
+        .unwrap();
         // a clip spelled in another case still finds its sample
-        e.call("add_audio_clip", &json!({"track": "vox", "sample": "TONE", "start_beat": 6.0})).unwrap();
+        e.call(
+            "add_audio_clip",
+            &json!({"track": "vox", "sample": "TONE", "start_beat": 6.0}),
+        )
+        .unwrap();
         assert_eq!(e.project.audio_clips.last().unwrap().sample, "tone");
-        assert!(e.call("add_audio_clip", &json!({"track": "vox", "sample": "nope", "start_beat": 0.0})).is_err());
+        assert!(e
+            .call(
+                "add_audio_clip",
+                &json!({"track": "vox", "sample": "nope", "start_beat": 0.0})
+            )
+            .is_err());
         e.project.audio_clips.pop();
         let mix = e.mix().unwrap();
-        let at = |s: f32| mix.left[(s * SR) as usize].abs().max(mix.left[(s * SR) as usize + 30].abs());
+        let at = |s: f32| {
+            mix.left[(s * SR) as usize]
+                .abs()
+                .max(mix.left[(s * SR) as usize + 30].abs())
+        };
         // beat 2 at 120 BPM = 1.0 s
         assert!(at(0.5) < 1e-4, "silent before the clip");
         assert!(at(1.3) > 0.05, "clip sounds at 1.3 s");
@@ -765,14 +1001,38 @@ mod tests {
         e.project.audio_clips[0].sample = "TONE".into();
         e.revision += 1;
         let mix = e.mix().unwrap();
-        assert!(mix.left[(1.3 * SR) as usize].abs().max(mix.left[(1.3 * SR) as usize + 30].abs()) > 0.05, "case-insensitive sample lookup");
+        assert!(
+            mix.left[(1.3 * SR) as usize]
+                .abs()
+                .max(mix.left[(1.3 * SR) as usize + 30].abs())
+                > 0.05,
+            "case-insensitive sample lookup"
+        );
         // a clip pointing at a sample that does not exist fails the render and names it
-        e.project.audio_clips.push(AudioClip { track: "vox".into(), sample: "ghost_take".into(), start_beat: 0.0, offset_s: 0.0, length_s: None, gain_db: 0.0, fade_in_ms: None, fade_out_ms: None, id: String::new() });
+        e.project.audio_clips.push(AudioClip {
+            track: "vox".into(),
+            sample: "ghost_take".into(),
+            start_beat: 0.0,
+            offset_s: 0.0,
+            length_s: None,
+            gain_db: 0.0,
+            fade_in_ms: None,
+            fade_out_ms: None,
+            id: String::new(),
+        });
         e.revision += 1;
         let out = dir.join("missing.wav");
-        let err = e.call("render", &json!({"path": out.to_string_lossy()})).unwrap_err().to_string();
+        let err = e
+            .call("render", &json!({"path": out.to_string_lossy()}))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("ghost_take") && err.contains("vox"), "{err}");
         assert!(e.mix().is_err());
-        assert!(e.call("render", &json!({"path": out.to_string_lossy(), "allow_missing_clips": true})).is_ok());
+        assert!(e
+            .call(
+                "render",
+                &json!({"path": out.to_string_lossy(), "allow_missing_clips": true})
+            )
+            .is_ok());
     }
 }

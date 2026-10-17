@@ -16,14 +16,18 @@ pub fn fps() -> f32 {
     SR / HOP as f32
 }
 
-pub const PCN: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+pub const PCN: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
 
 pub fn note_name(m: u8) -> String {
     format!("{}{}", PCN[(m % 12) as usize], m as i32 / 12 - 1)
 }
 
 fn hann(n: usize) -> Vec<f32> {
-    (0..n).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / n as f32).cos()).collect()
+    (0..n)
+        .map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / n as f32).cos())
+        .collect()
 }
 
 fn pct(v: &[f32], p: f32) -> f32 {
@@ -53,7 +57,11 @@ pub struct Grid {
 
 impl Grid {
     pub fn new(bpm: f32, downbeat_s: f32, beats_per_bar: usize) -> Grid {
-        let mut g = Grid { bpm: bpm.clamp(30.0, 300.0), downbeat_s, beats_per_bar: beats_per_bar.clamp(2, 12) };
+        let mut g = Grid {
+            bpm: bpm.clamp(30.0, 300.0),
+            downbeat_s,
+            beats_per_bar: beats_per_bar.clamp(2, 12),
+        };
         // the bar line at or before the audio's start, allowing a short lead-in
         let tol = g.beat_s().min(0.5);
         let k = ((g.downbeat_s - tol) / g.bar_s()).ceil();
@@ -124,7 +132,11 @@ pub fn band_analysis(x: &[f32], nfft: usize, edges: &[(f32, f32)]) -> Bands {
     for f in 0..frames {
         for k in 0..nfft {
             let i = (f * HOP + k) as isize - (nfft / 2) as isize;
-            re[k] = if i >= 0 && (i as usize) < x.len() { x[i as usize] * w[k] } else { 0.0 };
+            re[k] = if i >= 0 && (i as usize) < x.len() {
+                x[i as usize] * w[k]
+            } else {
+                0.0
+            };
             im[k] = 0.0;
         }
         fft.forward(&mut re, &mut im);
@@ -146,7 +158,11 @@ pub fn band_analysis(x: &[f32], nfft: usize, edges: &[(f32, f32)]) -> Bands {
         }
         std::mem::swap(&mut prev, &mut cur);
     }
-    Bands { frames, energy, flux }
+    Bands {
+        frames,
+        energy,
+        flux,
+    }
 }
 
 /// Peaks of an onset curve above an adaptive threshold (local median + k *
@@ -230,12 +246,12 @@ pub struct DrumScore {
 }
 
 const DRUM_BANDS: [(f32, f32); 6] = [
-    (30.0, 110.0),    // 0 kick
-    (110.0, 260.0),   // 1 tom / body
-    (160.0, 400.0),   // 2 snare body
-    (1200.0, 5000.0), // 3 snare crack
-    (6000.0, 16000.0),// 4 hats
-    (3500.0, 9000.0), // 5 cymbal body
+    (30.0, 110.0),     // 0 kick
+    (110.0, 260.0),    // 1 tom / body
+    (160.0, 400.0),    // 2 snare body
+    (1200.0, 5000.0),  // 3 snare crack
+    (6000.0, 16000.0), // 4 hats
+    (3500.0, 9000.0),  // 5 cymbal body
 ];
 
 fn strength_near(peaks: &[(usize, f32)], f: usize, w: usize) -> f32 {
@@ -276,11 +292,21 @@ pub fn adapt_peaks(p: &mut [(usize, f32)], win: usize, floor: f32) {
 
 /// transcribe_drums with `follow_level`: band strengths read against the
 /// local level (about 8 s around each hit) instead of the whole song's.
-pub fn transcribe_drums_opts(x: &[f32], grid: Grid, steps_per_bar: usize, follow_level: bool) -> DrumScore {
+pub fn transcribe_drums_opts(
+    x: &[f32],
+    grid: Grid,
+    steps_per_bar: usize,
+    follow_level: bool,
+) -> DrumScore {
     let fps = fps();
     let b = band_analysis(x, 2048, &DRUM_BANDS);
     let gap = ((0.045 * fps) as usize).max(2);
-    let mut peaks: Vec<Vec<(usize, f32)>> = b.flux.iter().enumerate().map(|(i, f)| pick_peaks(f, if i == 3 || i == 2 { 0.3 } else { 0.6 }, gap)).collect();
+    let mut peaks: Vec<Vec<(usize, f32)>> = b
+        .flux
+        .iter()
+        .enumerate()
+        .map(|(i, f)| pick_peaks(f, if i == 3 || i == 2 { 0.3 } else { 0.6 }, gap))
+        .collect();
     if follow_level {
         let win = (4.0 * fps) as usize;
         for p in peaks.iter_mut() {
@@ -315,8 +341,11 @@ pub fn transcribe_drums_opts(x: &[f32], grid: Grid, steps_per_bar: usize, follow
         };
         let sub_db = 10.0 * ((e0 + 1e-12) / (e2 + 1e-12)).log10();
         let rise = (e0 + 1e-12) / (before + 1e-12);
-        let kick = s[0] >= 0.3 && sub_db > -1.0 && rise >= 1.5 && (s[0] >= 0.4 * s[1] || sub_db > 3.0);
-        let snare = (s[3] >= 0.35 && s[2] >= 0.2) || s[3] >= 0.7 || (s[3] >= 0.15 && s[2] >= 0.1 && s[3] >= 0.8 * s[4] && s[0] < 0.3);
+        let kick =
+            s[0] >= 0.3 && sub_db > -1.0 && rise >= 1.5 && (s[0] >= 0.4 * s[1] || sub_db > 3.0);
+        let snare = (s[3] >= 0.35 && s[2] >= 0.2)
+            || s[3] >= 0.7
+            || (s[3] >= 0.15 && s[2] >= 0.1 && s[3] >= 0.8 * s[4] && s[0] < 0.3);
         let tom = !kick && !snare && s[1] >= 0.45 && s[3] < 0.3;
         if kick {
             raw.push((t, 0, s[0]));
@@ -330,9 +359,16 @@ pub fn transcribe_drums_opts(x: &[f32], grid: Grid, steps_per_bar: usize, follow
         let hat_ok = s[4] >= 0.3 && (!snare || (s[4] >= 1.2 * s[3] && s[4] >= 0.5));
         if hat_ok {
             // decay of the hat band: min over 60..95 ms and 450..550 ms against the attack
-            let pk = (f..f + 4).map(|i| energy_at(4, i)).fold(0.0f32, f32::max).max(1e-12);
-            let short = (f + (0.06 * fps) as usize..=f + (0.095 * fps) as usize).map(|i| energy_at(4, i)).fold(f32::MAX, f32::min);
-            let long = (f + (0.45 * fps) as usize..=f + (0.55 * fps) as usize).map(|i| energy_at(4, i)).fold(f32::MAX, f32::min);
+            let pk = (f..f + 4)
+                .map(|i| energy_at(4, i))
+                .fold(0.0f32, f32::max)
+                .max(1e-12);
+            let short = (f + (0.06 * fps) as usize..=f + (0.095 * fps) as usize)
+                .map(|i| energy_at(4, i))
+                .fold(f32::MAX, f32::min);
+            let long = (f + (0.45 * fps) as usize..=f + (0.55 * fps) as usize)
+                .map(|i| energy_at(4, i))
+                .fold(f32::MAX, f32::min);
             let crash = long / pk > 0.06 && s[4].max(s[5]) >= 0.6;
             let kind = if crash {
                 4
@@ -349,7 +385,12 @@ pub fn transcribe_drums_opts(x: &[f32], grid: Grid, steps_per_bar: usize, follow
     raw.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut dedup: Vec<(f32, usize, f32)> = Vec::new();
     for r in raw {
-        if let Some(p) = dedup.iter_mut().rev().take(8).find(|p| p.1 == r.1 && r.0 - p.0 < 0.06) {
+        if let Some(p) = dedup
+            .iter_mut()
+            .rev()
+            .take(8)
+            .find(|p| p.1 == r.1 && r.0 - p.0 < 0.06)
+        {
             if r.2 > p.2 {
                 p.2 = r.2;
             }
@@ -374,16 +415,32 @@ pub fn transcribe_drums_opts(x: &[f32], grid: Grid, steps_per_bar: usize, follow
     for (t, kind, s) in raw {
         let rel = s / med[kind];
         let ghost = kind == 1 && rel < 0.4;
-        let vel = if ghost { (25.0 + 40.0 * rel).round() } else { (92.0 * rel.powf(0.6)).round() }.clamp(15.0, 127.0) as u8;
+        let vel = if ghost {
+            (25.0 + 40.0 * rel).round()
+        } else {
+            (92.0 * rel.powf(0.6)).round()
+        }
+        .clamp(15.0, 127.0) as u8;
         let pos = (t - grid.downbeat_s) / step_s;
         if pos < -0.5 {
             continue;
         }
         let n = pos.round().max(0.0) as usize;
-        hits.push(DrumHit { t, kind, strength: s, vel, ghost, bar: n / steps_per_bar, step: n % steps_per_bar, offset: pos - n as f32 });
+        hits.push(DrumHit {
+            t,
+            kind,
+            strength: s,
+            vel,
+            ghost,
+            bar: n / steps_per_bar,
+            step: n % steps_per_bar,
+            offset: pos - n as f32,
+        });
     }
     let dur = x.len() as f32 / SR;
-    let bars = grid.bars_in(dur).max(hits.iter().map(|h| h.bar + 1).max().unwrap_or(0));
+    let bars = grid
+        .bars_in(dur)
+        .max(hits.iter().map(|h| h.bar + 1).max().unwrap_or(0));
     let mut pattern = vec![vec![vec![0u8; steps_per_bar]; 6]; bars];
     for h in &hits {
         let c = &mut pattern[h.bar][h.kind][h.step];
@@ -393,23 +450,53 @@ pub fn transcribe_drums_opts(x: &[f32], grid: Grid, steps_per_bar: usize, follow
     let per16 = (steps_per_bar / 16).max(1);
     let offs: Vec<f32> = hits
         .iter()
-        .filter(|h| (h.kind == 2 || h.kind == 3 || h.kind == 1) && (h.step / per16) % 2 == 1 && h.step % per16 == 0)
+        .filter(|h| {
+            (h.kind == 2 || h.kind == 3 || h.kind == 1)
+                && (h.step / per16) % 2 == 1
+                && h.step % per16 == 0
+        })
         .map(|h| h.offset * per16 as f32)
         .collect();
-    let swing_pct = if offs.len() >= 8 { (50.0 + 50.0 * pct(&offs, 0.5)).clamp(40.0, 75.0) } else { 50.0 };
+    let swing_pct = if offs.len() >= 8 {
+        (50.0 + 50.0 * pct(&offs, 0.5)).clamp(40.0, 75.0)
+    } else {
+        50.0
+    };
     let push_ms: Vec<f32> = (0..6)
         .map(|k| {
-            let v: Vec<f32> = hits.iter().filter(|h| h.kind == k && (h.step / per16) % 2 == 0).map(|h| h.offset * step_s * 1000.0).collect();
-            if v.is_empty() { 0.0 } else { (pct(&v, 0.5) * 10.0).round() / 10.0 }
+            let v: Vec<f32> = hits
+                .iter()
+                .filter(|h| h.kind == k && (h.step / per16) % 2 == 0)
+                .map(|h| h.offset * step_s * 1000.0)
+                .collect();
+            if v.is_empty() {
+                0.0
+            } else {
+                (pct(&v, 0.5) * 10.0).round() / 10.0
+            }
         })
         .collect();
     let (letters, fills) = group_bars(&pattern, steps_per_bar);
-    DrumScore { grid, steps_per_bar, hits, bars, pattern, swing_pct: (swing_pct * 10.0).round() / 10.0, push_ms, letters, fills }
+    DrumScore {
+        grid,
+        steps_per_bar,
+        hits,
+        bars,
+        pattern,
+        swing_pct: (swing_pct * 10.0).round() / 10.0,
+        push_ms,
+        letters,
+        fills,
+    }
 }
 
 /// Letter per bar (bars within a small hit distance share a letter) and the bars that look like fills.
 pub fn group_bars(pattern: &[Vec<Vec<u8>>], steps: usize) -> (Vec<char>, Vec<usize>) {
-    let sig = |p: &Vec<Vec<u8>>| -> Vec<bool> { p.iter().flat_map(|row| row.iter().map(|v| *v > 0)).collect() };
+    let sig = |p: &Vec<Vec<u8>>| -> Vec<bool> {
+        p.iter()
+            .flat_map(|row| row.iter().map(|v| *v > 0))
+            .collect()
+    };
     let mut reps: Vec<Vec<bool>> = Vec::new();
     let mut letters = Vec::new();
     for p in pattern {
@@ -426,11 +513,19 @@ pub fn group_bars(pattern: &[Vec<Vec<u8>>], steps: usize) -> (Vec<char>, Vec<usi
             .map(|(i, r)| (i, r.iter().zip(s.iter()).filter(|(a, b)| a != b).count()))
             .min_by_key(|x| x.1);
         match best {
-            Some((i, d)) if d <= tol => letters.push(if i < 26 { (b'A' + i as u8) as char } else { '?' }),
+            Some((i, d)) if d <= tol => letters.push(if i < 26 {
+                (b'A' + i as u8) as char
+            } else {
+                '?'
+            }),
             _ => {
                 reps.push(s);
                 let i = reps.len() - 1;
-                letters.push(if i < 26 { (b'A' + i as u8) as char } else { '?' });
+                letters.push(if i < 26 {
+                    (b'A' + i as u8) as char
+                } else {
+                    '?'
+                });
             }
         }
     }
@@ -443,7 +538,9 @@ pub fn group_bars(pattern: &[Vec<Vec<u8>>], steps: usize) -> (Vec<char>, Vec<usi
         }
         let count = letters.iter().filter(|x| **x == l).count();
         let last = steps * 3 / 4;
-        let busy = (last..steps).filter(|&s| p[1][s] > 0 || p[5][s] > 0).count();
+        let busy = (last..steps)
+            .filter(|&s| p[1][s] > 0 || p[5][s] > 0)
+            .count();
         let toms = p[5].iter().filter(|v| **v > 0).count();
         if count <= 2 && (toms >= 2 || busy >= 3) {
             fills.push(b);
@@ -469,11 +566,27 @@ pub fn drums_midi(s: &DrumScore, keep_timing: bool) -> Smf {
     let step_ticks = ppq as f32 * s.grid.beats_per_bar as f32 / s.steps_per_bar as f32;
     let mut notes = Vec::new();
     for h in &s.hits {
-        let n = (h.bar * s.steps_per_bar + h.step) as f32 + if keep_timing { h.offset } else { 0.0 };
-        notes.push(SmfNote { tick: (n * step_ticks).max(0.0).round() as u32, len: (step_ticks * 0.5).round() as u32, pitch: DRUM_GM[h.kind], vel: h.vel.max(1), channel: 9 });
+        let n =
+            (h.bar * s.steps_per_bar + h.step) as f32 + if keep_timing { h.offset } else { 0.0 };
+        notes.push(SmfNote {
+            tick: (n * step_ticks).max(0.0).round() as u32,
+            len: (step_ticks * 0.5).round() as u32,
+            pitch: DRUM_GM[h.kind],
+            vel: h.vel.max(1),
+            channel: 9,
+        });
     }
     notes.sort_by_key(|n| (n.tick, n.pitch));
-    Smf { division: ppq as u16, bpm: s.grid.bpm, time_sig: (s.grid.beats_per_bar as u8, 4), tracks: vec![SmfTrack { name: "Drums".into(), program: None, notes }] }
+    Smf {
+        division: ppq as u16,
+        bpm: s.grid.bpm,
+        time_sig: (s.grid.beats_per_bar as u8, 4),
+        tracks: vec![SmfTrack {
+            name: "Drums".into(),
+            program: None,
+            notes,
+        }],
+    }
 }
 
 // ---------------------------------------------------------------- pitched lines
@@ -491,7 +604,16 @@ pub struct PNote {
 
 /// Turn a frame-wise MIDI-pitch track (0 = unvoiced) into notes, splitting
 /// repeated pitches at onsets. `fr` = frames per second of the track.
-pub fn segment_notes(midi: &[f32], level: &[f32], onsets: &[usize], fr: f32, t_off: f32, min_s: f32, grid: Grid, steps_per_bar: usize) -> Vec<PNote> {
+pub fn segment_notes(
+    midi: &[f32],
+    level: &[f32],
+    onsets: &[usize],
+    fr: f32,
+    t_off: f32,
+    min_s: f32,
+    grid: Grid,
+    steps_per_bar: usize,
+) -> Vec<PNote> {
     let n = midi.len();
     let step_s = grid.bar_s() / steps_per_bar as f32;
     let lmax = pct(level, 0.95).max(1e-9);
@@ -525,7 +647,14 @@ pub fn segment_notes(midi: &[f32], level: &[f32], onsets: &[usize], fr: f32, t_o
             let vel = (40.0 + 87.0 * (lv / lmax).sqrt()).clamp(30.0, 127.0) as u8;
             let s0 = ((t0 - grid.downbeat_s) / step_s).round().max(0.0) as usize;
             let s1 = ((t1 - grid.downbeat_s) / step_s).round().max(0.0) as usize;
-            out.push(PNote { t0, t1, pitch, vel, step: s0, len: s1.saturating_sub(s0).max(1) });
+            out.push(PNote {
+                t0,
+                t1,
+                pitch,
+                vel,
+                step: s0,
+                len: s1.saturating_sub(s0).max(1),
+            });
         }
         i = j;
     }
@@ -551,7 +680,10 @@ pub fn segment_notes(midi: &[f32], level: &[f32], onsets: &[usize], fr: f32, t_o
 fn decimate4(x: &[f32], cutoff: f32) -> Vec<f32> {
     let mut a = Biquad::new(BiquadKind::HighCut, cutoff, 0.707, 0.0);
     let mut b = Biquad::new(BiquadKind::HighCut, cutoff, 0.707, 0.0);
-    x.iter().map(|v| b.process(a.process(*v))).step_by(4).collect()
+    x.iter()
+        .map(|v| b.process(a.process(*v)))
+        .step_by(4)
+        .collect()
 }
 
 fn fix_octaves(m: &mut [f32]) {
@@ -560,7 +692,10 @@ fn fix_octaves(m: &mut [f32]) {
         if src[i] <= 0.0 {
             continue;
         }
-        let w: Vec<f32> = (i.saturating_sub(3)..(i + 4).min(src.len())).filter(|&j| src[j] > 0.0).map(|j| src[j]).collect();
+        let w: Vec<f32> = (i.saturating_sub(3)..(i + 4).min(src.len()))
+            .filter(|&j| src[j] > 0.0)
+            .map(|j| src[j])
+            .collect();
         if w.len() >= 4 {
             let med = pct(&w, 0.5);
             let mut v = src[i];
@@ -611,12 +746,24 @@ pub fn transcribe_bass(x: &[f32], grid: Grid, steps_per_bar: usize) -> Vec<PNote
     // onsets from the level curve (rises of > 3 dB within two frames)
     let mut onsets = Vec::new();
     for f in 2..nfr {
-        if rms[f] > gate && db(rms[f] * rms[f]) - db(rms[f - 2] * rms[f - 2]) > 3.0 && (onsets.last().map(|&l: &usize| f - l > 3).unwrap_or(true)) {
+        if rms[f] > gate
+            && db(rms[f] * rms[f]) - db(rms[f - 2] * rms[f - 2]) > 3.0
+            && (onsets.last().map(|&l: &usize| f - l > 3).unwrap_or(true))
+        {
             onsets.push(f);
         }
     }
     let min_s = (grid.bar_s() / steps_per_bar as f32 * 0.4).max(0.05);
-    let mut notes = segment_notes(&midi, &rms, &onsets, fr, win as f32 / 2.0 / psr, min_s, grid, steps_per_bar);
+    let mut notes = segment_notes(
+        &midi,
+        &rms,
+        &onsets,
+        fr,
+        win as f32 / 2.0 / psr,
+        min_s,
+        grid,
+        steps_per_bar,
+    );
     refine_onsets(&y, psr, &mut notes, grid, steps_per_bar);
     notes
 }
@@ -641,7 +788,11 @@ pub fn log_flux_onsets(x: &[f32], delta: f32) -> Vec<f32> {
     for i in 0..n {
         for k in 0..nfft {
             let j = (i * hop + k) as isize - (nfft / 2) as isize;
-            re[k] = if j >= 0 && (j as usize) < x.len() { x[j as usize] * w[k] } else { 0.0 };
+            re[k] = if j >= 0 && (j as usize) < x.len() {
+                x[j as usize] * w[k]
+            } else {
+                0.0
+            };
             im[k] = 0.0;
         }
         fft.forward(&mut re, &mut im);
@@ -663,7 +814,9 @@ pub fn log_flux_onsets(x: &[f32], delta: f32) -> Vec<f32> {
         }
         env[i] = s / bins as f32;
     }
-    let (lo, hi) = env.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+    let (lo, hi) = env
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
     if hi - lo <= 1e-9 {
         return Vec::new();
     }
@@ -671,7 +824,10 @@ pub fn log_flux_onsets(x: &[f32], delta: f32) -> Vec<f32> {
         *v = (*v - lo) / (hi - lo);
     }
     let fr = SR / hop as f32;
-    let (pm, pa) = (((0.03 * fr).round() as usize).max(1), ((0.1 * fr).round() as usize).max(1));
+    let (pm, pa) = (
+        ((0.03 * fr).round() as usize).max(1),
+        ((0.1 * fr).round() as usize).max(1),
+    );
     let wait = ((0.03 * fr).round() as usize).max(1);
     let mut out = Vec::new();
     let mut last: Option<usize> = None;
@@ -699,7 +855,12 @@ pub fn log_flux_onsets(x: &[f32], delta: f32) -> Vec<f32> {
 /// level barely rises, so the re-attack is found from onsets (broadband
 /// attacks, the times in `onsets`, s) that fall inside a note: at least
 /// three quarters of a step after its start and half a step before its end.
-pub fn split_reattacks(onsets: &[f32], notes: &mut Vec<PNote>, grid: Grid, steps_per_bar: usize) -> usize {
+pub fn split_reattacks(
+    onsets: &[f32],
+    notes: &mut Vec<PNote>,
+    grid: Grid,
+    steps_per_bar: usize,
+) -> usize {
     let step_s = grid.bar_s() / steps_per_bar as f32;
     let mut out: Vec<PNote> = Vec::with_capacity(notes.len());
     let mut added = 0;
@@ -707,7 +868,10 @@ pub fn split_reattacks(onsets: &[f32], notes: &mut Vec<PNote>, grid: Grid, steps
         let end_step = n.step + n.len;
         let mut cur = n.clone();
         let lo = onsets.partition_point(|t| *t < n.t0 + step_s * 0.75);
-        for &t in onsets[lo..].iter().take_while(|t| **t < n.t1 - step_s * 0.5) {
+        for &t in onsets[lo..]
+            .iter()
+            .take_while(|t| **t < n.t1 - step_s * 0.5)
+        {
             let s = ((t - grid.downbeat_s) / step_s).round().max(0.0) as usize;
             if s <= cur.step || s >= end_step {
                 continue;
@@ -715,7 +879,14 @@ pub fn split_reattacks(onsets: &[f32], notes: &mut Vec<PNote>, grid: Grid, steps
             cur.len = s - cur.step;
             cur.t1 = t;
             out.push(cur.clone());
-            cur = PNote { t0: t, t1: n.t1, pitch: n.pitch, vel: n.vel, step: s, len: end_step - s };
+            cur = PNote {
+                t0: t,
+                t1: n.t1,
+                pitch: n.pitch,
+                vel: n.vel,
+                step: s,
+                len: end_step - s,
+            };
             added += 1;
         }
         out.push(cur);
@@ -745,8 +916,13 @@ pub fn refine_onsets(y: &[f32], psr: f32, notes: &mut [PNote], grid: Grid, steps
     let mut prev_t = f32::MIN;
     for i in 0..notes.len() {
         let t0 = notes[i].t0;
-        let lo = ((t0 - 0.11 - win as f32 / 2.0 / psr) * psr / hop as f32).floor().max(lag as f32) as usize;
-        let hi = (((t0 + 0.02 - win as f32 / 2.0 / psr) * psr / hop as f32).ceil().max(0.0) as usize).min(n - 1);
+        let lo = ((t0 - 0.11 - win as f32 / 2.0 / psr) * psr / hop as f32)
+            .floor()
+            .max(lag as f32) as usize;
+        let hi = (((t0 + 0.02 - win as f32 / 2.0 / psr) * psr / hop as f32)
+            .ceil()
+            .max(0.0) as usize)
+            .min(n - 1);
         let mut best = (0.0f32, None);
         for k in lo..=hi.max(lo) {
             if k >= n {
@@ -779,7 +955,13 @@ pub fn refine_onsets(y: &[f32], psr: f32, notes: &mut [PNote], grid: Grid, steps
 
 /// Top line of a (possibly polyphonic) part: the most salient pitch per frame
 /// by harmonic summation over spectral peaks, in lo..hi Hz.
-pub fn transcribe_top_line(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32) -> Vec<PNote> {
+pub fn transcribe_top_line(
+    x: &[f32],
+    grid: Grid,
+    steps_per_bar: usize,
+    lo: f32,
+    hi: f32,
+) -> Vec<PNote> {
     line_notes(x, grid, steps_per_bar, lo, hi, None)
 }
 
@@ -789,11 +971,32 @@ pub fn transcribe_top_line(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32,
 /// top-line tracker follows the loudest sustained string and misses the
 /// pattern; this follows the picking hand. Each note rings to the next pluck.
 /// `sensitivity` 0..1 (0.5 default): higher finds softer plucks under chorus and reverb.
-pub fn transcribe_picked(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32, sensitivity: f32) -> Vec<PNote> {
-    line_notes(x, grid, steps_per_bar, lo, hi, Some(sensitivity.clamp(0.0, 1.0)))
+pub fn transcribe_picked(
+    x: &[f32],
+    grid: Grid,
+    steps_per_bar: usize,
+    lo: f32,
+    hi: f32,
+    sensitivity: f32,
+) -> Vec<PNote> {
+    line_notes(
+        x,
+        grid,
+        steps_per_bar,
+        lo,
+        hi,
+        Some(sensitivity.clamp(0.0, 1.0)),
+    )
 }
 
-fn line_notes(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32, picked_sens: Option<f32>) -> Vec<PNote> {
+fn line_notes(
+    x: &[f32],
+    grid: Grid,
+    steps_per_bar: usize,
+    lo: f32,
+    hi: f32,
+    picked_sens: Option<f32>,
+) -> Vec<PNote> {
     let picked = picked_sens.is_some();
     let sens = picked_sens.unwrap_or(0.5);
     let nfft = 4096usize;
@@ -809,16 +1012,27 @@ fn line_notes(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32, pic
     let mut best = vec![0.0f32; frames];
     let mut sal_v = vec![0.0f32; frames];
     let mut lvl = vec![0.0f32; frames];
-    let (mlo_q, mhi_q) = (69.0 + 12.0 * (lo.max(30.0) / 440.0).log2(), 69.0 + 12.0 * (hi.min(4000.0) / 440.0).log2());
+    let (mlo_q, mhi_q) = (
+        69.0 + 12.0 * (lo.max(30.0) / 440.0).log2(),
+        69.0 + 12.0 * (hi.min(4000.0) / 440.0).log2(),
+    );
     let mut mag = vec![0.0f32; bins];
     let mut sal = vec![0.0f32; nsal];
     // picked: salience folded to whole semitones (MIDI 24..108) for every frame
     let nsemi = 85usize;
-    let mut semis: Vec<f32> = if picked { vec![0.0; frames * nsemi] } else { Vec::new() };
+    let mut semis: Vec<f32> = if picked {
+        vec![0.0; frames * nsemi]
+    } else {
+        Vec::new()
+    };
     for f in 0..frames {
         for k in 0..nfft {
             let i = (f * HOP + k) as isize - (nfft / 2) as isize;
-            re[k] = if i >= 0 && (i as usize) < x.len() { x[i as usize] * w[k] } else { 0.0 };
+            re[k] = if i >= 0 && (i as usize) < x.len() {
+                x[i as usize] * w[k]
+            } else {
+                0.0
+            };
             im[k] = 0.0;
         }
         fft.forward(&mut re, &mut im);
@@ -839,7 +1053,11 @@ fn line_notes(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32, pic
             // parabolic peak frequency
             let (a, b, c) = (mag[k - 1], m, mag[k + 1]);
             let d = a - 2.0 * b + c;
-            let off = if d.abs() > 1e-12 { 0.5 * (a - c) / d } else { 0.0 };
+            let off = if d.abs() > 1e-12 {
+                0.5 * (a - c) / d
+            } else {
+                0.0
+            };
             let hz = (k as f32 + off.clamp(-0.5, 0.5)) * SR / nfft as f32;
             let wgt = (m / mx).sqrt();
             for h in 1..=8 {
@@ -859,8 +1077,14 @@ fn line_notes(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32, pic
         let mut bi = a;
         for i in a..b {
             // a little smoothing across neighbouring bins
-            let s = sal[i] + 0.5 * (sal.get(i.wrapping_sub(1)).copied().unwrap_or(0.0) + sal.get(i + 1).copied().unwrap_or(0.0));
-            let sb = sal[bi] + 0.5 * (sal.get(bi.wrapping_sub(1)).copied().unwrap_or(0.0) + sal.get(bi + 1).copied().unwrap_or(0.0));
+            let s = sal[i]
+                + 0.5
+                    * (sal.get(i.wrapping_sub(1)).copied().unwrap_or(0.0)
+                        + sal.get(i + 1).copied().unwrap_or(0.0));
+            let sb = sal[bi]
+                + 0.5
+                    * (sal.get(bi.wrapping_sub(1)).copied().unwrap_or(0.0)
+                        + sal.get(bi + 1).copied().unwrap_or(0.0));
             if s > sb {
                 bi = i;
             }
@@ -880,18 +1104,33 @@ fn line_notes(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32, pic
     }
     let sgate = pct(&sal_v, 0.9) * 0.3;
     let lgate = pct(&lvl, 0.95) * 0.06;
-    let mut midi: Vec<f32> = (0..frames).map(|f| if sal_v[f] > sgate && lvl[f] > lgate { best[f] } else { 0.0 }).collect();
+    let mut midi: Vec<f32> = (0..frames)
+        .map(|f| {
+            if sal_v[f] > sgate && lvl[f] > lgate {
+                best[f]
+            } else {
+                0.0
+            }
+        })
+        .collect();
     fix_octaves(&mut midi);
     let fl: Vec<f32> = {
         let b = band_analysis(x, 2048, &[(lo.max(30.0), (hi * 4.0).min(12000.0))]);
         b.flux.into_iter().next().unwrap_or_default()
     };
-    let onsets: Vec<usize> = pick_peaks(&fl, if picked { 1.2 - 0.8 * sens } else { 0.8 }, 3).into_iter().filter(|p| p.1 > if picked { 0.3 * (1.0 - sens) } else { 0.25 }).map(|p| p.0).collect();
+    let onsets: Vec<usize> = pick_peaks(&fl, if picked { 1.2 - 0.8 * sens } else { 0.8 }, 3)
+        .into_iter()
+        .filter(|p| p.1 > if picked { 0.3 * (1.0 - sens) } else { 0.25 })
+        .map(|p| p.0)
+        .collect();
     let min_s = (grid.bar_s() / steps_per_bar as f32 * 0.5).max(0.05);
     if !picked {
         return segment_notes(&midi, &lvl, &onsets, fps(), 0.0, min_s, grid, steps_per_bar);
     }
-    let (sa, sb) = ((mlo_q - mlo).round().max(0.0) as usize, ((mhi_q - mlo).round().max(0.0) as usize).min(nsemi));
+    let (sa, sb) = (
+        (mlo_q - mlo).round().max(0.0) as usize,
+        ((mhi_q - mlo).round().max(0.0) as usize).min(nsemi),
+    );
     let at = |f: usize, p: usize| semis[f.min(frames - 1) * nsemi + p];
     let lmax = lvl.iter().cloned().fold(1e-12f32, f32::max);
     let step_s = grid.bar_s() / steps_per_bar as f32;
@@ -906,7 +1145,11 @@ fn line_notes(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32, pic
         let mut bafter = 0.0;
         for p in sa..sb {
             let after = (o..o + 5).map(|f| at(f, p)).fold(0.0f32, f32::max);
-            let before = if o >= 4 { (o - 4..o).map(|f| at(f, p)).sum::<f32>() / 4.0 } else { 0.0 };
+            let before = if o >= 4 {
+                (o - 4..o).map(|f| at(f, p)).sum::<f32>() / 4.0
+            } else {
+                0.0
+            };
             let rise = after - before;
             if rise > br {
                 br = rise;
@@ -917,12 +1160,23 @@ fn line_notes(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32, pic
         if br <= 0.0 || bafter < sgate * (1.5 - sens) {
             continue;
         }
-        let next = onsets.get(k + 1).copied().unwrap_or(frames).min(o + (grid.bar_s() * fr) as usize);
+        let next = onsets
+            .get(k + 1)
+            .copied()
+            .unwrap_or(frames)
+            .min(o + (grid.bar_s() * fr) as usize);
         let (t0, t1) = (o as f32 / fr, next as f32 / fr);
         let s0 = ((t0 - grid.downbeat_s) / step_s).round().max(0.0) as usize;
         let s1 = ((t1 - grid.downbeat_s) / step_s).round().max(0.0) as usize;
         let vel = (40.0 + 87.0 * (lvl[o.min(frames - 1)] / lmax).sqrt()).clamp(30.0, 127.0) as u8;
-        let nt = PNote { t0, t1, pitch: (mlo as usize + bp).min(127) as u8, vel, step: s0, len: s1.saturating_sub(s0).max(1) };
+        let nt = PNote {
+            t0,
+            t1,
+            pitch: (mlo as usize + bp).min(127) as u8,
+            vel,
+            step: s0,
+            len: s1.saturating_sub(s0).max(1),
+        };
         match out.last_mut() {
             Some(l) if l.step == nt.step => {
                 if nt.vel > l.vel {
@@ -941,22 +1195,54 @@ fn line_notes(x: &[f32], grid: Grid, steps_per_bar: usize, lo: f32, hi: f32, pic
     out
 }
 
-pub fn notes_midi(notes: &[PNote], grid: Grid, steps_per_bar: usize, name: &str, program: Option<u8>, keep_timing: bool) -> Smf {
+pub fn notes_midi(
+    notes: &[PNote],
+    grid: Grid,
+    steps_per_bar: usize,
+    name: &str,
+    program: Option<u8>,
+    keep_timing: bool,
+) -> Smf {
     let ppq = 480u32;
     let step_ticks = ppq as f32 * grid.beats_per_bar as f32 / steps_per_bar as f32;
-    let tick_of = |t: f32| (((t - grid.downbeat_s) / grid.beat_s()) * ppq as f32).max(0.0).round() as u32;
+    let tick_of = |t: f32| {
+        (((t - grid.downbeat_s) / grid.beat_s()) * ppq as f32)
+            .max(0.0)
+            .round() as u32
+    };
     let ns = notes
         .iter()
         .map(|n| {
             if keep_timing {
                 let a = tick_of(n.t0);
-                SmfNote { tick: a, len: tick_of(n.t1).saturating_sub(a).max(10), pitch: n.pitch, vel: n.vel, channel: 0 }
+                SmfNote {
+                    tick: a,
+                    len: tick_of(n.t1).saturating_sub(a).max(10),
+                    pitch: n.pitch,
+                    vel: n.vel,
+                    channel: 0,
+                }
             } else {
-                SmfNote { tick: (n.step as f32 * step_ticks).round() as u32, len: (n.len as f32 * step_ticks).round().max(1.0) as u32, pitch: n.pitch, vel: n.vel, channel: 0 }
+                SmfNote {
+                    tick: (n.step as f32 * step_ticks).round() as u32,
+                    len: (n.len as f32 * step_ticks).round().max(1.0) as u32,
+                    pitch: n.pitch,
+                    vel: n.vel,
+                    channel: 0,
+                }
             }
         })
         .collect();
-    Smf { division: ppq as u16, bpm: grid.bpm, time_sig: (grid.beats_per_bar as u8, 4), tracks: vec![SmfTrack { name: name.into(), program, notes: ns }] }
+    Smf {
+        division: ppq as u16,
+        bpm: grid.bpm,
+        time_sig: (grid.beats_per_bar as u8, 4),
+        tracks: vec![SmfTrack {
+            name: name.into(),
+            program,
+            notes: ns,
+        }],
+    }
 }
 
 /// Notes grouped per bar as text: "D2:4 F2:2 ." (pitch:length in steps, '.' = empty bar).
@@ -968,10 +1254,23 @@ pub fn notes_per_bar(notes: &[PNote], steps_per_bar: usize, bars: usize) -> Vec<
             if !out[b].is_empty() {
                 out[b].push(' ');
             }
-            out[b].push_str(&format!("{}@{}:{}", note_name(n.pitch), n.step % steps_per_bar, n.len));
+            out[b].push_str(&format!(
+                "{}@{}:{}",
+                note_name(n.pitch),
+                n.step % steps_per_bar,
+                n.len
+            ));
         }
     }
-    out.iter().map(|s| if s.is_empty() { ".".to_string() } else { s.clone() }).collect()
+    out.iter()
+        .map(|s| {
+            if s.is_empty() {
+                ".".to_string()
+            } else {
+                s.clone()
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------- chords and key
@@ -1001,7 +1300,11 @@ pub fn chord_pcs(state: usize) -> Vec<u8> {
         return Vec::new();
     }
     let r = (state % 12) as u8;
-    QUALITIES[state / 12].1.iter().map(|i| (r + i) % 12).collect()
+    QUALITIES[state / 12]
+        .1
+        .iter()
+        .map(|i| (r + i) % 12)
+        .collect()
 }
 
 /// Chroma (60 Hz-5 kHz) and bass chroma (35-220 Hz) per beat on the grid.
@@ -1019,7 +1322,11 @@ pub fn beat_chroma(x: &[f32], grid: Grid) -> (Vec<[f32; 12]>, Vec<[f32; 12]>, Ve
     let pc_of: Vec<i32> = (0..bins)
         .map(|k| {
             let hz = k as f32 * SR / nfft as f32;
-            if hz < 35.0 || hz > 5000.0 { -1 } else { ((69.0 + 12.0 * (hz / 440.0).log2()).round() as i32).rem_euclid(12) }
+            if hz < 35.0 || hz > 5000.0 {
+                -1
+            } else {
+                ((69.0 + 12.0 * (hz / 440.0).log2()).round() as i32).rem_euclid(12)
+            }
         })
         .collect();
     let (mut re, mut im) = (vec![0.0f32; nfft], vec![0.0f32; nfft]);
@@ -1036,7 +1343,11 @@ pub fn beat_chroma(x: &[f32], grid: Grid) -> (Vec<[f32; 12]>, Vec<[f32; 12]>, Ve
         }
         for k in 0..nfft {
             let i = (f * hop + k) as isize - (nfft / 2) as isize;
-            re[k] = if i >= 0 && (i as usize) < x.len() { x[i as usize] * w[k] } else { 0.0 };
+            re[k] = if i >= 0 && (i as usize) < x.len() {
+                x[i as usize] * w[k]
+            } else {
+                0.0
+            };
             im[k] = 0.0;
         }
         fft.forward(&mut re, &mut im);
@@ -1075,8 +1386,12 @@ fn norm12(c: &[f32; 12]) -> [f32; 12] {
 
 /// Key from total chroma (Krumhansl-Kessler): (tonic pc, minor?, confidence).
 pub fn key_of(chroma: &[[f32; 12]]) -> (u8, bool, f32) {
-    const MAJ: [f32; 12] = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
-    const MIN: [f32; 12] = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+    const MAJ: [f32; 12] = [
+        6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
+    ];
+    const MIN: [f32; 12] = [
+        6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
+    ];
     let mut tot = [0.0f32; 12];
     for c in chroma {
         let n = norm12(c);
@@ -1117,7 +1432,13 @@ pub fn key_of(chroma: &[[f32; 12]]) -> (u8, bool, f32) {
 /// cost for changing. Returns a state per beat (see chord_label).
 /// `bass_w` weighs the bass's pitch class as the chord root (0.25 on a full mix;
 /// higher when `bch` comes from an isolated bass stem).
-pub fn chords_per_beat(ch: &[[f32; 12]], bch: &[[f32; 12]], en: &[f32], change_cost: f32, bass_w: f32) -> Vec<usize> {
+pub fn chords_per_beat(
+    ch: &[[f32; 12]],
+    bch: &[[f32; 12]],
+    en: &[f32],
+    change_cost: f32,
+    bass_w: f32,
+) -> Vec<usize> {
     let nq = QUALITIES.len();
     let ns = 12 * nq + 1;
     let n = ch.len();
@@ -1128,28 +1449,41 @@ pub fn chords_per_beat(ch: &[[f32; 12]], bch: &[[f32; 12]], en: &[f32], change_c
     let emis: Vec<Vec<f32>> = (0..n)
         .map(|t| {
             let c = norm12(&ch[t]);
-            let bmax = bch.get(t).map(|b| b.iter().cloned().fold(0.0f32, f32::max)).unwrap_or(0.0).max(1e-12);
+            let bmax = bch
+                .get(t)
+                .map(|b| b.iter().cloned().fold(0.0f32, f32::max))
+                .unwrap_or(0.0)
+                .max(1e-12);
             let mut row = vec![0.0f32; ns];
             for q in 0..nq {
                 let (_, iv, w) = QUALITIES[q];
                 for r in 0..12 {
                     let mut tpl = [0.0f32; 12];
                     for (j, i) in iv.iter().enumerate() {
-                        tpl[(r + *i as usize) % 12] = if j == 0 { 1.0 } else if j < 3 { 0.9 } else { 0.6 };
+                        tpl[(r + *i as usize) % 12] = if j == 0 {
+                            1.0
+                        } else if j < 3 {
+                            0.9
+                        } else {
+                            0.6
+                        };
                     }
                     let tn = norm12(&tpl);
                     let cos: f32 = (0..12).map(|i| c[i] * tn[i]).sum();
                     // a 7th only counts when it is clearly there (overtones of the triad put a weak one in)
                     let mut wq = w;
                     if iv.len() == 4 {
-                        let triad = (c[r] + c[(r + iv[1] as usize) % 12] + c[(r + iv[2] as usize) % 12]) / 3.0;
+                        let triad =
+                            (c[r] + c[(r + iv[1] as usize) % 12] + c[(r + iv[2] as usize) % 12])
+                                / 3.0;
                         // the 7th's pitch class minus what the note a fifth below puts there as its third harmonic
                         let e7 = (r + iv[3] as usize) % 12;
                         if c[e7] - 0.4 * c[(e7 + 5) % 12] < 0.75 * triad {
                             wq *= 0.85;
                         }
                     }
-                    row[q * 12 + r] = wq * cos + bass_w * bch.get(t).map(|b| b[r]).unwrap_or(0.0) / bmax;
+                    row[q * 12 + r] =
+                        wq * cos + bass_w * bch.get(t).map(|b| b[r]).unwrap_or(0.0) / bmax;
                 }
             }
             row[ns - 1] = if en[t] < egate { 1.0 } else { 0.25 };
@@ -1159,7 +1493,11 @@ pub fn chords_per_beat(ch: &[[f32; 12]], bch: &[[f32; 12]], en: &[f32], change_c
     let mut score = emis[0].clone();
     let mut back = vec![vec![0usize; ns]; n];
     for t in 1..n {
-        let (bi, bv) = score.iter().enumerate().fold((0, f32::MIN), |a, (i, v)| if *v > a.1 { (i, *v) } else { a });
+        let (bi, bv) =
+            score.iter().enumerate().fold(
+                (0, f32::MIN),
+                |a, (i, v)| if *v > a.1 { (i, *v) } else { a },
+            );
         let mut next = vec![0.0f32; ns];
         for s in 0..ns {
             let stay = score[s];
@@ -1174,7 +1512,14 @@ pub fn chords_per_beat(ch: &[[f32; 12]], bch: &[[f32; 12]], en: &[f32], change_c
         }
         score = next;
     }
-    let mut s = score.iter().enumerate().fold((0, f32::MIN), |a, (i, v)| if *v > a.1 { (i, *v) } else { a }).0;
+    let mut s = score
+        .iter()
+        .enumerate()
+        .fold(
+            (0, f32::MIN),
+            |a, (i, v)| if *v > a.1 { (i, *v) } else { a },
+        )
+        .0;
     let mut path = vec![0usize; n];
     for t in (0..n).rev() {
         path[t] = s;
@@ -1247,15 +1592,28 @@ mod tests {
         let mut rng = Rng::new(7);
         let mut add = |t: f32, kind: &str, amp: f32, x: &mut Vec<f32>| {
             let i0 = (t * SR) as usize;
-            let len = match kind { "kick" => 0.25, "snare" => 0.18, "hat" => 0.04, _ => 1.2 };
+            let len = match kind {
+                "kick" => 0.25,
+                "snare" => 0.18,
+                "hat" => 0.04,
+                _ => 1.2,
+            };
             let mut hp = Biquad::new(BiquadKind::LowCut, 7000.0, 0.7, 0.0);
             let mut bp = Biquad::new(BiquadKind::LowCut, 1500.0, 0.7, 0.0);
             for k in 0..(len * SR) as usize {
                 let tt = k as f32 / SR;
-                if i0 + k >= x.len() { break; }
+                if i0 + k >= x.len() {
+                    break;
+                }
                 let v = match kind {
-                    "kick" => (2.0 * PI * (50.0 + 120.0 * (-tt * 30.0).exp()) * tt).sin() * (-tt * 14.0).exp(),
-                    "snare" => 0.5 * (2.0 * PI * 200.0 * tt).sin() * (-tt * 25.0).exp() + 0.7 * bp.process(rng.bipolar()) * (-tt * 18.0).exp(),
+                    "kick" => {
+                        (2.0 * PI * (50.0 + 120.0 * (-tt * 30.0).exp()) * tt).sin()
+                            * (-tt * 14.0).exp()
+                    }
+                    "snare" => {
+                        0.5 * (2.0 * PI * 200.0 * tt).sin() * (-tt * 25.0).exp()
+                            + 0.7 * bp.process(rng.bipolar()) * (-tt * 18.0).exp()
+                    }
                     "hat" => hp.process(rng.bipolar()) * (-tt * 90.0).exp(),
                     _ => 0.6 * hp.process(rng.bipolar()) * (-tt * 1.5).exp(),
                 };
@@ -1265,12 +1623,22 @@ mod tests {
         for b in 0..bars {
             for s in 0..16 {
                 let t = 0.1 + (b * 16 + s) as f32 * step;
-                if [0, 8, 10].contains(&s) { add(t, "kick", 0.8, &mut x); }
-                if [4, 12].contains(&s) { add(t, "snare", 0.6, &mut x); }
-                if s % 2 == 0 { add(t, "hat", 0.25, &mut x); }
-                if Some(b) == ghost_bar && s == 7 { add(t, "snare", 0.12, &mut x); }
+                if [0, 8, 10].contains(&s) {
+                    add(t, "kick", 0.8, &mut x);
+                }
+                if [4, 12].contains(&s) {
+                    add(t, "snare", 0.6, &mut x);
+                }
+                if s % 2 == 0 {
+                    add(t, "hat", 0.25, &mut x);
+                }
+                if Some(b) == ghost_bar && s == 7 {
+                    add(t, "snare", 0.12, &mut x);
+                }
             }
-            if b == 0 { add(0.1, "crash", 0.5, &mut x); }
+            if b == 0 {
+                add(0.1, "crash", 0.5, &mut x);
+            }
         }
         x
     }
@@ -1286,17 +1654,25 @@ mod tests {
         assert_eq!(&row(3, 0), "x.......x.x.....", "kick {:?}", row(3, 0));
         assert_eq!(&row(3, 1)[4..5], "x");
         assert_eq!(&row(3, 1)[12..13], "x");
-        let hats = s.pattern[3][2].iter().filter(|v| **v > 0).count() + s.pattern[3][3].iter().filter(|v| **v > 0).count();
+        let hats = s.pattern[3][2].iter().filter(|v| **v > 0).count()
+            + s.pattern[3][3].iter().filter(|v| **v > 0).count();
         assert!(hats >= 6, "hats {hats}: {}", row(3, 2));
         // the ghost note in bar 6 shows up as a quiet snare
-        assert!(s.pattern[5][1][7] > 0 && s.pattern[5][1][7] < 60, "ghost {:?}", s.pattern[5][1]);
+        assert!(
+            s.pattern[5][1][7] > 0 && s.pattern[5][1][7] < 60,
+            "ghost {:?}",
+            s.pattern[5][1]
+        );
         // crash on the first downbeat
         assert!(s.pattern[0][4][0] > 0, "crash {:?}", s.pattern[0][4]);
         assert!((s.swing_pct - 50.0).abs() < 6.0, "swing {}", s.swing_pct);
         // repeated bars share a letter
         assert_eq!(s.letters[2], s.letters[3]);
         let m = drums_midi(&s, false);
-        assert!(m.tracks[0].notes.iter().any(|n| n.pitch == 36 && n.tick == 4 * 480 * 3));
+        assert!(m.tracks[0]
+            .notes
+            .iter()
+            .any(|n| n.pitch == 36 && n.tick == 4 * 480 * 3));
     }
 
     fn tone(x: &mut [f32], t0: f32, t1: f32, midi: f32, amp: f32, harmonics: usize) {
@@ -1327,16 +1703,29 @@ mod tests {
             }
         }
         let notes = transcribe_bass(&x, g, 16);
-        let odd: Vec<usize> = notes.iter().map(|n| n.step).filter(|s| s % 2 == 1).collect();
+        let odd: Vec<usize> = notes
+            .iter()
+            .map(|n| n.step)
+            .filter(|s| s % 2 == 1)
+            .collect();
         assert!(notes.len() >= 16, "too few notes: {}", notes.len());
-        assert!(odd.len() * 10 <= notes.len(), "notes landed between the 8ths: {odd:?}");
+        assert!(
+            odd.len() * 10 <= notes.len(),
+            "notes landed between the 8ths: {odd:?}"
+        );
     }
 
     #[test]
     fn bass_line_comes_out_note_for_note() {
         let bpm = 120.0; // 16th = 0.125 s
         let g = Grid::new(bpm, 0.0, 4);
-        let line = [(0usize, 4usize, 38.0f32), (4, 4, 41.0), (8, 2, 45.0), (10, 2, 43.0), (12, 4, 36.0)];
+        let line = [
+            (0usize, 4usize, 38.0f32),
+            (4, 4, 41.0),
+            (8, 2, 45.0),
+            (10, 2, 43.0),
+            (12, 4, 36.0),
+        ];
         let mut x = vec![0.0f32; (SR * 4.5) as usize];
         for bar in 0..2 {
             for (s, l, m) in line {
@@ -1348,7 +1737,13 @@ mod tests {
         let got: Vec<(usize, u8)> = notes.iter().map(|n| (n.step, n.pitch)).collect();
         for bar in 0..2 {
             for (s, _, m) in line {
-                assert!(got.contains(&(bar * 16 + s, m as u8)), "missing {} at {}: {:?}", m, bar * 16 + s, got);
+                assert!(
+                    got.contains(&(bar * 16 + s, m as u8)),
+                    "missing {} at {}: {:?}",
+                    m,
+                    bar * 16 + s,
+                    got
+                );
             }
         }
         assert!(notes.len() <= 12, "too many notes {got:?}");
@@ -1368,7 +1763,13 @@ mod tests {
         }
         let notes = transcribe_picked(&x, g, 16, 120.0, 1500.0, 0.5);
         let got: Vec<(usize, u8)> = notes.iter().map(|n| (n.step, n.pitch)).collect();
-        let want: Vec<(usize, u8)> = (0..2).flat_map(|b| arp.iter().enumerate().map(move |(i, m)| (b * 16 + i * 2, *m as u8))).collect();
+        let want: Vec<(usize, u8)> = (0..2)
+            .flat_map(|b| {
+                arp.iter()
+                    .enumerate()
+                    .map(move |(i, m)| (b * 16 + i * 2, *m as u8))
+            })
+            .collect();
         let hit = want.iter().filter(|w| got.contains(w)).count();
         assert!(hit >= 13, "picked {hit}/16: {got:?}");
         assert!(notes.len() <= 18, "too many {got:?}");
@@ -1390,7 +1791,11 @@ mod tests {
         }
         let notes = transcribe_top_line(&x, g, 16, 200.0, 1500.0);
         let got: Vec<(usize, u8)> = notes.iter().map(|n| (n.step, n.pitch)).collect();
-        let hit = riff.iter().enumerate().filter(|(i, m)| got.contains(&(i * 2, **m as u8))).count();
+        let hit = riff
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| got.contains(&(i * 2, **m as u8)))
+            .count();
         assert!(hit >= 7, "riff {hit}/8: {got:?}");
     }
 
@@ -1398,7 +1803,12 @@ mod tests {
     fn chords_and_key_from_a_progression() {
         let bpm = 120.0; // bar = 2 s
         let g = Grid::new(bpm, 0.0, 4);
-        let prog: [(&[f32], &str); 4] = [(&[50.0, 53.0, 57.0], "Dm"), (&[46.0, 50.0, 53.0], "A#"), (&[53.0, 57.0, 60.0], "F"), (&[48.0, 52.0, 55.0], "C")];
+        let prog: [(&[f32], &str); 4] = [
+            (&[50.0, 53.0, 57.0], "Dm"),
+            (&[46.0, 50.0, 53.0], "A#"),
+            (&[53.0, 57.0, 60.0], "F"),
+            (&[48.0, 52.0, 55.0], "C"),
+        ];
         let mut x = vec![0.0f32; (SR * 16.5) as usize];
         for rep in 0..2 {
             for (i, (ns, _)) in prog.iter().enumerate() {
@@ -1414,12 +1824,23 @@ mod tests {
         for rep in 0..2 {
             for (i, (_, name)) in prog.iter().enumerate() {
                 let beat = (rep * 4 + i) * 4 + 1;
-                assert_eq!(chord_label(path[beat]), *name, "bar {} {:?}", rep * 4 + i + 1, path.iter().map(|s| chord_label(*s)).collect::<Vec<_>>());
+                assert_eq!(
+                    chord_label(path[beat]),
+                    *name,
+                    "bar {} {:?}",
+                    rep * 4 + i + 1,
+                    path.iter().map(|s| chord_label(*s)).collect::<Vec<_>>()
+                );
             }
         }
         let (k, minor, _) = key_of(&ch);
         // D minor and F major share notes; either is an acceptable reading, D minor preferred
-        assert!((k == 2 && minor) || (k == 5 && !minor), "key {} {}", PCN[k as usize], minor);
+        assert!(
+            (k == 2 && minor) || (k == 5 && !minor),
+            "key {} {}",
+            PCN[k as usize],
+            minor
+        );
         let per_bar: Vec<String> = (0..8).map(|b| chord_label(path[b * 4 + 1])).collect();
         assert_eq!(chord_loop(&per_bar).0, 4);
     }
@@ -1440,9 +1861,20 @@ mod reattack_tests {
     use super::*;
     #[test]
     fn a_held_note_struck_again_is_split_on_its_step() {
-        let g = Grid { bpm: 120.0, downbeat_s: 0.0, beats_per_bar: 4 };
+        let g = Grid {
+            bpm: 120.0,
+            downbeat_s: 0.0,
+            beats_per_bar: 4,
+        };
         // one bar = 2 s, a 16th = 0.125 s; a note held the whole bar, re-struck on step 12
-        let mut ns = vec![PNote { t0: 0.0, t1: 2.0, pitch: 33, vel: 90, step: 0, len: 16 }];
+        let mut ns = vec![PNote {
+            t0: 0.0,
+            t1: 2.0,
+            pitch: 33,
+            vel: 90,
+            step: 0,
+            len: 16,
+        }];
         let added = split_reattacks(&[0.01, 0.06, 1.51, 1.97], &mut ns, g, 16);
         assert_eq!(added, 1, "{ns:?}");
         assert_eq!((ns[0].step, ns[0].len), (0, 12));
@@ -1458,12 +1890,19 @@ mod reattack_tests {
             let s0 = (t0 * SR) as usize;
             for i in s0..n {
                 let t = (i - s0) as f32 / SR;
-                x[i] += amp * (-t * 3.0).exp() * ((2.0 * PI * 110.0 * t).sin() + 0.3 * (2.0 * PI * 220.0 * t).sin() + 0.2 * (2.0 * PI * 1760.0 * t).sin() * (-t * 40.0).exp());
+                x[i] += amp
+                    * (-t * 3.0).exp()
+                    * ((2.0 * PI * 110.0 * t).sin()
+                        + 0.3 * (2.0 * PI * 220.0 * t).sin()
+                        + 0.2 * (2.0 * PI * 1760.0 * t).sin() * (-t * 40.0).exp());
             }
         }
         let on = log_flux_onsets(&x, 0.07);
         for t0 in [0.5f32, 2.0] {
-            assert!(on.iter().any(|t| (t - t0).abs() < 0.04), "{t0} not in {on:?}");
+            assert!(
+                on.iter().any(|t| (t - t0).abs() < 0.04),
+                "{t0} not in {on:?}"
+            );
         }
     }
 }
@@ -1474,7 +1913,9 @@ mod adapt_tests {
     #[test]
     fn soft_passage_peaks_are_lifted_to_the_local_level() {
         // loud hits (1.0) for the first 1000 frames, then the same pattern 6 dB down (0.5)
-        let mut p: Vec<(usize, f32)> = (0..40).map(|i| (i * 50, if i < 20 { 1.0 } else { 0.5 })).collect();
+        let mut p: Vec<(usize, f32)> = (0..40)
+            .map(|i| (i * 50, if i < 20 { 1.0 } else { 0.5 }))
+            .collect();
         adapt_peaks(&mut p, 200, 0.35);
         assert!((p[5].1 - 1.0).abs() < 1e-3, "{:?}", p[5]);
         assert!((p[35].1 - 1.0).abs() < 1e-3, "{:?}", p[35]);

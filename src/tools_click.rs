@@ -43,22 +43,36 @@ pub fn click_track(bpm: f32, bars: u32, beats_per_bar: u32, accent: bool) -> Vec
 /// (accented bar lines, dotted quarters in 6/8) and the tempo automation,
 /// after `count_in` bars of the first pattern's meter at the song bpm.
 /// Returns (samples, seconds of count-in, bars).
-pub fn song_click(p: &crate::project::Project, count_in: u32, accent: bool) -> (Vec<f32>, f32, u32) {
+pub fn song_click(
+    p: &crate::project::Project,
+    count_in: u32,
+    accent: bool,
+) -> (Vec<f32>, f32, u32) {
     let curve = crate::tempo_curve::TempoCurve::new(p);
-    let first = p.song_sections().first().and_then(|s| p.pattern_index(&s.pattern).ok()).map(|i| p.patterns[i].meter()).unwrap_or((4, 4));
+    let first = p
+        .song_sections()
+        .first()
+        .and_then(|s| p.pattern_index(&s.pattern).ok())
+        .map(|i| p.patterns[i].meter())
+        .unwrap_or((4, 4));
     let step_s = p.step_secs() as f64;
     let ci_steps = count_in as f64 * crate::project::meter_steps(first) as f64;
     let lead = ci_steps * step_s;
     let mut hits: Vec<(f64, bool)> = Vec::new();
     for b in 0..count_in {
         for (s, down) in crate::project::meter_clicks(first) {
-            hits.push(((b * crate::project::meter_steps(first) + s) as f64 * step_s, down));
+            hits.push((
+                (b * crate::project::meter_steps(first) + s) as f64 * step_s,
+                down,
+            ));
         }
     }
     let mut off = 0u32;
     let mut bars = 0u32;
     for sec in p.song_sections() {
-        let Ok(pi) = p.pattern_index(&sec.pattern) else { continue };
+        let Ok(pi) = p.pattern_index(&sec.pattern) else {
+            continue;
+        };
         let pat = &p.patterns[pi];
         let (m, spb) = (pat.meter(), pat.steps_per_bar());
         for _ in 0..sec.repeats.max(1) * pat.bars {
@@ -69,7 +83,8 @@ pub fn song_click(p: &crate::project::Project, count_in: u32, accent: bool) -> (
             bars += 1;
         }
     }
-    let total = ((lead + curve.secs_at_step(off as f64)) * SR as f64) as usize + (0.05 * SR) as usize;
+    let total =
+        ((lead + curve.secs_at_step(off as f64)) * SR as f64) as usize + (0.05 * SR) as usize;
     let mut out = vec![0.0f32; total];
     for (t, down) in hits {
         let b = blip(accent && down);
@@ -85,18 +100,32 @@ pub fn song_click(p: &crate::project::Project, count_in: u32, accent: bool) -> (
 
 fn export_click(e: &mut Engine, a: &Value) -> Result<Value> {
     // no explicit grid asked for: follow the song (meters + tempo automation)
-    if f_opt(a, "bpm").is_none() && f_opt(a, "bars").is_none() && f_opt(a, "beats_per_bar").is_none() {
+    if f_opt(a, "bpm").is_none()
+        && f_opt(a, "bars").is_none()
+        && f_opt(a, "beats_per_bar").is_none()
+    {
         let count_in = f_opt(a, "count_in_bars").unwrap_or(1.0).clamp(0.0, 8.0) as u32;
         let (x, lead, bars) = song_click(&e.project, count_in, b_or(a, "accent", true));
         let path = match s_opt(a, "path") {
             Some(p) => e.resolve(&p),
-            None => e.renders_dir().join(format!("{}_click.wav", crate::samples::sample_name(&e.project.name))),
+            None => e.renders_dir().join(format!(
+                "{}_click.wav",
+                crate::samples::sample_name(&e.project.name)
+            )),
         };
         if let Some(d) = path.parent() {
             std::fs::create_dir_all(d)?;
         }
         crate::render::write_wav(&path, &x, &x)?;
-        let meters: Vec<String> = e.project.patterns.iter().map(|p| { let (n, d) = p.meter(); format!("{}: {n}/{d}", p.name) }).collect();
+        let meters: Vec<String> = e
+            .project
+            .patterns
+            .iter()
+            .map(|p| {
+                let (n, d) = p.meter();
+                format!("{}: {n}/{d}", p.name)
+            })
+            .collect();
         return Ok(json!({
             "path": path.to_string_lossy(), "follows": "song (time signatures + tempo automation)", "bars": bars,
             "count_in_bars": count_in, "meters": meters, "tempo_points": e.project.tempo_points.len(),
@@ -104,10 +133,12 @@ fn export_click(e: &mut Engine, a: &Value) -> Result<Value> {
             "note": "record against this; the song's beat 0 is after the count-in (song_starts_at_s)"
         }));
     }
-    let bpm = f_opt(a, "bpm").map(|x| x as f32).unwrap_or(e.project.bpm);
+    let bpm = f_opt(a, "bpm").unwrap_or(e.project.bpm);
     let song_bars = (e.project.song_steps() as f32 / 16.0).ceil().max(1.0) as u32;
     let count_in = f_opt(a, "count_in_bars").unwrap_or(1.0).clamp(0.0, 8.0) as u32;
-    let bars = f_opt(a, "bars").map(|x| x.clamp(1.0, 999.0) as u32).unwrap_or(song_bars);
+    let bars = f_opt(a, "bars")
+        .map(|x| x.clamp(1.0, 999.0) as u32)
+        .unwrap_or(song_bars);
     let bpb = f_opt(a, "beats_per_bar").unwrap_or(4.0).clamp(1.0, 16.0) as u32;
     let accent = b_or(a, "accent", true);
     if !(20.0..=400.0).contains(&bpm) {
@@ -116,7 +147,11 @@ fn export_click(e: &mut Engine, a: &Value) -> Result<Value> {
     let x = click_track(bpm, bars + count_in, bpb, accent);
     let path = match s_opt(a, "path") {
         Some(p) => e.resolve(&p),
-        None => e.renders_dir().join(format!("{}_click_{}bpm.wav", crate::samples::sample_name(&e.project.name), bpm.round())),
+        None => e.renders_dir().join(format!(
+            "{}_click_{}bpm.wav",
+            crate::samples::sample_name(&e.project.name),
+            bpm.round()
+        )),
     };
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
@@ -158,13 +193,20 @@ mod tests {
         let peak = |at: usize| x[at..at + 400].iter().fold(0.0f32, |m, v| m.max(v.abs()));
         for k in 0..8 {
             assert!(peak(k * beat) > 0.3, "no click on beat {k}");
-            assert!(x[k * beat + beat / 2..k * beat + beat / 2 + 400].iter().all(|v| v.abs() < 1e-3), "noise between clicks");
+            assert!(
+                x[k * beat + beat / 2..k * beat + beat / 2 + 400]
+                    .iter()
+                    .all(|v| v.abs() < 1e-3),
+                "noise between clicks"
+            );
         }
         assert!(peak(0) > peak(beat) * 1.3, "downbeat not accented");
         let dir = std::env::temp_dir().join("bb_click_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir);
-        let r = e.call("export_click", &json!({"bars": 2, "count_in_bars": 1})).unwrap();
+        let r = e
+            .call("export_click", &json!({"bars": 2, "count_in_bars": 1}))
+            .unwrap();
         assert!(r["seconds"].as_f64().unwrap() > 5.0);
         assert!(std::path::Path::new(r["path"].as_str().unwrap()).exists());
     }
@@ -178,10 +220,17 @@ mod tests {
         assert_eq!((bars, lead), (4, 0.0));
         let beat = (0.5 * SR) as usize;
         let peak = |at: usize| x[at..at + 400].iter().fold(0.0f32, |m, v| m.max(v.abs()));
-        assert!(peak(0) > peak(beat) * 1.3 && peak(3 * beat) > peak(beat) * 1.3, "bar 2 starts on beat 3");
+        assert!(
+            peak(0) > peak(beat) * 1.3 && peak(3 * beat) > peak(beat) * 1.3,
+            "bar 2 starts on beat 3"
+        );
         assert!((x.len() as f32 / SR - 6.05).abs() < 0.02);
         // half tempo from beat 6: the song gets longer
-        p.tempo_points.push(crate::project::TempoPoint { beat: 6.0, bpm: 60.0, ramp: false });
+        p.tempo_points.push(crate::project::TempoPoint {
+            beat: 6.0,
+            bpm: 60.0,
+            ramp: false,
+        });
         let (y, _, _) = song_click(&p, 1, true);
         assert!(y.len() > x.len() + (4.0 * SR) as usize);
     }

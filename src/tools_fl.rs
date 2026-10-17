@@ -219,11 +219,24 @@ pub fn ghost_notes(
 
 /// Find a playlist clip by stable id ("pl4") or its position.
 fn clip_index(p: &Project, a: &Value) -> Result<usize> {
-    let v = a.get("id").ok_or_else(|| anyhow::anyhow!("give id (a stable clip id like \"pl4\", see list_playlist)"))?;
-    if let Some(s) = v.as_str().map(str::trim).filter(|s| s.parse::<usize>().is_err()) {
-        return p.playlist.iter().position(|c| c.id.eq_ignore_ascii_case(s)).ok_or_else(|| anyhow::anyhow!("no playlist clip '{s}' (see list_playlist)"));
+    let v = a.get("id").ok_or_else(|| {
+        anyhow::anyhow!("give id (a stable clip id like \"pl4\", see list_playlist)")
+    })?;
+    if let Some(s) = v
+        .as_str()
+        .map(str::trim)
+        .filter(|s| s.parse::<usize>().is_err())
+    {
+        return p
+            .playlist
+            .iter()
+            .position(|c| c.id.eq_ignore_ascii_case(s))
+            .ok_or_else(|| anyhow::anyhow!("no playlist clip '{s}' (see list_playlist)"));
     }
-    let i = v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())).ok_or_else(|| anyhow::anyhow!("id must be a clip id or index"))? as usize;
+    let i = v
+        .as_u64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        .ok_or_else(|| anyhow::anyhow!("id must be a clip id or index"))? as usize;
     if i >= p.playlist.len() {
         bail!("no clip {i} ({} clips)", p.playlist.len());
     }
@@ -233,7 +246,10 @@ fn clip_index(p: &Project, a: &Value) -> Result<usize> {
 fn bar_arg(a: &Value, k: &str) -> Result<Option<i64>> {
     match a.get(k) {
         None | Some(Value::Null) => Ok(None),
-        Some(v) => v.as_f64().map(|x| Some(x.round() as i64)).ok_or_else(|| anyhow::anyhow!("{k} must be a number of bars")),
+        Some(v) => v
+            .as_f64()
+            .map(|x| Some(x.round() as i64))
+            .ok_or_else(|| anyhow::anyhow!("{k} must be a number of bars")),
     }
 }
 
@@ -244,7 +260,9 @@ fn playlist_clip_edit(e: &mut crate::engine::Engine, a: &Value) -> Result<Value>
     let id = e.project.playlist[i].id.clone();
     let pat_bars = {
         let c = &e.project.playlist[i];
-        e.project.patterns[e.project.pattern_index(&c.pattern)?].bars.max(1) as i64
+        e.project.patterns[e.project.pattern_index(&c.pattern)?]
+            .bars
+            .max(1) as i64
     };
     let mut new_ids: Vec<String> = Vec::new();
     let mut made_unique: Option<String> = None;
@@ -268,7 +286,9 @@ fn playlist_clip_edit(e: &mut crate::engine::Engine, a: &Value) -> Result<Value>
             }
         }
         "split" => {
-            let at = bar_arg(a, "at_bar")?.ok_or_else(|| anyhow::anyhow!("split needs at_bar (a song bar inside the clip)"))?;
+            let at = bar_arg(a, "at_bar")?.ok_or_else(|| {
+                anyhow::anyhow!("split needs at_bar (a song bar inside the clip)")
+            })?;
             let c = e.project.playlist[i].clone();
             let (s0, s1) = (c.start_bar as i64, (c.start_bar + c.bars.max(1)) as i64);
             if at <= s0 || at >= s1 {
@@ -302,7 +322,11 @@ fn playlist_clip_edit(e: &mut crate::engine::Engine, a: &Value) -> Result<Value>
             c.offset_bars = off;
         }
         "duplicate" => {
-            let count = a.get("count").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 64) as u32;
+            let count = a
+                .get("count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1)
+                .clamp(1, 64) as u32;
             let c = e.project.playlist[i].clone();
             let mut at = match bar_arg(a, "at_bar")? {
                 Some(b) if b < 0 => bail!("at_bar must be 0 or later"),
@@ -327,7 +351,10 @@ fn playlist_clip_edit(e: &mut crate::engine::Engine, a: &Value) -> Result<Value>
             let src = e.project.playlist[i].pattern.clone();
             let pi = e.project.pattern_index(&src)?;
             let base = src.split(" #").next().unwrap_or(&src).to_string();
-            let name = (2..).map(|n| format!("{base} #{n}")).find(|n| e.project.pattern_index(n).is_err()).unwrap_or_default();
+            let name = (2..)
+                .map(|n| format!("{base} #{n}"))
+                .find(|n| e.project.pattern_index(n).is_err())
+                .unwrap_or_default();
             // a deep copy: the note buffers are plain owned Vecs (no shared
             // Rc/Arc), and the copy's ids are left empty so ensure_ids gives
             // it and its notes fresh ones
@@ -338,7 +365,9 @@ fn playlist_clip_edit(e: &mut crate::engine::Engine, a: &Value) -> Result<Value>
             e.project.playlist[i].pattern = name.clone();
             made_unique = Some(name);
         }
-        other => bail!("unknown action '{other}': move | split | trim | duplicate | delete | make_unique"),
+        other => bail!(
+            "unknown action '{other}': move | split | trim | duplicate | delete | make_unique"
+        ),
     }
     compile_playlist(&mut e.project)?;
     let mut v = playlist_json(&e.project);
@@ -691,32 +720,86 @@ mod tests {
     #[test]
     fn make_unique_gives_one_clip_its_own_pattern() {
         let mut e = eng();
-        e.call("add_track", &json!({"name": "kick", "preset": "kick"})).unwrap();
-        e.call("add_pattern", &json!({"name": "beat", "bars": 1})).unwrap();
-        e.call("toggle_step", &json!({"track": "kick", "step": 0, "pattern": "beat"})).unwrap();
-        e.call("place_pattern", &json!({"pattern": "beat", "start_bar": 0, "lane": 0})).unwrap();
-        let v = e.call("place_pattern", &json!({"pattern": "beat", "start_bar": 1, "lane": 0})).unwrap();
-        let ids: Vec<String> = v["clips"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().to_string()).collect();
+        e.call("add_track", &json!({"name": "kick", "preset": "kick"}))
+            .unwrap();
+        e.call("add_pattern", &json!({"name": "beat", "bars": 1}))
+            .unwrap();
+        e.call(
+            "toggle_step",
+            &json!({"track": "kick", "step": 0, "pattern": "beat"}),
+        )
+        .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern": "beat", "start_bar": 0, "lane": 0}),
+        )
+        .unwrap();
+        let v = e
+            .call(
+                "place_pattern",
+                &json!({"pattern": "beat", "start_bar": 1, "lane": 0}),
+            )
+            .unwrap();
+        let ids: Vec<String> = v["clips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap().to_string())
+            .collect();
         assert_eq!(ids.len(), 2);
-        let v = e.call("playlist_clip", &json!({"action": "make_unique", "id": ids[1]})).unwrap();
+        let v = e
+            .call(
+                "playlist_clip",
+                &json!({"action": "make_unique", "id": ids[1]}),
+            )
+            .unwrap();
         assert_eq!(v["new_pattern"], json!("beat #2"));
         assert_eq!(v["clip"]["pattern"], json!("beat #2"));
-        let pat_of = |e: &Engine, id: &str| e.project.playlist.iter().find(|c| c.id == id).unwrap().pattern.clone();
+        let pat_of = |e: &Engine, id: &str| {
+            e.project
+                .playlist
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+                .pattern
+                .clone()
+        };
         assert_eq!(pat_of(&e, &ids[0]), "beat");
         // the copy starts identical
-        let notes = |e: &Engine, p: &str| e.project.patterns[e.project.pattern_index(p).unwrap()].notes("kick").len();
+        let notes = |e: &Engine, p: &str| {
+            e.project.patterns[e.project.pattern_index(p).unwrap()]
+                .notes("kick")
+                .len()
+        };
         assert_eq!((notes(&e, "beat"), notes(&e, "beat #2")), (1, 1));
         // its own ids, pattern and notes
-        let pid = |e: &Engine, p: &str| e.project.patterns[e.project.pattern_index(p).unwrap()].id.clone();
+        let pid = |e: &Engine, p: &str| {
+            e.project.patterns[e.project.pattern_index(p).unwrap()]
+                .id
+                .clone()
+        };
         assert!(!pid(&e, "beat #2").is_empty());
         assert_ne!(pid(&e, "beat"), pid(&e, "beat #2"));
-        let nid = |e: &Engine, p: &str| e.project.patterns[e.project.pattern_index(p).unwrap()].notes("kick")[0].id.clone();
+        let nid = |e: &Engine, p: &str| {
+            e.project.patterns[e.project.pattern_index(p).unwrap()].notes("kick")[0]
+                .id
+                .clone()
+        };
         assert_ne!(nid(&e, "beat"), nid(&e, "beat #2"));
         // editing the unique copy leaves the original (and its clip) alone
-        e.call("toggle_step", &json!({"track": "kick", "step": 4, "pattern": "beat #2"})).unwrap();
+        e.call(
+            "toggle_step",
+            &json!({"track": "kick", "step": 4, "pattern": "beat #2"}),
+        )
+        .unwrap();
         assert_eq!((notes(&e, "beat"), notes(&e, "beat #2")), (1, 2));
         // again on the copy: the next free name, from the base
-        let v = e.call("playlist_clip", &json!({"action": "make_unique", "id": ids[1]})).unwrap();
+        let v = e
+            .call(
+                "playlist_clip",
+                &json!({"action": "make_unique", "id": ids[1]}),
+            )
+            .unwrap();
         assert_eq!(v["new_pattern"], json!("beat #3"));
         assert_eq!(notes(&e, "beat #3"), 2);
         // undo puts the clip back on its old pattern
@@ -727,45 +810,125 @@ mod tests {
     #[test]
     fn playlist_clip_edits_by_stable_id() {
         let mut e = eng();
-        e.call("add_track", &json!({"name": "kick", "preset": "kick"})).unwrap();
-        e.call("add_pattern", &json!({"name": "two", "bars": 2})).unwrap();
+        e.call("add_track", &json!({"name": "kick", "preset": "kick"}))
+            .unwrap();
+        e.call("add_pattern", &json!({"name": "two", "bars": 2}))
+            .unwrap();
         // a note on bar 1 step 0 and bar 2 step 0 (steps 0 and 16)
         e.call("add_notes", &json!({"pattern": "two", "track": "kick", "notes": [{"start": 0, "len": 1, "pitch": 60}, {"start": 16, "len": 1, "pitch": 62}]})).unwrap();
-        let v = e.call("place_pattern", &json!({"pattern": "two", "start_bar": 0, "bars": 4})).unwrap();
+        let v = e
+            .call(
+                "place_pattern",
+                &json!({"pattern": "two", "start_bar": 0, "bars": 4}),
+            )
+            .unwrap();
         let id = v["clips"][0]["id"].as_str().unwrap().to_string();
         assert!(id.starts_with("pl"), "{id}");
         // split at bar 1: right half plays on from the pattern's second bar
-        let v = e.call("playlist_clip", &json!({"action": "split", "id": id, "at_bar": 1})).unwrap();
+        let v = e
+            .call(
+                "playlist_clip",
+                &json!({"action": "split", "id": id, "at_bar": 1}),
+            )
+            .unwrap();
         let rid = v["new_ids"][0].as_str().unwrap().to_string();
         assert_ne!(rid, id);
-        let r = e.project.playlist.iter().find(|c| c.id == rid).unwrap().clone();
+        let r = e
+            .project
+            .playlist
+            .iter()
+            .find(|c| c.id == rid)
+            .unwrap()
+            .clone();
         assert_eq!((r.start_bar, r.bars, r.offset_bars), (1, 3, 1));
-        assert_eq!(e.project.playlist.iter().find(|c| c.id == id).unwrap().bars, 1);
+        assert_eq!(
+            e.project.playlist.iter().find(|c| c.id == id).unwrap().bars,
+            1
+        );
         // move the right part by id; its id survives the move
-        e.call("playlist_clip", &json!({"action": "move", "id": rid, "to_bar": 5, "lane": 2})).unwrap();
-        let r = e.project.playlist.iter().find(|c| c.id == rid).unwrap().clone();
+        e.call(
+            "playlist_clip",
+            &json!({"action": "move", "id": rid, "to_bar": 5, "lane": 2}),
+        )
+        .unwrap();
+        let r = e
+            .project
+            .playlist
+            .iter()
+            .find(|c| c.id == rid)
+            .unwrap()
+            .clone();
         assert_eq!((r.start_bar, r.lane), (5, 2));
         // the compiled section at bar 5 starts with the pattern's second bar (pitch 62)
-        let sec = e.project.patterns.iter().find(|p| p.name.starts_with("pl:5:")).unwrap();
-        let first = sec.clips["kick"].iter().min_by(|a, b| a.start.total_cmp(&b.start)).unwrap();
+        let sec = e
+            .project
+            .patterns
+            .iter()
+            .find(|p| p.name.starts_with("pl:5:"))
+            .unwrap();
+        let first = sec.clips["kick"]
+            .iter()
+            .min_by(|a, b| a.start.total_cmp(&b.start))
+            .unwrap();
         assert_eq!((first.start, first.pitch), (0.0, 62));
         // trim the start a bar: the music stays in place (offset wraps in the 2-bar loop)
-        e.call("playlist_clip", &json!({"action": "trim", "id": rid, "start_bar": 6})).unwrap();
-        let r = e.project.playlist.iter().find(|c| c.id == rid).unwrap().clone();
+        e.call(
+            "playlist_clip",
+            &json!({"action": "trim", "id": rid, "start_bar": 6}),
+        )
+        .unwrap();
+        let r = e
+            .project
+            .playlist
+            .iter()
+            .find(|c| c.id == rid)
+            .unwrap()
+            .clone();
         assert_eq!((r.start_bar, r.bars, r.offset_bars), (6, 2, 0));
         // duplicate twice: fresh ids, back to back
-        let v = e.call("playlist_clip", &json!({"action": "duplicate", "id": rid, "count": 2})).unwrap();
-        let d: Vec<String> = v["new_ids"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+        let v = e
+            .call(
+                "playlist_clip",
+                &json!({"action": "duplicate", "id": rid, "count": 2}),
+            )
+            .unwrap();
+        let d: Vec<String> = v["new_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
         assert_eq!(d.len(), 2);
-        let starts: Vec<u32> = d.iter().map(|i| e.project.playlist.iter().find(|c| &c.id == i).unwrap().start_bar).collect();
+        let starts: Vec<u32> = d
+            .iter()
+            .map(|i| {
+                e.project
+                    .playlist
+                    .iter()
+                    .find(|c| &c.id == i)
+                    .unwrap()
+                    .start_bar
+            })
+            .collect();
         assert_eq!(starts, vec![8, 10]);
         // ids survive undo, and deleting by id removes exactly that clip
-        e.call("playlist_clip", &json!({"action": "delete", "id": d[0]})).unwrap();
+        e.call("playlist_clip", &json!({"action": "delete", "id": d[0]}))
+            .unwrap();
         assert!(e.project.playlist.iter().all(|c| c.id != d[0]));
         e.call("undo", &json!({})).unwrap();
         assert!(e.project.playlist.iter().any(|c| c.id == d[0]));
-        assert!(e.call("playlist_clip", &json!({"action": "split", "id": id, "at_bar": 3})).is_err());
-        assert!(e.call("playlist_clip", &json!({"action": "move", "id": "pl999", "by_bars": 1})).is_err());
+        assert!(e
+            .call(
+                "playlist_clip",
+                &json!({"action": "split", "id": id, "at_bar": 3})
+            )
+            .is_err());
+        assert!(e
+            .call(
+                "playlist_clip",
+                &json!({"action": "move", "id": "pl999", "by_bars": 1})
+            )
+            .is_err());
     }
 
     #[test]

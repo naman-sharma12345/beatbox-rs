@@ -9,8 +9,8 @@
 use crate::engine::Engine;
 use crate::instruments::{Instrument, SamplerParams};
 use crate::project::{AudioClip, Track};
-use crate::samples::SampleInfo;
 use crate::render::{self, RenderOptions};
+use crate::samples::SampleInfo;
 use crate::tools::{b_or, obj, register_sample, s_opt, s_req, Tool};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -33,10 +33,29 @@ fn bounce(e: &mut Engine, a: &Value) -> Result<Value> {
         }
     }
     e.bank.sync(&p.samples);
-    let tail = a.get("tail").and_then(|v| v.as_f64()).unwrap_or(2.0).clamp(0.0, 30.0) as f32;
-    let mix = render::render(&p, &e.bank, &RenderOptions { keep_stems: true, tail, ..Default::default() })?;
-    let stem = mix.stems.get(ti).ok_or_else(|| anyhow::anyhow!("no stem for '{src}'"))?;
-    let peak = stem.left.iter().chain(stem.right.iter()).fold(0.0f32, |m, x| m.max(x.abs()));
+    let tail = a
+        .get("tail")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(2.0)
+        .clamp(0.0, 30.0) as f32;
+    let mix = render::render(
+        &p,
+        &e.bank,
+        &RenderOptions {
+            keep_stems: true,
+            tail,
+            ..Default::default()
+        },
+    )?;
+    let stem = mix
+        .stems
+        .get(ti)
+        .ok_or_else(|| anyhow::anyhow!("no stem for '{src}'"))?;
+    let peak = stem
+        .left
+        .iter()
+        .chain(stem.right.iter())
+        .fold(0.0f32, |m, x| m.max(x.abs()));
     if peak < 1e-5 {
         bail!("'{src}' renders silent (no notes or clips?); nothing was bounced");
     }
@@ -57,7 +76,13 @@ fn bounce(e: &mut Engine, a: &Value) -> Result<Value> {
     )?;
     let sample = reg["sample"].as_str().unwrap_or(&name).to_string();
     let orig = e.project.tracks[ti].clone();
-    let mut t = Track::new(&name, Instrument::Sampler(SamplerParams { sample: sample.clone(), ..Default::default() }));
+    let mut t = Track::new(
+        &name,
+        Instrument::Sampler(SamplerParams {
+            sample: sample.clone(),
+            ..Default::default()
+        }),
+    );
     // the stem is post-fader and post-pan: the new channel sits at unity,
     // routed and sending like the original
     t.volume_db = 0.0;
@@ -65,7 +90,17 @@ fn bounce(e: &mut Engine, a: &Value) -> Result<Value> {
     t.output = orig.output.clone();
     t.sends = orig.sends.clone();
     e.project.tracks.push(t);
-    e.project.audio_clips.push(AudioClip { track: name.clone(), sample: sample.clone(), start_beat: 0.0, offset_s: 0.0, length_s: None, gain_db: 0.0, fade_in_ms: None, fade_out_ms: None, id: String::new() });
+    e.project.audio_clips.push(AudioClip {
+        track: name.clone(),
+        sample: sample.clone(),
+        start_beat: 0.0,
+        offset_s: 0.0,
+        length_s: None,
+        gain_db: 0.0,
+        fade_in_ms: None,
+        fade_out_ms: None,
+        id: String::new(),
+    });
     let mute = b_or(a, "mute_original", true);
     if mute {
         e.project.tracks[ti].mute = true;
@@ -103,9 +138,15 @@ mod tests {
         let dir = std::env::temp_dir().join("bb_bounce_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut e = Engine::new(dir);
-        e.call("new_project", &json!({"name": "b", "bpm": 120})).unwrap();
-        e.call("add_track", &json!({"name": "keys", "preset": "piano"})).unwrap();
-        e.call("add_notes", &json!({"track": "keys", "notes": [{"start": 0, "pitch": 60, "len": 8}]})).unwrap();
+        e.call("new_project", &json!({"name": "b", "bpm": 120}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "keys", "preset": "piano"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track": "keys", "notes": [{"start": 0, "pitch": 60, "len": 8}]}),
+        )
+        .unwrap();
         let before = e.mix().unwrap();
         let r = e.call("bounce_track", &json!({"track": "keys"})).unwrap();
         assert_eq!(r["track"], "keys_bounce");
@@ -115,7 +156,13 @@ mod tests {
         let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
         let n = before.left.len().min(after.left.len());
         let (a, b) = (rms(&before.left[..n]), rms(&after.left[..n]));
-        assert!(b > 0.0 && (crate::dsp::gain_to_db(b) - crate::dsp::gain_to_db(a)).abs() < 1.0, "{a} vs {b}");
-        assert!(e.call("bounce_track", &json!({"track": "keys"})).is_err(), "same name twice");
+        assert!(
+            b > 0.0 && (crate::dsp::gain_to_db(b) - crate::dsp::gain_to_db(a)).abs() < 1.0,
+            "{a} vs {b}"
+        );
+        assert!(
+            e.call("bounce_track", &json!({"track": "keys"})).is_err(),
+            "same name twice"
+        );
     }
 }

@@ -13,7 +13,14 @@ use crate::tools::{obj, Tool};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
-const BANDS: [(&str, f32, f32); 6] = [("sub", 20.0, 60.0), ("low", 60.0, 250.0), ("lowmid", 250.0, 800.0), ("mid", 800.0, 2000.0), ("harsh", 2000.0, 5000.0), ("air", 5000.0, 16000.0)];
+const BANDS: [(&str, f32, f32); 6] = [
+    ("sub", 20.0, 60.0),
+    ("low", 60.0, 250.0),
+    ("lowmid", 250.0, 800.0),
+    ("mid", 800.0, 2000.0),
+    ("harsh", 2000.0, 5000.0),
+    ("air", 5000.0, 16000.0),
+];
 
 /// Band power relative to the whole (dB) of typical modern mixes.
 fn reference(genre: &str) -> Option<[f32; 6]> {
@@ -31,7 +38,16 @@ fn reference(genre: &str) -> Option<[f32; 6]> {
 pub fn band_shares(mono: &[f32]) -> [f32; 6] {
     let ps = crate::analysis::power_spectrum(mono);
     let hz = SR / (2.0 * ps.len() as f32);
-    let sum = |a: f32, b: f32| -> f32 { ps.iter().enumerate().filter(|(i, _)| { let f = *i as f32 * hz; f >= a && f < b }).map(|(_, v)| *v).sum() };
+    let sum = |a: f32, b: f32| -> f32 {
+        ps.iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                let f = *i as f32 * hz;
+                f >= a && f < b
+            })
+            .map(|(_, v)| *v)
+            .sum()
+    };
     let tot = sum(20.0, 16000.0).max(1e-20);
     let mut out = [0.0f32; 6];
     for (k, (_, a, b)) in BANDS.iter().enumerate() {
@@ -61,10 +77,22 @@ pub fn band_powers(mono: &[f32]) -> [f32; 6] {
 pub fn band_owners(e: &mut Engine) -> Result<Vec<Vec<(String, f32)>>> {
     let p = e.project.clone();
     e.bank.sync(&p.samples);
-    let m = render::render(&p, &e.bank, &RenderOptions { keep_stems: true, ..Default::default() })?;
+    let m = render::render(
+        &p,
+        &e.bank,
+        &RenderOptions {
+            keep_stems: true,
+            ..Default::default()
+        },
+    )?;
     let mut per: Vec<(String, [f32; 6])> = Vec::new();
     for s in &m.stems {
-        let mono: Vec<f32> = s.left.iter().zip(&s.right).map(|(x, y)| 0.5 * (x + y)).collect();
+        let mono: Vec<f32> = s
+            .left
+            .iter()
+            .zip(&s.right)
+            .map(|(x, y)| 0.5 * (x + y))
+            .collect();
         per.push((s.name.clone(), band_powers(&mono)));
     }
     let mut out = Vec::new();
@@ -102,13 +130,23 @@ pub fn split_clicks(clicks: &[f32], drum_hits: &[f32]) -> (Vec<f32>, usize) {
 /// Seconds of every scheduled drum hit in the project (tracks whose name or
 /// instrument reads as a drum), for split_clicks.
 pub fn drum_hit_times(p: &crate::project::Project) -> Vec<f32> {
-    const DRUMS: [&str; 16] = ["kick", "snare", "clap", "hat", "open_hat", "perc", "crash", "cymbal", "rim", "shaker", "tom", "ride", "tabla", "dholak", "conga", "drum"];
+    const DRUMS: [&str; 16] = [
+        "kick", "snare", "clap", "hat", "open_hat", "perc", "crash", "cymbal", "rim", "shaker",
+        "tom", "ride", "tabla", "dholak", "conga", "drum",
+    ];
     let opts = crate::render::RenderOptions::default();
     let (events, _) = crate::render::schedule(p, &opts);
     let mut out = Vec::new();
     for (ti, t) in p.tracks.iter().enumerate() {
         let name = t.name.to_lowercase();
-        let inst = serde_json::to_value(&t.instrument).ok().and_then(|v| v.get("type").and_then(|x| x.as_str()).map(|x| x.to_lowercase())).unwrap_or_default();
+        let inst = serde_json::to_value(&t.instrument)
+            .ok()
+            .and_then(|v| {
+                v.get("type")
+                    .and_then(|x| x.as_str())
+                    .map(|x| x.to_lowercase())
+            })
+            .unwrap_or_default();
         if DRUMS.iter().any(|d| name.contains(d) || inst.contains(d)) {
             out.extend(events[ti].iter().map(|e| e.start as f32 / SR));
         }
@@ -128,7 +166,9 @@ pub fn find_clicks(mono: &[f32]) -> Vec<f32> {
     let mut hp = crate::dsp::Biquad::new(crate::dsp::BiquadKind::LowCut, 6000.0, 0.7, 0.0);
     let mut hp2 = crate::dsp::Biquad::new(crate::dsp::BiquadKind::LowCut, 6000.0, 0.7, 0.0);
     let h: Vec<f32> = mono.iter().map(|&v| hp2.process(hp.process(v))).collect();
-    let e: Vec<f32> = (0..n).map(|i| h[i * w..(i + 1) * w].iter().map(|v| v * v).sum::<f32>() / w as f32 + 1e-12).collect();
+    let e: Vec<f32> = (0..n)
+        .map(|i| h[i * w..(i + 1) * w].iter().map(|v| v * v).sum::<f32>() / w as f32 + 1e-12)
+        .collect();
     let mut sorted = e.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let floor = sorted[n / 2];
@@ -152,7 +192,11 @@ pub fn find_clicks(mono: &[f32]) -> Vec<f32> {
         if e[i] < CLICK_FLOOR_POWER {
             continue;
         }
-        let after = if i + 8 < n { e[i + 4..i + 8].iter().copied().fold(0.0, f32::max) } else { e[i] };
+        let after = if i + 8 < n {
+            e[i + 4..i + 8].iter().copied().fold(0.0, f32::max)
+        } else {
+            e[i]
+        };
         if after < 0.15 * e[i] {
             out.push(i as f32 * 0.001);
             last = i as i64;
@@ -166,7 +210,9 @@ fn r1(x: f32) -> f32 {
 }
 
 fn kind_of(pattern: &str) -> String {
-    pattern.trim_end_matches(|c: char| c.is_ascii_digit() || c == '_').to_string()
+    pattern
+        .trim_end_matches(|c: char| c.is_ascii_digit() || c == '_')
+        .to_string()
 }
 
 pub fn tools() -> Vec<Tool> {
@@ -185,7 +231,11 @@ pub fn tools() -> Vec<Tool> {
 }
 
 fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
-    let genre_in = a.get("genre").and_then(|v| v.as_str()).unwrap_or("hiphop").to_lowercase();
+    let genre_in = a
+        .get("genre")
+        .and_then(|v| v.as_str())
+        .unwrap_or("hiphop")
+        .to_lowercase();
     let genre = match genre_in.as_str() {
         "rnb" | "r&b" | "soul" | "pop" => "rnb",
         "lofi" | "lo-fi" | "lo_fi" | "chill" | "jazz_rap" | "study" => "lofi",
@@ -221,12 +271,18 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
         if from_file.is_some() {
             score -= 0.5;
         }
-        problems.push(format!("integrated loudness {:.1} LUFS (streaming target -14; export_audio masters to it)", ld.integrated_lufs));
+        problems.push(format!(
+            "integrated loudness {:.1} LUFS (streaming target -14; export_audio masters to it)",
+            ld.integrated_lufs
+        ));
         fixes.push(json!({"why": "master to -14 LUFS", "tool": "export_audio", "args": {"path": "song.mp3", "target_lufs": -14.0, "true_peak_ceiling": -1.0}}));
     }
     if ld.true_peak_dbtp > -1.0 {
         score -= 1.0;
-        problems.push(format!("true peak {:.1} dBTP (over -1: clips on phones and in encoding)", ld.true_peak_dbtp));
+        problems.push(format!(
+            "true peak {:.1} dBTP (over -1: clips on phones and in encoding)",
+            ld.true_peak_dbtp
+        ));
         fixes.push(json!({"why": "peak ceiling", "tool": "add_effect", "args": {"track": "master", "type": "limiter", "params": {"ceiling_db": -1.2}}}));
     }
     let clipped = mono.iter().filter(|v| v.abs() >= 0.999).count();
@@ -242,33 +298,79 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
     // the bell lead owned 53% of 2-5 kHz, the clap 53% of 800 Hz-2 kHz), not
     // with a master EQ that dulls everything else in the band too
     let per_track = a.get("per_track").and_then(|v| v.as_bool()).unwrap_or(true);
-    let any_off = reference(genre).map(|rf| (0..6).any(|k| (shares[k] - rf[k]).abs() > 4.0)).unwrap_or(false);
-    let owners = if from_file.is_none() && per_track && any_off { band_owners(e).ok() } else { None };
+    let any_off = reference(genre)
+        .map(|rf| (0..6).any(|k| (shares[k] - rf[k]).abs() > 4.0))
+        .unwrap_or(false);
+    let owners = if from_file.is_none() && per_track && any_off {
+        band_owners(e).ok()
+    } else {
+        None
+    };
     if let Some(rf) = reference(genre) {
         let mut off = 0.0f32;
         for (k, (name, a0, b0)) in BANDS.iter().enumerate() {
             let d = shares[k] - rf[k];
-            let own: Vec<Value> = owners.as_ref().map(|o| o[k].iter().map(|(t, s)| json!({"track": t, "share_pct": (s * 100.0).round()})).collect()).unwrap_or_default();
+            let own: Vec<Value> = owners
+                .as_ref()
+                .map(|o| {
+                    o[k].iter()
+                        .map(|(t, s)| json!({"track": t, "share_pct": (s * 100.0).round()}))
+                        .collect()
+                })
+                .unwrap_or_default();
             if own.is_empty() {
-                bands.insert(name.to_string(), json!({"share_db": r1(shares[k]), "vs_ref_db": r1(d)}));
+                bands.insert(
+                    name.to_string(),
+                    json!({"share_db": r1(shares[k]), "vs_ref_db": r1(d)}),
+                );
             } else {
-                bands.insert(name.to_string(), json!({"share_db": r1(shares[k]), "vs_ref_db": r1(d), "owners": own}));
+                bands.insert(
+                    name.to_string(),
+                    json!({"share_db": r1(shares[k]), "vs_ref_db": r1(d), "owners": own}),
+                );
             }
             if d.abs() > 4.0 {
                 off += 0.5 + 0.12 * (d.abs() - 4.0);
                 let fc = (a0 * b0).sqrt();
                 let hot = d > 0.0;
-                problems.push(format!("{name} ({a0:.0}-{b0:.0} Hz) {}{:.1} dB vs a {genre} reference", if hot { "+" } else { "" }, d));
-                let (fallback, gain) = if hot { ("master", -(d - 2.0).min(6.0)) } else if *a0 < 250.0 { ("bass", (-d - 2.0).min(5.0)) } else { ("master", (-d - 2.0).min(4.0)) };
+                problems.push(format!(
+                    "{name} ({a0:.0}-{b0:.0} Hz) {}{:.1} dB vs a {genre} reference",
+                    if hot { "+" } else { "" },
+                    d
+                ));
+                let (fallback, gain) = if hot {
+                    ("master", -(d - 2.0).min(6.0))
+                } else if *a0 < 250.0 {
+                    ("bass", (-d - 2.0).min(5.0))
+                } else {
+                    ("master", (-d - 2.0).min(4.0))
+                };
                 // the owner: the track with the biggest share of the band
                 // (hot: cut it there; weak: lift the one already playing in it)
-                let owner = owners.as_ref().and_then(|o| o[k].first().filter(|(_, s)| *s >= 0.25).map(|(t, s)| (t.clone(), *s)));
+                let owner = owners.as_ref().and_then(|o| {
+                    o[k].first()
+                        .filter(|(_, s)| *s >= 0.25)
+                        .map(|(t, s)| (t.clone(), *s))
+                });
                 let (track, why) = match &owner {
-                    Some((t, s)) => (t.clone(), format!("{name} {}: {t} makes {:.0}% of it", if hot { "too hot" } else { "too weak" }, s * 100.0)),
-                    None => (fallback.to_string(), format!("{name} {}", if hot { "too hot" } else { "too weak" })),
+                    Some((t, s)) => (
+                        t.clone(),
+                        format!(
+                            "{name} {}: {t} makes {:.0}% of it",
+                            if hot { "too hot" } else { "too weak" },
+                            s * 100.0
+                        ),
+                    ),
+                    None => (
+                        fallback.to_string(),
+                        format!("{name} {}", if hot { "too hot" } else { "too weak" }),
+                    ),
                 };
                 // a single owner takes the whole correction; a shared band is cut a bit less
-                let gain = match &owner { Some((_, s)) if *s < 0.5 => gain * 0.75, _ => gain };
+                let gain = match &owner {
+                    Some((_, s)) if *s < 0.5 => gain * 0.75,
+                    _ => gain,
+                };
                 fixes.push(json!({"why": why, "tool": "add_effect",
                     "args": {"track": track, "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": fc.round(), "gain_db": r1(gain), "q": 0.8}]}}}));
             }
@@ -283,11 +385,19 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
     // 3. clicks
     let raw_clicks = find_clicks(&mono);
     // onsets on a scheduled drum hit are attacks (critic v17), not splices
-    let (clicks, drum_attacks) = if from_file.is_none() { split_clicks(&raw_clicks, &drum_hit_times(&e.project)) } else { (raw_clicks.clone(), 0) };
+    let (clicks, drum_attacks) = if from_file.is_none() {
+        split_clicks(&raw_clicks, &drum_hit_times(&e.project))
+    } else {
+        (raw_clicks.clone(), 0)
+    };
     if clicks.len() > 10 {
         score -= if clicks.len() > 40 { 1.5 } else { 0.75 };
         let first: Vec<String> = clicks.iter().take(5).map(|t| format!("{t:.2}")).collect();
-        problems.push(format!("{} click-like transients (first at {} s)", clicks.len(), first.join(", ")));
+        problems.push(format!(
+            "{} click-like transients (first at {} s)",
+            clicks.len(),
+            first.join(", ")
+        ));
         fixes.push(json!({"why": "find which track clicks", "tool": "detect_artifacts", "args": {"per_track": true}}));
     }
 
@@ -295,7 +405,15 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
     let drones = crate::tools_drone::find_drones(&mono, 9.0, 0.8, 120.0, 8000.0);
     if !drones.is_empty() {
         score -= 1.0;
-        problems.push(format!("held drone(s) through the song at {} Hz", drones.iter().take(3).map(|d| format!("{:.0}", d.0)).collect::<Vec<_>>().join(", ")));
+        problems.push(format!(
+            "held drone(s) through the song at {} Hz",
+            drones
+                .iter()
+                .take(3)
+                .map(|d| format!("{:.0}", d.0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
         fixes.push(json!({"why": "notch the held partials", "tool": "notch_drones", "args": {}}));
     }
 
@@ -308,9 +426,14 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
         let mut hook = Vec::new();
         let mut verse = Vec::new();
         for s in p.song_sections() {
-            let Ok(pi) = p.pattern_index(&s.pattern) else { continue };
+            let Ok(pi) = p.pattern_index(&s.pattern) else {
+                continue;
+            };
             let dur = p.patterns[pi].steps() as f32 * s.repeats.max(1) as f32 * step;
-            let (i0, i1) = (((t * SR) as usize).min(l.len()), (((t + dur) * SR) as usize).min(l.len()));
+            let (i0, i1) = (
+                ((t * SR) as usize).min(l.len()),
+                (((t + dur) * SR) as usize).min(l.len()),
+            );
             if i1 > i0 + (SR * 0.5) as usize {
                 let lu = crate::analysis::loudness(&l[i0..i1], &r[i0..i1]).integrated_lufs;
                 let k = kind_of(&s.pattern);
@@ -340,7 +463,11 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
 
     // 6. the vocal over the beat (project with a vocal track)
     let mut vocal = Value::Null;
-    let vt = a.get("vocal_track").and_then(|v| v.as_str()).unwrap_or("vocal").to_string();
+    let vt = a
+        .get("vocal_track")
+        .and_then(|v| v.as_str())
+        .unwrap_or("vocal")
+        .to_string();
     if from_file.is_none() && e.project.track_index(&vt).is_ok() {
         let mut beat = e.project.clone();
         let mut solo = e.project.clone();
@@ -361,10 +488,15 @@ fn critique(e: &mut Engine, a: &Value) -> Result<Value> {
         vocal = json!({"vocal_lufs": r1(lv), "beat_lufs": r1(lb), "vocal_over_beat_db": r1(d)});
         if d < 0.0 {
             score -= 2.0;
-            problems.push(format!("the vocal sits {:.1} dB UNDER the beat (words get masked)", -d));
+            problems.push(format!(
+                "the vocal sits {:.1} dB UNDER the beat (words get masked)",
+                -d
+            ));
         } else if d < 1.5 {
             score -= 1.0;
-            problems.push(format!("the vocal is only {d:.1} dB over the beat (aim about +3)"));
+            problems.push(format!(
+                "the vocal is only {d:.1} dB over the beat (aim about +3)"
+            ));
         }
         if d < 1.5 {
             let vol = e.project.tracks[vi].volume_db;
@@ -403,8 +535,12 @@ mod tests {
     #[test]
     fn band_powers_put_a_tone_in_its_band() {
         let n = (SR * 1.0) as usize;
-        let hi: Vec<f32> = (0..n).map(|i| 0.3 * (i as f32 * 3000.0 * std::f32::consts::TAU / SR).sin()).collect();
-        let lo: Vec<f32> = (0..n).map(|i| 0.3 * (i as f32 * 100.0 * std::f32::consts::TAU / SR).sin()).collect();
+        let hi: Vec<f32> = (0..n)
+            .map(|i| 0.3 * (i as f32 * 3000.0 * std::f32::consts::TAU / SR).sin())
+            .collect();
+        let lo: Vec<f32> = (0..n)
+            .map(|i| 0.3 * (i as f32 * 100.0 * std::f32::consts::TAU / SR).sin())
+            .collect();
         let (h, l) = (band_powers(&hi), band_powers(&lo));
         assert!(h[4] > 100.0 * h[1], "3 kHz lands in harsh: {h:?}");
         assert!(l[1] > 100.0 * l[4], "100 Hz lands in low: {l:?}");
@@ -415,7 +551,9 @@ mod tests {
     #[test]
     fn clicks_are_found_and_hats_are_not() {
         let n = (SR * 3.0) as usize;
-        let mut x: Vec<f32> = (0..n).map(|i| 0.2 * (i as f32 * 220.0 * std::f32::consts::TAU / SR).sin()).collect();
+        let mut x: Vec<f32> = (0..n)
+            .map(|i| 0.2 * (i as f32 * 220.0 * std::f32::consts::TAU / SR).sin())
+            .collect();
         // two hard steps (clicks)
         for at in [SR as usize, 2 * SR as usize] {
             for v in x[at..at + 40].iter_mut() {
@@ -427,7 +565,9 @@ mod tests {
         let s = band_shares(&x);
         assert!(s[1] > s[5], "a 220 Hz tone lives in the low band: {s:?}");
         // the same steps 40 dB quieter sit under the absolute floor
-        let mut q: Vec<f32> = (0..n).map(|i| 0.2 * (i as f32 * 220.0 * std::f32::consts::TAU / SR).sin()).collect();
+        let mut q: Vec<f32> = (0..n)
+            .map(|i| 0.2 * (i as f32 * 220.0 * std::f32::consts::TAU / SR).sin())
+            .collect();
         for at in [SR as usize, 2 * SR as usize] {
             for v in q[at..at + 40].iter_mut() {
                 *v += 0.006;

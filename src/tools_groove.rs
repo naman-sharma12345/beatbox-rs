@@ -18,13 +18,23 @@ fn template_of(e: &Engine, a: &Value) -> Result<GrooveTemplate> {
         let sr = crate::dsp::SR;
         let bpm = f_opt(a, "bpm").unwrap_or_else(|| crate::audio_edit::estimate_bpm(&x).0);
         let on = crate::sc_dsp::detect_transients(&x, 0.5);
-        let words: Vec<crate::vocal::Word> = on.iter().map(|&s| crate::vocal::Word { start: s as f32 / sr, end: s as f32 / sr + 0.05, word: String::new(), prob: 1.0 }).collect();
+        let words: Vec<crate::vocal::Word> = on
+            .iter()
+            .map(|&s| crate::vocal::Word {
+                start: s as f32 / sr,
+                end: s as f32 / sr + 0.05,
+                word: String::new(),
+                prob: 1.0,
+            })
+            .collect();
         let te = crate::vocal::estimate_tempo(&[], &words, x.len() as f32 / sr, Some(bpm));
         let step_s = 60.0 / te.bpm / 4.0;
         let pts: Vec<(f32, f32)> = on
             .iter()
             .map(|&s| {
-                let pk = x[s..(s + (0.012 * sr) as usize).min(x.len())].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+                let pk = x[s..(s + (0.012 * sr) as usize).min(x.len())]
+                    .iter()
+                    .fold(0.0f32, |m, v| m.max(v.abs()));
                 ((s as f32 / sr - te.downbeat) / step_s, pk)
             })
             .collect();
@@ -34,7 +44,11 @@ fn template_of(e: &Engine, a: &Value) -> Result<GrooveTemplate> {
         let Some(m) = &e.project.vocal_map else {
             bail!("give path (an audio loop / reference), template, or from:'vocal' after vocal_to_song");
         };
-        let pts: Vec<(f32, f32)> = m.notes.iter().map(|n| (n.0 * 4.0, n.1.min(2.0).sqrt())).collect();
+        let pts: Vec<(f32, f32)> = m
+            .notes
+            .iter()
+            .map(|n| (n.0 * 4.0, n.1.min(2.0).sqrt()))
+            .collect();
         return Ok(groove_extract::from_steps(&pts, e.project.bpm));
     }
     bail!("unknown source")
@@ -49,7 +63,10 @@ pub fn drum_fundamental(x: &[f32], sr: f32, lo: f32, hi: f32) -> Option<f32> {
         return None;
     }
     let dec = 8usize;
-    let y: Vec<f32> = x[s0..s1].chunks(dec).map(|c| c.iter().sum::<f32>() / c.len() as f32).collect();
+    let y: Vec<f32> = x[s0..s1]
+        .chunks(dec)
+        .map(|c| c.iter().sum::<f32>() / c.len() as f32)
+        .collect();
     let fs = sr / dec as f32;
     let mut best = (0.0f32, 0.0f32);
     let mut f = lo;
@@ -75,14 +92,24 @@ fn tune_drums(e: &mut Engine, a: &Value) -> Result<Value> {
     let key_pc = crate::theory::pitch_class(&e.project.key_root)? as i32;
     let ivs = crate::theory::scale_intervals(&e.project.scale)?;
     let third = ivs.get(2).copied().unwrap_or(4) as i32;
-    let want: Vec<String> = a.get("tracks").and_then(|v| v.as_array()).map(|v| v.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+    let want: Vec<String> = a
+        .get("tracks")
+        .and_then(|v| v.as_array())
+        .map(|v| {
+            v.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut rows = Vec::new();
     for ti in 0..e.project.tracks.len() {
         let t = &e.project.tracks[ti];
         if !want.is_empty() && !want.iter().any(|w| w.eq_ignore_ascii_case(&t.name)) {
             continue;
         }
-        let Instrument::Drum(d) = &t.instrument else { continue };
+        let Instrument::Drum(d) = &t.instrument else {
+            continue;
+        };
         let (lo, hi, targets): (f32, f32, Vec<i32>) = match d.kind {
             DrumKind::Kick => (30.0, 160.0, vec![0, 7]),
             DrumKind::Tom => (60.0, 400.0, vec![0, third, 7]),
@@ -90,7 +117,9 @@ fn tune_drums(e: &mut Engine, a: &Value) -> Result<Value> {
             _ => continue,
         };
         let hit = crate::instruments::render_note(&t.instrument, 60.0, 0.9, 0.3, &e.bank, 1);
-        let Some(f0) = drum_fundamental(&hit, crate::dsp::SR, lo, hi) else { continue };
+        let Some(f0) = drum_fundamental(&hit, crate::dsp::SR, lo, hi) else {
+            continue;
+        };
         let m = 69.0 + 12.0 * (f0 / 440.0).log2();
         // nearest key target (root / fifth / third) in any octave
         let mut best = (0.0f32, f32::INFINITY, 0i32);
@@ -164,7 +193,12 @@ mod tests {
     #[test]
     fn finds_a_kick_like_fundamental() {
         let sr = crate::dsp::SR;
-        let x: Vec<f32> = (0..(sr * 0.4) as usize).map(|i| { let t = i as f32 / sr; (t * 55.0 * std::f32::consts::TAU).sin() * (-t * 6.0).exp() }).collect();
+        let x: Vec<f32> = (0..(sr * 0.4) as usize)
+            .map(|i| {
+                let t = i as f32 / sr;
+                (t * 55.0 * std::f32::consts::TAU).sin() * (-t * 6.0).exp()
+            })
+            .collect();
         let f = drum_fundamental(&x, sr, 30.0, 160.0).unwrap();
         assert!((f - 55.0).abs() < 1.5, "{f}");
     }
@@ -172,9 +206,12 @@ mod tests {
     #[test]
     fn kick_lands_on_a_key_tone() {
         let mut e = Engine::new(std::env::temp_dir().join("beatbox_tune_drums"));
-        e.call("new_project", &json!({"name": "t", "bpm": 90})).unwrap();
-        e.call("set_key", &json!({"root": "F", "scale": "minor"})).unwrap();
-        e.call("add_track", &json!({"name": "kick", "preset": "kick"})).unwrap();
+        e.call("new_project", &json!({"name": "t", "bpm": 90}))
+            .unwrap();
+        e.call("set_key", &json!({"root": "F", "scale": "minor"}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "kick", "preset": "kick"}))
+            .unwrap();
         let r = e.call("tune_drums_to_key", &json!({})).unwrap();
         let row = &r["tuned"][0];
         let t = row["target"].as_str().unwrap();

@@ -5,9 +5,12 @@
 //! - `carve_frequencies`: sidechain spectral ducking, a key (a vocal)
 //!   carving one band of a target only while it sounds there
 //!   (`dsp::carve_eq`).
+//!
 //! Opt-in: nothing else calls them, and the project is not changed.
 
-use crate::dsp::carve_eq::{carve_coeffs, carve_focus_hz, group_delay_samples, CarveMode, CarveParams, Carver};
+use crate::dsp::carve_eq::{
+    carve_coeffs, carve_focus_hz, group_delay_samples, CarveMode, CarveParams, Carver,
+};
 use crate::dsp::loudness_meter::measure_stereo;
 use crate::dsp::SR;
 use crate::render::write_wav;
@@ -59,7 +62,8 @@ fn analyze(e: &mut crate::engine::Engine, a: &Value) -> Result<Value> {
         let every = |x: Vec<f64>| x.into_iter().step_by(10).map(r2).collect::<Vec<_>>();
         v["short_term_lufs_per_s"] = json!(every(meter.short_term()));
         v["momentary_lufs_per_s"] = json!(every(meter.momentary()));
-        v["series_note"] = json!("one value per second; short-term starts at 3 s, momentary at 0.4 s");
+        v["series_note"] =
+            json!("one value per second; short-term starts at 3 s, momentary at 0.4 s");
     }
     Ok(v)
 }
@@ -69,7 +73,9 @@ fn carve(e: &mut crate::engine::Engine, a: &Value) -> Result<Value> {
     let (lo, hi) = match s_opt(a, "band").as_deref() {
         Some("mud") => (150.0, 400.0),
         Some("presence") => (2000.0, 4000.0),
-        Some(other) => bail!("band '{other}': use mud (150-400 Hz), presence (2-4 kHz), or low_hz/high_hz"),
+        Some(other) => {
+            bail!("band '{other}': use mud (150-400 Hz), presence (2-4 kHz), or low_hz/high_hz")
+        }
         None => (d.low_hz, d.high_hz),
     };
     let mode = match s_opt(a, "mode").as_deref() {
@@ -90,14 +96,26 @@ fn carve(e: &mut crate::engine::Engine, a: &Value) -> Result<Value> {
         attack_ms: f_opt(a, "attack_ms").unwrap_or(d.attack_ms),
         release_ms: f_opt(a, "release_ms").unwrap_or(d.release_ms),
     };
-    if !(20.0..=20000.0).contains(&p.low_hz) || p.high_hz <= p.low_hz * 1.05 || p.high_hz > 20000.0 {
-        bail!("low_hz/high_hz: 20..20000 Hz with high_hz above low_hz (got {}..{})", p.low_hz, p.high_hz);
+    if !(20.0..=20000.0).contains(&p.low_hz) || p.high_hz <= p.low_hz * 1.05 || p.high_hz > 20000.0
+    {
+        bail!(
+            "low_hz/high_hz: 20..20000 Hz with high_hz above low_hz (got {}..{})",
+            p.low_hz,
+            p.high_hz
+        );
     }
-    if !(0.0..=24.0).contains(&p.max_cut_db) || !(1.0..=100.0).contains(&p.ratio) || !(-80.0..=0.0).contains(&p.threshold_db) {
+    if !(0.0..=24.0).contains(&p.max_cut_db)
+        || !(1.0..=100.0).contains(&p.ratio)
+        || !(-80.0..=0.0).contains(&p.threshold_db)
+    {
         bail!("max_cut_db 0..24, ratio 1..100, threshold_db -80..0");
     }
-    let tpath = e.resolve(&s_opt(a, "target").ok_or_else(|| anyhow!("target: the audio file to carve"))?);
-    let kpath = e.resolve(&s_opt(a, "key").ok_or_else(|| anyhow!("key: the audio file that drives the carve (the vocal)"))?);
+    let tpath =
+        e.resolve(&s_opt(a, "target").ok_or_else(|| anyhow!("target: the audio file to carve"))?);
+    let kpath = e.resolve(
+        &s_opt(a, "key")
+            .ok_or_else(|| anyhow!("key: the audio file that drives the carve (the vocal)"))?,
+    );
     let (mut l, mut r) = samples::decode_stereo(&tpath)?;
     let (kl, kr) = samples::decode_stereo(&kpath)?;
     let key: Vec<f32> = kl.iter().zip(&kr).map(|(a, b)| 0.5 * (a + b)).collect();
@@ -116,11 +134,19 @@ fn carve(e: &mut crate::engine::Engine, a: &Value) -> Result<Value> {
         "latency_samples": 0,
     });
     // phase: report the filter's group delay where it acts, at the deepest cut used (or max_cut_db)
-    let cut = if max_cut > 0.0 { max_cut as f64 } else { p.max_cut_db as f64 };
+    let cut = if max_cut > 0.0 {
+        max_cut as f64
+    } else {
+        p.max_cut_db as f64
+    };
     let (b, aa) = carve_coeffs(&p, cut, SR as f64);
     let focus = carve_focus_hz(&p, SR as f64);
     let gd = group_delay_samples(b, aa, focus, SR as f64);
-    v["mode"] = json!(match mode { CarveMode::Bell => "bell", CarveMode::LowShelf => "low_shelf", CarveMode::HighShelf => "high_shelf" });
+    v["mode"] = json!(match mode {
+        CarveMode::Bell => "bell",
+        CarveMode::LowShelf => "low_shelf",
+        CarveMode::HighShelf => "high_shelf",
+    });
     v["phase"] = json!({
         "type": "minimum-phase IIR (biquad); no latency, so the carved target stays aligned with the key",
         "at_hz": focus.round(),
@@ -134,7 +160,9 @@ fn carve(e: &mut crate::engine::Engine, a: &Value) -> Result<Value> {
             write_wav(&path, &l, &r)?;
             v["out"] = json!(path.display().to_string());
         }
-        None => v["note"] = json!("measured only; pass out to write the carved target (16-bit wav)"),
+        None => {
+            v["note"] = json!("measured only; pass out to write the carved target (16-bit wav)")
+        }
     }
     Ok(v)
 }
@@ -199,36 +227,75 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         // 10 s of 1 kHz at -23 dBFS per channel: -23 LUFS, 0 LU range, -23 dBTP
         let a = 10f32.powf(-23.0 / 20.0);
-        let x: Vec<f32> = (0..441000).map(|i| a * (2.0 * PI * 1000.0 * i as f32 / 44100.0).sin()).collect();
+        let x: Vec<f32> = (0..441000)
+            .map(|i| a * (2.0 * PI * 1000.0 * i as f32 / 44100.0).sin())
+            .collect();
         let f = dir.join("m23.wav");
         crate::render::write_wav(&f, &x, &x).unwrap();
         let mut e = Engine::new(dir.clone());
-        let v = e.call("analyze_loudness", &json!({"path": f.display().to_string(), "series": true, "target_lufs": -14.0})).unwrap();
-        assert!((v["integrated_lufs"].as_f64().unwrap() + 23.0).abs() < 0.15, "{v}");
-        assert!((v["momentary_max_lufs"].as_f64().unwrap() + 23.0).abs() < 0.15, "{v}");
+        let v = e
+            .call(
+                "analyze_loudness",
+                &json!({"path": f.display().to_string(), "series": true, "target_lufs": -14.0}),
+            )
+            .unwrap();
+        assert!(
+            (v["integrated_lufs"].as_f64().unwrap() + 23.0).abs() < 0.15,
+            "{v}"
+        );
+        assert!(
+            (v["momentary_max_lufs"].as_f64().unwrap() + 23.0).abs() < 0.15,
+            "{v}"
+        );
         assert!(v["loudness_range_lu"].as_f64().unwrap() < 0.2, "{v}");
-        assert!((v["true_peak_dbtp"].as_f64().unwrap() + 23.0).abs() < 0.2, "{v}");
-        assert!((v["gain_to_target_db"].as_f64().unwrap() - 9.0).abs() < 0.15, "{v}");
+        assert!(
+            (v["true_peak_dbtp"].as_f64().unwrap() + 23.0).abs() < 0.2,
+            "{v}"
+        );
+        assert!(
+            (v["gain_to_target_db"].as_f64().unwrap() - 9.0).abs() < 0.15,
+            "{v}"
+        );
         assert!(v["short_term_lufs_per_s"].as_array().unwrap().len() >= 7);
         // carve: a 250 Hz pad against a 220 Hz "vocal"
         let n = 44100;
-        let pad: Vec<f32> = (0..n).map(|i| 0.25 * (2.0 * PI * 250.0 * i as f32 / 44100.0).sin()).collect();
-        let voc: Vec<f32> = (0..n).map(|i| 0.25 * (2.0 * PI * 220.0 * i as f32 / 44100.0).sin()).collect();
-        let (pf, vf, of) = (dir.join("pad.wav"), dir.join("voc.wav"), dir.join("carved.wav"));
+        let pad: Vec<f32> = (0..n)
+            .map(|i| 0.25 * (2.0 * PI * 250.0 * i as f32 / 44100.0).sin())
+            .collect();
+        let voc: Vec<f32> = (0..n)
+            .map(|i| 0.25 * (2.0 * PI * 220.0 * i as f32 / 44100.0).sin())
+            .collect();
+        let (pf, vf, of) = (
+            dir.join("pad.wav"),
+            dir.join("voc.wav"),
+            dir.join("carved.wav"),
+        );
         crate::render::write_wav(&pf, &pad, &pad).unwrap();
         crate::render::write_wav(&vf, &voc, &voc).unwrap();
         let v = e
             .call("carve_frequencies", &json!({"target": pf.display().to_string(), "key": vf.display().to_string(), "out": of.display().to_string(), "band": "mud"}))
             .unwrap();
-        assert!((v["deepest_cut_db"].as_f64().unwrap() - 6.0).abs() < 0.05, "{v}");
+        assert!(
+            (v["deepest_cut_db"].as_f64().unwrap() - 6.0).abs() < 0.05,
+            "{v}"
+        );
         assert!(v["carved_percent"].as_f64().unwrap() > 90.0, "{v}");
         assert!(of.exists());
-        assert!(v["phase"]["group_delay_samples"].as_f64().unwrap().is_finite(), "{v}");
+        assert!(
+            v["phase"]["group_delay_samples"]
+                .as_f64()
+                .unwrap()
+                .is_finite(),
+            "{v}"
+        );
         let v = e
             .call("carve_frequencies", &json!({"target": pf.display().to_string(), "key": vf.display().to_string(), "band": "mud", "mode": "low_shelf"}))
             .unwrap();
         assert_eq!(v["mode"], "low_shelf");
-        assert!((v["deepest_cut_db"].as_f64().unwrap() - 6.0).abs() < 0.05, "{v}");
+        assert!(
+            (v["deepest_cut_db"].as_f64().unwrap() - 6.0).abs() < 0.05,
+            "{v}"
+        );
         assert!(e.call("carve_frequencies", &json!({"target": pf.display().to_string(), "key": vf.display().to_string(), "band": "air"})).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

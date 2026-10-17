@@ -111,8 +111,19 @@ pub fn selection_of(a: &Value) -> Result<Selection> {
         s.vel_max = v;
     }
     match a.get("ids") {
-        Some(Value::Array(v)) => s.ids = v.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).collect(),
-        Some(Value::String(v)) => s.ids = v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
+        Some(Value::Array(v)) => {
+            s.ids = v
+                .iter()
+                .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+                .collect()
+        }
+        Some(Value::String(v)) => {
+            s.ids = v
+                .split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        }
         _ => {}
     }
     Ok(s)
@@ -1143,7 +1154,13 @@ pub fn lfo_value(shape: &str, pos: f32, tension: f32, rng: &mut Rng) -> f32 {
         "triangle" => 1.0 - 4.0 * (ph - 0.5).abs(),
         "saw_up" => 2.0 * ph - 1.0,
         "saw_down" => 1.0 - 2.0 * ph,
-        "square" => if ph < 0.5 { 1.0 } else { -1.0 },
+        "square" => {
+            if ph < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
         "random" => rng.bipolar(),
         _ => (2.0 * std::f32::consts::PI * ph).sin(),
     };
@@ -1805,17 +1822,40 @@ mod tests {
     #[test]
     fn lfo_tool_shapes_velocity_and_gate() {
         let mut e = Engine::new(std::env::temp_dir().join("beatbox_midi_lfo"));
-        e.call("add_track", &json!({"name": "hat", "preset": "hat"})).unwrap();
-        let notes: Vec<Value> = (0..16).map(|i| json!({"start": i, "len": 1, "pitch": 60})).collect();
-        e.call("add_notes", &json!({"track": "hat", "notes": notes})).unwrap();
+        e.call("add_track", &json!({"name": "hat", "preset": "hat"}))
+            .unwrap();
+        let notes: Vec<Value> = (0..16)
+            .map(|i| json!({"start": i, "len": 1, "pitch": 60}))
+            .collect();
+        e.call("add_notes", &json!({"track": "hat", "notes": notes}))
+            .unwrap();
         let r = e.call("lfo_tool", &json!({"track": "hat", "property": "velocity", "shape": "sine", "rate": "1 bar", "center": 0.6, "depth": 0.3})).unwrap();
         assert_eq!(r["affected"], 16);
-        let v: Vec<f32> = e.project.patterns[0].notes("hat").iter().map(|n| n.vel).collect();
-        assert!((v[0] - 0.6).abs() < 1e-3 && (v[4] - 0.9).abs() < 1e-3 && (v[12] - 0.3).abs() < 1e-3, "{v:?}");
+        let v: Vec<f32> = e.project.patterns[0]
+            .notes("hat")
+            .iter()
+            .map(|n| n.vel)
+            .collect();
+        assert!(
+            (v[0] - 0.6).abs() < 1e-3 && (v[4] - 0.9).abs() < 1e-3 && (v[12] - 0.3).abs() < 1e-3,
+            "{v:?}"
+        );
         e.call("lfo_tool", &json!({"track": "hat", "property": "gate", "shape": "saw_down", "rate": 4, "center": 1.0, "depth": 0.5, "from": 8})).unwrap();
-        let l: Vec<f32> = e.project.patterns[0].notes("hat").iter().map(|n| n.len).collect();
-        assert!((l[0] - 1.0).abs() < 1e-3 && (l[8] - 1.0).abs() < 1e-3 && (l[9] - 0.9375).abs() < 1e-3 && l[15] < l[9], "{l:?}");
-        assert!(e.call("lfo_tool", &json!({"track": "hat", "property": "pan"})).is_err());
+        let l: Vec<f32> = e.project.patterns[0]
+            .notes("hat")
+            .iter()
+            .map(|n| n.len)
+            .collect();
+        assert!(
+            (l[0] - 1.0).abs() < 1e-3
+                && (l[8] - 1.0).abs() < 1e-3
+                && (l[9] - 0.9375).abs() < 1e-3
+                && l[15] < l[9],
+            "{l:?}"
+        );
+        assert!(e
+            .call("lfo_tool", &json!({"track": "hat", "property": "pan"}))
+            .is_err());
     }
 
     #[test]

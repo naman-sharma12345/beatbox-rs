@@ -99,7 +99,7 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "analyze",
         description: "Listen and measure: mix analysis, loudness, spectrum, masking, stereo, punch, hooks, structure, artifacts, render diffs, blind A/B tests with a listener.",
-        actions: &["analyze_mix", "analyze_track", "analyze_audio", "judge_audio", "auto_judge", "auto_fix_mix", "analyze_sections", "ears_report", "loudness_report", "spectrum", "eq_curve", "render_spectrogram", "waveform_peaks", "masking_matrix", "stereo_image", "punch", "groove_analysis", "hook_analysis", "structure", "vocal_pocket", "detect_transients", "detect_artifacts", "diff_renders", "reference_match", "ab_listen", "novelty_report", "blind_ab_create", "blind_ab_rate", "blind_ab_judge", "blind_ab_reveal", "blind_ab_preferences", "analyze_loudness", "mix_report"],
+        actions: &["analyze_mix", "analyze_track", "analyze_audio", "judge_audio", "auto_judge", "auto_fix_mix", "analyze_sections", "ears_report", "loudness_report", "spectrum", "eq_curve", "render_spectrogram", "waveform_peaks", "render_waveform_png", "masking_matrix", "stereo_image", "punch", "groove_analysis", "hook_analysis", "structure", "vocal_pocket", "detect_transients", "detect_artifacts", "diff_renders", "reference_match", "ab_listen", "novelty_report", "blind_ab_create", "blind_ab_rate", "blind_ab_judge", "blind_ab_reveal", "blind_ab_preferences", "analyze_loudness", "mix_report"],
     },
     Category {
         name: "transcribe",
@@ -153,7 +153,10 @@ fn gist(desc: &str) -> String {
 /// Does this engine tool have its own `action` argument (transport,
 /// perform, midi_input, playlist_clip)? In flat form it is passed as `op`.
 fn has_own_action(t: &Tool) -> bool {
-    (t.schema)().get("properties").and_then(|p| p.get("action")).is_some()
+    (t.schema)()
+        .get("properties")
+        .and_then(|p| p.get("action"))
+        .is_some()
 }
 
 /// `name(required, [optional…]): what it does` - one line per action.
@@ -162,17 +165,45 @@ pub fn action_line(t: &Tool) -> String {
     let req: Vec<String> = s
         .get("required")
         .and_then(|r| r.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(|x| if x == "action" { "op".to_string() } else { x.to_string() })).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| {
+                    x.as_str().map(|x| {
+                        if x == "action" {
+                            "op".to_string()
+                        } else {
+                            x.to_string()
+                        }
+                    })
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let opt: Vec<String> = s
         .get("properties")
         .and_then(|p| p.as_object())
-        .map(|m| m.keys().filter(|k| !req.contains(k) && !(k.as_str() == "action" && req.iter().any(|r| r == "op"))).map(|k| if k == "action" { "op".to_string() } else { k.clone() }).collect())
+        .map(|m| {
+            m.keys()
+                .filter(|k| {
+                    !req.contains(k) && !(k.as_str() == "action" && req.iter().any(|r| r == "op"))
+                })
+                .map(|k| {
+                    if k == "action" {
+                        "op".to_string()
+                    } else {
+                        k.clone()
+                    }
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let mut parts = req.clone();
     if !opt.is_empty() {
         let more = if opt.len() > 4 { ", …" } else { "" };
-        parts.push(format!("[{}{more}]", opt.iter().take(4).cloned().collect::<Vec<_>>().join(", ")));
+        parts.push(format!(
+            "[{}{more}]",
+            opt.iter().take(4).cloned().collect::<Vec<_>>().join(", ")
+        ));
     }
     format!("{}({}): {}", t.name, parts.join(", "), gist(t.description))
 }
@@ -181,7 +212,12 @@ pub fn action_line(t: &Tool) -> String {
 pub fn tool_json(c: &Category) -> Value {
     let mut actions: Vec<Value> = c.actions.iter().map(|a| Value::from(*a)).collect();
     actions.push(Value::from(HELP));
-    let lines: Vec<String> = c.actions.iter().filter_map(|a| tools::find(a)).map(action_line).collect();
+    let lines: Vec<String> = c
+        .actions
+        .iter()
+        .filter_map(|a| tools::find(a))
+        .map(action_line)
+        .collect();
     json!({
         "name": c.name,
         "description": c.description,
@@ -235,7 +271,9 @@ pub enum Resolved {
 fn help(c: &Category, which: Option<&str>) -> Result<Value> {
     match which {
         Some(a) => {
-            let t = tools::find(a).filter(|_| c.actions.contains(&a)).ok_or_else(|| wrong_action(c, a))?;
+            let t = tools::find(a)
+                .filter(|_| c.actions.contains(&a))
+                .ok_or_else(|| wrong_action(c, a))?;
             let mut schema = (t.schema)();
             if has_own_action(t) {
                 if let Some(p) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
@@ -259,23 +297,41 @@ fn help(c: &Category, which: Option<&str>) -> Result<Value> {
                     }
                 }
             }
-            Ok(json!({"tool": c.name, "action": a, "does": t.description, "params_schema": schema,
-                "example": {"action": a, "params": ex}}))
+            Ok(
+                json!({"tool": c.name, "action": a, "does": t.description, "params_schema": schema,
+                "example": {"action": a, "params": ex}}),
+            )
         }
         None => Ok(json!({"tool": c.name, "about": c.description,
             "actions": c.actions.iter().filter_map(|a| tools::find(a)).map(action_line).collect::<Vec<_>>(),
-            "tip": format!("call {{\"action\":\"<name>\",\"params\":{{...}}}}; {{\"action\":\"help\",\"params\":{{\"action\":\"<name>\"}}}} shows one action's full schema")})),
+            "tip": "call {\"action\":\"<name>\",\"params\":{...}}; {\"action\":\"help\",\"params\":{\"action\":\"<name>\"}} shows one action's full schema".to_string()})),
     }
 }
 
 fn wrong_action(c: &Category, a: &str) -> anyhow::Error {
     if let Some(home) = category_of(a) {
-        return anyhow!("'{a}' is an action of the '{}' tool, not '{}'. Call {} with {{\"action\":\"{a}\"}}.", home.name, c.name, home.name);
+        return anyhow!(
+            "'{a}' is an action of the '{}' tool, not '{}'. Call {} with {{\"action\":\"{a}\"}}.",
+            home.name,
+            c.name,
+            home.name
+        );
     }
-    let mut near: Vec<(usize, &str)> = c.actions.iter().map(|x| (crate::tools_meta::distance(a, x), *x)).collect();
+    let mut near: Vec<(usize, &str)> = c
+        .actions
+        .iter()
+        .map(|x| (crate::tools_meta::distance(a, x), *x))
+        .collect();
     near.sort();
-    anyhow!("'{}' has no action '{a}'. Did you mean: {}? (action \"help\" lists them all)", c.name,
-        near.iter().take(3).map(|(_, x)| *x).collect::<Vec<_>>().join(", "))
+    anyhow!(
+        "'{}' has no action '{a}'. Did you mean: {}? (action \"help\" lists them all)",
+        c.name,
+        near.iter()
+            .take(3)
+            .map(|(_, x)| *x)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// Turn a category call into the engine tool it names.
@@ -286,14 +342,20 @@ pub fn resolve(c: &'static Category, args: &Value) -> Result<Resolved> {
     let legacy_same_name = tools::find(c.name).filter(|_| c.actions.contains(&c.name));
     let action = match action {
         Some(a) if a == HELP => {
-            let which = m.get("params").and_then(|p| p.get("action")).or_else(|| m.get("of")).and_then(|v| v.as_str());
+            let which = m
+                .get("params")
+                .and_then(|p| p.get("action"))
+                .or_else(|| m.get("of"))
+                .and_then(|v| v.as_str());
             return help(c, which).map(Resolved::Answer);
         }
         Some(a) if c.actions.contains(&a) => a,
         // a category that is also an engine tool (transport, history): its own
         // arguments pass straight through, so `transport {"action":"play"}`
         // and `history {}` keep meaning what they always did
-        _ if legacy_same_name.is_some() => return Ok(Resolved::Call(legacy_same_name.unwrap().name, args.clone())),
+        _ if legacy_same_name.is_some() => {
+            return Ok(Resolved::Call(legacy_same_name.unwrap().name, args.clone()))
+        }
         Some(a) => {
             if let Some(home) = category_of(a).filter(|h| h.name != c.name) {
                 let note = format!("'{a}' lives in the '{}' tool; it ran there (call {} with {{\"action\":\"{a}\"}} next time)", home.name, home.name);
@@ -306,11 +368,16 @@ pub fn resolve(c: &'static Category, args: &Value) -> Result<Resolved> {
         }
         None => return help(c, None).map(Resolved::Answer),
     };
-    let tool = tools::find(action).ok_or_else(|| anyhow!("action '{action}' is not available in this build"))?;
+    let tool = tools::find(action)
+        .ok_or_else(|| anyhow!("action '{action}' is not available in this build"))?;
     let only_params = m.keys().all(|k| k == "action" || k == "params");
     let mut inner: Map<String, Value> = match m.get("params") {
         Some(Value::Object(p)) if only_params => p.clone(),
-        _ => m.iter().filter(|(k, _)| k.as_str() != "action").map(|(k, v)| (k.clone(), v.clone())).collect(),
+        _ => m
+            .iter()
+            .filter(|(k, _)| k.as_str() != "action")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
     };
     if has_own_action(tool) {
         if let Some(op) = inner.remove("op") {
@@ -332,7 +399,11 @@ mod tests {
         assert!(n <= MAX_TOOLS, "tools/list has {n} tools; the ceiling is {MAX_TOOLS}. Add an ACTION to a category instead of a new tool.");
         assert!(n >= 10, "{n}");
         for c in CATEGORIES {
-            assert!(c.description.len() <= 200, "{}: description too long", c.name);
+            assert!(
+                c.description.len() <= 200,
+                "{}: description too long",
+                c.name
+            );
         }
     }
 
@@ -342,7 +413,11 @@ mod tests {
         for c in CATEGORIES {
             for a in c.actions {
                 seen.entry(a).or_default().push(c.name);
-                assert!(tools::find(a).is_some(), "{}.{a}: no such engine tool", c.name);
+                assert!(
+                    tools::find(a).is_some(),
+                    "{}.{a}: no such engine tool",
+                    c.name
+                );
                 assert_ne!(*a, HELP);
             }
         }
@@ -356,11 +431,17 @@ mod tests {
     #[test]
     fn category_calls_reach_the_engine_tools() {
         let mut e = Engine::new(std::env::temp_dir().join("bb_categories"));
-        e.call("project", &json!({"action": "new_project", "params": {}})).unwrap();
-        e.call("project", &json!({"action": "set_tempo", "params": {"bpm": 97}})).unwrap();
+        e.call("project", &json!({"action": "new_project", "params": {}}))
+            .unwrap();
+        e.call(
+            "project",
+            &json!({"action": "set_tempo", "params": {"bpm": 97}}),
+        )
+        .unwrap();
         assert_eq!(e.project.bpm, 97.0);
         // flat arguments next to action
-        e.call("project", &json!({"action": "set_tempo", "bpm": 101})).unwrap();
+        e.call("project", &json!({"action": "set_tempo", "bpm": 101}))
+            .unwrap();
         assert_eq!(e.project.bpm, 101.0);
         // the same edit is one undo step, through the category or the old name
         e.call("history", &json!({"action": "undo"})).unwrap();
@@ -373,21 +454,41 @@ mod tests {
         // help: the list, and one action's schema + example
         let h = e.call("mixer", &json!({"action": "help"})).unwrap();
         assert!(h["actions"].as_array().unwrap().len() >= 5, "{h}");
-        let h = e.call("mixer", &json!({"action": "help", "params": {"action": "set_mixer"}})).unwrap();
-        assert!(h["params_schema"]["properties"]["volume_db"].is_object(), "{h}");
+        let h = e
+            .call(
+                "mixer",
+                &json!({"action": "help", "params": {"action": "set_mixer"}}),
+            )
+            .unwrap();
+        assert!(
+            h["params_schema"]["properties"]["volume_db"].is_object(),
+            "{h}"
+        );
         // an action called on the wrong category runs in its own, and says so
-        let r = e.call("mixer", &json!({"action": "set_tempo", "bpm": 90})).unwrap();
+        let r = e
+            .call("mixer", &json!({"action": "set_tempo", "bpm": 90}))
+            .unwrap();
         assert_eq!(e.project.bpm, 90.0);
-        assert!(r["note"].as_str().map(|n| n.contains("project")).unwrap_or(false), "{r}");
+        assert!(
+            r["note"]
+                .as_str()
+                .map(|n| n.contains("project"))
+                .unwrap_or(false),
+            "{r}"
+        );
         // an action no category has is still a clear error with suggestions
-        let err = e.call("mixer", &json!({"action": "set_mixr"})).unwrap_err().to_string();
+        let err = e
+            .call("mixer", &json!({"action": "set_mixr"}))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("set_mixer"), "{err}");
     }
 
     #[test]
     fn own_action_tools_take_op_in_flat_form() {
         let mut e = Engine::new(std::env::temp_dir().join("bb_categories_op"));
-        e.call("project", &json!({"action": "new_project"})).unwrap();
+        e.call("project", &json!({"action": "new_project"}))
+            .unwrap();
         let r = e.call("transport", &json!({"action": "transport", "op": "status"}));
         assert!(r.is_ok(), "{r:?}");
         let r = e.call("transport", &json!({"action": "status"}));

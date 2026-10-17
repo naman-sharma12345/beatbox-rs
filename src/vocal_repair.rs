@@ -13,7 +13,9 @@ pub const N: usize = 2048;
 pub const H: usize = 512;
 
 fn hann(n: usize) -> Vec<f32> {
-    (0..n).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos()).collect()
+    (0..n)
+        .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos())
+        .collect()
 }
 
 /// Magnitude spectra (N/2+1 bins) of every frame.
@@ -30,7 +32,11 @@ pub fn mags(x: &[f32]) -> Vec<Vec<f32>> {
             im[i] = 0.0;
         }
         fft.forward(&mut re, &mut im);
-        out.push((0..=N / 2).map(|k| (re[k] * re[k] + im[k] * im[k]).sqrt()).collect());
+        out.push(
+            (0..=N / 2)
+                .map(|k| (re[k] * re[k] + im[k] * im[k]).sqrt())
+                .collect(),
+        );
         off += H;
     }
     out
@@ -42,7 +48,7 @@ pub fn spectral<F: FnMut(usize, &[f32], &mut [f32])>(x: &[f32], mut gain: F) -> 
     let pad = N;
     let mut xp = vec![0.0f32; pad];
     xp.extend_from_slice(x);
-    xp.extend(std::iter::repeat(0.0).take(pad + N));
+    xp.extend(std::iter::repeat_n(0.0, pad + N));
     let fft = Fft::new(N);
     let w = hann(N);
     let mut out = vec![0.0f32; xp.len()];
@@ -93,7 +99,10 @@ pub fn spectral<F: FnMut(usize, &[f32], &mut [f32])>(x: &[f32], mut gain: F) -> 
 pub fn learn_profile(x: &[f32], region: Option<(f32, f32)>) -> Vec<f32> {
     let src: &[f32] = match region {
         Some((a, b)) => {
-            let (s0, s1) = (((a * SR) as usize).min(x.len()), ((b * SR) as usize).min(x.len()));
+            let (s0, s1) = (
+                ((a * SR) as usize).min(x.len()),
+                ((b * SR) as usize).min(x.len()),
+            );
             &x[s0..s1]
         }
         None => x,
@@ -104,7 +113,10 @@ pub fn learn_profile(x: &[f32], region: Option<(f32, f32)>) -> Vec<f32> {
     }
     let mut idx: Vec<usize> = (0..ms.len()).collect();
     if region.is_none() {
-        let e: Vec<f32> = ms.iter().map(|m| m.iter().skip(4).map(|v| v * v).sum::<f32>()).collect();
+        let e: Vec<f32> = ms
+            .iter()
+            .map(|m| m.iter().skip(4).map(|v| v * v).sum::<f32>())
+            .collect();
         idx.sort_by(|a, b| e[*a].partial_cmp(&e[*b]).unwrap());
         idx.truncate((ms.len() / 10).max(1));
     }
@@ -131,7 +143,13 @@ pub fn reduce_noise(x: &[f32], profile: &[f32], reduction_db: f32, sensitivity: 
 /// Gains are Wiener (xi / (1 + xi)), then smoothed over frequency and time.
 /// `keep_air_hz`: above it the deepest cut is halved (in dB), so weak
 /// consonants and air are not stripped from a dark take.
-pub fn reduce_noise_ex(x: &[f32], profile: &[f32], reduction_db: f32, sensitivity: f32, keep_air_hz: Option<f32>) -> Vec<f32> {
+pub fn reduce_noise_ex(
+    x: &[f32],
+    profile: &[f32],
+    reduction_db: f32,
+    sensitivity: f32,
+    keep_air_hz: Option<f32>,
+) -> Vec<f32> {
     let floor = 10f32.powf(-reduction_db.abs() / 20.0);
     let alpha = sensitivity.clamp(0.5, 4.0);
     let hz = SR / N as f32;
@@ -161,7 +179,11 @@ pub fn reduce_noise_ex(x: &[f32], profile: &[f32], reduction_db: f32, sensitivit
             let d = raw[(k + 2).min(N / 2)];
             let s = 0.1 * a + 0.2 * b + 0.4 * raw[k] + 0.2 * c + 0.1 * d;
             // fast open, slower close
-            let v = if s > prev[k] { 0.3 * prev[k] + 0.7 * s } else { 0.7 * prev[k] + 0.3 * s };
+            let v = if s > prev[k] {
+                0.3 * prev[k] + 0.7 * s
+            } else {
+                0.7 * prev[k] + 0.3 * s
+            };
             prev[k] = v;
             g[k] = v.max(floors[k]);
         }
@@ -176,11 +198,19 @@ pub fn detect_hum(x: &[f32]) -> (f32, f32) {
     let fft = Fft::new(M);
     let w = hann(M);
     let mut avg = vec![0.0f32; M / 2 + 1];
-    let frames = if x.len() >= M { ((x.len() - M) / (M / 2) + 1).min(24) } else { 0 };
+    let frames = if x.len() >= M {
+        ((x.len() - M) / (M / 2) + 1).min(24)
+    } else {
+        0
+    };
     if frames == 0 {
         return (50.0, 0.0);
     }
-    let step = if frames > 1 { (x.len() - M) / (frames - 1) } else { 0 };
+    let step = if frames > 1 {
+        (x.len() - M) / (frames - 1)
+    } else {
+        0
+    };
     let (mut re, mut im) = (vec![0.0f32; M], vec![0.0f32; M]);
     for f in 0..frames {
         let off = f * step;
@@ -208,14 +238,29 @@ pub fn detect_hum(x: &[f32]) -> (f32, f32) {
         s / 4.0
     };
     let (a, b) = (score(50.0), score(60.0));
-    if a >= b { (50.0, a) } else { (60.0, b) }
+    if a >= b {
+        (50.0, a)
+    } else {
+        (60.0, b)
+    }
 }
 
 pub fn remove_hum(x: &[f32], f0: f32, harmonics: usize, q: f32) -> Vec<f32> {
-    let mut filters: Vec<Biquad> = (1..=harmonics).map(|h| f0 * h as f32).filter(|f| *f < SR * 0.45).map(|f| Biquad::new(BiquadKind::Notch, f, q, 0.0)).collect();
+    let mut filters: Vec<Biquad> = (1..=harmonics)
+        .map(|h| f0 * h as f32)
+        .filter(|f| *f < SR * 0.45)
+        .map(|f| Biquad::new(BiquadKind::Notch, f, q, 0.0))
+        .collect();
     // the fundamental's rumble below it goes too
-    filters.push(Biquad::new(BiquadKind::LowCut, (f0 * 0.6).max(25.0), 0.707, 0.0));
-    x.iter().map(|v| filters.iter_mut().fold(*v, |s, f| f.process(s))).collect()
+    filters.push(Biquad::new(
+        BiquadKind::LowCut,
+        (f0 * 0.6).max(25.0),
+        0.707,
+        0.0,
+    ));
+    x.iter()
+        .map(|v| filters.iter_mut().fold(*v, |s, f| f.process(s)))
+        .collect()
 }
 
 /// Clicks: samples whose high-passed value jumps over `k` x the local
@@ -239,7 +284,9 @@ pub fn remove_clicks(x: &[f32], k: f32, max_ms: f32) -> (Vec<f32>, usize) {
     let mut n = 0usize;
     let mut i = 8usize;
     while i + 8 < d.len() {
-        let local = lvl[i.saturating_sub(win / 2).max(0)].max(lvl[(i + win / 2).min(d.len() - 1)]).max(1e-5);
+        let local = lvl[i.saturating_sub(win / 2)]
+            .max(lvl[(i + win / 2).min(d.len() - 1)])
+            .max(1e-5);
         if d[i] > k * local && d[i] > 0.02 {
             let mut j = i;
             while j + 1 < d.len() && j - i < maxlen && d[j + 1] > 0.5 * k * local {
@@ -248,7 +295,10 @@ pub fn remove_clicks(x: &[f32], k: f32, max_ms: f32) -> (Vec<f32>, usize) {
             if j - i < maxlen {
                 let (a, b) = (i.saturating_sub(3), (j + 3).min(y.len() - 1));
                 let (ya, yb) = (y[a], y[b]);
-                let (da, db) = (y[a] - y[a.saturating_sub(1)], y[(b + 1).min(y.len() - 1)] - y[b]);
+                let (da, db) = (
+                    y[a] - y[a.saturating_sub(1)],
+                    y[(b + 1).min(y.len() - 1)] - y[b],
+                );
                 let len = (b - a) as f32;
                 for t in a + 1..b {
                     let s = (t - a) as f32 / len;
@@ -271,7 +321,15 @@ pub fn remove_clicks(x: &[f32], k: f32, max_ms: f32) -> (Vec<f32>, usize) {
 /// Gate with hysteresis: opens when the voice band rises over `open_db`,
 /// closes only when it falls `hyst_db` under that and stays there for
 /// `hold_ms`; the closed level is `range_db` (not silence: breaths duck).
-pub fn gate(x: &[f32], open_db: f32, hyst_db: f32, attack_ms: f32, hold_ms: f32, release_ms: f32, range_db: f32) -> (Vec<f32>, f32) {
+pub fn gate(
+    x: &[f32],
+    open_db: f32,
+    hyst_db: f32,
+    attack_ms: f32,
+    hold_ms: f32,
+    release_ms: f32,
+    range_db: f32,
+) -> (Vec<f32>, f32) {
     let db = crate::vocal_flex::band_db(x);
     let hop = (crate::vocal_flex::HOP * SR) as usize;
     let close = open_db - hyst_db.abs();
@@ -303,8 +361,16 @@ pub fn gate(x: &[f32], open_db: f32, hyst_db: f32, attack_ms: f32, hold_ms: f32,
     let mut closed = 0usize;
     for i in 0..x.len() {
         let fi = ((i + la) / hop).min(target.len().saturating_sub(1));
-        let t = if target.get(fi).copied().unwrap_or(false) { 1.0 } else { lo };
-        g = if t > g { t + (g - t) * a } else { t + (g - t) * r };
+        let t = if target.get(fi).copied().unwrap_or(false) {
+            1.0
+        } else {
+            lo
+        };
+        g = if t > g {
+            t + (g - t) * a
+        } else {
+            t + (g - t) * r
+        };
         if t < 1.0 {
             closed += 1;
         }
@@ -328,7 +394,9 @@ pub fn dereverb(x: &[f32], amount: f32, rt60_s: f32, delay_ms: f32) -> Vec<f32> 
             let old = &hist[f - d];
             for k in 0..=N / 2 {
                 let late = decay * old[k];
-                let gk = (1.0 - amount * late / p[k].max(1e-12)).max(floor * floor).sqrt();
+                let gk = (1.0 - amount * late / p[k].max(1e-12))
+                    .max(floor * floor)
+                    .sqrt();
                 let v = 0.5 * prev[k] + 0.5 * gk;
                 prev[k] = v;
                 g[k] = v;
@@ -341,7 +409,15 @@ pub fn dereverb(x: &[f32], amount: f32, rt60_s: f32, delay_ms: f32) -> Vec<f32> 
 /// RMS (dB) of the quietest 10% and loudest 10% of 20 ms windows.
 pub fn floor_and_peak_db(x: &[f32]) -> (f32, f32) {
     let w = (0.02 * SR) as usize;
-    let mut v: Vec<f32> = x.chunks(w).filter(|c| c.len() == w).map(|c| 10.0 * (c.iter().map(|s| s * s).sum::<f32>() / w as f32).max(1e-12).log10()).collect();
+    let mut v: Vec<f32> = x
+        .chunks(w)
+        .filter(|c| c.len() == w)
+        .map(|c| {
+            10.0 * (c.iter().map(|s| s * s).sum::<f32>() / w as f32)
+                .max(1e-12)
+                .log10()
+        })
+        .collect();
     if v.is_empty() {
         return (-120.0, -120.0);
     }
@@ -356,12 +432,25 @@ fn r1(x: f32) -> f32 {
     (x * 10.0).round() / 10.0
 }
 
-fn save(e: &mut Engine, base: &crate::samples::SampleInfo, nn: &str, y: &[f32], what: &str) -> Result<String> {
+fn save(
+    e: &mut Engine,
+    base: &crate::samples::SampleInfo,
+    nn: &str,
+    y: &[f32],
+    what: &str,
+) -> Result<String> {
     let name = crate::samples::sample_name(nn);
     std::fs::create_dir_all(e.samples_dir())?;
     let path = e.samples_dir().join(format!("{name}.wav"));
     crate::render::write_wav(&path, y, y)?;
-    let info = crate::samples::SampleInfo { name, path: path.to_string_lossy().into(), source: format!("{} ({what})", base.source), license: base.license.clone(), author: base.author.clone(), duration: 0.0 };
+    let info = crate::samples::SampleInfo {
+        name,
+        path: path.to_string_lossy().into(),
+        source: format!("{} ({what})", base.source),
+        license: base.license.clone(),
+        author: base.author.clone(),
+        duration: 0.0,
+    };
     let r = crate::tools::register_sample(e, info)?;
     e.revision += 1;
     Ok(r["sample"].as_str().unwrap_or(nn).to_string())
@@ -500,11 +589,15 @@ mod tests {
     fn voice_with_noise(seed: u64) -> (Vec<f32>, Vec<f32>) {
         let mut rng = crate::dsp::Rng::new(seed);
         let n = (2.0 * SR) as usize;
-        let clean: Vec<f32> = (0..n).map(|i| {
-            let t = i as f32 / SR;
-            let on = (t > 0.6 && t < 1.4) as i32 as f32;
-            on * 0.3 * ((t * 220.0 * std::f32::consts::TAU).sin() + 0.4 * (t * 660.0 * std::f32::consts::TAU).sin())
-        }).collect();
+        let clean: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                let on = (t > 0.6 && t < 1.4) as i32 as f32;
+                on * 0.3
+                    * ((t * 220.0 * std::f32::consts::TAU).sin()
+                        + 0.4 * (t * 660.0 * std::f32::consts::TAU).sin())
+            })
+            .collect();
         let noisy = clean.iter().map(|v| v + 0.02 * rng.bipolar()).collect();
         (clean, noisy)
     }
@@ -550,12 +643,21 @@ mod tests {
         let y2 = reduce_noise_ex(&noisy, &p, 18.0, 1.0, Some(4000.0));
         let (f_full, _) = floor_and_peak_db(&y);
         let (f_air, _) = floor_and_peak_db(&y2);
-        assert!(f_air >= f_full - 0.5, "keep_air never cuts more: {f_full} vs {f_air}");
+        assert!(
+            f_air >= f_full - 0.5,
+            "keep_air never cuts more: {f_full} vs {f_air}"
+        );
     }
 
     #[test]
     fn hum_is_found_and_notched() {
-        let x: Vec<f32> = (0..(2.0 * SR) as usize).map(|i| { let t = i as f32 / SR; 0.1 * (t * 60.0 * std::f32::consts::TAU).sin() + 0.05 * (t * 180.0 * std::f32::consts::TAU).sin() }).collect();
+        let x: Vec<f32> = (0..(2.0 * SR) as usize)
+            .map(|i| {
+                let t = i as f32 / SR;
+                0.1 * (t * 60.0 * std::f32::consts::TAU).sin()
+                    + 0.05 * (t * 180.0 * std::f32::consts::TAU).sin()
+            })
+            .collect();
         let (f, s) = detect_hum(&x);
         assert_eq!(f, 60.0);
         assert!(s > 6.0);
@@ -566,7 +668,9 @@ mod tests {
 
     #[test]
     fn clicks_are_repaired_and_gate_ducks_gaps() {
-        let mut x: Vec<f32> = (0..SR as usize).map(|i| 0.2 * (i as f32 / SR * 200.0 * std::f32::consts::TAU).sin()).collect();
+        let mut x: Vec<f32> = (0..SR as usize)
+            .map(|i| 0.2 * (i as f32 / SR * 200.0 * std::f32::consts::TAU).sin())
+            .collect();
         for &p in &[10000usize, 25000, 33000] {
             x[p] += 0.8;
             x[p + 1] -= 0.6;
@@ -596,7 +700,12 @@ mod tests {
             x[i] = 0.5 * rng.bipolar() * (-6.9 * t / 0.6).exp();
         }
         let y = dereverb(&x, 0.9, 0.6, 50.0);
-        let e = |v: &[f32]| v[(0.45 * SR) as usize..(0.9 * SR) as usize].iter().map(|s| s * s).sum::<f32>();
+        let e = |v: &[f32]| {
+            v[(0.45 * SR) as usize..(0.9 * SR) as usize]
+                .iter()
+                .map(|s| s * s)
+                .sum::<f32>()
+        };
         assert!(e(&y) < e(&x) * 0.6, "{} vs {}", e(&y), e(&x));
     }
 }

@@ -1213,18 +1213,34 @@ mod tests {
         let mut rng = crate::dsp::Rng::new(3);
         // 1 s hiss, then 1 s tone + hiss
         let x: Vec<f32> = (0..(2.0 * SR) as usize)
-            .map(|i| 0.02 * rng.bipolar() + if i as f32 > SR { 0.4 * (i as f32 * 440.0 / SR * std::f32::consts::TAU).sin() } else { 0.0 })
+            .map(|i| {
+                0.02 * rng.bipolar()
+                    + if i as f32 > SR {
+                        0.4 * (i as f32 * 440.0 / SR * std::f32::consts::TAU).sin()
+                    } else {
+                        0.0
+                    }
+            })
             .collect();
         let wav = dir.join("hiss.wav");
         crate::render::write_wav(&wav, &x, &x).unwrap();
-        e.call("import_sample", &json!({"path": wav.to_string_lossy(), "name": "hiss"})).unwrap();
-        let r = e.call("denoise_sample", &json!({"sample": "hiss"})).unwrap();
+        e.call(
+            "import_sample",
+            &json!({"path": wav.to_string_lossy(), "name": "hiss"}),
+        )
+        .unwrap();
+        let r = e
+            .call("denoise_sample", &json!({"sample": "hiss"}))
+            .unwrap();
         // (the tone dominates the total, so the overall figure is small)
         assert!(r["noise_reduced_db"].as_f64().unwrap() <= 0.0, "{r}");
         let (_, y) = sample_data(&mut e, r["sample"].as_str().unwrap()).unwrap();
         let rms = |s: &[f32]| (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt();
         let q = (0.8 * SR) as usize;
-        assert!(rms(&y[2048..q]) < 0.5 * rms(&x[2048..q]), "hiss not reduced");
+        assert!(
+            rms(&y[2048..q]) < 0.5 * rms(&x[2048..q]),
+            "hiss not reduced"
+        );
     }
 
     #[test]
@@ -1384,14 +1400,18 @@ mod tests {
     fn spectral_edit_removes_a_band_in_a_span() {
         let mut e = eng();
         let n = (1.0 * SR) as usize;
-        let x: Vec<f32> = (0..n).map(|i| {
-            let t = i as f32 / SR;
-            0.4 * (std::f32::consts::TAU * 440.0 * t).sin() + 0.3 * (std::f32::consts::TAU * 5000.0 * t).sin()
-        }).collect();
+        let x: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                0.4 * (std::f32::consts::TAU * 440.0 * t).sin()
+                    + 0.3 * (std::f32::consts::TAU * 5000.0 * t).sin()
+            })
+            .collect();
         let path = std::env::temp_dir().join("beatbox_sound_tests/two_tones.wav");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         crate::render::write_wav(&path, &x, &x).unwrap();
-        e.call("import_sample", &json!({"path": path, "name": "tones"})).unwrap();
+        e.call("import_sample", &json!({"path": path, "name": "tones"}))
+            .unwrap();
         let r = e.call("spectral_edit_sample", &json!({"sample": "tones", "start_s": 0.25, "end_s": 0.75, "low_hz": 3000, "high_hz": 8000})).unwrap();
         assert!(r["changed_db"].as_f64().unwrap() < -0.5, "{r}");
         let (_, y) = sample_data(&mut e, "tones_spectral").unwrap();
@@ -1416,23 +1436,48 @@ mod tests {
         let (_, z) = sample_data(&mut e, "hi_only").unwrap();
         assert!(db(band(&z, 0.45, 440.0), band(&x, 0.45, 440.0)) < -40.0);
         assert!(db(band(&z, 0.45, 5000.0), band(&x, 0.45, 5000.0)).abs() < 0.5);
-        assert!(e.call("spectral_edit_sample", &json!({"sample": "tones", "low_hz": 900, "high_hz": 100})).is_err());
+        assert!(e
+            .call(
+                "spectral_edit_sample",
+                &json!({"sample": "tones", "low_hz": 900, "high_hz": 100})
+            )
+            .is_err());
     }
 
     #[test]
     fn sample_spectrogram_finds_the_tone() {
         let mut e = eng();
         let n = (0.5 * SR) as usize;
-        let x: Vec<f32> = (0..n).map(|i| 0.5 * (std::f32::consts::TAU * 2000.0 * i as f32 / SR).sin()).collect();
+        let x: Vec<f32> = (0..n)
+            .map(|i| 0.5 * (std::f32::consts::TAU * 2000.0 * i as f32 / SR).sin())
+            .collect();
         let path = std::env::temp_dir().join("beatbox_sound_tests/tone2k.wav");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         crate::render::write_wav(&path, &x, &x).unwrap();
-        e.call("import_sample", &json!({"path": path, "name": "tone2k"})).unwrap();
-        let r = e.call("sample_spectrogram", &json!({"sample": "tone2k", "frames": 20, "bands": 24})).unwrap();
+        e.call("import_sample", &json!({"path": path, "name": "tone2k"}))
+            .unwrap();
+        let r = e
+            .call(
+                "sample_spectrogram",
+                &json!({"sample": "tone2k", "frames": 20, "bands": 24}),
+            )
+            .unwrap();
         assert_eq!(r["frames"], 20);
-        let edges: Vec<f64> = r["band_edges_hz"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let edges: Vec<f64> = r["band_edges_hz"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
         let row = r["db"][10].as_array().unwrap();
-        let best = (0..row.len()).max_by_key(|&b| row[b].as_i64().unwrap()).unwrap();
-        assert!(edges[best] <= 2100.0 && edges[best + 1] >= 1900.0, "loudest band {}..{}", edges[best], edges[best + 1]);
+        let best = (0..row.len())
+            .max_by_key(|&b| row[b].as_i64().unwrap())
+            .unwrap();
+        assert!(
+            edges[best] <= 2100.0 && edges[best + 1] >= 1900.0,
+            "loudest band {}..{}",
+            edges[best],
+            edges[best + 1]
+        );
     }
 }

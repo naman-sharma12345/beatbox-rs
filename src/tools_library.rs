@@ -11,10 +11,18 @@ use serde_json::{json, Value};
 
 /// Queue a one-shot preview of stereo audio on the attached studio's speakers.
 /// Returns the fields every "play" answer carries.
-pub fn queue_audition(e: &mut crate::engine::Engine, l: Vec<f32>, r: Vec<f32>, gain_db: f32) -> Value {
+pub fn queue_audition(
+    e: &mut crate::engine::Engine,
+    l: Vec<f32>,
+    r: Vec<f32>,
+    gain_db: f32,
+) -> Value {
     let g = 10f32.powf(gain_db.clamp(-60.0, 12.0) / 20.0);
     let secs = l.len() as f32 / SR;
-    let buf = std::sync::Arc::new((l.into_iter().map(|v| v * g).collect::<Vec<f32>>(), r.into_iter().map(|v| v * g).collect::<Vec<f32>>()));
+    let buf = std::sync::Arc::new((
+        l.into_iter().map(|v| v * g).collect::<Vec<f32>>(),
+        r.into_iter().map(|v| v * g).collect::<Vec<f32>>(),
+    ));
     e.transport.pending_audition = Some(Some(buf));
     let attached = e.transport.attached;
     json!({"playing": attached, "play_seconds": (secs * 10.0).round() / 10.0, "heard_in": if attached { "studio speakers" } else { "nowhere: no studio window is attached; open the WAV path to listen" }})
@@ -43,7 +51,9 @@ pub fn preset_phrase(inst: &Instrument, root: f32) -> Vec<Value> {
     }
     let c = root.round().clamp(12.0, 108.0) as u8;
     for (i, iv) in [0u8, 4, 7, 12, 7, 4].iter().enumerate() {
-        notes.push(json!({"start": i as f32 * 2.0, "pitch": (c + iv).min(127), "len": 2, "vel": 0.75}));
+        notes.push(
+            json!({"start": i as f32 * 2.0, "pitch": (c + iv).min(127), "len": 2, "vel": 0.75}),
+        );
     }
     for iv in [0u8, 4, 7] {
         notes.push(json!({"start": 16.0, "pitch": (c + iv).min(127), "len": 14, "vel": 0.7}));
@@ -52,9 +62,17 @@ pub fn preset_phrase(inst: &Instrument, root: f32) -> Vec<Value> {
 }
 
 /// Render a built-in preset's phrase in a scratch engine (the project is untouched).
-pub fn render_preset_preview(name: &str, root: Option<f32>) -> Result<(Vec<f32>, Vec<f32>, &'static str)> {
-    let inst = crate::instruments::preset(name).ok_or_else(|| anyhow!("unknown preset '{name}' (list_presets)"))?;
-    let scratch = std::env::temp_dir().join(format!("beatbox_hear_{}_{}", std::process::id(), crate::samples::sample_name(name)));
+pub fn render_preset_preview(
+    name: &str,
+    root: Option<f32>,
+) -> Result<(Vec<f32>, Vec<f32>, &'static str)> {
+    let inst = crate::instruments::preset(name)
+        .ok_or_else(|| anyhow!("unknown preset '{name}' (list_presets)"))?;
+    let scratch = std::env::temp_dir().join(format!(
+        "beatbox_hear_{}_{}",
+        std::process::id(),
+        crate::samples::sample_name(name)
+    ));
     let mut s = crate::engine::Engine::new(scratch.clone());
     s.project.bpm = 120.0;
     s.project.tracks.clear();
@@ -62,24 +80,53 @@ pub fn render_preset_preview(name: &str, root: Option<f32>) -> Result<(Vec<f32>,
         p.bars = 2;
         p.clips.clear();
     } else {
-        s.project.patterns.push(crate::project::Pattern::new("main", 2));
+        s.project
+            .patterns
+            .push(crate::project::Pattern::new("main", 2));
     }
     s.project.arrangement.clear();
     let r = (|| -> Result<(Vec<f32>, Vec<f32>)> {
-        s.call("add_track", &json!({"name": "hear", "preset": name, "volume_db": 0.0}))?;
-        let dflt = if matches!(inst, Instrument::Bass808(_)) { 36.0 } else { 52.0 };
-        s.call("add_notes", &json!({"track": "hear", "notes": preset_phrase(&inst, root.unwrap_or(dflt))}))?;
+        s.call(
+            "add_track",
+            &json!({"name": "hear", "preset": name, "volume_db": 0.0}),
+        )?;
+        let dflt = if matches!(inst, Instrument::Bass808(_)) {
+            36.0
+        } else {
+            52.0
+        };
+        s.call(
+            "add_notes",
+            &json!({"track": "hear", "notes": preset_phrase(&inst, root.unwrap_or(dflt))}),
+        )?;
         let m = s.mix()?;
         Ok((m.left.clone(), m.right.clone()))
     })();
     let _ = std::fs::remove_dir_all(&scratch);
     let (l, rr) = r?;
-    Ok((l, rr, if matches!(inst, Instrument::Drum(_)) { "groove" } else { "arpeggio + chord" }))
+    Ok((
+        l,
+        rr,
+        if matches!(inst, Instrument::Drum(_)) {
+            "groove"
+        } else {
+            "arpeggio + chord"
+        },
+    ))
 }
 
 fn params_from(a: &Value) -> Result<SoundFontParams> {
     let mut p = match s_opt(a, "instrument") {
-        Some(n) => soundfont::alias(&n).ok_or_else(|| anyhow!("unknown instrument '{n}'. Names: {}", soundfont::ALIASES.iter().map(|x| x.0).collect::<Vec<_>>().join(", ")))?,
+        Some(n) => soundfont::alias(&n).ok_or_else(|| {
+            anyhow!(
+                "unknown instrument '{n}'. Names: {}",
+                soundfont::ALIASES
+                    .iter()
+                    .map(|x| x.0)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?,
         None => SoundFontParams::default(),
     };
     if let Some(f) = s_opt(a, "font") {
@@ -112,7 +159,12 @@ fn params_from(a: &Value) -> Result<SoundFontParams> {
                     p.preset_name = x.2.clone();
                 }
             }
-            None if !p.drums => bail!("font '{}' has no preset at bank {} program {} (list_instruments shows them)", p.font, p.bank, p.program),
+            None if !p.drums => bail!(
+                "font '{}' has no preset at bank {} program {} (list_instruments shows them)",
+                p.font,
+                p.bank,
+                p.program
+            ),
             None => {}
         }
     }
@@ -139,25 +191,49 @@ pub fn preview(p: &SoundFontParams, root: f32) -> Vec<f32> {
             let o = bar as f32 * 4.0;
             for k in 0..8 {
                 let v = if k % 2 == 0 { 0.8 } else { 0.55 };
-                add_at(&mut out, at(o + k as f32 * 0.5), &soundfont::render_note(p, 42.0, v, 0.1));
+                add_at(
+                    &mut out,
+                    at(o + k as f32 * 0.5),
+                    &soundfont::render_note(p, 42.0, v, 0.1),
+                );
             }
             for b in [0.0, 2.5] {
-                add_at(&mut out, at(o + b), &soundfont::render_note(p, 36.0, 0.9, 0.2));
+                add_at(
+                    &mut out,
+                    at(o + b),
+                    &soundfont::render_note(p, 36.0, 0.9, 0.2),
+                );
             }
             for b in [1.0, 3.0] {
-                add_at(&mut out, at(o + b), &soundfont::render_note(p, 38.0, 0.85, 0.2));
+                add_at(
+                    &mut out,
+                    at(o + b),
+                    &soundfont::render_note(p, 38.0, 0.85, 0.2),
+                );
             }
         }
     } else if p.drums {
         for k in 0..4 {
-            add_at(&mut out, at(k as f32), &soundfont::render_note(p, 60.0, 0.6 + 0.1 * k as f32, 0.2));
+            add_at(
+                &mut out,
+                at(k as f32),
+                &soundfont::render_note(p, 60.0, 0.6 + 0.1 * k as f32, 0.2),
+            );
         }
     } else {
         for (i, iv) in [0.0, 4.0, 7.0, 12.0, 7.0, 4.0].iter().enumerate() {
-            add_at(&mut out, at(i as f32 * 0.5), &soundfont::render_note(p, root + iv, 0.75, 0.45));
+            add_at(
+                &mut out,
+                at(i as f32 * 0.5),
+                &soundfont::render_note(p, root + iv, 0.75, 0.45),
+            );
         }
         for iv in [0.0, 4.0, 7.0] {
-            add_at(&mut out, at(3.5), &soundfont::render_note(p, root + iv, 0.7, 1.6));
+            add_at(
+                &mut out,
+                at(3.5),
+                &soundfont::render_note(p, root + iv, 0.7, 1.6),
+            );
         }
     }
     out
@@ -199,7 +275,7 @@ pub fn tools() -> Vec<Tool> {
             schema: || obj(json!({"font": {"type": "string"}, "presets": {"type": "boolean"}, "search": {"type": "string"}}), &[]),
             run: |_e, a| {
                 let q = s_opt(a, "search").map(|s| s.to_lowercase());
-                let hit = |s: &str| q.as_ref().map_or(true, |q| s.to_lowercase().contains(q.as_str()));
+                let hit = |s: &str| q.as_ref().is_none_or(|q| s.to_lowercase().contains(q.as_str()));
                 let named: Vec<Value> = soundfont::ALIASES.iter().filter(|x| hit(x.0) || hit(x.1)).map(|x| json!({"instrument": x.0, "what": x.1, "drums": x.4})).collect();
                 let font = s_opt(a, "font").unwrap_or_else(|| "generaluser_gs".into());
                 let installed: Vec<Value> = soundfont::FONTS.iter().map(|f| json!({"id": f.id, "installed": soundfont::installed_path(f).is_file(), "bytes": f.bytes, "license": f.license})).collect();
@@ -462,13 +538,27 @@ mod tests {
             return;
         }
         let mut e = Engine::new(std::env::temp_dir().join("beatbox_sf_tests"));
-        e.call("generate_beat", &json!({"style": "lofi", "seed": 3})).unwrap();
-        let r = e.call("load_instrument", &json!({"track": "gtr_real", "instrument": "clean_electric_guitar"})).unwrap();
+        e.call("generate_beat", &json!({"style": "lofi", "seed": 3}))
+            .unwrap();
+        let r = e
+            .call(
+                "load_instrument",
+                &json!({"track": "gtr_real", "instrument": "clean_electric_guitar"}),
+            )
+            .unwrap();
         assert_eq!(r["created"], true, "{r}");
-        e.call("add_pattern_notes", &json!({"track": "gtr_real", "notes": [{"step": 0, "pitch": 64, "len": 4}]})).ok();
-        let pv = e.call("preview_instrument", &json!({"instrument": "drum_kit"})).unwrap();
+        e.call(
+            "add_pattern_notes",
+            &json!({"track": "gtr_real", "notes": [{"step": 0, "pitch": 64, "len": 4}]}),
+        )
+        .ok();
+        let pv = e
+            .call("preview_instrument", &json!({"instrument": "drum_kit"}))
+            .unwrap();
         assert!(pv["peak_dbfs"].as_f64().unwrap() > -30.0, "{pv}");
-        let ls = e.call("list_instruments", &json!({"search": "guitar"})).unwrap();
+        let ls = e
+            .call("list_instruments", &json!({"search": "guitar"}))
+            .unwrap();
         assert!(ls["presets"].as_array().unwrap().len() >= 4, "{ls}");
         let m = e.mix().unwrap();
         assert!(m.left.iter().any(|v| v.abs() > 0.0));
@@ -478,22 +568,37 @@ mod tests {
     fn hear_preset_queues_a_preview_for_the_studio() {
         let mut e = Engine::new(std::env::temp_dir().join("beatbox_hear_tests"));
         for pn in ["kick", "acid_bass"] {
-            let r = e.call("preview_instrument", &json!({"preset": pn, "play": true})).unwrap();
+            let r = e
+                .call("preview_instrument", &json!({"preset": pn, "play": true}))
+                .unwrap();
             assert!(r["peak_dbfs"].as_f64().unwrap() > -40.0, "{r}");
             assert_eq!(r["playing"], false, "no studio attached: {r}");
             let q = e.transport.pending_audition.clone().unwrap().unwrap();
-            assert!(q.0.len() > 44_100 && q.0.iter().any(|v| v.abs() > 0.01), "{pn}");
+            assert!(
+                q.0.len() > 44_100 && q.0.iter().any(|v| v.abs() > 0.01),
+                "{pn}"
+            );
         }
         let n_tracks = e.project.tracks.len();
-        assert!(e.call("preview_instrument", &json!({"preset": "no_such_preset"})).is_err());
+        assert!(e
+            .call("preview_instrument", &json!({"preset": "no_such_preset"}))
+            .is_err());
         e.transport.attached = true;
-        let wav = e.call("preview_instrument", &json!({"preset": "kick"})).unwrap();
-        let p = e.call("play_audio", &json!({"path": wav["path"], "gain_db": -6.0})).unwrap();
+        let wav = e
+            .call("preview_instrument", &json!({"preset": "kick"}))
+            .unwrap();
+        let p = e
+            .call("play_audio", &json!({"path": wav["path"], "gain_db": -6.0}))
+            .unwrap();
         assert_eq!(p["playing"], true, "{p}");
         assert!(p["play_seconds"].as_f64().unwrap() > 1.0, "{p}");
         let s = e.call("play_audio", &json!({"stop": true})).unwrap();
         assert_eq!(s["stopped"], true);
         assert!(matches!(e.transport.pending_audition, Some(None)));
-        assert_eq!(e.project.tracks.len(), n_tracks, "previews never touch the project");
+        assert_eq!(
+            e.project.tracks.len(),
+            n_tracks,
+            "previews never touch the project"
+        );
     }
 }

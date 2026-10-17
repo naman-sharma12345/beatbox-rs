@@ -23,7 +23,11 @@ fn load(e: &Engine, a: &Value) -> Result<(PathBuf, Vec<f32>)> {
 fn file_key(p: &Path) -> String {
     let md = std::fs::metadata(p).ok();
     let len = md.as_ref().map(|m| m.len()).unwrap_or(0);
-    let mt = md.and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+    let mt = md
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     format!("{}|{len}|{mt}", p.display())
 }
 
@@ -33,7 +37,10 @@ fn file_key(p: &Path) -> String {
 pub fn grid_for(e: &Engine, a: &Value, path: &Path, x: &[f32]) -> Result<(Grid, String)> {
     let bpb = u_or(a, "beats_per_bar", 4) as usize;
     if let Some(bpm) = f_opt(a, "bpm") {
-        return Ok((Grid::new(bpm, f_opt(a, "downbeat_s").unwrap_or(0.0), bpb), "given".into()));
+        return Ok((
+            Grid::new(bpm, f_opt(a, "downbeat_s").unwrap_or(0.0), bpb),
+            "given".into(),
+        ));
     }
     let (src, own) = match s_opt(a, "grid_from") {
         Some(g) => (e.resolve(&g), false),
@@ -41,10 +48,16 @@ pub fn grid_for(e: &Engine, a: &Value, path: &Path, x: &[f32]) -> Result<(Grid, 
     };
     let cache = e.workdir.join(".beatbox_grid_cache.json");
     let key = file_key(&src);
-    let mut map: Map<String, Value> = std::fs::read_to_string(&cache).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut map: Map<String, Value> = std::fs::read_to_string(&cache)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
     if let Some(v) = map.get(&key) {
         if let Ok(g) = serde_json::from_value::<Grid>(v.clone()) {
-            return Ok((Grid::new(g.bpm, g.downbeat_s, bpb), format!("estimated from {} (cached)", src.display())));
+            return Ok((
+                Grid::new(g.bpm, g.downbeat_s, bpb),
+                format!("estimated from {} (cached)", src.display()),
+            ));
         }
     }
     let (g, _conf) = if own {
@@ -57,7 +70,10 @@ pub fn grid_for(e: &Engine, a: &Value, path: &Path, x: &[f32]) -> Result<(Grid, 
     };
     map.insert(key, serde_json::to_value(g)?);
     let _ = std::fs::write(&cache, serde_json::to_string(&map)?);
-    Ok((Grid::new(g.bpm, g.downbeat_s, bpb), format!("estimated from {}", src.display())))
+    Ok((
+        Grid::new(g.bpm, g.downbeat_s, bpb),
+        format!("estimated from {}", src.display()),
+    ))
 }
 
 fn out_base(e: &Engine, a: &Value, path: &Path, kind: &str) -> Result<PathBuf> {
@@ -84,17 +100,28 @@ fn grid_json(g: &Grid, src: &str) -> Value {
 
 /// "AAAB AAAC ..." in groups of four bars.
 fn letters_text(l: &[char]) -> String {
-    l.chunks(4).map(|c| c.iter().collect::<String>()).collect::<Vec<_>>().join(" ")
+    l.chunks(4)
+        .map(|c| c.iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn maybe_import(e: &mut Engine, a: &Value, midi: &Path, name: &str) -> Option<Value> {
     if !b_or(a, "import", false) {
         return None;
     }
-    Some(match e.call_from("import_midi", &json!({"path": midi.to_string_lossy(), "pattern": name, "set_tempo": false}), "transcribe") {
-        Ok(v) => json!({"pattern": name, "tracks": v.get("tracks").cloned().unwrap_or(Value::Null)}),
-        Err(err) => json!({"error": format!("{err:#}")}),
-    })
+    Some(
+        match e.call_from(
+            "import_midi",
+            &json!({"path": midi.to_string_lossy(), "pattern": name, "set_tempo": false}),
+            "transcribe",
+        ) {
+            Ok(v) => {
+                json!({"pattern": name, "tracks": v.get("tracks").cloned().unwrap_or(Value::Null)})
+            }
+            Err(err) => json!({"error": format!("{err:#}")}),
+        },
+    )
 }
 
 fn write_midi(p: &Path, smf: &crate::smf::Smf) -> Result<()> {
@@ -121,13 +148,19 @@ fn transcribe_drums(e: &mut Engine, a: &Value) -> Result<Value> {
             None => counts.push((*l, 1, b)),
         }
     }
-    counts.sort_by(|a, b| b.1.cmp(&a.1));
+    counts.sort_by_key(|a| std::cmp::Reverse(a.1));
     let ghost_max = 60u8;
     let pat_json = |b: usize| -> Value {
         let mut m = Map::new();
         for (k, name) in tr::DRUM_KINDS.iter().enumerate() {
             if s.pattern[b][k].iter().any(|v| *v > 0) {
-                m.insert(name.to_string(), json!(tr::row_text(&s.pattern[b][k], if k == 1 { ghost_max } else { 0 })));
+                m.insert(
+                    name.to_string(),
+                    json!(tr::row_text(
+                        &s.pattern[b][k],
+                        if k == 1 { ghost_max } else { 0 }
+                    )),
+                );
             }
         }
         Value::Object(m)
@@ -149,26 +182,47 @@ fn transcribe_drums(e: &mut Engine, a: &Value) -> Result<Value> {
     }
     let detail = base.with_extension("json");
     let bars: Vec<Value> = (0..s.bars).map(|b| json!({"bar": b + 1, "letter": s.letters[b].to_string(), "t": (grid.bar_t(b) * 1000.0).round() / 1000.0, "fill": s.fills.contains(&b), "pattern": pat_json(b)})).collect();
-    std::fs::write(&detail, serde_json::to_string_pretty(&json!({"grid": grid_json(&grid, &src), "steps_per_bar": steps, "swing_pct": s.swing_pct, "bars": bars,
-        "hits": s.hits.iter().map(|h| json!({"t": (h.t * 1000.0).round() / 1000.0, "kind": tr::DRUM_KINDS[h.kind], "vel": h.vel, "ghost": h.ghost, "bar": h.bar + 1, "step": h.step, "offset": (h.offset * 100.0).round() / 100.0})).collect::<Vec<_>>()}))?)?;
+    std::fs::write(
+        &detail,
+        serde_json::to_string_pretty(
+            &json!({"grid": grid_json(&grid, &src), "steps_per_bar": steps, "swing_pct": s.swing_pct, "bars": bars,
+        "hits": s.hits.iter().map(|h| json!({"t": (h.t * 1000.0).round() / 1000.0, "kind": tr::DRUM_KINDS[h.kind], "vel": h.vel, "ghost": h.ghost, "bar": h.bar + 1, "step": h.step, "offset": (h.offset * 100.0).round() / 100.0})).collect::<Vec<_>>()}),
+        )?,
+    )?;
     let imported = maybe_import(e, a, &midi, "drums_transcribed");
-    Ok(json!({"grid": grid_json(&grid, &src), "bars": s.bars, "steps_per_bar": steps, "swing_pct": s.swing_pct, "push_ms": push, "hits": hits,
+    Ok(
+        json!({"grid": grid_json(&grid, &src), "bars": s.bars, "steps_per_bar": steps, "swing_pct": s.swing_pct, "push_ms": push, "hits": hits,
         "ghost_notes": s.hits.iter().filter(|h| h.ghost).count(),
         "patterns": patterns, "bar_letters": letters_text(&s.letters), "fills": s.fills.iter().map(|b| b + 1).collect::<Vec<_>>(),
         "legend": "per step: X accent, x hit, g ghost, . rest; bar_letters groups 4 bars, '-' = no drums",
         "midi": midi.to_string_lossy(), "detail": detail.to_string_lossy(), "imported": imported,
-        "next": ["import_midi", "transcribe_bass", "arrangement_map"]}))
+        "next": ["import_midi", "transcribe_bass", "arrangement_map"]}),
+    )
 }
 
-fn pitched_summary(notes: &[tr::PNote], grid: &Grid, src: &str, steps: usize, dur: f32, midi: &Path, detail: &Path, imported: Option<Value>) -> Value {
+fn pitched_summary(
+    notes: &[tr::PNote],
+    grid: &Grid,
+    src: &str,
+    steps: usize,
+    dur: f32,
+    midi: &Path,
+    detail: &Path,
+    imported: Option<Value>,
+) -> Value {
     let bars = grid.bars_in(dur);
     let per_bar = tr::notes_per_bar(notes, steps, bars);
     let mut hist = [0usize; 12];
     for n in notes {
         hist[(n.pitch % 12) as usize] += n.len;
     }
-    let mut pcs: Vec<(usize, usize)> = hist.iter().cloned().enumerate().filter(|x| x.1 > 0).collect();
-    pcs.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut pcs: Vec<(usize, usize)> = hist
+        .iter()
+        .cloned()
+        .enumerate()
+        .filter(|x| x.1 > 0)
+        .collect();
+    pcs.sort_by_key(|a| std::cmp::Reverse(a.1));
     let lo = notes.iter().map(|n| n.pitch).min();
     let hi = notes.iter().map(|n| n.pitch).max();
     json!({"grid": grid_json(grid, src), "notes": notes.len(), "bars": bars,
@@ -179,13 +233,22 @@ fn pitched_summary(notes: &[tr::PNote], grid: &Grid, src: &str, steps: usize, du
         "midi": midi.to_string_lossy(), "detail": detail.to_string_lossy(), "imported": imported})
 }
 
-fn write_notes_detail(p: &Path, notes: &[tr::PNote], grid: &Grid, src: &str, steps: usize, dur: f32) -> Result<()> {
+fn write_notes_detail(
+    p: &Path,
+    notes: &[tr::PNote],
+    grid: &Grid,
+    src: &str,
+    steps: usize,
+    dur: f32,
+) -> Result<()> {
     let per_bar = tr::notes_per_bar(notes, steps, grid.bars_in(dur));
     std::fs::write(
         p,
-        serde_json::to_string_pretty(&json!({"grid": grid_json(grid, src), "steps_per_bar": steps,
+        serde_json::to_string_pretty(
+            &json!({"grid": grid_json(grid, src), "steps_per_bar": steps,
             "per_bar": per_bar,
-            "notes": notes.iter().map(|n| json!({"t0": (n.t0 * 1000.0).round() / 1000.0, "t1": (n.t1 * 1000.0).round() / 1000.0, "pitch": tr::note_name(n.pitch), "midi": n.pitch, "vel": n.vel, "bar": n.step / steps + 1, "step": n.step % steps, "len": n.len})).collect::<Vec<_>>()}))?,
+            "notes": notes.iter().map(|n| json!({"t0": (n.t0 * 1000.0).round() / 1000.0, "t1": (n.t1 * 1000.0).round() / 1000.0, "pitch": tr::note_name(n.pitch), "midi": n.pitch, "vel": n.vel, "bar": n.step / steps + 1, "step": n.step % steps, "len": n.len})).collect::<Vec<_>>()}),
+        )?,
     )?;
     Ok(())
 }
@@ -195,10 +258,29 @@ fn transcribe_bass(e: &mut Engine, a: &Value) -> Result<Value> {
     let steps = steps_arg(a)?;
     let (grid, src) = grid_for(e, a, &path, &x)?;
     let mut notes = tr::transcribe_bass(&x, grid, steps);
-    let restruck = if b_or(a, "reattacks", false) { tr::split_reattacks(&tr::log_flux_onsets(&x, f_opt(a, "reattack_delta").unwrap_or(0.07) as f32), &mut notes, grid, steps) } else { 0 };
+    let restruck = if b_or(a, "reattacks", false) {
+        tr::split_reattacks(
+            &tr::log_flux_onsets(&x, f_opt(a, "reattack_delta").unwrap_or(0.07)),
+            &mut notes,
+            grid,
+            steps,
+        )
+    } else {
+        0
+    };
     let base = out_base(e, a, &path, "bass")?;
     let midi = base.with_extension("mid");
-    write_midi(&midi, &tr::notes_midi(&notes, grid, steps, "Bass", Some(33), b_or(a, "keep_timing", false)))?;
+    write_midi(
+        &midi,
+        &tr::notes_midi(
+            &notes,
+            grid,
+            steps,
+            "Bass",
+            Some(33),
+            b_or(a, "keep_timing", false),
+        ),
+    )?;
     let detail = base.with_extension("json");
     let dur = x.len() as f32 / crate::dsp::SR;
     write_notes_detail(&detail, &notes, &grid, &src, steps, dur)?;
@@ -224,12 +306,31 @@ fn transcribe_melody(e: &mut Engine, a: &Value) -> Result<Value> {
     let mode = s_opt(a, "mode").unwrap_or_else(|| "line".into());
     let notes = match mode.as_str() {
         "line" => tr::transcribe_top_line(&x, grid, steps, lo, hi),
-        "picked" => tr::transcribe_picked(&x, grid, steps, lo, hi, f_opt(a, "sensitivity").unwrap_or(0.5)),
-        m => bail!("mode '{m}': line (one sustained line) or picked (one note per pluck: arpeggios)"),
+        "picked" => tr::transcribe_picked(
+            &x,
+            grid,
+            steps,
+            lo,
+            hi,
+            f_opt(a, "sensitivity").unwrap_or(0.5),
+        ),
+        m => {
+            bail!("mode '{m}': line (one sustained line) or picked (one note per pluck: arpeggios)")
+        }
     };
     let base = out_base(e, a, &path, &name)?;
     let midi = base.with_extension("mid");
-    write_midi(&midi, &tr::notes_midi(&notes, grid, steps, &name, None, b_or(a, "keep_timing", false)))?;
+    write_midi(
+        &midi,
+        &tr::notes_midi(
+            &notes,
+            grid,
+            steps,
+            &name,
+            None,
+            b_or(a, "keep_timing", false),
+        ),
+    )?;
     let detail = base.with_extension("json");
     let dur = x.len() as f32 / crate::dsp::SR;
     write_notes_detail(&detail, &notes, &grid, &src, steps, dur)?;
@@ -257,7 +358,10 @@ fn transcribe_chords(e: &mut Engine, a: &Value) -> Result<Value> {
             let b0 = ((n.t0 - grid.downbeat_s) / bs).floor().max(0.0) as usize;
             let b1 = ((n.t1 - grid.downbeat_s) / bs).ceil().max(0.0) as usize;
             for b in b0..b1.min(nb) {
-                let (s0, s1) = (grid.downbeat_s + b as f32 * bs, grid.downbeat_s + (b + 1) as f32 * bs);
+                let (s0, s1) = (
+                    grid.downbeat_s + b as f32 * bs,
+                    grid.downbeat_s + (b + 1) as f32 * bs,
+                );
                 let ov = n.t1.min(s1) - n.t0.max(s0);
                 if ov > 0.0 {
                     bch[b][(n.pitch % 12) as usize] += ov;
@@ -267,7 +371,13 @@ fn transcribe_chords(e: &mut Engine, a: &Value) -> Result<Value> {
         bass_w = 0.6;
     }
     let bass_w = f_opt(a, "bass_weight").unwrap_or(bass_w).clamp(0.0, 2.0);
-    let path_st = tr::chords_per_beat(&ch, &bch, &en, f_opt(a, "change_cost").unwrap_or(0.15).clamp(0.0, 2.0), bass_w);
+    let path_st = tr::chords_per_beat(
+        &ch,
+        &bch,
+        &en,
+        f_opt(a, "change_cost").unwrap_or(0.15).clamp(0.0, 2.0),
+        bass_w,
+    );
     let (k, minor, kconf) = tr::key_of(&ch);
     let bpb = grid.beats_per_bar;
     let bars = path_st.len().div_ceil(bpb);
@@ -278,8 +388,15 @@ fn transcribe_chords(e: &mut Engine, a: &Value) -> Result<Value> {
         let mut cells = Vec::new();
         let mut prev = String::new();
         for i in 0..bpb {
-            let s = path_st.get(b * bpb + i).map(|s| tr::chord_label(*s)).unwrap_or_else(|| "N".into());
-            cells.push(if s == prev { ".".to_string() } else { s.clone() });
+            let s = path_st
+                .get(b * bpb + i)
+                .map(|s| tr::chord_label(*s))
+                .unwrap_or_else(|| "N".into());
+            cells.push(if s == prev {
+                ".".to_string()
+            } else {
+                s.clone()
+            });
             prev = s;
         }
         // the bar's main chord: the most beats
@@ -292,13 +409,21 @@ fn transcribe_chords(e: &mut Engine, a: &Value) -> Result<Value> {
                 }
             }
         }
-        let m = cnt.iter().max_by_key(|c| c.1).map(|c| tr::chord_label(c.0)).unwrap_or_else(|| "N".into());
+        let m = cnt
+            .iter()
+            .max_by_key(|c| c.1)
+            .map(|c| tr::chord_label(c.0))
+            .unwrap_or_else(|| "N".into());
         main.push(m);
         per_bar.push(cells.join(" "));
     }
     let (loop_bars, held) = tr::chord_loop(&main);
     let first = main.iter().position(|c| c != "N").unwrap_or(0);
-    let loop_txt = if loop_bars > 0 { main[first..(first + loop_bars).min(main.len())].join(" | ") } else { String::new() };
+    let loop_txt = if loop_bars > 0 {
+        main[first..(first + loop_bars).min(main.len())].join(" | ")
+    } else {
+        String::new()
+    };
     // MIDI: one block chord per chord change (close voicing around C4)
     let ppq = 480u32;
     let mut notes = Vec::new();
@@ -310,22 +435,47 @@ fn transcribe_chords(e: &mut Engine, a: &Value) -> Result<Value> {
             j += 1;
         }
         for p in tr::voicing(s) {
-            notes.push(crate::smf::SmfNote { tick: i as u32 * ppq, len: (j - i) as u32 * ppq - 10, pitch: p, vel: 80, channel: 0 });
+            notes.push(crate::smf::SmfNote {
+                tick: i as u32 * ppq,
+                len: (j - i) as u32 * ppq - 10,
+                pitch: p,
+                vel: 80,
+                channel: 0,
+            });
         }
         i = j;
     }
     let base = out_base(e, a, &path, "chords")?;
     let midi = base.with_extension("mid");
-    write_midi(&midi, &crate::smf::Smf { division: ppq as u16, bpm: grid.bpm, time_sig: (bpb as u8, 4), tracks: vec![crate::smf::SmfTrack { name: "Chords".into(), program: Some(0), notes }] })?;
+    write_midi(
+        &midi,
+        &crate::smf::Smf {
+            division: ppq as u16,
+            bpm: grid.bpm,
+            time_sig: (bpb as u8, 4),
+            tracks: vec![crate::smf::SmfTrack {
+                name: "Chords".into(),
+                program: Some(0),
+                notes,
+            }],
+        },
+    )?;
     let detail = base.with_extension("json");
-    std::fs::write(&detail, serde_json::to_string_pretty(&json!({"grid": grid_json(&grid, &src), "per_bar": per_bar, "main_per_bar": main, "per_beat": path_st.iter().map(|s| tr::chord_label(*s)).collect::<Vec<_>>()}))?)?;
+    std::fs::write(
+        &detail,
+        serde_json::to_string_pretty(
+            &json!({"grid": grid_json(&grid, &src), "per_bar": per_bar, "main_per_bar": main, "per_beat": path_st.iter().map(|s| tr::chord_label(*s)).collect::<Vec<_>>()}),
+        )?,
+    )?;
     let imported = maybe_import(e, a, &midi, "chords_transcribed");
-    Ok(json!({"grid": grid_json(&grid, &src), "key": format!("{} {}", tr::PCN[k as usize], if minor { "minor" } else { "major" }), "key_confidence": (kconf * 100.0).round() / 100.0,
+    Ok(
+        json!({"grid": grid_json(&grid, &src), "key": format!("{} {}", tr::PCN[k as usize], if minor { "minor" } else { "major" }), "key_confidence": (kconf * 100.0).round() / 100.0,
         "bars": bars, "loop": if loop_bars > 0 { json!({"bars": loop_bars, "chords": loop_txt, "holds_pct": (held * 100.0).round()}) } else { Value::Null },
         "first_bars": per_bar.iter().take(8).enumerate().map(|(i, s)| format!("{}: {s}", i + 1)).collect::<Vec<_>>(),
         "legend": "one cell per beat, '.' = same chord, N = no chord",
         "midi": midi.to_string_lossy(), "detail": detail.to_string_lossy(), "imported": imported,
-        "next": ["import_midi", "set_key", "transcribe_bass"]}))
+        "next": ["import_midi", "set_key", "transcribe_bass"]}),
+    )
 }
 
 fn grid_props(mut m: Value) -> Value {
@@ -397,16 +547,31 @@ mod tests {
             for k in 0..(0.15 * sr) as usize {
                 let t = k as f32 / sr;
                 if i0 + k < n {
-                    x[i0 + k] += 0.8 * (2.0 * std::f32::consts::PI * (50.0 + 100.0 * (-t * 30.0).exp()) * t).sin() * (-t * 20.0).exp();
+                    x[i0 + k] += 0.8
+                        * (2.0 * std::f32::consts::PI * (50.0 + 100.0 * (-t * 30.0).exp()) * t)
+                            .sin()
+                        * (-t * 20.0).exp();
                 }
             }
         }
         crate::render::write_wav(&dir.join("k.wav"), &x, &x).unwrap();
-        let v = e.call("transcribe_drums", &json!({"path": "k.wav", "bpm": 120, "downbeat_s": 0.0})).unwrap();
+        let v = e
+            .call(
+                "transcribe_drums",
+                &json!({"path": "k.wav", "bpm": 120, "downbeat_s": 0.0}),
+            )
+            .unwrap();
         assert!(v["hits"]["kick"].as_u64().unwrap_or(0) >= 7, "{v}");
         assert!(Path::new(v["midi"].as_str().unwrap()).exists());
-        let c = e.call("transcribe_chords", &json!({"path": "k.wav", "bpm": 120})).unwrap();
+        let c = e
+            .call("transcribe_chords", &json!({"path": "k.wav", "bpm": 120}))
+            .unwrap();
         assert!(c["key"].is_string(), "{c}");
-        assert!(e.call("transcribe_drums", &json!({"path": "k.wav", "bpm": 120, "steps_per_bar": 7})).is_err());
+        assert!(e
+            .call(
+                "transcribe_drums",
+                &json!({"path": "k.wav", "bpm": 120, "steps_per_bar": 7})
+            )
+            .is_err());
     }
 }

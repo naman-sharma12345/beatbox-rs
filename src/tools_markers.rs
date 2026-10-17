@@ -15,7 +15,12 @@ fn section_starts(e: &Engine) -> Vec<(String, f32)> {
     let mut v = Vec::new();
     for s in &p.arrangement {
         v.push((s.pattern.clone(), beat));
-        let beats = p.patterns.iter().find(|x| x.name == s.pattern).map(|x| x.steps() as f32 / 4.0).unwrap_or(16.0);
+        let beats = p
+            .patterns
+            .iter()
+            .find(|x| x.name == s.pattern)
+            .map(|x| x.steps() as f32 / 4.0)
+            .unwrap_or(16.0);
         beat += beats * s.repeats.max(1) as f32;
     }
     v
@@ -33,15 +38,34 @@ fn add_marker(e: &mut Engine, a: &Value) -> Result<Value> {
     }
     let ts = s_opt(a, "time_signature");
     if let Some(t) = &ts {
-        let ok = t.split_once('/').map(|(n, d)| n.trim().parse::<u32>().map(|n| (1..=32).contains(&n)).unwrap_or(false) && matches!(d.trim(), "2" | "4" | "8" | "16")).unwrap_or(false);
+        let ok = t
+            .split_once('/')
+            .map(|(n, d)| {
+                n.trim()
+                    .parse::<u32>()
+                    .map(|n| (1..=32).contains(&n))
+                    .unwrap_or(false)
+                    && matches!(d.trim(), "2" | "4" | "8" | "16")
+            })
+            .unwrap_or(false);
         if !ok {
             bail!("time_signature '{t}' (like 4/4, 3/4, 6/8, 7/8)");
         }
     }
     e.project.markers.retain(|m| m.name != name);
-    e.project.markers.push(Marker { name: name.clone(), beat, time_signature: ts });
-    e.project.markers.sort_by(|x, y| x.beat.partial_cmp(&y.beat).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(json!({"added": name, "beat": beat, "bar": e.project.bar_at_beat(beat), "markers": e.project.markers.len()}))
+    e.project.markers.push(Marker {
+        name: name.clone(),
+        beat,
+        time_signature: ts,
+    });
+    e.project.markers.sort_by(|x, y| {
+        x.beat
+            .partial_cmp(&y.beat)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(
+        json!({"added": name, "beat": beat, "bar": e.project.bar_at_beat(beat), "markers": e.project.markers.len()}),
+    )
 }
 
 pub fn tools() -> Vec<Tool> {
@@ -95,12 +119,22 @@ mod tests {
     #[test]
     fn markers_add_list_remove() {
         let mut e = Engine::new(std::env::temp_dir().join("bb_marker_test"));
-        e.call("add_marker", &json!({"name": "drop", "bar": 9})).unwrap();
-        e.call("add_marker", &json!({"name": "intro", "beat": 0, "time_signature": "3/4"})).unwrap();
+        e.call("add_marker", &json!({"name": "drop", "bar": 9}))
+            .unwrap();
+        e.call(
+            "add_marker",
+            &json!({"name": "intro", "beat": 0, "time_signature": "3/4"}),
+        )
+        .unwrap();
         let l = e.call("list_markers", &json!({})).unwrap();
         assert_eq!(l["markers"][0]["name"], "intro");
         assert_eq!(l["markers"][1]["beat"], 32.0);
-        assert!(e.call("add_marker", &json!({"name": "x", "beat": 1, "time_signature": "3/5"})).is_err());
+        assert!(e
+            .call(
+                "add_marker",
+                &json!({"name": "x", "beat": 1, "time_signature": "3/5"})
+            )
+            .is_err());
         e.call("remove_marker", &json!({"name": "drop"})).unwrap();
         assert!(e.call("remove_marker", &json!({"name": "drop"})).is_err());
     }

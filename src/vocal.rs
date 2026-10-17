@@ -191,7 +191,9 @@ impl PitchDetect {
     pub fn from_arg(s: Option<&str>) -> Result<Self> {
         match s {
             None => Ok(Self::DEFAULT),
-            Some(v) => Self::parse(v).ok_or_else(|| anyhow!("pitch_detect must be yin_gated (default) or legacy, not {v:?}")),
+            Some(v) => Self::parse(v).ok_or_else(|| {
+                anyhow!("pitch_detect must be yin_gated (default) or legacy, not {v:?}")
+            }),
         }
     }
 }
@@ -207,7 +209,11 @@ pub const GATED_PITCH_MIN_RUN_S: f32 = GATED_KEY_SMOOTH_S;
 /// dropped. Same frames (40 ms at 10 ms hops, 11.025 kHz), then the same
 /// median, octave fix and isolated-frame drop as `pitch_track`.
 pub fn pitch_track_gated(x: &[f32], sr: f32) -> Vec<PitchFrame> {
-    let y = if (sr - PSR).abs() > 1.0 { crate::samples::resample(x, sr, PSR) } else { x.to_vec() };
+    let y = if (sr - PSR).abs() > 1.0 {
+        crate::samples::resample(x, sr, PSR)
+    } else {
+        x.to_vec()
+    };
     let win = (PSR * 0.04) as usize;
     let hop = (PSR * HOP_S) as usize;
     let floor = 10f32.powf(GATED_KEY_FLOOR_DB / 20.0);
@@ -224,7 +230,12 @@ pub fn pitch_track_gated(x: &[f32], sr: f32) -> Vec<PitchFrame> {
         } else {
             0.0
         };
-        frames.push(PitchFrame { t: pos as f32 / PSR + 0.02, hz, midi: if hz > 0.0 { hz_to_midi(hz) } else { 0.0 }, rms });
+        frames.push(PitchFrame {
+            t: pos as f32 / PSR + 0.02,
+            hz,
+            midi: if hz > 0.0 { hz_to_midi(hz) } else { 0.0 },
+            rms,
+        });
         pos += hop;
     }
     // voiced runs shorter than the minimum are not sung notes
@@ -345,9 +356,7 @@ pub fn segment_notes(frames: &[PitchFrame], tuning: f32) -> Vec<VNote> {
         let mut p: Vec<f32> = cur.iter().rev().take(25).map(|&j| frames[j].midi).collect();
         let med = median(&mut p);
         // a fresh attack: energy jumps 2.5x within 30 ms after a dip
-        let attack = i >= 3
-            && f.rms > 2.5 * frames[i - 3].rms
-            && cur.len() > 10;
+        let attack = i >= 3 && f.rms > 2.5 * frames[i - 3].rms && cur.len() > 10;
         if (f.midi - med).abs() > 0.7 {
             away += 1;
         } else {
@@ -382,7 +391,11 @@ pub fn retune_and_merge(notes: &mut Vec<VNote>) {
                 c += a.cos() * d;
             }
         }
-        let off = if s == 0.0 && c == 0.0 { 0.0 } else { s.atan2(c) / std::f32::consts::TAU };
+        let off = if s == 0.0 && c == 0.0 {
+            0.0
+        } else {
+            s.atan2(c) / std::f32::consts::TAU
+        };
         n.pitch = (n.midi - off).round().clamp(0.0, 127.0) as u8;
     }
     let mut out: Vec<VNote> = Vec::with_capacity(notes.len());
@@ -390,7 +403,11 @@ pub fn retune_and_merge(notes: &mut Vec<VNote>) {
         if let Some(prev) = out.last_mut() {
             let gap = n.start - prev.end;
             let short = n.dur() < 0.12 || prev.dur() < 0.12;
-            if gap < 0.05 && short && (prev.pitch == n.pitch || (prev.dur() < 0.12 && (prev.midi - n.midi).abs() < 1.2)) {
+            if gap < 0.05
+                && short
+                && (prev.pitch == n.pitch
+                    || (prev.dur() < 0.12 && (prev.midi - n.midi).abs() < 1.2))
+            {
                 // keep the longer note's pitch
                 if n.dur() > prev.dur() {
                     prev.pitch = n.pitch;
@@ -477,7 +494,11 @@ pub const GATED_KEY_MIN_MARGIN: f32 = 0.05;
 /// histogram is weighted by level x (1 - aperiodicity), then Krumhansl.
 /// None when fewer than 50 frames pass.
 pub fn gated_key(x: &[f32], sr: f32) -> Option<GatedKey> {
-    let y = if (sr - PSR).abs() > 1.0 { crate::samples::resample(x, sr, PSR) } else { x.to_vec() };
+    let y = if (sr - PSR).abs() > 1.0 {
+        crate::samples::resample(x, sr, PSR)
+    } else {
+        x.to_vec()
+    };
     let win = (PSR * 0.04) as usize;
     let hop = (PSR * HOP_S) as usize;
     let floor = 10f32.powf(GATED_KEY_FLOOR_DB / 20.0);
@@ -545,11 +566,19 @@ pub fn gated_key(x: &[f32], sr: f32) -> Option<GatedKey> {
     let tot: f32 = h.iter().sum::<f32>().max(1e-12);
     h.iter_mut().for_each(|v| *v /= tot);
     let keys = crate::midi_ops::key_from_chroma(&h);
-    let name = |k: &(u8, &str, f32)| format!("{} {}", theory::note_name(k.0 + 60).trim_end_matches(char::is_numeric), k.1);
+    let name = |k: &(u8, &str, f32)| {
+        format!(
+            "{} {}",
+            theory::note_name(k.0 + 60).trim_end_matches(char::is_numeric),
+            k.1
+        )
+    };
     let (best, second) = (keys[0], keys[1]);
     let margin = best.2 - second.2;
     Some(GatedKey {
-        key_root: theory::note_name(best.0 + 60).trim_end_matches(char::is_numeric).to_string(),
+        key_root: theory::note_name(best.0 + 60)
+            .trim_end_matches(char::is_numeric)
+            .to_string(),
         scale: best.1.to_string(),
         confidence: (best.2 * 1000.0).round() / 1000.0,
         margin: (margin * 1000.0).round() / 1000.0,
@@ -582,10 +611,20 @@ fn onset_envelope(onsets: &[(f32, f32)], len_s: f32) -> Vec<f32> {
 /// onsets (and word starts when lyrics are known): comb-filtered
 /// autocorrelation with a mild prior around 100 BPM, then a least-squares
 /// grid fit and a downbeat chosen where long, strong notes land.
-pub fn estimate_tempo(notes: &[VNote], words: &[Word], len_s: f32, bpm_hint: Option<f32>) -> TempoEstimate {
+pub fn estimate_tempo(
+    notes: &[VNote],
+    words: &[Word],
+    len_s: f32,
+    bpm_hint: Option<f32>,
+) -> TempoEstimate {
     let mut onsets: Vec<(f32, f32)> = notes
         .iter()
-        .map(|n| (n.start, (n.dur().min(1.0)).sqrt() * (0.3 + n.strength.min(1.0))))
+        .map(|n| {
+            (
+                n.start,
+                (n.dur().min(1.0)).sqrt() * (0.3 + n.strength.min(1.0)),
+            )
+        })
         .collect();
     for w in words {
         onsets.push((w.start, 0.6));
@@ -640,7 +679,11 @@ pub fn estimate_tempo(notes: &[VNote], words: &[Word], len_s: f32, bpm_hint: Opt
         }
     }
     let mut bpm = picks.first().map(|p| p.0).unwrap_or(100.0);
-    let conf = picks.first().map(|p| p.1 / (total / cands.len() as f32) / 3.0).unwrap_or(0.0).min(1.0);
+    let conf = picks
+        .first()
+        .map(|p| p.1 / (total / cands.len() as f32) / 3.0)
+        .unwrap_or(0.0)
+        .min(1.0);
     // phase: maximize the envelope on the beat grid
     let best_phase = |bpm: f32| -> (f32, f32) {
         let period = 60.0 / bpm;
@@ -703,7 +746,11 @@ pub fn estimate_tempo(notes: &[VNote], words: &[Word], len_s: f32, bpm_hint: Opt
         se += d * d * n.dur();
         wn += n.dur();
     }
-    let spread = if wn > 0.0 { (se / wn).sqrt() * 1000.0 } else { 0.0 };
+    let spread = if wn > 0.0 {
+        (se / wn).sqrt() * 1000.0
+    } else {
+        0.0
+    };
     // downbeat: which of the 4 beats carries the long / strong notes and phrase starts
     let mut bar_score = [0.0f32; 4];
     let ph_starts: Vec<f32> = phrases(notes, 0.35).iter().map(|p| p.0).collect();
@@ -723,7 +770,11 @@ pub fn estimate_tempo(notes: &[VNote], words: &[Word], len_s: f32, bpm_hint: Opt
         }
     }
     let slot = (0..4)
-        .max_by(|&a, &b| bar_score[a].partial_cmp(&bar_score[b]).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|&a, &b| {
+            bar_score[a]
+                .partial_cmp(&bar_score[b])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .unwrap_or(0);
     let downbeat = phase + slot as f32 * period;
     TempoEstimate {
@@ -732,7 +783,10 @@ pub fn estimate_tempo(notes: &[VNote], words: &[Word], len_s: f32, bpm_hint: Opt
         downbeat,
         confidence: conf,
         timing_spread_ms: spread,
-        candidates: picks.iter().map(|p| ((p.0 * 10.0).round() / 10.0, p.1 / picks[0].1.max(1e-9))).collect(),
+        candidates: picks
+            .iter()
+            .map(|p| ((p.0 * 10.0).round() / 10.0, p.1 / picks[0].1.max(1e-9)))
+            .collect(),
     }
 }
 
@@ -749,22 +803,50 @@ pub fn analyze(x: &[f32], sr: f32, words: &[Word], bpm_hint: Option<f32>) -> Voc
 /// land on opposite sides of it (+38 c vs -45 c on a real take), which puts
 /// every note a semitone off. Without enough gated frames for a key, the
 /// frames' own estimate is used.
-pub fn analyze_with(x: &[f32], sr: f32, words: &[Word], bpm_hint: Option<f32>, pd: PitchDetect) -> VocalAnalysis {
+pub fn analyze_with(
+    x: &[f32],
+    sr: f32,
+    words: &[Word],
+    bpm_hint: Option<f32>,
+    pd: PitchDetect,
+) -> VocalAnalysis {
     match pd {
         PitchDetect::Legacy => analyze_frames(x, sr, pitch_track(x, sr), words, bpm_hint, None),
-        PitchDetect::YinGated => analyze_yin_gated(x, sr, words, bpm_hint, gated_key(x, sr).as_ref()),
+        PitchDetect::YinGated => {
+            analyze_yin_gated(x, sr, words, bpm_hint, gated_key(x, sr).as_ref())
+        }
     }
 }
 
 /// `analyze_with(.., YinGated)` with the gated key already in hand (cover_song
 /// reads it anyway): the notes are rounded against its tuning offset.
-pub fn analyze_yin_gated(x: &[f32], sr: f32, words: &[Word], bpm_hint: Option<f32>, gated: Option<&GatedKey>) -> VocalAnalysis {
-    analyze_frames(x, sr, pitch_track_gated(x, sr), words, bpm_hint, gated.map(|g| g.tuning_cents))
+pub fn analyze_yin_gated(
+    x: &[f32],
+    sr: f32,
+    words: &[Word],
+    bpm_hint: Option<f32>,
+    gated: Option<&GatedKey>,
+) -> VocalAnalysis {
+    analyze_frames(
+        x,
+        sr,
+        pitch_track_gated(x, sr),
+        words,
+        bpm_hint,
+        gated.map(|g| g.tuning_cents),
+    )
 }
 
 /// Notes, key, tempo, range and phrases from a pitch track; `note_tuning`
 /// (cents) replaces the frames' own tuning estimate when given.
-fn analyze_frames(x: &[f32], sr: f32, frames: Vec<PitchFrame>, words: &[Word], bpm_hint: Option<f32>, note_tuning: Option<f32>) -> VocalAnalysis {
+fn analyze_frames(
+    x: &[f32],
+    sr: f32,
+    frames: Vec<PitchFrame>,
+    words: &[Word],
+    bpm_hint: Option<f32>,
+    note_tuning: Option<f32>,
+) -> VocalAnalysis {
     let (tuning, tuning_source) = match note_tuning {
         Some(t) => (t, "gated_key"),
         None => (tuning_cents(&frames), "frames"),
@@ -781,14 +863,22 @@ fn analyze_frames(x: &[f32], sr: f32, frames: Vec<PitchFrame>, words: &[Word], b
     VocalAnalysis {
         duration,
         tuning_cents: (tuning * 10.0).round() / 10.0,
-        key_root: theory::note_name(pc + 60).trim_end_matches(char::is_numeric).to_string(),
+        key_root: theory::note_name(pc + 60)
+            .trim_end_matches(char::is_numeric)
+            .to_string(),
         scale: sc.to_string(),
         key_confidence: kc,
         key_alternatives: keys
             .iter()
             .skip(1)
             .take(2)
-            .map(|k| format!("{} {}", theory::note_name(k.0 + 60).trim_end_matches(char::is_numeric), k.1))
+            .map(|k| {
+                format!(
+                    "{} {}",
+                    theory::note_name(k.0 + 60).trim_end_matches(char::is_numeric),
+                    k.1
+                )
+            })
             .collect(),
         tempo,
         range: (theory::note_name(lo), theory::note_name(hi)),
@@ -807,7 +897,7 @@ pub fn phrase_anchors(notes: &[VNote], min_gap: f32, min_space: f32) -> Vec<f32>
     let mut out: Vec<f32> = Vec::new();
     let mut prev_end = f32::NEG_INFINITY;
     for n in notes {
-        if n.start - prev_end >= min_gap && out.last().map_or(true, |&a| n.start - a >= min_space) {
+        if n.start - prev_end >= min_gap && out.last().is_none_or(|&a| n.start - a >= min_space) {
             out.push(n.start);
         }
         prev_end = prev_end.max(n.end);
@@ -875,7 +965,11 @@ pub fn fit_warp(anchors: &[f32], bpm_guess: f32) -> Warp {
         let half = (beats / 2.0).round().max(2.0) * 2.0;
         let cb = (beats - bar).powi(2);
         let ch = (beats - half).powi(2) + 0.35;
-        if cb <= ch { (bar, cb) } else { (half, ch) }
+        if cb <= ch {
+            (bar, cb)
+        } else {
+            (half, ch)
+        }
     };
     let mut best = (bpm_guess, f32::INFINITY);
     let mut b = bpm_guess * 0.88;
@@ -914,7 +1008,12 @@ pub fn fit_warp(anchors: &[f32], bpm_guess: f32) -> Warp {
         mn = mn.min(r);
         out.push((a, lb + q));
     }
-    Warp { bpm, anchors: out, max_stretch: mx, min_stretch: mn }
+    Warp {
+        bpm,
+        anchors: out,
+        max_stretch: mx,
+        min_stretch: mn,
+    }
 }
 
 /// Time-stretch with a time-varying ratio (WSOLA, pitch kept): output time
@@ -923,12 +1022,20 @@ pub fn warp_audio(x: &[f32], sr: f32, out_len_s: f32, map: impl Fn(f32) -> f32) 
     let n = 1536usize;
     let ha = n / 4;
     let tol = 288i64;
-    let w: Vec<f32> = (0..n).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos()).collect();
+    let w: Vec<f32> = (0..n)
+        .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos())
+        .collect();
     let out_len = (out_len_s * sr).max(0.0) as usize;
     let mut out = vec![0.0f32; out_len + n];
     let mut wsum = vec![0.0f32; out_len + n];
     let xl = x.len() as i64;
-    let get = |i: i64| -> f32 { if i >= 0 && i < xl { x[i as usize] } else { 0.0 } };
+    let get = |i: i64| -> f32 {
+        if i >= 0 && i < xl {
+            x[i as usize]
+        } else {
+            0.0
+        }
+    };
     let mut prev: Option<i64> = None;
     let mut o = 0usize;
     while o < out_len {
@@ -1016,7 +1123,11 @@ fn off_key_cents(notes: &[VNote], key_pc: u8, scale: &[u8]) -> f32 {
         s += (n.midi - snap_to_scale(n.midi, key_pc, scale)).abs() * 100.0 * n.dur();
         w += n.dur();
     }
-    if w > 0.0 { s / w } else { 0.0 }
+    if w > 0.0 {
+        s / w
+    } else {
+        0.0
+    }
 }
 
 /// Pitch-correct a sung take to a key (TD-PSOLA, formants kept). Each sung
@@ -1030,7 +1141,8 @@ fn off_key_cents(notes: &[VNote], key_pc: u8, scale: &[u8]) -> f32 {
 pub fn psola(x: &[f32], sr: f32, frames: &[PitchFrame], f: &[f32], lo: f32, hi: f32) -> Vec<f32> {
     let frame_at = |s: usize| -> usize { ((s as f32 / sr - 0.02) / HOP_S).max(0.0) as usize };
     let f0_at = |s: usize| -> f32 { frames.get(frame_at(s)).map(|fr| fr.hz).unwrap_or(0.0) };
-    let ratio_at = |s: usize| -> f32 { 2f32.powf(f.get(frame_at(s)).copied().unwrap_or(0.0) / 12.0) };
+    let ratio_at =
+        |s: usize| -> f32 { 2f32.powf(f.get(frame_at(s)).copied().unwrap_or(0.0) / 12.0) };
     // analysis epochs: one per period in voiced parts (on the waveform's
     // local peak), every 5 ms elsewhere
     let mut epochs: Vec<(usize, usize)> = Vec::new(); // (position, period)
@@ -1078,12 +1190,18 @@ pub fn psola(x: &[f32], sr: f32, frames: &[PitchFrame], f: &[f32], lo: f32, hi: 
     let mut ai = 0usize;
     while (o as usize) < x.len() {
         let oi = o as usize;
-        while ai + 1 < epochs.len() && (epochs[ai + 1].0 as f32 - o).abs() < (epochs[ai].0 as f32 - o).abs() {
+        while ai + 1 < epochs.len()
+            && (epochs[ai + 1].0 as f32 - o).abs() < (epochs[ai].0 as f32 - o).abs()
+        {
             ai += 1;
         }
         let (ae, t) = epochs[ai];
         let voiced = f0_at(ae) > 0.0;
-        let r = if voiced { ratio_at(ae).clamp(lo, hi) } else { 1.0 };
+        let r = if voiced {
+            ratio_at(ae).clamp(lo, hi)
+        } else {
+            1.0
+        };
         let half = t;
         for k in 0..(2 * half) {
             let src = ae as i64 - half as i64 + k as i64;
@@ -1105,7 +1223,15 @@ pub fn psola(x: &[f32], sr: f32, frames: &[PitchFrame], f: &[f32], lo: f32, hi: 
     out
 }
 
-pub fn autotune(x: &[f32], sr: f32, key_pc: u8, scale: &[u8], amount: f32, hard: f32, speed_ms: f32) -> (Vec<f32>, TuneStats) {
+pub fn autotune(
+    x: &[f32],
+    sr: f32,
+    key_pc: u8,
+    scale: &[u8],
+    amount: f32,
+    hard: f32,
+    speed_ms: f32,
+) -> (Vec<f32>, TuneStats) {
     let frames = pitch_track(x, sr);
     // absolute pitch (A440): the beat is in concert tuning even if the singer is not
     let mut notes = segment_notes(&frames, 0.0);
@@ -1128,8 +1254,12 @@ pub fn autotune(x: &[f32], sr: f32, key_pc: u8, scale: &[u8], amount: f32, hard:
             }
             // the frame's own octave (the median was folded)
             let mut fm = m;
-            while fm - n.midi > 6.0 { fm -= 12.0; }
-            while n.midi - fm > 6.0 { fm += 12.0; }
+            while fm - n.midi > 6.0 {
+                fm -= 12.0;
+            }
+            while n.midi - fm > 6.0 {
+                fm += 12.0;
+            }
             let soft = target - n.midi;
             let firm = (target - fm).clamp(-1.0, 1.0);
             corr[i] = amount.clamp(0.0, 1.0) * ((1.0 - hard) * soft + hard * firm);
@@ -1169,13 +1299,26 @@ pub const TRANSCRIBE_PY: &str = include_str!("../scripts/transcribe_lyrics.py");
 
 /// Transcribe sung lyrics with word timestamps. Uses `BEATBOX_PYTHON` (or
 /// python3) with faster-whisper; `model` is tiny / base / small.
-pub fn transcribe(audio: &Path, workdir: &Path, model: &str, language: Option<&str>, prompt: Option<&str>) -> Result<Lyrics> {
+pub fn transcribe(
+    audio: &Path,
+    workdir: &Path,
+    model: &str,
+    language: Option<&str>,
+    prompt: Option<&str>,
+) -> Result<Lyrics> {
     transcribe_with(audio, workdir, model, language, prompt, false)
 }
 
 /// `full_mix`: a whole record (singer inside the music): no voice-activity
 /// filter (it drops sung lines under a band), greedy decoding, 4 threads.
-pub fn transcribe_with(audio: &Path, workdir: &Path, model: &str, language: Option<&str>, prompt: Option<&str>, full_mix: bool) -> Result<Lyrics> {
+pub fn transcribe_with(
+    audio: &Path,
+    workdir: &Path,
+    model: &str,
+    language: Option<&str>,
+    prompt: Option<&str>,
+    full_mix: bool,
+) -> Result<Lyrics> {
     // a rapped Hindi take loops the whole-file decoder (2026-10-12): such
     // takes, a helper that failed and a looped result all go to the chunked
     // fallback (30 s chunks, VAD, segment times only, loop filter)
@@ -1192,7 +1335,11 @@ pub fn transcribe_with(audio: &Path, workdir: &Path, model: &str, language: Opti
 /// A decoder loop: one short phrase over and over in a segment, or a
 /// transcript of very few distinct words.
 pub fn lyrics_looped(l: &Lyrics) -> bool {
-    let all: Vec<String> = l.segments.iter().flat_map(|s| norm_words(&s.text)).collect();
+    let all: Vec<String> = l
+        .segments
+        .iter()
+        .flat_map(|s| norm_words(&s.text))
+        .collect();
     if all.len() < 12 {
         return false;
     }
@@ -1207,13 +1354,29 @@ pub fn lyrics_looped(l: &Lyrics) -> bool {
         if w.len() < 8 {
             return false;
         }
-        let top = w.iter().map(|x| w.iter().filter(|y| *y == x).count()).max().unwrap_or(0);
+        let top = w
+            .iter()
+            .map(|x| w.iter().filter(|y| *y == x).count())
+            .max()
+            .unwrap_or(0);
         top * 10 >= w.len() * 6 && top >= 4
     })
 }
 
-fn transcribe_run(audio: &Path, workdir: &Path, model: &str, language: Option<&str>, prompt: Option<&str>, full_mix: bool, chunked: bool) -> Result<Lyrics> {
-    let cache = audio.with_extension(format!("lyrics.{model}{}{}.json", if full_mix { ".mix" } else { "" }, if chunked { ".chunks" } else { "" }));
+fn transcribe_run(
+    audio: &Path,
+    workdir: &Path,
+    model: &str,
+    language: Option<&str>,
+    prompt: Option<&str>,
+    full_mix: bool,
+    chunked: bool,
+) -> Result<Lyrics> {
+    let cache = audio.with_extension(format!(
+        "lyrics.{model}{}{}.json",
+        if full_mix { ".mix" } else { "" },
+        if chunked { ".chunks" } else { "" }
+    ));
     if prompt.is_none() {
         if let Ok(s) = std::fs::read_to_string(&cache) {
             if let Ok(l) = serde_json::from_str::<Lyrics>(&s) {
@@ -1227,7 +1390,11 @@ fn transcribe_run(audio: &Path, workdir: &Path, model: &str, language: Option<&s
     let mut cmd = std::process::Command::new(&py);
     cmd.arg(&script).arg(audio).arg("--model").arg(model);
     if full_mix {
-        cmd.arg("--no-vad").arg("--beam").arg("1").arg("--threads").arg("4");
+        cmd.arg("--no-vad")
+            .arg("--beam")
+            .arg("1")
+            .arg("--threads")
+            .arg("4");
     }
     if chunked {
         cmd.arg("--chunk-s").arg("30");
@@ -1238,14 +1405,17 @@ fn transcribe_run(audio: &Path, workdir: &Path, model: &str, language: Option<&s
     if let Some(p) = prompt {
         cmd.arg("--prompt").arg(p);
     }
-    let out = cmd
-        .output()
-        .with_context(|| format!("running {py} (set BEATBOX_PYTHON to a Python with faster-whisper)"))?;
+    let out = cmd.output().with_context(|| {
+        format!("running {py} (set BEATBOX_PYTHON to a Python with faster-whisper)")
+    })?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let v: Value = serde_json::from_str(stdout.trim()).map_err(|_| {
         anyhow!(
             "lyrics helper failed: {}",
-            String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("no output")
+            String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .last()
+                .unwrap_or("no output")
         )
     })?;
     if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
@@ -1260,13 +1430,21 @@ fn transcribe_run(audio: &Path, workdir: &Path, model: &str, language: Option<&s
 
 impl Lyrics {
     pub fn words(&self) -> Vec<Word> {
-        self.segments.iter().flat_map(|s| s.words.iter().cloned()).collect()
+        self.segments
+            .iter()
+            .flat_map(|s| s.words.iter().cloned())
+            .collect()
     }
 }
 
 fn norm_words(s: &str) -> Vec<String> {
     s.split_whitespace()
-        .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase())
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+                .to_lowercase()
+        })
         .filter(|w| !w.is_empty())
         .collect()
 }
@@ -1296,16 +1474,33 @@ pub fn candidate_chords(key_pc: u8, scale: &str) -> Result<Vec<Chord>> {
         &["i", "III", "iv", "v", "V", "VI", "VII"]
     };
     let sc = if scale == "major" { "major" } else { "minor" };
-    romans.iter().map(|r| theory::parse_chord(r, key_pc, sc)).collect()
+    romans
+        .iter()
+        .map(|r| theory::parse_chord(r, key_pc, sc))
+        .collect()
 }
 
 fn functional_bonus(from: &str, to: &str) -> f32 {
     let f = from.to_lowercase();
     let t = to.to_lowercase();
     match (f.as_str(), t.as_str()) {
-        ("v", "i") | ("v", "vi") | ("iv", "v") | ("ii", "v") | ("iv", "i") | ("i", "iv") | ("i", "v")
-        | ("vi", "iv") | ("vi", "ii") | ("i", "vi") | ("iii", "vi") | ("vii", "i") | ("vi", "v")
-        | ("iii", "iv") | ("vi", "vii") | ("vii", "iii") | ("i", "vii") => 0.25,
+        ("v", "i")
+        | ("v", "vi")
+        | ("iv", "v")
+        | ("ii", "v")
+        | ("iv", "i")
+        | ("i", "iv")
+        | ("i", "v")
+        | ("vi", "iv")
+        | ("vi", "ii")
+        | ("i", "vi")
+        | ("iii", "vi")
+        | ("vii", "i")
+        | ("vi", "v")
+        | ("iii", "iv")
+        | ("vi", "vii")
+        | ("vii", "iii")
+        | ("i", "vii") => 0.25,
         _ => 0.0,
     }
 }
@@ -1315,7 +1510,13 @@ fn functional_bonus(from: &str, to: &str) -> f32 {
 /// functional moves and phrase-level holding are preferred.
 /// `notes_beats`: (start_beat, len_beats, pitch) on the song grid, beat 0 = the
 /// first slot.
-pub fn harmonize(notes_beats: &[(f32, f32, u8)], n_slots: usize, slot_beats: f32, key_pc: u8, scale: &str) -> Result<Vec<Chord>> {
+pub fn harmonize(
+    notes_beats: &[(f32, f32, u8)],
+    n_slots: usize,
+    slot_beats: f32,
+    key_pc: u8,
+    scale: &str,
+) -> Result<Vec<Chord>> {
     let cands = candidate_chords(key_pc, scale)?;
     let scale_iv = theory::scale_intervals(if scale == "major" { "major" } else { "minor" })?;
     let in_scale = |pc: u8| scale_iv.iter().any(|i| (key_pc + i) % 12 == pc);
@@ -1332,12 +1533,23 @@ pub fn harmonize(notes_beats: &[(f32, f32, u8)], n_slots: usize, slot_beats: f32
                 continue;
             }
             let pos = st - t0;
-            let strong = if st >= t0 && pos < 0.25 { 1.6 } else if (st.fract()) < 0.2 { 1.0 } else { 0.6 };
+            let strong = if st >= t0 && pos < 0.25 {
+                1.6
+            } else if (st.fract()) < 0.2 {
+                1.0
+            } else {
+                0.6
+            };
             let w = (b - a).min(2.0) * strong;
             tot += w;
             let pc = p % 12;
             for (ci, c) in cands.iter().enumerate() {
-                let tones: Vec<u8> = c.intervals.iter().take(3).map(|i| (c.root_pc + i) % 12).collect();
+                let tones: Vec<u8> = c
+                    .intervals
+                    .iter()
+                    .take(3)
+                    .map(|i| (c.root_pc + i) % 12)
+                    .collect();
                 let primary = matches!(c.label.as_str(), "I" | "IV" | "V" | "i" | "iv");
                 row[ci] += w * if tones.contains(&pc) {
                     (if pc == c.root_pc { 1.05 } else { 1.0 }) + if primary { 0.1 } else { 0.0 }
@@ -1367,9 +1579,14 @@ pub fn harmonize(notes_beats: &[(f32, f32, u8)], n_slots: usize, slot_beats: f32
             let mut best = (f32::NEG_INFINITY, 0usize);
             for p in 0..nc {
                 let mut tr = if p == c {
-                    if mid_bar { 0.15 } else { -0.05 }
+                    if mid_bar {
+                        0.15
+                    } else {
+                        -0.05
+                    }
                 } else {
-                    functional_bonus(&cands[p].label, &cands[c].label) - if mid_bar { 0.3 } else { 0.0 }
+                    functional_bonus(&cands[p].label, &cands[c].label)
+                        - if mid_bar { 0.3 } else { 0.0 }
                 };
                 // the minor v is a colour, the V a cadence
                 if cands[c].label == "v" {
@@ -1388,7 +1605,11 @@ pub fn harmonize(notes_beats: &[(f32, f32, u8)], n_slots: usize, slot_beats: f32
     if n_slots > 0 {
         let last = n_slots - 1;
         path[last] = (0..nc)
-            .max_by(|&a, &b| score[last][a].partial_cmp(&score[last][b]).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|&a, &b| {
+                score[last][a]
+                    .partial_cmp(&score[last][b])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .unwrap_or(0);
         for s in (1..n_slots).rev() {
             path[s - 1] = back[s][path[s]];
@@ -1405,11 +1626,28 @@ mod tests {
     /// harmonics, octave slips in the second pass, a noise floor), and its
     /// sung pitches in order.
     fn flat_noisy_line(sr: f32) -> (Vec<f32>, Vec<u8>) {
-        let line: [(f32, f32); 14] = [(52.0, 0.8), (55.0, 0.4), (54.0, 0.4), (52.0, 0.8), (47.0, 0.4), (50.0, 0.4), (52.0, 1.2),
-            (55.0, 0.4), (57.0, 0.4), (59.0, 0.8), (57.0, 0.4), (55.0, 0.4), (54.0, 0.4), (52.0, 1.2)];
+        let line: [(f32, f32); 14] = [
+            (52.0, 0.8),
+            (55.0, 0.4),
+            (54.0, 0.4),
+            (52.0, 0.8),
+            (47.0, 0.4),
+            (50.0, 0.4),
+            (52.0, 1.2),
+            (55.0, 0.4),
+            (57.0, 0.4),
+            (59.0, 0.8),
+            (57.0, 0.4),
+            (55.0, 0.4),
+            (54.0, 0.4),
+            (52.0, 1.2),
+        ];
         let mut x: Vec<f32> = Vec::new();
         let mut seed = 12345u32;
-        let mut noise = move || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); (seed >> 8) as f32 / 8388608.0 - 1.0 };
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / 8388608.0 - 1.0
+        };
         let mut phase = 0.0f32;
         let mut want = Vec::new();
         for rep in 0..2 {
@@ -1419,13 +1657,20 @@ mod tests {
                 for i in 0..n {
                     let t = i as f32 / sr;
                     let slip = rep == 1 && k % 3 == 0 && i < (0.03 * sr) as usize;
-                    let midi = m - 0.4 + 0.2 * (std::f32::consts::TAU * 5.0 * t).sin() + if slip { 12.0 } else { 0.0 };
+                    let midi = m - 0.4
+                        + 0.2 * (std::f32::consts::TAU * 5.0 * t).sin()
+                        + if slip { 12.0 } else { 0.0 };
                     let hz = 440.0 * 2f32.powf((midi - 69.0) / 12.0);
                     // wrapped: an f32 phase left to grow for 20 s loses the
                     // precision to hold the pitch (it steps by ~1 semitone)
                     phase = (phase + std::f32::consts::TAU * hz / sr) % std::f32::consts::TAU;
                     let env = (t / 0.03).min(1.0) * ((d - t) / 0.03).min(1.0);
-                    x.push(0.3 * env * (phase.sin() + 0.5 * (2.0 * phase).sin() + 0.25 * (3.0 * phase).sin()));
+                    x.push(
+                        0.3 * env
+                            * (phase.sin()
+                                + 0.5 * (2.0 * phase).sin()
+                                + 0.25 * (3.0 * phase).sin()),
+                    );
                 }
                 x.extend(std::iter::repeat(0.0).take((0.12 * sr) as usize));
             }
@@ -1446,22 +1691,52 @@ mod tests {
         let got: Vec<u8> = g.notes.iter().map(|n| n.pitch).collect();
         let legacy: Vec<u8> = l.notes.iter().map(|n| n.pitch).collect();
         eprintln!("yin_gated: {} notes, key {} {}, tuning {:.1} c; legacy: {} notes, key {} {}, tuning {:.1} c", got.len(), g.key_root, g.scale, g.tuning_cents, legacy.len(), l.key_root, l.scale, l.tuning_cents);
-        assert_eq!(got, want, "one note per sung note, at its pitch (tuning removed)");
-        assert!((g.tuning_cents + 40.0).abs() < 10.0, "tuning {}", g.tuning_cents);
+        assert_eq!(
+            got, want,
+            "one note per sung note, at its pitch (tuning removed)"
+        );
+        assert!(
+            (g.tuning_cents + 40.0).abs() < 10.0,
+            "tuning {}",
+            g.tuning_cents
+        );
         assert_eq!((g.key_root.as_str(), g.scale.as_str()), ("E", "minor"));
     }
-
 
     /// An E minor line sung `flat` cents flat (light vibrato, a noise floor),
     /// every note of 0.4 s or more flipping up `flip_st` semitones for
     /// `flip_s` seconds in its middle, `flip_gain` louder: a quick upper
     /// ornament the note frames keep and the gated key's 120 ms smoothing drops.
-    fn flipped_flat_line(sr: f32, flat: f32, flip_st: f32, flip_s: f32, flip_gain: f32, flip_every: f32) -> (Vec<f32>, Vec<u8>) {
-        let line: [(f32, f32); 14] = [(52.0, 0.6), (55.0, 0.4), (54.0, 0.4), (52.0, 0.8), (47.0, 0.4), (50.0, 0.4), (52.0, 1.0),
-            (55.0, 0.4), (57.0, 0.4), (59.0, 0.8), (57.0, 0.4), (55.0, 0.4), (54.0, 0.4), (52.0, 1.0)];
+    fn flipped_flat_line(
+        sr: f32,
+        flat: f32,
+        flip_st: f32,
+        flip_s: f32,
+        flip_gain: f32,
+        flip_every: f32,
+    ) -> (Vec<f32>, Vec<u8>) {
+        let line: [(f32, f32); 14] = [
+            (52.0, 0.6),
+            (55.0, 0.4),
+            (54.0, 0.4),
+            (52.0, 0.8),
+            (47.0, 0.4),
+            (50.0, 0.4),
+            (52.0, 1.0),
+            (55.0, 0.4),
+            (57.0, 0.4),
+            (59.0, 0.8),
+            (57.0, 0.4),
+            (55.0, 0.4),
+            (54.0, 0.4),
+            (52.0, 1.0),
+        ];
         let mut x: Vec<f32> = Vec::new();
         let mut seed = 777u32;
-        let mut noise = move || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); (seed >> 8) as f32 / 8388608.0 - 1.0 };
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / 8388608.0 - 1.0
+        };
         let mut phase = 0.0f32;
         let mut want = Vec::new();
         for _rep in 0..2 {
@@ -1475,11 +1750,23 @@ mod tests {
                     let t = i as f32 / sr;
                     let c = (t / slice).floor() * slice + slice / 2.0;
                     let flip = (t - c).abs() < flip_s / 2.0;
-                    let midi = m - flat / 100.0 + if flip { flip_st } else { 0.08 * (std::f32::consts::TAU * 5.5 * t).sin() };
+                    let midi = m - flat / 100.0
+                        + if flip {
+                            flip_st
+                        } else {
+                            0.08 * (std::f32::consts::TAU * 5.5 * t).sin()
+                        };
                     let hz = 440.0 * 2f32.powf((midi - 69.0) / 12.0);
                     phase = (phase + std::f32::consts::TAU * hz / sr) % std::f32::consts::TAU;
-                    let env = (t / 0.02).min(1.0) * ((d - t) / 0.03).min(1.0) * if flip { flip_gain } else { 1.0 };
-                    x.push(0.25 * env * (phase.sin() + 0.5 * (2.0 * phase).sin() + 0.25 * (3.0 * phase).sin()));
+                    let env = (t / 0.02).min(1.0)
+                        * ((d - t) / 0.03).min(1.0)
+                        * if flip { flip_gain } else { 1.0 };
+                    x.push(
+                        0.25 * env
+                            * (phase.sin()
+                                + 0.5 * (2.0 * phase).sin()
+                                + 0.25 * (3.0 * phase).sin()),
+                    );
                 }
                 x.extend(std::iter::repeat(0.0).take((0.15 * sr) as usize));
             }
@@ -1507,14 +1794,30 @@ mod tests {
         let got: Vec<u8> = g.notes.iter().map(|n| n.pitch).collect();
         let old_p: Vec<u8> = old.notes.iter().map(|n| n.pitch).collect();
         eprintln!("frames' own tuning {own:.1} c -> {} {}; gated-key tuning {:.1} c ({}) -> {} {}, {} notes", old.key_root, old.scale, g.tuning_cents, g.tuning_source, g.key_root, g.scale, got.len());
-        assert!(own > 0.0, "the frames' own estimate wraps to the sharp side: {own}");
-        assert_ne!(old_p, want, "rounded on the frames' own tuning the notes land a semitone off");
+        assert!(
+            own > 0.0,
+            "the frames' own estimate wraps to the sharp side: {own}"
+        );
+        assert_ne!(
+            old_p, want,
+            "rounded on the frames' own tuning the notes land a semitone off"
+        );
         assert_eq!(g.tuning_source, "gated_key");
-        assert!((g.tuning_cents + 45.0).abs() < 10.0, "gated tuning {}", g.tuning_cents);
-        assert_eq!(got, want, "one note per sung note, at its pitch (gated tuning removed)");
+        assert!(
+            (g.tuning_cents + 45.0).abs() < 10.0,
+            "gated tuning {}",
+            g.tuning_cents
+        );
+        assert_eq!(
+            got, want,
+            "one note per sung note, at its pitch (gated tuning removed)"
+        );
         assert_eq!((g.key_root.as_str(), g.scale.as_str()), ("E", "minor"));
         // legacy keeps its own estimate
-        assert_eq!(analyze_with(&x, sr, &[], None, PitchDetect::Legacy).tuning_source, "frames");
+        assert_eq!(
+            analyze_with(&x, sr, &[], None, PitchDetect::Legacy).tuning_source,
+            "frames"
+        );
     }
 
     #[test]
@@ -1522,19 +1825,33 @@ mod tests {
         let sr = crate::dsp::SR;
         let mut seed = 99u32;
         let x: Vec<f32> = (0..(4.0 * sr) as usize)
-            .map(|_| { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); 0.2 * ((seed >> 8) as f32 / 8388608.0 - 1.0) })
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                0.2 * ((seed >> 8) as f32 / 8388608.0 - 1.0)
+            })
             .collect();
         let fr = pitch_track_gated(&x, sr);
-        assert!(fr.iter().all(|f| f.midi == 0.0), "white noise has no voiced frames");
-        assert!(analyze_with(&x, sr, &[], None, PitchDetect::YinGated).notes.is_empty());
+        assert!(
+            fr.iter().all(|f| f.midi == 0.0),
+            "white noise has no voiced frames"
+        );
+        assert!(analyze_with(&x, sr, &[], None, PitchDetect::YinGated)
+            .notes
+            .is_empty());
     }
 
     #[test]
     fn pitch_detect_defaults_to_yin_gated() {
         assert_eq!(PitchDetect::DEFAULT, PitchDetect::YinGated);
         assert_eq!(PitchDetect::from_arg(None).unwrap(), PitchDetect::YinGated);
-        assert_eq!(PitchDetect::from_arg(Some("yin_gated")).unwrap(), PitchDetect::YinGated);
-        assert_eq!(PitchDetect::from_arg(Some("legacy")).unwrap(), PitchDetect::Legacy);
+        assert_eq!(
+            PitchDetect::from_arg(Some("yin_gated")).unwrap(),
+            PitchDetect::YinGated
+        );
+        assert_eq!(
+            PitchDetect::from_arg(Some("legacy")).unwrap(),
+            PitchDetect::Legacy
+        );
         assert!(PitchDetect::from_arg(Some("notes")).is_err());
     }
 
@@ -1543,11 +1860,28 @@ mod tests {
         // E minor line sung 40 cents flat with vibrato, harmonics, a noise floor
         // and octave slips: E G F# E B D E | G A B A G F# E
         let sr = crate::dsp::SR;
-        let line: [(f32, f32); 14] = [(52.0, 0.8), (55.0, 0.4), (54.0, 0.4), (52.0, 0.8), (47.0, 0.4), (50.0, 0.4), (52.0, 1.2),
-            (55.0, 0.4), (57.0, 0.4), (59.0, 0.8), (57.0, 0.4), (55.0, 0.4), (54.0, 0.4), (52.0, 1.2)];
+        let line: [(f32, f32); 14] = [
+            (52.0, 0.8),
+            (55.0, 0.4),
+            (54.0, 0.4),
+            (52.0, 0.8),
+            (47.0, 0.4),
+            (50.0, 0.4),
+            (52.0, 1.2),
+            (55.0, 0.4),
+            (57.0, 0.4),
+            (59.0, 0.8),
+            (57.0, 0.4),
+            (55.0, 0.4),
+            (54.0, 0.4),
+            (52.0, 1.2),
+        ];
         let mut x: Vec<f32> = Vec::new();
         let mut seed = 12345u32;
-        let mut noise = move || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); (seed >> 8) as f32 / 8388608.0 - 1.0 };
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / 8388608.0 - 1.0
+        };
         let mut phase = 0.0f32;
         for rep in 0..2 {
             for (k, &(m, d)) in line.iter().enumerate() {
@@ -1555,11 +1889,18 @@ mod tests {
                 for i in 0..n {
                     let t = i as f32 / sr;
                     let slip = rep == 1 && k % 3 == 0 && i < (0.03 * sr) as usize;
-                    let midi = m - 0.4 + 0.2 * (std::f32::consts::TAU * 5.0 * t).sin() + if slip { 12.0 } else { 0.0 };
+                    let midi = m - 0.4
+                        + 0.2 * (std::f32::consts::TAU * 5.0 * t).sin()
+                        + if slip { 12.0 } else { 0.0 };
                     let hz = 440.0 * 2f32.powf((midi - 69.0) / 12.0);
                     phase += std::f32::consts::TAU * hz / sr;
                     let env = (t / 0.03).min(1.0) * ((d - t) / 0.03).min(1.0);
-                    x.push(0.3 * env * (phase.sin() + 0.5 * (2.0 * phase).sin() + 0.25 * (3.0 * phase).sin()));
+                    x.push(
+                        0.3 * env
+                            * (phase.sin()
+                                + 0.5 * (2.0 * phase).sin()
+                                + 0.25 * (3.0 * phase).sin()),
+                    );
                 }
                 x.extend(std::iter::repeat(0.0).take((0.12 * sr) as usize));
             }
@@ -1569,18 +1910,31 @@ mod tests {
             *v += 0.003 * noise();
         }
         let g = gated_key(&x, sr).expect("enough voiced frames");
-        assert_eq!((g.key_root.as_str(), g.scale.as_str()), ("E", "minor"), "{g:?}");
+        assert_eq!(
+            (g.key_root.as_str(), g.scale.as_str()),
+            ("E", "minor"),
+            "{g:?}"
+        );
         assert!(!g.unknown && g.margin >= GATED_KEY_MIN_MARGIN, "{g:?}");
-        assert!((g.tuning_cents + 40.0).abs() < 10.0, "tuning offset found: {g:?}");
+        assert!(
+            (g.tuning_cents + 40.0).abs() < 10.0,
+            "tuning offset found: {g:?}"
+        );
     }
 
     #[test]
     fn gated_key_stays_silent_on_noise() {
         let mut seed = 7u32;
         let x: Vec<f32> = (0..(3.0 * crate::dsp::SR) as usize)
-            .map(|_| { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); 0.2 * ((seed >> 8) as f32 / 8388608.0 - 1.0) })
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                0.2 * ((seed >> 8) as f32 / 8388608.0 - 1.0)
+            })
             .collect();
-        assert!(gated_key(&x, crate::dsp::SR).map_or(true, |g| g.unknown), "white noise has no key");
+        assert!(
+            gated_key(&x, crate::dsp::SR).map_or(true, |g| g.unknown),
+            "white noise has no key"
+        );
     }
 
     use crate::dsp::SR;
@@ -1598,7 +1952,9 @@ mod tests {
                 let f = f0 * (1.0 + 0.004 * (tt * 5.5 * std::f32::consts::TAU).sin());
                 ph += f / SR;
                 let env = (tt / 0.03).min(1.0) * ((d - tt) / 0.05).clamp(0.0, 1.0);
-                let x = (ph * std::f32::consts::TAU).sin() + 0.4 * (2.0 * ph * std::f32::consts::TAU).sin() + 0.2 * (3.0 * ph * std::f32::consts::TAU).sin();
+                let x = (ph * std::f32::consts::TAU).sin()
+                    + 0.4 * (2.0 * ph * std::f32::consts::TAU).sin()
+                    + 0.2 * (3.0 * ph * std::f32::consts::TAU).sin();
                 if let Some(o) = out.get_mut(s0 + i) {
                     *o += 0.25 * env * x;
                 }
@@ -1609,7 +1965,9 @@ mod tests {
 
     fn twinkle(bpm: f32, offset: f32) -> (Vec<(f32, f32, f32)>, f32) {
         // C C G G A A G- F F E E D D C-
-        let mel = [60, 60, 67, 67, 69, 69, 67, 67, 65, 65, 64, 64, 62, 62, 60, 60];
+        let mel = [
+            60, 60, 67, 67, 69, 69, 67, 67, 65, 65, 64, 64, 62, 62, 60, 60,
+        ];
         let beat = 60.0 / bpm;
         let mut v = Vec::new();
         let mut i = 0;
@@ -1633,21 +1991,40 @@ mod tests {
         let (mel, len) = twinkle(100.0, 0.7);
         let x = sing(&mel, len);
         let a = analyze(&x, SR, &[], None);
-        assert!(a.notes.len() >= 24 && a.notes.len() <= 34, "notes {}", a.notes.len());
+        assert!(
+            a.notes.len() >= 24 && a.notes.len() <= 34,
+            "notes {}",
+            a.notes.len()
+        );
         let pitches: Vec<u8> = a.notes.iter().map(|n| n.pitch).collect();
-        assert!(pitches.contains(&60) && pitches.contains(&67) && pitches.contains(&69), "{pitches:?}");
+        assert!(
+            pitches.contains(&60) && pitches.contains(&67) && pitches.contains(&69),
+            "{pitches:?}"
+        );
         assert_eq!(a.key_root, "C", "key {} {}", a.key_root, a.scale);
         assert_eq!(a.scale, "major");
         assert!((a.tempo.bpm - 100.0).abs() < 2.0, "bpm {}", a.tempo.bpm);
         let period = 0.6;
         let d = ((a.tempo.downbeat - 0.7) / period).rem_euclid(4.0);
-        assert!(d < 0.15 || d > 3.85, "downbeat {} phase {}", a.tempo.downbeat, a.tempo.phase);
+        assert!(
+            d < 0.15 || d > 3.85,
+            "downbeat {} phase {}",
+            a.tempo.downbeat,
+            a.tempo.phase
+        );
     }
 
     #[test]
     fn harmonizes_twinkle_with_tonic_subdominant_dominant() {
-        let mel = [60u8, 60, 67, 67, 69, 69, 67, 67, 65, 65, 64, 64, 62, 62, 60, 60];
-        let nb: Vec<(f32, f32, u8)> = mel.iter().enumerate().filter(|(k, _)| k % 8 != 7).map(|(k, &p)| (k as f32, if k % 8 == 6 { 2.0 } else { 1.0 }, p)).collect();
+        let mel = [
+            60u8, 60, 67, 67, 69, 69, 67, 67, 65, 65, 64, 64, 62, 62, 60, 60,
+        ];
+        let nb: Vec<(f32, f32, u8)> = mel
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| k % 8 != 7)
+            .map(|(k, &p)| (k as f32, if k % 8 == 6 { 2.0 } else { 1.0 }, p))
+            .collect();
         let ch = harmonize(&nb, 8, 2.0, 0, "major").unwrap();
         let labels: Vec<&str> = ch.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(labels[0], "I");
@@ -1677,7 +2054,9 @@ mod tests {
 
     #[test]
     fn wsola_keeps_pitch_and_hits_the_length() {
-        let x: Vec<f32> = (0..(SR as usize * 2)).map(|i| (i as f32 * 330.0 / SR * std::f32::consts::TAU).sin() * 0.5).collect();
+        let x: Vec<f32> = (0..(SR as usize * 2))
+            .map(|i| (i as f32 * 330.0 / SR * std::f32::consts::TAU).sin() * 0.5)
+            .collect();
         let y = warp_audio(&x, SR, 2.4, |o| o / 1.2);
         assert_eq!(y.len(), (2.4 * SR) as usize);
         let f = crate::sc_dsp::yin(&y[40000..42048], SR, 60.0, 1000.0, 0.15).unwrap();
@@ -1707,17 +2086,37 @@ mod tests {
 
     #[test]
     fn lyric_similarity_finds_the_repeat() {
-        assert!(lyric_similarity("Twinkle twinkle little star", "twinkle, twinkle little star!") > 0.9);
-        assert!(lyric_similarity("Up above the world so high", "When the blazing sun is gone") < 0.2);
+        assert!(
+            lyric_similarity(
+                "Twinkle twinkle little star",
+                "twinkle, twinkle little star!"
+            ) > 0.9
+        );
+        assert!(
+            lyric_similarity("Up above the world so high", "When the blazing sun is gone") < 0.2
+        );
     }
 
     #[test]
     fn lyrics_looped_catches_decoder_loops() {
-        let line = |t: &str| LyricLine { start: 0.0, end: 1.0, text: t.into(), words: Vec::new() };
-        let mk = |v: Vec<LyricLine>| Lyrics { language: "hi".into(), text: String::new(), segments: v };
+        let line = |t: &str| LyricLine {
+            start: 0.0,
+            end: 1.0,
+            text: t.into(),
+            words: Vec::new(),
+        };
+        let mk = |v: Vec<LyricLine>| Lyrics {
+            language: "hi".into(),
+            text: String::new(),
+            segments: v,
+        };
         let looped = mk(vec![line("मैं हूँ मैं हूँ मैं हूँ मैं हूँ मैं हूँ मैं हूँ")]);
         assert!(lyrics_looped(&looped));
-        let fine = mk(vec![line("तवकी धुम की लगती लिब दनते है"), line("मैंने तो मश्वी शहिया देकाया"), line("निमन देखाम खाँवा ने ना")]);
+        let fine = mk(vec![
+            line("तवकी धुम की लगती लिब दनते है"),
+            line("मैंने तो मश्वी शहिया देकाया"),
+            line("निमन देखाम खाँवा ने ना"),
+        ]);
         assert!(!lyrics_looped(&fine));
         let same = mk((0..8).map(|_| line("ना ना ना")).collect());
         assert!(lyrics_looped(&same));

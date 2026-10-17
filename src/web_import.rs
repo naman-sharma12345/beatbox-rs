@@ -16,8 +16,16 @@ use std::path::{Path, PathBuf};
 const AUDIO: &[&str] = &["wav", "wave", "aif", "aiff", "flac", "mp3", "ogg", "oga"];
 
 fn slug(s: &str) -> String {
-    let t: String = s.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    let t = t.split('_').filter(|x| !x.is_empty()).collect::<Vec<_>>().join("_");
+    let t: String = s
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let t = t
+        .split('_')
+        .filter(|x| !x.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
     t.chars().take(48).collect()
 }
 
@@ -35,7 +43,8 @@ fn check_url(url: &str) -> Result<()> {
 
 /// Downloads done ahead of the tool call (the studio fetches off the UI
 /// thread, then runs import_from_url on the engine): url -> (bytes, final url).
-static PREFETCHED: std::sync::Mutex<Vec<(String, Vec<u8>, String)>> = std::sync::Mutex::new(Vec::new());
+static PREFETCHED: std::sync::Mutex<Vec<(String, Vec<u8>, String)>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// Download `url` now and keep it for the next import_from_url of the same
 /// URL in this process (used by the studio so the engine is never blocked
@@ -68,11 +77,22 @@ pub fn download(url: &str, max_mb: u64) -> Result<(Vec<u8>, String)> {
 
 fn fetch(url: &str, max_mb: u64) -> Result<(Vec<u8>, String)> {
     check_url(url)?;
-    let agent = ureq::AgentBuilder::new().redirects(8).timeout_connect(std::time::Duration::from_secs(20)).timeout_read(std::time::Duration::from_secs(120)).build();
-    let resp = agent.get(url).set("User-Agent", "beatbox-rs (music tool)").call().map_err(|e| anyhow!("download {url}: {e}"))?;
+    let agent = ureq::AgentBuilder::new()
+        .redirects(8)
+        .timeout_connect(std::time::Duration::from_secs(20))
+        .timeout_read(std::time::Duration::from_secs(120))
+        .build();
+    let resp = agent
+        .get(url)
+        .set("User-Agent", "beatbox-rs (music tool)")
+        .call()
+        .map_err(|e| anyhow!("download {url}: {e}"))?;
     let final_url = resp.get_url().to_string();
     let cap = max_mb * 1_000_000;
-    if let Some(len) = resp.header("Content-Length").and_then(|v| v.parse::<u64>().ok()) {
+    if let Some(len) = resp
+        .header("Content-Length")
+        .and_then(|v| v.parse::<u64>().ok())
+    {
         if len > cap {
             bail!("{url} is {:.0} MB, over max_mb {max_mb}", len as f64 / 1e6);
         }
@@ -90,12 +110,20 @@ fn fetch(url: &str, max_mb: u64) -> Result<(Vec<u8>, String)> {
 
 /// What the bytes are, from magic numbers first, then the URL's extension.
 pub fn sniff(b: &[u8], url: &str) -> &'static str {
-    let ext = url.split(['?', '#']).next().unwrap_or("").rsplit('.').next().unwrap_or("").to_lowercase();
+    let ext = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
     if b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WAVE" {
         "wav"
     } else if b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"sfbk" {
         "sf2"
-    } else if b.len() >= 12 && &b[0..4] == b"FORM" && (&b[8..12] == b"AIFF" || &b[8..12] == b"AIFC") {
+    } else if b.len() >= 12 && &b[0..4] == b"FORM" && (&b[8..12] == b"AIFF" || &b[8..12] == b"AIFC")
+    {
         "aiff"
     } else if b.starts_with(b"fLaC") {
         "flac"
@@ -109,7 +137,8 @@ pub fn sniff(b: &[u8], url: &str) -> &'static str {
         "tar.gz"
     } else if b.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) {
         "7z"
-    } else if ext == "sfz" || String::from_utf8_lossy(&b[..b.len().min(4000)]).contains("<region>") {
+    } else if ext == "sfz" || String::from_utf8_lossy(&b[..b.len().min(4000)]).contains("<region>")
+    {
         "sfz"
     } else if ext == "sf3" {
         "sf3"
@@ -140,7 +169,9 @@ pub fn unpack(bytes: &[u8], kind: &str, dir: &Path, cap: u64) -> Result<Vec<Path
     let mut out = Vec::new();
     let mut total = 0u64;
     let mut write = |name: &str, r: &mut dyn Read, out: &mut Vec<PathBuf>| -> Result<()> {
-        let Some(p) = safe_join(dir, name) else { return Ok(()) };
+        let Some(p) = safe_join(dir, name) else {
+            return Ok(());
+        };
         std::fs::create_dir_all(p.parent().unwrap())?;
         let mut f = std::fs::File::create(&p)?;
         let n = std::io::copy(&mut r.take(cap.saturating_sub(total) + 1), &mut f)?;
@@ -187,13 +218,34 @@ pub fn unpack(bytes: &[u8], kind: &str, dir: &Path, cap: u64) -> Result<Vec<Path
 pub fn detect_license(files: &[PathBuf]) -> Option<String> {
     let mut found = Vec::new();
     for f in files {
-        let n = f.file_name().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
-        if !(n.contains("licen") || n.contains("readme") || n.contains("copying") || n.ends_with(".txt") || n.ends_with(".md")) {
+        let n = f
+            .file_name()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if !(n.contains("licen")
+            || n.contains("readme")
+            || n.contains("copying")
+            || n.ends_with(".txt")
+            || n.ends_with(".md"))
+        {
             continue;
         }
-        let Ok(t) = std::fs::read_to_string(f) else { continue };
+        let Ok(t) = std::fs::read_to_string(f) else {
+            continue;
+        };
         let t = t.to_lowercase();
-        for (k, label) in [("non-commercial", "NON-COMMERCIAL (check before use)"), ("noncommercial", "NON-COMMERCIAL (check before use)"), ("cc0", "CC0"), ("public domain", "public domain"), ("creative commons attribution", "CC BY"), ("cc-by", "CC BY"), ("cc by", "CC BY"), ("mit license", "MIT"), ("permission is hereby granted", "MIT-style"), ("gnu general public", "GPL")] {
+        for (k, label) in [
+            ("non-commercial", "NON-COMMERCIAL (check before use)"),
+            ("noncommercial", "NON-COMMERCIAL (check before use)"),
+            ("cc0", "CC0"),
+            ("public domain", "public domain"),
+            ("creative commons attribution", "CC BY"),
+            ("cc-by", "CC BY"),
+            ("cc by", "CC BY"),
+            ("mit license", "MIT"),
+            ("permission is hereby granted", "MIT-style"),
+            ("gnu general public", "GPL"),
+        ] {
             if t.contains(k) && !found.contains(&label) {
                 found.push(label);
             }
@@ -210,7 +262,10 @@ fn manifest_path() -> PathBuf {
 }
 
 pub fn manifest() -> Vec<Value> {
-    std::fs::read_to_string(manifest_path()).ok().and_then(|s| serde_json::from_str::<Vec<Value>>(&s).ok()).unwrap_or_default()
+    std::fs::read_to_string(manifest_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<Value>>(&s).ok())
+        .unwrap_or_default()
 }
 
 fn record(v: Value) -> Result<()> {
@@ -249,39 +304,81 @@ fn drum_role(name: &str) -> Option<&'static str> {
     })
 }
 
-fn register_file(e: &mut crate::engine::Engine, path: &Path, name: &str, license: &str, source: &str) -> Result<String> {
-    let info = crate::samples::SampleInfo { name: crate::samples::sample_name(name), path: path.to_string_lossy().into(), source: source.into(), license: license.into(), author: String::new(), duration: 0.0 };
+fn register_file(
+    e: &mut crate::engine::Engine,
+    path: &Path,
+    name: &str,
+    license: &str,
+    source: &str,
+) -> Result<String> {
+    let info = crate::samples::SampleInfo {
+        name: crate::samples::sample_name(name),
+        path: path.to_string_lossy().into(),
+        source: source.into(),
+        license: license.into(),
+        author: String::new(),
+        duration: 0.0,
+    };
     let r = crate::tools::register_sample(e, info)?;
     Ok(r["sample"].as_str().unwrap_or(name).to_string())
 }
 
 /// Load whatever an import produced. Returns a JSON description.
 /// Put an instrument on a track, creating it when missing. True when created.
-fn put_track(e: &mut crate::engine::Engine, track: &str, inst: crate::instruments::Instrument) -> bool {
+fn put_track(
+    e: &mut crate::engine::Engine,
+    track: &str,
+    inst: crate::instruments::Instrument,
+) -> bool {
     match e.project.track_index(track) {
         Ok(i) => {
             e.project.tracks[i].instrument = inst;
             false
         }
         Err(_) => {
-            e.project.tracks.push(crate::project::Track::new(track, inst));
+            e.project
+                .tracks
+                .push(crate::project::Track::new(track, inst));
             true
         }
     }
 }
 
-fn load_import(e: &mut crate::engine::Engine, files: &[PathBuf], base: &str, kind_hint: &str, license: &str, source: &str, track: Option<&str>) -> Result<Value> {
-    let ext = |p: &PathBuf| p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+fn load_import(
+    e: &mut crate::engine::Engine,
+    files: &[PathBuf],
+    base: &str,
+    kind_hint: &str,
+    license: &str,
+    source: &str,
+    track: Option<&str>,
+) -> Result<Value> {
+    let ext = |p: &PathBuf| {
+        p.extension()
+            .map(|x| x.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
     let sf2: Vec<&PathBuf> = files.iter().filter(|p| ext(p) == "sf2").collect();
     let sfz: Vec<&PathBuf> = files.iter().filter(|p| ext(p) == "sfz").collect();
-    let audio: Vec<&PathBuf> = files.iter().filter(|p| AUDIO.contains(&ext(p).as_str())).collect();
+    let audio: Vec<&PathBuf> = files
+        .iter()
+        .filter(|p| AUDIO.contains(&ext(p).as_str()))
+        .collect();
     if let Some(f) = sf2.first() {
         let font = f.to_string_lossy().to_string();
         let ps = crate::soundfont::presets(&font)?;
         let first = ps.iter().find(|p| p.0 == 0).or(ps.first()).cloned();
         let mut out = json!({"loaded": "soundfont", "font": font, "presets": ps.len(), "first_presets": ps.iter().take(24).map(|p| json!({"bank": p.0, "program": p.1, "name": p.2})).collect::<Vec<_>>(), "next": "set_instrument {track, instrument:{type:'soundfont', font:<font>, bank, program}}"});
         if let (Some(t), Some(p)) = (track, first) {
-            let inst = crate::instruments::Instrument::SoundFont(crate::soundfont::SoundFontParams { font: font.clone(), bank: p.0, program: p.1, drums: p.0 == 128, preset_name: p.2.clone(), ..Default::default() });
+            let inst =
+                crate::instruments::Instrument::SoundFont(crate::soundfont::SoundFontParams {
+                    font: font.clone(),
+                    bank: p.0,
+                    program: p.1,
+                    drums: p.0 == 128,
+                    preset_name: p.2.clone(),
+                    ..Default::default()
+                });
             let created = put_track(e, t, inst);
             out["track"] = json!(t);
             out["created"] = json!(created);
@@ -290,10 +387,16 @@ fn load_import(e: &mut crate::engine::Engine, files: &[PathBuf], base: &str, kin
         return Ok(out);
     }
     if !sfz.is_empty() {
-        let progs: Vec<String> = sfz.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        let progs: Vec<String> = sfz
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
         let mut out = json!({"loaded": "sfz", "programs": progs, "next": "add_multisample_track {name, sfz:<program>}"});
         if let Some(t) = track {
-            let r = e.call("add_multisample_track", &json!({"name": t, "sfz": progs[0]}))?;
+            let r = e.call(
+                "add_multisample_track",
+                &json!({"name": t, "sfz": progs[0]}),
+            )?;
             out["track"] = json!(t);
             out["track_result"] = r;
         }
@@ -303,45 +406,90 @@ fn load_import(e: &mut crate::engine::Engine, files: &[PathBuf], base: &str, kin
         bail!("nothing playable found (no audio, .sf2 or .sfz)");
     }
     if kind_hint == "ir" {
-        return Ok(json!({"loaded": "ir", "ir_path": audio[0], "next": "add_effect convolution {ir_path} or cab_ir {path}"}));
+        return Ok(
+            json!({"loaded": "ir", "ir_path": audio[0], "next": "add_effect convolution {ir_path} or cab_ir {path}"}),
+        );
     }
     // one-shot folder -> kit by drum names, or multisample by note names
-    let notes: Vec<(String, u8, i32, u8)> = audio.iter().filter_map(|p| {
-        let n = p.file_name()?.to_string_lossy().to_string();
-        crate::multisample::parse_sample_name(&n).map(|(k, v, rr)| (p.to_string_lossy().to_string(), k, v, rr))
-    }).collect();
+    let notes: Vec<(String, u8, i32, u8)> = audio
+        .iter()
+        .filter_map(|p| {
+            let n = p.file_name()?.to_string_lossy().to_string();
+            crate::multisample::parse_sample_name(&n)
+                .map(|(k, v, rr)| (p.to_string_lossy().to_string(), k, v, rr))
+        })
+        .collect();
     let mut names = Vec::new();
-    if audio.len() > 1 && (kind_hint == "kit" || (kind_hint == "auto" && notes.len() * 2 < audio.len())) {
+    if audio.len() > 1
+        && (kind_hint == "kit" || (kind_hint == "auto" && notes.len() * 2 < audio.len()))
+    {
         let mut kit = serde_json::Map::new();
         for p in &audio {
-            let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let stem = p
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
             let s = register_file(e, p, &format!("{base}_{stem}"), license, source)?;
             names.push(s.clone());
             if let Some(role) = drum_role(&stem) {
-                kit.entry(role.to_string()).or_insert_with(|| json!([])).as_array_mut().unwrap().push(json!(s));
+                kit.entry(role.to_string())
+                    .or_insert_with(|| json!([]))
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!(s));
             }
         }
-        return Ok(json!({"loaded": "kit", "samples": names, "by_drum": kit, "next": "add_sample_track {name, sample} per drum, or use the samples in a pattern"}));
+        return Ok(
+            json!({"loaded": "kit", "samples": names, "by_drum": kit, "next": "add_sample_track {name, sample} per drum, or use the samples in a pattern"}),
+        );
     }
     if notes.len() >= 2 && kind_hint != "sample" && kind_hint != "loop" {
         let mut zones_in = Vec::new();
         for (path, k, v, rr) in &notes {
-            let stem = Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-            let s = register_file(e, Path::new(path), &format!("{base}_{stem}"), license, source)?;
+            let stem = Path::new(path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let s = register_file(
+                e,
+                Path::new(path),
+                &format!("{base}_{stem}"),
+                license,
+                source,
+            )?;
             names.push(s.clone());
             zones_in.push((s, *k, *v, *rr));
         }
         let zones = crate::multisample::zones_from(&zones_in);
-        let (lo, hi) = (zones.iter().map(|z| z.lo_note).min().unwrap_or(0), zones.iter().map(|z| z.hi_note).max().unwrap_or(127));
+        let (lo, hi) = (
+            zones.iter().map(|z| z.lo_note).min().unwrap_or(0),
+            zones.iter().map(|z| z.hi_note).max().unwrap_or(127),
+        );
         let n = zones.len();
-        let track = track.map(|t| t.to_string()).unwrap_or_else(|| crate::samples::sample_name(base));
-        let inst = crate::instruments::Instrument::Multisample(crate::multisample::MultisampleParams { zones, source: format!("{source} ({license})"), ..Default::default() });
+        let track = track
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| crate::samples::sample_name(base));
+        let inst =
+            crate::instruments::Instrument::Multisample(crate::multisample::MultisampleParams {
+                zones,
+                source: format!("{source} ({license})"),
+                ..Default::default()
+            });
         put_track(e, &track, inst);
-        return Ok(json!({"loaded": "multisample", "track": track, "zones": n, "key_range": [lo, hi], "samples": names}));
+        return Ok(
+            json!({"loaded": "multisample", "track": track, "zones": n, "key_range": [lo, hi], "samples": names}),
+        );
     }
     for p in &audio {
-        let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let nm = if audio.len() == 1 { base.to_string() } else { format!("{base}_{stem}") };
+        let stem = p
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let nm = if audio.len() == 1 {
+            base.to_string()
+        } else {
+            format!("{base}_{stem}")
+        };
         names.push(register_file(e, p, &nm, license, source)?);
     }
     Ok(json!({"loaded": if kind_hint == "loop" { "loop" } else { "sample" }, "samples": names}))
@@ -349,7 +497,10 @@ fn load_import(e: &mut crate::engine::Engine, files: &[PathBuf], base: &str, kin
 
 /// Links on a page that point at audio, SoundFonts, SFZ or archives.
 pub fn page_links(html: &str, base: &str) -> Vec<(String, String)> {
-    let exts = [".wav", ".flac", ".mp3", ".ogg", ".aif", ".aiff", ".sf2", ".sf3", ".sfz", ".zip", ".tar.gz", ".tgz", ".7z"];
+    let exts = [
+        ".wav", ".flac", ".mp3", ".ogg", ".aif", ".aiff", ".sf2", ".sf3", ".sfz", ".zip",
+        ".tar.gz", ".tgz", ".7z",
+    ];
     let mut out: Vec<(String, String)> = Vec::new();
     let lower = html.to_lowercase();
     for attr in ["href=", "src="] {
@@ -357,8 +508,15 @@ pub fn page_links(html: &str, base: &str) -> Vec<(String, String)> {
         while let Some(j) = lower[i..].find(attr) {
             let s = i + j + attr.len();
             let q = html[s..].chars().next().unwrap_or(' ');
-            let (start, endc) = if q == '"' || q == '\'' { (s + 1, q) } else { (s, ' ') };
-            let end = html[start..].find(|c: char| c == endc || c == '>' || (endc == ' ' && c.is_whitespace())).map(|k| start + k).unwrap_or(html.len());
+            let (start, endc) = if q == '"' || q == '\'' {
+                (s + 1, q)
+            } else {
+                (s, ' ')
+            };
+            let end = html[start..]
+                .find(|c: char| c == endc || c == '>' || (endc == ' ' && c.is_whitespace()))
+                .map(|k| start + k)
+                .unwrap_or(html.len());
             let link = html[start..end].trim().to_string();
             i = end.max(s);
             let l = link.to_lowercase();
@@ -374,13 +532,21 @@ pub fn page_links(html: &str, base: &str) -> Vec<(String, String)> {
                 let origin: String = base.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
                 format!("{origin}{link}")
             } else {
-                format!("{}/{link}", base.rsplit_once('/').map(|x| x.0).unwrap_or(base))
+                format!(
+                    "{}/{link}",
+                    base.rsplit_once('/').map(|x| x.0).unwrap_or(base)
+                )
             };
             // the link text, when it is an <a>
-            let text = html[end..].find('>').and_then(|g| {
-                let t0 = end + g + 1;
-                html[t0..].find('<').map(|k| html[t0..t0 + k].trim().to_string())
-            }).unwrap_or_default();
+            let text = html[end..]
+                .find('>')
+                .and_then(|g| {
+                    let t0 = end + g + 1;
+                    html[t0..]
+                        .find('<')
+                        .map(|k| html[t0..t0 + k].trim().to_string())
+                })
+                .unwrap_or_default();
             if !out.iter().any(|(u, _)| *u == abs) {
                 out.push((abs, text));
             }
@@ -395,9 +561,22 @@ pub fn import_url(e: &mut crate::engine::Engine, a: &Value) -> Result<Value> {
     let max = a.get("max_mb").and_then(|v| v.as_u64()).unwrap_or(200);
     let (bytes, final_url) = download(&url, max)?;
     let kind = sniff(&bytes, &final_url);
-    let fname = final_url.split(['?', '#']).next().unwrap_or("").rsplit('/').next().unwrap_or("file").to_string();
-    let base = s_opt(a, "name").map(|s| slug(&s)).unwrap_or_else(|| slug(fname.split('.').next().unwrap_or("import")));
-    let base = if base.is_empty() { "import".to_string() } else { base };
+    let fname = final_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('/')
+        .next()
+        .unwrap_or("file")
+        .to_string();
+    let base = s_opt(a, "name")
+        .map(|s| slug(&s))
+        .unwrap_or_else(|| slug(fname.split('.').next().unwrap_or("import")));
+    let base = if base.is_empty() {
+        "import".to_string()
+    } else {
+        base
+    };
     let dir = crate::soundfont::library_dir().join("imports").join(&base);
     std::fs::create_dir_all(&dir)?;
     let sha = crate::voice_ai::sha256_hex(&bytes);
@@ -419,14 +598,26 @@ pub fn import_url(e: &mut crate::engine::Engine, a: &Value) -> Result<Value> {
         bail!("a lone .sfz has no samples; import the zip of its instrument instead (or search_instruments for SFZ instruments the catalog can fetch with their samples)");
     }
     let detected = detect_license(&files);
-    let license = s_opt(a, "license").or(detected.clone()).unwrap_or_else(|| "unknown (not stated)".into());
+    let license = s_opt(a, "license")
+        .or(detected.clone())
+        .unwrap_or_else(|| "unknown (not stated)".into());
     let source = s_opt(a, "source_page").unwrap_or_else(|| url.clone());
     let mut hint = s_opt(a, "kind").unwrap_or_else(|| "auto".into());
     if hint == "instrument" {
         hint = "auto".into();
     }
-    let loaded = load_import(e, &files, &base, &hint, &license, &source, s_opt(a, "track").as_deref())?;
-    record(json!({"slug": base, "url": url, "final_url": final_url, "source_page": s_opt(a, "source_page"), "license": license, "license_detected": detected, "sha256": sha, "bytes": bytes.len(), "kind": kind, "date": crate::sound_catalog::now(), "loaded": loaded["loaded"]}))?;
+    let loaded = load_import(
+        e,
+        &files,
+        &base,
+        &hint,
+        &license,
+        &source,
+        s_opt(a, "track").as_deref(),
+    )?;
+    record(
+        json!({"slug": base, "url": url, "final_url": final_url, "source_page": s_opt(a, "source_page"), "license": license, "license_detected": detected, "sha256": sha, "bytes": bytes.len(), "kind": kind, "date": crate::sound_catalog::now(), "loaded": loaded["loaded"]}),
+    )?;
     crate::sound_catalog::evict("imports");
     let mut out = json!({"name": base, "kind": kind, "sha256": sha, "mb": (bytes.len() as f64 / 1e5).round() / 10.0, "license": license, "folder": dir, "files": files.len()});
     if license.to_lowercase().contains("non-commercial") || license.starts_with("unknown") {
@@ -466,14 +657,26 @@ pub fn license_label(l: &str) -> String {
 
 fn fs_get(path_and_query: &str) -> Result<Value> {
     let key = freesound_key()?;
-    let sep = if path_and_query.contains('?') { '&' } else { '?' };
+    let sep = if path_and_query.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
     let url = format!("{}{path_and_query}{sep}token={key}", freesound_base());
     let (b, _) = download(&url, 8)?;
-    Ok(serde_json::from_slice(&b).context("freesound answer")?)
+    serde_json::from_slice(&b).context("freesound answer")
 }
 
 fn enc(s: &str) -> String {
-    s.bytes().map(|c| if c.is_ascii_alphanumeric() || b"-_.~".contains(&c) { (c as char).to_string() } else { format!("%{c:02X}") }).collect()
+    s.bytes()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || b"-_.~".contains(&c) {
+                (c as char).to_string()
+            } else {
+                format!("%{c:02X}")
+            }
+        })
+        .collect()
 }
 
 fn fs_row(r: &Value) -> Value {
@@ -617,7 +820,9 @@ mod tests {
                 let path = req.url().split('?').next().unwrap_or("").to_string();
                 match files.get(&path) {
                     Some(b) => req.respond(tiny_http::Response::from_data(b.clone())).ok(),
-                    None => req.respond(tiny_http::Response::from_string("nope").with_status_code(404)).ok(),
+                    None => req
+                        .respond(tiny_http::Response::from_string("nope").with_status_code(404))
+                        .ok(),
                 };
             }
         });
@@ -626,13 +831,19 @@ mod tests {
 
     fn tone(freq: f32, secs: f32) -> Vec<u8> {
         let n = (44100.0 * secs) as usize;
-        let x: Vec<f32> = (0..n).map(|i| 0.5 * (i as f32 * freq * std::f32::consts::TAU / 44100.0).sin() * (1.0 - i as f32 / n as f32)).collect();
+        let x: Vec<f32> = (0..n)
+            .map(|i| {
+                0.5 * (i as f32 * freq * std::f32::consts::TAU / 44100.0).sin()
+                    * (1.0 - i as f32 / n as f32)
+            })
+            .collect();
         crate::media::wav_bytes(&x, &x, 44100)
     }
 
     fn zip_of(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
         let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        let opt = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let opt = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         for (n, b) in entries {
             w.start_file(*n, opt).unwrap();
             w.write_all(b).unwrap();
@@ -651,12 +862,17 @@ mod tests {
             ("MyKit/Kick 01.wav", tone(60.0, 0.4)),
             ("MyKit/Snare 01.wav", tone(200.0, 0.2)),
             ("MyKit/HiHat closed.wav", tone(4000.0, 0.1)),
-            ("MyKit/LICENSE.txt", b"These samples are released under CC0 1.0 (public domain).".to_vec()),
+            (
+                "MyKit/LICENSE.txt",
+                b"These samples are released under CC0 1.0 (public domain).".to_vec(),
+            ),
             ("../escape.wav", tone(100.0, 0.1)),
         ]);
         files.insert("/kits/mykit.zip".to_string(), kit);
         files.insert("/page.html".to_string(), b"<html><a href=\"/kits/mykit.zip\">My kit</a> <a href='sounds/clean_hit.wav'>hit</a> <a href=\"/about\">about</a></html>".to_vec());
-        let font = crate::soundfont::font_entry("generaluser_gs").map(|f| crate::soundfont::installed_path(f)).filter(|p| p.is_file());
+        let font = crate::soundfont::font_entry("generaluser_gs")
+            .map(|f| crate::soundfont::installed_path(f))
+            .filter(|p| p.is_file());
         if let Some(p) = &font {
             files.insert("/fonts/small.sf2".to_string(), std::fs::read(p).unwrap());
         }
@@ -664,13 +880,21 @@ mod tests {
         let mut e = Engine::new(lib.join("work"));
 
         // plain https rule
-        assert!(e.call("import_from_url", &json!({"url": "http://example.com/a.wav"})).is_err());
+        assert!(e
+            .call(
+                "import_from_url",
+                &json!({"url": "http://example.com/a.wav"})
+            )
+            .is_err());
 
         // 1. one CC0 wav -> sample with licence
         let r = e.call("import_from_url", &json!({"url": format!("{base}/sounds/clean_hit.wav"), "license": "CC0", "source_page": "https://example.org/hit"})).unwrap();
         assert_eq!(r["loaded"], "sample", "{r}");
         assert_eq!(r["license"], "CC0");
-        assert!(e.project.samples.iter().any(|s| s.name == "clean_hit"), "{r}");
+        assert!(
+            e.project.samples.iter().any(|s| s.name == "clean_hit"),
+            "{r}"
+        );
 
         // prefetch (the studio's off-thread download) is used once by the next download
         let u = format!("{base}/sounds/clean_hit.wav");
@@ -681,26 +905,52 @@ mod tests {
         assert!(!super::PREFETCHED.lock().unwrap().iter().any(|x| x.0 == u));
 
         // 2. zip of one-shots -> kit by drum names, licence found in the archive, no escape
-        let r = e.call("import_from_url", &json!({"url": format!("{base}/kits/mykit.zip"), "name": "my kit"})).unwrap();
+        let r = e
+            .call(
+                "import_from_url",
+                &json!({"url": format!("{base}/kits/mykit.zip"), "name": "my kit"}),
+            )
+            .unwrap();
         assert_eq!(r["loaded"], "kit", "{r}");
         assert_eq!(r["license"], "CC0", "{r}");
-        assert!(r["by_drum"]["kick"].is_array() && r["by_drum"]["snare"].is_array() && r["by_drum"]["closed_hat"].is_array(), "{r}");
-        assert!(!lib.join("imports").join("escape.wav").exists() && !lib.join("escape.wav").exists());
+        assert!(
+            r["by_drum"]["kick"].is_array()
+                && r["by_drum"]["snare"].is_array()
+                && r["by_drum"]["closed_hat"].is_array(),
+            "{r}"
+        );
+        assert!(
+            !lib.join("imports").join("escape.wav").exists() && !lib.join("escape.wav").exists()
+        );
         for f in walk(&lib.join("imports")) {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o111, 0, "{f:?} is executable");
+                assert_eq!(
+                    std::fs::metadata(&f).unwrap().permissions().mode() & 0o111,
+                    0,
+                    "{f:?} is executable"
+                );
             }
         }
 
         // 3. page scrape
-        let p = e.call("import_from_page", &json!({"url": format!("{base}/page.html")})).unwrap();
+        let p = e
+            .call(
+                "import_from_page",
+                &json!({"url": format!("{base}/page.html")}),
+            )
+            .unwrap();
         assert_eq!(p["count"], 2, "{p}");
 
         // 4. sf2 -> soundfont track
         if font.is_some() {
-            let r = e.call("import_from_url", &json!({"url": format!("{base}/fonts/small.sf2"), "track": "keys"})).unwrap();
+            let r = e
+                .call(
+                    "import_from_url",
+                    &json!({"url": format!("{base}/fonts/small.sf2"), "track": "keys"}),
+                )
+                .unwrap();
             assert_eq!(r["loaded"], "soundfont", "{r}");
             assert!(r["presets"].as_u64().unwrap() > 10);
             assert!(e.project.track_index("keys").is_ok());
@@ -708,10 +958,21 @@ mod tests {
 
         // sources.json + credits
         let m = manifest();
-        assert!(m.iter().any(|x| x["slug"] == "my_kit" && x["sha256"].as_str().map(|s| s.len() == 64).unwrap_or(false)), "{m:?}");
-        let c = e.call("export_credits", &json!({"format": "json"})).unwrap();
+        assert!(
+            m.iter().any(|x| x["slug"] == "my_kit"
+                && x["sha256"].as_str().map(|s| s.len() == 64).unwrap_or(false)),
+            "{m:?}"
+        );
+        let c = e
+            .call("export_credits", &json!({"format": "json"}))
+            .unwrap();
         let rows = c["credits"].as_array().unwrap();
-        assert!(rows.iter().any(|r| r["source"].as_str().unwrap_or("").contains("mykit.zip") && r["license"] == "CC0"), "{c}");
+        assert!(
+            rows.iter()
+                .any(|r| r["source"].as_str().unwrap_or("").contains("mykit.zip")
+                    && r["license"] == "CC0"),
+            "{c}"
+        );
         let l = e.call("list_imports", &json!({})).unwrap();
         assert!(l["count"].as_u64().unwrap() >= 2, "{l}");
         std::env::remove_var("BEATBOX_LIBRARY");
@@ -738,16 +999,29 @@ mod tests {
         let d = std::env::temp_dir().join(format!("beatbox_unpack_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        let z = zip_of(&[("/abs.wav", vec![1; 10]), ("a/../../up.wav", vec![1; 10]), ("ok/x.wav", vec![1; 10])]);
+        let z = zip_of(&[
+            ("/abs.wav", vec![1; 10]),
+            ("a/../../up.wav", vec![1; 10]),
+            ("ok/x.wav", vec![1; 10]),
+        ]);
         let out = unpack(&z, "zip", &d, 1_000_000).unwrap();
         assert_eq!(out.len(), 1);
         assert!(out[0].starts_with(&d));
         let big = zip_of(&[("big.wav", vec![0; 3000])]);
         assert!(unpack(&big, "zip", &d.join("b"), 1000).is_err());
         let _ = std::fs::remove_dir_all(&d);
-        assert_eq!(license_label("http://creativecommons.org/publicdomain/zero/1.0/"), "CC0");
-        assert_eq!(license_label("https://creativecommons.org/licenses/by/4.0/"), "CC BY");
-        assert!(license_label("http://creativecommons.org/licenses/by-nc/3.0/").contains("non-commercial"));
+        assert_eq!(
+            license_label("http://creativecommons.org/publicdomain/zero/1.0/"),
+            "CC0"
+        );
+        assert_eq!(
+            license_label("https://creativecommons.org/licenses/by/4.0/"),
+            "CC BY"
+        );
+        assert!(
+            license_label("http://creativecommons.org/licenses/by-nc/3.0/")
+                .contains("non-commercial")
+        );
         assert_eq!(sniff(b"RIFF\0\0\0\0WAVEfmt ", "x"), "wav");
     }
 }

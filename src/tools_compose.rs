@@ -727,7 +727,10 @@ mod tests {
         let r = e.call("generate_drums", &json!({"style": "trap"})).unwrap();
         let seed = r["seed"].as_u64().unwrap();
         let last = e.project.seed_log.last().cloned().expect("logged");
-        assert_eq!((last.tool.as_str(), last.seed, last.source.as_str()), ("generate_drums", seed, "fresh"));
+        assert_eq!(
+            (last.tool.as_str(), last.seed, last.source.as_str()),
+            ("generate_drums", seed, "fresh")
+        );
         assert_eq!(last.args["seed"].as_u64(), Some(seed));
         let made = e.project.patterns.clone();
         // the log survives a save/load round trip

@@ -71,7 +71,9 @@ pub(crate) fn active_rms_db(l: &[f32], r: &[f32]) -> Option<f32> {
     let mut i = 0;
     while i < n {
         let j = (i + blk).min(n);
-        let s: f64 = (i..j).map(|k| (l[k] as f64).powi(2) + (r[k] as f64).powi(2)).sum();
+        let s: f64 = (i..j)
+            .map(|k| (l[k] as f64).powi(2) + (r[k] as f64).powi(2))
+            .sum();
         ms.push(s / (2.0 * (j - i) as f64));
         i = j;
     }
@@ -140,7 +142,11 @@ pub(crate) fn short_term_max_lufs(l: &[f32], r: &[f32]) -> Option<f32> {
             }
         }
     }
-    let ms = if hops >= W { best / (W * hop) as f64 } else { total / n as f64 };
+    let ms = if hops >= W {
+        best / (W * hop) as f64
+    } else {
+        total / n as f64
+    };
     let v = -0.691 + 10.0 * ms.log10();
     (v.is_finite() && v > -70.0).then_some(v as f32)
 }
@@ -148,8 +154,15 @@ pub(crate) fn short_term_max_lufs(l: &[f32], r: &[f32]) -> Option<f32> {
 /// Track names from a name, a comma list or an array (empty = none given).
 fn name_list(a: &Value, k: &str) -> Vec<String> {
     match a.get(k) {
-        Some(Value::String(s)) => s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
-        Some(Value::Array(v)) => v.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).collect(),
+        Some(Value::String(s)) => s
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect(),
+        Some(Value::Array(v)) => v
+            .iter()
+            .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -160,7 +173,12 @@ fn volume_lanes(p: &Project, track: &str) -> Vec<usize> {
     p.automation
         .iter()
         .enumerate()
-        .filter(|(_, l)| l.enabled && !l.points.is_empty() && l.target.eq_ignore_ascii_case(track) && parse_target(&l.param) == Some(Target::Volume))
+        .filter(|(_, l)| {
+            l.enabled
+                && !l.points.is_empty()
+                && l.target.eq_ignore_ascii_case(track)
+                && parse_target(&l.param) == Some(Target::Volume)
+        })
         .map(|(i, _)| i)
         .collect()
 }
@@ -168,17 +186,25 @@ fn volume_lanes(p: &Project, track: &str) -> Vec<usize> {
 /// Every track's post-fader stem (what it sends to its output), by track index.
 fn track_stems(e: &mut Engine, p: &Project) -> Result<Vec<Option<(Vec<f32>, Vec<f32>)>>> {
     let m = e.render_stems_all(p)?;
-    Ok(p
-        .tracks
+    Ok(p.tracks
         .iter()
-        .map(|t| m.stems.iter().find(|s| s.name == t.name && !s.left.is_empty()).map(|s| (s.left.clone(), s.right.clone())))
+        .map(|t| {
+            m.stems
+                .iter()
+                .find(|s| s.name == t.name && !s.left.is_empty())
+                .map(|s| (s.left.clone(), s.right.clone()))
+        })
         .collect())
 }
 
 fn gain_stage(e: &mut Engine, a: &Value) -> Result<Value> {
     let meter = Meter::parse(&s_opt(a, "measure").unwrap_or_else(|| "lufs".into()))?;
     let target = f_opt(a, "target_db");
-    let per = a.get("targets").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    let per = a
+        .get("targets")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
     if target.is_none() && per.is_empty() {
         bail!("give target_db (one level for every chosen track) and/or targets ({{track: dB}})");
     }
@@ -205,7 +231,11 @@ fn gain_stage(e: &mut Engine, a: &Value) -> Result<Value> {
     // track when target_db applies to all
     let mut chosen = name_list(a, "tracks");
     if chosen.is_empty() {
-        chosen = if target.is_some() { p.tracks.iter().map(|t| t.name.clone()).collect() } else { per.keys().cloned().collect() };
+        chosen = if target.is_some() {
+            p.tracks.iter().map(|t| t.name.clone()).collect()
+        } else {
+            per.keys().cloned().collect()
+        };
     }
     let mut idx = Vec::new();
     for n in &chosen {
@@ -216,7 +246,12 @@ fn gain_stage(e: &mut Engine, a: &Value) -> Result<Value> {
             .and_then(|(_, v)| v.as_f64())
             .map(|v| v as f32)
             .or(target);
-        let Some(want) = want else { bail!("no target for track '{}' (add it to targets or give target_db)", p.tracks[i].name) };
+        let Some(want) = want else {
+            bail!(
+                "no target for track '{}' (add it to targets or give target_db)",
+                p.tracks[i].name
+            )
+        };
         check(want, &format!("target for '{}'", p.tracks[i].name))?;
         if !idx.iter().any(|(j, _)| *j == i) {
             idx.push((i, want));
@@ -240,13 +275,16 @@ fn gain_stage(e: &mut Engine, a: &Value) -> Result<Value> {
         };
         let d = want - before;
         let lanes = volume_lanes(&p, &name);
-        let mut row = json!({"track": name, "target_db": want, "before_db": r2(before), "change_db": r2(d)});
+        let mut row =
+            json!({"track": name, "target_db": want, "before_db": r2(before), "change_db": r2(d)});
         if lanes.is_empty() {
             let t = &mut p.tracks[i];
             let v = t.volume_db + d;
             let landed = v.clamp(FADER_MIN_DB, FADER_MAX_DB);
             if landed != v {
-                row["clamped"] = json!(format!("the fader stops at {landed} dB (range {FADER_MIN_DB}..{FADER_MAX_DB})"));
+                row["clamped"] = json!(format!(
+                    "the fader stops at {landed} dB (range {FADER_MIN_DB}..{FADER_MAX_DB})"
+                ));
             }
             row["volume_db_before"] = json!(t.volume_db);
             t.volume_db = landed;
@@ -258,7 +296,8 @@ fn gain_stage(e: &mut Engine, a: &Value) -> Result<Value> {
                     pt.value = (pt.value + d).clamp(-120.0, 24.0);
                 }
             }
-            row["applied_to"] = json!("volume automation lane (it overrides the fader), shifted by change_db");
+            row["applied_to"] =
+                json!("volume automation lane (it overrides the fader), shifted by change_db");
         }
         moved.push(i);
         rows.push(row);
@@ -266,14 +305,19 @@ fn gain_stage(e: &mut Engine, a: &Value) -> Result<Value> {
     if b_or(a, "verify", true) && !moved.is_empty() {
         let after = track_stems(e, &p)?;
         for row in rows.iter_mut() {
-            let Some(name) = row["track"].as_str().map(|s| s.to_string()) else { continue };
+            let Some(name) = row["track"].as_str().map(|s| s.to_string()) else {
+                continue;
+            };
             if row.get("skipped").is_some() {
                 continue;
             }
             let i = p.track_index(&name)?;
             if let Some(v) = after[i].as_ref().and_then(|(l, r)| read_meter(meter, l, r)) {
                 row["after_db"] = json!((v * 1000.0).round() / 1000.0);
-                row["error_db"] = json!(((v - row["target_db"].as_f64().unwrap_or(0.0) as f32) * 1000.0).round() / 1000.0);
+                row["error_db"] = json!(
+                    ((v - row["target_db"].as_f64().unwrap_or(0.0) as f32) * 1000.0).round()
+                        / 1000.0
+                );
             }
         }
     }
@@ -302,9 +346,27 @@ pub(crate) fn stereo_facts(l: &[f32], r: &[f32]) -> (f32, f32, f32) {
         ll += a * a;
         rr += b * b;
     }
-    let width = if mm > 1e-18 { (ss / mm).sqrt() as f32 } else if ss > 1e-18 { f32::INFINITY } else { 0.0 };
-    let corr = if ll > 1e-18 && rr > 1e-18 { (lr / (ll * rr).sqrt()) as f32 } else { 1.0 };
-    let bal = if ll > 1e-18 && rr > 1e-18 { (10.0 * (rr / ll).log10()) as f32 } else if rr > 1e-18 { 99.0 } else if ll > 1e-18 { -99.0 } else { 0.0 };
+    let width = if mm > 1e-18 {
+        (ss / mm).sqrt() as f32
+    } else if ss > 1e-18 {
+        f32::INFINITY
+    } else {
+        0.0
+    };
+    let corr = if ll > 1e-18 && rr > 1e-18 {
+        (lr / (ll * rr).sqrt()) as f32
+    } else {
+        1.0
+    };
+    let bal = if ll > 1e-18 && rr > 1e-18 {
+        (10.0 * (rr / ll).log10()) as f32
+    } else if rr > 1e-18 {
+        99.0
+    } else if ll > 1e-18 {
+        -99.0
+    } else {
+        0.0
+    };
     (width, corr, bal)
 }
 
@@ -320,10 +382,21 @@ fn centroid_hz(mono: &[f32]) -> f32 {
             den += *v as f64;
         }
     }
-    if den > 0.0 { (num / den) as f32 } else { 0.0 }
+    if den > 0.0 {
+        (num / den) as f32
+    } else {
+        0.0
+    }
 }
 
-const BAND_NAMES: [&str; 6] = ["sub_20_60", "low_60_250", "lowmid_250_800", "mid_800_2k", "presence_2k_5k", "air_5k_16k"];
+const BAND_NAMES: [&str; 6] = [
+    "sub_20_60",
+    "low_60_250",
+    "lowmid_250_800",
+    "mid_800_2k",
+    "presence_2k_5k",
+    "air_5k_16k",
+];
 
 fn meter_row(l: &[f32], r: &[f32]) -> Value {
     let opt = |v: Option<f32>| v.map(|x| json!(r2(x))).unwrap_or(Value::Null);
@@ -356,18 +429,30 @@ fn mix_report(e: &mut Engine, a: &Value) -> Result<Value> {
         p.track_index(n)?;
     }
     let m = e.render_stems_all(&p)?;
-    let energy = |l: &[f32], r: &[f32]| -> f64 { l.iter().chain(r.iter()).map(|v| (*v as f64).powi(2)).sum() };
-    let total: f64 = p.tracks.iter().filter_map(|t| m.stems.iter().find(|s| s.name == t.name)).map(|s| energy(&s.left, &s.right)).sum();
+    let energy = |l: &[f32], r: &[f32]| -> f64 {
+        l.iter().chain(r.iter()).map(|v| (*v as f64).powi(2)).sum()
+    };
+    let total: f64 = p
+        .tracks
+        .iter()
+        .filter_map(|t| m.stems.iter().find(|s| s.name == t.name))
+        .map(|s| energy(&s.left, &s.right))
+        .sum();
     let mut rows = Vec::new();
     for t in &p.tracks {
         if !want.is_empty() && !want.iter().any(|w| w.eq_ignore_ascii_case(&t.name)) {
             continue;
         }
-        let mut row = match m.stems.iter().find(|s| s.name == t.name && !s.left.is_empty()) {
+        let mut row = match m
+            .stems
+            .iter()
+            .find(|s| s.name == t.name && !s.left.is_empty())
+        {
             Some(s) => {
                 let mut v = meter_row(&s.left, &s.right);
                 if total > 0.0 && v.get("silent").is_none() {
-                    v["energy_share_percent"] = json!(r2((100.0 * energy(&s.left, &s.right) / total) as f32));
+                    v["energy_share_percent"] =
+                        json!(r2((100.0 * energy(&s.left, &s.right) / total) as f32));
                 }
                 v
             }
@@ -384,7 +469,11 @@ fn mix_report(e: &mut Engine, a: &Value) -> Result<Value> {
     let mut buses = Vec::new();
     if b_or(a, "buses", true) {
         for b in &p.buses {
-            let mut row = match m.bus_stems.iter().find(|s| s.name == b.name && !s.left.is_empty()) {
+            let mut row = match m
+                .bus_stems
+                .iter()
+                .find(|s| s.name == b.name && !s.left.is_empty())
+            {
                 Some(s) => meter_row(&s.left, &s.right),
                 None => json!({"silent": true}),
             };
@@ -457,14 +546,19 @@ pub(crate) fn gain_computer(x_db: f32, c: &KeyedComp) -> f32 {
 /// queue (peak) or a running sum over a fixed ring (RMS).
 pub(crate) fn key_level_db(key_l: &[f32], key_r: &[f32], c: &KeyedComp) -> Vec<f32> {
     let n = key_l.len().min(key_r.len());
-    let hp = if c.key_hpf_hz > 0.0 { (-2.0 * std::f32::consts::PI * c.key_hpf_hz / SR).exp() } else { 0.0 };
+    let hp = if c.key_hpf_hz > 0.0 {
+        (-2.0 * std::f32::consts::PI * c.key_hpf_hz / SR).exp()
+    } else {
+        0.0
+    };
     let (mut xl, mut yl, mut xr, mut yr) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
     let w = match c.detector {
         Detector::Peak => (PEAK_HOLD_MS * 0.001 * SR).round() as usize,
         Detector::Rms => (RMS_WINDOW_MS * 0.001 * SR).round() as usize,
     }
     .max(1);
-    let mut q: std::collections::VecDeque<(usize, f32)> = std::collections::VecDeque::with_capacity(w + 1);
+    let mut q: std::collections::VecDeque<(usize, f32)> =
+        std::collections::VecDeque::with_capacity(w + 1);
     let mut ring = vec![0.0f64; w];
     let mut sum = 0.0f64;
     let mut out = Vec::with_capacity(n);
@@ -510,7 +604,13 @@ pub(crate) fn key_level_db(key_l: &[f32], key_r: &[f32], c: &KeyedComp) -> Vec<f
 /// level, the static curve in dB, then a branching attack/release smoother on
 /// the gain reduction (same paper, sec. 3.2), plus makeup.
 pub(crate) fn keyed_gain(key_l: &[f32], key_r: &[f32], c: &KeyedComp) -> Vec<f32> {
-    let coef = |ms: f32| if ms <= 0.0 { 0.0 } else { (-1.0 / (ms * 0.001 * SR)).exp() };
+    let coef = |ms: f32| {
+        if ms <= 0.0 {
+            0.0
+        } else {
+            (-1.0 / (ms * 0.001 * SR)).exp()
+        }
+    };
     let (aa, ar) = (coef(c.attack_ms), coef(c.release_ms));
     let mut gr = 0.0f32;
     key_level_db(key_l, key_r, c)
@@ -526,29 +626,59 @@ pub(crate) fn keyed_gain(key_l: &[f32], key_r: &[f32], c: &KeyedComp) -> Vec<f32
 }
 
 /// A stereo source by track name (its post-fader stem) or file path.
-fn source_audio(e: &mut Engine, a: &Value, track_key: &str, path_key: &str) -> Result<(String, Vec<f32>, Vec<f32>)> {
+fn source_audio(
+    e: &mut Engine,
+    a: &Value,
+    track_key: &str,
+    path_key: &str,
+) -> Result<(String, Vec<f32>, Vec<f32>)> {
     if let Some(pth) = s_opt(a, path_key) {
         let path = e.resolve(&pth);
         let (l, r) = crate::samples::decode_stereo(&path)?;
         return Ok((path.display().to_string(), l, r));
     }
-    let Some(name) = s_opt(a, track_key) else { bail!("give {track_key} (a track) or {path_key} (an audio file)") };
+    let Some(name) = s_opt(a, track_key) else {
+        bail!("give {track_key} (a track) or {path_key} (an audio file)")
+    };
     let p = e.project.clone();
     let i = p.track_index(&name)?;
     let m = e.render_stems_all(&p)?;
-    let s = m.stems.iter().find(|s| s.name == p.tracks[i].name && !s.left.is_empty());
-    let Some(s) = s else { bail!("track '{}' is silent in this render (muted, no notes, or soloed out)", p.tracks[i].name) };
-    Ok((format!("track {}", p.tracks[i].name), s.left.clone(), s.right.clone()))
+    let s = m
+        .stems
+        .iter()
+        .find(|s| s.name == p.tracks[i].name && !s.left.is_empty());
+    let Some(s) = s else {
+        bail!(
+            "track '{}' is silent in this render (muted, no notes, or soloed out)",
+            p.tracks[i].name
+        )
+    };
+    Ok((
+        format!("track {}", p.tracks[i].name),
+        s.left.clone(),
+        s.right.clone(),
+    ))
 }
 
 fn sidechain_compress(e: &mut Engine, a: &Value) -> Result<Value> {
     let ratio = match a.get("ratio") {
         None | Some(Value::Null) => 4.0,
         Some(Value::Number(x)) => x.as_f64().unwrap_or(f64::NAN) as f32,
-        Some(Value::String(s)) if matches!(s.trim().to_ascii_lowercase().as_str(), "inf" | "infinity" | "limit") => f32::INFINITY,
+        Some(Value::String(s))
+            if matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "inf" | "infinity" | "limit"
+            ) =>
+        {
+            f32::INFINITY
+        }
         Some(other) => bail!("ratio must be 1..20 or \"inf\" (got {other})"),
     };
-    let detector = match s_opt(a, "detector").unwrap_or_else(|| "peak".into()).to_ascii_lowercase().as_str() {
+    let detector = match s_opt(a, "detector")
+        .unwrap_or_else(|| "peak".into())
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "peak" => Detector::Peak,
         "rms" => Detector::Rms,
         other => bail!("detector must be peak or rms (got '{other}')"),
@@ -564,21 +694,45 @@ fn sidechain_compress(e: &mut Engine, a: &Value) -> Result<Value> {
         detector,
     };
     let lookahead_ms = f_opt(a, "lookahead_ms").unwrap_or(0.0);
-    if !(-60.0..=0.0).contains(&c.threshold_db) { bail!("threshold_db must be -60..0 (got {})", c.threshold_db); }
-    if !(c.ratio.is_infinite() || (1.0..=20.0).contains(&c.ratio)) { bail!("ratio must be 1..20 or \"inf\" (got {})", c.ratio); }
-    if !(0.0..=24.0).contains(&c.knee_db) { bail!("knee_db must be 0..24 (got {})", c.knee_db); }
-    if !(0.1..=100.0).contains(&c.attack_ms) { bail!("attack_ms must be 0.1..100 (got {})", c.attack_ms); }
-    if !(10.0..=1000.0).contains(&c.release_ms) { bail!("release_ms must be 10..1000 (got {})", c.release_ms); }
-    if !(lookahead_ms == 0.0 || (1.0..=5.0).contains(&lookahead_ms)) { bail!("lookahead_ms must be 0 (off) or 1..5 (got {lookahead_ms})"); }
-    if !(-24.0..=24.0).contains(&c.makeup_db) { bail!("makeup_db must be -24..24 (got {})", c.makeup_db); }
-    if !(0.0..=1000.0).contains(&c.key_hpf_hz) { bail!("key_hpf_hz must be 0..1000 (got {})", c.key_hpf_hz); }
+    if !(-60.0..=0.0).contains(&c.threshold_db) {
+        bail!("threshold_db must be -60..0 (got {})", c.threshold_db);
+    }
+    if !(c.ratio.is_infinite() || (1.0..=20.0).contains(&c.ratio)) {
+        bail!("ratio must be 1..20 or \"inf\" (got {})", c.ratio);
+    }
+    if !(0.0..=24.0).contains(&c.knee_db) {
+        bail!("knee_db must be 0..24 (got {})", c.knee_db);
+    }
+    if !(0.1..=100.0).contains(&c.attack_ms) {
+        bail!("attack_ms must be 0.1..100 (got {})", c.attack_ms);
+    }
+    if !(10.0..=1000.0).contains(&c.release_ms) {
+        bail!("release_ms must be 10..1000 (got {})", c.release_ms);
+    }
+    if !(lookahead_ms == 0.0 || (1.0..=5.0).contains(&lookahead_ms)) {
+        bail!("lookahead_ms must be 0 (off) or 1..5 (got {lookahead_ms})");
+    }
+    if !(-24.0..=24.0).contains(&c.makeup_db) {
+        bail!("makeup_db must be -24..24 (got {})", c.makeup_db);
+    }
+    if !(0.0..=1000.0).contains(&c.key_hpf_hz) {
+        bail!("key_hpf_hz must be 0..1000 (got {})", c.key_hpf_hz);
+    }
     let (tname, mut tl, mut tr) = source_audio(e, a, "target", "target_path")?;
     // no key given (or the target named as its own key): internal detection,
     // keyed by the target's own signal like an ordinary compressor
     let external = s_opt(a, "key").is_some() || s_opt(a, "key_path").is_some();
-    let (kname, kl, kr) = if external { source_audio(e, a, "key", "key_path")? } else { (tname.clone(), tl.clone(), tr.clone()) };
+    let (kname, kl, kr) = if external {
+        source_audio(e, a, "key", "key_path")?
+    } else {
+        (tname.clone(), tl.clone(), tr.clone())
+    };
     let internal = kname == tname;
-    let kname = if internal { format!("internal ({tname}'s own signal)") } else { kname };
+    let kname = if internal {
+        format!("internal ({tname}'s own signal)")
+    } else {
+        kname
+    };
     let lufs_before = read_meter(Meter::Lufs, &tl, &tr).unwrap_or(-70.0);
     let n = tl.len().min(tr.len());
     // Lookahead, offline: instead of delaying the target (which would shift it
@@ -608,14 +762,27 @@ fn sidechain_compress(e: &mut Engine, a: &Value) -> Result<Value> {
             env.push(r2(gr));
         }
     }
-    let gr_db: Vec<f32> = g.iter().map(|v| 20.0 * v.max(1e-9).log10() - c.makeup_db).collect();
-    let mean = |v: &[f32]| if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 };
+    let gr_db: Vec<f32> = g
+        .iter()
+        .map(|v| 20.0 * v.max(1e-9).log10() - c.makeup_db)
+        .collect();
+    let mean = |v: &[f32]| {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().sum::<f32>() / v.len() as f32
+        }
+    };
     // how the reduction splits between where the key is over the threshold and where it rests
     let mut key_db = key_level_db(&kl, &kr, &c);
     key_db.resize(n + la, -180.0);
     let (mut on, mut off) = (Vec::new(), Vec::new());
     for i in 0..n {
-        if key_db[i + la] > c.threshold_db { on.push(gr_db[i]) } else { off.push(gr_db[i]) }
+        if key_db[i + la] > c.threshold_db {
+            on.push(gr_db[i])
+        } else {
+            off.push(gr_db[i])
+        }
     }
     let mut v = json!({
         "target": tname, "key": kname,
@@ -641,7 +808,9 @@ fn sidechain_compress(e: &mut Engine, a: &Value) -> Result<Value> {
             crate::render::write_wav(&path, &tl, &tr)?;
             v["out"] = json!(path.display().to_string());
         }
-        None => v["note"] = json!("measured only; pass out to write the compressed target (16-bit wav)"),
+        None => {
+            v["note"] = json!("measured only; pass out to write the compressed target (16-bit wav)")
+        }
     }
     Ok(v)
 }
@@ -719,10 +888,17 @@ mod tests {
 
     fn song(dir: &str) -> Engine {
         let mut e = Engine::new(std::env::temp_dir().join(dir));
-        for (n, p) in [("kick", "kick"), ("hat", "hat"), ("bass", "808"), ("keys", "epiano")] {
-            e.call("add_track", &json!({"name": n, "preset": p})).unwrap();
+        for (n, p) in [
+            ("kick", "kick"),
+            ("hat", "hat"),
+            ("bass", "808"),
+            ("keys", "epiano"),
+        ] {
+            e.call("add_track", &json!({"name": n, "preset": p}))
+                .unwrap();
         }
-        e.call("generate_drums", &json!({"style": "trap", "seed": 2})).unwrap();
+        e.call("generate_drums", &json!({"style": "trap", "seed": 2}))
+            .unwrap();
         e.call("add_notes", &json!({"track": "bass", "notes": [{"start": 0, "pitch": "C2", "len": 8}, {"start": 8, "pitch": "C2", "len": 8}]})).unwrap();
         e.call("add_notes", &json!({"track": "keys", "notes": [{"start": 0, "pitch": "C4", "len": 8}, {"start": 8, "pitch": "Eb4", "len": 8}]})).unwrap();
         e
@@ -731,7 +907,9 @@ mod tests {
     #[test]
     fn meters_read_known_signals() {
         // a 0.5-amplitude 1 kHz sine on both channels: peak -6.02 dBFS, RMS -9.03 dBFS
-        let x: Vec<f32> = (0..48000).map(|i| 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / SR).sin()).collect();
+        let x: Vec<f32> = (0..48000)
+            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / SR).sin())
+            .collect();
         assert!((read_meter(Meter::Peak, &x, &x).unwrap() + 6.0206).abs() < 0.01);
         assert!((read_meter(Meter::Rms, &x, &x).unwrap() + 9.0309).abs() < 0.01);
         // silence then signal: the gate ignores the silent blocks
@@ -745,8 +923,15 @@ mod tests {
     #[test]
     fn gain_stage_lands_within_a_tenth_of_a_db_on_every_meter() {
         let mut e = song("bb_gain_stage");
-        for (measure, tgt) in [("lufs", -20.0), ("rms", -22.0), ("peak", -8.0), ("true_peak", -6.0)] {
-            let v = e.call("gain_stage", &json!({"measure": measure, "target_db": tgt})).unwrap();
+        for (measure, tgt) in [
+            ("lufs", -20.0),
+            ("rms", -22.0),
+            ("peak", -8.0),
+            ("true_peak", -6.0),
+        ] {
+            let v = e
+                .call("gain_stage", &json!({"measure": measure, "target_db": tgt}))
+                .unwrap();
             assert_eq!(v["applied"], true);
             let rows = v["tracks"].as_array().unwrap();
             assert_eq!(rows.len(), e.project.tracks.len(), "{v}");
@@ -757,32 +942,83 @@ mod tests {
             }
         }
         // per-track targets, and the project's faders really moved
-        let before = e.project.tracks.iter().find(|t| t.name == "kick").unwrap().volume_db;
-        let v = e.call("gain_stage", &json!({"measure": "rms", "targets": {"kick": -14.0, "keys": -26.0}})).unwrap();
+        let before = e
+            .project
+            .tracks
+            .iter()
+            .find(|t| t.name == "kick")
+            .unwrap()
+            .volume_db;
+        let v = e
+            .call(
+                "gain_stage",
+                &json!({"measure": "rms", "targets": {"kick": -14.0, "keys": -26.0}}),
+            )
+            .unwrap();
         let rows = v["tracks"].as_array().unwrap();
         assert_eq!(rows.len(), 2, "{v}");
         for row in rows {
             assert!(row["error_db"].as_f64().unwrap().abs() <= 0.1, "{row}");
         }
-        let after = e.project.tracks.iter().find(|t| t.name == "kick").unwrap().volume_db;
+        let after = e
+            .project
+            .tracks
+            .iter()
+            .find(|t| t.name == "kick")
+            .unwrap()
+            .volume_db;
         let kick = rows.iter().find(|r| r["track"] == "kick").unwrap();
-        assert!((after - before - kick["change_db"].as_f64().unwrap() as f32).abs() < 0.02, "{v}");
+        assert!(
+            (after - before - kick["change_db"].as_f64().unwrap() as f32).abs() < 0.02,
+            "{v}"
+        );
         // dry run leaves the project alone
-        let snap = e.project.tracks.iter().map(|t| t.volume_db).collect::<Vec<_>>();
-        let v = e.call("gain_stage", &json!({"measure": "peak", "target_db": -30.0, "dry_run": true})).unwrap();
+        let snap = e
+            .project
+            .tracks
+            .iter()
+            .map(|t| t.volume_db)
+            .collect::<Vec<_>>();
+        let v = e
+            .call(
+                "gain_stage",
+                &json!({"measure": "peak", "target_db": -30.0, "dry_run": true}),
+            )
+            .unwrap();
         assert_eq!(v["applied"], false);
-        assert_eq!(snap, e.project.tracks.iter().map(|t| t.volume_db).collect::<Vec<_>>());
+        assert_eq!(
+            snap,
+            e.project
+                .tracks
+                .iter()
+                .map(|t| t.volume_db)
+                .collect::<Vec<_>>()
+        );
         // bad input
         assert!(e.call("gain_stage", &json!({"measure": "rms"})).is_err());
         assert!(e.call("gain_stage", &json!({"target_db": 3.0})).is_err());
-        assert!(e.call("gain_stage", &json!({"target_db": -20.0, "tracks": "nobody"})).is_err());
+        assert!(e
+            .call(
+                "gain_stage",
+                &json!({"target_db": -20.0, "tracks": "nobody"})
+            )
+            .is_err());
     }
 
     #[test]
     fn gain_stage_shifts_a_volume_lane_that_overrides_the_fader() {
         let mut e = song("bb_gain_stage_lane");
-        e.call("add_automation", &json!({"track": "keys", "param": "volume", "points": [[0, -6.0], [4, -12.0]]})).unwrap();
-        let v = e.call("gain_stage", &json!({"measure": "rms", "targets": {"keys": -24.0}})).unwrap();
+        e.call(
+            "add_automation",
+            &json!({"track": "keys", "param": "volume", "points": [[0, -6.0], [4, -12.0]]}),
+        )
+        .unwrap();
+        let v = e
+            .call(
+                "gain_stage",
+                &json!({"measure": "rms", "targets": {"keys": -24.0}}),
+            )
+            .unwrap();
         let row = &v["tracks"][0];
         assert!(row["applied_to"].as_str().unwrap().contains("lane"), "{v}");
         assert!(row["error_db"].as_f64().unwrap().abs() <= 0.1, "{v}");
@@ -791,49 +1027,108 @@ mod tests {
     #[test]
     fn mix_report_numbers_match_the_meters_and_the_stereo_facts() {
         let mut e = song("bb_mix_report");
-        e.call("set_mixer", &json!({"track": "hat", "pan": -1.0})).unwrap();
-        e.call("add_effect", &json!({"track": "keys", "type": "width", "params": {"amount": 0.0}})).unwrap();
-        e.call("add_bus", &json!({"name": "grp", "preset": "none"})).unwrap();
-        e.call("route_track", &json!({"track": "kick,hat", "bus": "grp"})).unwrap();
+        e.call("set_mixer", &json!({"track": "hat", "pan": -1.0}))
+            .unwrap();
+        e.call(
+            "add_effect",
+            &json!({"track": "keys", "type": "width", "params": {"amount": 0.0}}),
+        )
+        .unwrap();
+        e.call("add_bus", &json!({"name": "grp", "preset": "none"}))
+            .unwrap();
+        e.call("route_track", &json!({"track": "kick,hat", "bus": "grp"}))
+            .unwrap();
         let v = e.call("mix_report", &json!({})).unwrap();
         let rows = v["tracks"].as_array().unwrap();
         assert_eq!(rows.len(), e.project.tracks.len(), "{v}");
-        let share: f64 = rows.iter().map(|r| r["energy_share_percent"].as_f64().unwrap_or(0.0)).sum();
+        let share: f64 = rows
+            .iter()
+            .map(|r| r["energy_share_percent"].as_f64().unwrap_or(0.0))
+            .sum();
         assert!((share - 100.0).abs() < 0.1, "{share}");
         // every reading equals the shared meters on the same stems
         let p = e.project.clone();
         let m = e.render_stems_all(&p).unwrap();
         for row in rows {
-            let s = m.stems.iter().find(|s| s.name == row["track"].as_str().unwrap()).unwrap();
+            let s = m
+                .stems
+                .iter()
+                .find(|s| s.name == row["track"].as_str().unwrap())
+                .unwrap();
             let lufs = read_meter(Meter::Lufs, &s.left, &s.right).unwrap();
-            assert!((row["lufs"].as_f64().unwrap() as f32 - lufs).abs() <= 0.006, "{row}");
+            assert!(
+                (row["lufs"].as_f64().unwrap() as f32 - lufs).abs() <= 0.006,
+                "{row}"
+            );
             let pk = read_meter(Meter::Peak, &s.left, &s.right).unwrap();
-            assert!((row["peak_dbfs"].as_f64().unwrap() as f32 - pk).abs() <= 0.006, "{row}");
+            assert!(
+                (row["peak_dbfs"].as_f64().unwrap() as f32 - pk).abs() <= 0.006,
+                "{row}"
+            );
         }
         let get = |n: &str| rows.iter().find(|r| r["track"] == n).unwrap().clone();
         // width amount 0 is exact mono: no side at all, correlation 1
-        assert_eq!(get("keys")["width_side_over_mid"].as_f64().unwrap(), 0.0, "{}", get("keys"));
+        assert_eq!(
+            get("keys")["width_side_over_mid"].as_f64().unwrap(),
+            0.0,
+            "{}",
+            get("keys")
+        );
         assert_eq!(get("keys")["correlation"].as_f64().unwrap(), 1.0);
         // hard left: the right channel is (near) silent
-        assert!(get("hat")["balance_db_r_minus_l"].as_f64().unwrap() < -40.0, "{}", get("hat"));
+        assert!(
+            get("hat")["balance_db_r_minus_l"].as_f64().unwrap() < -40.0,
+            "{}",
+            get("hat")
+        );
         assert!(v["master"]["lufs"].as_f64().is_some(), "{v}");
         // short-term max (3 s window, 100 ms hop) on every track, the bus and the master
         let st = |l: &[f32], r: &[f32]| r2(short_term_max_lufs(l, r).unwrap()) as f64;
         for row in rows {
-            let s = m.stems.iter().find(|s| s.name == row["track"].as_str().unwrap()).unwrap();
-            assert!((row["short_term_max_lufs"].as_f64().unwrap() - st(&s.left, &s.right)).abs() <= 0.006, "{row}");
+            let s = m
+                .stems
+                .iter()
+                .find(|s| s.name == row["track"].as_str().unwrap())
+                .unwrap();
+            assert!(
+                (row["short_term_max_lufs"].as_f64().unwrap() - st(&s.left, &s.right)).abs()
+                    <= 0.006,
+                "{row}"
+            );
         }
-        let bus = v["buses"].as_array().unwrap().iter().find(|b| b["bus"] == "grp").unwrap().clone();
+        let bus = v["buses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["bus"] == "grp")
+            .unwrap()
+            .clone();
         let bs = m.bus_stems.iter().find(|s| s.name == "grp").unwrap();
-        assert!((bus["short_term_max_lufs"].as_f64().unwrap() - st(&bs.left, &bs.right)).abs() <= 0.006, "{bus}");
-        assert!((v["master"]["short_term_max_lufs"].as_f64().unwrap() - st(&m.left, &m.right)).abs() <= 0.006, "{v}");
+        assert!(
+            (bus["short_term_max_lufs"].as_f64().unwrap() - st(&bs.left, &bs.right)).abs() <= 0.006,
+            "{bus}"
+        );
+        assert!(
+            (v["master"]["short_term_max_lufs"].as_f64().unwrap() - st(&m.left, &m.right)).abs()
+                <= 0.006,
+            "{v}"
+        );
         // a filter, and a bad name
-        assert_eq!(e.call("mix_report", &json!({"tracks": "kick,bass"})).unwrap()["tracks"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            e.call("mix_report", &json!({"tracks": "kick,bass"}))
+                .unwrap()["tracks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
         assert!(e.call("mix_report", &json!({"tracks": "nobody"})).is_err());
     }
 
     fn sine(f: f32, amp: f32, secs: f32, phase: f32) -> Vec<f32> {
-        (0..(secs * SR) as usize).map(|i| amp * (2.0 * std::f32::consts::PI * f * i as f32 / SR + phase).sin()).collect()
+        (0..(secs * SR) as usize)
+            .map(|i| amp * (2.0 * std::f32::consts::PI * f * i as f32 / SR + phase).sin())
+            .collect()
     }
 
     #[test]
@@ -842,7 +1137,10 @@ mod tests {
         // reads the same, so the short-term max equals the integrated value
         let x = sine(1000.0, 10f32.powf(-20.0 / 20.0), 10.0, 0.0);
         let row = meter_row(&x, &x);
-        let (st, int) = (row["short_term_max_lufs"].as_f64().unwrap(), row["lufs"].as_f64().unwrap());
+        let (st, int) = (
+            row["short_term_max_lufs"].as_f64().unwrap(),
+            row["lufs"].as_f64().unwrap(),
+        );
         eprintln!("steady -20 dBFS 1 kHz: short-term max {st}, integrated {int}");
         assert!((st - int).abs() <= 0.01, "{row}");
         assert_eq!(meter_row(&[0.0; 4800], &[0.0; 4800])["silent"], true);
@@ -864,14 +1162,23 @@ mod tests {
         let mut y = sine(997.0, a, 2.0, 0.0);
         y.resize((10.0 * SR) as usize, 0.0);
         let sty = short_term_max_lufs(&y, &y).unwrap();
-        eprintln!("2 s burst: {sty:.4} (expect {:.4})", -23.0 + 10.0 * (2.0f32 / 3.0).log10());
-        assert!((sty - (-23.0 + 10.0 * (2.0f32 / 3.0).log10())).abs() <= 0.01, "{sty}");
+        eprintln!(
+            "2 s burst: {sty:.4} (expect {:.4})",
+            -23.0 + 10.0 * (2.0f32 / 3.0).log10()
+        );
+        assert!(
+            (sty - (-23.0 + 10.0 * (2.0f32 / 3.0).log10())).abs() <= 0.01,
+            "{sty}"
+        );
         // under 3 s: ungated loudness over the whole clip; 1 s of silence then 1 s of tone
         // reads 3.01 LU under the tone (the integrated meter gates the silence out)
         let mut z = vec![0.0f32; SR as usize];
         z.extend(sine(997.0, a, 1.0, 0.0));
         let stz = short_term_max_lufs(&z, &z).unwrap();
-        eprintln!("short clip: {stz:.4} (expect {:.4})", -23.0 - 10.0 * 2f32.log10());
+        eprintln!(
+            "short clip: {stz:.4} (expect {:.4})",
+            -23.0 - 10.0 * 2f32.log10()
+        );
         assert!((stz - (-23.0 - 10.0 * 2f32.log10())).abs() <= 0.01, "{stz}");
         let full = short_term_max_lufs(&z[SR as usize..], &z[SR as usize..]).unwrap();
         assert!((full + 23.0).abs() <= 0.01, "{full}");
@@ -883,14 +1190,28 @@ mod tests {
     fn peak_and_true_peak_read_0_db_cases() {
         // full-scale 997 Hz sine: sample peak and true peak both 0 dB
         let x = sine(997.0, 1.0, 2.0, 0.0);
-        let (pk, tp) = (read_meter(Meter::Peak, &x, &x).unwrap(), read_meter(Meter::TruePeak, &x, &x).unwrap());
+        let (pk, tp) = (
+            read_meter(Meter::Peak, &x, &x).unwrap(),
+            read_meter(Meter::TruePeak, &x, &x).unwrap(),
+        );
         eprintln!("0 dBFS 997 Hz: peak {pk:.4} dBFS, true peak {tp:.4} dBTP");
         assert!(pk.abs() <= 0.01 && tp.abs() <= 0.01, "{pk} {tp}");
         // fs/4 sine at 45 degrees: every sample is +-0.7071 (-3.01 dBFS) but the
         // waveform between them reaches 1.0, so true peak is 0 dBTP
         // (built from the exact sample pattern; a computed sin() drifts in phase at f32)
-        let y: Vec<f32> = (0..2 * SR as usize).map(|i| if i % 4 < 2 { std::f32::consts::FRAC_1_SQRT_2 } else { -std::f32::consts::FRAC_1_SQRT_2 }).collect();
-        let (pk, tp) = (read_meter(Meter::Peak, &y, &y).unwrap(), read_meter(Meter::TruePeak, &y, &y).unwrap());
+        let y: Vec<f32> = (0..2 * SR as usize)
+            .map(|i| {
+                if i % 4 < 2 {
+                    std::f32::consts::FRAC_1_SQRT_2
+                } else {
+                    -std::f32::consts::FRAC_1_SQRT_2
+                }
+            })
+            .collect();
+        let (pk, tp) = (
+            read_meter(Meter::Peak, &y, &y).unwrap(),
+            read_meter(Meter::TruePeak, &y, &y).unwrap(),
+        );
         eprintln!("fs/4 at 45 deg: peak {pk:.4} dBFS, true peak {tp:.4} dBTP");
         assert!((pk + 3.0103).abs() <= 0.01, "{pk}");
         // Measured error, not a loosened bound: the BS.1770-4 Annex 2 4x interpolator
@@ -900,20 +1221,36 @@ mod tests {
         // 0.0826). It over-reads, never under-reads, which is the safe side for a limiter.
         assert!(tp >= 0.0 && (tp - 0.0826).abs() <= 0.003, "{tp}");
         let row = meter_row(&y, &y);
-        assert!((row["crest_db"].as_f64().unwrap() - (row["peak_dbfs"].as_f64().unwrap() - row["active_rms_dbfs"].as_f64().unwrap())).abs() <= 0.011, "{row}");
+        assert!(
+            (row["crest_db"].as_f64().unwrap()
+                - (row["peak_dbfs"].as_f64().unwrap() - row["active_rms_dbfs"].as_f64().unwrap()))
+            .abs()
+                <= 0.011,
+            "{row}"
+        );
     }
 
     #[test]
     fn band_shares_put_known_tones_in_their_band() {
-        for (k, f) in [35.0f32, 120.0, 450.0, 1250.0, 3200.0, 9000.0].into_iter().enumerate() {
+        for (k, f) in [35.0f32, 120.0, 450.0, 1250.0, 3200.0, 9000.0]
+            .into_iter()
+            .enumerate()
+        {
             let x = sine(f, 0.5, 4.0, 0.0);
             let row = meter_row(&x, &x);
-            let shares: Vec<f64> = BAND_NAMES.iter().map(|n| row["band_share_db"][*n].as_f64().unwrap()).collect();
+            let shares: Vec<f64> = BAND_NAMES
+                .iter()
+                .map(|n| row["band_share_db"][*n].as_f64().unwrap())
+                .collect();
             eprintln!("{f} Hz: {shares:?}");
             assert!(shares[k] >= -0.01, "{f} Hz -> {shares:?}");
             for (j, s) in shares.iter().enumerate() {
                 if j != k {
-                    assert!(*s < -30.0, "{f} Hz leaks into {}: {shares:?}", BAND_NAMES[j]);
+                    assert!(
+                        *s < -30.0,
+                        "{f} Hz leaks into {}: {shares:?}",
+                        BAND_NAMES[j]
+                    );
                 }
             }
         }
@@ -925,16 +1262,28 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let n = (2.0 * SR) as usize;
         let half = n / 2;
-        let tone = |f: f32, a: f32, i: usize| a * (2.0 * std::f32::consts::PI * f * i as f32 / SR).sin();
+        let tone =
+            |f: f32, a: f32, i: usize| a * (2.0 * std::f32::consts::PI * f * i as f32 / SR).sin();
         let target: Vec<f32> = (0..n).map(|i| tone(200.0, 0.25, i)).collect();
-        let key_a: Vec<f32> = (0..n).map(|i| if i < half { tone(1000.0, 0.9, i) } else { 0.0 }).collect();
-        let key_b: Vec<f32> = (0..n).map(|i| if i >= half { tone(1000.0, 0.9, i) } else { 0.0 }).collect();
+        let key_a: Vec<f32> = (0..n)
+            .map(|i| if i < half { tone(1000.0, 0.9, i) } else { 0.0 })
+            .collect();
+        let key_b: Vec<f32> = (0..n)
+            .map(|i| if i >= half { tone(1000.0, 0.9, i) } else { 0.0 })
+            .collect();
         let (tp, ka, kb) = (dir.join("t.wav"), dir.join("ka.wav"), dir.join("kb.wav"));
         crate::render::write_wav(&tp, &target, &target).unwrap();
         crate::render::write_wav(&ka, &key_a, &key_a).unwrap();
         crate::render::write_wav(&kb, &key_b, &key_b).unwrap();
         let mut e = Engine::new(dir.clone());
-        let env = |v: &Value| v["gain_reduction_every_50ms_db"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect::<Vec<f64>>();
+        let env = |v: &Value| {
+            v["gain_reduction_every_50ms_db"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_f64().unwrap())
+                .collect::<Vec<f64>>()
+        };
         let mean = |x: &[f64]| x.iter().sum::<f64>() / x.len() as f64;
         let m = (1.0 / 0.05) as usize; // envelope points per second
         let out = dir.join("ducked.wav");
@@ -943,11 +1292,17 @@ mod tests {
         // key A plays in the first second: about 0.75 x 23 dB of reduction there, none once it has released
         assert!(mean(&ea[2..m - 1]) < -12.0, "{a}");
         assert!(mean(&ea[m + 8..]) > -0.05, "{a}");
-        assert!(a["mean_gr_while_key_over_threshold_db"].as_f64().unwrap() < -12.0, "{a}");
+        assert!(
+            a["mean_gr_while_key_over_threshold_db"].as_f64().unwrap() < -12.0,
+            "{a}"
+        );
         assert!(a["mean_gr_elsewhere_db"].as_f64().unwrap() > -3.0, "{a}");
         let (l, _) = crate::samples::decode_stereo(&out).unwrap();
         let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
-        assert!(rms(&l[half / 4..half - 2000]) < 0.3 * rms(&l[half + half / 2..]), "first half ducked, second half untouched");
+        assert!(
+            rms(&l[half / 4..half - 2000]) < 0.3 * rms(&l[half + half / 2..]),
+            "first half ducked, second half untouched"
+        );
         // key B plays in the second second: the reduction moves with it
         let b = e.call("sidechain_compress", &json!({"target_path": tp.display().to_string(), "key_path": kb.display().to_string(), "release_ms": 50.0})).unwrap();
         let eb = env(&b);
@@ -960,11 +1315,23 @@ mod tests {
         let stems = s.render_stems_all(&p).unwrap();
         let stem = |n: &str| stems.stems.iter().find(|x| x.name == n).unwrap();
         let blk = (0.05 * SR) as usize;
-        let c = KeyedComp { threshold_db: -30.0, ratio: 4.0, knee_db: 6.0, attack_ms: 1.0, release_ms: 30.0, makeup_db: 0.0, key_hpf_hz: 0.0, detector: Detector::Peak };
+        let c = KeyedComp {
+            threshold_db: -30.0,
+            ratio: 4.0,
+            knee_db: 6.0,
+            attack_ms: 1.0,
+            release_ms: 30.0,
+            makeup_db: 0.0,
+            key_hpf_hz: 0.0,
+            detector: Detector::Peak,
+        };
         let expect = |n: &str| -> Vec<f64> {
             let k = stem(n);
             let g = keyed_gain(&k.left, &k.right, &c);
-            (0..g.len()).step_by(blk).map(|i| r2(20.0 * g[i].max(1e-9).log10()) as f64).collect()
+            (0..g.len())
+                .step_by(blk)
+                .map(|i| r2(20.0 * g[i].max(1e-9).log10()) as f64)
+                .collect()
         };
         for (key, other) in [("kick", "hat"), ("hat", "kick")] {
             let v = s.call("sidechain_compress", &json!({"target": "keys", "key": key, "threshold_db": -30.0, "attack_ms": 1.0, "release_ms": 30.0})).unwrap();
@@ -972,29 +1339,84 @@ mod tests {
             let (own, oth) = (expect(key), expect(other));
             let len = got.len().min(own.len()).min(oth.len());
             let dev = |x: &[f64]| (0..len).map(|i| (got[i] - x[i]).abs()).fold(0.0, f64::max);
-            eprintln!("key {key}: max |env - own key| {:.3} dB, max |env - {other}| {:.3} dB", dev(&own), dev(&oth));
+            eprintln!(
+                "key {key}: max |env - own key| {:.3} dB, max |env - {other}| {:.3} dB",
+                dev(&own),
+                dev(&oth)
+            );
             assert!(dev(&own) <= 0.011, "{key}: {v}");
             assert!(dev(&oth) > 1.0, "{key} vs {other}");
             assert!(v["max_gain_reduction_db"].as_f64().unwrap() < -1.0, "{v}");
         }
         // no key: internal detection on the target itself (the same as naming it as its own key)
-        let own = s.call("sidechain_compress", &json!({"target": "keys", "attack_ms": 1.0, "release_ms": 30.0})).unwrap();
-        assert!(own["key"].as_str().unwrap().starts_with("internal"), "{own}");
-        let same = s.call("sidechain_compress", &json!({"target": "keys", "key": "keys", "attack_ms": 1.0, "release_ms": 30.0})).unwrap();
+        let own = s
+            .call(
+                "sidechain_compress",
+                &json!({"target": "keys", "attack_ms": 1.0, "release_ms": 30.0}),
+            )
+            .unwrap();
+        assert!(
+            own["key"].as_str().unwrap().starts_with("internal"),
+            "{own}"
+        );
+        let same = s
+            .call(
+                "sidechain_compress",
+                &json!({"target": "keys", "key": "keys", "attack_ms": 1.0, "release_ms": 30.0}),
+            )
+            .unwrap();
         assert_eq!(env(&own), env(&same));
         let ks = stem("keys");
-        let gk = keyed_gain(&ks.left, &ks.right, &KeyedComp { threshold_db: -24.0, ..c });
-        let want: Vec<f64> = (0..gk.len()).step_by(blk).map(|i| r2(20.0 * gk[i].max(1e-9).log10()) as f64).collect();
-        assert!(env(&own).iter().zip(&want).all(|(x, y)| (x - y).abs() <= 0.011), "internal keying follows the target's own level");
-        assert!(s.call("sidechain_compress", &json!({"key": "kick"})).is_err());
-        for bad in [json!({"ratio": 0.5}), json!({"ratio": 21.0}), json!({"ratio": "lots"}), json!({"attack_ms": 0.05}), json!({"attack_ms": 101.0}),
-                    json!({"release_ms": 5.0}), json!({"release_ms": 1001.0}), json!({"lookahead_ms": 0.5}), json!({"lookahead_ms": 6.0}),
-                    json!({"threshold_db": 3.0}), json!({"knee_db": 30.0}), json!({"detector": "vu"})] {
+        let gk = keyed_gain(
+            &ks.left,
+            &ks.right,
+            &KeyedComp {
+                threshold_db: -24.0,
+                ..c
+            },
+        );
+        let want: Vec<f64> = (0..gk.len())
+            .step_by(blk)
+            .map(|i| r2(20.0 * gk[i].max(1e-9).log10()) as f64)
+            .collect();
+        assert!(
+            env(&own)
+                .iter()
+                .zip(&want)
+                .all(|(x, y)| (x - y).abs() <= 0.011),
+            "internal keying follows the target's own level"
+        );
+        assert!(s
+            .call("sidechain_compress", &json!({"key": "kick"}))
+            .is_err());
+        for bad in [
+            json!({"ratio": 0.5}),
+            json!({"ratio": 21.0}),
+            json!({"ratio": "lots"}),
+            json!({"attack_ms": 0.05}),
+            json!({"attack_ms": 101.0}),
+            json!({"release_ms": 5.0}),
+            json!({"release_ms": 1001.0}),
+            json!({"lookahead_ms": 0.5}),
+            json!({"lookahead_ms": 6.0}),
+            json!({"threshold_db": 3.0}),
+            json!({"knee_db": 30.0}),
+            json!({"detector": "vu"}),
+        ] {
             let mut a = json!({"target": "keys", "key": "kick"});
-            a.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+            a.as_object_mut()
+                .unwrap()
+                .extend(bad.as_object().unwrap().clone());
             assert!(s.call("sidechain_compress", &a).is_err(), "{a}");
         }
-        assert_eq!(s.call("sidechain_compress", &json!({"target": "keys", "key": "kick", "ratio": "inf"})).unwrap()["ratio"], "inf");
+        assert_eq!(
+            s.call(
+                "sidechain_compress",
+                &json!({"target": "keys", "key": "kick", "ratio": "inf"})
+            )
+            .unwrap()["ratio"],
+            "inf"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1007,18 +1429,31 @@ mod tests {
         let (b0, b1) = ((0.5 * SR) as usize, (1.5 * SR) as usize);
         let t = sine(200.0, 0.25, 3.0, 0.0);
         let k1 = sine(1000.0, 0.5, 3.0, 0.0);
-        let key: Vec<f32> = (0..n).map(|i| if (b0..b1).contains(&i) { k1[i] } else { 0.0 }).collect();
+        let key: Vec<f32> = (0..n)
+            .map(|i| if (b0..b1).contains(&i) { k1[i] } else { 0.0 })
+            .collect();
         let (tp, kp, op) = (dir.join("t.wav"), dir.join("k.wav"), dir.join("o.wav"));
         crate::render::write_wav(&tp, &t, &t).unwrap();
         crate::render::write_wav(&kp, &key, &key).unwrap();
         let mut e = Engine::new(dir.clone());
         e.call("sidechain_compress", &json!({"target_path": tp.display().to_string(), "key_path": kp.display().to_string(), "out": op.display().to_string()})).unwrap();
         let (o, _) = crate::samples::decode_stereo(&op).unwrap();
-        let rms = |x: &[f32]| (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
+        let rms = |x: &[f32]| {
+            (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).sqrt()
+        };
         // settled part of the burst (0.7..1.4 s): the target drops by exactly the static curve at -6.02 dB
         let (s0, s1) = ((0.7 * SR) as usize, (1.4 * SR) as usize);
         let att = 20.0 * (rms(&o[s0..s1]) / rms(&t[s0..s1])).log10();
-        let c = KeyedComp { threshold_db: -24.0, ratio: 4.0, knee_db: 6.0, attack_ms: 5.0, release_ms: 150.0, makeup_db: 0.0, key_hpf_hz: 0.0, detector: Detector::Peak };
+        let c = KeyedComp {
+            threshold_db: -24.0,
+            ratio: 4.0,
+            knee_db: 6.0,
+            attack_ms: 5.0,
+            release_ms: 150.0,
+            makeup_db: 0.0,
+            key_hpf_hz: 0.0,
+            detector: Detector::Peak,
+        };
         let want = gain_computer(20.0 * 0.5f32.log10(), &c) as f64;
         eprintln!("1 kHz burst: target attenuated {att:.4} dB, curve {want:.4} dB");
         assert!((att - want).abs() <= 0.05, "{att} vs {want}");
@@ -1027,8 +1462,14 @@ mod tests {
         // release: once the 10 ms hold lets go of the last peak, the reduction (in dB)
         // decays as exp(-t / release): 1/e after one time constant, e^-3 after three
         for rel in [50.0f32, 150.0, 400.0] {
-            let c = KeyedComp { release_ms: rel, ..c };
-            let g: Vec<f32> = keyed_gain(&key, &key, &c).iter().map(|v| 20.0 * v.log10()).collect();
+            let c = KeyedComp {
+                release_ms: rel,
+                ..c
+            };
+            let g: Vec<f32> = keyed_gain(&key, &key, &c)
+                .iter()
+                .map(|v| 20.0 * v.log10())
+                .collect();
             let lvl = key_level_db(&key, &key, &c);
             let i0 = (b1..n).find(|&i| gain_computer(lvl[i], &c) == 0.0).unwrap(); // first sample the curve asks for no reduction
             let g0 = g[i0 - 1];
@@ -1038,7 +1479,10 @@ mod tests {
             let at3 = g[i0 - 1 + 3 * tau_n];
             eprintln!("release {rel} ms: GR {g0:.3} dB at release start ({:.2} ms after the burst), measured time constant {tau_ms:.3} ms, at 3 tau {at3:.4} dB (expect {:.4})", (i0 - b1) as f32 / SR * 1000.0, g0 * (-3.0f32).exp());
             // tolerance: one sample (0.023 ms) plus 0.1 % for the f32 smoothing coefficient
-            assert!((tau_ms - rel).abs() <= 0.03 + 0.001 * rel, "{tau_ms} vs {rel}");
+            assert!(
+                (tau_ms - rel).abs() <= 0.03 + 0.001 * rel,
+                "{tau_ms} vs {rel}"
+            );
             assert!((at3 - g0 * (-3.0f32).exp()).abs() <= 0.01, "{at3}");
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -1048,29 +1492,87 @@ mod tests {
     fn sidechain_gain_on_a_steady_key_sits_on_the_static_curve() {
         // the curve itself, by hand: above the knee GR = (x - t)(1/r - 1); at the
         // knee centre (1/r - 1) w / 8; an infinite ratio pins the output at t
-        let base = KeyedComp { threshold_db: -24.0, ratio: 4.0, knee_db: 6.0, attack_ms: 5.0, release_ms: 150.0, makeup_db: 0.0, key_hpf_hz: 0.0, detector: Detector::Peak };
+        let base = KeyedComp {
+            threshold_db: -24.0,
+            ratio: 4.0,
+            knee_db: 6.0,
+            attack_ms: 5.0,
+            release_ms: 150.0,
+            makeup_db: 0.0,
+            key_hpf_hz: 0.0,
+            detector: Detector::Peak,
+        };
         assert!((gain_computer(-6.0, &base) + 18.0 * 0.75).abs() < 1e-4);
         assert!((gain_computer(-24.0, &base) + 0.75 * 6.0 / 8.0).abs() < 1e-4);
         assert_eq!(gain_computer(-30.0, &base), 0.0);
-        assert!((gain_computer(-6.0, &KeyedComp { ratio: f32::INFINITY, ..base }) + 18.0).abs() < 1e-4);
+        assert!(
+            (gain_computer(
+                -6.0,
+                &KeyedComp {
+                    ratio: f32::INFINITY,
+                    ..base
+                }
+            ) + 18.0)
+                .abs()
+                < 1e-4
+        );
         // a steady 1 kHz key at 0.5 peak: peak -6.02 dBFS, RMS -9.03 dBFS
         let key = sine(1000.0, 0.5, 3.0, 0.0);
         let pk = 20.0 * 0.5f32.log10();
         let rms = pk - 10.0 * 2f32.log10();
         let cases = [
             (base, pk),
-            (KeyedComp { detector: Detector::Rms, ..base }, rms),
-            (KeyedComp { threshold_db: -7.0, ..base }, pk),
-            (KeyedComp { ratio: f32::INFINITY, ..base }, pk),
-            (KeyedComp { ratio: 20.0, knee_db: 0.0, attack_ms: 0.1, release_ms: 10.0, detector: Detector::Rms, ..base }, rms),
+            (
+                KeyedComp {
+                    detector: Detector::Rms,
+                    ..base
+                },
+                rms,
+            ),
+            (
+                KeyedComp {
+                    threshold_db: -7.0,
+                    ..base
+                },
+                pk,
+            ),
+            (
+                KeyedComp {
+                    ratio: f32::INFINITY,
+                    ..base
+                },
+                pk,
+            ),
+            (
+                KeyedComp {
+                    ratio: 20.0,
+                    knee_db: 0.0,
+                    attack_ms: 0.1,
+                    release_ms: 10.0,
+                    detector: Detector::Rms,
+                    ..base
+                },
+                rms,
+            ),
         ];
         for (c, lvl) in cases {
             let g = keyed_gain(&key, &key, &c);
-            let last: Vec<f32> = g[g.len() - SR as usize..].iter().map(|v| 20.0 * v.log10()).collect();
-            let (lo, hi) = last.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+            let last: Vec<f32> = g[g.len() - SR as usize..]
+                .iter()
+                .map(|v| 20.0 * v.log10())
+                .collect();
+            let (lo, hi) = last
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
             let curve = gain_computer(lvl, &c);
-            eprintln!("{:?} t {} r {} w {}: measured {lo:.4}..{hi:.4} dB, curve {curve:.4} dB", c.detector, c.threshold_db, c.ratio, c.knee_db);
-            assert!((lo - curve).abs() <= 0.1 && (hi - curve).abs() <= 0.1, "{c:?}");
+            eprintln!(
+                "{:?} t {} r {} w {}: measured {lo:.4}..{hi:.4} dB, curve {curve:.4} dB",
+                c.detector, c.threshold_db, c.ratio, c.knee_db
+            );
+            assert!(
+                (lo - curve).abs() <= 0.1 && (hi - curve).abs() <= 0.1,
+                "{c:?}"
+            );
         }
         // and through the tool, from files
         let dir = std::env::temp_dir().join("bb_sc_curve");
@@ -1081,7 +1583,13 @@ mod tests {
         crate::render::write_wav(&tp, &t, &t).unwrap();
         let mut e = Engine::new(dir.clone());
         let v = e.call("sidechain_compress", &json!({"target_path": tp.display().to_string(), "key_path": kp.display().to_string()})).unwrap();
-        let tail = v["gain_reduction_every_50ms_db"].as_array().unwrap().last().unwrap().as_f64().unwrap();
+        let tail = v["gain_reduction_every_50ms_db"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .as_f64()
+            .unwrap();
         assert!((tail as f32 - gain_computer(pk, &base)).abs() <= 0.1, "{v}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1091,16 +1599,43 @@ mod tests {
         // a click every 10 ms at 0.9: the peak detector (10 ms hold) always holds one
         // click, -0.92 dBFS; the 20 ms RMS window always holds two, 0.9 sqrt(2/882) = -27.36 dBFS
         let n = 3 * SR as usize;
-        let key: Vec<f32> = (0..n).map(|i| if i % 441 == 0 { 0.9 } else { 0.0 }).collect();
-        let base = KeyedComp { threshold_db: -24.0, ratio: 4.0, knee_db: 6.0, attack_ms: 1.0, release_ms: 100.0, makeup_db: 0.0, key_hpf_hz: 0.0, detector: Detector::Peak };
+        let key: Vec<f32> = (0..n)
+            .map(|i| if i % 441 == 0 { 0.9 } else { 0.0 })
+            .collect();
+        let base = KeyedComp {
+            threshold_db: -24.0,
+            ratio: 4.0,
+            knee_db: 6.0,
+            attack_ms: 1.0,
+            release_ms: 100.0,
+            makeup_db: 0.0,
+            key_hpf_hz: 0.0,
+            detector: Detector::Peak,
+        };
         let pk_lvl = 20.0 * 0.9f32.log10();
         let rms_lvl = 20.0 * (0.9 * (2.0f32 / 882.0).sqrt()).log10();
-        let settled = |c: &KeyedComp| -> f32 { let g = keyed_gain(&key, &key, c); 20.0 * g[n - 100].log10() };
-        let (gp, gr) = (settled(&base), settled(&KeyedComp { detector: Detector::Rms, ..base }));
-        eprintln!("click train: peak mode {gp:.3} dB (curve {:.3}), rms mode {gr:.3} dB (curve {:.3})", gain_computer(pk_lvl, &base), gain_computer(rms_lvl, &base));
+        let settled = |c: &KeyedComp| -> f32 {
+            let g = keyed_gain(&key, &key, c);
+            20.0 * g[n - 100].log10()
+        };
+        let (gp, gr) = (
+            settled(&base),
+            settled(&KeyedComp {
+                detector: Detector::Rms,
+                ..base
+            }),
+        );
+        eprintln!(
+            "click train: peak mode {gp:.3} dB (curve {:.3}), rms mode {gr:.3} dB (curve {:.3})",
+            gain_computer(pk_lvl, &base),
+            gain_computer(rms_lvl, &base)
+        );
         assert!((gp - gain_computer(pk_lvl, &base)).abs() <= 0.1, "{gp}");
         assert!((gr - gain_computer(rms_lvl, &base)).abs() <= 0.1, "{gr}");
-        assert!(gp < -15.0 && gr > -0.1, "the peak detector clamps hard on the clicks, the RMS one barely moves");
+        assert!(
+            gp < -15.0 && gr > -0.1,
+            "the peak detector clamps hard on the clicks, the RMS one barely moves"
+        );
     }
 
     #[test]
@@ -1116,7 +1651,16 @@ mod tests {
         crate::render::write_wav(&tp, &x, &x).unwrap();
         crate::render::write_wav(&kp, &x, &x).unwrap();
         let mut e = Engine::new(dir.clone());
-        let c = KeyedComp { threshold_db: -24.0, ratio: 4.0, knee_db: 0.0, attack_ms: 0.5, release_ms: 100.0, makeup_db: 0.0, key_hpf_hz: 0.0, detector: Detector::Peak };
+        let c = KeyedComp {
+            threshold_db: -24.0,
+            ratio: 4.0,
+            knee_db: 0.0,
+            attack_ms: 0.5,
+            release_ms: 100.0,
+            makeup_db: 0.0,
+            key_hpf_hz: 0.0,
+            detector: Detector::Peak,
+        };
         let pk = 20.0 * 0.5f32.log10();
         let curve_out = pk + gain_computer(pk, &c);
         let run = |e: &mut Engine, la: f64, name: &str| -> Vec<f32> {
@@ -1128,12 +1672,28 @@ mod tests {
         };
         // worst 1 ms block peak over the first 30 ms of the tone, against the curve's output level
         let over = |y: &[f32]| -> f32 {
-            (0..30).map(|b| { let s = n0 + b * 44; let p = y[s..s + 44].iter().fold(0.0f32, |m, v| m.max(v.abs())); 20.0 * p.max(1e-9).log10() - curve_out }).fold(f32::MIN, f32::max)
+            (0..30)
+                .map(|b| {
+                    let s = n0 + b * 44;
+                    let p = y[s..s + 44].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+                    20.0 * p.max(1e-9).log10() - curve_out
+                })
+                .fold(f32::MIN, f32::max)
         };
         let (with, without) = (run(&mut e, 5.0, "la5.wav"), run(&mut e, 0.0, "la0.wav"));
-        eprintln!("transient vs curve: lookahead 5 ms {:+.4} dB, none {:+.4} dB", over(&with), over(&without));
-        assert!(over(&with) <= 0.0 + 0.01, "with lookahead the transient sits on or under the curve");
-        assert!(over(&without) > 1.0, "without it the first cycles overshoot");
+        eprintln!(
+            "transient vs curve: lookahead 5 ms {:+.4} dB, none {:+.4} dB",
+            over(&with),
+            over(&without)
+        );
+        assert!(
+            over(&with) <= 0.0 + 0.01,
+            "with lookahead the transient sits on or under the curve"
+        );
+        assert!(
+            over(&without) > 1.0,
+            "without it the first cycles overshoot"
+        );
         // timing is kept: the output starts on the same sample as the target
         let first = |y: &[f32]| y.iter().position(|v| v.abs() > 1e-4).unwrap();
         assert_eq!(first(&with), first(&x));

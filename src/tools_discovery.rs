@@ -21,12 +21,32 @@ use serde_json::{json, Value};
 /// The tools a compact `tools/list` advertises: discovery, the one-call
 /// producers, the everyday project edits, render/export and undo.
 pub const COMPACT: &[&str] = &[
-    "get_guide", "list_tool_groups", "search_tools", "describe_tool", "call_tool",
-    "get_project_summary", "new_project", "load_project", "save_project",
-    "make_beat", "produce_song",
-    "add_track", "add_notes", "get_pattern", "set_mixer", "add_effect", "tweak_effect",
-    "set_tempo", "set_key", "list_ids", "lookup_id",
-    "render", "export_audio", "undo", "redo", "history",
+    "get_guide",
+    "list_tool_groups",
+    "search_tools",
+    "describe_tool",
+    "call_tool",
+    "get_project_summary",
+    "new_project",
+    "load_project",
+    "save_project",
+    "make_beat",
+    "produce_song",
+    "add_track",
+    "add_notes",
+    "get_pattern",
+    "set_mixer",
+    "add_effect",
+    "tweak_effect",
+    "set_tempo",
+    "set_key",
+    "list_ids",
+    "lookup_id",
+    "render",
+    "export_audio",
+    "undo",
+    "redo",
+    "history",
 ];
 
 /// The compact tool list in MCP `tools/list` shape.
@@ -43,7 +63,11 @@ pub fn compact_tools_json() -> Value {
 fn required_of(t: &Tool) -> Vec<String> {
     (t.schema)()["required"]
         .as_array()
-        .map(|r| r.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|r| {
+            r.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -80,12 +104,24 @@ pub fn search(query: &str, category: Option<&str>, limit: usize) -> Vec<(i32, &'
     let q = query.to_lowercase();
     let mut words: Vec<String> = q
         .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|w| w.len() > 1 && !["the", "a", "an", "to", "of", "and", "on", "in", "my", "it", "is", "for", "with", "me"].contains(w))
+        .filter(|w| {
+            w.len() > 1
+                && ![
+                    "the", "a", "an", "to", "of", "and", "on", "in", "my", "it", "is", "for",
+                    "with", "me",
+                ]
+                .contains(w)
+        })
         .map(|w| w.to_string())
         .collect();
     let extra: Vec<String> = words
         .iter()
-        .flat_map(|w| SYNONYMS.iter().filter(|(k, _)| w.starts_with(k)).flat_map(|(_, v)| v.iter().map(|s| s.to_string())))
+        .flat_map(|w| {
+            SYNONYMS
+                .iter()
+                .filter(|(k, _)| w.starts_with(k))
+                .flat_map(|(_, v)| v.iter().map(|s| s.to_string()))
+        })
         .collect();
     let n_orig = words.len();
     words.extend(extra);
@@ -120,7 +156,11 @@ pub fn search(query: &str, category: Option<&str>, limit: usize) -> Vec<(i32, &'
         })
         .filter(|(s, _)| *s > 0)
         .collect();
-    out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.len().cmp(&b.1.name.len())).then(a.1.name.cmp(b.1.name)));
+    out.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(a.1.name.len().cmp(&b.1.name.len()))
+            .then(a.1.name.cmp(b.1.name))
+    });
     out.truncate(limit);
     out
 }
@@ -206,34 +246,91 @@ mod tests {
         assert!(n <= 30);
         let full = crate::tools::tools_json().to_string().len();
         let small = v.to_string().len();
-        assert!(small * 5 < full, "compact list {small} bytes vs full {full}");
-        for must in ["search_tools", "describe_tool", "call_tool", "list_tool_groups"] {
+        assert!(
+            small * 5 < full,
+            "compact list {small} bytes vs full {full}"
+        );
+        for must in [
+            "search_tools",
+            "describe_tool",
+            "call_tool",
+            "list_tool_groups",
+        ] {
             assert!(COMPACT.contains(&must));
         }
     }
 
     #[test]
     fn search_finds_the_obvious_tool() {
-        let top = |q: &str| search(q, None, 5).iter().map(|(_, t)| t.name).collect::<Vec<_>>();
-        assert!(top("split clip").contains(&"split_clip"), "{:?}", top("split clip"));
-        assert!(top("reverb").iter().any(|n| n.contains("effect") || n.contains("reverb")), "{:?}", top("reverb"));
-        assert!(top("export mp3").contains(&"export_audio"), "{:?}", top("export mp3"));
-        assert!(top("make the vocal louder").iter().any(|n| n.contains("vocal") || n.contains("mixer") || n.contains("gain")));
+        let top = |q: &str| {
+            search(q, None, 5)
+                .iter()
+                .map(|(_, t)| t.name)
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            top("split clip").contains(&"split_clip"),
+            "{:?}",
+            top("split clip")
+        );
+        assert!(
+            top("reverb")
+                .iter()
+                .any(|n| n.contains("effect") || n.contains("reverb")),
+            "{:?}",
+            top("reverb")
+        );
+        assert!(
+            top("export mp3").contains(&"export_audio"),
+            "{:?}",
+            top("export mp3")
+        );
+        assert!(top("make the vocal louder")
+            .iter()
+            .any(|n| n.contains("vocal") || n.contains("mixer") || n.contains("gain")));
         assert!(top("undo")[0] == "undo");
     }
 
     #[test]
     fn groups_cover_every_tool_and_call_tool_is_one_undo_step() {
-        let mut e = Engine::new(std::env::temp_dir().join(format!("bb_disc_{}", std::process::id())));
+        let mut e =
+            Engine::new(std::env::temp_dir().join(format!("bb_disc_{}", std::process::id())));
         let g = e.call("list_tool_groups", &json!({})).unwrap();
-        let sum: u64 = g["groups"].as_array().unwrap().iter().map(|x| x["tools"].as_u64().unwrap()).sum();
-        assert_eq!(sum, crate::tools::registry().len() as u64, "every tool sits in a group");
-        let d = e.call("describe_tool", &json!({"name": "split_clip"})).unwrap();
-        assert!(d["input_schema"]["properties"]["at_beat"].is_object(), "{d}");
-        e.call("call_tool", &json!({"name": "add_track", "arguments": {"name": "keys", "preset": "pad"}})).unwrap();
+        let sum: u64 = g["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["tools"].as_u64().unwrap())
+            .sum();
+        assert_eq!(
+            sum,
+            crate::tools::registry().len() as u64,
+            "every tool sits in a group"
+        );
+        let d = e
+            .call("describe_tool", &json!({"name": "split_clip"}))
+            .unwrap();
+        assert!(
+            d["input_schema"]["properties"]["at_beat"].is_object(),
+            "{d}"
+        );
+        e.call(
+            "call_tool",
+            &json!({"name": "add_track", "arguments": {"name": "keys", "preset": "pad"}}),
+        )
+        .unwrap();
         assert_eq!(e.project.tracks.len(), 1);
-        assert!(e.call("call_tool", &json!({"name": "add_track", "arguments": {"nope": 1}})).is_err());
-        assert!(e.call("call_tool", &json!({"name": "splitclip"})).unwrap_err().to_string().contains("split_clip"));
+        assert!(e
+            .call(
+                "call_tool",
+                &json!({"name": "add_track", "arguments": {"nope": 1}})
+            )
+            .is_err());
+        assert!(e
+            .call("call_tool", &json!({"name": "splitclip"}))
+            .unwrap_err()
+            .to_string()
+            .contains("split_clip"));
         e.call("undo", &json!({})).unwrap();
         assert!(e.project.tracks.is_empty());
     }
