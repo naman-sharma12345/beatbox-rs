@@ -55,6 +55,43 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Signalsmith Audio DSP library
+
+- Source: https://github.com/Signalsmith-Audio/dsp (commit `ca390d2`)
+- Copyright (c) 2021 Geraint Luff / Signalsmith Audio Ltd.
+- License: MIT (the repository's `LICENSE.txt`, reproduced below; the adapted
+  files carry no per-file header)
+- Changes: ported from C++ to Rust (no FFI), integer positions return the
+  stored sample untouched, delay-line and buffer-read wrappers, tests added.
+
+| Beatbox file | Adapted from (Signalsmith DSP) | What |
+|---|---|---|
+| `src/interp.rs` | `delay.h` (`InterpolatorCubic`) | Opt-in 4-point cubic Hermite interpolation and a fractional delay line, shared by delay, sampler and granular code |
+
+```
+MIT License
+
+Copyright (c) 2021 Geraint Luff / Signalsmith Audio Ltd.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Sound palette samples (downloaded on first use, not bundled)
 
 53 CC0 1.0 one-shots from Sonic Pi's bundled freesound CC0 set and Michael Fischer's 1994 TR-808 set (tidalcycles/sounds-tr808-fischer, CC0). Per-file author, source page, pinned URL and SHA-256: [SAMPLES_LICENSES.md](SAMPLES_LICENSES.md).
@@ -125,3 +162,18 @@ published formula only; no third-party filter source was read or used.
 
 - R. Bristow-Johnson, "Cookbook formulae for audio EQ biquad filter coefficients" (the
   "Audio EQ Cookbook"; HPF coefficients, direct form I).
+
+`src/waveform_png.rs` (the headless waveform PNG: its PNG writer, CRC-32, zlib wrapper,
+Adler-32 and DEFLATE encoder) is written from the published specifications only; no
+third-party encoder or compression source was read or used, and none of the `png`, `image`,
+`flate2` or `tiny-skia` crates is used on this path (the `png` and `flate2` crates appear only
+in its tests, to decode the output and prove it valid).
+
+- W3C, "Portable Network Graphics (PNG) Specification (Second Edition)" / ISO/IEC 15948:2004
+  (signature, IHDR / IDAT / IEND chunks, filter types 0 and 2, the CRC-32 of Annex D).
+- P. Deutsch, J-L. Gailly, RFC 1950, "ZLIB Compressed Data Format Specification version 3.3",
+  1996 (CMF/FLG header, Adler-32).
+- P. Deutsch, RFC 1951, "DEFLATE Compressed Data Format Specification version 1.3", 1996
+  (stored blocks, fixed Huffman codes, length and distance code tables).
+- J. Ziv, A. Lempel, "A Universal Algorithm for Sequential Data Compression", IEEE Trans.
+  Information Theory 23(3), 1977 (LZ77 matching).
