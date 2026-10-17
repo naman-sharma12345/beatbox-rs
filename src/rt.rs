@@ -2662,8 +2662,10 @@ mod tests {
                 "add_effect",
                 &serde_json::json!({
                     "track": "lead", "type": "compressor",
-                    "threshold_db": -14.0, "ratio": 3.0,
-                    "knee_db": 6.0, "lookahead_ms": 10.0
+                    "params": {
+                        "threshold_db": -14.0, "ratio": 3.0,
+                        "knee_db": 6.0, "lookahead_ms": 10.0
+                    }
                 }),
             )
             .unwrap();
