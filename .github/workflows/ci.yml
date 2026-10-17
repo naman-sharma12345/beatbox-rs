@@ -7,6 +7,10 @@ env:
   CARGO_TERM_COLOR: always
 jobs:
   check:
+    # runner size: ubuntu-latest is 4 vCPU / 16 GB RAM, and the 16 GB is
+    # required - the 107k-line lib test target OOMs below ~2 GB RSS during
+    # codegen/link (proven on a 1.9 GB box, SIGKILL even at opt-level=0 -j1).
+    # Do not move this job to a smaller runner class.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +28,8 @@ jobs:
       - name: rust-toolchain.toml matches the CI toolchain
         run: grep -q 'channel = "1.99.0"' rust-toolchain.toml
   beats:
+    # runner size: same 16 GB / 4 vCPU requirement as check - release codegen
+    # of the crate does not fit in small runners.
     # prove the producer: render the reference beats with produce_track
     # (fresh seeds), compare them with the previous sprint, build a blind A/B
     runs-on: ubuntu-latest
