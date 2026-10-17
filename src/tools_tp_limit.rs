@@ -138,7 +138,7 @@ mod tests {
             .unwrap();
         assert!(v["true_peak_before_dbtp"].as_f64().unwrap() > 0.5, "{v}");
         let after = v["true_peak_after_dbtp"].as_f64().unwrap();
-        assert!(after <= -0.9 && after >= -1.15, "{v}");
+        assert!((-1.15..=-0.9).contains(&after), "{v}");
         assert_eq!(v["latency_samples"].as_u64().unwrap(), 132 + 10, "{v}");
         let (l, _r) = crate::samples::decode_stereo(&out).unwrap();
         assert_eq!(l.len(), 22050);
