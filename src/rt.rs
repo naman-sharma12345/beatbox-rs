@@ -338,11 +338,19 @@ pub struct MixNode<'a> {
     master_smoothed: bool,
     dc_l: DcBlock,
     dc_r: DcBlock,
+    /// RT5: the master effect chain, streamed (the ChainStreamer
+    /// subset: lookahead compressor, non-true-peak limiter, ...). None
+    /// when the chain is empty or any link is one-shot-only (true-peak
+    /// limiter): the master section then stays fader + DcBlock +
+    /// zeroing, exactly as before.
+    master_chain: Option<ChainStreamer>,
     coeff: f32,
     pos: usize,
     total: usize,
-    /// RT4 PDC: max track-chain latency in samples. Every track's output
-    /// is delayed (latency_max - own) so all paths align at the sum.
+    /// RT4 PDC: max track-chain latency in samples plus the streamed
+    /// master chain's latency (RT5). Every track's output is delayed
+    /// (latency_max - own) so all paths align at the sum; the master
+    /// chain then delays the sum itself.
     latency: usize,
 }
 
@@ -454,6 +462,26 @@ impl<'a> MixNode<'a> {
             .iter()
             .find(|x| parse_target(&x.param) == Some(Target::Volume))
             .copied();
+        // RT5: stream the master chain when every link is in the
+        // ChainStreamer subset; a one-shot-only link (true-peak
+        // limiter) or master FX automation keeps the old fader +
+        // DcBlock-only section. An empty chain keeps the old path too.
+        let master_chain = if p.master_effects.is_empty() {
+            None
+        } else {
+            ChainStreamer::build(
+                &p.master_effects,
+                &master_lanes,
+                p.step_secs(),
+                &triggers,
+                total,
+            )
+        };
+        let latency = latency
+            + master_chain
+                .as_ref()
+                .map(|c| c.latency_samples())
+                .unwrap_or(0);
         MixNode {
             block_size,
             tl,
@@ -464,6 +492,7 @@ impl<'a> MixNode<'a> {
             master_smoothed: false,
             dc_l: DcBlock::default(),
             dc_r: DcBlock::default(),
+            master_chain,
             latency,
             coeff: auto_smooth_coeff(SR),
             pos: 0,
@@ -522,6 +551,7 @@ impl<'a> Node for MixNode<'a> {
         let coeff = self.coeff;
         let master_lane = self.master_lane;
         let master_k = db_to_gain(self.master_volume_db);
+        let master_fx = self.master_chain.is_some();
         let mut master_y = self.master_y;
         let mut master_smoothed = self.master_smoothed;
         let (dl, dr) = (&mut self.dc_l, &mut self.dc_r);
@@ -606,8 +636,27 @@ impl<'a> Node for MixNode<'a> {
             ar *= gm;
             let yl = dl.process(al);
             let yr = dr.process(ar);
-            ml[i] = if yl.is_finite() { yl } else { 0.0 };
-            mr[i] = if yr.is_finite() { yr } else { 0.0 };
+            // Offline order (render::master_section): fader, DcBlock,
+            // chain, THEN non-finite zeroing - so a streamed chain sees
+            // the unclamped signal and zeroing runs after it.
+            if master_fx {
+                ml[i] = yl;
+                mr[i] = yr;
+            } else {
+                ml[i] = if yl.is_finite() { yl } else { 0.0 };
+                mr[i] = if yr.is_finite() { yr } else { 0.0 };
+            }
+        }
+        if let Some(chain) = &mut self.master_chain {
+            chain.process_block(ml, mr);
+            for i in 0..n {
+                if !ml[i].is_finite() {
+                    ml[i] = 0.0;
+                }
+                if !mr[i].is_finite() {
+                    mr[i] = 0.0;
+                }
+            }
         }
         self.master_y = master_y;
         self.master_smoothed = master_smoothed;
@@ -3012,6 +3061,87 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// RT5: a streamed master chain (2ms-lookahead compressor + non-TP
+    /// limiter, latency 88 + 88) runs on MixNode's master bus: the
+    /// engine output equals the one-shot oracle shifted by the reported
+    /// latency, tail flushed by that many extra silent samples, at all
+    /// 8 test-0 block sizes. A master chain with a one-shot-only link
+    /// (true-peak limiter) keeps the old fader + DcBlock-only section.
+    #[test]
+    fn mix_node_master_chain_shifted_oracle() {
+        let opts = RenderOptions::default();
+        let mut e = pdc_project(false, None, "masterchain");
+        e.project.master_effects = vec![
+            serde_json::from_value(serde_json::json!({
+                "type":"compressor","threshold_db":-14.0,"ratio":3.0,
+                "knee_db":6.0,"lookahead_ms":2.0
+            }))
+            .unwrap(),
+            serde_json::from_value(serde_json::json!({
+                "type":"limiter","ceiling_db":-1.0,"release_ms":80.0,"true_peak":false
+            }))
+            .unwrap(),
+        ];
+        let lat_expect = 88 + 88;
+        let one_shot = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        let n = one_shot.left.len();
+        for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+            let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
+            let lat = node.latency();
+            assert_eq!(lat, lat_expect, "master chain latency (block {block})");
+            let ftz = crate::dsp::flush_denormals();
+            let _nd = ftz.then(crate::dsp::NoDenormals::new);
+            let mut el = vec![0.0f32; n + lat];
+            let mut er = vec![0.0f32; n + lat];
+            let mut pos = 0usize;
+            while pos < n + lat {
+                let k = block.min(n + lat - pos);
+                let ctx = BlockCtx {
+                    sample_rate: SR,
+                    block_len: k,
+                    frame_offset: pos as u64,
+                };
+                let mut outs: [&mut [f32]; 2] = [&mut el[pos..pos + k], &mut er[pos..pos + k]];
+                node.process(&ctx, &[], &mut outs);
+                pos += k;
+            }
+            for i in lat..n {
+                assert_eq!(
+                    el[i].to_bits(),
+                    one_shot.left[i - lat].to_bits(),
+                    "shifted left block {block} i {i}"
+                );
+                assert_eq!(
+                    er[i].to_bits(),
+                    one_shot.right[i - lat].to_bits(),
+                    "shifted right block {block} i {i}"
+                );
+            }
+            for i in 0..lat {
+                assert_eq!(
+                    el[n + i].to_bits(),
+                    one_shot.left[n - lat + i].to_bits(),
+                    "flush left block {block} i {i}"
+                );
+                assert_eq!(
+                    er[n + i].to_bits(),
+                    one_shot.right[n - lat + i].to_bits(),
+                    "flush right block {block} i {i}"
+                );
+            }
+        }
+        // one-shot-only link (default true-peak limiter): no streaming,
+        // no added latency - the section stays fader + DcBlock only.
+        let mut ed = pdc_project(false, None, "masterdefault");
+        ed.project.master_effects = vec![serde_json::from_value(serde_json::json!({
+            "type": "limiter"
+        }))
+        .unwrap()];
+        let node = MixNode::new(&ed.project, &ed.bank, &opts, 512);
+        assert!(node.master_chain.is_none());
+        assert_eq!(node.latency(), 0, "true-peak master chain does not stream");
     }
 
     /// RT4 relay: chained lookahead effects add - two 10ms lookahead
