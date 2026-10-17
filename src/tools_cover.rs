@@ -3693,7 +3693,7 @@ mod air_fix_tests {
         };
         let loud7 = run(tone(7000.0, -6.0));
         assert!(
-            loud7 < -3.0 && loud7 >= -4.2,
+            (-4.2..-3.0).contains(&loud7),
             "loud 7 kHz cut {loud7:.2} dB"
         );
         assert!(
