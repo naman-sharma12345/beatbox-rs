@@ -34,7 +34,15 @@ pub struct Biquad {
 
 impl Biquad {
     fn from(b: [f64; 3], a: [f64; 3]) -> Self {
-        Biquad { b0: b[0] / a[0], b1: b[1] / a[0], b2: b[2] / a[0], a1: a[1] / a[0], a2: a[2] / a[0], z1: 0.0, z2: 0.0 }
+        Biquad {
+            b0: b[0] / a[0],
+            b1: b[1] / a[0],
+            b2: b[2] / a[0],
+            a1: a[1] / a[0],
+            a2: a[2] / a[0],
+            z1: 0.0,
+            z2: 0.0,
+        }
     }
 
     fn k(f: f64, sr: f64) -> f64 {
@@ -45,21 +53,39 @@ impl Biquad {
     pub fn butter_lp(f: f64, sr: f64) -> Self {
         let k = Self::k(f, sr);
         let k2 = k * k;
-        Self::from([k2, 2.0 * k2, k2], [1.0 + SQRT_2 * k + k2, 2.0 * (k2 - 1.0), 1.0 - SQRT_2 * k + k2])
+        Self::from(
+            [k2, 2.0 * k2, k2],
+            [
+                1.0 + SQRT_2 * k + k2,
+                2.0 * (k2 - 1.0),
+                1.0 - SQRT_2 * k + k2,
+            ],
+        )
     }
 
     /// 2nd-order Butterworth highpass at `f`.
     pub fn butter_hp(f: f64, sr: f64) -> Self {
         let k = Self::k(f, sr);
         let k2 = k * k;
-        Self::from([1.0, -2.0, 1.0], [1.0 + SQRT_2 * k + k2, 2.0 * (k2 - 1.0), 1.0 - SQRT_2 * k + k2])
+        Self::from(
+            [1.0, -2.0, 1.0],
+            [
+                1.0 + SQRT_2 * k + k2,
+                2.0 * (k2 - 1.0),
+                1.0 - SQRT_2 * k + k2,
+            ],
+        )
     }
 
     /// 2nd-order allpass with the Butterworth pole pair at `f` (= LP4 + HP4).
     pub fn butter_ap(f: f64, sr: f64) -> Self {
         let k = Self::k(f, sr);
         let k2 = k * k;
-        let (d0, d1, d2) = (1.0 + SQRT_2 * k + k2, 2.0 * (k2 - 1.0), 1.0 - SQRT_2 * k + k2);
+        let (d0, d1, d2) = (
+            1.0 + SQRT_2 * k + k2,
+            2.0 * (k2 - 1.0),
+            1.0 - SQRT_2 * k + k2,
+        );
         Self::from([d2, d1, d0], [d0, d1, d2])
     }
 
@@ -87,7 +113,10 @@ struct Lr4 {
 impl Lr4 {
     fn new(f: f64, sr: f64) -> Self {
         let (l, h) = (Biquad::butter_lp(f, sr), Biquad::butter_hp(f, sr));
-        Lr4 { lp: [l, l], hp: [h, h] }
+        Lr4 {
+            lp: [l, l],
+            hp: [h, h],
+        }
     }
     #[inline]
     fn split(&mut self, x: f64) -> (f64, f64) {
@@ -119,7 +148,9 @@ impl Crossover {
         let mut f = [0.0f64; MAX_CROSSOVERS];
         let mut prev = 0.0f64;
         for i in 0..n_x {
-            let v = (freqs.get(i).copied().unwrap_or(1000.0) as f64).clamp(10.0, 0.45 * sr).max(prev * 1.0001);
+            let v = (freqs.get(i).copied().unwrap_or(1000.0) as f64)
+                .clamp(10.0, 0.45 * sr)
+                .max(prev * 1.0001);
             f[i] = v;
             prev = v;
         }
@@ -199,15 +230,24 @@ pub(crate) mod tests {
     }
 
     fn log_freqs(n: usize) -> Vec<f64> {
-        (0..n).map(|i| 20.0 * (20000.0f64 / 20.0).powf(i as f64 / (n - 1) as f64)).collect()
+        (0..n)
+            .map(|i| 20.0 * (20000.0f64 / 20.0).powf(i as f64 / (n - 1) as f64))
+            .collect()
     }
 
     #[test]
     fn lr4_bands_sum_to_a_flat_allpass() {
         let mut lines = Vec::new();
-        for (freqs, sr) in [(vec![150.0f32, 2500.0], 44_100.0f32), (vec![150.0, 2500.0], 48_000.0), (vec![80.0, 400.0, 3000.0, 9000.0], 44_100.0), (vec![1000.0], 96_000.0)] {
+        for (freqs, sr) in [
+            (vec![150.0f32, 2500.0], 44_100.0f32),
+            (vec![150.0, 2500.0], 48_000.0),
+            (vec![80.0, 400.0, 3000.0, 9000.0], 44_100.0),
+            (vec![1000.0], 96_000.0),
+        ] {
             let irs = band_irs(&freqs, sr, 1 << 16);
-            let sum: Vec<f64> = (0..irs[0].len()).map(|n| irs.iter().map(|b| b[n]).sum()).collect();
+            let sum: Vec<f64> = (0..irs[0].len())
+                .map(|n| irs.iter().map(|b| b[n]).sum())
+                .collect();
             let mut dev = 0.0f64;
             for f in log_freqs(400) {
                 let (re, im) = dft(&sum, f, sr as f64);
@@ -227,8 +267,16 @@ pub(crate) mod tests {
             let (re, im) = dft(h, f, sr as f64);
             10.0 * (re * re + im * im).log10()
         };
-        assert!((mag(&irs[0], 1000.0) + 6.02).abs() < 0.05, "{}", mag(&irs[0], 1000.0));
-        assert!((mag(&irs[1], 1000.0) + 6.02).abs() < 0.05, "{}", mag(&irs[1], 1000.0));
+        assert!(
+            (mag(&irs[0], 1000.0) + 6.02).abs() < 0.05,
+            "{}",
+            mag(&irs[0], 1000.0)
+        );
+        assert!(
+            (mag(&irs[1], 1000.0) + 6.02).abs() < 0.05,
+            "{}",
+            mag(&irs[1], 1000.0)
+        );
         // two octaves above / below: ~ -48 dB (24 dB/oct asymptote, bilinear-warped a hair)
         let lo4 = mag(&irs[0], 4000.0);
         let hi4 = mag(&irs[1], 250.0);

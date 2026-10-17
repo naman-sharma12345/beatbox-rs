@@ -158,7 +158,11 @@ impl LoudnessMeter {
 
     /// Tech 3342 loudness range: (LRA, low, high) in LU / LUFS.
     pub fn loudness_range(&self) -> (f64, f64, f64) {
-        let st: Vec<f64> = self.window(30).into_iter().filter(|m| lufs(*m) > -70.0).collect();
+        let st: Vec<f64> = self
+            .window(30)
+            .into_iter()
+            .filter(|m| lufs(*m) > -70.0)
+            .collect();
         if st.is_empty() {
             return (0.0, -70.0, -70.0);
         }
@@ -179,7 +183,13 @@ impl LoudnessMeter {
     pub fn report(&self) -> LoudnessReport {
         let mx = |v: Vec<f64>| v.into_iter().fold(-200.0f64, f64::max);
         let (lra, lo, hi) = self.loudness_range();
-        let db = |x: f32| if x > 0.0 { 20.0 * (x as f64).log10() } else { -200.0 };
+        let db = |x: f32| {
+            if x > 0.0 {
+                20.0 * (x as f64).log10()
+            } else {
+                -200.0
+            }
+        };
         LoudnessReport {
             integrated_lufs: self.integrated(),
             momentary_max_lufs: mx(self.momentary()),
@@ -239,9 +249,27 @@ mod tests {
         let cases: [(&str, Vec<(f64, f64)>, f64); 5] = [
             ("3341-1", vec![(20.0, -23.0)], -23.0),
             ("3341-2", vec![(20.0, -33.0)], -33.0),
-            ("3341-3", vec![(10.0, -36.0), (60.0, -23.0), (10.0, -36.0)], -23.0),
-            ("3341-4", vec![(10.0, -72.0), (10.0, -36.0), (60.0, -23.0), (10.0, -36.0), (10.0, -72.0)], -23.0),
-            ("3341-5", vec![(20.0, -26.0), (20.1, -20.0), (20.0, -26.0)], -23.0),
+            (
+                "3341-3",
+                vec![(10.0, -36.0), (60.0, -23.0), (10.0, -36.0)],
+                -23.0,
+            ),
+            (
+                "3341-4",
+                vec![
+                    (10.0, -72.0),
+                    (10.0, -36.0),
+                    (60.0, -23.0),
+                    (10.0, -36.0),
+                    (10.0, -72.0),
+                ],
+                -23.0,
+            ),
+            (
+                "3341-5",
+                vec![(20.0, -26.0), (20.1, -20.0), (20.0, -26.0)],
+                -23.0,
+            ),
         ];
         let mut lines = Vec::new();
         for (name, segs, want) in cases {
@@ -268,9 +296,14 @@ mod tests {
         }
         let m = meter(&sine_segments(&segs, 1000.0));
         let st = m.short_term();
-        let (lo, hi) = st.iter().fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+        let (lo, hi) = st
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
         eprintln!("LUFS_3341_S short-term over 5 cycles: {lo:.3} .. {hi:.3} LUFS (expected -23.0)");
-        assert!((lo + 23.0).abs() <= 0.1 && (hi + 23.0).abs() <= 0.1, "{lo} {hi}");
+        assert!(
+            (lo + 23.0).abs() <= 0.1 && (hi + 23.0).abs() <= 0.1,
+            "{lo} {hi}"
+        );
         // momentary: 0.18 s at -20 dBFS, 0.22 s at -30, repeated: every 400 ms window reads -23.0
         let mut segs = Vec::new();
         for _ in 0..20 {
@@ -279,9 +312,14 @@ mod tests {
         }
         let m = meter(&sine_segments(&segs, 1000.0));
         let mo = m.momentary();
-        let (lo, hi) = mo.iter().fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+        let (lo, hi) = mo
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
         eprintln!("LUFS_3341_M momentary over 20 cycles: {lo:.3} .. {hi:.3} LUFS (expected -23.0)");
-        assert!((lo + 23.0).abs() <= 0.1 && (hi + 23.0).abs() <= 0.1, "{lo} {hi}");
+        assert!(
+            (lo + 23.0).abs() <= 0.1 && (hi + 23.0).abs() <= 0.1,
+            "{lo} {hi}"
+        );
     }
 
     #[test]
@@ -290,7 +328,17 @@ mod tests {
             ("3342-1", vec![(20.0, -20.0), (20.0, -30.0)], 10.0),
             ("3342-2", vec![(20.0, -20.0), (20.0, -15.0)], 5.0),
             ("3342-3", vec![(20.0, -40.0), (20.0, -20.0)], 20.0),
-            ("3342-4", vec![(20.0, -50.0), (20.0, -35.0), (20.0, -20.0), (20.0, -35.0), (20.0, -50.0)], 15.0),
+            (
+                "3342-4",
+                vec![
+                    (20.0, -50.0),
+                    (20.0, -35.0),
+                    (20.0, -20.0),
+                    (20.0, -35.0),
+                    (20.0, -50.0),
+                ],
+                15.0,
+            ),
         ];
         let mut lines = Vec::new();
         for (name, segs, want) in cases {
@@ -310,7 +358,9 @@ mod tests {
         // every case to within +0.3 / -0.4 and prints which ones meet the 3341 tolerance.
         for ph in [0.0f64, 45.0, 60.0, 67.5] {
             let a = 10f64.powf(-6.0 / 20.0);
-            let x: Vec<f32> = (0..48000).map(|n| (a * (PI / 2.0 * n as f64 + ph.to_radians()).sin()) as f32).collect();
+            let x: Vec<f32> = (0..48000)
+                .map(|n| (a * (PI / 2.0 * n as f64 + ph.to_radians()).sin()) as f32)
+                .collect();
             let r = measure_stereo(&x, &x, FS).0;
             let ref16 = 20.0 * super::super::true_peak::tests::true_peak_ref16(&x).log10();
             let ok = r.true_peak_dbtp <= -6.0 + 0.2 && r.true_peak_dbtp >= -6.0 - 0.4;
@@ -322,7 +372,11 @@ mod tests {
                 .enumerate()
                 .map(|(n, v)| {
                     let e = n.min(x.len() - 1 - n);
-                    let g = if e < fade { 0.5 - 0.5 * (PI * e as f64 / fade as f64).cos() } else { 1.0 };
+                    let g = if e < fade {
+                        0.5 - 0.5 * (PI * e as f64 / fade as f64).cos()
+                    } else {
+                        1.0
+                    };
                     (*v as f64 * g) as f32
                 })
                 .collect();
@@ -331,7 +385,11 @@ mod tests {
                 "TP_3341 fs/4 phase {ph}: {:.3} dBTP (16x reference {ref16:.3}); with 20 ms fades {:.3} dBTP; within 3341 +0.2/-0.4: {ok}",
                 r.true_peak_dbtp, rf.true_peak_dbtp
             );
-            assert!(r.true_peak_dbtp <= -6.0 + 0.3 && r.true_peak_dbtp >= -6.0 - 0.4, "{ph}: {}", r.true_peak_dbtp);
+            assert!(
+                r.true_peak_dbtp <= -6.0 + 0.3 && r.true_peak_dbtp >= -6.0 - 0.4,
+                "{ph}: {}",
+                r.true_peak_dbtp
+            );
         }
     }
 
@@ -347,30 +405,53 @@ mod tests {
     #[test]
     fn k_weighting_matches_the_bs1770_4_coefficients_at_48k() {
         // BS.1770-4 Table 1 (shelf) and Table 2 (high-pass), fs = 48 kHz
-        let shelf = ([1.535_124_859_586_97, -2.691_696_189_406_38, 1.198_392_810_852_85], [1.0, -1.690_659_293_182_41, 0.732_480_774_215_85]);
-        let hp = ([1.0, -2.0, 1.0], [1.0, -1.990_047_454_833_98, 0.990_072_250_366_21]);
+        let shelf = (
+            [
+                1.535_124_859_586_97,
+                -2.691_696_189_406_38,
+                1.198_392_810_852_85,
+            ],
+            [1.0, -1.690_659_293_182_41, 0.732_480_774_215_85],
+        );
+        let hp = (
+            [1.0, -2.0, 1.0],
+            [1.0, -1.990_047_454_833_98, 0.990_072_250_366_21],
+        );
         let resp = |b: [f64; 3], a: [f64; 3], f: f64| {
             let w = 2.0 * PI * f / 48_000.0;
-            let n = (b[0] + b[1] * w.cos() + b[2] * (2.0 * w).cos(), -(b[1] * w.sin() + b[2] * (2.0 * w).sin()));
-            let d = (a[0] + a[1] * w.cos() + a[2] * (2.0 * w).cos(), -(a[1] * w.sin() + a[2] * (2.0 * w).sin()));
+            let n = (
+                b[0] + b[1] * w.cos() + b[2] * (2.0 * w).cos(),
+                -(b[1] * w.sin() + b[2] * (2.0 * w).sin()),
+            );
+            let d = (
+                a[0] + a[1] * w.cos() + a[2] * (2.0 * w).cos(),
+                -(a[1] * w.sin() + a[2] * (2.0 * w).sin()),
+            );
             10.0 * ((n.0 * n.0 + n.1 * n.1) / (d.0 * d.0 + d.1 * d.1)).log10()
         };
         // ours, measured: impulse response of the meter's K filter, DFT at f
         let mut k = k_weighting(48_000.0);
-        let ir: Vec<f64> = (0..1 << 16).map(|n| {
-            let a = k[0].run(if n == 0 { 1.0 } else { 0.0 });
-            k[1].run(a)
-        }).collect();
+        let ir: Vec<f64> = (0..1 << 16)
+            .map(|n| {
+                let a = k[0].run(if n == 0 { 1.0 } else { 0.0 });
+                k[1].run(a)
+            })
+            .collect();
         let ours = |f: f64| {
             let w = -2.0 * PI * f / 48_000.0;
-            let (re, im) = ir.iter().enumerate().fold((0.0, 0.0), |(r, i), (n, v)| (r + v * (w * n as f64).cos(), i + v * (w * n as f64).sin()));
+            let (re, im) = ir.iter().enumerate().fold((0.0, 0.0), |(r, i), (n, v)| {
+                (r + v * (w * n as f64).cos(), i + v * (w * n as f64).sin())
+            });
             10.0 * (re * re + im * im).log10()
         };
         let mut lines = Vec::new();
         for f in [100.0f64, 1000.0, 2000.0, 10_000.0] {
             let spec = resp(shelf.0, shelf.1, f) + resp(hp.0, hp.1, f);
             let mine = ours(f);
-            lines.push(format!("{f} Hz: spec {spec:+.4} dB, meter {mine:+.4} dB, diff {:+.5}", mine - spec));
+            lines.push(format!(
+                "{f} Hz: spec {spec:+.4} dB, meter {mine:+.4} dB, diff {:+.5}",
+                mine - spec
+            ));
             assert!((mine - spec).abs() < 0.01, "{f}: {mine} vs {spec}");
         }
         eprintln!("K_WEIGHTING_48K\n{}", lines.join("\n"));

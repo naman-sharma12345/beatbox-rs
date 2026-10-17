@@ -60,7 +60,12 @@ pub const SLOW_CHARGE_MS: f32 = 150.0;
 
 impl Default for TruePeakLimiterParams {
     fn default() -> Self {
-        TruePeakLimiterParams { ceiling_dbtp: -0.1, lookahead_ms: 3.0, release_fast_ms: 40.0, release_slow_ms: 400.0 }
+        TruePeakLimiterParams {
+            ceiling_dbtp: -0.1,
+            lookahead_ms: 3.0,
+            release_fast_ms: 40.0,
+            release_slow_ms: 400.0,
+        }
     }
 }
 
@@ -189,7 +194,11 @@ impl TruePeakLimiter {
     /// the output frame `latency()` samples ago.
     #[inline]
     fn gain_step(&mut self, d: f32) -> f32 {
-        let gr_req = if d > self.ceiling { 20.0 * (d / self.ceiling).log10() } else { 0.0 };
+        let gr_req = if d > self.ceiling {
+            20.0 * (d / self.ceiling).log10()
+        } else {
+            0.0
+        };
         if gr_req > self.e_slow {
             self.e_slow += self.charge * (gr_req - self.e_slow);
         } else {
@@ -264,7 +273,11 @@ impl TruePeakLimiter {
                 self.delay[c * dlen + self.dpos] = x;
             }
             let s = self.gain_step(d);
-            let rd = if self.dpos + 1 == dlen { 0 } else { self.dpos + 1 };
+            let rd = if self.dpos + 1 == dlen {
+                0
+            } else {
+                self.dpos + 1
+            };
             for (c, ch) in chans.iter_mut().enumerate().take(nch) {
                 ch[i] = self.delay[c * dlen + rd] * s;
             }
@@ -304,7 +317,11 @@ pub fn limit_offline(chans: &mut [Vec<f32>], sr: f32, p: TruePeakLimiterParams) 
     for c in chans.iter_mut() {
         c.drain(..lat);
     }
-    LimitReport { latency: lat, lookahead: lim.lookahead(), max_gain_reduction_db: lim.take_max_gain_reduction_db() }
+    LimitReport {
+        latency: lat,
+        lookahead: lim.lookahead(),
+        max_gain_reduction_db: lim.take_max_gain_reduction_db(),
+    }
 }
 
 #[cfg(test)]
@@ -339,10 +356,20 @@ mod tests {
         let n = 22050;
         let mut v = Vec::new();
         // quarter-rate sine at 45 degrees: samples +-1.414, true peak 2.0 (+6 dBTP)
-        let q: Vec<f32> = (0..n).map(|i| 2.0 * (PI / 2.0 * i as f32 + PI / 4.0).sin()).collect();
+        let q: Vec<f32> = (0..n)
+            .map(|i| 2.0 * (PI / 2.0 * i as f32 + PI / 4.0).sin())
+            .collect();
         v.push(("fs/4 sine 45deg +6dBTP", q.clone(), q));
         // naive (aliased) full-scale square wave at 1 kHz, +3 dB
-        let sq: Vec<f32> = (0..n).map(|i| if (i as f32 * 1000.0 / SR).fract() < 0.5 { 1.41 } else { -1.41 }).collect();
+        let sq: Vec<f32> = (0..n)
+            .map(|i| {
+                if (i as f32 * 1000.0 / SR).fract() < 0.5 {
+                    1.41
+                } else {
+                    -1.41
+                }
+            })
+            .collect();
         v.push(("1k naive square +3dB", sq.clone(), sq));
         // +12 dB white noise, independent channels
         let mut r = rng(7);
@@ -373,7 +400,9 @@ mod tests {
             let b0 = k * 2700;
             for i in 0..2600.min(n - b0) {
                 let t = i as f32 / SR;
-                dr[b0 + i] += 2.5 * (-t * 18.0).exp() * (2.0 * PI * 60.0 * t * (1.0 + 2.0 * (-t * 40.0).exp())).sin();
+                dr[b0 + i] += 2.5
+                    * (-t * 18.0).exp()
+                    * (2.0 * PI * 60.0 * t * (1.0 + 2.0 * (-t * 40.0).exp())).sin();
                 if k % 2 == 1 {
                     dr[b0 + i] += 1.5 * (-t * 30.0).exp() * r();
                 }
@@ -383,7 +412,15 @@ mod tests {
         let dl = dr.clone();
         v.push(("drum loop hot", dl, dr));
         // a step from silence to a +9 dB 5 kHz tone (fast transient)
-        let st: Vec<f32> = (0..n).map(|i| if i < n / 2 { 0.0 } else { 2.8 * (2.0 * PI * 5000.0 * i as f32 / SR + 0.7).sin() }).collect();
+        let st: Vec<f32> = (0..n)
+            .map(|i| {
+                if i < n / 2 {
+                    0.0
+                } else {
+                    2.8 * (2.0 * PI * 5000.0 * i as f32 / SR + 0.7).sin()
+                }
+            })
+            .collect();
         v.push(("step into +9dB 5k", st.clone(), st));
         for (_, l, r) in v.iter_mut() {
             fade(l, 64);
@@ -400,11 +437,15 @@ mod tests {
             let mut worst16 = -200.0f32;
             for (name, l0, r0) in torture_signals() {
                 let mut ch = vec![l0.clone(), r0.clone()];
-                let p = TruePeakLimiterParams { ceiling_dbtp: ceil, ..Default::default() };
+                let p = TruePeakLimiterParams {
+                    ceiling_dbtp: ceil,
+                    ..Default::default()
+                };
                 let rep = limit_offline(&mut ch, SR, p);
                 let tp = 20.0 * true_peak(&ch[0]).max(true_peak(&ch[1])).log10();
                 let tp_in = 20.0 * true_peak(&l0).max(true_peak(&r0)).log10();
-                let r16 = 20.0 * true_peak_ref16(&ch[0]).max(true_peak_ref16(&ch[1])).log10() as f32;
+                let r16 =
+                    20.0 * true_peak_ref16(&ch[0]).max(true_peak_ref16(&ch[1])).log10() as f32;
                 lines.push(format!(
                     "ceiling {ceil:+.1} | {name}: in {tp_in:+.2} dBTP -> out {tp:+.3} dBTP (4x BS.1770) / {r16:+.3} dB (16x ref), max GR {:.1} dB",
                     rep.max_gain_reduction_db
@@ -412,9 +453,14 @@ mod tests {
                 worst = worst.max(tp);
                 worst16 = worst16.max(r16);
                 assert!(tp <= ceil + 0.1, "{name}: {tp} over {ceil}");
-                assert!(tp >= ceil - 0.1, "{name}: over-limited to {tp} (ceiling {ceil})");
+                assert!(
+                    tp >= ceil - 0.1,
+                    "{name}: over-limited to {tp} (ceiling {ceil})"
+                );
             }
-            lines.push(format!("ceiling {ceil:+.1} | WORST out {worst:+.3} dBTP (4x), {worst16:+.3} dB (16x ref)"));
+            lines.push(format!(
+                "ceiling {ceil:+.1} | WORST out {worst:+.3} dBTP (4x), {worst16:+.3} dB (16x ref)"
+            ));
         }
         eprintln!("TP_LIMITER_CEILING\n{}", lines.join("\n"));
     }
@@ -425,7 +471,9 @@ mod tests {
         // at the quarter rate and at other rational rates with 45-degree phase
         for (num, den) in [(1u32, 4u32), (1, 3), (3, 8), (1, 6), (2, 5)] {
             let w = 2.0 * PI * num as f32 / den as f32;
-            let raw: Vec<f32> = (0..22050).map(|i| (w * i as f32 + PI / 4.0).sin()).collect();
+            let raw: Vec<f32> = (0..22050)
+                .map(|i| (w * i as f32 + PI / 4.0).sin())
+                .collect();
             let sp = raw.iter().fold(0.0f32, |m, v| m.max(v.abs()));
             let mut x: Vec<f32> = raw.iter().map(|v| v / sp).collect();
             fade(&mut x, 64);
@@ -442,14 +490,17 @@ mod tests {
     #[test]
     fn latency_is_exact_and_quiet_audio_is_bit_identical() {
         for look_ms in [0.5f32, 1.5, 5.0] {
-            let p = TruePeakLimiterParams { lookahead_ms: look_ms, ..Default::default() };
+            let p = TruePeakLimiterParams {
+                lookahead_ms: look_ms,
+                ..Default::default()
+            };
             let mut lim = TruePeakLimiter::new(SR, 2, p);
             let lat = lim.latency();
             assert_eq!(lat, (look_ms * 0.001 * SR).round() as usize + 10);
             let mut r = rng(11);
             let x: Vec<f32> = (0..4000).map(|_| 0.3 * r()).collect();
             let mut l = x.clone();
-            l.extend(std::iter::repeat(0.0).take(lat));
+            l.extend(std::iter::repeat_n(0.0, lat));
             let mut rr = l.clone();
             lim.process_stereo(&mut l, &mut rr);
             assert!(l[..lat].iter().all(|v| *v == 0.0));
@@ -462,7 +513,14 @@ mod tests {
             imp[17] = 3.0;
             let mut im2 = imp.clone();
             lim.process_stereo(&mut imp, &mut im2);
-            let arg = imp.iter().enumerate().fold((0, 0.0f32), |m, (i, v)| if v.abs() > m.1 { (i, v.abs()) } else { m }).0;
+            let arg = imp
+                .iter()
+                .enumerate()
+                .fold(
+                    (0, 0.0f32),
+                    |m, (i, v)| if v.abs() > m.1 { (i, v.abs()) } else { m },
+                )
+                .0;
             assert_eq!(arg, 17 + lat);
         }
     }
@@ -501,11 +559,20 @@ mod tests {
             })
             .collect();
         let mut ch = vec![x.clone(), x.clone()];
-        let p = TruePeakLimiterParams { ceiling_dbtp: -1.0, ..Default::default() };
+        let p = TruePeakLimiterParams {
+            ceiling_dbtp: -1.0,
+            ..Default::default()
+        };
         let rep = limit_offline(&mut ch, SR, p);
-        assert!((rep.max_gain_reduction_db - 7.0).abs() < 0.2, "{}", rep.max_gain_reduction_db);
+        assert!(
+            (rep.max_gain_reduction_db - 7.0).abs() < 0.2,
+            "{}",
+            rep.max_gain_reduction_db
+        );
         // the largest sample-to-sample jump stays a small step of a 200 Hz wave
-        let jump = ch[0].windows(2).fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()));
+        let jump = ch[0]
+            .windows(2)
+            .fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()));
         assert!(jump < 0.045, "{jump}");
     }
 
@@ -514,21 +581,35 @@ mod tests {
     fn recovery_samples(event: &[f32]) -> usize {
         let mut x = event.to_vec();
         let start = x.len();
-        x.extend(std::iter::repeat(0.1f32).take(60_000));
+        x.extend(std::iter::repeat_n(0.1f32, 60_000));
         let mut ch = vec![x.clone()];
-        let p = TruePeakLimiterParams { ceiling_dbtp: -1.0, ..Default::default() };
+        let p = TruePeakLimiterParams {
+            ceiling_dbtp: -1.0,
+            ..Default::default()
+        };
         limit_offline(&mut ch, SR, p);
         let ok = 0.1 * 10f32.powf(-0.5 / 20.0);
-        (start + 200..x.len()).find(|&i| ch[0][i] >= ok).unwrap_or(x.len()) - start
+        (start + 200..x.len())
+            .find(|&i| ch[0][i] >= ok)
+            .unwrap_or(x.len())
+            - start
     }
 
     #[test]
     fn the_dual_release_is_fast_after_a_transient_and_slow_after_sustained_limiting() {
         // the same 9 dB over: once as a 1 ms click, once held for 400 ms
-        let click: Vec<f32> = (0..44).map(|i| 2.8 * (2.0 * PI * 1000.0 * i as f32 / SR).sin()).collect();
-        let held: Vec<f32> = (0..17640).map(|i| 2.8 * (2.0 * PI * 1000.0 * i as f32 / SR).sin()).collect();
+        let click: Vec<f32> = (0..44)
+            .map(|i| 2.8 * (2.0 * PI * 1000.0 * i as f32 / SR).sin())
+            .collect();
+        let held: Vec<f32> = (0..17640)
+            .map(|i| 2.8 * (2.0 * PI * 1000.0 * i as f32 / SR).sin())
+            .collect();
         let (rc, rh) = (recovery_samples(&click), recovery_samples(&held));
-        eprintln!("TP_LIMITER_RELEASE click {:.1} ms, sustained {:.1} ms", rc as f32 / SR * 1000.0, rh as f32 / SR * 1000.0);
+        eprintln!(
+            "TP_LIMITER_RELEASE click {:.1} ms, sustained {:.1} ms",
+            rc as f32 / SR * 1000.0,
+            rh as f32 / SR * 1000.0
+        );
         assert!(rc < (0.15 * SR) as usize, "click recovery {rc}");
         assert!(rh > 3 * rc, "sustained {rh} vs click {rc}");
     }
@@ -537,10 +618,23 @@ mod tests {
     fn mono_and_eight_channels_link_and_stay_finite() {
         for nch in [1usize, 8] {
             let mut r = rng(21);
-            let mut chans: Vec<Vec<f32>> = (0..nch).map(|c| (0..5000).map(|_| (c as f32 + 1.0) * r()).collect()).collect();
-            limit_offline(&mut chans, 48_000.0, TruePeakLimiterParams { ceiling_dbtp: -0.3, ..Default::default() });
+            let mut chans: Vec<Vec<f32>> = (0..nch)
+                .map(|c| (0..5000).map(|_| (c as f32 + 1.0) * r()).collect())
+                .collect();
+            limit_offline(
+                &mut chans,
+                48_000.0,
+                TruePeakLimiterParams {
+                    ceiling_dbtp: -0.3,
+                    ..Default::default()
+                },
+            );
             let tp = chans.iter().fold(0.0f32, |m, c| m.max(true_peak(c)));
-            assert!(20.0 * tp.log10() <= -0.3 + 0.1, "{nch}: {}", 20.0 * tp.log10());
+            assert!(
+                20.0 * tp.log10() <= -0.3 + 0.1,
+                "{nch}: {}",
+                20.0 * tp.log10()
+            );
             assert!(chans.iter().flatten().all(|v| v.is_finite()));
         }
     }

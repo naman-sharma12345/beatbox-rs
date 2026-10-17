@@ -40,7 +40,16 @@ pub struct BandParams {
 
 impl Default for BandParams {
     fn default() -> Self {
-        BandParams { threshold_db: -18.0, ratio: 2.0, attack_ms: 10.0, release_ms: 150.0, knee_db: 6.0, makeup_db: 0.0, solo: false, bypass: false }
+        BandParams {
+            threshold_db: -18.0,
+            ratio: 2.0,
+            attack_ms: 10.0,
+            release_ms: 150.0,
+            knee_db: 6.0,
+            makeup_db: 0.0,
+            solo: false,
+            bypass: false,
+        }
     }
 }
 
@@ -100,7 +109,13 @@ impl MultibandDynamics {
             channels,
             bands: nb,
             params: [BandParams::default(); MAX_BANDS],
-            state: [BandState { a_att: 0.0, a_rel: 0.0, y1: 0.0, yl: 0.0, makeup: 1.0 }; MAX_BANDS],
+            state: [BandState {
+                a_att: 0.0,
+                a_rel: 0.0,
+                y1: 0.0,
+                yl: 0.0,
+                makeup: 1.0,
+            }; MAX_BANDS],
             xo: vec![xo0; channels],
             sr,
             max_gr: [0.0; MAX_BANDS],
@@ -129,7 +144,11 @@ impl MultibandDynamics {
         let s = &mut self.state[b];
         s.a_att = coef(p.attack_ms, self.sr);
         s.a_rel = coef(p.release_ms, self.sr);
-        s.makeup = if p.makeup_db == 0.0 { 1.0 } else { 10f32.powf(p.makeup_db / 20.0) };
+        s.makeup = if p.makeup_db == 0.0 {
+            1.0
+        } else {
+            10f32.powf(p.makeup_db / 20.0)
+        };
     }
 
     /// Largest gain reduction per band (dB) since the last call; resets it.
@@ -170,8 +189,13 @@ impl MultibandDynamics {
                 let g = if p.bypass {
                     1.0f64
                 } else {
-                    let peak = (0..self.channels).fold(0.0f64, |m, c| m.max(split[c][b].abs())) as f32;
-                    let x_g = if peak > 1e-12 { 20.0 * peak.log10() } else { -240.0 };
+                    let peak =
+                        (0..self.channels).fold(0.0f64, |m, c| m.max(split[c][b].abs())) as f32;
+                    let x_g = if peak > 1e-12 {
+                        20.0 * peak.log10()
+                    } else {
+                        -240.0
+                    };
                     let x_l = gain_reduction_db(x_g, p.threshold_db, p.ratio, p.knee_db);
                     let s = &mut self.state[b];
                     s.y1 = x_l.max(s.a_rel * s.y1 + (1.0 - s.a_rel) * x_l);
@@ -179,7 +203,11 @@ impl MultibandDynamics {
                     if s.yl > self.max_gr[b] {
                         self.max_gr[b] = s.yl;
                     }
-                    let g = if s.yl == 0.0 { 1.0 } else { 10f32.powf(-s.yl / 20.0) };
+                    let g = if s.yl == 0.0 {
+                        1.0
+                    } else {
+                        10f32.powf(-s.yl / 20.0)
+                    };
                     (g * s.makeup) as f64
                 };
                 for c in 0..self.channels {
@@ -194,7 +222,12 @@ impl MultibandDynamics {
 }
 
 /// Offline helper: run whole buffers, returns the max gain reduction per band.
-pub fn process_offline(chans: &mut [Vec<f32>], sr: f32, crossovers: &[f32], bands: &[BandParams]) -> Vec<f32> {
+pub fn process_offline(
+    chans: &mut [Vec<f32>],
+    sr: f32,
+    crossovers: &[f32],
+    bands: &[BandParams],
+) -> Vec<f32> {
     let mut m = MultibandDynamics::new(sr, chans.len(), crossovers, bands);
     {
         let mut refs: Vec<&mut [f32]> = chans.iter_mut().map(|c| c.as_mut_slice()).collect();
@@ -234,7 +267,10 @@ mod tests {
         assert!((at_t - (1.0 - 0.25) * 9.0 / 12.0).abs() < 1e-5, "{at_t}");
         // the curve is continuous at both knee edges
         for x in [-23.0f32, -17.0] {
-            let (a, b) = (gain_reduction_db(x - 1e-3, -20.0, 4.0, 6.0), gain_reduction_db(x + 1e-3, -20.0, 4.0, 6.0));
+            let (a, b) = (
+                gain_reduction_db(x - 1e-3, -20.0, 4.0, 6.0),
+                gain_reduction_db(x + 1e-3, -20.0, 4.0, 6.0),
+            );
             // 2e-3 dB apart at slope <= 1 - 1/R: a jump would be far larger
             assert!((a - b).abs() < 2.5e-3, "{x}: {a} {b}");
         }
@@ -245,17 +281,28 @@ mod tests {
     #[test]
     fn null_test_thresholds_at_0_dbfs_give_the_allpass_sum() {
         let x = noise(30000, 0.25, 9); // -12 dBFS peak: every band stays under the knee
-        let bands = [BandParams { threshold_db: 0.0, ..Default::default() }; 3];
+        let bands = [BandParams {
+            threshold_db: 0.0,
+            ..Default::default()
+        }; 3];
         let mut ch = vec![x.clone(), x.clone()];
         let gr = process_offline(&mut ch, SR, &XO, &bands);
         assert!(gr.iter().all(|g| *g == 0.0), "{gr:?}");
         // reference: the input through AP(150) then AP(2500), computed independently
-        let (mut a, mut b) = (Biquad::butter_ap(150.0, SR as f64), Biquad::butter_ap(2500.0, SR as f64));
+        let (mut a, mut b) = (
+            Biquad::butter_ap(150.0, SR as f64),
+            Biquad::butter_ap(2500.0, SR as f64),
+        );
         let refy: Vec<f64> = x.iter().map(|v| b.run(a.run(*v as f64))).collect();
-        let err = ch[0].iter().zip(&refy).fold(0.0f64, |m, (y, r)| m.max((*y as f64 - r).abs()));
+        let err = ch[0]
+            .iter()
+            .zip(&refy)
+            .fold(0.0f64, |m, (y, r)| m.max((*y as f64 - r).abs()));
         let rms = (refy.iter().map(|v| v * v).sum::<f64>() / refy.len() as f64).sqrt();
         let null_db = 20.0 * (err / rms).log10();
-        eprintln!("MULTIBAND_NULL max |out - allpass(in)| = {err:.2e} ({null_db:.1} dB re signal RMS)");
+        eprintln!(
+            "MULTIBAND_NULL max |out - allpass(in)| = {err:.2e} ({null_db:.1} dB re signal RMS)"
+        );
         assert!(null_db < -120.0, "{null_db}");
         assert_eq!(ch[0], ch[1]);
     }
@@ -267,13 +314,25 @@ mod tests {
         let x: Vec<f32> = (0..n)
             .map(|i| {
                 let t = i as f32 / SR;
-                0.7 * (2.0 * PI * 60.0 * t).sin() + 0.03 * (2.0 * PI * 1000.0 * t).sin() + 0.03 * (2.0 * PI * 8000.0 * t).sin()
+                0.7 * (2.0 * PI * 60.0 * t).sin()
+                    + 0.03 * (2.0 * PI * 1000.0 * t).sin()
+                    + 0.03 * (2.0 * PI * 8000.0 * t).sin()
             })
             .collect();
-        let p = BandParams { threshold_db: -20.0, ratio: 4.0, attack_ms: 5.0, release_ms: 100.0, knee_db: 0.0, ..Default::default() };
+        let p = BandParams {
+            threshold_db: -20.0,
+            ratio: 4.0,
+            attack_ms: 5.0,
+            release_ms: 100.0,
+            knee_db: 0.0,
+            ..Default::default()
+        };
         let mut ch = vec![x.clone()];
         let gr = process_offline(&mut ch, SR, &XO, &[p; 3]);
-        eprintln!("MULTIBAND_GR low/mid/high {:.2} / {:.2} / {:.2} dB", gr[0], gr[1], gr[2]);
+        eprintln!(
+            "MULTIBAND_GR low/mid/high {:.2} / {:.2} / {:.2} dB",
+            gr[0], gr[1], gr[2]
+        );
         // low band peaks ~ -3 dB: (17 dB over) * 0.75 = 12.8 dB of reduction
         assert!(gr[0] > 11.0 && gr[0] < 14.0, "{gr:?}");
         assert!(gr[1] < 0.5 && gr[2] < 0.5, "{gr:?}");
@@ -284,19 +343,34 @@ mod tests {
         let x = noise(20000, 0.5, 4);
         let irs = band_irs(&XO, SR, 20000);
         // solo the mid band with bypass on everything: output = mid band of the input
-        let mut bands = [BandParams { bypass: true, ..Default::default() }; 3];
+        let mut bands = [BandParams {
+            bypass: true,
+            ..Default::default()
+        }; 3];
         bands[1].solo = true;
         let mut ch = vec![x.clone()];
         process_offline(&mut ch, SR, &XO, &bands);
-        let mid: Vec<f64> = (0..x.len()).map(|n| (0..=n).map(|k| irs[1][k] * x[n - k] as f64).sum()).take(2000).collect();
-        let err = mid.iter().zip(&ch[0]).fold(0.0f64, |m, (r, y)| m.max((r - *y as f64).abs()));
+        let mid: Vec<f64> = (0..x.len())
+            .map(|n| (0..=n).map(|k| irs[1][k] * x[n - k] as f64).sum())
+            .take(2000)
+            .collect();
+        let err = mid
+            .iter()
+            .zip(&ch[0])
+            .fold(0.0f64, |m, (r, y)| m.max((r - *y as f64).abs()));
         assert!(err < 1e-5, "{err}");
         // bypass on every band with a crushing threshold: still the allpass sum, no reduction
-        let bands = [BandParams { threshold_db: -60.0, ratio: 20.0, bypass: true, ..Default::default() }; 3];
+        let bands = [BandParams {
+            threshold_db: -60.0,
+            ratio: 20.0,
+            bypass: true,
+            ..Default::default()
+        }; 3];
         let mut ch = vec![x.clone()];
         let gr = process_offline(&mut ch, SR, &XO, &bands);
         assert!(gr.iter().all(|g| *g == 0.0));
-        let tot = ch[0].iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>();
+        let tot = ch[0].iter().map(|v| (*v as f64).powi(2)).sum::<f64>()
+            / x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>();
         assert!((10.0 * tot.log10()).abs() < 0.1, "{tot}");
     }
 
@@ -304,8 +378,23 @@ mod tests {
     fn attack_and_release_follow_their_time_constants() {
         // a step from silence into a hot low tone, then back to quiet
         let n = 44100;
-        let x: Vec<f32> = (0..n).map(|i| if (4410..22050).contains(&i) { 0.9 * (2.0 * PI * 80.0 * i as f32 / SR).sin() } else { 0.0 }).collect();
-        let p = BandParams { threshold_db: -30.0, ratio: 10.0, attack_ms: 20.0, release_ms: 200.0, knee_db: 0.0, ..Default::default() };
+        let x: Vec<f32> = (0..n)
+            .map(|i| {
+                if (4410..22050).contains(&i) {
+                    0.9 * (2.0 * PI * 80.0 * i as f32 / SR).sin()
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let p = BandParams {
+            threshold_db: -30.0,
+            ratio: 10.0,
+            attack_ms: 20.0,
+            release_ms: 200.0,
+            knee_db: 0.0,
+            ..Default::default()
+        };
         let mut m = MultibandDynamics::new(SR, 1, &XO, &[p; 3]);
         let mut y = x.clone();
         // measure the low band's gain reduction trace through the state after each block of 441
@@ -320,6 +409,9 @@ mod tests {
         assert!(a20 > 0.5 * full && a20 < full, "attack {a20} of {full}");
         // 200 ms after the tone stops it has fallen to about 1/e
         let r200 = trace[49 + 20];
-        assert!(r200 < 0.5 * full && r200 > 0.2 * full, "release {r200} of {full}");
+        assert!(
+            r200 < 0.5 * full && r200 > 0.2 * full,
+            "release {r200} of {full}"
+        );
     }
 }

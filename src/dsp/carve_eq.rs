@@ -50,7 +50,18 @@ pub struct CarveParams {
 
 impl Default for CarveParams {
     fn default() -> Self {
-        CarveParams { mode: CarveMode::Bell, low_hz: 150.0, high_hz: 400.0, key_low_hz: None, key_high_hz: None, threshold_db: -40.0, ratio: 4.0, max_cut_db: 6.0, attack_ms: 10.0, release_ms: 150.0 }
+        CarveParams {
+            mode: CarveMode::Bell,
+            low_hz: 150.0,
+            high_hz: 400.0,
+            key_low_hz: None,
+            key_high_hz: None,
+            threshold_db: -40.0,
+            ratio: 4.0,
+            max_cut_db: 6.0,
+            attack_ms: 10.0,
+            release_ms: 150.0,
+        }
     }
 }
 
@@ -95,7 +106,10 @@ fn peaking(c: f64, q: f64, gain_db: f64, sr: f64) -> ([f64; 3], [f64; 3]) {
     let w = 2.0 * PI * c / sr;
     let al = w.sin() / (2.0 * q);
     let cw = w.cos();
-    ([1.0 + al * a, -2.0 * cw, 1.0 - al * a], [1.0 + al / a, -2.0 * cw, 1.0 - al / a])
+    (
+        [1.0 + al * a, -2.0 * cw, 1.0 - al * a],
+        [1.0 + al / a, -2.0 * cw, 1.0 - al / a],
+    )
 }
 
 /// RBJ shelf coefficients (slope S = 1), corner `f`, gain in dB.
@@ -106,13 +120,29 @@ fn shelf(high: bool, f: f64, gain_db: f64, sr: f64) -> ([f64; 3], [f64; 3]) {
     let sa = 2.0 * a.sqrt() * al;
     if high {
         (
-            [a * ((a + 1.0) + (a - 1.0) * cw + sa), -2.0 * a * ((a - 1.0) + (a + 1.0) * cw), a * ((a + 1.0) + (a - 1.0) * cw - sa)],
-            [(a + 1.0) - (a - 1.0) * cw + sa, 2.0 * ((a - 1.0) - (a + 1.0) * cw), (a + 1.0) - (a - 1.0) * cw - sa],
+            [
+                a * ((a + 1.0) + (a - 1.0) * cw + sa),
+                -2.0 * a * ((a - 1.0) + (a + 1.0) * cw),
+                a * ((a + 1.0) + (a - 1.0) * cw - sa),
+            ],
+            [
+                (a + 1.0) - (a - 1.0) * cw + sa,
+                2.0 * ((a - 1.0) - (a + 1.0) * cw),
+                (a + 1.0) - (a - 1.0) * cw - sa,
+            ],
         )
     } else {
         (
-            [a * ((a + 1.0) - (a - 1.0) * cw + sa), 2.0 * a * ((a - 1.0) - (a + 1.0) * cw), a * ((a + 1.0) - (a - 1.0) * cw - sa)],
-            [(a + 1.0) + (a - 1.0) * cw + sa, -2.0 * ((a - 1.0) + (a + 1.0) * cw), (a + 1.0) + (a - 1.0) * cw - sa],
+            [
+                a * ((a + 1.0) - (a - 1.0) * cw + sa),
+                2.0 * a * ((a - 1.0) - (a + 1.0) * cw),
+                a * ((a + 1.0) - (a - 1.0) * cw - sa),
+            ],
+            [
+                (a + 1.0) + (a - 1.0) * cw + sa,
+                -2.0 * ((a - 1.0) + (a + 1.0) * cw),
+                (a + 1.0) + (a - 1.0) * cw - sa,
+            ],
         )
     }
 }
@@ -122,7 +152,12 @@ pub fn carve_coeffs(p: &CarveParams, cut_db: f64, sr: f64) -> ([f64; 3], [f64; 3
     let (c, q) = centre_q(p.low_hz, p.high_hz, sr);
     match p.mode {
         CarveMode::Bell => peaking(c, q, -cut_db, sr),
-        CarveMode::LowShelf => shelf(false, (p.high_hz as f64).clamp(10.0, 0.49 * sr), -cut_db, sr),
+        CarveMode::LowShelf => shelf(
+            false,
+            (p.high_hz as f64).clamp(10.0, 0.49 * sr),
+            -cut_db,
+            sr,
+        ),
         CarveMode::HighShelf => shelf(true, (p.low_hz as f64).clamp(10.0, 0.49 * sr), -cut_db, sr),
     }
 }
@@ -140,8 +175,14 @@ pub fn carve_focus_hz(p: &CarveParams, sr: f64) -> f64 {
 pub fn group_delay_samples(b: [f64; 3], a: [f64; 3], f: f64, sr: f64) -> f64 {
     let ph = |f: f64| {
         let w = 2.0 * PI * f / sr;
-        let (re_n, im_n) = (b[0] + b[1] * w.cos() + b[2] * (2.0 * w).cos(), -(b[1] * w.sin() + b[2] * (2.0 * w).sin()));
-        let (re_d, im_d) = (a[0] + a[1] * w.cos() + a[2] * (2.0 * w).cos(), -(a[1] * w.sin() + a[2] * (2.0 * w).sin()));
+        let (re_n, im_n) = (
+            b[0] + b[1] * w.cos() + b[2] * (2.0 * w).cos(),
+            -(b[1] * w.sin() + b[2] * (2.0 * w).sin()),
+        );
+        let (re_d, im_d) = (
+            a[0] + a[1] * w.cos() + a[2] * (2.0 * w).cos(),
+            -(a[1] * w.sin() + a[2] * (2.0 * w).sin()),
+        );
         im_n.atan2(re_n) - im_d.atan2(re_d)
     };
     let (f1, f2) = (f - 0.5, f + 0.5);
@@ -158,16 +199,28 @@ pub fn group_delay_samples(b: [f64; 3], a: [f64; 3], f: f64, sr: f64) -> f64 {
 /// Phase (degrees) of a biquad at `f`.
 pub fn phase_deg(b: [f64; 3], a: [f64; 3], f: f64, sr: f64) -> f64 {
     let w = 2.0 * PI * f / sr;
-    let (re_n, im_n) = (b[0] + b[1] * w.cos() + b[2] * (2.0 * w).cos(), -(b[1] * w.sin() + b[2] * (2.0 * w).sin()));
-    let (re_d, im_d) = (a[0] + a[1] * w.cos() + a[2] * (2.0 * w).cos(), -(a[1] * w.sin() + a[2] * (2.0 * w).sin()));
+    let (re_n, im_n) = (
+        b[0] + b[1] * w.cos() + b[2] * (2.0 * w).cos(),
+        -(b[1] * w.sin() + b[2] * (2.0 * w).sin()),
+    );
+    let (re_d, im_d) = (
+        a[0] + a[1] * w.cos() + a[2] * (2.0 * w).cos(),
+        -(a[1] * w.sin() + a[2] * (2.0 * w).sin()),
+    );
     (im_n.atan2(re_n) - im_d.atan2(re_d)).to_degrees()
 }
 
 /// Magnitude (dB) of a biquad at `f`.
 pub fn magnitude_db(b: [f64; 3], a: [f64; 3], f: f64, sr: f64) -> f64 {
     let w = 2.0 * PI * f / sr;
-    let (re_n, im_n) = (b[0] + b[1] * w.cos() + b[2] * (2.0 * w).cos(), -(b[1] * w.sin() + b[2] * (2.0 * w).sin()));
-    let (re_d, im_d) = (a[0] + a[1] * w.cos() + a[2] * (2.0 * w).cos(), -(a[1] * w.sin() + a[2] * (2.0 * w).sin()));
+    let (re_n, im_n) = (
+        b[0] + b[1] * w.cos() + b[2] * (2.0 * w).cos(),
+        -(b[1] * w.sin() + b[2] * (2.0 * w).sin()),
+    );
+    let (re_d, im_d) = (
+        a[0] + a[1] * w.cos() + a[2] * (2.0 * w).cos(),
+        -(a[1] * w.sin() + a[2] * (2.0 * w).sin()),
+    );
     10.0 * ((re_n * re_n + im_n * im_n) / (re_d * re_d + im_d * im_d)).log10()
 }
 
@@ -200,13 +253,23 @@ pub struct Carver {
 impl Carver {
     pub fn new(sr: f32, p: CarveParams) -> Self {
         let sr = sr as f64;
-        let (kc, kq) = centre_q(p.key_low_hz.unwrap_or(p.low_hz), p.key_high_hz.unwrap_or(p.high_hz), sr);
+        let (kc, kq) = centre_q(
+            p.key_low_hz.unwrap_or(p.low_hz),
+            p.key_high_hz.unwrap_or(p.high_hz),
+            sr,
+        );
         // two identical bandpass sections: 4th order, so a key well outside the band stays out
         let mut key_bp = [Bq::default(); 2];
         let (b, a) = bandpass(kc, kq, sr);
         key_bp[0].set(b, a);
         key_bp[1].set(b, a);
-        let c = |ms: f32| if ms <= 0.0 { 0.0 } else { (-1.0 / (ms as f64 * 0.001 * sr)).exp() };
+        let c = |ms: f32| {
+            if ms <= 0.0 {
+                0.0
+            } else {
+                (-1.0 / (ms as f64 * 0.001 * sr)).exp()
+            }
+        };
         Carver {
             sr,
             p,
@@ -237,14 +300,24 @@ impl Carver {
     /// Processes min(key length, target length) frames.
     pub fn process(&mut self, key: &[f32], target: &mut [&mut [f32]]) {
         let nch = target.len().min(8);
-        let n = target[..nch].iter().map(|c| c.len()).min().unwrap_or(0).min(key.len());
+        let n = target[..nch]
+            .iter()
+            .map(|c| c.len())
+            .min()
+            .unwrap_or(0)
+            .min(key.len());
         let p = self.p;
         for i in 0..n {
             let k0 = self.key_bp[0].run(key[i] as f64);
             let k = self.key_bp[1].run(k0);
             self.pow = self.rms_c * self.pow + (1.0 - self.rms_c) * k * k;
-            let lvl = if self.pow > 1e-24 { 10.0 * self.pow.log10() + 3.0103 } else { -240.0 };
-            let want = ((lvl - p.threshold_db as f64) * (1.0 - 1.0 / (p.ratio as f64).max(1.0))).clamp(0.0, p.max_cut_db.max(0.0) as f64);
+            let lvl = if self.pow > 1e-24 {
+                10.0 * self.pow.log10() + 3.0103
+            } else {
+                -240.0
+            };
+            let want = ((lvl - p.threshold_db as f64) * (1.0 - 1.0 / (p.ratio as f64).max(1.0)))
+                .clamp(0.0, p.max_cut_db.max(0.0) as f64);
             let co = if want > self.cut { self.att } else { self.rel };
             self.cut = co * self.cut + (1.0 - co) * want;
             if self.cut < 1e-4 && want == 0.0 {
@@ -289,7 +362,9 @@ mod tests {
     const SR: f32 = 44_100.0;
 
     fn tone(f: f32, amp: f32, n: usize) -> Vec<f32> {
-        (0..n).map(|i| amp * (2.0 * P * f * i as f32 / SR).sin()).collect()
+        (0..n)
+            .map(|i| amp * (2.0 * P * f * i as f32 / SR).sin())
+            .collect()
     }
 
     fn band_level_db(x: &[f32], f: f32) -> f32 {
@@ -305,7 +380,11 @@ mod tests {
 
     #[test]
     fn a_quiet_key_leaves_the_target_bit_identical() {
-        let x: Vec<f32> = tone(250.0, 0.5, 20000).iter().zip(tone(3000.0, 0.3, 20000)).map(|(a, b)| a + b).collect();
+        let x: Vec<f32> = tone(250.0, 0.5, 20000)
+            .iter()
+            .zip(tone(3000.0, 0.3, 20000))
+            .map(|(a, b)| a + b)
+            .collect();
         let key = vec![0.0f32; 20000];
         let mut y = x.clone();
         let mut c = Carver::new(SR, CarveParams::default());
@@ -318,16 +397,34 @@ mod tests {
     fn a_key_in_the_band_carves_only_that_band() {
         let n = 44100;
         // target: 250 Hz (in the 150-400 band) and 4 kHz (out of it), both -12 dBFS
-        let x: Vec<f32> = tone(250.0, 0.25, n).iter().zip(tone(4000.0, 0.25, n)).map(|(a, b)| a + b).collect();
+        let x: Vec<f32> = tone(250.0, 0.25, n)
+            .iter()
+            .zip(tone(4000.0, 0.25, n))
+            .map(|(a, b)| a + b)
+            .collect();
         // key: a 220 Hz "voice" at -12 dBFS, all the way through
         let key = tone(220.0, 0.25, n);
-        let p = CarveParams { max_cut_db: 6.0, ..Default::default() };
+        let p = CarveParams {
+            max_cut_db: 6.0,
+            ..Default::default()
+        };
         let mut y = x.clone();
         let mut c = Carver::new(SR, p);
         c.process(&key, &mut [&mut y]);
-        let (lo_in, lo_out) = (band_level_db(&x[11025..], 250.0), band_level_db(&y[11025..], 250.0));
-        let (hi_in, hi_out) = (band_level_db(&x[11025..], 4000.0), band_level_db(&y[11025..], 4000.0));
-        eprintln!("CARVE in-band 250 Hz: {:.2} dB, out-of-band 4 kHz: {:.2} dB, max cut {:.2} dB", lo_out - lo_in, hi_out - hi_in, c.stats().0);
+        let (lo_in, lo_out) = (
+            band_level_db(&x[11025..], 250.0),
+            band_level_db(&y[11025..], 250.0),
+        );
+        let (hi_in, hi_out) = (
+            band_level_db(&x[11025..], 4000.0),
+            band_level_db(&y[11025..], 4000.0),
+        );
+        eprintln!(
+            "CARVE in-band 250 Hz: {:.2} dB, out-of-band 4 kHz: {:.2} dB, max cut {:.2} dB",
+            lo_out - lo_in,
+            hi_out - hi_in,
+            c.stats().0
+        );
         assert!((lo_out - lo_in + 6.0).abs() < 0.6, "{}", lo_out - lo_in);
         assert!((hi_out - hi_in).abs() < 0.3, "{}", hi_out - hi_in);
         assert!((c.stats().0 - 6.0).abs() < 0.01);
@@ -349,9 +446,19 @@ mod tests {
     fn the_cut_releases_after_the_key_stops() {
         let n = 44100;
         let x = tone(300.0, 0.25, n);
-        let key: Vec<f32> = tone(300.0, 0.3, n).into_iter().enumerate().map(|(i, v)| if i < 11025 { v } else { 0.0 }).collect();
+        let key: Vec<f32> = tone(300.0, 0.3, n)
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| if i < 11025 { v } else { 0.0 })
+            .collect();
         let mut y = x.clone();
-        let mut c = Carver::new(SR, CarveParams { release_ms: 100.0, ..Default::default() });
+        let mut c = Carver::new(
+            SR,
+            CarveParams {
+                release_ms: 100.0,
+                ..Default::default()
+            },
+        );
         c.process(&key, &mut [&mut y]);
         // well after the release the band is back to (nearly) full level
         let d = band_level_db(&y[33000..], 300.0) - band_level_db(&x[33000..], 300.0);
@@ -363,9 +470,19 @@ mod tests {
         let n = 44100;
         let key = tone(220.0, 0.25, n);
         // low shelf, corner at 400 Hz: an 80 Hz tone drops ~6 dB, 4 kHz stays
-        let x: Vec<f32> = tone(80.0, 0.25, n).iter().zip(tone(4000.0, 0.25, n)).map(|(a, b)| a + b).collect();
+        let x: Vec<f32> = tone(80.0, 0.25, n)
+            .iter()
+            .zip(tone(4000.0, 0.25, n))
+            .map(|(a, b)| a + b)
+            .collect();
         let mut y = x.clone();
-        let mut c = Carver::new(SR, CarveParams { mode: CarveMode::LowShelf, ..Default::default() });
+        let mut c = Carver::new(
+            SR,
+            CarveParams {
+                mode: CarveMode::LowShelf,
+                ..Default::default()
+            },
+        );
         c.process(&key, &mut [&mut y]);
         let lo = band_level_db(&y[11025..], 80.0) - band_level_db(&x[11025..], 80.0);
         let hi = band_level_db(&y[11025..], 4000.0) - band_level_db(&x[11025..], 4000.0);
@@ -373,9 +490,18 @@ mod tests {
         assert!((lo + 6.0).abs() < 0.6 && hi.abs() < 0.3, "{lo} {hi}");
         // high shelf on the presence band (corner 2 kHz), keyed by a 3 kHz voice: 8 kHz drops, 200 Hz stays
         let key = tone(3000.0, 0.25, n);
-        let x: Vec<f32> = tone(200.0, 0.25, n).iter().zip(tone(8000.0, 0.25, n)).map(|(a, b)| a + b).collect();
+        let x: Vec<f32> = tone(200.0, 0.25, n)
+            .iter()
+            .zip(tone(8000.0, 0.25, n))
+            .map(|(a, b)| a + b)
+            .collect();
         let mut y = x.clone();
-        let p = CarveParams { mode: CarveMode::HighShelf, low_hz: 2000.0, high_hz: 4000.0, ..Default::default() };
+        let p = CarveParams {
+            mode: CarveMode::HighShelf,
+            low_hz: 2000.0,
+            high_hz: 4000.0,
+            ..Default::default()
+        };
         let mut c = Carver::new(SR, p);
         c.process(&key, &mut [&mut y]);
         let lo = band_level_db(&y[11025..], 200.0) - band_level_db(&x[11025..], 200.0);
@@ -388,11 +514,24 @@ mod tests {
     fn every_carve_filter_is_minimum_phase_and_its_group_delay_is_reported() {
         let sr = SR as f64;
         let mut lines = Vec::new();
-        for (mode, lo, hi) in [(CarveMode::Bell, 150.0f32, 400.0f32), (CarveMode::Bell, 2000.0, 4000.0), (CarveMode::LowShelf, 150.0, 400.0), (CarveMode::HighShelf, 2000.0, 4000.0)] {
-            let p = CarveParams { mode, low_hz: lo, high_hz: hi, ..Default::default() };
+        for (mode, lo, hi) in [
+            (CarveMode::Bell, 150.0f32, 400.0f32),
+            (CarveMode::Bell, 2000.0, 4000.0),
+            (CarveMode::LowShelf, 150.0, 400.0),
+            (CarveMode::HighShelf, 2000.0, 4000.0),
+        ] {
+            let p = CarveParams {
+                mode,
+                low_hz: lo,
+                high_hz: hi,
+                ..Default::default()
+            };
             for cut in [3.0f64, 6.0, 12.0] {
                 let (b, a) = carve_coeffs(&p, cut, sr);
-                assert!(roots_inside(a) && roots_inside(b), "{mode:?} {cut}: not minimum phase");
+                assert!(
+                    roots_inside(a) && roots_inside(b),
+                    "{mode:?} {cut}: not minimum phase"
+                );
                 let f = carve_focus_hz(&p, sr);
                 let gd = group_delay_samples(b, a, f, sr);
                 assert!(gd.is_finite());
@@ -406,11 +545,15 @@ mod tests {
         let (b, a) = carve_coeffs(&p, 6.0, sr);
         let mut q = Bq::default();
         q.set(b, a);
-        let ir: Vec<f64> = (0..1 << 15).map(|n| q.run(if n == 0 { 1.0 } else { 0.0 })).collect();
+        let ir: Vec<f64> = (0..1 << 15)
+            .map(|n| q.run(if n == 0 { 1.0 } else { 0.0 }))
+            .collect();
         let f = carve_focus_hz(&p, sr);
         let ph = |f: f64| {
             let w = -2.0 * PI * f / sr;
-            let (re, im) = ir.iter().enumerate().fold((0.0, 0.0), |(r, i), (n, v)| (r + v * (w * n as f64).cos(), i + v * (w * n as f64).sin()));
+            let (re, im) = ir.iter().enumerate().fold((0.0, 0.0), |(r, i), (n, v)| {
+                (r + v * (w * n as f64).cos(), i + v * (w * n as f64).sin())
+            });
             im.atan2(re)
         };
         let gd_ir = -(ph(f + 0.5) - ph(f - 0.5)) / (2.0 * PI / sr);
@@ -423,15 +566,34 @@ mod tests {
     fn a_key_below_threshold_nulls_bit_exact_against_the_dry_signal() {
         // the key sounds in the band, but at -70 dBFS: under the -40 dB threshold, so no cut at all
         let n = 30000;
-        let x: Vec<f32> = tone(250.0, 0.5, n).iter().zip(tone(9000.0, 0.2, n)).map(|(a, b)| a + b).collect();
+        let x: Vec<f32> = tone(250.0, 0.5, n)
+            .iter()
+            .zip(tone(9000.0, 0.2, n))
+            .map(|(a, b)| a + b)
+            .collect();
         let key = tone(250.0, 0.000_316, n);
         for mode in [CarveMode::Bell, CarveMode::LowShelf, CarveMode::HighShelf] {
             let mut y = x.clone();
-            let mut c = Carver::new(SR, CarveParams { mode, ..Default::default() });
+            let mut c = Carver::new(
+                SR,
+                CarveParams {
+                    mode,
+                    ..Default::default()
+                },
+            );
             c.process(&key, &mut [&mut y]);
-            let resid = x.iter().zip(&y).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
-            eprintln!("CARVE_NULL {mode:?}: max |dry - out| = {resid:e} (bit-exact: {})", resid == 0.0);
-            assert!(x.iter().zip(&y).all(|(a, b)| a.to_bits() == b.to_bits()), "{mode:?}");
+            let resid = x
+                .iter()
+                .zip(&y)
+                .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+            eprintln!(
+                "CARVE_NULL {mode:?}: max |dry - out| = {resid:e} (bit-exact: {})",
+                resid == 0.0
+            );
+            assert!(
+                x.iter().zip(&y).all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{mode:?}"
+            );
         }
     }
 
@@ -448,13 +610,19 @@ mod tests {
                 let w = f / p.high_hz as f64;
                 let s2 = std::f64::consts::SQRT_2;
                 // A (s^2 + sqrt(A)/Q s + A) / (A s^2 + sqrt(A)/Q s + 1), Q = 1/sqrt2
-                ((a * (a - w * w), a * a.sqrt() * s2 * w), (1.0 - a * w * w, a.sqrt() * s2 * w))
+                (
+                    (a * (a - w * w), a * a.sqrt() * s2 * w),
+                    (1.0 - a * w * w, a.sqrt() * s2 * w),
+                )
             }
             CarveMode::HighShelf => {
                 let w = f / p.low_hz as f64;
                 let s2 = std::f64::consts::SQRT_2;
                 // A (A s^2 + sqrt(A)/Q s + 1) / (s^2 + sqrt(A)/Q s + A)
-                ((a * (1.0 - a * w * w), a * a.sqrt() * s2 * w), (a - w * w, a.sqrt() * s2 * w))
+                (
+                    (a * (1.0 - a * w * w), a * a.sqrt() * s2 * w),
+                    (a - w * w, a.sqrt() * s2 * w),
+                )
             }
         };
         10.0 * ((num.0 * num.0 + num.1 * num.1) / (den.0 * den.0 + den.1 * den.1)).log10()
@@ -464,8 +632,19 @@ mod tests {
     fn response_near_nyquist_tracks_the_analog_prototype_and_phase_is_reported() {
         let sr = SR as f64;
         let mut lines = Vec::new();
-        for (mode, lo, hi) in [(CarveMode::Bell, 150.0f32, 400.0f32), (CarveMode::Bell, 2000.0, 4000.0), (CarveMode::LowShelf, 150.0, 400.0), (CarveMode::HighShelf, 2000.0, 4000.0)] {
-            let p = CarveParams { mode, low_hz: lo, high_hz: hi, max_cut_db: 12.0, ..Default::default() };
+        for (mode, lo, hi) in [
+            (CarveMode::Bell, 150.0f32, 400.0f32),
+            (CarveMode::Bell, 2000.0, 4000.0),
+            (CarveMode::LowShelf, 150.0, 400.0),
+            (CarveMode::HighShelf, 2000.0, 4000.0),
+        ] {
+            let p = CarveParams {
+                mode,
+                low_hz: lo,
+                high_hz: hi,
+                max_cut_db: 12.0,
+                ..Default::default()
+            };
             let cut = p.max_cut_db as f64;
             let (b, a) = carve_coeffs(&p, cut, sr);
             let err16 = magnitude_db(b, a, 16000.0, sr) - analog_db(&p, cut, 16000.0, sr);
@@ -489,17 +668,30 @@ mod tests {
         // the cut (dB) is one-pole smoothed and the coefficients are refreshed every 16 samples
         let n = 88_200;
         let sr = SR as f64;
-        let x: Vec<f32> = tone(250.0, 0.25, n).iter().zip(tone(4000.0, 0.25, n)).map(|(a, b)| a + b).collect();
+        let x: Vec<f32> = tone(250.0, 0.25, n)
+            .iter()
+            .zip(tone(4000.0, 0.25, n))
+            .map(|(a, b)| a + b)
+            .collect();
         let key: Vec<f32> = tone(220.0, 0.5, n)
             .into_iter()
             .enumerate()
             .map(|(i, v)| {
                 let t = i % 8820;
-                let g = if t < 4410 { (t as f32 / 220.5).min(1.0) } else { (1.0 - (t - 4410) as f32 / 220.5).max(0.0) };
+                let g = if t < 4410 {
+                    (t as f32 / 220.5).min(1.0)
+                } else {
+                    (1.0 - (t - 4410) as f32 / 220.5).max(0.0)
+                };
                 v * g
             })
             .collect();
-        let p = CarveParams { max_cut_db: 12.0, attack_ms: 5.0, release_ms: 50.0, ..Default::default() };
+        let p = CarveParams {
+            max_cut_db: 12.0,
+            attack_ms: 5.0,
+            release_ms: 50.0,
+            ..Default::default()
+        };
         let f = carve_focus_hz(&p, sr);
         let mut y = x.clone();
         let mut c = Carver::new(SR, p);
@@ -515,16 +707,31 @@ mod tests {
         let mut q = Bq::default();
         q.set(b, a);
         let s: Vec<f32> = x.iter().map(|v| q.run(*v as f64) as f32).collect();
-        let step = |v: &[f32]| v.windows(2).skip(1000).fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()));
-        let curv = |v: &[f32]| v.windows(3).skip(1000).fold(0.0f32, |m, w| m.max((w[2] - 2.0 * w[1] + w[0]).abs()));
+        let step = |v: &[f32]| {
+            v.windows(2)
+                .skip(1000)
+                .fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()))
+        };
+        let curv = |v: &[f32]| {
+            v.windows(3)
+                .skip(1000)
+                .fold(0.0f32, |m, w| m.max((w[2] - 2.0 * w[1] + w[0]).abs()))
+        };
         let (st_dry, st_static, st_dyn) = (step(&x), step(&s), step(&y));
         let (cv_dry, cv_static, cv_dyn) = (curv(&x), curv(&s), curv(&y));
         let gd_static = group_delay_samples(b, a, f, sr);
         let gd_max = gds.iter().fold(0.0f64, |m, g| m.max(g.abs()));
-        let dgd = gds.windows(2).fold(0.0f64, |m, w| m.max((w[1] - w[0]).abs()));
-        let dcut = cuts.windows(2).fold(0.0f64, |m, w| m.max((w[1] - w[0]).abs()));
+        let dgd = gds
+            .windows(2)
+            .fold(0.0f64, |m, w| m.max((w[1] - w[0]).abs()));
+        let dcut = cuts
+            .windows(2)
+            .fold(0.0f64, |m, w| m.max((w[1] - w[0]).abs()));
         let cut_max = cuts.iter().cloned().fold(0.0, f64::max);
-        let cut_min_late = cuts[cuts.len() / 2..].iter().cloned().fold(f64::MAX, f64::min);
+        let cut_min_late = cuts[cuts.len() / 2..]
+            .iter()
+            .cloned()
+            .fold(f64::MAX, f64::min);
         eprintln!(
             "CARVE_SWEEP cut range {cut_min_late:.3}..{cut_max:.3} dB, max cut change per 16-sample refresh {dcut:.3} dB\n\
              max |y[n]-y[n-1]|: dry {st_dry:.5}, static 12 dB {st_static:.5}, dynamic {st_dyn:.5} (dynamic/static {:.4})\n\
@@ -532,10 +739,22 @@ mod tests {
              group delay at {f:.0} Hz: static max cut {gd_static:+.3} samples, dynamic max |gd| {gd_max:.3}, max change per refresh {dgd:.4} samples",
             st_dyn / st_static
         );
-        assert!(cut_max > 11.9 && cut_min_late < cut_max - 3.0, "{cut_min_late} {cut_max}");
-        assert!(st_dyn <= st_dry.max(st_static) * 1.01, "{st_dyn} vs {st_dry} / {st_static}");
-        assert!(cv_dyn <= cv_dry.max(cv_static) * 1.05, "{cv_dyn} vs {cv_dry} / {cv_static}");
-        assert!(gds.iter().all(|g| g.is_finite()) && gd_max <= gd_static.abs() * 1.001 + 1e-9, "{gd_max} {gd_static}");
+        assert!(
+            cut_max > 11.9 && cut_min_late < cut_max - 3.0,
+            "{cut_min_late} {cut_max}"
+        );
+        assert!(
+            st_dyn <= st_dry.max(st_static) * 1.01,
+            "{st_dyn} vs {st_dry} / {st_static}"
+        );
+        assert!(
+            cv_dyn <= cv_dry.max(cv_static) * 1.05,
+            "{cv_dyn} vs {cv_dry} / {cv_static}"
+        );
+        assert!(
+            gds.iter().all(|g| g.is_finite()) && gd_max <= gd_static.abs() * 1.001 + 1e-9,
+            "{gd_max} {gd_static}"
+        );
         assert!(dgd < 0.25 * gd_static.abs(), "{dgd} vs {gd_static}");
     }
 }

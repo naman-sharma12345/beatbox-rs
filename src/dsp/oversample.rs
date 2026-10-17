@@ -89,9 +89,15 @@ pub struct HalfBandSpec {
 }
 
 /// Stage 1, between the base rate and 2x.
-pub const STAGE1: HalfBandSpec = HalfBandSpec { k: 56, pass_edge: 0.2375 };
+pub const STAGE1: HalfBandSpec = HalfBandSpec {
+    k: 56,
+    pass_edge: 0.2375,
+};
 /// Stage 2, between 2x and 4x.
-pub const STAGE2: HalfBandSpec = HalfBandSpec { k: 7, pass_edge: 0.135 };
+pub const STAGE2: HalfBandSpec = HalfBandSpec {
+    k: 7,
+    pass_edge: 0.135,
+};
 
 /// A designed half-band filter.
 #[derive(Clone, Debug)]
@@ -123,14 +129,21 @@ impl HalfBandDesign {
     /// `|H|` at `f` cycles per sample (zero phase, so this is `H` itself).
     pub fn response(&self, f: f64) -> f64 {
         let w = 2.0 * std::f64::consts::PI * f;
-        0.5 + self.taps.iter().enumerate().map(|(j, &g)| 2.0 * g * ((2 * j + 1) as f64 * w).cos()).sum::<f64>()
+        0.5 + self
+            .taps
+            .iter()
+            .enumerate()
+            .map(|(j, &g)| 2.0 * g * ((2 * j + 1) as f64 * w).cos())
+            .sum::<f64>()
     }
 }
 
 /// Solves `a x = b` in place (Gaussian elimination, partial pivoting).
 fn solve(a: &mut [f64], b: &mut [f64], n: usize) {
     for col in 0..n {
-        let piv = (col..n).max_by(|&i, &j| a[i * n + col].abs().total_cmp(&a[j * n + col].abs())).unwrap_or(col);
+        let piv = (col..n)
+            .max_by(|&i, &j| a[i * n + col].abs().total_cmp(&a[j * n + col].abs()))
+            .unwrap_or(col);
         if piv != col {
             for k in 0..n {
                 a.swap(col * n + k, piv * n + k);
@@ -162,12 +175,17 @@ fn solve(a: &mut [f64], b: &mut [f64], n: usize) {
 /// Deterministic: same `spec`, same taps, on every run.
 pub fn design_halfband(spec: HalfBandSpec) -> HalfBandDesign {
     let k = spec.k;
-    assert!(k >= 1 && spec.pass_edge > 0.0 && spec.pass_edge < 0.25, "bad half-band spec {spec:?}");
+    assert!(
+        k >= 1 && spec.pass_edge > 0.0 && spec.pass_edge < 0.25,
+        "bad half-band spec {spec:?}"
+    );
     let wp = 2.0 * std::f64::consts::PI * spec.pass_edge;
     let ng = 32 * k + 1;
     let grid: Vec<f64> = (0..ng).map(|i| wp * i as f64 / (ng - 1) as f64).collect();
     let basis = |w: f64, j: usize| ((2 * j + 1) as f64 * w).cos();
-    let mut ext: Vec<usize> = (0..=k).map(|i| ((i * (ng - 1)) as f64 / k as f64).round() as usize).collect();
+    let mut ext: Vec<usize> = (0..=k)
+        .map(|i| ((i * (ng - 1)) as f64 / k as f64).round() as usize)
+        .collect();
     let n = k + 1;
     let mut c = vec![0.0; k];
     let mut delta = 0.0;
@@ -196,7 +214,13 @@ pub fn design_halfband(spec: HalfBandSpec) -> HalfBandDesign {
             let e = err[i];
             let l = if i > 0 { err[i - 1] } else { f64::NAN };
             let r = if i + 1 < ng { err[i + 1] } else { f64::NAN };
-            let is_ext = if e >= 0.0 { !(l > e) && !(r > e) } else { !(l < e) && !(r < e) };
+            let is_ext = if e >= 0.0 {
+                !matches!(l.partial_cmp(&e), Some(std::cmp::Ordering::Greater))
+                    && !matches!(r.partial_cmp(&e), Some(std::cmp::Ordering::Greater))
+            } else {
+                !matches!(l.partial_cmp(&e), Some(std::cmp::Ordering::Less))
+                    && !matches!(r.partial_cmp(&e), Some(std::cmp::Ordering::Less))
+            };
             if !is_ext {
                 continue;
             }
@@ -222,7 +246,12 @@ pub fn design_halfband(spec: HalfBandSpec) -> HalfBandDesign {
         ext = alt;
     }
     // Taps: A(w) = sum c_j cos((2j-1)w) = sum 2 g_j cos(...), so g_j = c_j / 2.
-    HalfBandDesign { spec, taps: c.iter().map(|v| 0.5 * v).collect(), delta, iterations }
+    HalfBandDesign {
+        spec,
+        taps: c.iter().map(|v| 0.5 * v).collect(),
+        delta,
+        iterations,
+    }
 }
 
 /// Stage 1's design, computed once per process.
@@ -240,11 +269,10 @@ pub fn stage2_design() -> &'static HalfBandDesign {
 /// `sum a[i] * b[i]` with eight partial sums, so the loop vectorizes.
 #[inline]
 fn dot(a: &[f32], b: &[f32]) -> f32 {
-    let ca = a.chunks_exact(8);
-    let cb = b.chunks_exact(8);
-    let (ra, rb) = (ca.remainder(), cb.remainder());
+    let (ca, ra) = a.as_chunks::<8>();
+    let (cb, rb) = b.as_chunks::<8>();
     let mut acc = [0.0f32; 8];
-    for (x, y) in ca.zip(cb) {
+    for (x, y) in ca.iter().zip(cb) {
         for l in 0..8 {
             acc[l] += x[l] * y[l];
         }
@@ -268,7 +296,11 @@ struct History {
 
 impl History {
     fn new(n: usize) -> Self {
-        Self { buf: vec![0.0; 2 * n].into_boxed_slice(), n, pos: n - 1 }
+        Self {
+            buf: vec![0.0; 2 * n].into_boxed_slice(),
+            n,
+            pos: n - 1,
+        }
     }
     #[inline]
     fn push(&mut self, x: f32) -> &[f32] {
@@ -326,7 +358,8 @@ impl Stage {
     /// passband is unity. Delay `2K - 1` samples at the high rate.
     fn upsample(&mut self, input: &[f32], out: &mut [f32]) {
         let k = self.k;
-        for (x, o) in input.iter().zip(out.chunks_exact_mut(2)) {
+        let (out_chunks, _) = out.as_chunks_mut::<2>();
+        for (x, o) in input.iter().zip(out_chunks) {
             let w = self.up.push(*x);
             o[0] = 2.0 * dot(&self.kern, w);
             o[1] = w[k];
@@ -336,7 +369,7 @@ impl Stage {
     /// 2x down: `out.len() * 2 == input.len()`. Delay `2K - 1` samples at
     /// the high rate.
     fn downsample(&mut self, input: &[f32], out: &mut [f32]) {
-        for (p, o) in input.chunks_exact(2).zip(out.iter_mut()) {
+        for (p, o) in input.as_chunks::<2>().0.iter().zip(out.iter_mut()) {
             let centre = self.down_odd[self.odd_pos];
             self.down_odd[self.odd_pos] = p[1];
             self.odd_pos += 1;
@@ -448,9 +481,7 @@ impl HalfBandOversampler {
                 f(hi);
                 s2.downsample(hi, mid);
                 for v in mid.iter_mut() {
-                    let d = self.pad;
-                    self.pad = *v;
-                    *v = d;
+                    std::mem::swap(&mut self.pad, &mut *v);
                 }
                 self.s1.downsample(mid, piece);
             }
@@ -512,14 +543,22 @@ impl<N: Nonlinearity> AdaaOversampled<N> {
     /// runs second order).
     pub fn with_order(shape: N, order: AdaaOrder, drive: f64, factor: OversampleFactor) -> Self {
         let order = route_order(order, factor, false);
-        Self { shaper: Waveshaper::new(shape, order, drive), os: HalfBandOversampler::new(factor), draft: false }
+        Self {
+            shaper: Waveshaper::new(shape, order, drive),
+            os: HalfBandOversampler::new(factor),
+            draft: false,
+        }
     }
 
     /// Low-CPU draft mode: first-order ADAA at `factor`, 2x included
     /// (about 20% cheaper than second order with `tanh`, and less clean
     /// at 2x on high tones).
     pub fn draft(shape: N, drive: f64, factor: OversampleFactor) -> Self {
-        Self { shaper: Waveshaper::new(shape, AdaaOrder::First, drive), os: HalfBandOversampler::new(factor), draft: true }
+        Self {
+            shaper: Waveshaper::new(shape, AdaaOrder::First, drive),
+            os: HalfBandOversampler::new(factor),
+            draft: true,
+        }
     }
 
     /// Shapes `block` in place.
@@ -614,7 +653,9 @@ mod tests {
         let mut re: Vec<f64> = y.iter().map(|&v| v as f64).collect();
         let mut im = vec![0.0; y.len()];
         fft64(&mut re, &mut im);
-        (0..=y.len() / 2).map(|k| re[k] * re[k] + im[k] * im[k]).collect()
+        (0..=y.len() / 2)
+            .map(|k| re[k] * re[k] + im[k] * im[k])
+            .collect()
     }
 
     /// Alias power relative to the fundamental (dB) for a sine on odd FFT bin
@@ -629,13 +670,27 @@ mod tests {
 
     /// Runs `input` through the named curve at `order`, at 1x (`factor` None)
     /// or inside a fresh oversampler.
-    pub(super) fn shape(name: &str, order: AdaaOrder, drive: f64, factor: Option<OversampleFactor>, input: &[f32]) -> Vec<f32> {
-        fn go<N: Nonlinearity>(nl: N, order: AdaaOrder, drive: f64, factor: Option<OversampleFactor>, buf: &mut [f32]) {
+    pub(super) fn shape(
+        name: &str,
+        order: AdaaOrder,
+        drive: f64,
+        factor: Option<OversampleFactor>,
+        input: &[f32],
+    ) -> Vec<f32> {
+        fn go<N: Nonlinearity>(
+            nl: N,
+            order: AdaaOrder,
+            drive: f64,
+            factor: Option<OversampleFactor>,
+            buf: &mut [f32],
+        ) {
             match factor {
                 None => Waveshaper::new(nl, order, drive).process_block(buf),
                 // measurement wants the order as asked: draft for first order
                 // (2x routing would turn it into second), with_order otherwise
-                Some(f) if order == AdaaOrder::First => AdaaOversampled::draft(nl, drive, f).process_block(buf),
+                Some(f) if order == AdaaOrder::First => {
+                    AdaaOversampled::draft(nl, drive, f).process_block(buf)
+                }
                 Some(f) => AdaaOversampled::with_order(nl, order, drive, f).process_block(buf),
             }
         }
@@ -655,7 +710,11 @@ mod tests {
         if bin % 2 == 0 {
             bin += 1;
         }
-        let x = (0..n + warm).map(|i| (2.0 * std::f64::consts::PI * (bin as f64) * (i % n) as f64 / n as f64).sin() as f32).collect();
+        let x = (0..n + warm)
+            .map(|i| {
+                (2.0 * std::f64::consts::PI * (bin as f64) * (i % n) as f64 / n as f64).sin() as f32
+            })
+            .collect();
         (x, bin)
     }
 
@@ -682,9 +741,21 @@ mod tests {
                     }
                 }
             }
-            assert!(worst_pass <= d.delta * 1.01, "{spec:?}: pass {worst_pass:.3e} vs delta {:.3e}", d.delta);
-            assert!(worst_stop <= d.delta * 1.01, "{spec:?}: stop {worst_stop:.3e}");
-            assert!(signs.len() > spec.k, "{spec:?}: {} alternations, want {}", signs.len(), spec.k + 1);
+            assert!(
+                worst_pass <= d.delta * 1.01,
+                "{spec:?}: pass {worst_pass:.3e} vs delta {:.3e}",
+                d.delta
+            );
+            assert!(
+                worst_stop <= d.delta * 1.01,
+                "{spec:?}: stop {worst_stop:.3e}"
+            );
+            assert!(
+                signs.len() > spec.k,
+                "{spec:?}: {} alternations, want {}",
+                signs.len(),
+                spec.k + 1
+            );
             // half-band identity: exactly -6 dB at a quarter of the rate
             assert!((d.response(0.25) - 0.5).abs() < 1e-12);
             // the impulse response has the zeros a half-band must have
@@ -713,7 +784,10 @@ mod tests {
 
     #[test]
     fn round_trip_is_flat_linear_phase_and_delayed_by_the_reported_latency() {
-        for (f, lat) in [(OversampleFactor::X2, 111usize), (OversampleFactor::X4, 118)] {
+        for (f, lat) in [
+            (OversampleFactor::X2, 111usize),
+            (OversampleFactor::X4, 118),
+        ] {
             let os = HalfBandOversampler::new(f);
             assert_eq!(os.latency_samples(), lat);
             assert_eq!(os.latency(), lat as f64);
@@ -722,19 +796,31 @@ mod tests {
             // block size does not matter
             assert_eq!(ir, round_trip_ir(f, n, 1));
             assert_eq!(ir, round_trip_ir(f, n, DEFAULT_MAX_BLOCK));
-            let peak = (0..n).max_by(|&a, &b| ir[a].abs().total_cmp(&ir[b].abs())).unwrap();
+            let peak = (0..n)
+                .max_by(|&a, &b| ir[a].abs().total_cmp(&ir[b].abs()))
+                .unwrap();
             assert_eq!(peak, lat, "{f:?}: peak at {peak}");
             for i in 1..=lat {
-                assert!((ir[lat + i] - ir[lat - i]).abs() < 2e-7, "{f:?}: not symmetric at +-{i}");
+                assert!(
+                    (ir[lat + i] - ir[lat - i]).abs() < 2e-7,
+                    "{f:?}: not symmetric at +-{i}"
+                );
             }
-            assert!(ir[2 * lat + 1..].iter().all(|v| v.abs() < 1e-7), "{f:?}: tail past 2x latency");
+            assert!(
+                ir[2 * lat + 1..].iter().all(|v| v.abs() < 1e-7),
+                "{f:?}: tail past 2x latency"
+            );
             // magnitude: flat to 20 kHz at 44.1 kHz (0.4535 fs) and to 0.47 fs
             let p = power_spectrum(&ir);
             let mut worst = 0.0f64;
             for (k, pk) in p.iter().enumerate().take(((0.47 * n as f64) as usize) + 1) {
                 let db = 10.0 * pk.log10();
                 worst = worst.max(db.abs());
-                assert!(db.abs() < 0.002, "{f:?}: {db:.5} dB at {:.4} fs", k as f64 / n as f64);
+                assert!(
+                    db.abs() < 0.002,
+                    "{f:?}: {db:.5} dB at {:.4} fs",
+                    k as f64 / n as f64
+                );
             }
             eprintln!("{f:?}: latency {lat}, passband (0..0.47 fs) deviation {worst:.5} dB");
             // the shaper's own delay rides on top, at the high rate
@@ -763,16 +849,29 @@ mod tests {
                 for f in [1000.0, 5000.0, 10_000.0, 15_000.0] {
                     let (x, bin) = tone(f, fs, n, warm);
                     let naive = shape(name, AdaaOrder::Naive, 4.0, None, &x);
-                    let (nf, na) = (alias_db(&naive, n, bin, fs, None), alias_db(&naive, n, bin, fs, Some(20_000.0)));
+                    let (nf, na) = (
+                        alias_db(&naive, n, bin, fs, None),
+                        alias_db(&naive, n, bin, fs, Some(20_000.0)),
+                    );
                     let lv = |c| {
                         let y = shape(name, AdaaOrder::Second, 4.0, Some(c), &x);
-                        (alias_db(&y, n, bin, fs, None), alias_db(&y, n, bin, fs, Some(20_000.0)))
+                        (
+                            alias_db(&y, n, bin, fs, None),
+                            alias_db(&y, n, bin, fs, Some(20_000.0)),
+                        )
                     };
-                    let ((y2f, y2a), (y4f, y4a)) = (lv(OversampleFactor::X2), lv(OversampleFactor::X4));
+                    let ((y2f, y2a), (y4f, y4a)) =
+                        (lv(OversampleFactor::X2), lv(OversampleFactor::X4));
                     let (f2, a2, f4, a4) = (nf - y2f, na - y2a, nf - y4f, na - y4a);
                     eprintln!("{fs} {name} {f}: 2x {f2:.1}/{a2:.1} dB, 4x {f4:.1}/{a4:.1} dB (full/audio); 4x audio alias {y4a:.1} dBc");
-                    assert!(f2 >= 26.0 && a2 >= 26.0, "{fs} {name} {f}: 2x {f2:.1}/{a2:.1}");
-                    assert!(f4 >= 40.0 && a4 >= 40.0, "{fs} {name} {f}: 4x {f4:.1}/{a4:.1}");
+                    assert!(
+                        f2 >= 26.0 && a2 >= 26.0,
+                        "{fs} {name} {f}: 2x {f2:.1}/{a2:.1}"
+                    );
+                    assert!(
+                        f4 >= 40.0 && a4 >= 40.0,
+                        "{fs} {name} {f}: 4x {f4:.1}/{a4:.1}"
+                    );
                     assert!(a4 > a2 || y4a < -130.0, "{fs} {name} {f}: 4x {a4:.1} not above 2x {a2:.1} (audio band, 4x at {y4a:.1} dBc)");
                 }
             }
@@ -787,10 +886,14 @@ mod tests {
             let mut os = HalfBandOversampler::new(f);
             let lat = os.latency_samples();
             let fs = 44_100.0;
-            let x: Vec<f32> = (0..8192).map(|i| (0.3 * (2.0 * std::f64::consts::PI * 997.0 * i as f64 / fs).sin()) as f32).collect();
+            let x: Vec<f32> = (0..8192)
+                .map(|i| (0.3 * (2.0 * std::f64::consts::PI * 997.0 * i as f64 / fs).sin()) as f32)
+                .collect();
             let mut y = x.clone();
             os.run(&mut y, &mut |_hi: &mut [f32]| {});
-            let err = (lat + 300..8192).map(|i| (y[i] - x[i - lat]).abs()).fold(0.0f32, f32::max);
+            let err = (lat + 300..8192)
+                .map(|i| (y[i] - x[i - lat]).abs())
+                .fold(0.0f32, f32::max);
             assert!(err < 2e-5, "{f:?}: {err}");
         }
     }
@@ -820,7 +923,10 @@ mod tests {
         let mut r = AdaaOversampled::with_order(HardClip, First, 4.0, X2);
         assert_eq!(r.order(), Second);
         assert_eq!(r.latency(), 111.0 + 0.5);
-        assert_eq!(AdaaOversampled::with_order(HardClip, First, 4.0, X4).order(), First);
+        assert_eq!(
+            AdaaOversampled::with_order(HardClip, First, 4.0, X4).order(),
+            First
+        );
         r.set_order(First);
         assert_eq!(r.order(), Second);
         let mut d = AdaaOversampled::draft(HardClip, 4.0, X2);
@@ -837,8 +943,14 @@ mod tests {
             y
         };
         let asked1_2x = render(&mut AdaaOversampled::with_order(SoftClip3, First, 4.0, X2));
-        assert_eq!(asked1_2x, render(&mut AdaaOversampled::new(SoftClip3, 4.0, X2)));
-        assert_ne!(asked1_2x, render(&mut AdaaOversampled::draft(SoftClip3, 4.0, X2)));
+        assert_eq!(
+            asked1_2x,
+            render(&mut AdaaOversampled::new(SoftClip3, 4.0, X2))
+        );
+        assert_ne!(
+            asked1_2x,
+            render(&mut AdaaOversampled::draft(SoftClip3, 4.0, X2))
+        );
         // Case 2: ADAA1 requested at 4x stays ADAA1, untouched: same order,
         // same latency, and bit-identical to the plain first-order shaper in
         // the same 4x oversampler.
@@ -847,9 +959,13 @@ mod tests {
         assert_eq!(a4.latency(), 118.0 + 0.5 / 4.0);
         let asked1_4x = render(&mut a4);
         let mut plain = x.clone();
-        Waveshaper::new(SoftClip3, First, 4.0).process_with(&mut HalfBandOversampler::new(X4), &mut plain);
+        Waveshaper::new(SoftClip3, First, 4.0)
+            .process_with(&mut HalfBandOversampler::new(X4), &mut plain);
         assert_eq!(asked1_4x, plain);
-        assert_ne!(asked1_4x, render(&mut AdaaOversampled::new(SoftClip3, 4.0, X4)));
+        assert_ne!(
+            asked1_4x,
+            render(&mut AdaaOversampled::new(SoftClip3, 4.0, X4))
+        );
     }
 
     /// FNV-1a over the bytes of `v`.
@@ -871,25 +987,36 @@ mod tests {
         // produces, and running them through `NoOversampling` is bit
         // identical. Nothing in the engine calls this module, so every
         // default render is byte-identical (checked by the golden gates).
-        let x: Vec<f32> = (0..4096).map(|i| (1.7 * (i as f64 * 0.0731).sin() + 0.4 * (i as f64 * 0.91).sin()) as f32).collect();
+        let x: Vec<f32> = (0..4096)
+            .map(|i| (1.7 * (i as f64 * 0.0731).sin() + 0.4 * (i as f64 * 0.91).sin()) as f32)
+            .collect();
         let mut all = Vec::new();
         for name in NAMES {
             for order in [AdaaOrder::Naive, AdaaOrder::First, AdaaOrder::Second] {
                 let y = shape(name, order, 3.0, None, &x);
                 let mut z = x.clone();
                 match name {
-                    "hard" => Waveshaper::new(HardClip, order, 3.0).process_with(&mut NoOversampling, &mut z),
-                    "tanh" => Waveshaper::new(Tanh, order, 3.0).process_with(&mut NoOversampling, &mut z),
-                    "soft3" => Waveshaper::new(SoftClip3, order, 3.0).process_with(&mut NoOversampling, &mut z),
-                    _ => Waveshaper::new(SoftClip5, order, 3.0).process_with(&mut NoOversampling, &mut z),
+                    "hard" => Waveshaper::new(HardClip, order, 3.0)
+                        .process_with(&mut NoOversampling, &mut z),
+                    "tanh" => {
+                        Waveshaper::new(Tanh, order, 3.0).process_with(&mut NoOversampling, &mut z)
+                    }
+                    "soft3" => Waveshaper::new(SoftClip3, order, 3.0)
+                        .process_with(&mut NoOversampling, &mut z),
+                    _ => Waveshaper::new(SoftClip5, order, 3.0)
+                        .process_with(&mut NoOversampling, &mut z),
                 }
                 assert_eq!(y, z);
                 all.extend_from_slice(&y);
             }
         }
-        assert_eq!(fnv(&all), DEVELOP_1X_HASH, "1x shaper output changed: {:#018x}", fnv(&all));
+        assert_eq!(
+            fnv(&all),
+            DEVELOP_1X_HASH,
+            "1x shaper output changed: {:#018x}",
+            fnv(&all)
+        );
     }
-
 
     /// Exponential sweep `f1 -> f2` over `secs`, unit amplitude, and its
     /// instantaneous frequency at sample `i`.
@@ -909,7 +1036,14 @@ mod tests {
     /// frame whose fundamental is 500 Hz..f_stop, every bin farther than 8
     /// bins from the band any harmonic sweeps through is alias. Summed alias
     /// energy over summed fundamental energy, up to `f_max_hz`.
-    fn sweep_alias_db(y: &[f32], inst: &dyn Fn(f64) -> f64, fs: f64, lat: f64, f_stop: f64, f_max_hz: f64) -> f64 {
+    fn sweep_alias_db(
+        y: &[f32],
+        inst: &dyn Fn(f64) -> f64,
+        fs: f64,
+        lat: f64,
+        f_stop: f64,
+        f_max_hz: f64,
+    ) -> f64 {
         let w = 4096;
         let win: Vec<f64> = (0..w)
             .map(|i| {
@@ -937,11 +1071,16 @@ mod tests {
                         *h = true;
                     }
                     if k == 1.0 {
-                        fu += (lo..=hi).map(|b| re[b] * re[b] + im[b] * im[b]).sum::<f64>();
+                        fu += (lo..=hi)
+                            .map(|b| re[b] * re[b] + im[b] * im[b])
+                            .sum::<f64>();
                     }
                     k += 1.0;
                 }
-                al += (2..=top).filter(|&b| !harm[b]).map(|b| re[b] * re[b] + im[b] * im[b]).sum::<f64>();
+                al += (2..=top)
+                    .filter(|&b| !harm[b])
+                    .map(|b| re[b] * re[b] + im[b] * im[b])
+                    .sum::<f64>();
             }
             s += w / 2;
         }
@@ -954,7 +1093,11 @@ mod tests {
     #[ignore]
     fn measure_alias_table() {
         let n = 1 << 15;
-        let cfgs: [(&str, Option<OversampleFactor>); 3] = [("1x", None), ("2x", Some(OversampleFactor::X2)), ("4x", Some(OversampleFactor::X4))];
+        let cfgs: [(&str, Option<OversampleFactor>); 3] = [
+            ("1x", None),
+            ("2x", Some(OversampleFactor::X2)),
+            ("4x", Some(OversampleFactor::X4)),
+        ];
         println!("TABLE kind,fs,curve,drive_db,order,signal,naive_full_db,naive_aud_db,cfg,supp_full_db,supp_aud_db");
         for fs in [44_100.0, 48_000.0] {
             for drive in [4.0, 10.0] {
@@ -999,7 +1142,12 @@ mod tests {
     #[ignore]
     fn measure_cpu() {
         let fs = 48_000.0;
-        let x: Vec<f32> = (0..(fs as usize) * 2).map(|i| (0.9 * (2.0 * std::f64::consts::PI * 441.0 * i as f64 / fs).sin() + 0.3 * (i as f64 * 0.37).sin()) as f32).collect();
+        let x: Vec<f32> = (0..(fs as usize) * 2)
+            .map(|i| {
+                (0.9 * (2.0 * std::f64::consts::PI * 441.0 * i as f64 / fs).sin()
+                    + 0.3 * (i as f64 * 0.37).sin()) as f32
+            })
+            .collect();
         let time = |f: &mut dyn FnMut(&mut [f32])| {
             let mut best = f64::MAX;
             for _ in 0..7 {
@@ -1025,7 +1173,11 @@ mod tests {
                     let base = time(&mut |c: &mut [f32]| ws.process_block(c));
                     println!("CPU {},{order:?},1x,{base:.1}", $name);
                     for f in [OversampleFactor::X2, OversampleFactor::X4] {
-                        let mut a = if order == AdaaOrder::First { AdaaOversampled::draft($nl, 4.0, f) } else { AdaaOversampled::with_order($nl, order, 4.0, f) };
+                        let mut a = if order == AdaaOrder::First {
+                            AdaaOversampled::draft($nl, 4.0, f)
+                        } else {
+                            AdaaOversampled::with_order($nl, order, 4.0, f)
+                        };
                         let ns = time(&mut |c: &mut [f32]| a.process_block(c));
                         println!("CPU {},{order:?},{f:?},{ns:.1}", $name);
                     }

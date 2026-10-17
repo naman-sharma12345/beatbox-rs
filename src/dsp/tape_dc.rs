@@ -104,7 +104,9 @@ impl TapeDcGuard {
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
         let x = x as f64;
-        let mut y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2 - self.a1 * self.y1 - self.a2 * self.y2;
+        let mut y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
+            - self.a1 * self.y1
+            - self.a2 * self.y2;
         // a stop frozen on a held value decays toward zero for as long as it
         // holds: flush below 1e-20 (far under f32's smallest step at any
         // audible level) so the state never goes denormal; with b0+b1+b2 = 0

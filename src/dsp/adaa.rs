@@ -36,9 +36,9 @@
 //!   `c` the mean of `x[n]` and `x[n-2]` and `b = x[n-1]`;
 //! - both adjacent steps collapsed (a DC hold): `f` at the mean of the
 //!   three inputs, which is exactly `f(x)` on a held value. Everything runs in `f64`, and each shape
-//! gives closed-form divided differences on its polynomial pieces (and on
-//! `tanh`'s asymptotic part), so the large values of `F2` at high drive
-//! never cancel against each other.
+//!   gives closed-form divided differences on its polynomial pieces (and on
+//!   `tanh`'s asymptotic part), so the large values of `F2` at high drive
+//!   never cancel against each other.
 //!
 //! The shapes are odd functions and the formulas preserve that exactly:
 //! `-x` in gives bit-for-bit `-y` out, and a constant input gives `f(c)`.
@@ -375,7 +375,14 @@ fn tanh_f2(x: f64, r: f64) -> f64 {
         // Term by term integral of ln cosh x = x^2/2 - x^4/12 + x^6/45
         // - 17x^8/2520 + 31x^10/14175 - 691x^12/935550 + ...; at
         // |x| < 0.125 the first omitted term is under 1e-20.
-        const C: [f64; 6] = [1.0 / 6.0, -1.0 / 60.0, 1.0 / 315.0, -17.0 / 22_680.0, 31.0 / 155_925.0, -691.0 / 12_162_150.0];
+        const C: [f64; 6] = [
+            1.0 / 6.0,
+            -1.0 / 60.0,
+            1.0 / 315.0,
+            -17.0 / 22_680.0,
+            31.0 / 155_925.0,
+            -691.0 / 12_162_150.0,
+        ];
         let x2 = x * x;
         let mut p = 0.0;
         for c in C.iter().rev() {
@@ -515,7 +522,18 @@ impl<N: Nonlinearity> Waveshaper<N> {
     /// `order` and `drive` may change between samples (the history is kept
     /// in the driven domain); after changing `shape`, call [`Self::reset`].
     pub fn new(shape: N, order: AdaaOrder, drive: f64) -> Self {
-        Waveshaper { shape, order, drive, out_gain: 1.0, x1: 0.0, x2: 0.0, d_prev: 0.0, d_valid: false, a1: 0.0, a_order: AdaaOrder::Naive }
+        Waveshaper {
+            shape,
+            order,
+            drive,
+            out_gain: 1.0,
+            x1: 0.0,
+            x2: 0.0,
+            d_prev: 0.0,
+            d_valid: false,
+            a1: 0.0,
+            a_order: AdaaOrder::Naive,
+        }
     }
 
     /// Clears the input history (as if the input had been 0).
@@ -551,10 +569,18 @@ impl<N: Nonlinearity> Waveshaper<N> {
         }
         let first = self.order == AdaaOrder::First;
         if self.a_order != self.order {
-            self.a1 = if first { self.shape.aux1(self.x1) } else { self.shape.aux2(self.x1) };
+            self.a1 = if first {
+                self.shape.aux1(self.x1)
+            } else {
+                self.shape.aux2(self.x1)
+            };
             self.a_order = self.order;
         }
-        let a0 = if first { self.shape.aux1(u) } else { self.shape.aux2(u) };
+        let a0 = if first {
+            self.shape.aux1(u)
+        } else {
+            self.shape.aux2(u)
+        };
         let near = (u - self.x1).abs() < ADAA_EPS;
         let y = if first {
             self.d_valid = false;
@@ -568,7 +594,11 @@ impl<N: Nonlinearity> Waveshaper<N> {
                 self.d_prev = d2(&self.shape, self.x1, self.x2);
                 self.d_valid = true;
             }
-            let d_new = if near { self.shape.f1(0.5 * (u + self.x1)) } else { self.shape.dd2_aux(u, a0, self.x1, self.a1) };
+            let d_new = if near {
+                self.shape.f1(0.5 * (u + self.x1))
+            } else {
+                self.shape.dd2_aux(u, a0, self.x1, self.a1)
+            };
             let d = u - self.x2;
             let y = if d.abs() < ADAA2_WIDE_EPS {
                 adaa2(&self.shape, u, self.x1, self.x2)
@@ -696,7 +726,10 @@ mod tests {
         // F1' = f and F2' = F1 by central differences, across the kinks,
         // tanh's internal switches (|x| = 0.125, 0.25, 15) and far out.
         let h = 1e-6;
-        let xs = [-700.0, -40.0, -15.0, -10.0, -3.0, -0.25, -1.5, -1.0, -0.999, -0.5, -0.1, 0.0, 0.05, 0.125, 0.13, 0.3, 0.99, 1.0, 1.001, 2.0, 7.5, 10.0, 40.0, 700.0];
+        let xs = [
+            -700.0, -40.0, -15.0, -10.0, -3.0, -0.25, -1.5, -1.0, -0.999, -0.5, -0.1, 0.0, 0.05,
+            0.125, 0.13, 0.3, 0.99, 1.0, 1.001, 2.0, 7.5, 10.0, 40.0, 700.0,
+        ];
         for name in NAMES {
             let nl = shape(name);
             for &x in &xs {
@@ -704,13 +737,24 @@ mod tests {
                 let d2 = (nl.f2(x + h) - nl.f2(x - h)) / (2.0 * h);
                 let tol1 = 1e-6 * (1.0 + x.abs());
                 let tol2 = 1e-7 * (1.0 + x * x);
-                assert!((d1 - nl.f(x)).abs() < tol1, "{name} F1' at {x}: {d1} vs {}", nl.f(x));
-                assert!((d2 - nl.f1(x)).abs() < tol2, "{name} F2' at {x}: {d2} vs {}", nl.f1(x));
+                assert!(
+                    (d1 - nl.f(x)).abs() < tol1,
+                    "{name} F1' at {x}: {d1} vs {}",
+                    nl.f(x)
+                );
+                assert!(
+                    (d2 - nl.f1(x)).abs() < tol2,
+                    "{name} F2' at {x}: {d2} vs {}",
+                    nl.f1(x)
+                );
             }
             assert_eq!(nl.f1(0.0), 0.0, "{name}");
             assert_eq!(nl.f2(0.0), 0.0, "{name}");
             for &x in &[1e30, -1e30, 3.4e38] {
-                assert!(nl.f(x).is_finite() && nl.f1(x).is_finite() && nl.f2(x).is_finite(), "{name} at {x}");
+                assert!(
+                    nl.f(x).is_finite() && nl.f1(x).is_finite() && nl.f2(x).is_finite(),
+                    "{name} at {x}"
+                );
             }
         }
         // ln cosh never calls cosh: exact asymptote where cosh itself overflows.
@@ -724,7 +768,10 @@ mod tests {
             let below = x.next_down();
             let d1 = Tanh.f1(x) - Tanh.f1(below) - Tanh.f(x) * (x - below);
             let d2 = Tanh.f2(x) - Tanh.f2(below) - Tanh.f1(x) * (x - below);
-            assert!(d1.abs() <= tol && d2.abs() <= tol, "tanh switch at {x}: {d1:e} {d2:e}");
+            assert!(
+                d1.abs() <= tol && d2.abs() <= tol,
+                "tanh switch at {x}: {d1:e} {d2:e}"
+            );
         }
         // Below the asymptote switch the e^(-2|x|) tail is kept (it is
         // e^-20 at 10); past it F1 is the bare asymptote, and the step
@@ -733,9 +780,15 @@ mod tests {
         let (at, past) = (TANH_ASYMPTOTE, TANH_ASYMPTOTE.next_up());
         assert_eq!(Tanh.f1(past), past - LN2);
         let step1 = Tanh.f1(past) - Tanh.f1(at) - Tanh.f(at) * (past - at);
-        assert!(step1.abs() < 1e-13, "F1 step at the asymptote switch: {step1:e}");
+        assert!(
+            step1.abs() < 1e-13,
+            "F1 step at the asymptote switch: {step1:e}"
+        );
         let step2 = Tanh.f2(past) - Tanh.f2(at) - Tanh.f1(at) * (past - at);
-        assert!(step2.abs() < 3e-14, "F2 step at the asymptote switch: {step2:e}");
+        assert!(
+            step2.abs() < 3e-14,
+            "F2 step at the asymptote switch: {step2:e}"
+        );
         // First-order output across the switch over the smallest gap.
         let y = adaa1(&Tanh, at + 0.6 * ADAA_EPS, at - 0.6 * ADAA_EPS);
         assert!((y - at.tanh()).abs() < 1e-8, "{y}");
@@ -747,7 +800,9 @@ mod tests {
     fn closed_form_divided_differences_match_quotients() {
         // On well-separated points, the closed-form divided differences agree
         // with the plain quotients.
-        let pts = [-9.0, -2.0, -1.2, -0.7, -0.2, 0.15, 0.6, 0.95, 1.3, 4.0, 11.0];
+        let pts = [
+            -9.0, -2.0, -1.2, -0.7, -0.2, 0.15, 0.6, 0.95, 1.3, 4.0, 11.0,
+        ];
         for name in NAMES {
             let nl = shape(name);
             for &a in &pts {
@@ -758,7 +813,10 @@ mod tests {
                     let q1 = (nl.f1(a) - nl.f1(b)) / (a - b);
                     let q2 = (nl.f2(a) - nl.f2(b)) / (a - b);
                     assert!((nl.dd1(a, b) - q1).abs() < 1e-12, "{name} dd1({a},{b})");
-                    assert!((nl.dd2(a, b) - q2).abs() < 1e-11 * (1.0 + q2.abs()), "{name} dd2({a},{b})");
+                    assert!(
+                        (nl.dd2(a, b) - q2).abs() < 1e-11 * (1.0 + q2.abs()),
+                        "{name} dd2({a},{b})"
+                    );
                 }
             }
         }
@@ -770,7 +828,10 @@ mod tests {
         // divided-difference formula evaluated at the same inputs must agree:
         // below f32 resolution for first order, under -110 dB for second
         // order (which divides twice).
-        let centres = [0.0, 0.3, 0.999_99, 1.0, 1.000_01, -1.0, 2.5, -12.0, 0.124_999, 0.125, 9.999_99, 10.0, 14.999_99, 15.0, -15.000_01, 60.0];
+        let centres = [
+            0.0, 0.3, 0.999_99, 1.0, 1.000_01, -1.0, 2.5, -12.0, 0.124_999, 0.125, 9.999_99, 10.0,
+            14.999_99, 15.0, -15.000_01, 60.0,
+        ];
         let gap = 0.99 * ADAA_EPS;
         for name in NAMES {
             let nl = &*shape(name);
@@ -781,21 +842,34 @@ mod tests {
                     let full = nl.dd1(x0, c);
                     // 1e-9 everywhere except across tanh's asymptote switch
                     // at 15, whose e^-30 step in F1 over a 1e-5 gap is ~1e-8.
-                    let tol = if name == "tanh" && (c.abs() - TANH_ASYMPTOTE).abs() < 1e-3 { 2e-8 } else { 1e-9 };
-                    assert!((fb - full).abs() < tol, "{name} adaa1 at {c}: {fb} vs {full}");
+                    let tol = if name == "tanh" && (c.abs() - TANH_ASYMPTOTE).abs() < 1e-3 {
+                        2e-8
+                    } else {
+                        1e-9
+                    };
+                    assert!(
+                        (fb - full).abs() < tol,
+                        "{name} adaa1 at {c}: {fb} vs {full}"
+                    );
                     for &step in &[0.5 * ADAA_EPS, 3e-5, 1e-3, 0.2] {
                         // Wide-step case (x0 ~ x2), x1 a step away.
                         let x0w = c + k * 0.99 * ADAA2_WIDE_EPS;
                         let x1 = c + step;
                         let fb = adaa2(nl, x0w, x1, c);
                         let full = 2.0 * (d2(nl, x0w, x1) - d2(nl, x1, c)) / (x0w - c);
-                        assert!((fb - full).abs() < 3e-6, "{name} adaa2 x0~x2 at {c} step {step}: {fb} vs {full}");
+                        assert!(
+                            (fb - full).abs() < 3e-6,
+                            "{name} adaa2 x0~x2 at {c} step {step}: {fb} vs {full}"
+                        );
                         assert!(adaa2(nl, x0, x1, c).is_finite());
                         // Adjacent case (x0 ~ x1), x2 a step away.
                         let x2 = c - step - 2.0 * ADAA_EPS;
                         let fb = d2(nl, x0, c);
                         let full = nl.dd2(x0, c);
-                        assert!((fb - full).abs() < 1e-10, "{name} D x0~x1 at {c}: {fb} vs {full}");
+                        assert!(
+                            (fb - full).abs() < 1e-10,
+                            "{name} D x0~x1 at {c}: {fb} vs {full}"
+                        );
                         assert!(adaa2(nl, x0, c, x2).is_finite());
                     }
                 }
@@ -811,7 +885,12 @@ mod tests {
         // Hard clipper with the main formula: exactly +-1 in the saturated
         // tails and (x0 + x1 + x2) / 3 in the core, even at high drive where
         // F2 is large.
-        for &(x0, x1, x2) in &[(5.0, 5.000_02, 5.000_05), (-12.0, -12.000_1, -11.999_95), (0.2, 0.200_03, 0.199_98), (300.0, 300.001, 300.002)] {
+        for &(x0, x1, x2) in &[
+            (5.0, 5.000_02, 5.000_05),
+            (-12.0, -12.000_1, -11.999_95),
+            (0.2, 0.200_03, 0.199_98),
+            (300.0, 300.001, 300.002),
+        ] {
             let y = adaa2(&HardClip, x0, x1, x2);
             let want = if x0 > 1.0 {
                 1.0
@@ -845,11 +924,18 @@ mod tests {
                     let y = run(name, order, 3.0, &[v; 1024]);
                     assert!(y.iter().all(|s| s.is_finite()), "{name} {order:?} DC {v}");
                     let want = shape(name).f(3.0 * v as f64) as f32;
-                    assert!(y[2..].iter().all(|s| *s == want), "{name} {order:?} DC {v}: {} vs {want}", y[1023]);
+                    assert!(
+                        y[2..].iter().all(|s| *s == want),
+                        "{name} {order:?} DC {v}: {} vs {want}",
+                        y[1023]
+                    );
                 }
                 for drive in [1.0, 4.0, 63.0, 1e6] {
                     let y = run(name, order, drive, &x);
-                    assert!(y.iter().all(|v| v.is_finite() && v.abs() <= 1.0 + 1e-6), "{name} {order:?} drive {drive}");
+                    assert!(
+                        y.iter().all(|v| v.is_finite() && v.abs() <= 1.0 + 1e-6),
+                        "{name} {order:?} drive {drive}"
+                    );
                     // Held values settle to exactly f(drive * v).
                     let nl = shape(name);
                     let want = nl.f(drive * 0.25f32 as f64) as f32;
@@ -867,9 +953,16 @@ mod tests {
             for order in ORDERS {
                 let (a, b) = (run(name, order, 6.0, &x), run(name, order, 6.0, &neg));
                 for (p, q) in a.iter().zip(&b) {
-                    assert_eq!(p.to_bits(), (-q).to_bits(), "{name} {order:?} not exactly odd");
+                    assert_eq!(
+                        p.to_bits(),
+                        (-q).to_bits(),
+                        "{name} {order:?} not exactly odd"
+                    );
                 }
-                assert!(run(name, order, 6.0, &[0.0; 64]).iter().all(|v| *v == 0.0), "{name} {order:?}");
+                assert!(
+                    run(name, order, 6.0, &[0.0; 64]).iter().all(|v| *v == 0.0),
+                    "{name} {order:?}"
+                );
             }
         }
     }
@@ -881,7 +974,9 @@ mod tests {
         // curvature term (~gap^2/24 * f''), and only at the corners for the
         // hard clipper (~gap/8).
         let n = 8820;
-        let u: Vec<f64> = (0..n).map(|i| 3.0 * (2.0 * std::f64::consts::PI * 50.0 * i as f64 / FS).sin()).collect();
+        let u: Vec<f64> = (0..n)
+            .map(|i| 3.0 * (2.0 * std::f64::consts::PI * 50.0 * i as f64 / FS).sin())
+            .collect();
         for name in NAMES {
             let nl = shape(name);
             let tol = if name == "hard" { 3e-3 } else { 2e-4 };
@@ -909,7 +1004,11 @@ mod tests {
         let mut x1 = 0.0;
         for (i, v) in x.iter().enumerate() {
             let u = 8.0 * *v as f64;
-            assert_eq!(first[i], adaa1(&Tanh, u, x1) as f32, "first order, sample {i}");
+            assert_eq!(
+                first[i],
+                adaa1(&Tanh, u, x1) as f32,
+                "first order, sample {i}"
+            );
             x1 = u;
         }
         // Odd block sizes through the 1x hook give bit-identical output.
@@ -924,7 +1023,10 @@ mod tests {
         for c in chunked.chunks_mut(37) {
             ws.process_with(&mut hook, c);
         }
-        assert!(whole.iter().zip(&chunked).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(whole
+            .iter()
+            .zip(&chunked)
+            .all(|(a, b)| a.to_bits() == b.to_bits()));
         // Switching order mid-stream picks the second-order history back up.
         let mut ws = Waveshaper::new(Tanh, AdaaOrder::Second, 8.0);
         let mut sw = x.clone();
@@ -933,7 +1035,10 @@ mod tests {
         ws.process_block(&mut sw[100..200]);
         ws.order = AdaaOrder::Second;
         ws.process_block(&mut sw[200..]);
-        assert!(whole[200..].iter().zip(&sw[200..]).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(whole[200..]
+            .iter()
+            .zip(&sw[200..])
+            .all(|(a, b)| a.to_bits() == b.to_bits()));
     }
 
     /// A toy 2x hook for the tests: sample repeat up, pair average down.
@@ -961,7 +1066,9 @@ mod tests {
 
     #[test]
     fn shaper_runs_at_the_hook_rate_with_state_across_blocks() {
-        let x: Vec<f32> = (0..2048).map(|i| (0.9 * (i as f64 * 0.01).sin()) as f32).collect();
+        let x: Vec<f32> = (0..2048)
+            .map(|i| (0.9 * (i as f64 * 0.01).sin()) as f32)
+            .collect();
         let go = |chunk: usize| -> Vec<f32> {
             let mut ws = Waveshaper::new(HardClip, AdaaOrder::First, 4.0);
             let mut hook = Repeat2x { hi: Vec::new() };
@@ -972,7 +1079,10 @@ mod tests {
             buf
         };
         let (a, b) = (go(2048), go(61));
-        assert!(a.iter().zip(&b).all(|(p, q)| p.to_bits() == q.to_bits()), "state lost at block edges");
+        assert!(
+            a.iter().zip(&b).all(|(p, q)| p.to_bits() == q.to_bits()),
+            "state lost at block edges"
+        );
         // The shaper saw 2x the samples (every second one a zero-gap segment,
         // the fallback), and the result tracks the naive clipper.
         for i in 1..2048 {
@@ -1002,12 +1112,29 @@ mod tests {
         let n = 16_384;
         let warm = 1024;
         for &(bin, drive, g1, g2) in &[(373usize, 4.0, 3.0, 7.0), (1857, 10.0, 6.0, 12.0)] {
-            let x: Vec<f32> = (0..n + warm).map(|i| (2.0 * std::f64::consts::PI * bin as f64 * i as f64 / n as f64).sin() as f32).collect();
+            let x: Vec<f32> = (0..n + warm)
+                .map(|i| {
+                    (2.0 * std::f64::consts::PI * bin as f64 * i as f64 / n as f64).sin() as f32
+                })
+                .collect();
             for name in NAMES {
-                let db: Vec<f64> = ORDERS.iter().map(|o| alias_db(&run(name, *o, drive, &x)[warm..], bin)).collect();
+                let db: Vec<f64> = ORDERS
+                    .iter()
+                    .map(|o| alias_db(&run(name, *o, drive, &x)[warm..], bin))
+                    .collect();
                 eprintln!("alias bin {bin} drive {drive} {name}: naive {:.1} dB, first {:.1} dB, second {:.1} dB", db[0], db[1], db[2]);
-                assert!(db[1] < db[0] - g1, "{name}: first order {:.1} vs naive {:.1}", db[1], db[0]);
-                assert!(db[2] < db[0] - g2, "{name}: second order {:.1} vs naive {:.1}", db[2], db[0]);
+                assert!(
+                    db[1] < db[0] - g1,
+                    "{name}: first order {:.1} vs naive {:.1}",
+                    db[1],
+                    db[0]
+                );
+                assert!(
+                    db[2] < db[0] - g2,
+                    "{name}: second order {:.1} vs naive {:.1}",
+                    db[2],
+                    db[0]
+                );
             }
         }
     }
