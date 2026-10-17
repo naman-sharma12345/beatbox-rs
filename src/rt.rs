@@ -2717,12 +2717,11 @@ mod tests {
                 first_nonzero(&l0).map(|i| i + 441),
                 "mix marker must shift by L (block {block})"
             );
-            // dry path with the lookahead track solo-muted ("808" is the
-            // trap bass track): muting the lead removes its 441-sample
-            // latency from the PDC graph, so the 808 renders at latency 0
-            // and is BIT-IDENTICAL to the no-FX render - no shift, no
-            // compensation line.
-            let eb = pdc_project(true, Some("808"), &format!("bass{block}"));
+            // dry path with the lookahead track solo-muted: muting the lead
+            // removes its 441-sample latency from the PDC graph, so the
+            // bass renders at latency 0 and is BIT-IDENTICAL to the no-FX
+            // render - no shift, no compensation line.
+            let eb = pdc_project(true, Some("bass"), &format!("bass{block}"));
             let mut nb = MixNode::new(&eb.project, &eb.bank, &opts, block);
             assert_eq!(
                 nb.latency(),
@@ -2730,12 +2729,12 @@ mod tests {
                 "solo-muted lookahead track must leave PDC latency 0 (block {block})"
             );
             let (bl, br) = nb.render();
-            let eb0 = pdc_project(false, Some("808"), &format!("bass0_{block}"));
+            let eb0 = pdc_project(false, Some("bass"), &format!("bass0_{block}"));
             let mut nb0 = MixNode::new(&eb0.project, &eb0.bank, &opts, block);
             let (bl0, br0) = nb0.render();
             assert!(
                 bl0.iter().any(|&s| s != 0.0),
-                "808 solo must be non-silent (block {block})"
+                "bass solo must be non-silent (block {block})"
             );
             let n = bl0.len();
             assert_eq!(bl.len(), n, "dry length {block}");
