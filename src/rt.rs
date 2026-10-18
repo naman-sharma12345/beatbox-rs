@@ -263,8 +263,8 @@ impl Graph {
 
 use crate::automation::{parse_target, AutomationLane, Target};
 use crate::dsp::{
-    db_to_gain, flush_denormals, gain_to_db, Biquad, BiquadKind, DcBlock, FilterMode, NoDenormals,
-    Svf, SR,
+    db_to_gain, flush_denormals, gain_to_db, Biquad, BiquadKind, DcBlock, Fft, FilterMode,
+    NoDenormals, Svf, SR,
 };
 use crate::fx::Effect;
 use crate::project::Project;
@@ -965,6 +965,35 @@ impl<'a> VoiceStreamer<'a> {
 // tests (blocks {1, 63, 512} vs the one-shot arm) gate every variant.
 // ---------------------------------------------------------------------------
 
+/// The boxed state of [`StreamFx::CabIr`] (kept off the enum: the
+/// partitioned-convolver buffers make it much larger than the other
+/// arms).
+pub struct CabIrArm {
+    fft: Fft,
+    k: usize,
+    /// Per channel: the IR part spectra, the frequency-domain
+    /// delay line, the current input block, the two-block output
+    /// ring, and the overlap-add tail.
+    parts_re: [Vec<Vec<f32>>; 2],
+    parts_im: [Vec<Vec<f32>>; 2],
+    fdl_re: [Vec<Vec<f32>>; 2],
+    fdl_im: [Vec<Vec<f32>>; 2],
+    inbuf: [Vec<f32>; 2],
+    outring: [Vec<f32>; 2],
+    overlap: [Vec<f32>; 2],
+    head: usize,
+    infill: usize,
+    acc_re: Vec<f32>,
+    acc_im: Vec<f32>,
+    /// Dry delay lines for the wet/dry mix, B - 1 samples.
+    dry: [Vec<f32>; 2],
+    dw: usize,
+    g: f32,
+    mix: f32,
+    in_pos: usize,
+    total: usize,
+}
+
 #[doc(hidden)]
 pub enum StreamFx {
     Filter {
@@ -1148,6 +1177,24 @@ pub enum StreamFx {
         pmo_l: f32,
         pmo_r: f32,
     },
+    /// Cabinet IR (RT10): fx_amp::cab_ir's convolve - the uniformly
+    /// partitioned FFT convolver in fx_extra (B = 2048) - carried
+    /// across blocks. IR loading (the global cache mutex) and the IR
+    /// part FFTs happen at build, never on the audio path; every
+    /// buffer is preallocated, so process_block never allocates. A
+    /// block's convolver output is known only once its 2048 input
+    /// samples have arrived, so the wet path and the dry leg of the
+    /// wet/dry mix ride a constant B - 1 = 2047-sample delay:
+    /// latency 2047 reported to PDC, bit-identical to the offline
+    /// pass, and the tail past `total` is truncated exactly like the
+    /// offline `out.len() == n`. Render-path only: a live monitoring
+    /// chain must keep the buffered Effect::process path so
+    /// monitoring never pays the 46 ms.
+    CabIr(Box<CabIrArm>),
+    /// cab_ir with a missing/unloadable IR: the offline pass returns
+    /// early (a no-op), so the streamed arm passes audio through
+    /// untouched and adds no latency.
+    CabIrNop,
     Sidechain {
         trig: std::sync::Arc<Vec<usize>>,
         ti: usize,
@@ -1187,6 +1234,8 @@ impl StreamFx {
             StreamFx::CompressorLa { la, .. } => *la,
             StreamFx::Limiter { look, .. } => *look,
             StreamFx::Maximizer { la, .. } => la - 1,
+            // partitioned-conv block size 2048 minus 1 (see CabIr)
+            StreamFx::CabIr(_) => 2047,
             _ => 0,
         }
     }
@@ -1688,6 +1737,90 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::CabIr(arm) => {
+                let CabIrArm {
+                    fft,
+                    k,
+                    parts_re,
+                    parts_im,
+                    fdl_re,
+                    fdl_im,
+                    inbuf,
+                    outring,
+                    overlap,
+                    head,
+                    infill,
+                    acc_re,
+                    acc_im,
+                    dry,
+                    dw,
+                    g,
+                    mix,
+                    in_pos,
+                    total,
+                } = &mut **arm;
+                const B: usize = 2048;
+                for i in 0..l.len() {
+                    // push this sample into both block buffers; a full
+                    // block (or the final partial one at `total`) runs
+                    // the convolver exactly as fx_extra::convolve does
+                    inbuf[0][*infill] = l[i];
+                    inbuf[1][*infill] = r[i];
+                    *infill += 1;
+                    *in_pos += 1;
+                    let last = *in_pos == *total;
+                    if *infill == B || (last && *infill > 0) {
+                        let fill = *infill;
+                        let base = *in_pos - fill;
+                        if base < *total {
+                            for c in 0..2 {
+                                {
+                                    let (re, im) = (&mut fdl_re[c][*head], &mut fdl_im[c][*head]);
+                                    re.iter_mut().for_each(|v| *v = 0.0);
+                                    im.iter_mut().for_each(|v| *v = 0.0);
+                                    re[..fill].copy_from_slice(&inbuf[c][..fill]);
+                                    fft.forward(re, im);
+                                }
+                                acc_re.iter_mut().for_each(|v| *v = 0.0);
+                                acc_im.iter_mut().for_each(|v| *v = 0.0);
+                                for j in 0..*k {
+                                    let slot = (*head + *k - j) % *k;
+                                    let (xr, xi) = (&fdl_re[c][slot], &fdl_im[c][slot]);
+                                    let (hr, hi) = (&parts_re[c][j], &parts_im[c][j]);
+                                    for t in 0..2 * B {
+                                        acc_re[t] += xr[t] * hr[t] - xi[t] * hi[t];
+                                        acc_im[t] += xr[t] * hi[t] + xi[t] * hr[t];
+                                    }
+                                }
+                                fft.inverse(acc_re, acc_im);
+                                for t in 0..B {
+                                    outring[c][(base + t) % (2 * B)] = acc_re[t] + overlap[c][t];
+                                }
+                                overlap[c].copy_from_slice(&acc_re[B..]);
+                            }
+                            *head = (*head + 1) % *k;
+                        }
+                        *infill = 0;
+                    }
+                    // emit: wet and dry both delayed B - 1, so the mix
+                    // still pairs the same sample indices the offline
+                    // pass pairs
+                    let q = in_pos.wrapping_sub(B);
+                    let (wl, wr) = if *in_pos >= B && q < *total {
+                        (outring[0][q % (2 * B)], outring[1][q % (2 * B)])
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    let dl = dry[0][*dw];
+                    dry[0][*dw] = l[i];
+                    let dr = dry[1][*dw];
+                    dry[1][*dw] = r[i];
+                    *dw = (*dw + 1) % (B - 1);
+                    l[i] = (wl * *g) * *mix + dl * (1.0 - *mix);
+                    r[i] = (wr * *g) * *mix + dr * (1.0 - *mix);
+                }
+            }
+            StreamFx::CabIrNop => {}
             StreamFx::Sidechain {
                 trig,
                 ti,
@@ -1828,7 +1961,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Limiter(_) => OneShot("true-peak limiter: whole-buffer iterative passes"),
         Effect::Maximizer(_) => Streamable,
         Effect::Convolution(_) => OneShot("IR convolution: block processing"),
-        Effect::CabIr(_) => OneShot("cabinet IR: block processing"),
+        Effect::CabIr(_) => Streamable,
         Effect::PitchShift(_) => OneShot("pitch shift: time-windowed"),
         Effect::GrossBeat(_) => OneShot("gross beat: time-windowed"),
         Effect::Stutter(_) => OneShot("stutter: time-windowed"),
@@ -2123,6 +2256,62 @@ impl ChainStreamer {
                         prev_r: 0.0,
                         pmo_l: 0.0,
                         pmo_r: 0.0,
+                    }
+                }
+                Effect::CabIr(p) => {
+                    // fx_amp::cab_ir, chunked (RT10). The IR load (a
+                    // global cache mutex) and every part FFT run here
+                    // at build; a missing IR is the offline no-op.
+                    const B: usize = 2048;
+                    match crate::fx_amp::load_ir(&p.path, p.max_ms / 1000.0) {
+                        None => StreamFx::CabIrNop,
+                        Some(ir) => {
+                            let fft = Fft::new(2 * B);
+                            let mk_parts = |ir: &[f32]| -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
+                                ir.chunks(B)
+                                    .map(|c| {
+                                        let mut re = vec![0.0f32; 2 * B];
+                                        let mut im = vec![0.0f32; 2 * B];
+                                        re[..c.len()].copy_from_slice(c);
+                                        fft.forward(&mut re, &mut im);
+                                        (re, im)
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .into_iter()
+                                    .unzip()
+                            };
+                            let (pl_re, pl_im) = mk_parts(&ir.0);
+                            let rr = if ir.1.is_empty() { &ir.0 } else { &ir.1 };
+                            let (pr_re, pr_im) = mk_parts(rr);
+                            let k = pl_re.len();
+                            StreamFx::CabIr(Box::new(CabIrArm {
+                                fft: Fft::new(2 * B),
+                                k,
+                                parts_re: [pl_re, pr_re],
+                                parts_im: [pl_im, pr_im],
+                                fdl_re: [
+                                    vec![vec![0.0f32; 2 * B]; k],
+                                    vec![vec![0.0f32; 2 * B]; k],
+                                ],
+                                fdl_im: [
+                                    vec![vec![0.0f32; 2 * B]; k],
+                                    vec![vec![0.0f32; 2 * B]; k],
+                                ],
+                                inbuf: [vec![0.0f32; B], vec![0.0f32; B]],
+                                outring: [vec![0.0f32; 2 * B], vec![0.0f32; 2 * B]],
+                                overlap: [vec![0.0f32; B], vec![0.0f32; B]],
+                                head: 0,
+                                infill: 0,
+                                acc_re: vec![0.0f32; 2 * B],
+                                acc_im: vec![0.0f32; 2 * B],
+                                dry: [vec![0.0f32; B - 1], vec![0.0f32; B - 1]],
+                                dw: 0,
+                                g: db_to_gain(p.gain_db),
+                                mix: p.mix.clamp(0.0, 1.0),
+                                in_pos: 0,
+                                total,
+                            }))
+                        }
                     }
                 }
                 Effect::Sidechain(p) => {
@@ -2955,6 +3144,7 @@ mod tests {
             streamable,
             vec![
                 "bitcrush",
+                "cab_ir",
                 "chorus",
                 "compressor",
                 "delay",
@@ -3504,6 +3694,143 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// RT10: the streamed cab_ir (partitioned FFT convolver) is
+    /// bit-identical to the offline Effect::CabIr pass at every block
+    /// size, shifted by the constant 2047-sample latency plus a flush.
+    #[test]
+    fn stream_fx_cab_ir_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let dir = std::env::temp_dir().join("beatbox_rt_cab_ir_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        // (a) deterministic stereo IR spanning three convolver parts
+        // (5000 > 2 * 2048, not a multiple of the 2048 partition), so
+        // the delay line wraps and the last part is partial;
+        // (b) a 1-sample IR (single part, minimum k)
+        for (name, len) in [("ir5000", 5000usize), ("ir1", 1usize)] {
+            let irl: Vec<f32> = (0..len)
+                .map(|i| {
+                    (((i * 2654435761) % 2000) as f32 / 1000.0 - 1.0)
+                        * 0.5f32.powf(i as f32 / 1500.0)
+                })
+                .collect();
+            let irr: Vec<f32> = (0..len)
+                .map(|i| {
+                    (((i * 2246822519 + 7) % 2000) as f32 / 1000.0 - 1.0)
+                        * 0.5f32.powf(i as f32 / 1800.0)
+                })
+                .collect();
+            let ir_path = dir.join(format!("{name}.wav"));
+            crate::render::write_wav(&ir_path, &irl, &irr).unwrap();
+            let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+                "type":"cab_ir","path":ir_path.to_str().unwrap(),
+                "max_ms":500.0,"mix":0.7,"gain_db":-2.0
+            }))
+            .unwrap();
+            let lat = 2047usize;
+            let triggers: std::collections::HashMap<String, Vec<usize>> =
+                std::collections::HashMap::new();
+            let step = 60.0 / 140.0 / 4.0;
+            for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+                let mut ol = sig.clone();
+                let mut or_ = sig.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: 0,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let mut l = sig.clone();
+                let mut r = sig.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("cab_ir streams");
+                assert_eq!(cs.latency_samples(), lat);
+                let mut pos = 0usize;
+                while pos < n {
+                    let k = block.min(n - pos);
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                let mut fl = vec![0.0f32; lat];
+                let mut fr = vec![0.0f32; lat];
+                cs.process_block(&mut fl, &mut fr);
+                for i in lat..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i - lat].to_bits(),
+                        "left block {block} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i - lat].to_bits(),
+                        "right block {block} i {i}"
+                    );
+                }
+                for i in 0..lat {
+                    assert_eq!(
+                        fl[i].to_bits(),
+                        ol[n - lat + i].to_bits(),
+                        "flush left block {block} i {i}"
+                    );
+                    assert_eq!(
+                        fr[i].to_bits(),
+                        or_[n - lat + i].to_bits(),
+                        "flush right block {block} i {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// RT10: a missing IR file no-ops exactly like the offline early
+    /// return, and the streamed arm adds no latency.
+    #[test]
+    fn stream_fx_cab_ir_missing_ir_is_a_noop() {
+        let n = 4096usize;
+        let sig: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.05).sin() * 0.5).collect();
+        let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+            "type":"cab_ir","path":"/nonexistent/definitely_missing_ir.wav",
+            "mix":0.7,"gain_db":-2.0
+        }))
+        .unwrap();
+        let mut ol = sig.clone();
+        let mut or_ = sig.clone();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let ctx = crate::fx::FxContext {
+            step_secs: 60.0 / 140.0 / 4.0,
+            triggers: &triggers,
+            offset: 0,
+            levels: None,
+        };
+        fx.process(&mut ol, &mut or_, &ctx);
+        assert!(ol.iter().zip(&sig).all(|(a, b)| a.to_bits() == b.to_bits()));
+        let mut l = sig.clone();
+        let mut r = sig.clone();
+        let mut cs = ChainStreamer::build(
+            std::slice::from_ref(&fx),
+            &[],
+            60.0 / 140.0 / 4.0,
+            &triggers,
+            n,
+        )
+        .expect("missing IR still builds the no-op arm");
+        assert_eq!(cs.latency_samples(), 0);
+        cs.process_block(&mut l, &mut r);
+        assert!(l.iter().zip(&sig).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(r.iter().zip(&sig).all(|(a, b)| a.to_bits() == b.to_bits()));
     }
 
     /// RT4 PDC test fixture: trap seed 9 with a 10ms-lookahead soft-knee
