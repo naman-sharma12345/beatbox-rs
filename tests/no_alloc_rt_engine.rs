@@ -363,7 +363,11 @@ fn mix_node_with_master_multiband_allocates_nothing() {
     };
     for block in [512usize, 256] {
         let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
-        assert_eq!(node.latency(), 0, "master multiband latency (block {block})");
+        assert_eq!(
+            node.latency(),
+            0,
+            "master multiband latency (block {block})"
+        );
         let total = node.total_samples();
         let mut l = vec![0.0f32; block];
         let mut r = vec![0.0f32; block];
