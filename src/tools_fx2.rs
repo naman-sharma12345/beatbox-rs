@@ -499,6 +499,7 @@ mod tests {
         let good = serde_json::to_value(&e.project).unwrap();
         let before = e.project.clone();
         let revision = e.revision;
+        let snapshots_before = e.snapshots.len();
 
         let cases = [
             ("master", {
@@ -530,6 +531,11 @@ mod tests {
             assert!(msg.contains("freq_splitter"), "{what}: {msg}");
             assert_eq!(e.project, before, "{what}: project must be unchanged");
             assert_eq!(e.revision, revision, "{what}: revision must not move");
+            assert_eq!(
+                e.snapshots.len(),
+                snapshots_before,
+                "{what}: snapshots must be unchanged"
+            );
         }
 
         // the untouched good file still loads
@@ -606,5 +612,52 @@ mod tests {
         )
         .unwrap();
         assert_ne!(e.project, before);
+    }
+
+    /// Every effect type's default parameter set must still pass the new
+    /// validation, place through place_fx unchanged, and survive a save and
+    /// load with identical serialized bytes. Guards against validation
+    /// rejecting something that used to work.
+    #[test]
+    fn every_default_effect_passes_validate_place_fx_and_load_unchanged() {
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "keep", "preset": "acid_bass"}))
+            .unwrap();
+        let name = e.project.tracks[0].name.clone();
+        let mut expected = Vec::new();
+        for (kind, _) in fx::EFFECT_TYPES {
+            let direct = fx::Effect::from_type(kind).unwrap_or_else(|| panic!("{kind}"));
+            direct.validate().unwrap_or_else(|m| panic!("{kind}: {m}"));
+            let before = serde_json::to_value(&direct).unwrap();
+            if kind == &"sidechain" {
+                // needs a source track; the direct validate above still ran
+                continue;
+            }
+            e.call("place_fx", &json!({"track": name, "type": kind}))
+                .unwrap_or_else(|err| panic!("place_fx {kind}: {err:#}"));
+            let placed = e.project.tracks[0].effects.last().unwrap();
+            let mut after = serde_json::to_value(placed).unwrap();
+            let mut want = before.clone();
+            // ids are assigned by the engine, not part of the parameter set
+            after.as_object_mut().unwrap().remove("id");
+            want.as_object_mut().unwrap().remove("id");
+            assert_eq!(after, want, "{kind}: place_fx changed the parameter set");
+            expected.push(*kind);
+        }
+        assert!(
+            expected.len() > 20,
+            "expected many effect types: {}",
+            expected.len()
+        );
+        e.project.validate_effects().unwrap();
+        let bytes = serde_json::to_string(&e.project).unwrap();
+        let path = std::env::temp_dir().join("bb_fx2_every_default.json");
+        std::fs::write(&path, &bytes).unwrap();
+        e.call("load_project", &json!({"path": path})).unwrap();
+        assert_eq!(
+            serde_json::to_string(&e.project).unwrap(),
+            bytes,
+            "load_project changed the serialized project"
+        );
     }
 }
