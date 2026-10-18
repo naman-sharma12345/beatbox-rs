@@ -245,6 +245,7 @@ pub fn tools() -> Vec<Tool> {
 mod tests {
     use super::*;
     use crate::engine::Engine;
+    use crate::render;
 
     fn eng() -> Engine {
         Engine::new(std::env::temp_dir().join("bb_fx2_test"))
@@ -658,6 +659,54 @@ mod tests {
             serde_json::to_string(&e.project).unwrap(),
             bytes,
             "load_project changed the serialized project"
+        );
+    }
+
+    /// Validation only reads parameters, so a project must render to the
+    /// same bits whether it came from the live engine or through the
+    /// validating load path. Renders a one-bar pattern through one of every
+    /// effect type (default parameters) both ways and compares every sample.
+    /// Same build on both sides; no golden file is read or changed.
+    #[test]
+    fn load_validate_does_not_change_render_bits_for_every_default_effect() {
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "keep", "preset": "acid_bass"}))
+            .unwrap();
+        e.call("add_pattern", &json!({"name": "p", "bars": 1}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track": "keep", "pattern": "p", "replace": true, "notes": [
+                {"start": 0, "len": 4, "pitch": "C2", "vel": 0.9},
+                {"start": 8, "len": 4, "pitch": "G2", "vel": 0.8}
+            ]}),
+        )
+        .unwrap();
+        let dry = render::render(&e.project, &e.bank, &render::RenderOptions::default()).unwrap();
+        assert!(
+            dry.left.iter().any(|x| *x != 0.0),
+            "the dry pattern must make sound for this comparison to mean anything"
+        );
+        for (kind, _) in fx::EFFECT_TYPES {
+            if kind == &"sidechain" {
+                continue;
+            }
+            e.call("place_fx", &json!({"track": "keep", "type": kind}))
+                .unwrap_or_else(|err| panic!("place_fx {kind}: {err:#}"));
+        }
+        let before =
+            render::render(&e.project, &e.bank, &render::RenderOptions::default()).unwrap();
+        let path = std::env::temp_dir().join("bb_fx2_render_bits.json");
+        std::fs::write(&path, serde_json::to_string(&e.project).unwrap()).unwrap();
+        e.call("load_project", &json!({"path": path})).unwrap();
+        let after = render::render(&e.project, &e.bank, &render::RenderOptions::default()).unwrap();
+        assert_eq!(before.left.len(), after.left.len());
+        assert_eq!(before.right.len(), after.right.len());
+        let same = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
+        assert!(same(&before.left, &after.left), "left channel bits changed");
+        assert!(
+            same(&before.right, &after.right),
+            "right channel bits changed"
         );
     }
 }
