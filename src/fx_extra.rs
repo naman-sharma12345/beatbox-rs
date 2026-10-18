@@ -2422,4 +2422,33 @@ mod tests {
             }
         }
     }
+
+    /// REPRO (expected red on current code): the windowed-sinc low-pass IR
+    /// is symmetric in exact arithmetic but each tap is computed
+    /// independently, so mirrored taps can differ in the last float bit.
+    /// A linear-phase FIR should be exactly symmetric.
+    #[test]
+    fn lowpass_fir_is_bit_exact_symmetric() {
+        let mut worst = (0usize, 0usize, 0usize, 0.0f32);
+        let mut asym = 0usize;
+        for taps in [33usize, 34, 64, 65, 129, 513, 1025, 4097] {
+            for cutoff in [20.0f32, 250.0, 1000.0, 2500.0, 12000.0, 20000.0] {
+                let h = lowpass_fir(cutoff, taps);
+                let n = h.len();
+                for i in 0..n / 2 {
+                    if h[i].to_bits() != h[n - 1 - i].to_bits() {
+                        asym += 1;
+                        let d = (h[i] - h[n - 1 - i]).abs();
+                        if d > worst.3 {
+                            worst = (taps, cutoff as usize, i, d);
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            asym, 0,
+            "{asym} mirrored tap pairs differ in bits; worst (taps, cutoff, index, diff) = {worst:?}"
+        );
+    }
 }
