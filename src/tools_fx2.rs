@@ -526,6 +526,9 @@ mod tests {
             &json!({"track": "master", "type": "freq_splitter"}),
         )
         .unwrap();
+        // the engine starts with default master effects; freq_splitter is last
+        let fs = e.project.master_effects.len() - 1;
+        assert_eq!(e.project.master_effects[fs].type_name(), "freq_splitter");
         let good = serde_json::to_value(&e.project).unwrap();
         let before = e.project.clone();
         let revision = e.revision;
@@ -534,12 +537,12 @@ mod tests {
         let cases = [
             ("master", {
                 let mut v = good.clone();
-                v["master_effects"][0]["taps"] = json!(4294967295u64);
+                v["master_effects"][fs]["taps"] = json!(4294967295u64);
                 v
             }),
             ("track", {
                 let mut v = good.clone();
-                let mut fx = good["master_effects"][0].clone();
+                let mut fx = good["master_effects"][fs].clone();
                 fx["taps"] = json!(4294967295u64);
                 v["tracks"][0]["effects"] = json!([fx]);
                 v
@@ -572,7 +575,7 @@ mod tests {
         let path = dir.join("good.json");
         std::fs::write(&path, good.to_string()).unwrap();
         e.call("load_project", &json!({"path": path})).unwrap();
-        assert_eq!(e.project.master_effects.len(), 1);
+        assert_eq!(e.project.master_effects.len(), fs + 1);
     }
 
     /// A snapshot sidecar entry with a hostile effect is skipped and counted;
@@ -589,9 +592,11 @@ mod tests {
             &json!({"track": "master", "type": "freq_splitter"}),
         )
         .unwrap();
+        let fs = e.project.master_effects.len() - 1;
+        assert_eq!(e.project.master_effects[fs].type_name(), "freq_splitter");
         let good = serde_json::to_value(&e.project).unwrap();
         let mut bad = good.clone();
-        bad["master_effects"][0]["taps"] = json!(4294967295u64);
+        bad["master_effects"][fs]["taps"] = json!(4294967295u64);
         let path = dir.join("p.json");
         std::fs::write(&path, good.to_string()).unwrap();
         let snaps = json!([
@@ -701,11 +706,9 @@ mod tests {
         let mut e = eng();
         e.call("add_track", &json!({"name": "keep", "preset": "acid_bass"}))
             .unwrap();
-        e.call("add_pattern", &json!({"name": "p", "bars": 1}))
-            .unwrap();
         e.call(
             "add_notes",
-            &json!({"track": "keep", "pattern": "p", "replace": true, "notes": [
+            &json!({"track": "keep", "pattern": "A", "replace": true, "notes": [
                 {"start": 0, "len": 4, "pitch": "C2", "vel": 0.9},
                 {"start": 8, "len": 4, "pitch": "G2", "vel": 0.8}
             ]}),
