@@ -1177,6 +1177,25 @@ pub enum StreamFx {
         pmo_l: f32,
         pmo_r: f32,
     },
+    /// Phaser (RT11): fx_extra::phaser chunked. Allpass stage state
+    /// (x1/y1), the feedback sample and the current coefficient are
+    /// carried per channel; the LFO-driven coefficient updates on the
+    /// song's 16-sample grid via `pos`, exactly as the offline's
+    /// offset rule (the streamed chain always starts at sample 0, so
+    /// the grid update at k % 16 == 0 covers the offline's i == 0
+    /// case). Zero lookahead, so latency is 0.
+    Phaser {
+        x1: [Vec<f32>; 2],
+        y1: [Vec<f32>; 2],
+        last: [f32; 2],
+        a: [f32; 2],
+        rate: f32,
+        stages: usize,
+        mix: f32,
+        fb: f32,
+        center_hz: f32,
+        depth: f32,
+    },
     /// Cabinet IR (RT10): fx_amp::cab_ir's convolve - the uniformly
     /// partitioned FFT convolver in fx_extra (B = 2048) - carried
     /// across blocks. IR loading (the global cache mutex) and the IR
@@ -1737,6 +1756,50 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::Phaser {
+                x1,
+                y1,
+                last,
+                a,
+                rate,
+                stages,
+                mix,
+                fb,
+                center_hz,
+                depth,
+            } => {
+                use std::f32::consts::PI;
+                for (ci, ch) in [&mut *l, &mut *r].into_iter().enumerate() {
+                    let phase0 = ci as f32 * 0.25;
+                    for (i, s) in ch.iter_mut().enumerate() {
+                        // coefficients update on the song's 16-sample
+                        // grid; pos is the block's first sample in the
+                        // song, as the offline's `offset`
+                        let k = i + pos;
+                        if k % 16 == 0 {
+                            let k16 = k - k % 16;
+                            let lfo =
+                                0.5 + 0.5 * (2.0 * PI * (*rate * k16 as f32 / SR + phase0)).sin();
+                            let f = (*center_hz * 2f32.powf((lfo - 0.5) * 4.0 * *depth))
+                                .clamp(40.0, 16000.0);
+                            let t = (PI * f / SR).tan();
+                            a[ci] = (t - 1.0) / (t + 1.0);
+                        }
+                        let mut v = *s + last[ci] * *fb;
+                        for k in 0..*stages {
+                            let y = a[ci] * v + x1[ci][k] - a[ci] * y1[ci][k];
+                            x1[ci][k] = v;
+                            y1[ci][k] = y;
+                            v = y;
+                        }
+                        last[ci] = v;
+                        *s = *s * (1.0 - *mix * 0.5) + v * *mix * 0.5;
+                        if !s.is_finite() {
+                            *s = 0.0;
+                        }
+                    }
+                }
+            }
             StreamFx::CabIr(arm) => {
                 let CabIrArm {
                     fft,
@@ -1972,7 +2035,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::SoftClipper(_) => Streamable,
         Effect::Gate(_) => Streamable,
         Effect::Transient(_) => Streamable,
-        Effect::Phaser(_) => OneShot("phaser: unverified"),
+        Effect::Phaser(_) => Streamable,
         Effect::Flanger(_) => OneShot("flanger: unverified"),
         Effect::Autopan(_) => OneShot("autopan: unverified"),
         Effect::Saturator(_) => OneShot("saturator: unverified (ADAA state carry pending)"),
@@ -2312,6 +2375,27 @@ impl ChainStreamer {
                                 total,
                             }))
                         }
+                    }
+                }
+                Effect::Phaser(p) => {
+                    // fx_extra::phaser, chunked: lfo_rate() and the
+                    // clamps verbatim, stage state zeroed as offline.
+                    let stages = p.stages.clamp(2, 12) as usize;
+                    StreamFx::Phaser {
+                        x1: [vec![0.0f32; stages], vec![0.0f32; stages]],
+                        y1: [vec![0.0f32; stages], vec![0.0f32; stages]],
+                        last: [0.0; 2],
+                        a: [0.0; 2],
+                        rate: if p.sync_steps > 0.0 {
+                            1.0 / (p.sync_steps * step_secs).max(1e-3)
+                        } else {
+                            p.rate_hz.max(0.0)
+                        },
+                        stages,
+                        mix: p.mix.clamp(0.0, 1.0),
+                        fb: p.feedback.clamp(-0.95, 0.95),
+                        center_hz: p.center_hz,
+                        depth: p.depth.clamp(0.0, 1.0),
                     }
                 }
                 Effect::Sidechain(p) => {
@@ -3155,6 +3239,7 @@ mod tests {
                 "gate",
                 "maximizer",
                 "parametric_eq",
+                "phaser",
                 "reverb",
                 "sidechain",
                 "soft_clipper",
@@ -3831,6 +3916,75 @@ mod tests {
         cs.process_block(&mut l, &mut r);
         assert!(l.iter().zip(&sig).all(|(a, b)| a.to_bits() == b.to_bits()));
         assert!(r.iter().zip(&sig).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    /// RT11: the streamed phaser is bit-identical to fx_extra::phaser
+    /// at every block size, free-running and tempo-synced (zero
+    /// latency, so no shift and no flush).
+    #[test]
+    fn stream_fx_phaser_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                let base = if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                };
+                let j = i % 977;
+                let click = if i < 6000 && j < 8 {
+                    0.8 * 0.5f32.powi(j as i32)
+                } else {
+                    0.0
+                };
+                base + click
+            })
+            .collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for sync_steps in [0.0f32, 2.0] {
+            let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+                "type":"phaser","rate_hz":0.7,"sync_steps":sync_steps,"depth":0.8,
+                "center_hz":700.0,"feedback":0.5,"stages":6,"mix":0.6
+            }))
+            .unwrap();
+            for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+                let mut ol = sig.clone();
+                let mut or_ = sig.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: 0,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let mut l = sig.clone();
+                let mut r = sig.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("phaser streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                while pos < n {
+                    let k = block.min(n - pos);
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left sync {sync_steps} block {block} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right sync {sync_steps} block {block} i {i}"
+                    );
+                }
+            }
+        }
     }
 
     /// RT4 PDC test fixture: trap seed 9 with a 10ms-lookahead soft-knee
