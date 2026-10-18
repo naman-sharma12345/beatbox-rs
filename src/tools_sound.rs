@@ -134,6 +134,7 @@ pub fn set_param(p: &mut Project, owner: &str, param: &str, x: &Value) -> Result
                 bail!("{} has no parameter '{}' (describe_effect lists them)", fxv.type_name(), parts[2..].join("."));
             }
             let e: Effect = serde_json::from_value(v).map_err(|e| anyhow!("invalid value for {param}: {e}"))?;
+            e.validate().map_err(|m| anyhow!("invalid value for {param}: {m}. Nothing was changed."))?;
             chain[idx] = e;
             Ok(x.clone())
         }

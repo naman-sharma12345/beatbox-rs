@@ -780,6 +780,31 @@ impl Project {
     }
 
     /// Assign stable effect ids everywhere (new effects, legacy projects).
+    /// Run `Effect::validate` over every effect in the project (tracks,
+    /// buses, master). Cheap: reads plain parameter fields, allocates
+    /// nothing sized by them. The message names where the bad effect is.
+    pub fn validate_effects(&self) -> Result<(), String> {
+        for t in &self.tracks {
+            for (i, fx) in t.effects.iter().enumerate() {
+                fx.validate().map_err(|m| {
+                    format!("track '{}' effect {i} ({}): {m}", t.name, fx.type_name())
+                })?;
+            }
+        }
+        for b in &self.buses {
+            for (i, fx) in b.effects.iter().enumerate() {
+                fx.validate().map_err(|m| {
+                    format!("bus '{}' effect {i} ({}): {m}", b.name, fx.type_name())
+                })?;
+            }
+        }
+        for (i, fx) in self.master_effects.iter().enumerate() {
+            fx.validate()
+                .map_err(|m| format!("master effect {i} ({}): {m}", fx.type_name()))?;
+        }
+        Ok(())
+    }
+
     pub fn ensure_fx_ids(&mut self) -> bool {
         let mut ch = crate::fx::ensure_ids(&mut self.master_effects);
         for t in self.tracks.iter_mut() {

@@ -98,6 +98,7 @@ pub fn tools() -> Vec<Tool> {
                 if let Effect::Sidechain(sc) = &fxn {
                     e.project.track_index(&sc.source).context("sidechain source track")?;
                 }
+                fxn.validate().map_err(|m| anyhow!("place_fx {t}: {m}. Nothing was changed."))?;
                 let chain = effects_of(&mut e.project, &track)?;
                 let at = if let Some(b) = a.get("before") {
                     resolve_pos(chain, b, "before")?
@@ -478,5 +479,132 @@ mod tests {
                 "{kind}: valid tweak renders differently from the direct build"
             );
         }
+    }
+
+    /// A project file whose freq_splitter carries taps 4294967295 (a few
+    /// bytes of JSON) must be refused on load, fast, with the project left
+    /// untouched. Nothing sized by `taps` may be allocated on this path.
+    #[test]
+    fn load_project_rejects_hostile_effect_params_and_changes_nothing() {
+        let dir = std::env::temp_dir().join("bb_fx2_hostile_load");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "keep", "preset": "acid_bass"}))
+            .unwrap();
+        e.call(
+            "add_effect",
+            &json!({"track": "master", "type": "freq_splitter"}),
+        )
+        .unwrap();
+        let good = serde_json::to_value(&e.project).unwrap();
+        let before = e.project.clone();
+        let revision = e.revision;
+
+        let cases = [
+            ("master", {
+                let mut v = good.clone();
+                v["master_effects"][0]["taps"] = json!(4294967295u64);
+                v
+            }),
+            ("track", {
+                let mut v = good.clone();
+                let mut fx = good["master_effects"][0].clone();
+                fx["taps"] = json!(4294967295u64);
+                v["tracks"][0]["effects"] = json!([fx]);
+                v
+            }),
+        ];
+        for (what, v) in cases {
+            let path = dir.join(format!("hostile_{what}.json"));
+            std::fs::write(&path, v.to_string()).unwrap();
+            let t0 = std::time::Instant::now();
+            let err = e
+                .call("load_project", &json!({"path": path}))
+                .expect_err("hostile project must be refused");
+            assert!(
+                t0.elapsed() < std::time::Duration::from_secs(2),
+                "{what}: refusal must be fast"
+            );
+            let msg = format!("{err:#}");
+            assert!(msg.contains("taps"), "{what}: {msg}");
+            assert!(msg.contains("freq_splitter"), "{what}: {msg}");
+            assert_eq!(e.project, before, "{what}: project must be unchanged");
+            assert_eq!(e.revision, revision, "{what}: revision must not move");
+        }
+
+        // the untouched good file still loads
+        let path = dir.join("good.json");
+        std::fs::write(&path, good.to_string()).unwrap();
+        e.call("load_project", &json!({"path": path})).unwrap();
+        assert_eq!(e.project.master_effects.len(), 1);
+    }
+
+    /// A snapshot sidecar entry with a hostile effect is skipped and counted;
+    /// valid entries still load.
+    #[test]
+    fn load_project_skips_and_counts_snapshots_with_invalid_effects() {
+        let dir = std::env::temp_dir().join("bb_fx2_hostile_snap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "keep", "preset": "acid_bass"}))
+            .unwrap();
+        e.call(
+            "add_effect",
+            &json!({"track": "master", "type": "freq_splitter"}),
+        )
+        .unwrap();
+        let good = serde_json::to_value(&e.project).unwrap();
+        let mut bad = good.clone();
+        bad["master_effects"][0]["taps"] = json!(4294967295u64);
+        let path = dir.join("p.json");
+        std::fs::write(&path, good.to_string()).unwrap();
+        let snaps = json!([
+            {"name": "bad", "project": bad, "note": "", "revision": 1},
+            {"name": "ok", "project": good, "note": "", "revision": 2}
+        ]);
+        std::fs::write(crate::tools::snapshots_path(&path), snaps.to_string()).unwrap();
+        let r = e.call("load_project", &json!({"path": path})).unwrap();
+        assert_eq!(r["snapshots_loaded"], 1, "{r}");
+        assert_eq!(r["snapshots_skipped_invalid_effects"], 1, "{r}");
+        assert_eq!(e.snapshots.len(), 1);
+        assert_eq!(e.snapshots[0].0, "ok");
+    }
+
+    /// set_parameters and place_fx must validate before they change anything.
+    #[test]
+    fn set_parameters_and_place_fx_reject_invalid_effect_params() {
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "keep", "preset": "acid_bass"}))
+            .unwrap();
+        let name = e.project.tracks[0].name.clone();
+        e.call(
+            "add_effect",
+            &json!({"track": name, "type": "freq_splitter"}),
+        )
+        .unwrap();
+        let before = e.project.clone();
+        let err = e
+            .call(
+                "set_parameters",
+                &json!({"track": name, "changes": {"fx.0.taps": 4294967295u64}}),
+            )
+            .expect_err("taps out of range must be refused");
+        assert!(format!("{err:#}").contains("taps"), "{err:#}");
+        assert_eq!(e.project, before, "set_parameters must change nothing");
+        let err = e
+            .call(
+                "place_fx",
+                &json!({"track": name, "type": "freq_splitter", "params": {"taps": 1}}),
+            )
+            .expect_err("taps 1 must be refused");
+        assert!(format!("{err:#}").contains("taps"), "{err:#}");
+        assert_eq!(e.project, before, "place_fx must change nothing");
+        // a valid value still applies
+        e.call(
+            "set_parameters",
+            &json!({"track": name, "changes": {"fx.0.taps": 129}}),
+        )
+        .unwrap();
+        assert_ne!(e.project, before);
     }
 }
