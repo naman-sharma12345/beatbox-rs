@@ -20,21 +20,17 @@ the design and the two choices that are still open.
 - `mix` 0 leaves the audio untouched (bit-exact). NaN, infinity and
   denormal input are cleaned to zero inside the core.
 
-## Open decision 1: latency target
+## Latency target (decided)
 
-The effect itself adds 0 samples of latency. The question is what the
-monitoring path around it is allowed to cost. Options:
+The effect itself adds 0 samples of latency. The playback path runs at
+block 512 by default (about 11.6 ms at 44.1 kHz) with block 256 (about
+5.8 ms) as a runtime option. This is the project owner's standing call.
+Ceiling note only: playback-only monitoring should stay under about
+20 ms. The streamed arm is per-sample, so it holds at any block size.
 
-| Option | Budget | Notes |
-|---|---|---|
-| A | playback block 256 (about 5.8 ms at 44.1 kHz) | tightest; needs the 256 runtime option |
-| B | playback block 512 (about 11.6 ms), default | matches the current default block |
-| C | up to 20 ms playback-only | headroom for a lookahead-free chain plus one block |
+## Monitoring shape (working default, reversible)
 
-Proposal: B as the default, A as a runtime option, C as the stated
-ceiling. Latency is a parameter of the playback path, not of this effect.
-
-## Open decision 2: monitoring shape
+Not picked by the project owner yet. Working default: option 3.
 
 | Option | Behaviour |
 |---|---|
@@ -42,10 +38,7 @@ ceiling. Latency is a parameter of the playback path, not of this effect.
 | 2 | granular is rendered offline only and auditioned after the render |
 | 3 | live monitoring with a switch: streamed arm while playing, offline for the final render |
 
-Proposal: 3. The streamed and offline arms are bit-identical, so the
-switch cannot change what is bounced.
-
-## Not decided here
-
-The 20 ms figure and the monitoring shape are proposals. Neither is
-decided until the project owner picks one.
+Option 3 is the default because the streamed and offline arms are
+bit-identical, so the switch cannot change what is bounced. Nothing built
+so far blocks option 1 or option 2: both arms exist and either can be
+used alone. Switching the default is a one-line change.
