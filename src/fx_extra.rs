@@ -2200,4 +2200,160 @@ mod tests {
             assert!(check_freq_splitter(&bad).is_err(), "{bad:?}");
         }
     }
+
+    fn fs_sig(n: usize) -> (Vec<f32>, Vec<f32>) {
+        let l: Vec<f32> = (0..n)
+            .map(|i| (i as f32 * 0.05).sin() * 0.5 + (i as f32 * 0.013).sin() * 0.3)
+            .collect();
+        let r: Vec<f32> = l.iter().rev().copied().collect();
+        (l, r)
+    }
+
+    fn fs_hash(l: &[f32], r: &[f32]) -> u64 {
+        l.iter().chain(r).fold(0u64, |h, v| {
+            h.rotate_left(5) ^ (v.to_bits() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        })
+    }
+
+    #[test]
+    fn freq_splitter_validation_edges_and_non_finite() {
+        use crate::fx::FreqSplitterFx as F;
+        let ok = |p: F| check_freq_splitter(&p).is_ok();
+        // each bound: edge accepted, one past rejected
+        assert!(ok(F {
+            taps: 33,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            taps: 32,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            taps: 65_537,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            taps: 65_538,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            low_hz: 20.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            low_hz: 19.99,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            high_hz: 20_000.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            high_hz: 20_000.1,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            gain_db: -60.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            gain_db: -60.1,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            gain_db: 24.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            gain_db: 24.1,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            mix: 0.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            mix: -0.01,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            mix: 1.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            mix: 1.01,
+            ..Default::default()
+        }));
+        // inverted accepted, equal rejected
+        assert!(ok(F {
+            low_hz: 900.0,
+            high_hz: 300.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            low_hz: 300.0,
+            high_hz: 300.0,
+            ..Default::default()
+        }));
+        // NaN and infinities per float param
+        for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(!ok(F {
+                low_hz: v,
+                ..Default::default()
+            }));
+            assert!(!ok(F {
+                high_hz: v,
+                ..Default::default()
+            }));
+            assert!(!ok(F {
+                gain_db: v,
+                ..Default::default()
+            }));
+            assert!(!ok(F {
+                mix: v,
+                ..Default::default()
+            }));
+        }
+        // the error is a plain message naming the field, raised before
+        // any buffer exists (taps is checked first, no Vec is sized by it)
+        let e = check_freq_splitter(&F {
+            taps: u32::MAX,
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(e.contains("taps"), "{e}");
+    }
+
+    #[test]
+    fn freq_splitter_mix_zero_is_bit_exact_and_even_taps_round_up() {
+        use crate::fx::{FreqSplitBand, FreqSplitterFx as F};
+        let (l0, r0) = fs_sig(8192);
+        let (mut l, mut r) = (l0.clone(), r0.clone());
+        freq_splitter(
+            &F {
+                mix: 0.0,
+                ..Default::default()
+            },
+            &mut l,
+            &mut r,
+        );
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(r.iter().zip(&r0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        // even taps round UP to the next odd (513 and 514 -> 513 and 515)
+        let run = |taps: u32| {
+            let (mut a, mut b) = (l0.clone(), r0.clone());
+            freq_splitter(
+                &F {
+                    taps,
+                    band: FreqSplitBand::Mid,
+                    ..Default::default()
+                },
+                &mut a,
+                &mut b,
+            );
+            fs_hash(&a, &b)
+        };
+        assert_eq!(run(514), run(515));
+        assert_ne!(run(513), run(515));
+    }
 }
