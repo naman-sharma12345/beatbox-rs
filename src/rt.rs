@@ -1271,6 +1271,19 @@ pub enum StreamFx {
         mk: [f32; 3],
         mix: f32,
     },
+    /// Dynamic EQ (RT18): fx_extra::dynamic_eq chunked (the unkeyed
+    /// path; a keyed band stays on the buffered pass). The two
+    /// band-split biquads and the shared detector envelope are
+    /// carried; coef() and the cut/boost law verbatim. Zero latency.
+    DynamicEq {
+        bp: [Biquad; 2],
+        env: f32,
+        att: f32,
+        rel: f32,
+        thr: f32,
+        ratio: f32,
+        range: f32,
+    },
     /// Cabinet IR (RT10): fx_amp::cab_ir's convolve - the uniformly
     /// partitioned FFT convolver in fx_extra (B = 2048) - carried
     /// across blocks. IR loading (the global cache mutex) and the IR
@@ -2058,6 +2071,35 @@ impl StreamFx {
                     r[i] = xr * (1.0 - *mix) + out_r * *mix;
                 }
             }
+            StreamFx::DynamicEq {
+                bp,
+                env,
+                att,
+                rel,
+                thr,
+                ratio,
+                range,
+            } => {
+                for i in 0..l.len() {
+                    let bl = bp[0].process(l[i]);
+                    let br = bp[1].process(r[i]);
+                    let x = bl.abs().max(br.abs());
+                    let c = if x > *env { *att } else { *rel };
+                    *env = c * *env + (1.0 - c) * x;
+                    let over = (gain_to_db(*env) - *thr).max(0.0);
+                    let amount = over * (1.0 - 1.0 / *ratio);
+                    // cut (range < 0) or boost (range > 0) the band,
+                    // at most |range| dB
+                    let db = if *range < 0.0 {
+                        -amount.min(-*range)
+                    } else {
+                        amount.min(*range)
+                    };
+                    let g = db_to_gain(db) - 1.0;
+                    l[i] += bl * g;
+                    r[i] += br * g;
+                }
+            }
             StreamFx::CabIr(arm) => {
                 let CabIrArm {
                     fft,
@@ -2288,7 +2330,8 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Stutter(_) => OneShot("stutter: time-windowed"),
         Effect::Vocoder(_) => OneShot("vocoder: windowed analysis"),
         Effect::Multiband(_) => Streamable,
-        Effect::DynamicEq(_) => OneShot("dynamic EQ: unverified / cross-track keyed"),
+        Effect::DynamicEq(p) if p.source.is_empty() => Streamable,
+        Effect::DynamicEq(_) => OneShot("dynamic EQ: keyed"),
         Effect::Deesser(_) => Streamable,
         Effect::SoftClipper(_) => Streamable,
         Effect::Gate(_) => Streamable,
@@ -2764,6 +2807,23 @@ impl ChainStreamer {
                             db_to_gain(p.high_gain_db),
                         ],
                         mix: p.mix.clamp(0.0, 1.0),
+                    }
+                }
+                Effect::DynamicEq(p) => {
+                    // fx_extra::dynamic_eq, chunked (p.source empty,
+                    // enforced by classify): coef() and clamps
+                    // verbatim, biquads seeded fresh, env = 0.0.
+                    StreamFx::DynamicEq {
+                        bp: [
+                            Biquad::new(BiquadKind::Bandpass, p.freq, p.q, 0.0),
+                            Biquad::new(BiquadKind::Bandpass, p.freq, p.q, 0.0),
+                        ],
+                        env: 0.0,
+                        att: (-1.0 / (p.attack_ms.max(0.05) * 0.001 * SR)).exp(),
+                        rel: (-1.0 / (p.release_ms.max(0.05) * 0.001 * SR)).exp(),
+                        thr: p.threshold_db,
+                        ratio: p.ratio.max(1.0),
+                        range: p.range_db.clamp(-24.0, 12.0),
                     }
                 }
                 Effect::Sidechain(p) => {
@@ -3603,6 +3663,7 @@ mod tests {
                 "deesser",
                 "delay",
                 "distortion",
+                "dynamic_eq",
                 "eq",
                 "filter",
                 "flanger",
@@ -5027,6 +5088,136 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn stream_fx_dynamic_eq_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                let base = if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                };
+                let j = i % 977;
+                let click = if i < 6000 && j < 8 {
+                    0.8 * 0.5f32.powi(j as i32)
+                } else {
+                    0.0
+                };
+                base + click
+            })
+            .collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for range_db in [-8.0f32, 4.0] {
+            let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+                "type":"dynamic_eq","freq":3000.0,"q":1.5,"threshold_db":-26.0,
+                "ratio":3.0,"range_db":range_db,"attack_ms":3.0,"release_ms":90.0,
+                "source":""
+            }))
+            .unwrap();
+            for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+                let mut ol = sig.clone();
+                let mut or_ = sig.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: 0,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let mut l = sig.clone();
+                let mut r = sig.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("dynamic eq streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                while pos < n {
+                    let k = block.min(n - pos);
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left range {range_db} block {block} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right range {range_db} block {block} i {i}"
+                    );
+                }
+            }
+            // mixed block sizes mid-stream (carried state must not
+            // depend on block size) over distinct L/R inputs (a
+            // shared per-channel buffer or index would show)
+            let mut seq: Vec<usize> = Vec::new();
+            let mut t = 0usize;
+            for b in [1usize, 999, 7, 256, 64].into_iter().cycle() {
+                if t >= n {
+                    break;
+                }
+                seq.push(b.min(n - t));
+                t += b;
+            }
+            let mut sig_r = sig.clone();
+            sig_r.reverse();
+            let mut ol = sig.clone();
+            let mut or_ = sig_r.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let mut l = sig.clone();
+            let mut r = sig_r.clone();
+            let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                .expect("streams");
+            assert_eq!(cs.latency_samples(), 0);
+            let mut pos = 0usize;
+            for k in &seq {
+                cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                pos += k;
+            }
+            for i in 0..n {
+                assert_eq!(
+                    l[i].to_bits(),
+                    ol[i].to_bits(),
+                    "left mixed {range_db} seq i {i}"
+                );
+                assert_eq!(
+                    r[i].to_bits(),
+                    or_[i].to_bits(),
+                    "right mixed {range_db} seq i {i}"
+                );
+            }
+        }
+    }
+
+    /// A keyed dynamic_eq (a `source` set) has no streamed arm: the
+    /// chain stays on the buffered pass. Known debt (RT18 scope).
+    #[test]
+    fn keyed_dynamic_eq_stays_buffered() {
+        let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+            "type":"dynamic_eq","freq":3000.0,"q":1.5,"threshold_db":-26.0,
+            "ratio":3.0,"range_db":-8.0,"attack_ms":3.0,"release_ms":90.0,
+            "source":"lead"
+        }))
+        .unwrap();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        assert!(
+            ChainStreamer::build(std::slice::from_ref(&fx), &[], 0.1, &triggers, 64).is_none(),
+            "keyed dynamic_eq must route to the buffered pass"
+        );
     }
 
     /// RT4 PDC test fixture: trap seed 9 with a 10ms-lookahead soft-knee
