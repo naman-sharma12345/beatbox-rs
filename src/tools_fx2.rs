@@ -396,91 +396,121 @@ mod tests {
         l.iter().chain(&r).map(|v| v.to_bits()).collect()
     }
 
-    /// Every effect type that has a validate() rule: a rejected tweak
-    /// leaves the effect bit-identical (params, serialized state, render),
-    /// says so truthfully, and a valid tweak equals the effect built
-    /// straight from the merged params.
-    #[test]
-    fn rejected_tweak_changes_nothing_for_every_checked_effect() {
-        // (type, a tweak validate rejects, a tweak it accepts)
-        let table = [
-            (
-                "freq_splitter",
-                json!({"taps": 1}),
-                json!({"low_hz": 300.0}),
-            ),
-            ("granular", json!({"mix": 2.0}), json!({"mix": 0.3})),
-            (
-                "freq_shift",
-                json!({"shift_hz": 9000.0}),
-                json!({"shift_hz": 50.0}),
-            ),
-            (
-                "ring_mod",
-                json!({"shape": "nope"}),
-                json!({"freq_hz": 200.0}),
-            ),
-            (
-                "stereo_shaper",
-                json!({"delay_ms": 99.0}),
-                json!({"delay_ms": 10.0}),
-            ),
-            ("vinyl", json!({"age": 2.0}), json!({"age": 0.5})),
-            (
-                "waveshaper",
-                json!({"drive_db": 99.0}),
-                json!({"drive_db": 6.0}),
-            ),
-            ("vocoder", json!({"bands": 2}), json!({"bands": 16})),
-            ("gross_beat", json!({"time": "zzz_not_a_preset"}), json!({})),
-        ];
-        for (kind, bad, good) in table {
-            let mut e = eng();
-            e.call("add_track", &json!({"name": "t", "preset": "acid_bass"}))
-                .unwrap();
-            let name = e.project.tracks[0].name.clone();
-            e.call("add_effect", &json!({"track": name, "type": kind}))
-                .unwrap();
-            let before_json = serde_json::to_value(&e.project.tracks[0].effects[0]).unwrap();
-            let before_bits = fx_render_bits(&e.project.tracks[0].effects[0]);
-            let err = e
-                .call(
-                    "tweak_effect",
-                    &json!({"track": name, "index": 0, "params": bad}),
-                )
-                .expect_err(kind)
-                .to_string();
-            assert!(err.contains("Nothing was changed"), "{kind}: {err}");
-            let after_json = serde_json::to_value(&e.project.tracks[0].effects[0]).unwrap();
-            assert_eq!(
-                before_json, after_json,
-                "{kind}: state changed by a rejected tweak"
-            );
-            assert_eq!(
-                before_bits,
-                fx_render_bits(&e.project.tracks[0].effects[0]),
-                "{kind}: render changed by a rejected tweak"
-            );
-            // valid tweak: same effect as building it directly
-            e.call(
-                "tweak_effect",
-                &json!({"track": name, "index": 0, "params": good}),
-            )
+    /// One effect type with a validate() rule: a rejected tweak leaves the
+    /// effect bit-identical (params, serialized state, render), says so
+    /// truthfully, and a valid tweak equals the effect built straight from
+    /// the merged params. One #[test] per effect (macro below) so a failure
+    /// names the effect.
+    fn check_rejected_tweak(kind: &str, bad: Value, good: Value) {
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "t", "preset": "acid_bass"}))
             .unwrap();
-            let mut v = before_json.clone();
-            if let (Some(o), Some(g)) = (v.as_object_mut(), good.as_object()) {
-                for (k, x) in g {
-                    o.insert(k.clone(), x.clone());
-                }
+        let name = e.project.tracks[0].name.clone();
+        e.call("add_effect", &json!({"track": name, "type": kind}))
+            .unwrap();
+        let before_json = serde_json::to_value(&e.project.tracks[0].effects[0]).unwrap();
+        let before_bits = fx_render_bits(&e.project.tracks[0].effects[0]);
+        let err = e
+            .call(
+                "tweak_effect",
+                &json!({"track": name, "index": 0, "params": bad}),
+            )
+            .expect_err(kind)
+            .to_string();
+        assert!(err.contains("Nothing was changed"), "{kind}: {err}");
+        let after_json = serde_json::to_value(&e.project.tracks[0].effects[0]).unwrap();
+        assert_eq!(
+            before_json, after_json,
+            "{kind}: state changed by a rejected tweak"
+        );
+        assert_eq!(
+            before_bits,
+            fx_render_bits(&e.project.tracks[0].effects[0]),
+            "{kind}: render changed by a rejected tweak"
+        );
+        // valid tweak: same effect as building it directly
+        e.call(
+            "tweak_effect",
+            &json!({"track": name, "index": 0, "params": good}),
+        )
+        .unwrap();
+        let mut v = before_json.clone();
+        if let (Some(o), Some(g)) = (v.as_object_mut(), good.as_object()) {
+            for (k, x) in g {
+                o.insert(k.clone(), x.clone());
             }
-            let direct: crate::fx::Effect = serde_json::from_value(v).unwrap();
-            assert_eq!(
-                fx_render_bits(&e.project.tracks[0].effects[0]),
-                fx_render_bits(&direct),
-                "{kind}: valid tweak renders differently from the direct build"
-            );
         }
+        let direct: crate::fx::Effect = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            fx_render_bits(&e.project.tracks[0].effects[0]),
+            fx_render_bits(&direct),
+            "{kind}: valid tweak renders differently from the direct build"
+        );
     }
+
+    macro_rules! rejected_tweak_test {
+        ($name:ident, $kind:expr, $bad:expr, $good:expr) => {
+            #[test]
+            fn $name() {
+                check_rejected_tweak($kind, $bad, $good);
+            }
+        };
+    }
+
+    rejected_tweak_test!(
+        freq_splitter_rejected_tweak_changes_nothing,
+        "freq_splitter",
+        json!({"taps": 1}),
+        json!({"low_hz": 300.0})
+    );
+    rejected_tweak_test!(
+        granular_rejected_tweak_changes_nothing,
+        "granular",
+        json!({"mix": 2.0}),
+        json!({"mix": 0.3})
+    );
+    rejected_tweak_test!(
+        freq_shift_rejected_tweak_changes_nothing,
+        "freq_shift",
+        json!({"shift_hz": 9000.0}),
+        json!({"shift_hz": 50.0})
+    );
+    rejected_tweak_test!(
+        ring_mod_rejected_tweak_changes_nothing,
+        "ring_mod",
+        json!({"shape": "nope"}),
+        json!({"freq_hz": 200.0})
+    );
+    rejected_tweak_test!(
+        stereo_shaper_rejected_tweak_changes_nothing,
+        "stereo_shaper",
+        json!({"delay_ms": 99.0}),
+        json!({"delay_ms": 10.0})
+    );
+    rejected_tweak_test!(
+        vinyl_rejected_tweak_changes_nothing,
+        "vinyl",
+        json!({"age": 2.0}),
+        json!({"age": 0.5})
+    );
+    rejected_tweak_test!(
+        waveshaper_rejected_tweak_changes_nothing,
+        "waveshaper",
+        json!({"drive_db": 99.0}),
+        json!({"drive_db": 6.0})
+    );
+    rejected_tweak_test!(
+        vocoder_rejected_tweak_changes_nothing,
+        "vocoder",
+        json!({"bands": 2}),
+        json!({"bands": 16})
+    );
+    rejected_tweak_test!(
+        gross_beat_rejected_tweak_changes_nothing,
+        "gross_beat",
+        json!({"time": "zzz_not_a_preset"}),
+        json!({})
+    );
 
     /// A project file whose freq_splitter carries taps 4294967295 (a few
     /// bytes of JSON) must be refused on load, fast, with the project left
