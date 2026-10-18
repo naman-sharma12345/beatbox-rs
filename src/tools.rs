@@ -869,21 +869,15 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 let path = e.resolve(&s_req(a, "path")?);
                 let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
                 let p: Project = serde_json::from_str(&text).context("not a beatbox project")?;
-                p.validate_effects().map_err(|m| anyhow!("load_project: {m}. Nothing was changed."))?;
                 e.replace_project(p);
                 let saved_midi = e.project.midi.clone();
                 let (midi_links, midi_skipped) = crate::midi_in::restore(e, saved_midi.as_ref());
                 let mut loaded = 0;
-                let mut snapshots_skipped = 0;
                 if let Ok(t) = std::fs::read_to_string(snapshots_path(&path)) {
                     if let Ok(Value::Array(v)) = serde_json::from_str::<Value>(&t) {
                         e.snapshots.clear();
                         for s in v {
                             if let (Some(n), Ok(pr)) = (s["name"].as_str(), serde_json::from_value::<Project>(s["project"].clone())) {
-                                if pr.validate_effects().is_err() {
-                                    snapshots_skipped += 1;
-                                    continue;
-                                }
                                 e.snapshots.push((n.to_string(), crate::engine::Snapshot { project: pr, note: s["note"].as_str().unwrap_or("").to_string(), revision: s["revision"].as_u64().unwrap_or(0) }));
                                 loaded += 1;
                             }
@@ -892,9 +886,6 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 }
                 let mut out = summary(&e.project);
                 out["snapshots_loaded"] = json!(loaded);
-                if snapshots_skipped > 0 {
-                    out["snapshots_skipped_invalid_effects"] = json!(snapshots_skipped);
-                }
                 if saved_midi.is_some() {
                     out["midi"] = json!({"links": midi_links, "track": e.midi.track, "skipped": midi_skipped});
                 }
@@ -1157,11 +1148,10 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 let mut v = serde_json::to_value(&*fx)?;
                 let patch = a.get("params").ok_or_else(|| anyhow!("missing params"))?;
                 merge(&mut v, patch);
-                let new_fx: Effect = serde_json::from_value(v)?;
-                let eff = serde_json::to_value(&new_fx)?;
+                *fx = serde_json::from_value(v)?;
+                let eff = serde_json::to_value(&*fx)?;
                 reject_unknown(patch, &eff, "tweak_effect")?;
-                new_fx.validate().map_err(|m| anyhow!("tweak_effect: {m}. Nothing was changed."))?;
-                *fx = new_fx;
+                fx.validate().map_err(|m| anyhow!("tweak_effect: {m}. Nothing was changed."))?;
                 Ok(eff)
             },
         },

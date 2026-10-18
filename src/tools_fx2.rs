@@ -98,7 +98,6 @@ pub fn tools() -> Vec<Tool> {
                 if let Effect::Sidechain(sc) = &fxn {
                     e.project.track_index(&sc.source).context("sidechain source track")?;
                 }
-                fxn.validate().map_err(|m| anyhow!("place_fx {t}: {m}. Nothing was changed."))?;
                 let chain = effects_of(&mut e.project, &track)?;
                 let at = if let Some(b) = a.get("before") {
                     resolve_pos(chain, b, "before")?
