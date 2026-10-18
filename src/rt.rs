@@ -1196,6 +1196,20 @@ pub enum StreamFx {
         center_hz: f32,
         depth: f32,
     },
+    /// Flanger (RT12): fx_extra::flanger chunked. The modulated delay
+    /// line is one ring per channel indexed by the absolute song
+    /// position (w = k % max, read before write), so a persistent
+    /// ring matches the offline's freshly zeroed buffer exactly:
+    /// slot w holds the value written max samples ago, zeros before.
+    /// Zero lookahead, so latency is 0.
+    Flanger {
+        buf: [Vec<f32>; 2],
+        rate: f32,
+        delay_ms: f32,
+        depth_ms: f32,
+        mix: f32,
+        fb: f32,
+    },
     /// Cabinet IR (RT10): fx_amp::cab_ir's convolve - the uniformly
     /// partitioned FFT convolver in fx_extra (B = 2048) - carried
     /// across blocks. IR loading (the global cache mutex) and the IR
@@ -1800,6 +1814,37 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::Flanger {
+                buf,
+                rate,
+                delay_ms,
+                depth_ms,
+                mix,
+                fb,
+            } => {
+                use std::f32::consts::PI;
+                for (ci, ch) in [&mut *l, &mut *r].into_iter().enumerate() {
+                    let phase0 = ci as f32 * 0.25;
+                    let max = buf[ci].len();
+                    for (i, s) in ch.iter_mut().enumerate() {
+                        // k is the absolute song position, the
+                        // offline's i + offset; the ring is read
+                        // before it is written, exactly as offline
+                        let k = i + pos;
+                        let lfo = 0.5 + 0.5 * (2.0 * PI * (*rate * k as f32 / SR + phase0)).sin();
+                        let d =
+                            ((delay_ms.max(0.05) + depth_ms.max(0.0) * lfo) * 0.001 * SR).max(1.0);
+                        let w = k % max;
+                        let p0 = (w as f32 - d).rem_euclid(max as f32);
+                        let i0 = p0 as usize % max;
+                        let i1 = (i0 + 1) % max;
+                        let f = p0 - p0.floor();
+                        let delayed = buf[ci][i0] * (1.0 - f) + buf[ci][i1] * f;
+                        buf[ci][w] = *s + delayed * *fb;
+                        *s = *s * (1.0 - *mix * 0.5) + delayed * *mix * 0.7;
+                    }
+                }
+            }
             StreamFx::CabIr(arm) => {
                 let CabIrArm {
                     fft,
@@ -2036,7 +2081,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Gate(_) => Streamable,
         Effect::Transient(_) => Streamable,
         Effect::Phaser(_) => Streamable,
-        Effect::Flanger(_) => OneShot("flanger: unverified"),
+        Effect::Flanger(_) => Streamable,
         Effect::Autopan(_) => OneShot("autopan: unverified"),
         Effect::Saturator(_) => OneShot("saturator: unverified (ADAA state carry pending)"),
         Effect::Haas(_) => OneShot("haas: unverified"),
@@ -2396,6 +2441,23 @@ impl ChainStreamer {
                         fb: p.feedback.clamp(-0.95, 0.95),
                         center_hz: p.center_hz,
                         depth: p.depth.clamp(0.0, 1.0),
+                    }
+                }
+                Effect::Flanger(p) => {
+                    // fx_extra::flanger, chunked: lfo_rate() and the
+                    // clamps verbatim, rings zeroed as offline.
+                    let max = ((p.delay_ms + p.depth_ms).max(0.1) * 0.001 * SR) as usize + 8;
+                    StreamFx::Flanger {
+                        buf: [vec![0.0f32; max], vec![0.0f32; max]],
+                        rate: if p.sync_steps > 0.0 {
+                            1.0 / (p.sync_steps * step_secs).max(1e-3)
+                        } else {
+                            p.rate_hz.max(0.0)
+                        },
+                        delay_ms: p.delay_ms,
+                        depth_ms: p.depth_ms,
+                        mix: p.mix.clamp(0.0, 1.0),
+                        fb: p.feedback.clamp(-0.95, 0.95),
                     }
                 }
                 Effect::Sidechain(p) => {
@@ -3235,6 +3297,7 @@ mod tests {
                 "distortion",
                 "eq",
                 "filter",
+                "flanger",
                 "gain",
                 "gate",
                 "maximizer",
@@ -3964,6 +4027,72 @@ mod tests {
                 let mut cs =
                     ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
                         .expect("phaser streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                while pos < n {
+                    let k = block.min(n - pos);
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left sync {sync_steps} block {block} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right sync {sync_steps} block {block} i {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stream_fx_flanger_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                let base = if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                };
+                let j = i % 977;
+                let click = if i < 6000 && j < 8 {
+                    0.8 * 0.5f32.powi(j as i32)
+                } else {
+                    0.0
+                };
+                base + click
+            })
+            .collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for sync_steps in [0.0f32, 2.0] {
+            let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+                "type":"flanger","rate_hz":0.7,"sync_steps":sync_steps,"delay_ms":1.5,
+                "depth_ms":2.5,"feedback":0.5,"mix":0.6
+            }))
+            .unwrap();
+            for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+                let mut ol = sig.clone();
+                let mut or_ = sig.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: 0,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let mut l = sig.clone();
+                let mut r = sig.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("flanger streams");
                 assert_eq!(cs.latency_samples(), 0);
                 let mut pos = 0usize;
                 while pos < n {
