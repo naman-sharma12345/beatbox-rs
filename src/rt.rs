@@ -994,6 +994,143 @@ pub struct CabIrArm {
     total: usize,
 }
 
+/// One stereo uniformly partitioned FFT convolver for the freq_splitter
+/// arm: the exact arithmetic of fx_extra::convolve (B = 2048), carried
+/// across process blocks, emitting with the same B - 1 delay as CabIr.
+/// All buffers are sized at build; nothing allocates on the audio path.
+pub struct FirConvArm {
+    fft: Fft,
+    k: usize,
+    parts_re: [Vec<Vec<f32>>; 2],
+    parts_im: [Vec<Vec<f32>>; 2],
+    fdl_re: [Vec<Vec<f32>>; 2],
+    fdl_im: [Vec<Vec<f32>>; 2],
+    inbuf: [Vec<f32>; 2],
+    outring: [Vec<f32>; 2],
+    overlap: [Vec<f32>; 2],
+    head: usize,
+    infill: usize,
+    acc_re: Vec<f32>,
+    acc_im: Vec<f32>,
+}
+
+impl FirConvArm {
+    fn new(ir_l: &[f32], ir_r: &[f32]) -> Self {
+        const B: usize = 2048;
+        let fft = Fft::new(2 * B);
+        let mk_parts = |ir: &[f32]| -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
+            ir.chunks(B)
+                .map(|c| {
+                    let mut re = vec![0.0f32; 2 * B];
+                    let mut im = vec![0.0f32; 2 * B];
+                    re[..c.len()].copy_from_slice(c);
+                    fft.forward(&mut re, &mut im);
+                    (re, im)
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .unzip()
+        };
+        let (pl_re, pl_im) = mk_parts(ir_l);
+        let (pr_re, pr_im) = mk_parts(ir_r);
+        let k = pl_re.len();
+        FirConvArm {
+            fft: Fft::new(2 * B),
+            k,
+            parts_re: [pl_re, pr_re],
+            parts_im: [pl_im, pr_im],
+            fdl_re: [vec![vec![0.0f32; 2 * B]; k], vec![vec![0.0f32; 2 * B]; k]],
+            fdl_im: [vec![vec![0.0f32; 2 * B]; k], vec![vec![0.0f32; 2 * B]; k]],
+            inbuf: [vec![0.0f32; B], vec![0.0f32; B]],
+            outring: [vec![0.0f32; 2 * B], vec![0.0f32; 2 * B]],
+            overlap: [vec![0.0f32; B], vec![0.0f32; B]],
+            head: 0,
+            infill: 0,
+            acc_re: vec![0.0f32; 2 * B],
+            acc_im: vec![0.0f32; 2 * B],
+        }
+    }
+
+    /// Push one sample per channel; run the convolver block exactly as
+    /// fx_extra::convolve does when a block fills (or at `total`).
+    #[inline]
+    fn push(&mut self, xl: f32, xr: f32, in_pos: usize, total: usize) {
+        const B: usize = 2048;
+        self.inbuf[0][self.infill] = xl;
+        self.inbuf[1][self.infill] = xr;
+        self.infill += 1;
+        let last = in_pos == total;
+        if self.infill == B || (last && self.infill > 0) {
+            let fill = self.infill;
+            let base = in_pos - fill;
+            if base < total {
+                for c in 0..2 {
+                    {
+                        let (re, im) = (
+                            &mut self.fdl_re[c][self.head],
+                            &mut self.fdl_im[c][self.head],
+                        );
+                        re.iter_mut().for_each(|v| *v = 0.0);
+                        im.iter_mut().for_each(|v| *v = 0.0);
+                        re[..fill].copy_from_slice(&self.inbuf[c][..fill]);
+                        self.fft.forward(re, im);
+                    }
+                    self.acc_re.iter_mut().for_each(|v| *v = 0.0);
+                    self.acc_im.iter_mut().for_each(|v| *v = 0.0);
+                    for j in 0..self.k {
+                        let slot = (self.head + self.k - j) % self.k;
+                        let (xr, xi) = (&self.fdl_re[c][slot], &self.fdl_im[c][slot]);
+                        let (hr, hi) = (&self.parts_re[c][j], &self.parts_im[c][j]);
+                        for t in 0..2 * B {
+                            self.acc_re[t] += xr[t] * hr[t] - xi[t] * hi[t];
+                            self.acc_im[t] += xr[t] * hi[t] + xi[t] * hr[t];
+                        }
+                    }
+                    self.fft.inverse(&mut self.acc_re, &mut self.acc_im);
+                    for t in 0..B {
+                        self.outring[c][(base + t) % (2 * B)] = self.acc_re[t] + self.overlap[c][t];
+                    }
+                    self.overlap[c].copy_from_slice(&self.acc_re[B..]);
+                }
+                self.head = (self.head + 1) % self.k;
+            }
+            self.infill = 0;
+        }
+    }
+
+    /// The convolver output for absolute input position q (already
+    /// delayed B - 1 by the caller's read index), 0 outside [0, total).
+    #[inline]
+    fn read(&self, c: usize, q: usize, total: usize) -> f32 {
+        const B: usize = 2048;
+        if q < total {
+            self.outring[c][q % (2 * B)]
+        } else {
+            0.0
+        }
+    }
+}
+
+/// The boxed state of [`StreamFx::FreqSplit`] (kept off the enum: the
+/// convolver buffers are large).
+pub struct FreqSplitArm {
+    /// h1 = lowpass(low_hz): the low band (None for band = high).
+    conv1: Option<Box<FirConvArm>>,
+    /// h2 = lowpass(high_hz): the mid/high split (None for band = low).
+    conv2: Option<Box<FirConvArm>>,
+    /// Delayed input for the high-band complement, (B - 1) + m samples.
+    xd: [Vec<f32>; 2],
+    xw: usize,
+    /// Dry delay lines for the wet/dry mix, B - 1 samples.
+    dry: [Vec<f32>; 2],
+    dw: usize,
+    band: crate::fx::FreqSplitBand,
+    g: f32,
+    mix: f32,
+    in_pos: usize,
+    total: usize,
+}
+
 #[doc(hidden)]
 pub enum StreamFx {
     Filter {
@@ -1302,6 +1439,12 @@ pub enum StreamFx {
     /// early (a no-op), so the streamed arm passes audio through
     /// untouched and adds no latency.
     CabIrNop,
+    /// freq_splitter (RT19): fx_extra::freq_splitter chunked - the two
+    /// windowed-sinc FIR crossovers run as partitioned convolvers (the
+    /// CabIr machinery, B = 2048), the complement delay line is
+    /// (B - 1) + m. Latency 2047 reported to PDC, bit-identical to the
+    /// offline pass.
+    FreqSplit(Box<FreqSplitArm>),
     Sidechain {
         trig: std::sync::Arc<Vec<usize>>,
         ti: usize,
@@ -1343,6 +1486,7 @@ impl StreamFx {
             StreamFx::Maximizer { la, .. } => la - 1,
             // partitioned-conv block size 2048 minus 1 (see CabIr)
             StreamFx::CabIr(_) => 2047,
+            StreamFx::FreqSplit(_) => 2047,
             _ => 0,
         }
     }
@@ -2183,6 +2327,88 @@ impl StreamFx {
                     r[i] = (wr * *g) * *mix + dr * (1.0 - *mix);
                 }
             }
+            StreamFx::FreqSplit(arm) => {
+                let FreqSplitArm {
+                    conv1,
+                    conv2,
+                    xd,
+                    xw,
+                    dry,
+                    dw,
+                    band,
+                    g,
+                    mix,
+                    in_pos,
+                    total,
+                } = &mut **arm;
+                const B: usize = 2048;
+                for i in 0..l.len() {
+                    *in_pos += 1;
+                    let ip = *in_pos;
+                    if let Some(c1) = conv1 {
+                        c1.push(l[i], r[i], ip, *total);
+                    }
+                    if let Some(c2) = conv2 {
+                        c2.push(l[i], r[i], ip, *total);
+                    }
+                    // emit delayed B - 1, pairing the same sample
+                    // indices the offline pass pairs
+                    let q = ip.wrapping_sub(B);
+                    let have = ip >= B && q < *total;
+                    let (w1, w2) = if have {
+                        (
+                            conv1.as_ref().map(|c| c.read(0, q, *total)),
+                            conv2.as_ref().map(|c| c.read(0, q, *total)),
+                        )
+                    } else {
+                        (None, None)
+                    };
+                    let (w1r, w2r) = if have {
+                        (
+                            conv1.as_ref().map(|c| c.read(1, q, *total)),
+                            conv2.as_ref().map(|c| c.read(1, q, *total)),
+                        )
+                    } else {
+                        (None, None)
+                    };
+                    // delayed input for the high-band complement
+                    let xl_d = xd[0][*xw];
+                    let xr_d = xd[1][*xw];
+                    xd[0][*xw] = l[i];
+                    xd[1][*xw] = r[i];
+                    *xw = (*xw + 1) % xd[0].len();
+                    // priming (first B - 1 outputs) is silence, like
+                    // cab_ir: the convolvers have not emitted yet and
+                    // the offline pass has no negative indices
+                    let wet_l = if !have {
+                        0.0
+                    } else {
+                        match band {
+                            crate::fx::FreqSplitBand::Low => w1.unwrap_or(0.0),
+                            crate::fx::FreqSplitBand::Mid => w2.unwrap_or(0.0) - w1.unwrap_or(0.0),
+                            crate::fx::FreqSplitBand::High => xl_d - w2.unwrap_or(0.0),
+                        }
+                    };
+                    let wet_r = if !have {
+                        0.0
+                    } else {
+                        match band {
+                            crate::fx::FreqSplitBand::Low => w1r.unwrap_or(0.0),
+                            crate::fx::FreqSplitBand::Mid => {
+                                w2r.unwrap_or(0.0) - w1r.unwrap_or(0.0)
+                            }
+                            crate::fx::FreqSplitBand::High => xr_d - w2r.unwrap_or(0.0),
+                        }
+                    };
+                    let dl = dry[0][*dw];
+                    dry[0][*dw] = l[i];
+                    let dr = dry[1][*dw];
+                    dry[1][*dw] = r[i];
+                    *dw = (*dw + 1) % (B - 1);
+                    l[i] = (wet_l * *g) * *mix + dl * (1.0 - *mix);
+                    r[i] = (wet_r * *g) * *mix + dr * (1.0 - *mix);
+                }
+            }
             StreamFx::CabIrNop => {}
             StreamFx::Sidechain {
                 trig,
@@ -2343,7 +2569,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Haas(_) => Streamable,
         Effect::FreqShift(_) => OneShot("freq shift: unverified"),
         Effect::RingMod(_) => Streamable,
-        Effect::FreqSplitter(_) => OneShot("freq splitter: FIR crossover (stream arm pending)"),
+        Effect::FreqSplitter(_) => Streamable,
         Effect::StereoShaper(_) => OneShot("stereo shaper: unverified"),
         Effect::Vinyl(_) => OneShot("vinyl: unverified"),
         Effect::Waveshaper(_) => OneShot("waveshaper: unverified"),
@@ -2678,6 +2904,43 @@ impl ChainStreamer {
                             }))
                         }
                     }
+                }
+                Effect::FreqSplitter(p) => {
+                    // fx_extra::freq_splitter, chunked (RT19): the same
+                    // FIR design, convolvers built here (part FFTs at
+                    // build, never on the audio path), rings zeroed as
+                    // the offline i < m guard.
+                    const B: usize = 2048;
+                    let taps = (p.taps as usize).max(3) | 1;
+                    let m = (taps - 1) / 2;
+                    let lo = p.low_hz.min(p.high_hz);
+                    let hi = p.high_hz.max(p.low_hz);
+                    let band = p.band;
+                    let conv1 = if band == crate::fx::FreqSplitBand::High {
+                        None
+                    } else {
+                        let h = crate::fx_extra::lowpass_fir(lo, taps);
+                        Some(Box::new(FirConvArm::new(&h, &h)))
+                    };
+                    let conv2 = if band == crate::fx::FreqSplitBand::Low {
+                        None
+                    } else {
+                        let h = crate::fx_extra::lowpass_fir(hi, taps);
+                        Some(Box::new(FirConvArm::new(&h, &h)))
+                    };
+                    StreamFx::FreqSplit(Box::new(FreqSplitArm {
+                        conv1,
+                        conv2,
+                        xd: [vec![0.0f32; (B - 1) + m], vec![0.0f32; (B - 1) + m]],
+                        xw: 0,
+                        dry: [vec![0.0f32; B - 1], vec![0.0f32; B - 1]],
+                        dw: 0,
+                        band,
+                        g: db_to_gain(p.gain_db),
+                        mix: p.mix.clamp(0.0, 1.0),
+                        in_pos: 0,
+                        total,
+                    }))
                 }
                 Effect::Phaser(p) => {
                     // fx_extra::phaser, chunked: lfo_rate() and the
@@ -3668,6 +3931,7 @@ mod tests {
                 "eq",
                 "filter",
                 "flanger",
+                "freq_splitter",
                 "gain",
                 "gate",
                 "haas",
@@ -5269,6 +5533,139 @@ mod tests {
                     r[i].to_bits(),
                     r_in[i].to_bits(),
                     "right must be bit-exact at unity (block {block} i {i})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stream_fx_freq_splitter_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                let base = if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                };
+                let j = i % 977;
+                let click = if i < 6000 && j < 8 {
+                    0.8 * 0.5f32.powi(j as i32)
+                } else {
+                    0.0
+                };
+                base + click
+            })
+            .collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        let lat = 2047usize;
+        for band in ["low", "mid", "high"] {
+            let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+                "type":"freq_splitter","low_hz":250.0,"high_hz":2500.0,
+                "taps":513,"band":band
+            }))
+            .unwrap();
+            for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+                let mut ol = sig.clone();
+                let mut or_ = sig.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: 0,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let mut l = sig.clone();
+                let mut r = sig.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("freq_splitter streams");
+                assert_eq!(cs.latency_samples(), lat);
+                let mut pos = 0usize;
+                while pos < n {
+                    let k = block.min(n - pos);
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                // flush: lat extra silent samples push the tail through
+                let mut fl = vec![0.0f32; lat];
+                let mut fr = vec![0.0f32; lat];
+                cs.process_block(&mut fl, &mut fr);
+                for i in lat..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i - lat].to_bits(),
+                        "left band {band} block {block} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i - lat].to_bits(),
+                        "right band {band} block {block} i {i}"
+                    );
+                }
+                for i in 0..lat {
+                    assert_eq!(
+                        fl[i].to_bits(),
+                        ol[n - lat + i].to_bits(),
+                        "flush left band {band} block {block} i {i}"
+                    );
+                    assert_eq!(
+                        fr[i].to_bits(),
+                        or_[n - lat + i].to_bits(),
+                        "flush right band {band} block {block} i {i}"
+                    );
+                }
+            }
+            // mixed block sizes mid-stream over distinct L/R inputs
+            let mut seq: Vec<usize> = Vec::new();
+            let mut t = 0usize;
+            for b in [1usize, 999, 7, 256, 64].into_iter().cycle() {
+                if t >= n {
+                    break;
+                }
+                seq.push(b.min(n - t));
+                t += b;
+            }
+            let mut sig_r = sig.clone();
+            sig_r.reverse();
+            let mut ol = sig.clone();
+            let mut or_ = sig_r.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let mut l = sig.clone();
+            let mut r = sig_r.clone();
+            let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                .expect("freq_splitter streams");
+            let mut pos = 0usize;
+            for (si, &b) in seq.iter().enumerate() {
+                cs.process_block(&mut l[pos..pos + b], &mut r[pos..pos + b]);
+                pos += b;
+                let _ = si;
+            }
+            let mut fl = vec![0.0f32; lat];
+            let mut fr = vec![0.0f32; lat];
+            cs.process_block(&mut fl, &mut fr);
+            for i in lat..n {
+                assert_eq!(l[i].to_bits(), ol[i - lat].to_bits(), "mixed left i {i}");
+                assert_eq!(r[i].to_bits(), or_[i - lat].to_bits(), "mixed right i {i}");
+            }
+            for i in 0..lat {
+                assert_eq!(
+                    fl[i].to_bits(),
+                    ol[n - lat + i].to_bits(),
+                    "mixed flush i {i}"
+                );
+                assert_eq!(
+                    fr[i].to_bits(),
+                    or_[n - lat + i].to_bits(),
+                    "mixed flush r i {i}"
                 );
             }
         }
