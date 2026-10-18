@@ -414,6 +414,26 @@ fx_struct!(CabIrFx {
     gain_db: f32 = 0.0,
     max_ms: f32 = 500.0
 });
+
+/// Which band a freq_splitter insert solos (low | mid | high).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FreqSplitBand {
+    #[default]
+    Low,
+    Mid,
+    High,
+}
+fx_struct!(FreqSplitterFx {
+    low_hz: f32 = 250.0,
+    high_hz: f32 = 2500.0,
+    /// FIR crossover length in samples, forced odd; group delay
+    /// (taps-1)/2 is this insert's latency.
+    taps: u32 = 513,
+    band: FreqSplitBand = FreqSplitBand::Low,
+    gain_db: f32 = 0.0,
+    mix: f32 = 1.0
+});
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SatMode {
@@ -491,6 +511,7 @@ pub enum Effect {
     Maximizer(MaximizerFx),
     Lofi(LoFiFx),
     Rectifier(RectifierFx),
+    FreqSplitter(FreqSplitterFx),
 }
 
 macro_rules! each_fx {
@@ -536,6 +557,7 @@ macro_rules! each_fx {
             Effect::Maximizer($p) => $body,
             Effect::Lofi($p) => $body,
             Effect::Rectifier($p) => $body,
+            Effect::FreqSplitter($p) => $body,
         }
     };
 }
@@ -571,6 +593,7 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("maximizer", "Loudness maximizer: lookahead brickwall limiter driven by -threshold_db (threshold_db -30..0: -6 = 6 dB louder), never above ceiling_db (-30..0, default -0.3), release_ms 1..1000; latency compensated"),
     ("lofi", "Lo-fi crusher: bits 1..24, sample_rate_hz 500..48000 (sample-and-hold decimation, aliasing on purpose), noise 0..1 (hiss), mix 0..1"),
     ("rectifier", "Rectifier: mode full (octave up) | half (octave up plus the original), DC removed, mix 0..1, output_db -24..12. Octave fuzz on bass/synths, gritty textures"),
+    ("freq_splitter", "Linear-phase frequency splitter: windowed-sinc FIR crossover, phase-coherent (the three bands sum back to the delayed input). Solos one band: band low|mid|high, crossover low_hz/high_hz, taps (odd, latency (taps-1)/2), gain_db, mix"),
     ("convolution", "Convolution reverb with synthesized impulse responses, or a real recorded space with ir_path (an IR file or catalog id). space room|hall|plate|chamber|spring|cathedral, decay_s, predelay_ms, damping, early (reflections), width, mix"),
     ("autopan", "Tempo-synced auto-pan or tremolo. steps (16ths per cycle), depth 0..1, tremolo (true = volume instead of pan)"),
     ("saturator", "Character saturator. mode tape (soft, even+odd warmth, high-end roll-off) | tube (asymmetric, even harmonics) | transistor (hard odd-harmonic edge) | diode (clipped, gritty) | fold (wavefolder, metallic) | exciter (adds only new harmonics above a corner of tone_hz, capped 1.5-8 kHz). drive_db 0..36, tone_hz (post low-pass), bias -0.5..0.5 (asymmetry), mix, output_db, oversample (2x, less aliasing)"),
@@ -676,6 +699,7 @@ impl Effect {
             }
             Effect::Lofi(p) => crate::fx_sc::lofi_at(p, l, r, ctx.offset),
             Effect::Rectifier(p) => crate::fx_sc::rectifier(p, l, r),
+            Effect::FreqSplitter(p) => crate::fx_extra::freq_splitter(p, l, r),
             Effect::Filter(p) => {
                 let (mut fl, mut fr) = (Svf::default(), Svf::default());
                 for i in 0..l.len() {

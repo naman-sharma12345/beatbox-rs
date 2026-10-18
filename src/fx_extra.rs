@@ -755,6 +755,73 @@ pub fn synth_ir(p: &ConvolutionFx) -> (Vec<f32>, Vec<f32>) {
     (l, r)
 }
 
+/// Windowed-sinc lowpass FIR, odd length, unity DC gain, linear phase
+/// (group delay (taps-1)/2). Deterministic: a pure function of the
+/// cutoff and tap count. Blackman window.
+pub fn lowpass_fir(cutoff_hz: f32, taps: usize) -> Vec<f32> {
+    let n = taps.max(3) | 1;
+    let m = (n - 1) / 2;
+    let fc = (cutoff_hz / SR).clamp(1e-4, 0.4999);
+    let mut h = vec![0.0f32; n];
+    let mut sum = 0.0f32;
+    for (j, v) in h.iter_mut().enumerate() {
+        let k = j as f32 - m as f32;
+        let sinc = if j == m {
+            2.0 * fc
+        } else {
+            (2.0 * std::f32::consts::PI * fc * k).sin() / (std::f32::consts::PI * k)
+        };
+        let w = 0.42 - 0.5 * (2.0 * std::f32::consts::PI * j as f32 / (n - 1) as f32).cos()
+            + 0.08 * (4.0 * std::f32::consts::PI * j as f32 / (n - 1) as f32).cos();
+        *v = sinc * w;
+        sum += *v;
+    }
+    for v in h.iter_mut() {
+        *v /= sum;
+    }
+    h
+}
+
+/// Linear-phase 3-way frequency split (Frequency Splitter class):
+/// windowed-sinc FIR crossovers, complementary by construction. With
+/// h1 = lowpass(low_hz), h2 = lowpass(high_hz) and x_d = the input
+/// delayed by the FIR group delay m = (taps-1)/2: low = x*h1,
+/// mid = x*h2 - x*h1, high = x_d - x*h2, so the three bands share one
+/// linear phase and sum back to the delayed input. The insert solos
+/// ONE band (`p.band`) - band sends are one insert per lane. Latency
+/// is m samples; the rt arm reports it like cab_ir reports its own.
+pub fn freq_splitter(p: &crate::fx::FreqSplitterFx, l: &mut [f32], r: &mut [f32]) {
+    let taps = (p.taps as usize).max(3) | 1;
+    let m = (taps - 1) / 2;
+    let lo = p.low_hz.min(p.high_hz);
+    let hi = p.high_hz.max(p.low_hz);
+    let h1 = lowpass_fir(lo, taps);
+    let h2 = lowpass_fir(hi, taps);
+    let g = db_to_gain(p.gain_db);
+    let mix = p.mix.clamp(0.0, 1.0);
+    for chan in [l, r] {
+        let x = chan.to_vec();
+        let s1 = if p.band == crate::fx::FreqSplitBand::High {
+            Vec::new()
+        } else {
+            convolve(&x, &h1)
+        };
+        let s2 = if p.band == crate::fx::FreqSplitBand::Low {
+            Vec::new()
+        } else {
+            convolve(&x, &h2)
+        };
+        for i in 0..chan.len() {
+            let wet = match p.band {
+                crate::fx::FreqSplitBand::Low => s1[i],
+                crate::fx::FreqSplitBand::Mid => s2[i] - s1[i],
+                crate::fx::FreqSplitBand::High => (if i >= m { x[i - m] } else { 0.0 }) - s2[i],
+            };
+            chan[i] = (wet * g) * mix + x[i] * (1.0 - mix);
+        }
+    }
+}
+
 /// Uniformly partitioned FFT convolution; output has `x.len()` samples.
 pub fn convolve(x: &[f32], ir: &[f32]) -> Vec<f32> {
     const B: usize = 2048;
@@ -1482,5 +1549,111 @@ mod tests {
         level_keyed_dynamic_eq(&p, &sine(220.0, sec, 0.3), &mut l2, &mut r2);
         let drop = 20.0 * (rms(&l2[sec / 2..]) / rms(&dry[sec / 2..])).log10();
         assert!(drop < -3.0 && drop > -4.5, "drop {drop}");
+    }
+
+    #[test]
+    fn freq_splitter_bands_sum_back_to_the_delayed_input() {
+        let n = 8000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                ((i as f32) * 0.05).sin() * 0.4
+                    + ((i as f32) * 0.4).sin() * 0.2
+                    + ((i as f32) * 1.7).sin() * 0.1
+            })
+            .collect();
+        let taps = 513u32;
+        let m = ((taps - 1) / 2) as usize;
+        let band = |b: FreqSplitBand, x: &[f32]| {
+            let mut l = x.to_vec();
+            let mut r = x.to_vec();
+            freq_splitter(
+                &FreqSplitterFx {
+                    band: b,
+                    taps,
+                    ..Default::default()
+                },
+                &mut l,
+                &mut r,
+            );
+            l
+        };
+        let lo = band(FreqSplitBand::Low, &sig);
+        let mid = band(FreqSplitBand::Mid, &sig);
+        let hi = band(FreqSplitBand::High, &sig);
+        // the bands share one linear phase, so their sum tracks the
+        // delayed input to convolution round-off (not bit-exact: f32
+        // addition does not reassociate)
+        let mut worst = 0.0f32;
+        for i in m..n {
+            let xd = sig[i - m];
+            let sum = lo[i] + mid[i] + hi[i];
+            worst = worst.max((sum - xd).abs());
+        }
+        assert!(worst < 1e-4, "band-sum error {worst}");
+        // crossover placement: a 100 Hz sine lands in low, a 6 kHz sine
+        // in high, each down > 40 dB in the other band
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let lo_sig: Vec<f32> = (0..n).map(|i| (i as f32 * 0.014).sin() * 0.5).collect();
+        let hi_sig: Vec<f32> = (0..n).map(|i| (i as f32 * 0.85).sin() * 0.5).collect();
+        let l_in_lo = rms(&band(FreqSplitBand::Low, &lo_sig)[m..]);
+        let l_in_hi = rms(&band(FreqSplitBand::High, &lo_sig)[m..]);
+        let h_in_hi = rms(&band(FreqSplitBand::High, &hi_sig)[m..]);
+        let h_in_lo = rms(&band(FreqSplitBand::Low, &hi_sig)[m..]);
+        assert!(
+            l_in_lo > 20.0 * l_in_hi,
+            "low sine leak {l_in_lo}/{l_in_hi}"
+        );
+        assert!(
+            h_in_hi > 20.0 * h_in_lo,
+            "high sine leak {h_in_hi}/{h_in_lo}"
+        );
+    }
+
+    #[test]
+    fn freq_splitter_is_deterministic_and_forces_odd_taps() {
+        let n = 2000usize;
+        let sig: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.11).sin() * 0.5).collect();
+        let run = |taps: u32| {
+            let mut l = sig.clone();
+            let mut r = sig.clone();
+            freq_splitter(
+                &FreqSplitterFx {
+                    taps,
+                    band: FreqSplitBand::Mid,
+                    ..Default::default()
+                },
+                &mut l,
+                &mut r,
+            );
+            l
+        };
+        let a = run(257);
+        let b = run(257);
+        assert!(a
+            .iter()
+            .zip(b.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits()));
+        // even taps are forced odd: 256 == 257 bit for bit
+        let c = run(256);
+        assert!(a
+            .iter()
+            .zip(c.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits()));
+        // unity DC through the low band: DC in, same DC out (post-delay)
+        let dc = vec![0.5f32; n];
+        let mut l = dc.clone();
+        let mut r = dc.clone();
+        freq_splitter(
+            &FreqSplitterFx {
+                band: FreqSplitBand::Low,
+                ..Default::default()
+            },
+            &mut l,
+            &mut r,
+        );
+        let m = 256usize;
+        for i in m + 512..n {
+            assert!((l[i] - 0.5).abs() < 1e-5, "dc at {i}: {}", l[i]);
+        }
     }
 }

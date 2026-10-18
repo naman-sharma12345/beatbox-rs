@@ -2343,6 +2343,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Haas(_) => Streamable,
         Effect::FreqShift(_) => OneShot("freq shift: unverified"),
         Effect::RingMod(_) => Streamable,
+        Effect::FreqSplitter(_) => OneShot("freq splitter: FIR crossover (stream arm pending)"),
         Effect::StereoShaper(_) => OneShot("stereo shaper: unverified"),
         Effect::Vinyl(_) => OneShot("vinyl: unverified"),
         Effect::Waveshaper(_) => OneShot("waveshaper: unverified"),
