@@ -822,6 +822,37 @@ pub fn freq_splitter(p: &crate::fx::FreqSplitterFx, l: &mut [f32], r: &mut [f32]
     }
 }
 
+/// Rejects only configs that are nonsense today: out-of-range or
+/// non-finite crossover/gain/mix, equal crossovers (silent mid band), and
+/// tap counts that are degenerate (< 33) or unbounded cost (> 65537).
+/// Inverted low/high stays valid (it is swapped, as before).
+pub fn check_freq_splitter(p: &crate::fx::FreqSplitterFx) -> Result<(), String> {
+    let rng = |name: &str, v: f32, lo: f32, hi: f32| {
+        if v.is_finite() && v >= lo && v <= hi {
+            Ok(())
+        } else {
+            Err(format!(
+                "freq_splitter: {name} must be {lo}..{hi} (got {v})"
+            ))
+        }
+    };
+    if !(33..=65_537).contains(&p.taps) {
+        return Err(format!(
+            "freq_splitter: taps must be 33..65537 (got {})",
+            p.taps
+        ));
+    }
+    rng("low_hz", p.low_hz, 20.0, 20_000.0)?;
+    rng("high_hz", p.high_hz, 20.0, 20_000.0)?;
+    if p.low_hz == p.high_hz {
+        return Err(
+            "freq_splitter: low_hz and high_hz must differ (equal gives a silent mid band)".into(),
+        );
+    }
+    rng("gain_db", p.gain_db, -60.0, 24.0)?;
+    rng("mix", p.mix, 0.0, 1.0)
+}
+
 pub fn check_granular(p: &crate::fx::GranularFx) -> Result<(), String> {
     let rng = |name: &str, v: f32, lo: f32, hi: f32| {
         if v.is_finite() && v >= lo && v <= hi {
@@ -2098,6 +2129,75 @@ mod tests {
             let (ya, yb) = (a.step(x, -x), b.step(x, -x));
             assert_eq!(ya.0.to_bits(), yb.0.to_bits());
             assert_eq!(ya.1.to_bits(), yb.1.to_bits());
+        }
+    }
+
+    #[test]
+    fn freq_splitter_validation_rejects_only_nonsense() {
+        use crate::fx::FreqSplitterFx as F;
+        assert!(check_freq_splitter(&F::default()).is_ok());
+        // inverted stays valid (swapped as before)
+        assert!(check_freq_splitter(&F {
+            low_hz: 2500.0,
+            high_hz: 250.0,
+            ..Default::default()
+        })
+        .is_ok());
+        for taps in [33u32, 513, 65_537] {
+            assert!(check_freq_splitter(&F {
+                taps,
+                ..Default::default()
+            })
+            .is_ok());
+        }
+        for bad in [
+            F {
+                taps: 1,
+                ..Default::default()
+            },
+            F {
+                taps: 31,
+                ..Default::default()
+            },
+            F {
+                taps: 1_048_577,
+                ..Default::default()
+            },
+            F {
+                taps: u32::MAX,
+                ..Default::default()
+            },
+            F {
+                low_hz: 1000.0,
+                high_hz: 1000.0,
+                ..Default::default()
+            },
+            F {
+                low_hz: f32::NAN,
+                ..Default::default()
+            },
+            F {
+                high_hz: f32::INFINITY,
+                ..Default::default()
+            },
+            F {
+                low_hz: -100.0,
+                ..Default::default()
+            },
+            F {
+                high_hz: 30_000.0,
+                ..Default::default()
+            },
+            F {
+                gain_db: 80.0,
+                ..Default::default()
+            },
+            F {
+                mix: 1.5,
+                ..Default::default()
+            },
+        ] {
+            assert!(check_freq_splitter(&bad).is_err(), "{bad:?}");
         }
     }
 }

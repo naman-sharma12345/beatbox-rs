@@ -660,6 +660,7 @@ impl Effect {
             Effect::Vinyl(p) => crate::fx_char::check_vinyl(p),
             Effect::Waveshaper(p) => crate::fx_char::check_waveshaper(p),
             Effect::Granular(p) => crate::fx_extra::check_granular(p),
+            Effect::FreqSplitter(p) => crate::fx_extra::check_freq_splitter(p),
             _ => Ok(()),
         }
     }

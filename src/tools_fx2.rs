@@ -351,6 +351,18 @@ mod tests {
                 &json!({"track": name, "index": 0, "params": {"bogus": 1}})
             )
             .is_err());
+        assert!(e
+            .call(
+                "tweak_effect",
+                &json!({"track": name, "index": 0, "params": {"taps": 1}})
+            )
+            .is_err());
+        // restore a valid chain state before describing it
+        e.call(
+            "tweak_effect",
+            &json!({"track": name, "index": 0, "params": {"taps": 257}}),
+        )
+        .unwrap();
         let d = e
             .call("describe_effect", &json!({"track": name, "index": 0}))
             .unwrap();
