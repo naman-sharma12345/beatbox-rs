@@ -1232,6 +1232,18 @@ pub enum StreamFx {
         lfo_depth: f32,
         mix: f32,
     },
+    /// Haas (RT15): fx_sat::haas chunked. The high-pass biquad state
+    /// and the delayed hi signal ride a ring of d slots seeded with
+    /// zeros, matching the offline's i < d guard. Only the delayed
+    /// side is touched, as offline. Zero latency.
+    Haas {
+        hp: Biquad,
+        ring: Vec<f32>,
+        idx: usize,
+        mix: f32,
+        lvl: f32,
+        right: bool,
+    },
     /// Cabinet IR (RT10): fx_amp::cab_ir's convolve - the uniformly
     /// partitioned FFT convolver in fx_extra (B = 2048) - carried
     /// across blocks. IR loading (the global cache mutex) and the IR
@@ -1925,6 +1937,28 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::Haas {
+                hp,
+                ring,
+                idx,
+                mix,
+                lvl,
+                right,
+            } => {
+                let src: &mut [f32] = if *right { &mut *r } else { &mut *l };
+                for x in src.iter_mut() {
+                    // read before write: the ring slot still holds the
+                    // hi value from d song samples ago (0.0 for the
+                    // first d samples), as the offline's i < d guard
+                    let dry = *x;
+                    let hi = hp.process(dry);
+                    let delayed = ring[*idx];
+                    ring[*idx] = hi;
+                    *idx = (*idx + 1) % ring.len();
+                    let wet = (dry - hi) + delayed * *lvl;
+                    *x = dry * (1.0 - *mix) + wet * *mix;
+                }
+            }
             StreamFx::CabIr(arm) => {
                 let CabIrArm {
                     fft,
@@ -2164,7 +2198,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Flanger(_) => Streamable,
         Effect::Autopan(_) => Streamable,
         Effect::Saturator(_) => OneShot("saturator: unverified (ADAA state carry pending)"),
-        Effect::Haas(_) => OneShot("haas: unverified"),
+        Effect::Haas(_) => Streamable,
         Effect::FreqShift(_) => OneShot("freq shift: unverified"),
         Effect::RingMod(_) => Streamable,
         Effect::StereoShaper(_) => OneShot("stereo shaper: unverified"),
@@ -2562,6 +2596,24 @@ impl ChainStreamer {
                         lfo_hz: p.lfo_hz,
                         lfo_depth: p.lfo_depth,
                         mix: p.mix.clamp(0.0, 1.0),
+                    }
+                }
+                Effect::Haas(p) => {
+                    // fx_sat::haas, chunked: clamps verbatim, biquad
+                    // seeded fresh and the ring zeroed as offline.
+                    let d = ((p.delay_ms.clamp(1.0, 40.0) * 0.001 * SR) as usize).max(1);
+                    StreamFx::Haas {
+                        hp: Biquad::new(
+                            BiquadKind::LowCut,
+                            p.low_cut_hz.clamp(20.0, 1000.0),
+                            0.707,
+                            0.0,
+                        ),
+                        ring: vec![0.0f32; d],
+                        idx: 0,
+                        mix: p.mix.clamp(0.0, 1.0),
+                        lvl: db_to_gain(p.level_db.clamp(-12.0, 6.0)),
+                        right: p.side >= 0,
                     }
                 }
                 Effect::Sidechain(p) => {
@@ -3405,6 +3457,7 @@ mod tests {
                 "flanger",
                 "gain",
                 "gate",
+                "haas",
                 "maximizer",
                 "parametric_eq",
                 "phaser",
@@ -4483,6 +4536,117 @@ mod tests {
                     r[i].to_bits(),
                     or_[i].to_bits(),
                     "right mixed {shape} seq i {i}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stream_fx_haas_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                let base = if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                };
+                let j = i % 977;
+                let click = if i < 6000 && j < 8 {
+                    0.8 * 0.5f32.powi(j as i32)
+                } else {
+                    0.0
+                };
+                base + click
+            })
+            .collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for side in [-1i32, 1] {
+            let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+                "type":"haas","delay_ms":14.0,"side":side,"mix":0.8,
+                "low_cut_hz":150.0,"level_db":-2.0
+            }))
+            .unwrap();
+            for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+                let mut ol = sig.clone();
+                let mut or_ = sig.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: 0,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let mut l = sig.clone();
+                let mut r = sig.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("haas streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                while pos < n {
+                    let k = block.min(n - pos);
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left side {side} block {block} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right side {side} block {block} i {i}"
+                    );
+                }
+            }
+            // mixed block sizes mid-stream (carried state must not
+            // depend on block size) over distinct L/R inputs (a
+            // shared per-channel buffer or index would show)
+            let mut seq: Vec<usize> = Vec::new();
+            let mut t = 0usize;
+            for b in [1usize, 999, 7, 256, 64].into_iter().cycle() {
+                if t >= n {
+                    break;
+                }
+                seq.push(b.min(n - t));
+                t += b;
+            }
+            let mut sig_r = sig.clone();
+            sig_r.reverse();
+            let mut ol = sig.clone();
+            let mut or_ = sig_r.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let mut l = sig.clone();
+            let mut r = sig_r.clone();
+            let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                .expect("streams");
+            assert_eq!(cs.latency_samples(), 0);
+            let mut pos = 0usize;
+            for k in &seq {
+                cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                pos += k;
+            }
+            for i in 0..n {
+                assert_eq!(
+                    l[i].to_bits(),
+                    ol[i].to_bits(),
+                    "left mixed {side} seq i {i}"
+                );
+                assert_eq!(
+                    r[i].to_bits(),
+                    or_[i].to_bits(),
+                    "right mixed {side} seq i {i}"
                 );
             }
         }
