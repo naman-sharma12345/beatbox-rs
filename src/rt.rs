@@ -1210,6 +1210,15 @@ pub enum StreamFx {
         mix: f32,
         fb: f32,
     },
+    /// Autopan (RT13): fx_extra::autopan chunked. Stateless
+    /// per-sample gain math on the absolute song position
+    /// (ph = ((i + pos) / period).fract()), so chunked and
+    /// whole-song agree exactly. Zero latency.
+    Autopan {
+        period: f32,
+        depth: f32,
+        tremolo: bool,
+    },
     /// Cabinet IR (RT10): fx_amp::cab_ir's convolve - the uniformly
     /// partitioned FFT convolver in fx_extra (B = 2048) - carried
     /// across blocks. IR loading (the global cache mutex) and the IR
@@ -1845,6 +1854,35 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::Autopan {
+                period,
+                depth,
+                tremolo,
+            } => {
+                use std::f32::consts::PI;
+                for i in 0..l.len() {
+                    // ph reads the absolute song position, as the
+                    // offline's (i + offset)
+                    let ph = ((i + pos) as f32 / *period).fract();
+                    let lfo = (2.0 * PI * ph).sin();
+                    if *tremolo {
+                        let g = 1.0 - *depth * (0.5 - 0.5 * lfo);
+                        l[i] *= g;
+                        r[i] *= g;
+                    } else {
+                        let pan = lfo * *depth;
+                        let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
+                        let (gl, gr) = (
+                            angle.cos() * std::f32::consts::SQRT_2,
+                            angle.sin() * std::f32::consts::SQRT_2,
+                        );
+                        let m = 0.5 * (l[i] + r[i]);
+                        let s = 0.5 * (l[i] - r[i]);
+                        l[i] = (m + s) * gl;
+                        r[i] = (m - s) * gr;
+                    }
+                }
+            }
             StreamFx::CabIr(arm) => {
                 let CabIrArm {
                     fft,
@@ -2082,7 +2120,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Transient(_) => Streamable,
         Effect::Phaser(_) => Streamable,
         Effect::Flanger(_) => Streamable,
-        Effect::Autopan(_) => OneShot("autopan: unverified"),
+        Effect::Autopan(_) => Streamable,
         Effect::Saturator(_) => OneShot("saturator: unverified (ADAA state carry pending)"),
         Effect::Haas(_) => OneShot("haas: unverified"),
         Effect::FreqShift(_) => OneShot("freq shift: unverified"),
@@ -2458,6 +2496,15 @@ impl ChainStreamer {
                         depth_ms: p.depth_ms,
                         mix: p.mix.clamp(0.0, 1.0),
                         fb: p.feedback.clamp(-0.95, 0.95),
+                    }
+                }
+                Effect::Autopan(p) => {
+                    // fx_extra::autopan, chunked: period and depth
+                    // verbatim; no state to seed.
+                    StreamFx::Autopan {
+                        period: (p.steps.max(0.25) * step_secs * SR).max(1.0),
+                        depth: p.depth.clamp(0.0, 1.0),
+                        tremolo: p.tremolo,
                     }
                 }
                 Effect::Sidechain(p) => {
@@ -3289,6 +3336,7 @@ mod tests {
         assert_eq!(
             streamable,
             vec![
+                "autopan",
                 "bitcrush",
                 "cab_ir",
                 "chorus",
@@ -4112,6 +4160,161 @@ mod tests {
                         "right sync {sync_steps} block {block} i {i}"
                     );
                 }
+            }
+            // mixed block sizes mid-stream (carried state must not
+            // depend on block size) over distinct L/R inputs (a
+            // shared per-channel buffer or index would show)
+            let mut seq: Vec<usize> = Vec::new();
+            let mut t = 0usize;
+            for b in [1usize, 999, 7, 256, 64].into_iter().cycle() {
+                if t >= n {
+                    break;
+                }
+                seq.push(b.min(n - t));
+                t += b;
+            }
+            let mut sig_r = sig.clone();
+            sig_r.reverse();
+            let mut ol = sig.clone();
+            let mut or_ = sig_r.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let mut l = sig.clone();
+            let mut r = sig_r.clone();
+            let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                .expect("streams");
+            assert_eq!(cs.latency_samples(), 0);
+            let mut pos = 0usize;
+            for k in &seq {
+                cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                pos += k;
+            }
+            for i in 0..n {
+                assert_eq!(
+                    l[i].to_bits(),
+                    ol[i].to_bits(),
+                    "left mixed {sync_steps} seq i {i}"
+                );
+                assert_eq!(
+                    r[i].to_bits(),
+                    or_[i].to_bits(),
+                    "right mixed {sync_steps} seq i {i}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stream_fx_autopan_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                let base = if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                };
+                let j = i % 977;
+                let click = if i < 6000 && j < 8 {
+                    0.8 * 0.5f32.powi(j as i32)
+                } else {
+                    0.0
+                };
+                base + click
+            })
+            .collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for tremolo in [false, true] {
+            let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+                "type":"autopan","steps":8.0,"depth":0.7,"tremolo":tremolo
+            }))
+            .unwrap();
+            for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+                let mut ol = sig.clone();
+                let mut or_ = sig.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: 0,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let mut l = sig.clone();
+                let mut r = sig.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("autopan streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                while pos < n {
+                    let k = block.min(n - pos);
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left tremolo {tremolo} block {block} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right tremolo {tremolo} block {block} i {i}"
+                    );
+                }
+            }
+            // mixed block sizes mid-stream (carried state must not
+            // depend on block size) over distinct L/R inputs (a
+            // shared per-channel buffer or index would show)
+            let mut seq: Vec<usize> = Vec::new();
+            let mut t = 0usize;
+            for b in [1usize, 999, 7, 256, 64].into_iter().cycle() {
+                if t >= n {
+                    break;
+                }
+                seq.push(b.min(n - t));
+                t += b;
+            }
+            let mut sig_r = sig.clone();
+            sig_r.reverse();
+            let mut ol = sig.clone();
+            let mut or_ = sig_r.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let mut l = sig.clone();
+            let mut r = sig_r.clone();
+            let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                .expect("streams");
+            assert_eq!(cs.latency_samples(), 0);
+            let mut pos = 0usize;
+            for k in &seq {
+                cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                pos += k;
+            }
+            for i in 0..n {
+                assert_eq!(
+                    l[i].to_bits(),
+                    ol[i].to_bits(),
+                    "left mixed {tremolo} seq i {i}"
+                );
+                assert_eq!(
+                    r[i].to_bits(),
+                    or_[i].to_bits(),
+                    "right mixed {tremolo} seq i {i}"
+                );
             }
         }
     }
