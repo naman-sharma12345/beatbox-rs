@@ -375,4 +375,108 @@ mod tests {
             .unwrap();
         assert_eq!(d["type"], "freq_splitter", "{d}");
     }
+
+    fn fx_render_bits(fx: &crate::fx::Effect) -> Vec<u32> {
+        let n = 4096usize;
+        let l0: Vec<f32> = (0..n)
+            .map(|i| ((i as f32) * 0.037).sin() * 0.5 + ((i as f32) * 0.0021).cos() * 0.2)
+            .collect();
+        let r0: Vec<f32> = l0.iter().rev().copied().collect();
+        let (mut l, mut r) = (l0, r0);
+        let triggers = std::collections::HashMap::new();
+        let ctx = crate::fx::FxContext {
+            step_secs: 0.1,
+            triggers: &triggers,
+            offset: 0,
+            levels: None,
+        };
+        fx.process(&mut l, &mut r, &ctx);
+        l.iter().chain(&r).map(|v| v.to_bits()).collect()
+    }
+
+    /// Every effect type that has a validate() rule: a rejected tweak
+    /// leaves the effect bit-identical (params, serialized state, render),
+    /// says so truthfully, and a valid tweak equals the effect built
+    /// straight from the merged params.
+    #[test]
+    fn rejected_tweak_changes_nothing_for_every_checked_effect() {
+        // (type, a tweak validate rejects, a tweak it accepts)
+        let table = [
+            (
+                "freq_splitter",
+                json!({"taps": 1}),
+                json!({"low_hz": 300.0}),
+            ),
+            ("granular", json!({"mix": 2.0}), json!({"mix": 0.3})),
+            (
+                "freq_shift",
+                json!({"shift_hz": 9000.0}),
+                json!({"shift_hz": 50.0}),
+            ),
+            (
+                "ring_mod",
+                json!({"shape": "nope"}),
+                json!({"freq_hz": 200.0}),
+            ),
+            (
+                "stereo_shaper",
+                json!({"delay_ms": 99.0}),
+                json!({"delay_ms": 10.0}),
+            ),
+            ("vinyl", json!({"age": 2.0}), json!({"age": 0.5})),
+            (
+                "waveshaper",
+                json!({"drive_db": 99.0}),
+                json!({"drive_db": 6.0}),
+            ),
+            ("vocoder", json!({"bands": 2}), json!({"bands": 16})),
+            ("gross_beat", json!({"time": "zzz_not_a_preset"}), json!({})),
+        ];
+        for (kind, bad, good) in table {
+            let mut e = eng();
+            e.call("add_track", &json!({"name": "t", "preset": "acid_bass"}))
+                .unwrap();
+            let name = e.project.tracks[0].name.clone();
+            e.call("add_effect", &json!({"track": name, "type": kind}))
+                .unwrap();
+            let before_json = serde_json::to_value(&e.project.tracks[0].effects[0]).unwrap();
+            let before_bits = fx_render_bits(&e.project.tracks[0].effects[0]);
+            let err = e
+                .call(
+                    "tweak_effect",
+                    &json!({"track": name, "index": 0, "params": bad}),
+                )
+                .expect_err(kind)
+                .to_string();
+            assert!(err.contains("Nothing was changed"), "{kind}: {err}");
+            let after_json = serde_json::to_value(&e.project.tracks[0].effects[0]).unwrap();
+            assert_eq!(
+                before_json, after_json,
+                "{kind}: state changed by a rejected tweak"
+            );
+            assert_eq!(
+                before_bits,
+                fx_render_bits(&e.project.tracks[0].effects[0]),
+                "{kind}: render changed by a rejected tweak"
+            );
+            // valid tweak: same effect as building it directly
+            e.call(
+                "tweak_effect",
+                &json!({"track": name, "index": 0, "params": good}),
+            )
+            .unwrap();
+            let mut v = before_json.clone();
+            if let (Some(o), Some(g)) = (v.as_object_mut(), good.as_object()) {
+                for (k, x) in g {
+                    o.insert(k.clone(), x.clone());
+                }
+            }
+            let direct: crate::fx::Effect = serde_json::from_value(v).unwrap();
+            assert_eq!(
+                fx_render_bits(&e.project.tracks[0].effects[0]),
+                fx_render_bits(&direct),
+                "{kind}: valid tweak renders differently from the direct build"
+            );
+        }
+    }
 }
