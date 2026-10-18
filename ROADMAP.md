@@ -65,6 +65,7 @@ Numbering note: this slot was planned as "real-time engine"; what actually shipp
 - DONE: staged MCP discovery for small models. `list_tool_groups` (the map), `search_tools {query}` (ranked, with required arguments), `describe_tool` (now includes the full `input_schema`) and `call_tool` (run any tool by name). `beatbox mcp --tools compact` / `BEATBOX_MCP_TOOLS=compact` advertises about 25 tools instead of all of them; every tool stays reachable. The stale "175 tools" line in the README is gone. Default stays the full list so existing clients see no change.
 
 ## Known behavior / technical debt
+- Keyed dynamic EQ (`dynamic_eq` with a `source` set) has no streamed rt arm: a chain containing it stays on the buffered whole-chain pass (asserted by `keyed_dynamic_eq_stays_buffered`). The unkeyed band streams bit-identically (RT18); routing the keyed form through the trigger envelope chunk-wise is open debt.
 - Master DC blocker (`DcBlock` in src/dsp.rs, R = 0.995): `y = x - x1 + 0.995*y1` is really a gentle low cut, not a pure DC blocker: -3 dB at ~35 Hz at 44.1 kHz, -6.1 dB at 20 Hz, -1.7 dB at 50 Hz, ~10 degrees of phase at 200 Hz.
 - It runs on the master sum in `render()`, on each post_master stem, and on `export_stems`' null-check copy of the pre-master stem sum.
 - Kept at 0.995 on purpose for byte-identity with the goldens, D11 and IWBY v5/v6. A true DC blocker (R ~ 0.9995, ~3.5 Hz) is deferred to a future major milestone or an opt-in mastering flag.
