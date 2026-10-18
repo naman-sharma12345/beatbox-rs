@@ -5220,6 +5220,59 @@ mod tests {
         );
     }
 
+    /// A dynamic_eq whose detector never engages (threshold above any
+    /// reachable level) adds exactly zero: the streamed output matches
+    /// the input bit for bit (to_bits, the golden-render standard).
+    /// Note the only theoretical exception is an exact -0.0 sample
+    /// (x + 0.0 normalises -0.0 to +0.0); the fixture below is always
+    /// nonzero.
+    #[test]
+    fn stream_fx_dynamic_eq_unity_is_bit_exact() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                ((i as f32) * 0.031).sin() * 0.6
+                    + ((i as f32) * 0.0013).cos() * 0.3
+                    + ((i as f32) * 0.11).sin() * 0.1
+            })
+            .collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+            "type":"dynamic_eq","freq":3000.0,"q":1.5,"threshold_db":100.0,
+            "ratio":3.0,"range_db":-8.0,"attack_ms":3.0,"release_ms":90.0,
+            "source":""
+        }))
+        .unwrap();
+        for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+            let mut l = sig.clone();
+            let mut r: Vec<f32> = sig.iter().rev().copied().collect();
+            let r_in = r.clone();
+            let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                .expect("dynamic eq streams");
+            assert_eq!(cs.latency_samples(), 0);
+            let mut pos = 0usize;
+            while pos < n {
+                let k = block.min(n - pos);
+                cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                pos += k;
+            }
+            for i in 0..n {
+                assert_eq!(
+                    l[i].to_bits(),
+                    sig[i].to_bits(),
+                    "left must be bit-exact at unity (block {block} i {i})"
+                );
+                assert_eq!(
+                    r[i].to_bits(),
+                    r_in[i].to_bits(),
+                    "right must be bit-exact at unity (block {block} i {i})"
+                );
+            }
+        }
+    }
+
     /// RT4 PDC test fixture: trap seed 9 with a 10ms-lookahead soft-knee
     /// compressor appended to the lead chain (la = 441 samples).
     fn pdc_project(with_fx: bool, solo: Option<&str>, tag: &str) -> crate::engine::Engine {
