@@ -329,6 +329,79 @@ fn mix_node_with_master_chain_allocates_nothing() {
     }
 }
 
+/// RT10: a streamed master cab_ir (partitioned FFT convolver, latency
+/// 2047 reported to PDC) must not allocate in process() - the IR part
+/// FFTs, delay lines, block buffers and accumulators are all
+/// preallocated in ChainStreamer::build.
+#[test]
+fn mix_node_with_master_cab_ir_allocates_nothing() {
+    use beatbox::rt::MixNode;
+    let d = std::env::temp_dir().join("beatbox_noalloc_cab_ir");
+    std::fs::create_dir_all(&d).unwrap();
+    // deterministic stereo IR spanning two convolver parts
+    let irl: Vec<f32> = (0..3000usize)
+        .map(|i| (((i * 2654435761) % 2000) as f32 / 1000.0 - 1.0) * 0.5f32.powf(i as f32 / 1200.0))
+        .collect();
+    let irr: Vec<f32> = (0..3000usize)
+        .map(|i| {
+            (((i * 2246822519 + 7) % 2000) as f32 / 1000.0 - 1.0) * 0.5f32.powf(i as f32 / 1500.0)
+        })
+        .collect();
+    let ir_path = d.join("test_ir.wav");
+    beatbox::render::write_wav(&ir_path, &irl, &irr).unwrap();
+    let mut e = beatbox::engine::Engine::new(d);
+    e.call(
+        "generate_beat",
+        &serde_json::json!({"style": "trap", "seed": 9, "bars": 1}),
+    )
+    .unwrap();
+    e.call("set_tempo", &serde_json::json!({"bpm": 200.0}))
+        .unwrap();
+    e.bank.sync(&e.project.samples);
+    e.project.arrangement = vec![beatbox::project::Section {
+        pattern: "main".into(),
+        repeats: 1,
+    }];
+    e.project.master_effects = vec![serde_json::from_value(serde_json::json!({
+        "type": "cab_ir", "path": ir_path.to_str().unwrap(),
+        "max_ms": 200.0, "mix": 0.7, "gain_db": -2.0
+    }))
+    .unwrap()];
+    let opts = beatbox::render::RenderOptions {
+        tail: 0.03,
+        ..Default::default()
+    };
+    for block in [512usize, 256, 63] {
+        let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
+        assert_eq!(
+            node.latency(),
+            2047,
+            "master cab_ir latency (block {block})"
+        );
+        let total = node.total_samples() + node.latency(); // include flush
+        let mut l = vec![0.0f32; block];
+        let mut r = vec![0.0f32; block];
+        let before = ALLOCS.with(|c| c.get());
+        let mut pos = 0u64;
+        while (pos as usize) < total {
+            let n = block.min(total - pos as usize);
+            let ctx = BlockCtx {
+                sample_rate: 44_100.0,
+                block_len: n,
+                frame_offset: pos,
+            };
+            let mut outs: [&mut [f32]; 2] = [&mut l[..n], &mut r[..n]];
+            node.process(&ctx, &[], &mut outs);
+            pos += n as u64;
+        }
+        assert_eq!(
+            ALLOCS.with(|c| c.get()),
+            before,
+            "MixNode::process with a streamed master cab_ir must not allocate (block {block})"
+        );
+    }
+}
+
 /// RT3 relay item 4: an Engine graph swap landing mid-run is pointer
 /// moves only - the payload Vec is built control-side before the window,
 /// old nodes return through the trash ring and are dropped control-side
