@@ -1255,6 +1255,22 @@ pub enum StreamFx {
         thr: f32,
         range: f32,
     },
+    /// Multiband (RT17): fx_extra::multiband chunked. The split3
+    /// cascades (two HighCut biquads at f_lo, two at f_hi on the
+    /// residual, per channel) and the three band detector envelopes
+    /// are carried; each detector sees its band's samples in song
+    /// order, so the per-sample band interleave changes nothing.
+    /// Zero latency.
+    Multiband {
+        split: [[Biquad; 4]; 2],
+        env: [f32; 3],
+        att: f32,
+        rel: f32,
+        thr: [f32; 3],
+        ratio: [f32; 3],
+        mk: [f32; 3],
+        mix: f32,
+    },
     /// Cabinet IR (RT10): fx_amp::cab_ir's convolve - the uniformly
     /// partitioned FFT convolver in fx_extra (B = 2048) - carried
     /// across blocks. IR loading (the global cache mutex) and the IR
@@ -1991,6 +2007,57 @@ impl StreamFx {
                     r[i] += hr * g;
                 }
             }
+            StreamFx::Multiband {
+                split,
+                env,
+                att,
+                rel,
+                thr,
+                ratio,
+                mk,
+                mix,
+            } => {
+                for i in 0..l.len() {
+                    let xl = l[i];
+                    let xr = r[i];
+                    // split3, per channel, verbatim
+                    let [la1, la2, lb1, lb2] = &mut split[0];
+                    let lo_l = la2.process(la1.process(xl));
+                    let rest_l = xl - lo_l;
+                    let mid_l = lb2.process(lb1.process(rest_l));
+                    let hi_l = rest_l - mid_l;
+                    let [ra1, ra2, rb1, rb2] = &mut split[1];
+                    let lo_r = ra2.process(ra1.process(xr));
+                    let rest_r = xr - lo_r;
+                    let mid_r = rb2.process(rb1.process(rest_r));
+                    let hi_r = rest_r - mid_r;
+                    let bl = [lo_l, mid_l, hi_l];
+                    let br = [lo_r, mid_r, hi_r];
+                    let mut out_l = 0.0f32;
+                    let mut out_r = 0.0f32;
+                    for b in 0..3 {
+                        // fx_extra::Comp::gain verbatim (soft 6 dB
+                        // knee), then * mk as the offline band loop
+                        let x = bl[b].abs().max(br[b].abs());
+                        let c = if x > env[b] { *att } else { *rel };
+                        env[b] = c * env[b] + (1.0 - c) * x;
+                        let over = gain_to_db(env[b]) - thr[b];
+                        let knee = 6.0;
+                        let gr = if over <= -knee / 2.0 {
+                            0.0
+                        } else if over < knee / 2.0 {
+                            (1.0 - 1.0 / ratio[b]) * (over + knee / 2.0).powi(2) / (2.0 * knee)
+                        } else {
+                            over * (1.0 - 1.0 / ratio[b])
+                        };
+                        let g = db_to_gain(-gr) * mk[b];
+                        out_l += bl[b] * g;
+                        out_r += br[b] * g;
+                    }
+                    l[i] = xl * (1.0 - *mix) + out_l * *mix;
+                    r[i] = xr * (1.0 - *mix) + out_r * *mix;
+                }
+            }
             StreamFx::CabIr(arm) => {
                 let CabIrArm {
                     fft,
@@ -2220,7 +2287,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::GrossBeat(_) => OneShot("gross beat: time-windowed"),
         Effect::Stutter(_) => OneShot("stutter: time-windowed"),
         Effect::Vocoder(_) => OneShot("vocoder: windowed analysis"),
-        Effect::Multiband(_) => OneShot("multiband: unverified"),
+        Effect::Multiband(_) => Streamable,
         Effect::DynamicEq(_) => OneShot("dynamic EQ: unverified / cross-track keyed"),
         Effect::Deesser(_) => Streamable,
         Effect::SoftClipper(_) => Streamable,
@@ -2663,6 +2730,40 @@ impl ChainStreamer {
                         rel: (-1.0 / (p.release_ms.max(0.05) * 0.001 * SR)).exp(),
                         thr: p.threshold_db,
                         range: p.range_db.clamp(-24.0, 0.0),
+                    }
+                }
+                Effect::Multiband(p) => {
+                    // fx_extra::multiband, chunked: crossover clamps,
+                    // coef() and Comp::new's ratio floor verbatim;
+                    // biquads seeded fresh and envs 0.0 as offline.
+                    let q = std::f32::consts::FRAC_1_SQRT_2;
+                    let f_lo = p.low_freq.clamp(40.0, 1000.0);
+                    let f_hi = p.high_freq.clamp(f_lo * 1.5, 12000.0);
+                    let mk_split = || {
+                        [
+                            Biquad::new(BiquadKind::HighCut, f_lo, q, 0.0),
+                            Biquad::new(BiquadKind::HighCut, f_lo, q, 0.0),
+                            Biquad::new(BiquadKind::HighCut, f_hi, q, 0.0),
+                            Biquad::new(BiquadKind::HighCut, f_hi, q, 0.0),
+                        ]
+                    };
+                    StreamFx::Multiband {
+                        split: [mk_split(), mk_split()],
+                        env: [0.0; 3],
+                        att: (-1.0 / (p.attack_ms.max(0.05) * 0.001 * SR)).exp(),
+                        rel: (-1.0 / (p.release_ms.max(0.05) * 0.001 * SR)).exp(),
+                        thr: [p.low_threshold_db, p.mid_threshold_db, p.high_threshold_db],
+                        ratio: [
+                            p.low_ratio.max(1.0),
+                            p.mid_ratio.max(1.0),
+                            p.high_ratio.max(1.0),
+                        ],
+                        mk: [
+                            db_to_gain(p.low_gain_db),
+                            db_to_gain(p.mid_gain_db),
+                            db_to_gain(p.high_gain_db),
+                        ],
+                        mix: p.mix.clamp(0.0, 1.0),
                     }
                 }
                 Effect::Sidechain(p) => {
@@ -3509,6 +3610,7 @@ mod tests {
                 "gate",
                 "haas",
                 "maximizer",
+                "multiband",
                 "parametric_eq",
                 "phaser",
                 "reverb",
@@ -4808,6 +4910,120 @@ mod tests {
                     r[i].to_bits(),
                     or_[i].to_bits(),
                     "right mixed {freq} seq i {i}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stream_fx_multiband_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                let base = if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                };
+                let j = i % 977;
+                let click = if i < 6000 && j < 8 {
+                    0.8 * 0.5f32.powi(j as i32)
+                } else {
+                    0.0
+                };
+                base + click
+            })
+            .collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for mix in [0.6f32, 1.0] {
+            let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+                "type":"multiband","low_freq":200.0,"high_freq":3000.0,
+                "low_threshold_db":-20.0,"mid_threshold_db":-20.0,"high_threshold_db":-22.0,
+                "low_ratio":3.0,"mid_ratio":2.0,"high_ratio":2.5,
+                "attack_ms":15.0,"release_ms":150.0,
+                "low_gain_db":1.5,"mid_gain_db":-1.0,"high_gain_db":2.0,"mix":mix
+            }))
+            .unwrap();
+            for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+                let mut ol = sig.clone();
+                let mut or_ = sig.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: 0,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let mut l = sig.clone();
+                let mut r = sig.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("multiband streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                while pos < n {
+                    let k = block.min(n - pos);
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left mix {mix} block {block} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right mix {mix} block {block} i {i}"
+                    );
+                }
+            }
+            // mixed block sizes mid-stream (carried state must not
+            // depend on block size) over distinct L/R inputs (a
+            // shared per-channel buffer or index would show)
+            let mut seq: Vec<usize> = Vec::new();
+            let mut t = 0usize;
+            for b in [1usize, 999, 7, 256, 64].into_iter().cycle() {
+                if t >= n {
+                    break;
+                }
+                seq.push(b.min(n - t));
+                t += b;
+            }
+            let mut sig_r = sig.clone();
+            sig_r.reverse();
+            let mut ol = sig.clone();
+            let mut or_ = sig_r.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let mut l = sig.clone();
+            let mut r = sig_r.clone();
+            let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                .expect("streams");
+            assert_eq!(cs.latency_samples(), 0);
+            let mut pos = 0usize;
+            for k in &seq {
+                cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                pos += k;
+            }
+            for i in 0..n {
+                assert_eq!(
+                    l[i].to_bits(),
+                    ol[i].to_bits(),
+                    "left mixed {mix} seq i {i}"
+                );
+                assert_eq!(
+                    r[i].to_bits(),
+                    or_[i].to_bits(),
+                    "right mixed {mix} seq i {i}"
                 );
             }
         }
