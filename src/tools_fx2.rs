@@ -750,4 +750,61 @@ mod tests {
             "right channel bits changed"
         );
     }
+
+    /// REPRO (expected red on current code): an automation lane may drive an
+    /// effect parameter to a value `Effect::validate` rejects, because lane
+    /// values are only clamped for a few parameter names and the render
+    /// builds the automated effect without validating it. 4e9 taps is far
+    /// past the 65537 bound (and would ask for ~16 GB at render); the test
+    /// never renders, it only asserts the lane is refused when created.
+    #[test]
+    fn repro_add_automation_refuses_a_lane_that_drives_taps_out_of_range() {
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "keep", "preset": "acid_bass"}))
+            .unwrap();
+        e.call(
+            "add_effect",
+            &json!({"track": "keep", "type": "freq_splitter"}),
+        )
+        .unwrap();
+        assert_eq!(e.project.tracks[0].effects[0].type_name(), "freq_splitter");
+        let before = e.project.clone();
+        let r = e.call(
+            "add_automation",
+            &json!({"track": "keep", "param": "fx.0.taps",
+                    "points": [{"beat": 0, "value": 4.0e9}, {"beat": 4, "value": 4.0e9}]}),
+        );
+        assert!(r.is_err(), "lane to 4e9 taps was accepted: {r:?}");
+        assert_eq!(e.project, before, "a refused lane must change nothing");
+    }
+
+    /// REPRO (expected red on current code): the same lane inside a project
+    /// file passes load_project (validate_effects checks static fields only).
+    #[test]
+    fn repro_load_project_refuses_a_lane_that_drives_taps_out_of_range() {
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "keep", "preset": "acid_bass"}))
+            .unwrap();
+        e.call(
+            "add_effect",
+            &json!({"track": "keep", "type": "freq_splitter"}),
+        )
+        .unwrap();
+        e.call(
+            "add_automation",
+            &json!({"track": "keep", "param": "fx.0.taps",
+                    "points": [{"beat": 0, "value": 300}, {"beat": 4, "value": 400}]}),
+        )
+        .unwrap();
+        let mut v = serde_json::to_value(&e.project).unwrap();
+        v["automation"][0]["points"][1]["value"] = json!(4.0e9);
+        let dir = std::env::temp_dir().join("bb_fx2_hostile_lane");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lane.json");
+        std::fs::write(&path, v.to_string()).unwrap();
+        let before = e.project.clone();
+        let r = e.call("load_project", &json!({"path": path}));
+        assert!(r.is_err(), "project with a 4e9-taps lane was loaded");
+        assert_eq!(e.project, before, "a refused load must change nothing");
+    }
 }
