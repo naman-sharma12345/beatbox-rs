@@ -2356,4 +2356,70 @@ mod tests {
         assert_eq!(run(514), run(515));
         assert_ne!(run(513), run(515));
     }
+
+    /// Frozen copy of freq_splitter as it was when validation landed. The
+    /// live fn must stay bit-identical to it on the same build (no libm
+    /// dependence: both run here).
+    fn freq_splitter_reference(p: &crate::fx::FreqSplitterFx, l: &mut [f32], r: &mut [f32]) {
+        let taps = (p.taps as usize).max(3) | 1;
+        let m = (taps - 1) / 2;
+        let lo = p.low_hz.min(p.high_hz);
+        let hi = p.high_hz.max(p.low_hz);
+        let h1 = lowpass_fir(lo, taps);
+        let h2 = lowpass_fir(hi, taps);
+        let g = db_to_gain(p.gain_db);
+        let mix = p.mix.clamp(0.0, 1.0);
+        for chan in [l, r] {
+            let x = chan.to_vec();
+            let s1 = if p.band == crate::fx::FreqSplitBand::High {
+                Vec::new()
+            } else {
+                convolve(&x, &h1)
+            };
+            let s2 = if p.band == crate::fx::FreqSplitBand::Low {
+                Vec::new()
+            } else {
+                convolve(&x, &h2)
+            };
+            for i in 0..chan.len() {
+                let wet = match p.band {
+                    crate::fx::FreqSplitBand::Low => s1[i],
+                    crate::fx::FreqSplitBand::Mid => s2[i] - s1[i],
+                    crate::fx::FreqSplitBand::High => (if i >= m { x[i - m] } else { 0.0 }) - s2[i],
+                };
+                chan[i] = (wet * g) * mix + x[i] * (1.0 - mix);
+            }
+        }
+    }
+
+    #[test]
+    fn freq_splitter_matches_its_frozen_reference_bit_for_bit() {
+        use crate::fx::{FreqSplitBand, FreqSplitterFx as F};
+        let (l0, r0) = fs_sig(6000);
+        for band in [FreqSplitBand::Low, FreqSplitBand::Mid, FreqSplitBand::High] {
+            for (taps, low_hz, high_hz, gain_db, mix) in [
+                (513u32, 250.0f32, 2500.0f32, 0.0f32, 1.0f32),
+                (34, 250.0, 2500.0, 0.0, 1.0),
+                (64, 900.0, 300.0, 3.0, 0.6),
+                (257, 120.0, 8000.0, -6.0, 0.0),
+            ] {
+                let p = F {
+                    taps,
+                    low_hz,
+                    high_hz,
+                    gain_db,
+                    mix,
+                    band,
+                    ..Default::default()
+                };
+                let (mut a, mut b) = (l0.clone(), r0.clone());
+                let (mut c, mut d) = (l0.clone(), r0.clone());
+                freq_splitter(&p, &mut a, &mut b);
+                freq_splitter_reference(&p, &mut c, &mut d);
+                let same = a.iter().zip(&c).all(|(x, y)| x.to_bits() == y.to_bits())
+                    && b.iter().zip(&d).all(|(x, y)| x.to_bits() == y.to_bits());
+                assert!(same, "band {band:?} taps {taps}");
+            }
+        }
+    }
 }
