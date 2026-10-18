@@ -313,4 +313,55 @@ mod tests {
         assert!(ga.abs() < 0.2 || gb.abs() < 0.2, "{r}");
         assert!(r["verdict"].as_str().is_some());
     }
+
+    #[test]
+    fn freq_splitter_is_reachable_through_the_generic_effect_tools() {
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "bus", "preset": "acid_bass"}))
+            .unwrap();
+        let name = e.project.tracks[0].name.clone();
+        let r = e
+            .call(
+                "add_effect",
+                &json!({"track": name, "type": "freq_splitter"}),
+            )
+            .unwrap();
+        assert_eq!(r["chain"][0], "freq_splitter", "{r}");
+        assert_eq!(r["index"], 0, "{r}");
+        assert_eq!(e.project.tracks[0].effects[0].type_name(), "freq_splitter");
+        let r = e
+            .call(
+                "tweak_effect",
+                &json!({"track": name, "index": 0, "params": {"band": "mid", "low_hz": 400.0, "high_hz": 3000.0, "taps": 257}}),
+            )
+            .unwrap();
+        assert_eq!(r["band"], "mid", "{r}");
+        assert_eq!(r["low_hz"], 400.0, "{r}");
+        assert_eq!(r["high_hz"], 3000.0, "{r}");
+        assert_eq!(r["taps"], 257, "{r}");
+        assert!(e
+            .call(
+                "tweak_effect",
+                &json!({"track": name, "index": 0, "params": {"band": "sub"}})
+            )
+            .is_err());
+        assert!(e
+            .call(
+                "tweak_effect",
+                &json!({"track": name, "index": 0, "params": {"bogus": 1}})
+            )
+            .is_err());
+        let d = e
+            .call("describe_effect", &json!({"track": name, "index": 0}))
+            .unwrap();
+        assert_eq!(d["type"], "freq_splitter", "{d}");
+        let params = d["parameters"].to_string();
+        for k in ["low_hz", "high_hz", "taps", "band", "gain_db", "mix"] {
+            assert!(params.contains(k), "describe_effect misses {k}: {d}");
+        }
+        let d = e
+            .call("describe_effect", &json!({"type": "freq_splitter"}))
+            .unwrap();
+        assert_eq!(d["type"], "freq_splitter", "{d}");
+    }
 }
