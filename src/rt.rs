@@ -3741,7 +3741,7 @@ mod tests {
             let triggers: std::collections::HashMap<String, Vec<usize>> =
                 std::collections::HashMap::new();
             let step = 60.0 / 140.0 / 4.0;
-            for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+            for block in [1usize, 7, 63, 64, 256, 512, 999, 1000, 1 << 16] {
                 let mut ol = sig.clone();
                 let mut or_ = sig.clone();
                 let ctx = crate::fx::FxContext {
