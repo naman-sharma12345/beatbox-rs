@@ -31,6 +31,8 @@ jobs:
           grep -E "(error|warning)" clippy.txt | head -50 | while read -r line; do echo "::error::$line"; done
           exit $status
       - run: cargo test --locked --no-default-features
+      - name: tests (default features)
+        run: cargo test --locked
       - name: rust-toolchain.toml matches the CI toolchain
         run: grep -q 'channel = "1.99.0"' rust-toolchain.toml
   beats:
