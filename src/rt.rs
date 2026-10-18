@@ -1106,6 +1106,18 @@ pub enum StreamFx {
         smooth: Vec<f32>,
         in_pos: usize,
     },
+    /// Transient shaper (RT7): the Effect::Transient arm chunked.
+    /// Dual fast/slow envelopes over the stereo abs-max detector are
+    /// carried across blocks; constants and the gain curve are
+    /// verbatim from fx.rs, zero lookahead, so latency is 0.
+    Transient {
+        fast: f32,
+        slow: f32,
+        fast_c: f32,
+        slow_c: f32,
+        attack: f32,
+        sustain: f32,
+    },
     Sidechain {
         trig: std::sync::Arc<Vec<usize>>,
         ti: usize,
@@ -1544,6 +1556,29 @@ impl StreamFx {
                     *in_pos += 1;
                 }
             }
+            StreamFx::Transient {
+                fast,
+                slow,
+                fast_c,
+                slow_c,
+                attack,
+                sustain,
+            } => {
+                for i in 0..l.len() {
+                    let x = l[i].abs().max(r[i].abs());
+                    *fast = *fast_c * *fast + (1.0 - *fast_c) * x;
+                    *slow = *slow_c * *slow + (1.0 - *slow_c) * x;
+                    let diff = (*fast - *slow) / (*slow + 1e-4);
+                    let g = if diff > 0.0 {
+                        1.0 + *attack * diff.min(2.0)
+                    } else {
+                        1.0 + *sustain * (-diff).min(1.0)
+                    };
+                    let g = g.clamp(0.1, 3.0);
+                    l[i] *= g;
+                    r[i] *= g;
+                }
+            }
             StreamFx::Sidechain {
                 trig,
                 ti,
@@ -1694,7 +1729,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Deesser(_) => OneShot("deesser: unverified"),
         Effect::SoftClipper(_) => OneShot("soft clipper: unverified"),
         Effect::Gate(_) => OneShot("gate: unverified"),
-        Effect::Transient(_) => OneShot("transient shaper: unverified"),
+        Effect::Transient(_) => Streamable,
         Effect::Phaser(_) => OneShot("phaser: unverified"),
         Effect::Flanger(_) => OneShot("flanger: unverified"),
         Effect::Autopan(_) => OneShot("autopan: unverified"),
@@ -1934,6 +1969,18 @@ impl ChainStreamer {
                         sum: la as f64,
                         smooth: vec![1.0; la],
                         in_pos: 0,
+                    }
+                }
+                Effect::Transient(p) => {
+                    // Effect::Transient (fx.rs), chunked: constants
+                    // verbatim, envelopes start at 0.0 as offline.
+                    StreamFx::Transient {
+                        fast: 0.0,
+                        slow: 0.0,
+                        fast_c: (-1.0 / (0.001 * SR)).exp(),
+                        slow_c: (-1.0 / (0.03 * SR)).exp(),
+                        attack: p.attack.clamp(-1.0, 1.0),
+                        sustain: p.sustain.clamp(-1.0, 1.0),
                     }
                 }
                 Effect::Sidechain(p) => {
@@ -2777,6 +2824,7 @@ mod tests {
                 "parametric_eq",
                 "reverb",
                 "sidechain",
+                "transient",
                 "width",
             ]
         );
@@ -3116,6 +3164,69 @@ mod tests {
                     fr[i].to_bits(),
                     or_[n - lat + i].to_bits(),
                     "flush right block {block} i {i}"
+                );
+            }
+        }
+    }
+
+    /// RT7: the streamed transient shaper is bit-identical to the
+    /// offline Effect::Transient arm at every block size (zero
+    /// latency, so no shift and no flush).
+    #[test]
+    fn stream_fx_transient_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                let base = if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                };
+                // decaying clicks every 977 samples so the attack and
+                // sustain branches both fire
+                let j = i % 977;
+                let click = if i < 6000 && j < 8 {
+                    0.8 * 0.5f32.powi(j as i32)
+                } else {
+                    0.0
+                };
+                base + click
+            })
+            .collect();
+        let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+            "type":"transient","attack":0.8,"sustain":-0.6
+        }))
+        .unwrap();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+            let mut ol = sig.clone();
+            let mut or_ = sig.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let mut l = sig.clone();
+            let mut r = sig.clone();
+            let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                .expect("transient streams");
+            assert_eq!(cs.latency_samples(), 0);
+            let mut pos = 0usize;
+            while pos < n {
+                let k = block.min(n - pos);
+                cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                pos += k;
+            }
+            for i in 0..n {
+                assert_eq!(l[i].to_bits(), ol[i].to_bits(), "left block {block} i {i}");
+                assert_eq!(
+                    r[i].to_bits(),
+                    or_[i].to_bits(),
+                    "right block {block} i {i}"
                 );
             }
         }
