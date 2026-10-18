@@ -392,6 +392,71 @@ fn mix_node_with_master_multiband_allocates_nothing() {
     }
 }
 
+/// RT18: a streamed master-chain dynamic EQ (unkeyed) must not
+/// allocate in process() - the two band-split biquads and the shared
+/// detector envelope are built once and carried. The threshold sits
+/// above the fixture's level so the detector engages and the full
+/// process path (bandpass + envelope + gain) is measured, not just
+/// construction.
+#[test]
+fn mix_node_with_master_dynamic_eq_allocates_nothing() {
+    use beatbox::rt::MixNode;
+    let d = std::env::temp_dir().join("beatbox_noalloc_dynamic_eq");
+    std::fs::create_dir_all(&d).unwrap();
+    let mut e = beatbox::engine::Engine::new(d);
+    e.call(
+        "generate_beat",
+        &serde_json::json!({"style": "trap", "seed": 9, "bars": 1}),
+    )
+    .unwrap();
+    e.call("set_tempo", &serde_json::json!({"bpm": 200.0}))
+        .unwrap();
+    e.bank.sync(&e.project.samples);
+    e.project.arrangement = vec![beatbox::project::Section {
+        pattern: "main".into(),
+        repeats: 1,
+    }];
+    e.project.master_effects = vec![serde_json::from_value(serde_json::json!({
+        "type": "dynamic_eq", "freq": 3000.0, "q": 1.5,
+        "threshold_db": -26.0, "ratio": 3.0, "range_db": -8.0,
+        "attack_ms": 3.0, "release_ms": 90.0, "source": ""
+    }))
+    .unwrap()];
+    let opts = beatbox::render::RenderOptions {
+        tail: 0.03,
+        ..Default::default()
+    };
+    for block in [512usize, 256] {
+        let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
+        assert_eq!(
+            node.latency(),
+            0,
+            "master dynamic_eq latency (block {block})"
+        );
+        let total = node.total_samples();
+        let mut l = vec![0.0f32; block];
+        let mut r = vec![0.0f32; block];
+        let before = ALLOCS.with(|c| c.get());
+        let mut pos = 0u64;
+        while (pos as usize) < total {
+            let n = block.min(total - pos as usize);
+            let ctx = BlockCtx {
+                sample_rate: 44_100.0,
+                block_len: n,
+                frame_offset: pos,
+            };
+            let mut outs: [&mut [f32]; 2] = [&mut l[..n], &mut r[..n]];
+            node.process(&ctx, &[], &mut outs);
+            pos += n as u64;
+        }
+        assert_eq!(
+            ALLOCS.with(|c| c.get()),
+            before,
+            "MixNode::process with a streamed master dynamic_eq must not allocate (block {block})"
+        );
+    }
+}
+
 /// RT10: a streamed master cab_ir (partitioned FFT convolver, latency
 /// 2047 reported to PDC) must not allocate in process() - the IR part
 /// FFTs, delay lines, block buffers and accumulators are all
