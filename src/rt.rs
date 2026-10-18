@@ -1133,6 +1133,21 @@ pub enum StreamFx {
         det: f32,
         hold: usize,
     },
+    /// Soft clipper (RT9): fx_extra::soft_clipper chunked. Per-sample
+    /// tanh shaper with the 2x-oversample midpoint filter carried
+    /// (prev / prev_mid_out per channel), constants verbatim, zero
+    /// lookahead, so latency is 0.
+    SoftClipper {
+        c: f32,
+        t: f32,
+        drive: f32,
+        mix: f32,
+        oversample: bool,
+        prev_l: f32,
+        prev_r: f32,
+        pmo_l: f32,
+        pmo_r: f32,
+    },
     Sidechain {
         trig: std::sync::Arc<Vec<usize>>,
         ti: usize,
@@ -1627,6 +1642,52 @@ impl StreamFx {
                     r[i] *= *g;
                 }
             }
+            StreamFx::SoftClipper {
+                c,
+                t,
+                drive,
+                mix,
+                oversample,
+                prev_l,
+                prev_r,
+                pmo_l,
+                pmo_r,
+            } => {
+                // soft_clip_sample inlined verbatim from fx_extra.rs
+                let clip = |x: f32, t: f32, c: f32| -> f32 {
+                    let a = x.abs();
+                    if a <= t {
+                        x
+                    } else {
+                        let room = (c - t).max(1e-4);
+                        x.signum() * (t + room * ((a - t) / room).tanh())
+                    }
+                };
+                for (chi, ch) in [&mut *l, &mut *r].into_iter().enumerate() {
+                    let (prev, prev_mid_out) = if chi == 0 {
+                        (&mut *prev_l, &mut *pmo_l)
+                    } else {
+                        (&mut *prev_r, &mut *pmo_r)
+                    };
+                    for s in ch.iter_mut() {
+                        let x = *s * *drive;
+                        let wet = if *oversample {
+                            // 2x: clip the midpoint and the sample, then
+                            // average back down
+                            let mid = 0.5 * (*prev + x);
+                            let ym = clip(mid, *t, *c);
+                            let y = clip(x, *t, *c);
+                            let out = 0.25 * *prev_mid_out + 0.5 * ym + 0.25 * y;
+                            *prev_mid_out = y;
+                            out.clamp(-*c, *c)
+                        } else {
+                            clip(x, *t, *c)
+                        };
+                        *prev = x;
+                        *s = *s * (1.0 - *mix) + wet * *mix;
+                    }
+                }
+            }
             StreamFx::Sidechain {
                 trig,
                 ti,
@@ -1775,7 +1836,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Multiband(_) => OneShot("multiband: unverified"),
         Effect::DynamicEq(_) => OneShot("dynamic EQ: unverified / cross-track keyed"),
         Effect::Deesser(_) => OneShot("deesser: unverified"),
-        Effect::SoftClipper(_) => OneShot("soft clipper: unverified"),
+        Effect::SoftClipper(_) => Streamable,
         Effect::Gate(_) => Streamable,
         Effect::Transient(_) => Streamable,
         Effect::Phaser(_) => OneShot("phaser: unverified"),
@@ -2046,6 +2107,22 @@ impl ChainStreamer {
                         rel: (-1.0 / (p.release_ms.max(0.05) * 0.001 * SR)).exp(),
                         det: (-1.0 / (1.0_f32.max(0.05) * 0.001 * SR)).exp(),
                         hold: (p.hold_ms.max(0.0) * 0.001 * SR) as usize,
+                    }
+                }
+                Effect::SoftClipper(p) => {
+                    // fx_extra::soft_clipper, chunked: c/t/drive/mix
+                    // and the zeroed oversample filter state verbatim.
+                    let c = db_to_gain(p.ceiling_db.min(0.0));
+                    StreamFx::SoftClipper {
+                        c,
+                        t: db_to_gain(p.threshold_db.min(p.ceiling_db - 0.1)).min(c * 0.999),
+                        drive: db_to_gain(p.drive_db.clamp(-12.0, 24.0)),
+                        mix: p.mix.clamp(0.0, 1.0),
+                        oversample: p.oversample,
+                        prev_l: 0.0,
+                        prev_r: 0.0,
+                        pmo_l: 0.0,
+                        pmo_r: 0.0,
                     }
                 }
                 Effect::Sidechain(p) => {
@@ -2890,6 +2967,7 @@ mod tests {
                 "parametric_eq",
                 "reverb",
                 "sidechain",
+                "soft_clipper",
                 "transient",
                 "width",
             ]
@@ -3355,6 +3433,75 @@ mod tests {
                     or_[i].to_bits(),
                     "right block {block} i {i}"
                 );
+            }
+        }
+    }
+
+    /// RT9: the streamed soft clipper is bit-identical to
+    /// fx_extra::soft_clipper at every block size, with and without
+    /// the 2x oversample filter (zero latency, so no shift/flush).
+    #[test]
+    fn stream_fx_soft_clipper_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                let base = if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                };
+                let j = i % 977;
+                let click = if i < 6000 && j < 8 {
+                    0.8 * 0.5f32.powi(j as i32)
+                } else {
+                    0.0
+                };
+                base + click
+            })
+            .collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for os in [true, false] {
+            let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+                "type":"soft_clipper","threshold_db":-12.0,"ceiling_db":-1.0,
+                "drive_db":6.0,"mix":1.0,"oversample":os
+            }))
+            .unwrap();
+            for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+                let mut ol = sig.clone();
+                let mut or_ = sig.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: 0,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let mut l = sig.clone();
+                let mut r = sig.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("soft clipper streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                while pos < n {
+                    let k = block.min(n - pos);
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left os {os} block {block} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right os {os} block {block} i {i}"
+                    );
+                }
             }
         }
     }
