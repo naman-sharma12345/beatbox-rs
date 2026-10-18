@@ -20,6 +20,18 @@ through `Effect::validate`. This CHANGES inputs that used to work.
 - Inverted `low_hz` > `high_hz` is still valid; it is swapped as before.
 - Even `taps` still round up to the next odd value (514 gives the same
   output as 515). Odd values in 33..=65537 give the same output as before.
+- Even-`taps` rounding at the new lower edge, measured on a copy of the
+  exact code (existing behaviour, not changed here): 34 becomes 35 (centre
+  index 17) and 64 becomes 65 (centre index 32), and the output is
+  identical to asking for 35 and 65 directly. The impulse response is
+  symmetric to float rounding only. Largest mirror difference (tap i against
+  tap N-1-i): 34 -> 1.9e-8 low band, 1.5e-8 high band; 64 -> 9.3e-9 low,
+  5.6e-9 high; the default 513 -> 9.3e-10 low, 3.7e-9 high. DC gain is
+  1.000000.
+- Known debt: the response is not bit-exact symmetric (a handful of mirror
+  pairs differ in the last float bit, for example 26/35 at 34 taps and
+  392/400 at 513). Writing the mirrored half would fix it but changes
+  output bits, so it is left as is.
 - The DSP code (`freq_splitter`, the streamed arm) is untouched; only the
   check was added. No golden render, preset, playbook or doc used
   freq_splitter before this unit.
