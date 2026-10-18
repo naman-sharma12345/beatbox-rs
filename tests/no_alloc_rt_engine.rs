@@ -329,6 +329,65 @@ fn mix_node_with_master_chain_allocates_nothing() {
     }
 }
 
+/// RT17: a streamed master-chain multiband compressor must not
+/// allocate in process() - the crossover cascades (8 biquads) and
+/// the three band detector envelopes are built once and carried.
+#[test]
+fn mix_node_with_master_multiband_allocates_nothing() {
+    use beatbox::rt::MixNode;
+    let d = std::env::temp_dir().join("beatbox_noalloc_multiband");
+    std::fs::create_dir_all(&d).unwrap();
+    let mut e = beatbox::engine::Engine::new(d);
+    e.call(
+        "generate_beat",
+        &serde_json::json!({"style": "trap", "seed": 9, "bars": 1}),
+    )
+    .unwrap();
+    e.call("set_tempo", &serde_json::json!({"bpm": 200.0}))
+        .unwrap();
+    e.bank.sync(&e.project.samples);
+    e.project.arrangement = vec![beatbox::project::Section {
+        pattern: "main".into(),
+        repeats: 1,
+    }];
+    e.project.master_effects = vec![serde_json::from_value(serde_json::json!({
+        "type": "multiband", "low_freq": 200.0, "high_freq": 3000.0,
+        "low_threshold_db": -20.0, "mid_threshold_db": -20.0, "high_threshold_db": -22.0,
+        "low_ratio": 3.0, "mid_ratio": 2.0, "high_ratio": 2.5,
+        "attack_ms": 15.0, "release_ms": 150.0, "mix": 1.0
+    }))
+    .unwrap()];
+    let opts = beatbox::render::RenderOptions {
+        tail: 0.03,
+        ..Default::default()
+    };
+    for block in [512usize, 256] {
+        let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
+        assert_eq!(node.latency(), 0, "master multiband latency (block {block})");
+        let total = node.total_samples();
+        let mut l = vec![0.0f32; block];
+        let mut r = vec![0.0f32; block];
+        let before = ALLOCS.with(|c| c.get());
+        let mut pos = 0u64;
+        while (pos as usize) < total {
+            let n = block.min(total - pos as usize);
+            let ctx = BlockCtx {
+                sample_rate: 44_100.0,
+                block_len: n,
+                frame_offset: pos,
+            };
+            let mut outs: [&mut [f32]; 2] = [&mut l[..n], &mut r[..n]];
+            node.process(&ctx, &[], &mut outs);
+            pos += n as u64;
+        }
+        assert_eq!(
+            ALLOCS.with(|c| c.get()),
+            before,
+            "MixNode::process with a streamed master multiband must not allocate (block {block})"
+        );
+    }
+}
+
 /// RT10: a streamed master cab_ir (partitioned FFT convolver, latency
 /// 2047 reported to PDC) must not allocate in process() - the IR part
 /// FFTs, delay lines, block buffers and accumulators are all
