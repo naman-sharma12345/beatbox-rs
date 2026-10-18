@@ -1118,6 +1118,21 @@ pub enum StreamFx {
         attack: f32,
         sustain: f32,
     },
+    /// Noise gate (RT8): fx_extra::gate chunked. Peak-hold detector,
+    /// hold counter and attack/release smoothing carried across
+    /// blocks; constants and state seeds (env 0, g = floor) verbatim
+    /// from the offline pass, zero lookahead, so latency is 0.
+    Gate {
+        env: f32,
+        g: f32,
+        held: usize,
+        thr: f32,
+        floor: f32,
+        att: f32,
+        rel: f32,
+        det: f32,
+        hold: usize,
+    },
     Sidechain {
         trig: std::sync::Arc<Vec<usize>>,
         ti: usize,
@@ -1579,6 +1594,39 @@ impl StreamFx {
                     r[i] *= g;
                 }
             }
+            StreamFx::Gate {
+                env,
+                g,
+                held,
+                thr,
+                floor,
+                att,
+                rel,
+                det,
+                hold,
+            } => {
+                for i in 0..l.len() {
+                    let x = l[i].abs().max(r[i].abs());
+                    *env = if x > *env {
+                        x
+                    } else {
+                        *det * *env + (1.0 - *det) * x
+                    };
+                    let target = if *env >= *thr {
+                        *held = *hold;
+                        1.0
+                    } else if *held > 0 {
+                        *held -= 1;
+                        1.0
+                    } else {
+                        *floor
+                    };
+                    let c = if target > *g { *att } else { *rel };
+                    *g = c * *g + (1.0 - c) * target;
+                    l[i] *= *g;
+                    r[i] *= *g;
+                }
+            }
             StreamFx::Sidechain {
                 trig,
                 ti,
@@ -1728,7 +1776,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::DynamicEq(_) => OneShot("dynamic EQ: unverified / cross-track keyed"),
         Effect::Deesser(_) => OneShot("deesser: unverified"),
         Effect::SoftClipper(_) => OneShot("soft clipper: unverified"),
-        Effect::Gate(_) => OneShot("gate: unverified"),
+        Effect::Gate(_) => Streamable,
         Effect::Transient(_) => Streamable,
         Effect::Phaser(_) => OneShot("phaser: unverified"),
         Effect::Flanger(_) => OneShot("flanger: unverified"),
@@ -1981,6 +2029,23 @@ impl ChainStreamer {
                         slow_c: (-1.0 / (0.03 * SR)).exp(),
                         attack: p.attack.clamp(-1.0, 1.0),
                         sustain: p.sustain.clamp(-1.0, 1.0),
+                    }
+                }
+                Effect::Gate(p) => {
+                    // fx_extra::gate, chunked: thr/floor/coef() and the
+                    // initial state (env 0.0, g = floor, held 0)
+                    // verbatim from the offline pass.
+                    let floor = db_to_gain(p.range_db.min(0.0));
+                    StreamFx::Gate {
+                        env: 0.0,
+                        g: floor,
+                        held: 0,
+                        thr: db_to_gain(p.threshold_db),
+                        floor,
+                        att: (-1.0 / (p.attack_ms.max(0.05) * 0.001 * SR)).exp(),
+                        rel: (-1.0 / (p.release_ms.max(0.05) * 0.001 * SR)).exp(),
+                        det: (-1.0 / (1.0_f32.max(0.05) * 0.001 * SR)).exp(),
+                        hold: (p.hold_ms.max(0.0) * 0.001 * SR) as usize,
                     }
                 }
                 Effect::Sidechain(p) => {
@@ -2820,6 +2885,7 @@ mod tests {
                 "eq",
                 "filter",
                 "gain",
+                "gate",
                 "maximizer",
                 "parametric_eq",
                 "reverb",
@@ -3214,6 +3280,67 @@ mod tests {
             let mut r = sig.clone();
             let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
                 .expect("transient streams");
+            assert_eq!(cs.latency_samples(), 0);
+            let mut pos = 0usize;
+            while pos < n {
+                let k = block.min(n - pos);
+                cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                pos += k;
+            }
+            for i in 0..n {
+                assert_eq!(l[i].to_bits(), ol[i].to_bits(), "left block {block} i {i}");
+                assert_eq!(
+                    r[i].to_bits(),
+                    or_[i].to_bits(),
+                    "right block {block} i {i}"
+                );
+            }
+        }
+    }
+
+    /// RT8: the streamed gate is bit-identical to fx_extra::gate at
+    /// every block size (zero latency, so no shift and no flush).
+    #[test]
+    fn stream_fx_gate_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                let base = if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                };
+                let j = i % 977;
+                let click = if i < 6000 && j < 8 {
+                    0.8 * 0.5f32.powi(j as i32)
+                } else {
+                    0.0
+                };
+                base + click
+            })
+            .collect();
+        let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+            "type":"gate","threshold_db":-30.0,"range_db":-40.0,
+            "attack_ms":1.0,"hold_ms":20.0,"release_ms":50.0
+        }))
+        .unwrap();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+            let mut ol = sig.clone();
+            let mut or_ = sig.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let mut l = sig.clone();
+            let mut r = sig.clone();
+            let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                .expect("gate streams");
             assert_eq!(cs.latency_samples(), 0);
             let mut pos = 0usize;
             while pos < n {
