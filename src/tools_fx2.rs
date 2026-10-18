@@ -408,6 +408,12 @@ mod tests {
         let name = e.project.tracks[0].name.clone();
         e.call("add_effect", &json!({"track": name, "type": kind}))
             .unwrap();
+        assert_eq!(e.project.tracks[0].effects.len(), 1, "{kind}: fresh track");
+        assert_eq!(
+            e.project.tracks[0].effects[0].type_name(),
+            kind,
+            "the effect under test must be at index 0"
+        );
         let before_json = serde_json::to_value(&e.project.tracks[0].effects[0]).unwrap();
         let before_bits = fx_render_bits(&e.project.tracks[0].effects[0]);
         let err = e
@@ -624,6 +630,8 @@ mod tests {
             &json!({"track": name, "type": "freq_splitter"}),
         )
         .unwrap();
+        assert_eq!(e.project.tracks[0].effects.len(), 1);
+        assert_eq!(e.project.tracks[0].effects[0].type_name(), "freq_splitter");
         let before = e.project.clone();
         let err = e
             .call(
