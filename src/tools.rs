@@ -1148,10 +1148,11 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 let mut v = serde_json::to_value(&*fx)?;
                 let patch = a.get("params").ok_or_else(|| anyhow!("missing params"))?;
                 merge(&mut v, patch);
-                *fx = serde_json::from_value(v)?;
-                let eff = serde_json::to_value(&*fx)?;
+                let new_fx: Effect = serde_json::from_value(v)?;
+                let eff = serde_json::to_value(&new_fx)?;
                 reject_unknown(patch, &eff, "tweak_effect")?;
-                fx.validate().map_err(|m| anyhow!("tweak_effect: {m}. Nothing was changed."))?;
+                new_fx.validate().map_err(|m| anyhow!("tweak_effect: {m}. Nothing was changed."))?;
+                *fx = new_fx;
                 Ok(eff)
             },
         },

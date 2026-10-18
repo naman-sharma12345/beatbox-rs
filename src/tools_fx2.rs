@@ -357,12 +357,11 @@ mod tests {
                 &json!({"track": name, "index": 0, "params": {"taps": 1}})
             )
             .is_err());
-        // restore a valid chain state before describing it
-        e.call(
-            "tweak_effect",
-            &json!({"track": name, "index": 0, "params": {"taps": 257}}),
-        )
-        .unwrap();
+        // a rejected tweak leaves the chain exactly as it was
+        match &e.project.tracks[0].effects[0] {
+            crate::fx::Effect::FreqSplitter(p) => assert_eq!(p.taps, 257),
+            other => panic!("unexpected effect {}", other.type_name()),
+        }
         let d = e
             .call("describe_effect", &json!({"track": name, "index": 0}))
             .unwrap();
