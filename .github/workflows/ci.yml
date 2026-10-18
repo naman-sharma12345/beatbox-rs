@@ -7,11 +7,11 @@ env:
   CARGO_TERM_COLOR: always
 jobs:
   check:
-    # runner size: ubuntu-latest is 4 vCPU / 16 GB RAM, and the 16 GB is
+    # runner size: ubuntu-24.04 is 4 vCPU / 16 GB RAM, and the 16 GB is
     # required - the 107k-line lib test target OOMs below ~2 GB RSS during
     # codegen/link (proven on a 1.9 GB box, SIGKILL even at opt-level=0 -j1).
     # Do not move this job to a smaller runner class.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       # keep in step with rust-toolchain.toml
@@ -40,7 +40,7 @@ jobs:
     # of the crate does not fit in small runners.
     # prove the producer: render the reference beats with produce_track
     # (fresh seeds), compare them with the previous sprint, build a blind A/B
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
