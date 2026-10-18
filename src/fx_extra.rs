@@ -822,6 +822,133 @@ pub fn freq_splitter(p: &crate::fx::FreqSplitterFx, l: &mut [f32], r: &mut [f32]
     }
 }
 
+pub fn check_granular(p: &crate::fx::GranularFx) -> Result<(), String> {
+    let rng = |name: &str, v: f32, lo: f32, hi: f32| {
+        if v.is_finite() && v >= lo && v <= hi {
+            Ok(())
+        } else {
+            Err(format!("granular: {name} must be {lo}..{hi} (got {v})"))
+        }
+    };
+    rng("grain_ms", p.grain_ms, 5.0, 500.0)?;
+    rng("density_hz", p.density_hz, 0.5, 200.0)?;
+    rng("pitch_semitones", p.pitch_semitones, -24.0, 24.0)?;
+    rng("position_jitter_ms", p.position_jitter_ms, 0.0, 500.0)?;
+    rng("spread", p.spread, 0.0, 1.0)?;
+    rng("mix", p.mix, 0.0, 1.0)?;
+    if !p.freeze_at_ms.is_finite() {
+        return Err("granular: freeze_at_ms must be finite (negative = off)".into());
+    }
+    Ok(())
+}
+
+struct Grain {
+    start: usize,
+    src0: f32,
+    gl: f32,
+    gr: f32,
+    /// Frozen region (first index, length); length 0 = read live input.
+    a: usize,
+    flen: usize,
+}
+
+/// Live-input granular insert. Causal: a grain only reads input samples at
+/// or before the sample being produced, so the same scheduler can run
+/// streamed later. `mix` 0 leaves the buffers untouched (bit-exact).
+pub fn granular(p: &crate::fx::GranularFx, l: &mut [f32], r: &mut [f32]) {
+    let n = l.len();
+    if p.mix <= 0.0 || n == 0 {
+        return;
+    }
+    let glen = ((p.grain_ms * 0.001 * SR) as usize).max(16);
+    let rate = 2.0f32.powf(p.pitch_semitones / 12.0);
+    let interval = (SR / p.density_hz.max(0.5)).max(1.0) as f64;
+    let jit = p.position_jitter_ms.max(0.0) * 0.001 * SR;
+    let mix = p.mix.clamp(0.0, 1.0);
+    let norm = 1.0 / (p.density_hz * p.grain_ms * 0.001 * 0.5).max(1.0).sqrt();
+    let freeze = if p.freeze_at_ms >= 0.0 {
+        Some(((p.freeze_at_ms * 0.001 * SR) as usize).min(n - 1))
+    } else {
+        None
+    };
+    let xl = l.to_vec();
+    let xr = r.to_vec();
+    let mut state: u32 = if p.seed == 0 { 0x9E37_79B9 } else { p.seed };
+    let mut rand01 = move || {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        (state >> 8) as f32 / 16_777_216.0
+    };
+    let mut grains: Vec<Grain> = Vec::new();
+    let mut next = 0.0f64;
+    let read = |x: &[f32], pos: f32, hi: usize| -> f32 {
+        if pos < 0.0 {
+            return 0.0;
+        }
+        let i0 = (pos as usize).min(hi);
+        let fr = pos - i0 as f32;
+        let a = x[i0];
+        let b = x[(i0 + 1).min(hi)];
+        a + (b - a) * fr
+    };
+    for i in 0..n {
+        while next <= i as f64 {
+            let u = (rand01() * 2.0 - 1.0) * p.spread.clamp(0.0, 1.0);
+            let ang = (u + 1.0) * std::f32::consts::FRAC_PI_4;
+            let (gl, gr) = (
+                ang.cos() * std::f32::consts::SQRT_2,
+                ang.sin() * std::f32::consts::SQRT_2,
+            );
+            let pos_r = rand01();
+            let mut g = Grain {
+                start: i,
+                src0: 0.0,
+                gl,
+                gr,
+                a: 0,
+                flen: 0,
+            };
+            match freeze {
+                Some(f) if i >= f => {
+                    let flen = ((glen as f32 + jit) as usize).min(f + 1).max(1);
+                    g.a = f + 1 - flen;
+                    g.flen = flen;
+                    g.src0 = g.a as f32 + pos_r * flen as f32;
+                }
+                _ => {
+                    let lead = if rate > 1.0 {
+                        glen as f32 * (rate - 1.0)
+                    } else {
+                        0.0
+                    };
+                    g.src0 = i as f32 - lead - pos_r * jit;
+                }
+            }
+            grains.push(g);
+            next += interval * (0.75 + 0.5 * rand01() as f64);
+        }
+        let (mut wl, mut wr) = (0.0f32, 0.0f32);
+        for g in &grains {
+            let t = i - g.start;
+            let w = 0.5 - 0.5 * (2.0 * PI * (t as f32 + 0.5) / glen as f32).cos();
+            let mut pos = g.src0 + rate * t as f32;
+            let hi = if g.flen > 0 {
+                let rel = (pos - g.a as f32).rem_euclid(g.flen as f32);
+                pos = g.a as f32 + rel;
+                g.a + g.flen - 1
+            } else {
+                i
+            };
+            wl += read(&xl, pos, hi) * w * g.gl;
+            wr += read(&xr, pos, hi) * w * g.gr;
+        }
+        l[i] = (wl * norm) * mix + xl[i] * (1.0 - mix);
+        r[i] = (wr * norm) * mix + xr[i] * (1.0 - mix);
+        grains.retain(|g| i + 1 - g.start < glen);
+    }
+}
+
 /// Uniformly partitioned FFT convolution; output has `x.len()` samples.
 pub fn convolve(x: &[f32], ir: &[f32]) -> Vec<f32> {
     const B: usize = 2048;
@@ -1654,6 +1781,136 @@ mod tests {
         let m = 256usize;
         for i in m + 512..n {
             assert!((l[i] - 0.5).abs() < 1e-5, "dc at {i}: {}", l[i]);
+        }
+    }
+
+    fn gr_sig(n: usize) -> (Vec<f32>, Vec<f32>) {
+        let l: Vec<f32> = (0..n)
+            .map(|i| (i as f32 * 0.05).sin() * 0.5 + (i as f32 * 0.013).sin() * 0.3)
+            .collect();
+        let r: Vec<f32> = l.iter().rev().copied().collect();
+        (l, r)
+    }
+
+    #[test]
+    fn granular_mix_zero_is_bit_exact_bypass() {
+        let (l0, r0) = gr_sig(20_000);
+        let (mut l, mut r) = (l0.clone(), r0.clone());
+        let p = crate::fx::GranularFx {
+            mix: 0.0,
+            ..Default::default()
+        };
+        granular(&p, &mut l, &mut r);
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(r.iter().zip(&r0).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    #[test]
+    fn granular_is_deterministic_per_seed_and_seeds_differ() {
+        let (l0, r0) = gr_sig(30_000);
+        let run = |seed: u32| {
+            let (mut l, mut r) = (l0.clone(), r0.clone());
+            let p = crate::fx::GranularFx {
+                mix: 1.0,
+                seed,
+                ..Default::default()
+            };
+            granular(&p, &mut l, &mut r);
+            (l, r)
+        };
+        let (a, b) = (run(7), run(7));
+        assert!(a
+            .0
+            .iter()
+            .zip(&b.0)
+            .all(|(x, y)| x.to_bits() == y.to_bits()));
+        assert!(a
+            .1
+            .iter()
+            .zip(&b.1)
+            .all(|(x, y)| x.to_bits() == y.to_bits()));
+        let c = run(8);
+        assert!(a
+            .0
+            .iter()
+            .zip(&c.0)
+            .any(|(x, y)| x.to_bits() != y.to_bits()));
+        assert!(a.0.iter().chain(&a.1).all(|v| v.is_finite()));
+        assert!(a.0.iter().any(|v| v.abs() > 1e-3), "wet path is silent");
+    }
+
+    #[test]
+    fn granular_is_causal_and_pitch_up_does_not_peek_ahead() {
+        let n = 30_000;
+        let mut l = vec![0.0f32; n];
+        l[20_000] = 1.0;
+        let r = l.clone();
+        for semis in [0.0f32, 12.0, 24.0] {
+            let (mut a, mut b) = (l.clone(), r.clone());
+            let p = crate::fx::GranularFx {
+                mix: 1.0,
+                pitch_semitones: semis,
+                ..Default::default()
+            };
+            granular(&p, &mut a, &mut b);
+            assert!(
+                a[..20_000].iter().chain(&b[..20_000]).all(|v| *v == 0.0),
+                "output before the impulse at {semis} st"
+            );
+        }
+    }
+
+    #[test]
+    fn granular_freeze_keeps_sounding_after_the_input_stops() {
+        let n = 60_000;
+        let (mut l, mut r) = gr_sig(n);
+        for i in 20_000..n {
+            l[i] = 0.0;
+            r[i] = 0.0;
+        }
+        let tail_energy = |freeze_at_ms: f32| {
+            let (mut a, mut b) = (l.clone(), r.clone());
+            let p = crate::fx::GranularFx {
+                mix: 1.0,
+                freeze_at_ms,
+                ..Default::default()
+            };
+            granular(&p, &mut a, &mut b);
+            a[40_000..].iter().map(|v| v * v).sum::<f32>()
+        };
+        let off = tail_energy(-1.0);
+        let held = tail_energy(400.0);
+        assert!(off < 1e-9, "unfrozen tail should be silent, got {off}");
+        assert!(held > 1e-3, "frozen tail should keep sounding, got {held}");
+    }
+
+    #[test]
+    fn granular_validation_rejects_nonsense() {
+        use crate::fx::GranularFx;
+        assert!(check_granular(&GranularFx::default()).is_ok());
+        for bad in [
+            GranularFx {
+                grain_ms: 1.0,
+                ..Default::default()
+            },
+            GranularFx {
+                density_hz: 0.0,
+                ..Default::default()
+            },
+            GranularFx {
+                pitch_semitones: 30.0,
+                ..Default::default()
+            },
+            GranularFx {
+                mix: 1.5,
+                ..Default::default()
+            },
+            GranularFx {
+                spread: f32::NAN,
+                ..Default::default()
+            },
+        ] {
+            assert!(check_granular(&bad).is_err());
         }
     }
 }

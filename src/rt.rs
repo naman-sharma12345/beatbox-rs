@@ -2569,6 +2569,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Haas(_) => Streamable,
         Effect::FreqShift(_) => OneShot("freq shift: unverified"),
         Effect::RingMod(_) => Streamable,
+        Effect::Granular(_) => OneShot("granular: grain scheduler stream arm pending"),
         Effect::FreqSplitter(_) => Streamable,
         Effect::StereoShaper(_) => OneShot("stereo shaper: unverified"),
         Effect::Vinyl(_) => OneShot("vinyl: unverified"),
