@@ -43,12 +43,27 @@ through `Effect::validate`. This CHANGES inputs that used to work.
 - The taps bound is checked first, before any buffer is created, so a huge
   value (u32::MAX) fails without allocating anything sized by it. The
   error message is a fixed-size string.
-- A rejected `tweak_effect` now leaves the effect unchanged (earlier it
-  assigned the new values before validating).
+- `tweak_effect` now validates a new copy and only then assigns it. Through
+  the engine (`Engine::call`) a failed mutating tool already restored the
+  whole project from a snapshot, so a rejected tweak left the project
+  unchanged before this change as well; the change makes the tool itself
+  safe when run without that wrapper. The per-effect tests therefore pass on
+  the old code too (shown by CI on a scratch branch); they guard the
+  engine-level behaviour, they are not a regression test for the old
+  assign-then-validate order.
 
 ## Not covered
 
-Validation runs through the tool path (`add_effect`, `tweak_effect`,
-chain loading in `tools_chain`). A project file or JSON deserialized
-directly into an `Effect` and processed without those paths is not
-checked; a bound inside `freq_splitter` itself would be a separate unit.
+Validation runs through `add_effect`, `place_fx`, `tweak_effect`,
+`set_parameters` (fx.<i>.<path>), chain loading in `tools_chain`, and
+`load_project` (every effect on every track, bus and master; a snapshot
+sidecar entry with an invalid effect is skipped and counted in
+`snapshots_skipped_invalid_effects`). Not covered (known debt):
+
+- Automation lanes. A lane on `fx.<i>.taps` can carry point values outside
+  the validated range; the render applies them with `set_path` and builds
+  the effect without `validate` (render.rs, both automation sites). A
+  load-time lane-bounds check would reject files that load today, so it is
+  only proposed, not built.
+- A bound inside `freq_splitter` itself (a direct `Effect` built in code
+  and processed) would be a separate unit.
