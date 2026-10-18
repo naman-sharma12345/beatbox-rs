@@ -1219,6 +1219,19 @@ pub enum StreamFx {
         depth: f32,
         tremolo: bool,
     },
+    /// Ring mod (RT14): fx_mod::ring_mod_at chunked. The carrier
+    /// phase is carried per channel instead of replayed from sample
+    /// 0 (the offline's offset replay loop); advance applies the
+    /// same f32 ops in the same order, so the phase sequence is
+    /// bit-identical. Zero latency.
+    RingMod {
+        ph: [f32; 2],
+        shape: String,
+        inc: f32,
+        lfo_hz: f32,
+        lfo_depth: f32,
+        mix: f32,
+    },
     /// Cabinet IR (RT10): fx_amp::cab_ir's convolve - the uniformly
     /// partitioned FFT convolver in fx_extra (B = 2048) - carried
     /// across blocks. IR loading (the global cache mutex) and the IR
@@ -1883,6 +1896,35 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::RingMod {
+                ph,
+                shape,
+                inc,
+                lfo_hz,
+                lfo_depth,
+                mix,
+            } => {
+                use std::f32::consts::PI;
+                let step_at = |i: usize| {
+                    let semis = if *lfo_hz > 0.0 {
+                        *lfo_depth * (2.0 * PI * *lfo_hz * i as f32 / SR).sin()
+                    } else {
+                        0.0
+                    };
+                    *inc * 2f32.powf(semis / 12.0)
+                };
+                for (ci, ch) in [&mut *l, &mut *r].into_iter().enumerate() {
+                    for (i, x) in ch.iter_mut().enumerate() {
+                        let step = step_at(i + pos);
+                        let c = crate::fx_mod::carrier(shape, ph[ci]);
+                        *x = *x * (1.0 - *mix) + *x * c * *mix;
+                        ph[ci] += step;
+                        if ph[ci] >= 1.0 {
+                            ph[ci] -= ph[ci].floor();
+                        }
+                    }
+                }
+            }
             StreamFx::CabIr(arm) => {
                 let CabIrArm {
                     fft,
@@ -2124,7 +2166,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Saturator(_) => OneShot("saturator: unverified (ADAA state carry pending)"),
         Effect::Haas(_) => OneShot("haas: unverified"),
         Effect::FreqShift(_) => OneShot("freq shift: unverified"),
-        Effect::RingMod(_) => OneShot("ring mod: unverified"),
+        Effect::RingMod(_) => Streamable,
         Effect::StereoShaper(_) => OneShot("stereo shaper: unverified"),
         Effect::Vinyl(_) => OneShot("vinyl: unverified"),
         Effect::Waveshaper(_) => OneShot("waveshaper: unverified"),
@@ -2505,6 +2547,21 @@ impl ChainStreamer {
                         period: (p.steps.max(0.25) * step_secs * SR).max(1.0),
                         depth: p.depth.clamp(0.0, 1.0),
                         tremolo: p.tremolo,
+                    }
+                }
+                Effect::RingMod(p) => {
+                    // fx_mod::ring_mod_at, chunked: phase seeds and
+                    // clamps verbatim (the offline replays advance()
+                    // over 0..offset; the streamed chain starts at
+                    // sample 0, so carrying the phase is the same
+                    // sequence).
+                    StreamFx::RingMod {
+                        ph: [0.0, p.stereo_phase.rem_euclid(1.0)],
+                        shape: p.shape.clone(),
+                        inc: p.freq_hz / SR,
+                        lfo_hz: p.lfo_hz,
+                        lfo_depth: p.lfo_depth,
+                        mix: p.mix.clamp(0.0, 1.0),
                     }
                 }
                 Effect::Sidechain(p) => {
@@ -3352,6 +3409,7 @@ mod tests {
                 "parametric_eq",
                 "phaser",
                 "reverb",
+                "ring_mod",
                 "sidechain",
                 "soft_clipper",
                 "transient",
@@ -4314,6 +4372,117 @@ mod tests {
                     r[i].to_bits(),
                     or_[i].to_bits(),
                     "right mixed {tremolo} seq i {i}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stream_fx_ring_mod_shifted_identity() {
+        let n = 12000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                let base = if i < 6000 {
+                    ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3
+                } else {
+                    0.0
+                };
+                let j = i % 977;
+                let click = if i < 6000 && j < 8 {
+                    0.8 * 0.5f32.powi(j as i32)
+                } else {
+                    0.0
+                };
+                base + click
+            })
+            .collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for shape in ["sine", "square"] {
+            let fx: crate::fx::Effect = serde_json::from_value(serde_json::json!({
+                "type":"ring_mod","freq_hz":130.0,"shape":shape,"stereo_phase":0.25,
+                "lfo_hz":0.5,"lfo_depth":3.0,"mix":0.7
+            }))
+            .unwrap();
+            for block in [1usize, 7, 64, 256, 512, 999, 1000, 1 << 16] {
+                let mut ol = sig.clone();
+                let mut or_ = sig.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: 0,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let mut l = sig.clone();
+                let mut r = sig.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("ring mod streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                while pos < n {
+                    let k = block.min(n - pos);
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left shape {shape} block {block} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right shape {shape} block {block} i {i}"
+                    );
+                }
+            }
+            // mixed block sizes mid-stream (carried state must not
+            // depend on block size) over distinct L/R inputs (a
+            // shared per-channel buffer or index would show)
+            let mut seq: Vec<usize> = Vec::new();
+            let mut t = 0usize;
+            for b in [1usize, 999, 7, 256, 64].into_iter().cycle() {
+                if t >= n {
+                    break;
+                }
+                seq.push(b.min(n - t));
+                t += b;
+            }
+            let mut sig_r = sig.clone();
+            sig_r.reverse();
+            let mut ol = sig.clone();
+            let mut or_ = sig_r.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let mut l = sig.clone();
+            let mut r = sig_r.clone();
+            let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                .expect("streams");
+            assert_eq!(cs.latency_samples(), 0);
+            let mut pos = 0usize;
+            for k in &seq {
+                cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                pos += k;
+            }
+            for i in 0..n {
+                assert_eq!(
+                    l[i].to_bits(),
+                    ol[i].to_bits(),
+                    "left mixed {shape} seq i {i}"
+                );
+                assert_eq!(
+                    r[i].to_bits(),
+                    or_[i].to_bits(),
+                    "right mixed {shape} seq i {i}"
                 );
             }
         }

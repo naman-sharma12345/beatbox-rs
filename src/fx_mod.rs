@@ -146,7 +146,7 @@ pub fn check_ring_mod(p: &RingModFx) -> Result<(), String> {
     Ok(())
 }
 
-fn carrier(shape: &str, ph: f32) -> f32 {
+pub(crate) fn carrier(shape: &str, ph: f32) -> f32 {
     // ph in [0, 1)
     match shape {
         "triangle" => 1.0 - 4.0 * (ph - 0.5).abs(),
