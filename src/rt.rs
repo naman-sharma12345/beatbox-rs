@@ -3978,6 +3978,7 @@ mod tests {
                 "multiband",
                 "parametric_eq",
                 "phaser",
+                "pitch_shift",
                 "reverb",
                 "ring_mod",
                 "sidechain",
