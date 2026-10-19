@@ -1450,6 +1450,10 @@ pub enum StreamFx {
     /// preallocated at build; bit-identical to the offline pass at any
     /// block size.
     Granular(Box<crate::fx_extra::GranularCore>),
+    /// pitch_shift: fx_extra::PitchShiftCore, the offline dual-tap delay
+    /// as a per-sample state machine, zero latency, rings allocated at
+    /// build; bit-identical to the offline pass at any block size.
+    PitchShift(Box<crate::fx_extra::PitchShiftCore>),
     Sidechain {
         trig: std::sync::Arc<Vec<usize>>,
         ti: usize,
@@ -2341,6 +2345,15 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::PitchShift(core) => {
+                if core.mix > 0.0 {
+                    for i in 0..l.len() {
+                        let (a, b) = core.step(l[i], r[i]);
+                        l[i] = a;
+                        r[i] = b;
+                    }
+                }
+            }
             StreamFx::FreqSplit(arm) => {
                 let FreqSplitArm {
                     conv1,
@@ -2565,7 +2578,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Maximizer(_) => Streamable,
         Effect::Convolution(_) => OneShot("IR convolution: block processing"),
         Effect::CabIr(_) => Streamable,
-        Effect::PitchShift(_) => OneShot("pitch shift: time-windowed"),
+        Effect::PitchShift(_) => Streamable,
         Effect::GrossBeat(_) => OneShot("gross beat: time-windowed"),
         Effect::Stutter(_) => OneShot("stutter: time-windowed"),
         Effect::Vocoder(_) => OneShot("vocoder: windowed analysis"),
@@ -2924,6 +2937,11 @@ impl ChainStreamer {
                     // fx_extra::granular: the same core, ring/grain pool
                     // allocated here and never on the audio path
                     StreamFx::Granular(Box::new(crate::fx_extra::GranularCore::new(p, total)))
+                }
+                Effect::PitchShift(p) => {
+                    // fx_extra::pitch_shift: the same core, rings
+                    // allocated here and never on the audio path
+                    StreamFx::PitchShift(Box::new(crate::fx_extra::PitchShiftCore::new(p)))
                 }
                 Effect::FreqSplitter(p) => {
                     // fx_extra::freq_splitter, chunked (RT19): the same
@@ -5640,6 +5658,95 @@ mod tests {
             serde_json::from_value(serde_json::json!({"type":"granular","mix":0.0})).unwrap();
         let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], 0.1, &triggers, n)
             .expect("granular streams");
+        let (mut l, mut r) = (l0.clone(), r0.clone());
+        for (a, b) in l.chunks_mut(333).zip(r.chunks_mut(333)) {
+            cs.process_block(a, b);
+        }
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(r.iter().zip(&r0).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    #[test]
+    fn stream_fx_pitch_shift_bit_identical_to_offline() {
+        let n = 30_000usize;
+        let l0: Vec<f32> = (0..n)
+            .map(|i| ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3)
+            .collect();
+        let r0: Vec<f32> = l0.iter().rev().copied().collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        let variants = [
+            serde_json::json!({"type":"pitch_shift"}),
+            serde_json::json!({"type":"pitch_shift","semitones":-7.0,"cents":33.0,
+                "window_ms":90.0,"mix":0.65}),
+            serde_json::json!({"type":"pitch_shift","semitones":24.0,
+                "window_ms":200.0,"mix":1.0}),
+        ];
+        for (vi, v) in variants.iter().enumerate() {
+            let fx: crate::fx::Effect = serde_json::from_value(v.clone()).unwrap();
+            let mut ol = l0.clone();
+            let mut or_ = r0.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let seqs: Vec<Vec<usize>> = vec![
+                vec![1],
+                vec![7],
+                vec![64],
+                vec![256],
+                vec![512],
+                vec![999],
+                vec![1000],
+                vec![1 << 16],
+                vec![1, 999, 7, 256, 64],
+            ];
+            for seq in seqs {
+                let mut l = l0.clone();
+                let mut r = r0.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("pitch_shift streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                let mut si = 0usize;
+                while pos < n {
+                    let k = seq[si % seq.len()].min(n - pos);
+                    si += 1;
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left variant {vi} blocks {seq:?} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right variant {vi} blocks {seq:?} i {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stream_fx_pitch_shift_mix_zero_is_bit_exact_bypass() {
+        let n = 5_000usize;
+        let l0: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.07).sin() * 0.4).collect();
+        let r0: Vec<f32> = l0.iter().rev().copied().collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let fx: crate::fx::Effect =
+            serde_json::from_value(serde_json::json!({"type":"pitch_shift","mix":0.0})).unwrap();
+        let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], 0.1, &triggers, n)
+            .expect("pitch_shift streams");
         let (mut l, mut r) = (l0.clone(), r0.clone());
         for (a, b) in l.chunks_mut(333).zip(r.chunks_mut(333)) {
             cs.process_block(a, b);
