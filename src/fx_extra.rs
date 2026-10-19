@@ -653,6 +653,65 @@ pub fn pitch_shift_at(p: &PitchShiftFx, l: &mut [f32], r: &mut [f32], offset: us
     }
 }
 
+/// pitch_shift as a per-sample state machine: the same dual-tap delay/ring
+/// math as [`pitch_shift_at`] one sample at a time, so the streamed chain is
+/// bit-identical to the offline pass at any block size. Causal (the taps
+/// only read past samples), so zero latency. Both rings are allocated at
+/// build, never on the audio path.
+pub struct PitchShiftCore {
+    bufl: Vec<f32>,
+    bufr: Vec<f32>,
+    wi: usize,
+    d: f32,
+    w: f32,
+    ratio: f32,
+    pub mix: f32,
+}
+
+impl PitchShiftCore {
+    pub fn new(p: &PitchShiftFx) -> Self {
+        let ratio = 2f32.powf((p.semitones.clamp(-24.0, 24.0) + p.cents / 100.0) / 12.0);
+        let w = ((p.window_ms.clamp(10.0, 200.0) * 0.001 * SR) as usize).max(64) as f32;
+        let size = w as usize * 2 + 4;
+        PitchShiftCore {
+            bufl: vec![0.0; size],
+            bufr: vec![0.0; size],
+            wi: 0,
+            d: 0.0,
+            w,
+            ratio,
+            mix: p.mix.clamp(0.0, 1.0),
+        }
+    }
+
+    #[inline]
+    pub fn step(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let size = self.bufl.len();
+        let wi = self.wi;
+        self.bufl[wi] = l;
+        self.bufr[wi] = r;
+        self.d = (self.d + (1.0 - self.ratio)).rem_euclid(self.w);
+        let d = self.d;
+        let d2 = (d + self.w * 0.5).rem_euclid(self.w);
+        let g1 = (PI * d / self.w).sin();
+        let g2 = (PI * d2 / self.w).sin();
+        let sf = size as f32;
+        let tap = |buf: &[f32], delay: f32| {
+            let pos = (wi as f32 - delay - 1.0).rem_euclid(sf);
+            let i0 = pos as usize % size;
+            let f = pos - pos.floor();
+            buf[i0] * (1.0 - f) + buf[(i0 + 1) % size] * f
+        };
+        let wetl = tap(&self.bufl, d) * g1 + tap(&self.bufl, d2) * g2;
+        let wetr = tap(&self.bufr, d) * g1 + tap(&self.bufr, d2) * g2;
+        self.wi = (wi + 1) % size;
+        (
+            l * (1.0 - self.mix) + wetl * self.mix,
+            r * (1.0 - self.mix) + wetr * self.mix,
+        )
+    }
+}
+
 // ---------------- convolution reverb ----------------
 
 /// Synthesize a stereo impulse response for a space.
