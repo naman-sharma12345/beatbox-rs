@@ -110,6 +110,24 @@ fn playlist_json(p: &Project) -> Value {
 /// Write an automation clip's points into its lane at `at` (song beats),
 /// replacing what the lane had inside the clip's span.
 fn stamp(p: &mut Project, clip: &AutomationClip, at: f32) {
+    // on the validated effects, pull each value back into what
+    // Effect::validate accepts (other targets are returned unchanged)
+    let values: Vec<f32> = match crate::tools_studio::static_value(p, &clip.target, &clip.param) {
+        Ok(cur) => clip
+            .points
+            .iter()
+            .map(|pt| {
+                crate::tools_studio::clamp_to_valid_effect_value(
+                    p,
+                    &clip.target,
+                    &clip.param,
+                    cur,
+                    pt.value,
+                )
+            })
+            .collect(),
+        Err(_) => clip.points.iter().map(|pt| pt.value).collect(),
+    };
     let lane = match p
         .automation
         .iter()
@@ -125,10 +143,10 @@ fn stamp(p: &mut Project, clip: &AutomationClip, at: f32) {
     let end = at + clip.length_beats;
     lane.points
         .retain(|x| x.beat < at - 1e-4 || x.beat > end + 1e-4);
-    for pt in &clip.points {
+    for (pt, value) in clip.points.iter().zip(values) {
         lane.points.push(AutoPoint {
             beat: at + pt.beat.clamp(0.0, clip.length_beats),
-            value: pt.value,
+            value,
             curve: pt.curve,
         });
     }
