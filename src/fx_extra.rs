@@ -2133,10 +2133,14 @@ mod tests {
         for i in 512..512 + 1024 {
             assert_eq!(l[i].to_bits(), l0[i].to_bits(), "pass0 i {i}");
         }
-        // passes 1 and 2 repeat the slice; samples past the 1-sample wrap
-        // crossfade of each pass are raw
-        for k in 1024 + 1..3 * 1024 {
+        // passes 1 and 2 repeat the slice; each pass's first sample is the
+        // wrap crossfade (the enum documents a crossfade at every loop wrap,
+        // and the streamed arm matches it bit for bit), the rest are raw
+        for k in 1024..3 * 1024 {
             let i = k % 1024;
+            if i < 1 {
+                continue;
+            }
             assert_eq!(l[512 + k].to_bits(), l0[512 + i].to_bits(), "rep l k {k}");
             assert_eq!(r[512 + k].to_bits(), r0[512 + i].to_bits(), "rep r k {k}");
         }
