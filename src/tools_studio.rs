@@ -263,7 +263,13 @@ pub(crate) fn clamp_value(param: &str, v: f32) -> f32 {
 /// from `validate` itself, so no range is restated here. Anything else
 /// (other targets, effects without a rule, values that do not deserialize,
 /// a current value that is itself rejected) is returned unchanged.
-fn clamp_to_valid_effect_value(p: &Project, owner: &str, param: &str, current: f32, x: f32) -> f32 {
+pub(crate) fn clamp_to_valid_effect_value(
+    p: &Project,
+    owner: &str,
+    param: &str,
+    current: f32,
+    x: f32,
+) -> f32 {
     let Some(Target::Fx(i, path)) = parse_target(param) else {
         return x;
     };
