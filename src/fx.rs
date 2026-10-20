@@ -1010,20 +1010,26 @@ impl Allpass {
     }
 }
 
-fn reverb(p: &ReverbFx, l: &mut [f32], r: &mut [f32], offset: usize) {
-    if p.mode != ReverbMode::Freeverb {
-        use crate::sc_dsp::{fdn_reverb, FdnParams, HALL, PLATE, ROOM};
-        let (cfg, default_decay) = match p.mode {
-            ReverbMode::FdnPlate => (&PLATE, 2.5),
-            ReverbMode::FdnHall => (&HALL, 3.5),
-            _ => (&ROOM, 1.2),
-        };
-        let decay = if p.decay_s > 0.0 {
-            p.decay_s
-        } else {
-            default_decay * (0.4 + 1.2 * p.size.clamp(0.0, 1.0))
-        };
-        let fp = FdnParams {
+/// ReverbFx -> (config, params) for the FDN modes, shared by the
+/// offline pass (`reverb`) and the RT `StreamFx::ReverbFdn` arm so both
+/// run the same Fdn with the same numbers.
+pub(crate) fn fdn_params(
+    p: &ReverbFx,
+) -> (&'static crate::sc_dsp::FdnConfig, crate::sc_dsp::FdnParams) {
+    use crate::sc_dsp::{FdnParams, HALL, PLATE, ROOM};
+    let (cfg, default_decay) = match p.mode {
+        ReverbMode::FdnPlate => (&PLATE, 2.5),
+        ReverbMode::FdnHall => (&HALL, 3.5),
+        _ => (&ROOM, 1.2),
+    };
+    let decay = if p.decay_s > 0.0 {
+        p.decay_s
+    } else {
+        default_decay * (0.4 + 1.2 * p.size.clamp(0.0, 1.0))
+    };
+    (
+        cfg,
+        FdnParams {
             decay_s: decay,
             size: p.size,
             damping_hz: 18000.0 * 0.12f32.powf(p.damping.clamp(0.0, 1.0)),
@@ -1032,8 +1038,14 @@ fn reverb(p: &ReverbFx, l: &mut [f32], r: &mut [f32], offset: usize) {
             width: p.width,
             low_cut_hz: p.low_cut_hz,
             mix: p.mix,
-        };
-        fdn_reverb(cfg, &fp, l, r, offset);
+        },
+    )
+}
+
+fn reverb(p: &ReverbFx, l: &mut [f32], r: &mut [f32], offset: usize) {
+    if p.mode != ReverbMode::Freeverb {
+        let (cfg, fp) = fdn_params(p);
+        crate::sc_dsp::fdn_reverb(cfg, &fp, l, r, offset);
         return;
     }
     const COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
