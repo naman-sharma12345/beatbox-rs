@@ -611,6 +611,165 @@ fn stutter_guarded(
     }
 }
 
+// ---------------- stutter (streamed) ----------------
+
+/// stutter as a per-sample state machine: the same grid/ring math as
+/// [`stutter_guarded`] one sample at a time, so the streamed chain is
+/// bit-identical to the offline pass at any block size. The gate, stutter,
+/// half-time and tape-stop modes only read past samples, so they stream
+/// with zero latency; reverse reads up to a whole cycle of future samples
+/// and stays on the one-shot path. The history ring (cycle + tape-stop
+/// preroll + lerp margin) and the parsed gate levels are allocated at
+/// build, never on the audio path.
+pub struct StutterCore {
+    mode: StutterMode,
+    ring_l: Vec<f32>,
+    ring_r: Vec<f32>,
+    step: f32,
+    cycle: usize,
+    slice: usize,
+    fade: usize,
+    levels: Vec<f32>,
+    total: usize,
+    dc: (TapeDcGuard, TapeDcGuard),
+    dc_cycle: Option<usize>,
+    pub mix: f32,
+}
+
+impl StutterCore {
+    pub fn new(p: &StutterFx, step_secs: f32, total: usize) -> Self {
+        let step = (step_secs * SR).max(1.0);
+        let cycle = (p.cycle_steps.max(0.25) * step) as usize;
+        let cycle = cycle.max(1);
+        let slice = ((p.slice_steps.max(0.0625) * step) as usize).clamp(1, cycle);
+        let fade = ((p.smooth_ms.max(0.5) * 0.001 * SR) as usize).max(1);
+        let size = match p.mode {
+            StutterMode::Gate => 1,
+            _ => cycle + tape_dc::preroll() + 2,
+        };
+        StutterCore {
+            mode: p.mode,
+            ring_l: vec![0.0; size],
+            ring_r: vec![0.0; size],
+            step,
+            cycle,
+            slice,
+            fade,
+            levels: gate_levels(&p.pattern),
+            total,
+            dc: (TapeDcGuard::default(), TapeDcGuard::default()),
+            dc_cycle: None,
+            mix: p.mix.clamp(0.0, 1.0),
+        }
+    }
+
+    /// One song sample (`j` is its absolute index from the song start).
+    #[inline]
+    pub fn step(&mut self, j: usize, l: f32, r: f32) -> (f32, f32) {
+        let size = self.ring_l.len();
+        self.ring_l[j % size] = l;
+        self.ring_r[j % size] = r;
+        let mix = self.mix;
+        let fade = self.fade;
+        let cycle = self.cycle;
+        let win = |pos: usize, len: usize| -> f32 {
+            let a = (pos as f32 / fade as f32).min(1.0);
+            let b = ((len.saturating_sub(pos)) as f32 / fade as f32).min(1.0);
+            a.min(b)
+        };
+        let at = |ring: &[f32], a: usize| ring[a % size];
+        // lerp_read over the ring with the song length as the bound,
+        // offset 0: the same branches as the offline whole-song pass.
+        let lerp_at = |ring: &[f32], f: f32, total: usize| -> f32 {
+            if f < 0.0 {
+                return 0.0;
+            }
+            let i = f as usize;
+            if i + 1 >= total {
+                return if i < total { at(ring, i) } else { 0.0 };
+            }
+            let frac = f - i as f32;
+            // frac == 0.0: the i + 1 tap would only be multiplied by 0.0,
+            // and streamed that slot can hold stale wrapped history - stale *
+            // 0.0 is NaN for an inf/NaN stale value. Skip the read.
+            // Known limit (R2): at an exact -0.0 input the offline pass takes
+            // the result's zero sign from the future sample; the streamed pass
+            // cannot see it, so the zero sign may differ (numerically equal).
+            if frac == 0.0 {
+                return at(ring, i);
+            }
+            at(ring, i) * (1.0 - frac) + at(ring, i + 1) * frac
+        };
+        let total = self.total;
+        let (wl, wr) = match self.mode {
+            StutterMode::Gate => {
+                let step = self.step;
+                let k = (j as f32 / step) as usize;
+                let lv = self.levels[k % self.levels.len()];
+                let pos = j - (k as f32 * step) as usize;
+                let seg = step as usize;
+                let next = self.levels[(k + 1) % self.levels.len()];
+                let prev = self.levels[(k + self.levels.len() - 1) % self.levels.len()];
+                let mut g = lv;
+                if pos < fade && prev != lv {
+                    let t = pos as f32 / fade as f32;
+                    g = prev + (lv - prev) * t;
+                }
+                if seg.saturating_sub(pos) < fade && next != lv {
+                    let t = (seg.saturating_sub(pos)) as f32 / fade as f32;
+                    g = next + (lv - next) * t;
+                }
+                (l * g, r * g)
+            }
+            StutterMode::Stutter => {
+                let c0 = (j / cycle) * cycle;
+                let pos = (j - c0) % self.slice;
+                let src = c0 + pos;
+                let g = win(pos, self.slice);
+                (at(&self.ring_l, src) * g, at(&self.ring_r, src) * g)
+            }
+            StutterMode::HalfTime => {
+                let c0 = (j / cycle) * cycle;
+                let pos = j - c0;
+                let srcf = c0 as f32 + pos as f32 * 0.5;
+                let g = win(pos, cycle);
+                (
+                    lerp_at(&self.ring_l, srcf, total) * g,
+                    lerp_at(&self.ring_r, srcf, total) * g,
+                )
+            }
+            StutterMode::Reverse => unreachable!("reverse stutter stays one-shot"),
+            StutterMode::TapeStop => {
+                let c0 = (j / cycle) * cycle;
+                let u = (j - c0) as f32 / cycle as f32;
+                let tape_pos = |jj: usize| -> f32 {
+                    let c = (jj / cycle) * cycle;
+                    let uu = (jj - c) as f32 / cycle as f32;
+                    c as f32 + cycle as f32 * (uu - 0.5 * uu * uu)
+                };
+                let srcf = tape_pos(j);
+                let g = (1.0 - u).powf(0.3) * win(j - c0, cycle).max(0.0);
+                let (mut rl, mut rr) = (
+                    lerp_at(&self.ring_l, srcf, total),
+                    lerp_at(&self.ring_r, srcf, total),
+                );
+                if self.dc_cycle != Some(c0) {
+                    self.dc_cycle = Some(c0);
+                    self.dc.0.reset();
+                    self.dc.1.reset();
+                    for a in c0.saturating_sub(tape_dc::preroll())..c0 {
+                        self.dc.0.process(at(&self.ring_l, a));
+                        self.dc.1.process(at(&self.ring_r, a));
+                    }
+                }
+                rl = self.dc.0.process(rl);
+                rr = self.dc.1.process(rr);
+                (rl * g, rr * g)
+            }
+        };
+        (l * (1.0 - mix) + wl * mix, r * (1.0 - mix) + wr * mix)
+    }
+}
 // ---------------- pitch shifter ----------------
 
 pub fn pitch_shift(p: &PitchShiftFx, l: &mut [f32], r: &mut [f32]) {
