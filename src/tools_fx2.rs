@@ -926,7 +926,9 @@ mod tests {
         e.project.validate_lanes().unwrap();
         let lane = e.project.automation.last().unwrap();
         let (lo, hi) = lane.range().unwrap();
-        assert!(lo >= 33.0 && hi >= 33.0, "taps lane {lo}..{hi}");
+        // validate's true edge is 32.5: integer parameters round, and 32.5
+        // rounds up to the 33 minimum
+        assert!(lo >= 32.5 && hi >= 32.5, "taps lane {lo}..{hi}");
         e.call(
             "generate_automation",
             &json!({"track": "keep", "param": format!("fx.{idx}.mix"), "shape": "riser", "start_beat": 0, "end_beat": 8}),
@@ -961,7 +963,8 @@ mod tests {
             .unwrap();
         e.project.validate_lanes().unwrap();
         let (lo, hi) = e.project.automation.last().unwrap().range().unwrap();
-        assert!(lo >= 33.0 && hi >= 33.0, "taps lane {lo}..{hi}");
+        // 32.5 rounds up to the 33 minimum (integer parameters round)
+        assert!(lo >= 32.5 && hi >= 32.5, "taps lane {lo}..{hi}");
         e.call(
             "create_automation_clip",
             &json!({"name": "c", "track": "keep", "param": param, "points": [
