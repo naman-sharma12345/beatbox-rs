@@ -287,20 +287,46 @@ fn shape(c: &[(f32, f32)], x: f32, symmetric: bool) -> f32 {
 }
 
 pub fn waveshaper(p: &WaveshaperFx, l: &mut [f32], r: &mut [f32]) {
-    let c = curve_of(p);
-    let g = crate::dsp::db_to_gain(p.drive_db);
-    let out = crate::dsp::db_to_gain(p.output_db);
-    let mix = p.mix.clamp(0.0, 1.0);
-    // the curve's DC (asymmetric shapes) is removed with a gentle low cut
-    let mut dc = [
-        Biquad::new(BiquadKind::LowCut, 12.0, 0.707, 0.0),
-        Biquad::new(BiquadKind::LowCut, 12.0, 0.707, 0.0),
-    ];
+    let mut core = WaveshaperCore::new(p);
     for (ch, buf) in [l, r].into_iter().enumerate() {
         for x in buf.iter_mut() {
-            let y = dc[ch].process(shape(&c, *x * g, p.symmetric)) * out;
-            *x = *x * (1.0 - mix) + y * mix;
+            *x = core.step(ch, *x);
         }
+    }
+}
+
+/// The waveshaper's per-sample state machine (the DC-removal low cut per
+/// channel), shared by the offline pass and the RT StreamFx arm so a
+/// chunked render is the full render bit for bit.
+pub struct WaveshaperCore {
+    c: Vec<(f32, f32)>,
+    g: f32,
+    out: f32,
+    mix: f32,
+    symmetric: bool,
+    dc: [Biquad; 2],
+}
+
+impl WaveshaperCore {
+    pub fn new(p: &WaveshaperFx) -> Self {
+        WaveshaperCore {
+            c: curve_of(p),
+            g: crate::dsp::db_to_gain(p.drive_db),
+            out: crate::dsp::db_to_gain(p.output_db),
+            mix: p.mix.clamp(0.0, 1.0),
+            symmetric: p.symmetric,
+            // the curve's DC (asymmetric shapes) is removed with a gentle low cut
+            dc: [
+                Biquad::new(BiquadKind::LowCut, 12.0, 0.707, 0.0),
+                Biquad::new(BiquadKind::LowCut, 12.0, 0.707, 0.0),
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn step(&mut self, ch: usize, x: f32) -> f32 {
+        let y = self.dc[ch].process(shape(&self.c, x * self.g, self.symmetric)) * self.out;
+        x * (1.0 - self.mix) + y * self.mix
     }
 }
 

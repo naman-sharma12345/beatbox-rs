@@ -1490,6 +1490,9 @@ pub enum StreamFx {
     /// sc_dsp FDN reverb modes (room/plate/hall): the same Fdn the
     /// offline pass runs - Fdn::process is block-chunkable by design,
     /// so a chunked render is the full render bit for bit.
+    Waveshaper(Box<crate::fx_char::WaveshaperCore>),
+    Rectifier(Box<crate::fx_sc::RectifierCore>),
+    StereoShaper(Box<crate::fx_mod::StereoShaperCore>),
     ReverbFdn(Box<crate::sc_dsp::Fdn>),
     /// fx_vocoder: the same VocoderCore the offline pass runs (no
     /// lookahead, zero latency).
@@ -2507,6 +2510,27 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::Waveshaper(core) => {
+                for (ch, buf) in [l, r].into_iter().enumerate() {
+                    for x in buf.iter_mut() {
+                        *x = core.step(ch, *x);
+                    }
+                }
+            }
+            StreamFx::Rectifier(core) => {
+                for (ch, buf) in [l, r].into_iter().enumerate() {
+                    for x in buf.iter_mut() {
+                        *x = core.step(ch, *x);
+                    }
+                }
+            }
+            StreamFx::StereoShaper(core) => {
+                for i in 0..l.len() {
+                    let (yl, yr) = core.step(l[i], r[i]);
+                    l[i] = yl;
+                    r[i] = yr;
+                }
+            }
             StreamFx::ReverbFdn(core) => {
                 // sc_dsp::Fdn::process: block-chunkable by design (all
                 // state in self), so chunked blocks equal the offline
@@ -2634,13 +2658,13 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::RingMod(_) => Streamable,
         Effect::Granular(_) => Streamable,
         Effect::FreqSplitter(_) => Streamable,
-        Effect::StereoShaper(_) => OneShot("stereo shaper: unverified"),
+        Effect::StereoShaper(_) => Streamable,
         Effect::Vinyl(_) => OneShot("vinyl: unverified"),
-        Effect::Waveshaper(_) => OneShot("waveshaper: unverified"),
+        Effect::Waveshaper(_) => Streamable,
         Effect::AmpSim(_) => OneShot("amp sim: unverified"),
         Effect::ModDelay(_) => OneShot("mod delay: unverified"),
         Effect::Lofi(_) => OneShot("lofi: unverified"),
-        Effect::Rectifier(_) => OneShot("rectifier: unverified"),
+        Effect::Rectifier(_) => Streamable,
     }
 }
 
@@ -3190,6 +3214,15 @@ impl ChainStreamer {
                         att_n: (p.attack_ms.max(0.1) * 0.001 * SR) as usize,
                         amount: p.amount.clamp(0.0, 1.0),
                     }
+                }
+                Effect::Waveshaper(p) => {
+                    StreamFx::Waveshaper(Box::new(crate::fx_char::WaveshaperCore::new(p)))
+                }
+                Effect::Rectifier(p) => {
+                    StreamFx::Rectifier(Box::new(crate::fx_sc::RectifierCore::new(p)))
+                }
+                Effect::StereoShaper(p) => {
+                    StreamFx::StereoShaper(Box::new(crate::fx_mod::StereoShaperCore::new(p)))
                 }
                 Effect::Reverb(p) if p.mode != crate::fx::ReverbMode::Freeverb => {
                     // FDN modes: the same sc_dsp::Fdn the offline pass
@@ -4034,13 +4067,16 @@ mod tests {
                 "parametric_eq",
                 "phaser",
                 "pitch_shift",
+                "rectifier",
                 "reverb",
                 "ring_mod",
                 "sidechain",
                 "soft_clipper",
+                "stereo_shaper",
                 "stutter",
                 "transient",
                 "vocoder",
+                "waveshaper",
                 "width",
             ]
         );
@@ -6160,6 +6196,101 @@ mod tests {
                     or_[n - lat + i].to_bits(),
                     "mixed flush r i {i}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn stream_fx_waveshaper_bit_identical_to_offline() {
+        stream_fx_bit_identity_cases(&[
+            serde_json::json!({"type":"waveshaper"}),
+            serde_json::json!({"type":"waveshaper","preset":"tube","symmetric":false,
+                "drive_db":14.0,"output_db":-6.0,"mix":0.7}),
+            serde_json::json!({"type":"waveshaper","curve":"0:0, 0.3:0.9, 0.6:-0.4, 1:1",
+                "symmetric":false,"drive_db":24.0,"mix":1.0}),
+        ]);
+    }
+
+    #[test]
+    fn stream_fx_rectifier_bit_identical_to_offline() {
+        stream_fx_bit_identity_cases(&[
+            serde_json::json!({"type":"rectifier"}),
+            serde_json::json!({"type":"rectifier","mode":"half","mix":0.6,"output_db":6.0}),
+            serde_json::json!({"type":"rectifier","mode":"FULL","mix":0.25,"output_db":-12.0}),
+        ]);
+    }
+
+    #[test]
+    fn stream_fx_stereo_shaper_bit_identical_to_offline() {
+        stream_fx_bit_identity_cases(&[
+            serde_json::json!({"type":"stereo_shaper"}),
+            serde_json::json!({"type":"stereo_shaper","preset":"pseudo_stereo"}),
+            serde_json::json!({"type":"stereo_shaper","preset":"wide","delay_ms":8.0,
+                "delay_side":-1.0,"invert_left":true,"mix":0.6}),
+        ]);
+    }
+
+    /// Shared harness for the small per-sample shaper cores: the chunked RT
+    /// chain must equal the offline whole-buffer pass bit for bit across a
+    /// spread of block sequences, for each parameter variant.
+    fn stream_fx_bit_identity_cases(variants: &[serde_json::Value]) {
+        let n = 30_000usize;
+        let l0: Vec<f32> = (0..n)
+            .map(|i| ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3)
+            .collect();
+        let r0: Vec<f32> = l0.iter().rev().copied().collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        for (vi, v) in variants.iter().enumerate() {
+            let fx: crate::fx::Effect = serde_json::from_value(v.clone()).unwrap();
+            assert!(matches!(classify(&fx), FxClass::Streamable));
+            let mut ol = l0.clone();
+            let mut or_ = r0.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let seqs: Vec<Vec<usize>> = vec![
+                vec![1],
+                vec![7],
+                vec![64],
+                vec![512],
+                vec![999],
+                vec![1000],
+                vec![1 << 16],
+                vec![1, 999, 7, 256, 64],
+            ];
+            for seq in seqs {
+                let mut l = l0.clone();
+                let mut r = r0.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("effect streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                let mut si = 0usize;
+                while pos < n {
+                    let k = seq[si % seq.len()].min(n - pos);
+                    si += 1;
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left variant {vi} blocks {seq:?} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right variant {vi} blocks {seq:?} i {i}"
+                    );
+                }
             }
         }
     }
