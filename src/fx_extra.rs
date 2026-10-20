@@ -612,6 +612,9 @@ fn stutter_guarded(
     for i in 0..n {
         let j = i + offset;
         let (wl, wr) = match p.mode {
+            StutterMode::SliceRepeat => {
+                unreachable!("slice_repeat returns before the per-sample loop")
+            }
             StutterMode::Gate => {
                 let k = (j as f32 / step) as usize;
                 let lv = levels[k % levels.len()];
@@ -811,6 +814,9 @@ impl StutterCore {
         };
         let total = self.total;
         let (wl, wr) = match self.mode {
+            StutterMode::SliceRepeat => {
+                unreachable!("slice_repeat returns before the per-sample loop")
+            }
             StutterMode::Gate => {
                 let step = self.step;
                 let k = (j as f32 / step) as usize;
