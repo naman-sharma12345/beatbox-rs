@@ -517,6 +517,7 @@ pub fn tools() -> Vec<Tool> {
                 lane.enabled = true;
                 lane.sort();
                 let out = lane_json(lane);
+                e.project.validate_lanes().map_err(|m| anyhow!("add_automation: {m}. Nothing was changed."))?;
                 Ok(json!({"lane": out, "static_value": current, "suggested_range": automation::default_range(&param), "song_beats": e.project.song_beats()}))
             },
         },
@@ -568,7 +569,9 @@ pub fn tools() -> Vec<Tool> {
                     lane.enabled = en;
                 }
                 lane.sort();
-                Ok(lane_json(lane))
+                let out = lane_json(lane);
+                e.project.validate_lanes().map_err(|m| anyhow!("set_automation_points: {m}. Nothing was changed."))?;
+                Ok(out)
             },
         },
         Tool {
