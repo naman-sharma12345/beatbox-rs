@@ -180,10 +180,8 @@ impl VocoderCore {
         for _ in 0..n {
             let (cl, cr) = self.carrier();
             for b in 0..self.freqs.len() {
-                self.car_fl[b]
-                    .process(cl, self.freqs[b], self.res, FilterMode::Bandpass);
-                self.car_fr[b]
-                    .process(cr, self.freqs[b], self.res, FilterMode::Bandpass);
+                self.car_fl[b].process(cl, self.freqs[b], self.res, FilterMode::Bandpass);
+                self.car_fr[b].process(cr, self.freqs[b], self.res, FilterMode::Bandpass);
             }
         }
     }
@@ -201,11 +199,9 @@ impl VocoderCore {
                 .abs();
             let c = if x > self.env[b] { self.att } else { self.rel };
             self.env[b] = x + (self.env[b] - x) * c;
-            ol += self.car_fl[b]
-                .process(cl, self.freqs[b], self.res, FilterMode::Bandpass)
+            ol += self.car_fl[b].process(cl, self.freqs[b], self.res, FilterMode::Bandpass)
                 * self.env[b];
-            or += self.car_fr[b]
-                .process(cr, self.freqs[b], self.res, FilterMode::Bandpass)
+            or += self.car_fr[b].process(cr, self.freqs[b], self.res, FilterMode::Bandpass)
                 * self.env[b];
         }
         // consonants: the voice's own top end passes through
