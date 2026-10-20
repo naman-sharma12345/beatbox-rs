@@ -1470,6 +1470,9 @@ pub enum StreamFx {
     /// frequency shifter: fx_mod::FreqShiftCore, per-channel Hilbert pair
     /// and oscillator as a state machine; zero latency, offset pre-warmed.
     FreqShift(Box<crate::fx_mod::FreqShiftCore>),
+    /// vinyl: fx_char::VinylCore, the wow/flutter delay line, band filters
+    /// and record noise as a state machine; zero latency, offset pre-warmed.
+    Vinyl(Box<crate::fx_char::VinylCore>),
     /// lo-fi sample-and-hold crusher: fx_sc::LofiCore, the offline
     /// clock/quantize/hiss math as a per-sample state machine; zero
     /// latency, offset pre-warmed.
@@ -2396,6 +2399,13 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::Vinyl(core) => {
+                for i in 0..l.len() {
+                    let (a, b) = core.step(l[i], r[i]);
+                    l[i] = a;
+                    r[i] = b;
+                }
+            }
             StreamFx::FreqShift(core) => {
                 for (ch, buf) in [l, r].into_iter().enumerate() {
                     for x in buf.iter_mut() {
@@ -2706,7 +2716,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Granular(_) => Streamable,
         Effect::FreqSplitter(_) => Streamable,
         Effect::StereoShaper(_) => Streamable,
-        Effect::Vinyl(_) => OneShot("vinyl: unverified"),
+        Effect::Vinyl(_) => Streamable,
         Effect::Waveshaper(_) => Streamable,
         Effect::AmpSim(_) => OneShot("amp sim: unverified"),
         Effect::ModDelay(_) => Streamable,
@@ -3067,6 +3077,9 @@ impl ChainStreamer {
                 Effect::Stutter(p) => StreamFx::Stutter(Box::new(
                     crate::fx_extra::StutterCore::new(p, step_secs, total),
                 )),
+                Effect::Vinyl(p) => {
+                    StreamFx::Vinyl(Box::new(crate::fx_char::VinylCore::new(p, offset)))
+                }
                 Effect::FreqShift(p) => {
                     StreamFx::FreqShift(Box::new(crate::fx_mod::FreqShiftCore::new(p, offset)))
                 }
@@ -4150,6 +4163,7 @@ mod tests {
                 "stereo_shaper",
                 "stutter",
                 "transient",
+                "vinyl",
                 "vocoder",
                 "waveshaper",
                 "width",
@@ -6213,6 +6227,82 @@ mod tests {
                         off,
                     )
                     .expect("freq_shift streams");
+                    assert_eq!(cs.latency_samples(), 0);
+                    let mut pos = 0usize;
+                    let mut si = 0usize;
+                    while pos < n {
+                        let k = seq[si % seq.len()].min(n - pos);
+                        si += 1;
+                        cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                        pos += k;
+                    }
+                    for i in 0..n {
+                        assert_eq!(
+                            l[i].to_bits(),
+                            ol[i].to_bits(),
+                            "left off {off} blocks {seq:?} i {i}"
+                        );
+                        assert_eq!(
+                            r[i].to_bits(),
+                            or_[i].to_bits(),
+                            "right off {off} blocks {seq:?} i {i}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vinyl_stream_matches_offline() {
+        // The streamed vinyl bit-matches the offline pass for any
+        // block split, at offset 0 and at a nonzero song offset: the core
+        // pre-warms the delay slot and the record noise by `offset` samples.
+        let n = 48_000usize;
+        let l0: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.021).sin() * 0.6).collect();
+        let r0: Vec<f32> = (0..n)
+            .map(|i| ((i as f32) * 0.017 + 0.4).cos() * 0.6)
+            .collect();
+        let step = 60.0 / 140.0 / 4.0;
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        for params in [
+            serde_json::json!({"type":"vinyl","crackle":60.0,"hiss_db":-40.0,"wow_cents":20.0,"flutter_cents":8.0,"age":0.6,"mono":0.4,"mix":1.0,"seed":7}),
+            serde_json::json!({"type":"vinyl","crackle":0.0,"hiss_db":-90.0,"wow_cents":0.0,"flutter_cents":0.0,"age":0.0,"mono":0.0,"mix":0.5,"seed":3}),
+        ] {
+            let fx: crate::fx::Effect = serde_json::from_value(params).unwrap();
+            for off in [0usize, 12_345] {
+                let mut ol = l0.clone();
+                let mut or_ = r0.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: off,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let seqs: Vec<Vec<usize>> = vec![
+                    vec![1],
+                    vec![7],
+                    vec![64],
+                    vec![512],
+                    vec![999],
+                    vec![1000],
+                    vec![1 << 16],
+                    vec![1, 999, 7, 256, 64],
+                ];
+                for seq in seqs {
+                    let mut l = l0.clone();
+                    let mut r = r0.clone();
+                    let mut cs = ChainStreamer::build_with_offset(
+                        std::slice::from_ref(&fx),
+                        &[],
+                        step,
+                        &triggers,
+                        n,
+                        off,
+                    )
+                    .expect("vinyl streams");
                     assert_eq!(cs.latency_samples(), 0);
                     let mut pos = 0usize;
                     let mut si = 0usize;

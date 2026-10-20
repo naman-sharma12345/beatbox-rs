@@ -44,6 +44,174 @@ pub fn vinyl(p: &VinylFx, l: &mut [f32], r: &mut [f32]) {
     vinyl_at(p, l, r, 0)
 }
 
+/// Streaming core of `vinyl_at`: the wow/flutter delay line, the worn-record
+/// band filters, the mono fold and the record's noise floor (crackle pops
+/// and hiss), one stereo sample at a time. Pre-warmed by `offset` samples:
+/// the delay slot counts from the song's start and the noise (which does not
+/// depend on the audio) is run through the first `offset` samples, so a
+/// stream started at a song offset matches the whole-song pass bit-for-bit.
+pub struct VinylCore {
+    bl: Vec<f32>,
+    br: Vec<f32>,
+    size: usize,
+    w: usize,
+    i: usize,
+    base: f32,
+    dw: f32,
+    df: f32,
+    wow_rate: f32,
+    flut_rate: f32,
+    ph0: f32,
+    age: f32,
+    f: [Biquad; 4],
+    mono: f32,
+    mix: f32,
+    rng: Rng,
+    pop_p: f32,
+    pop_gain: f32,
+    hiss_gain: f32,
+    pop_env: f32,
+    pop_amp: f32,
+    pop_side: f32,
+    pop_decay: f32,
+    pop_bp: Biquad,
+    hiss_l: Biquad,
+    hiss_r: Biquad,
+}
+
+impl VinylCore {
+    pub fn new(p: &VinylFx, offset: usize) -> Self {
+        let mix = p.mix.clamp(0.0, 1.0);
+        let wow_rate = p.wow_hz.clamp(0.05, 4.0);
+        let flut_rate = p.flutter_hz.clamp(2.0, 20.0);
+        let dw = depth_samples(p.wow_cents.clamp(0.0, 50.0), wow_rate);
+        let df = depth_samples(p.flutter_cents.clamp(0.0, 30.0), flut_rate);
+        let base = dw + df + 4.0;
+        let size = (2.0 * base) as usize + 8;
+        let age = p.age.clamp(0.0, 1.0);
+        // a worn record: the band closes in from both ends
+        let lo = 20.0 + 160.0 * age;
+        let hi = 18000.0 - 12500.0 * age;
+        let mut rng = Rng::new(p.seed as u64 ^ 0x5EED_u64);
+        let ph0 = rng.f32();
+        let mut c = VinylCore {
+            bl: vec![0.0f32; size],
+            br: vec![0.0f32; size],
+            size,
+            w: offset % size,
+            i: offset,
+            base,
+            dw,
+            df,
+            wow_rate,
+            flut_rate,
+            ph0,
+            age,
+            f: [
+                Biquad::new(BiquadKind::LowCut, lo, 0.707, 0.0),
+                Biquad::new(BiquadKind::HighCut, hi, 0.707, 0.0),
+                Biquad::new(BiquadKind::LowCut, lo, 0.707, 0.0),
+                Biquad::new(BiquadKind::HighCut, hi, 0.707, 0.0),
+            ],
+            mono: p.mono.clamp(0.0, 1.0),
+            mix,
+            rng,
+            // crackle: a pop is a short decaying noise burst through a band-pass
+            pop_p: p.crackle.clamp(0.0, 200.0) / SR,
+            pop_gain: crate::dsp::db_to_gain(p.crackle_db),
+            hiss_gain: if p.hiss_db <= -90.0 {
+                0.0
+            } else {
+                crate::dsp::db_to_gain(p.hiss_db)
+            },
+            pop_env: 0.0,
+            pop_amp: 0.0,
+            pop_side: 0.0,
+            pop_decay: (-1.0 / (0.0008 * SR)).exp(),
+            pop_bp: Biquad::new(BiquadKind::Bandpass, 2500.0, 0.8, 0.0),
+            hiss_l: Biquad::new(BiquadKind::HighCut, 9000.0, 0.707, 0.0),
+            hiss_r: Biquad::new(BiquadKind::HighCut, 9000.0, 0.707, 0.0),
+        };
+        for _ in 0..offset {
+            c.noise();
+        }
+        c
+    }
+
+    /// The noise floor of the record for one sample: (pop l, pop r, hiss l, hiss r).
+    fn noise(&mut self) -> (f32, f32, f32, f32) {
+        if self.pop_p > 0.0 && self.rng.f32() < self.pop_p {
+            self.pop_env = 1.0;
+            self.pop_amp = self.pop_gain * (0.3 + 0.7 * self.rng.f32() * self.rng.f32());
+            self.pop_side = self.rng.bipolar() * 0.6;
+        }
+        let mut pop = 0.0;
+        if self.pop_env > 1e-4 {
+            pop = self.pop_bp.process(self.rng.bipolar()) * self.pop_env * self.pop_amp * 3.0;
+            self.pop_env *= self.pop_decay;
+        }
+        let (hl, hr) = if self.hiss_gain > 0.0 {
+            (
+                self.hiss_l.process(self.rng.bipolar()) * self.hiss_gain,
+                self.hiss_r.process(self.rng.bipolar()) * self.hiss_gain,
+            )
+        } else {
+            (0.0, 0.0)
+        };
+        (
+            pop * (1.0 - self.pop_side),
+            pop * (1.0 + self.pop_side),
+            hl,
+            hr,
+        )
+    }
+
+    pub fn step(&mut self, xl_in: f32, xr_in: f32) -> (f32, f32) {
+        let i = self.i;
+        let t = i as f32 / SR;
+        let d = self.base
+            + self.dw * (2.0 * PI * self.wow_rate * t + self.ph0 * 2.0 * PI).sin()
+            + self.df * (2.0 * PI * self.flut_rate * t).sin();
+        self.bl[self.w] = xl_in;
+        self.br[self.w] = xr_in;
+        // fractional read d samples back
+        let size = self.size;
+        let pos = self.w as f32 - d + size as f32 * 2.0;
+        let i0 = pos.floor() as usize % size;
+        let i1 = (i0 + 1) % size;
+        let fr = pos - pos.floor();
+        let (mut xl, mut xr) = if i >= self.base as usize + 2 {
+            (
+                self.bl[i0] + (self.bl[i1] - self.bl[i0]) * fr,
+                self.br[i0] + (self.br[i1] - self.br[i0]) * fr,
+            )
+        } else {
+            (xl_in, xr_in)
+        };
+        self.w = (self.w + 1) % size;
+        if self.age > 0.0 {
+            let a = self.f[0].process(xl);
+            xl = self.f[1].process(a);
+            let b = self.f[2].process(xr);
+            xr = self.f[3].process(b);
+        }
+        if self.mono > 0.0 {
+            let m = 0.5 * (xl + xr);
+            xl += (m - xl) * self.mono;
+            xr += (m - xr) * self.mono;
+        }
+        // noise floor of the record
+        let (pl, pr, hl, hr) = self.noise();
+        let wl = xl + pl + hl;
+        let wr = xr + pr + hr;
+        self.i += 1;
+        (
+            xl_in * (1.0 - self.mix) + wl * self.mix,
+            xr_in * (1.0 - self.mix) + wr * self.mix,
+        )
+    }
+}
+
 /// `vinyl` for a buffer that starts `offset` samples into the song: wow and
 /// flutter read the song position, the delay line's slot counts from the
 /// song's start, and the record's noise (crackle and hiss, which do not
@@ -54,108 +222,11 @@ pub fn vinyl_at(p: &VinylFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     if n == 0 {
         return;
     }
-    let mix = p.mix.clamp(0.0, 1.0);
-    let wow_rate = p.wow_hz.clamp(0.05, 4.0);
-    let flut_rate = p.flutter_hz.clamp(2.0, 20.0);
-    let dw = depth_samples(p.wow_cents.clamp(0.0, 50.0), wow_rate);
-    let df = depth_samples(p.flutter_cents.clamp(0.0, 30.0), flut_rate);
-    let base = dw + df + 4.0;
-    let size = (2.0 * base) as usize + 8;
-    let (mut bl, mut br) = (vec![0.0f32; size], vec![0.0f32; size]);
-    let mut w = offset % size;
-    let age = p.age.clamp(0.0, 1.0);
-    // a worn record: the band closes in from both ends
-    let lo = 20.0 + 160.0 * age;
-    let hi = 18000.0 - 12500.0 * age;
-    let mut f = [
-        Biquad::new(BiquadKind::LowCut, lo, 0.707, 0.0),
-        Biquad::new(BiquadKind::HighCut, hi, 0.707, 0.0),
-        Biquad::new(BiquadKind::LowCut, lo, 0.707, 0.0),
-        Biquad::new(BiquadKind::HighCut, hi, 0.707, 0.0),
-    ];
-    let mut rng = Rng::new(p.seed as u64 ^ 0x5EED_u64);
-    // crackle: a pop is a short decaying noise burst through a band-pass
-    let pop_p = p.crackle.clamp(0.0, 200.0) / SR;
-    let pop_gain = crate::dsp::db_to_gain(p.crackle_db);
-    let hiss_gain = if p.hiss_db <= -90.0 {
-        0.0
-    } else {
-        crate::dsp::db_to_gain(p.hiss_db)
-    };
-    let mut pop_env = 0.0f32;
-    let mut pop_amp = 0.0f32;
-    let mut pop_side = 0.0f32;
-    let pop_decay = (-1.0 / (0.0008 * SR)).exp();
-    let mut pop_bp = Biquad::new(BiquadKind::Bandpass, 2500.0, 0.8, 0.0);
-    let mut hiss_l = Biquad::new(BiquadKind::HighCut, 9000.0, 0.707, 0.0);
-    let mut hiss_r = Biquad::new(BiquadKind::HighCut, 9000.0, 0.707, 0.0);
-    let mono = p.mono.clamp(0.0, 1.0);
-    let ph0 = rng.f32();
-    // the noise floor of the record for one sample: (pop, hiss l, hiss r)
-    let mut noise = |rng: &mut Rng| -> (f32, f32, f32, f32) {
-        if pop_p > 0.0 && rng.f32() < pop_p {
-            pop_env = 1.0;
-            pop_amp = pop_gain * (0.3 + 0.7 * rng.f32() * rng.f32());
-            pop_side = rng.bipolar() * 0.6;
-        }
-        let mut pop = 0.0;
-        if pop_env > 1e-4 {
-            pop = pop_bp.process(rng.bipolar()) * pop_env * pop_amp * 3.0;
-            pop_env *= pop_decay;
-        }
-        let (hl, hr) = if hiss_gain > 0.0 {
-            (
-                hiss_l.process(rng.bipolar()) * hiss_gain,
-                hiss_r.process(rng.bipolar()) * hiss_gain,
-            )
-        } else {
-            (0.0, 0.0)
-        };
-        (pop * (1.0 - pop_side), pop * (1.0 + pop_side), hl, hr)
-    };
-    for _ in 0..offset {
-        noise(&mut rng);
-    }
+    let mut core = VinylCore::new(p, offset);
     for i in 0..n {
-        let i_buf = i;
-        let i = i + offset;
-        let t = i as f32 / SR;
-        let d = base
-            + dw * (2.0 * PI * wow_rate * t + ph0 * 2.0 * PI).sin()
-            + df * (2.0 * PI * flut_rate * t).sin();
-        bl[w] = l[i_buf];
-        br[w] = r[i_buf];
-        // fractional read d samples back
-        let pos = w as f32 - d + size as f32 * 2.0;
-        let i0 = pos.floor() as usize % size;
-        let i1 = (i0 + 1) % size;
-        let fr = pos - pos.floor();
-        let (mut xl, mut xr) = if i >= base as usize + 2 {
-            (
-                bl[i0] + (bl[i1] - bl[i0]) * fr,
-                br[i0] + (br[i1] - br[i0]) * fr,
-            )
-        } else {
-            (l[i_buf], r[i_buf])
-        };
-        w = (w + 1) % size;
-        if age > 0.0 {
-            let a = f[0].process(xl);
-            xl = f[1].process(a);
-            let b = f[2].process(xr);
-            xr = f[3].process(b);
-        }
-        if mono > 0.0 {
-            let m = 0.5 * (xl + xr);
-            xl += (m - xl) * mono;
-            xr += (m - xr) * mono;
-        }
-        // noise floor of the record
-        let (pl, pr, hl, hr) = noise(&mut rng);
-        let wl = xl + pl + hl;
-        let wr = xr + pr + hr;
-        l[i_buf] = l[i_buf] * (1.0 - mix) + wl * mix;
-        r[i_buf] = r[i_buf] * (1.0 - mix) + wr * mix;
+        let (yl, yr) = core.step(l[i], r[i]);
+        l[i] = yl;
+        r[i] = yr;
     }
 }
 
