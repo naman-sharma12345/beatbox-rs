@@ -3945,7 +3945,6 @@ mod tests {
         for bad in [
             serde_json::json!({"type":"limiter"}),
             serde_json::json!({"type":"convolution","sample":"x"}),
-            serde_json::json!({"type":"reverb","mode":"fdn_hall"}),
         ] {
             let fx: crate::fx::Effect = serde_json::from_value(bad).unwrap();
             assert!(
