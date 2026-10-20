@@ -802,6 +802,55 @@ impl Project {
             fx.validate()
                 .map_err(|m| format!("master effect {i} ({}): {m}", fx.type_name()))?;
         }
+        self.validate_lanes()
+    }
+
+    /// An automation lane on `fx.<i>.<param>` may not drive that effect to a
+    /// value `Effect::validate` rejects. Checks the lane's lowest and
+    /// highest point value against the target effect (what the render
+    /// would apply). Lanes whose target, effect or parameter does not exist,
+    /// and values that do not deserialize, are left to the render's existing
+    /// skip behaviour. Only effects with a validate rule can be rejected.
+    pub fn validate_lanes(&self) -> Result<(), String> {
+        use crate::automation::{parse_target, set_path, Target};
+        for lane in &self.automation {
+            let Some(Target::Fx(i, path)) = parse_target(&lane.param) else {
+                continue;
+            };
+            let Some((lo, hi)) = lane.range() else {
+                continue;
+            };
+            let chain: &[Effect] = if lane.target.eq_ignore_ascii_case("master") {
+                &self.master_effects
+            } else if let Ok(t) = self.track_index(&lane.target) {
+                &self.tracks[t].effects
+            } else if let Ok(b) = self.bus_index(&lane.target) {
+                &self.buses[b].effects
+            } else {
+                continue;
+            };
+            let Some(fx) = chain.get(i) else {
+                continue;
+            };
+            let Ok(base) = serde_json::to_value(fx) else {
+                continue;
+            };
+            for x in [lo, hi] {
+                let mut v = base.clone();
+                if !set_path(&mut v, &path, x) {
+                    break;
+                }
+                let Ok(e) = serde_json::from_value::<Effect>(v) else {
+                    continue;
+                };
+                e.validate().map_err(|m| {
+                    format!(
+                        "automation lane '{}' {} reaches {x}: {m}",
+                        lane.target, lane.param
+                    )
+                })?;
+            }
+        }
         Ok(())
     }
 
