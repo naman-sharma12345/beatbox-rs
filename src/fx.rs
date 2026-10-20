@@ -265,6 +265,9 @@ pub enum StutterMode {
     HalfTime,
     Reverse,
     TapeStop,
+    /// part B: repeat a block-snapped slice `repeat_count` times from
+    /// `trigger_sample`, raised-cosine crossfade at every loop wrap.
+    SliceRepeat,
 }
 
 fx_struct!(StutterFx {
@@ -273,7 +276,13 @@ fx_struct!(StutterFx {
     slice_steps: f32 = 1.0,
     cycle_steps: f32 = 4.0,
     smooth_ms: f32 = 3.0,
-    mix: f32 = 1.0
+    mix: f32 = 1.0,
+    // slice_repeat mode only (part B); ignored by the other modes
+    block_samples: f32 = 512.0,
+    slice_blocks: f32 = 4.0,
+    repeat_count: f32 = 8.0,
+    trigger_sample: f32 = 0.0,
+    wrap_fade_ms: f32 = 3.0
 });
 fx_struct!(GrossBeatFx {
     time: String = "none".to_string(),
