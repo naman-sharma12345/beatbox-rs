@@ -843,4 +843,96 @@ mod tests {
         e.call("load_project", &json!({"path": path})).unwrap();
         assert_eq!(serde_json::to_string(&e.project).unwrap(), bytes);
     }
+
+    /// generate_automation writes lanes with default ranges (0..1 for a
+    /// leaf it does not know). On each of the nine validated effects, every
+    /// numeric top-level parameter either gets a lane that passes
+    /// validation, or the call is refused and nothing changes.
+    #[test]
+    fn generate_automation_never_leaves_an_out_of_range_lane_on_the_validated_effects() {
+        for kind in [
+            "freq_splitter",
+            "granular",
+            "freq_shift",
+            "ring_mod",
+            "stereo_shaper",
+            "gross_beat",
+            "vinyl",
+            "vocoder",
+            "waveshaper",
+        ] {
+            let mut e = eng();
+            e.call("add_track", &json!({"name": "keep", "preset": "acid_bass"}))
+                .unwrap();
+            e.call("place_fx", &json!({"track": "keep", "type": kind}))
+                .unwrap_or_else(|err| panic!("place_fx {kind}: {err:#}"));
+            let idx = e.project.tracks[0].effects.len() - 1;
+            let leaves: Vec<String> = serde_json::to_value(&e.project.tracks[0].effects[idx])
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(_, v)| v.is_number())
+                .map(|(k, _)| k.clone())
+                .collect();
+            assert!(!leaves.is_empty(), "{kind}: no numeric parameters found");
+            for leaf in leaves {
+                let before = serde_json::to_string(&e.project).unwrap();
+                let param = format!("fx.{idx}.{leaf}");
+                let r = e.call(
+                    "generate_automation",
+                    &json!({"track": "keep", "param": param, "shape": "riser", "start_beat": 0, "end_beat": 8}),
+                );
+                match r {
+                    Ok(_) => e
+                        .project
+                        .validate_lanes()
+                        .unwrap_or_else(|m| panic!("{kind} {param}: accepted a bad lane: {m}")),
+                    Err(_) => assert_eq!(
+                        serde_json::to_string(&e.project).unwrap(),
+                        before,
+                        "{kind} {param}: refused call changed the project"
+                    ),
+                }
+                // keep the next leaf's check independent
+                e.call(
+                    "clear_automation",
+                    &json!({"track": "keep", "param": param}),
+                )
+                .ok();
+            }
+        }
+    }
+
+    /// The default 0..1 range of an unknown leaf (taps) is pulled back to
+    /// what freq_splitter validation accepts, instead of being refused or
+    /// written as is. A leaf with a known default range is untouched.
+    #[test]
+    fn generate_automation_clamps_taps_to_the_validated_range() {
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "keep", "preset": "acid_bass"}))
+            .unwrap();
+        e.call(
+            "place_fx",
+            &json!({"track": "keep", "type": "freq_splitter"}),
+        )
+        .unwrap();
+        let idx = e.project.tracks[0].effects.len() - 1;
+        e.call(
+            "generate_automation",
+            &json!({"track": "keep", "param": format!("fx.{idx}.taps"), "shape": "riser", "start_beat": 0, "end_beat": 8}),
+        )
+        .unwrap();
+        e.project.validate_lanes().unwrap();
+        let lane = e.project.automation.last().unwrap();
+        let (lo, hi) = lane.range().unwrap();
+        assert!(lo >= 33.0 && hi >= 33.0, "taps lane {lo}..{hi}");
+        e.call(
+            "generate_automation",
+            &json!({"track": "keep", "param": format!("fx.{idx}.mix"), "shape": "riser", "start_beat": 0, "end_beat": 8}),
+        )
+        .unwrap();
+        let (mlo, mhi) = e.project.automation.last().unwrap().range().unwrap();
+        assert!(mlo >= 0.0 && mhi <= 1.0);
+    }
 }
