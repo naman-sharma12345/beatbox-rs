@@ -257,6 +257,64 @@ pub(crate) fn clamp_value(param: &str, v: f32) -> f32 {
     }
 }
 
+/// For an `fx.<i>.<param>` target on an effect that has a validate rule,
+/// pull `x` back to the nearest value `Effect::validate` accepts, searching
+/// from the parameter's current (accepted) value. The accepted range is read
+/// from `validate` itself, so no range is restated here. Anything else
+/// (other targets, effects without a rule, values that do not deserialize,
+/// a current value that is itself rejected) is returned unchanged.
+fn clamp_to_valid_effect_value(p: &Project, owner: &str, param: &str, current: f32, x: f32) -> f32 {
+    let Some(Target::Fx(i, path)) = parse_target(param) else {
+        return x;
+    };
+    let chain: &[crate::fx::Effect] = if owner.eq_ignore_ascii_case("master") {
+        &p.master_effects
+    } else if let Ok(t) = p.track_index(owner) {
+        &p.tracks[t].effects
+    } else if let Ok(b) = p.bus_index(owner) {
+        &p.buses[b].effects
+    } else {
+        return x;
+    };
+    let Some(fx) = chain.get(i) else {
+        return x;
+    };
+    let Ok(base) = serde_json::to_value(fx) else {
+        return x;
+    };
+    let ok = |v: f32| -> Option<bool> {
+        let mut j = base.clone();
+        if !automation::set_path(&mut j, &path, v) {
+            return None;
+        }
+        let e = serde_json::from_value::<crate::fx::Effect>(j).ok()?;
+        Some(e.validate().is_ok())
+    };
+    if !current.is_finite() || ok(current) != Some(true) {
+        return x;
+    }
+    match ok(x) {
+        Some(false) => {}
+        _ => return x,
+    }
+    let (mut good, mut bad) = (current, x);
+    if !bad.is_finite() {
+        return good;
+    }
+    for _ in 0..64 {
+        let mid = good + (bad - good) * 0.5;
+        if mid == good || mid == bad {
+            break;
+        }
+        match ok(mid) {
+            Some(true) => good = mid,
+            Some(false) => bad = mid,
+            None => return x,
+        }
+    }
+    good
+}
+
 fn lane_json(l: &AutomationLane) -> Value {
     let (lo, hi) = l.range().unwrap_or((0.0, 0.0));
     json!({
@@ -673,6 +731,10 @@ pub fn tools() -> Vec<Tool> {
                 };
                 let lo = clamp_value(&param, f_opt(a, "min").unwrap_or(dlo));
                 let hi = clamp_value(&param, f_opt(a, "max").unwrap_or(dhi));
+                let (lo, hi) = (
+                    clamp_to_valid_effect_value(&e.project, &owner, &param, current, lo),
+                    clamp_to_valid_effect_value(&e.project, &owner, &param, current, hi),
+                );
                 let rate = parse_rate(a.get("rate"))?;
                 let log = automation::is_log_param(&param) && lo > 0.0 && hi > 0.0;
                 let pts = automation::generate(shape, start, end, lo, hi, rate, log);
