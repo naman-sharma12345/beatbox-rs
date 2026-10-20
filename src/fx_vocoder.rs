@@ -63,47 +63,98 @@ pub fn vocoder(p: &VocoderFx, l: &mut [f32], r: &mut [f32]) {
 /// audio) is run through the first `offset` samples, so it is the whole-song
 /// pass's carrier; the modulator side settles from the buffer's audio.
 pub fn vocoder_at(p: &VocoderFx, l: &mut [f32], r: &mut [f32], offset: usize) {
-    let Ok(notes) = parse_notes(&p.notes) else {
-        return;
-    };
     let mix = p.mix.clamp(0.0, 1.0);
     if mix <= 0.0 || l.is_empty() {
         return;
     }
-    let n = l.len();
-    let bands = p.bands.clamp(4, 40) as usize;
-    let (lo, hi) = (
-        p.low_hz.clamp(50.0, 1000.0),
-        p.high_hz.clamp(2000.0, 16000.0),
-    );
-    let freqs: Vec<f32> = (0..bands)
-        .map(|i| lo * (hi / lo).powf(i as f32 / (bands - 1) as f32))
-        .collect();
-    // narrower bands as there are more of them
-    let res = (0.35 + bands as f32 / 60.0).min(0.9);
-    let att = (-1.0 / (p.attack_ms.max(0.5) * 0.001 * SR)).exp();
-    let rel = (-1.0 / (p.release_ms.max(1.0) * 0.001 * SR)).exp();
-    // carrier: detuned saws on each note (+ a noise share for consonants)
-    let mut phases: Vec<[f32; 2]> = notes.iter().map(|_| [0.0, 0.37]).collect();
-    let incs: Vec<[f32; 2]> = notes
-        .iter()
-        .map(|m| {
-            let f = 440.0 * 2f32.powf((m - 69.0) / 12.0);
-            [f / SR, f * 1.004 / SR]
+    let Some(mut core) = VocoderCore::new(p) else {
+        return;
+    };
+    // The whole per-sample machine lives in VocoderCore: the offline pass
+    // and the RT StreamFx arm run the same code, so a chunked render is
+    // the full render bit for bit by construction.
+    core.warm_carrier(offset);
+    for i in 0..l.len() {
+        let (a, b) = core.step(l[i], r[i]);
+        l[i] = a;
+        r[i] = b;
+    }
+}
+
+/// The vocoder's per-sample state machine, shared by the offline pass
+/// (`vocoder_at`, which pre-warms the carrier for `offset` samples) and
+/// the real-time `StreamFx::Vocoder` arm (offset 0, no pre-warm). Every
+/// float op mirrors the original inline `vocoder_at` loop in the same
+/// order, so both paths agree bit for bit.
+pub struct VocoderCore {
+    phases: Vec<[f32; 2]>,
+    incs: Vec<[f32; 2]>,
+    seed: u32,
+    mod_f: Vec<Svf>,
+    car_fl: Vec<Svf>,
+    car_fr: Vec<Svf>,
+    env: Vec<f32>,
+    sib_hp: Svf,
+    freqs: Vec<f32>,
+    res: f32,
+    att: f32,
+    rel: f32,
+    noise_amt: f32,
+    norm: f32,
+    sibilance: f32,
+    g: f32,
+    mix: f32,
+}
+
+impl VocoderCore {
+    /// None when `notes` fails to parse: the offline pass then leaves the
+    /// buffer untouched, and the RT chain must use a bit-exact bypass.
+    pub fn new(p: &VocoderFx) -> Option<Self> {
+        let notes = parse_notes(&p.notes).ok()?;
+        let bands = p.bands.clamp(4, 40) as usize;
+        let (lo, hi) = (
+            p.low_hz.clamp(50.0, 1000.0),
+            p.high_hz.clamp(2000.0, 16000.0),
+        );
+        let freqs: Vec<f32> = (0..bands)
+            .map(|i| lo * (hi / lo).powf(i as f32 / (bands - 1) as f32))
+            .collect();
+        // narrower bands as there are more of them
+        let res = (0.35 + bands as f32 / 60.0).min(0.9);
+        Some(VocoderCore {
+            phases: notes.iter().map(|_| [0.0, 0.37]).collect(),
+            incs: notes
+                .iter()
+                .map(|m| {
+                    let f = 440.0 * 2f32.powf((m - 69.0) / 12.0);
+                    [f / SR, f * 1.004 / SR]
+                })
+                .collect(),
+            seed: 0x2545F491,
+            mod_f: vec![Svf::default(); bands],
+            car_fl: vec![Svf::default(); bands],
+            car_fr: vec![Svf::default(); bands],
+            env: vec![0.0; bands],
+            sib_hp: Svf::default(),
+            freqs,
+            res,
+            att: (-1.0 / (p.attack_ms.max(0.5) * 0.001 * SR)).exp(),
+            rel: (-1.0 / (p.release_ms.max(1.0) * 0.001 * SR)).exp(),
+            noise_amt: p.noise.clamp(0.0, 1.0),
+            norm: 1.0 / (notes.len() as f32).sqrt(),
+            sibilance: p.sibilance.clamp(0.0, 1.0),
+            g: 4.0 * p.gain.max(0.0) * (bands as f32 / 16.0).sqrt(),
+            mix: p.mix.clamp(0.0, 1.0),
         })
-        .collect();
-    let mut seed = 0x2545F491u32;
-    let mut mod_f: Vec<Svf> = vec![Svf::default(); bands];
-    let mut car_fl: Vec<Svf> = vec![Svf::default(); bands];
-    let mut car_fr: Vec<Svf> = vec![Svf::default(); bands];
-    let mut env = vec![0.0f32; bands];
-    let mut sib_hp = Svf::default();
-    let noise_amt = p.noise.clamp(0.0, 1.0);
-    let norm = 1.0 / (notes.len() as f32).sqrt();
-    // carrier sample (L/R decorrelated by the detune pair)
-    let mut carrier = || -> (f32, f32) {
+    }
+
+    /// Advance one carrier sample (detuned saw pair per note, the shared
+    /// xorshift noise, per-note norm and noise mix). No filtering, no
+    /// output.
+    #[inline]
+    fn carrier(&mut self) -> (f32, f32) {
         let (mut cl, mut cr) = (0.0f32, 0.0f32);
-        for (ph, inc) in phases.iter_mut().zip(&incs) {
+        for (ph, inc) in self.phases.iter_mut().zip(&self.incs) {
             for k in 0..2 {
                 ph[k] += inc[k];
                 if ph[k] >= 1.0 {
@@ -113,40 +164,57 @@ pub fn vocoder_at(p: &VocoderFx, l: &mut [f32], r: &mut [f32], offset: usize) {
             cl += 2.0 * ph[0] - 1.0;
             cr += 2.0 * ph[1] - 1.0;
         }
-        seed ^= seed << 13;
-        seed ^= seed >> 17;
-        seed ^= seed << 5;
-        let nz = (seed as f32 / u32::MAX as f32) * 2.0 - 1.0;
-        cl = cl * norm * (1.0 - noise_amt) + nz * noise_amt;
-        cr = cr * norm * (1.0 - noise_amt) + nz * noise_amt;
+        self.seed ^= self.seed << 13;
+        self.seed ^= self.seed >> 17;
+        self.seed ^= self.seed << 5;
+        let nz = (self.seed as f32 / u32::MAX as f32) * 2.0 - 1.0;
+        cl = cl * self.norm * (1.0 - self.noise_amt) + nz * self.noise_amt;
+        cr = cr * self.norm * (1.0 - self.noise_amt) + nz * self.noise_amt;
         (cl, cr)
-    };
-    for _ in 0..offset {
-        let (cl, cr) = carrier();
-        for b in 0..bands {
-            car_fl[b].process(cl, freqs[b], res, FilterMode::Bandpass);
-            car_fr[b].process(cr, freqs[b], res, FilterMode::Bandpass);
+    }
+
+    /// Pre-offset warmup: the carrier runs through its band filters for
+    /// `n` samples with no envelopes or output, exactly the offset loop
+    /// of the original inline `vocoder_at`.
+    pub fn warm_carrier(&mut self, n: usize) {
+        for _ in 0..n {
+            let (cl, cr) = self.carrier();
+            for b in 0..self.freqs.len() {
+                self.car_fl[b]
+                    .process(cl, self.freqs[b], self.res, FilterMode::Bandpass);
+                self.car_fr[b]
+                    .process(cr, self.freqs[b], self.res, FilterMode::Bandpass);
+            }
         }
     }
-    for i in 0..n {
-        let m = 0.5 * (l[i] + r[i]);
-        let (cl, cr) = carrier();
+
+    /// One output sample. State advances even when `mix` is 0; the mix
+    /// law `x * (1.0 - mix) + wet * mix` then returns the input.
+    #[inline]
+    pub fn step(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        let m = 0.5 * (xl + xr);
+        let (cl, cr) = self.carrier();
         let (mut ol, mut or) = (0.0f32, 0.0f32);
-        for b in 0..bands {
-            let x = mod_f[b]
-                .process(m, freqs[b], res, FilterMode::Bandpass)
+        for b in 0..self.freqs.len() {
+            let x = self.mod_f[b]
+                .process(m, self.freqs[b], self.res, FilterMode::Bandpass)
                 .abs();
-            let c = if x > env[b] { att } else { rel };
-            env[b] = x + (env[b] - x) * c;
-            ol += car_fl[b].process(cl, freqs[b], res, FilterMode::Bandpass) * env[b];
-            or += car_fr[b].process(cr, freqs[b], res, FilterMode::Bandpass) * env[b];
+            let c = if x > self.env[b] { self.att } else { self.rel };
+            self.env[b] = x + (self.env[b] - x) * c;
+            ol += self.car_fl[b]
+                .process(cl, self.freqs[b], self.res, FilterMode::Bandpass)
+                * self.env[b];
+            or += self.car_fr[b]
+                .process(cr, self.freqs[b], self.res, FilterMode::Bandpass)
+                * self.env[b];
         }
         // consonants: the voice's own top end passes through
-        let s = sib_hp.process(m, 5000.0, 0.1, FilterMode::Highpass) * p.sibilance.clamp(0.0, 1.0);
-        let g = 4.0 * p.gain.max(0.0) * (bands as f32 / 16.0).sqrt();
-        let (wl, wr) = (ol * g + s, or * g + s);
-        l[i] = l[i] * (1.0 - mix) + wl * mix;
-        r[i] = r[i] * (1.0 - mix) + wr * mix;
+        let s = self.sib_hp.process(m, 5000.0, 0.1, FilterMode::Highpass) * self.sibilance;
+        let (wl, wr) = (ol * self.g + s, or * self.g + s);
+        (
+            xl * (1.0 - self.mix) + wl * self.mix,
+            xr * (1.0 - self.mix) + wr * self.mix,
+        )
     }
 }
 
