@@ -348,20 +348,46 @@ pub fn lofi_at(p: &LoFiFx, l: &mut [f32], r: &mut [f32], offset: usize) {
 /// Half- or full-wave rectifier (adds octave-up harmonics) with a 10 Hz
 /// DC blocker on the wet path.
 pub fn rectifier(p: &RectifierFx, l: &mut [f32], r: &mut [f32]) {
-    let full = !p.mode.eq_ignore_ascii_case("half");
-    let mix = p.mix.clamp(0.0, 1.0);
-    let out = db_to_gain(p.output_db.clamp(-24.0, 12.0));
-    let rc = (-TAU * 10.0 / SR).exp();
-    for ch in [l, r] {
-        let (mut x1, mut y1) = (0.0f32, 0.0f32);
-        for s in ch.iter_mut() {
-            let dry = fin(*s);
-            let w = if full { dry.abs() } else { dry.max(0.0) };
-            let y = w - x1 + rc * y1;
-            x1 = w;
-            y1 = flush(y);
-            *s = (dry * (1.0 - mix) + y1 * mix) * out;
+    let mut core = RectifierCore::new(p);
+    for (ch, buf) in [l, r].into_iter().enumerate() {
+        for x in buf.iter_mut() {
+            *x = core.step(ch, *x);
         }
+    }
+}
+
+/// The rectifier's per-sample state machine (the 10 Hz smoothing one-pole
+/// per channel), shared by the offline pass and the RT StreamFx arm so a
+/// chunked render is the full render bit for bit.
+pub struct RectifierCore {
+    full: bool,
+    mix: f32,
+    out: f32,
+    rc: f32,
+    x1: [f32; 2],
+    y1: [f32; 2],
+}
+
+impl RectifierCore {
+    pub fn new(p: &RectifierFx) -> Self {
+        RectifierCore {
+            full: !p.mode.eq_ignore_ascii_case("half"),
+            mix: p.mix.clamp(0.0, 1.0),
+            out: db_to_gain(p.output_db.clamp(-24.0, 12.0)),
+            rc: (-TAU * 10.0 / SR).exp(),
+            x1: [0.0; 2],
+            y1: [0.0; 2],
+        }
+    }
+
+    #[inline]
+    pub fn step(&mut self, ch: usize, x: f32) -> f32 {
+        let dry = fin(x);
+        let w = if self.full { dry.abs() } else { dry.max(0.0) };
+        let y = w - self.x1[ch] + self.rc * self.y1[ch];
+        self.x1[ch] = w;
+        self.y1[ch] = flush(y);
+        (dry * (1.0 - self.mix) + self.y1[ch] * self.mix) * self.out
     }
 }
 
