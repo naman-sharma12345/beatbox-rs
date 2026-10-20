@@ -247,51 +247,92 @@ pub fn check_stereo_shaper(p: &StereoShaperFx) -> Result<(), String> {
 }
 
 pub fn stereo_shaper(p: &StereoShaperFx, l: &mut [f32], r: &mut [f32]) {
-    let (ll, rl, lr, rr) = preset(&p.preset).unwrap_or((
-        p.left_from_left,
-        p.left_from_right,
-        p.right_from_left,
-        p.right_from_right,
-    ));
-    let mix = p.mix.clamp(0.0, 1.0);
-    // pseudo_stereo: a mono source gets a short delay on the right, and the
-    // delayed side is phase-flipped against the low end staying mono
-    let pseudo = p.preset == "pseudo_stereo";
-    let delay_ms = if pseudo && p.delay_ms == 0.0 {
-        12.0
-    } else {
-        p.delay_ms
-    };
-    let d = (delay_ms.clamp(0.0, 50.0) * 0.001 * SR) as usize;
-    let mut buf = vec![0.0f32; d + 1];
-    let mut w = 0usize;
-    let flip_l = if p.invert_left { -1.0 } else { 1.0 };
-    let flip_r = if p.invert_right { -1.0 } else { 1.0 };
-    let delay_right = p.delay_side >= 0.0;
+    let mut core = StereoShaperCore::new(p);
     for i in 0..l.len() {
         let (x_l, x_r) = (l[i], r[i]);
-        let mut yl = (ll * x_l + rl * x_r) * flip_l;
-        let mut yr = (lr * x_l + rr * x_r) * flip_r;
-        if d > 0 {
-            let target = if delay_right { yr } else { yl };
-            let out = buf[w];
-            buf[w] = target;
-            w = (w + 1) % buf.len();
-            let delayed = if pseudo {
+        let (yl, yr) = core.step(x_l, x_r);
+        l[i] = yl;
+        r[i] = yr;
+    }
+}
+
+/// The stereo shaper's per-sample state machine (the matrix plus the
+/// haas-style delay ring), shared by the offline pass and the RT StreamFx
+/// arm so a chunked render is the full render bit for bit.
+pub struct StereoShaperCore {
+    ll: f32,
+    rl: f32,
+    lr: f32,
+    rr: f32,
+    mix: f32,
+    d: usize,
+    buf: Vec<f32>,
+    w: usize,
+    flip_l: f32,
+    flip_r: f32,
+    delay_right: bool,
+    pseudo: bool,
+}
+
+impl StereoShaperCore {
+    pub fn new(p: &StereoShaperFx) -> Self {
+        let (ll, rl, lr, rr) = preset(&p.preset).unwrap_or((
+            p.left_from_left,
+            p.left_from_right,
+            p.right_from_left,
+            p.right_from_right,
+        ));
+        // pseudo_stereo: a mono source gets a short delay on the right, and the
+        // delayed side is phase-flipped against the low end staying mono
+        let pseudo = p.preset == "pseudo_stereo";
+        let delay_ms = if pseudo && p.delay_ms == 0.0 {
+            12.0
+        } else {
+            p.delay_ms
+        };
+        let d = (delay_ms.clamp(0.0, 50.0) * 0.001 * SR) as usize;
+        StereoShaperCore {
+            ll,
+            rl,
+            lr,
+            rr,
+            mix: p.mix.clamp(0.0, 1.0),
+            d,
+            buf: vec![0.0f32; d + 1],
+            w: 0,
+            flip_l: if p.invert_left { -1.0 } else { 1.0 },
+            flip_r: if p.invert_right { -1.0 } else { 1.0 },
+            delay_right: p.delay_side >= 0.0,
+            pseudo,
+        }
+    }
+
+    #[inline]
+    pub fn step(&mut self, x_l: f32, x_r: f32) -> (f32, f32) {
+        let mut yl = (self.ll * x_l + self.rl * x_r) * self.flip_l;
+        let mut yr = (self.lr * x_l + self.rr * x_r) * self.flip_r;
+        if self.d > 0 {
+            let target = if self.delay_right { yr } else { yl };
+            let out = self.buf[self.w];
+            self.buf[self.w] = target;
+            self.w = (self.w + 1) % self.buf.len();
+            let delayed = if self.pseudo {
                 // the mid passes straight; only the delayed difference widens
                 let m = 0.5 * (yl + yr);
                 m + 0.5 * (out - m) * 1.2
             } else {
                 out
             };
-            if delay_right {
+            if self.delay_right {
                 yr = delayed;
             } else {
                 yl = delayed;
             }
         }
-        l[i] = x_l * (1.0 - mix) + yl * mix;
-        r[i] = x_r * (1.0 - mix) + yr * mix;
+        (
+            x_l * (1.0 - self.mix) + yl * self.mix,
+            x_r * (1.0 - self.mix) + yr * self.mix,
+        )
     }
 }
 
