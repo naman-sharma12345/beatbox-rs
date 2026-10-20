@@ -44,42 +44,86 @@ fn shape(mode: SatMode, x: f32, bias: f32) -> f32 {
 }
 
 pub fn saturator(p: &SaturatorFx, l: &mut [f32], r: &mut [f32]) {
-    let drive = db_to_gain(p.drive_db.clamp(0.0, 36.0));
-    // keep loudness in the same ballpark as the dry signal as drive rises
-    let comp = 1.0 / (1.0 + (drive - 1.0) * 0.12).sqrt();
-    let out = db_to_gain(p.output_db.clamp(-24.0, 24.0));
-    let mix = p.mix.clamp(0.0, 1.0);
-    let bias = p.bias.clamp(-0.5, 0.5);
-    let tone = p.tone_hz.clamp(200.0, 20000.0);
-    for ch in [&mut *l, &mut *r] {
-        let dry: Vec<f32> = ch.to_vec();
-        let mut lp = Biquad::new(BiquadKind::HighCut, tone, 0.707, 0.0);
-        let mut dc = Biquad::new(BiquadKind::LowCut, 12.0, 0.707, 0.0);
-        let mut hp = Biquad::new(BiquadKind::LowCut, tone.clamp(1500.0, 8000.0), 0.707, 0.0);
-        let mut prev = 0.0f32;
-        let mut prev_mid = 0.0f32;
-        for (i, s) in ch.iter_mut().enumerate() {
-            let x = dry[i] * drive;
-            let y = if p.oversample {
-                let mid = 0.5 * (prev + x);
-                let ym = shape(p.mode, mid, bias);
-                let y = shape(p.mode, x, bias);
-                let o = 0.25 * prev_mid + 0.5 * ym + 0.25 * y;
-                prev_mid = y;
-                o
-            } else {
-                shape(p.mode, x, bias)
-            };
-            prev = x;
-            let y = dc.process(y);
-            let wet = if p.mode == SatMode::Exciter {
-                // only the harmonics above the corner are added back
-                dry[i] + hp.process(y) * comp * 1.2
-            } else {
-                lp.process(y) * comp
-            };
-            *s = (dry[i] * (1.0 - mix) + wet * mix) * out;
+    let mut core = SaturatorCore::new(p);
+    for (ch, buf) in [l, r].into_iter().enumerate() {
+        for i in 0..buf.len() {
+            buf[i] = core.step(ch, buf[i]);
         }
+    }
+}
+
+/// The saturator's per-sample state machine (tone/output biquads plus the
+/// 2x oversampler's two carried taps, per channel), shared by the offline
+/// pass and the RT StreamFx arm so a chunked render is the full render bit
+/// for bit.
+pub struct SaturatorCore {
+    mode: SatMode,
+    oversample: bool,
+    drive: f32,
+    comp: f32,
+    out: f32,
+    mix: f32,
+    bias: f32,
+    lp: [Biquad; 2],
+    dc: [Biquad; 2],
+    hp: [Biquad; 2],
+    prev: [f32; 2],
+    prev_mid: [f32; 2],
+}
+
+impl SaturatorCore {
+    pub fn new(p: &SaturatorFx) -> Self {
+        let drive = db_to_gain(p.drive_db.clamp(0.0, 36.0));
+        // keep loudness in the same ballpark as the dry signal as drive rises
+        let comp = 1.0 / (1.0 + (drive - 1.0) * 0.12).sqrt();
+        let tone = p.tone_hz.clamp(200.0, 20000.0);
+        SaturatorCore {
+            mode: p.mode,
+            oversample: p.oversample,
+            drive,
+            comp,
+            out: db_to_gain(p.output_db.clamp(-24.0, 24.0)),
+            mix: p.mix.clamp(0.0, 1.0),
+            bias: p.bias.clamp(-0.5, 0.5),
+            lp: [
+                Biquad::new(BiquadKind::HighCut, tone, 0.707, 0.0),
+                Biquad::new(BiquadKind::HighCut, tone, 0.707, 0.0),
+            ],
+            dc: [
+                Biquad::new(BiquadKind::LowCut, 12.0, 0.707, 0.0),
+                Biquad::new(BiquadKind::LowCut, 12.0, 0.707, 0.0),
+            ],
+            hp: [
+                Biquad::new(BiquadKind::LowCut, tone.clamp(1500.0, 8000.0), 0.707, 0.0),
+                Biquad::new(BiquadKind::LowCut, tone.clamp(1500.0, 8000.0), 0.707, 0.0),
+            ],
+            prev: [0.0; 2],
+            prev_mid: [0.0; 2],
+        }
+    }
+
+    #[inline]
+    pub fn step(&mut self, ch: usize, dry: f32) -> f32 {
+        let x = dry * self.drive;
+        let y = if self.oversample {
+            let mid = 0.5 * (self.prev[ch] + x);
+            let ym = shape(self.mode, mid, self.bias);
+            let y = shape(self.mode, x, self.bias);
+            let o = 0.25 * self.prev_mid[ch] + 0.5 * ym + 0.25 * y;
+            self.prev_mid[ch] = y;
+            o
+        } else {
+            shape(self.mode, x, self.bias)
+        };
+        self.prev[ch] = x;
+        let y = self.dc[ch].process(y);
+        let wet = if self.mode == SatMode::Exciter {
+            // only the harmonics above the corner are added back
+            dry + self.hp[ch].process(y) * self.comp * 1.2
+        } else {
+            self.lp[ch].process(y) * self.comp
+        };
+        (dry * (1.0 - self.mix) + wet * self.mix) * self.out
     }
 }
 

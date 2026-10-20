@@ -1497,6 +1497,9 @@ pub enum StreamFx {
     /// fx_vocoder: the same VocoderCore the offline pass runs (no
     /// lookahead, zero latency).
     Vocoder(Box<crate::fx_vocoder::VocoderCore>),
+    /// fx_sat: the same SaturatorCore the offline pass runs (no
+    /// lookahead, zero latency).
+    Saturator(Box<crate::fx_sat::SaturatorCore>),
 }
 
 impl StreamFx {
@@ -2510,6 +2513,13 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::Saturator(core) => {
+                for (ch, buf) in [l, r].into_iter().enumerate() {
+                    for x in buf.iter_mut() {
+                        *x = core.step(ch, *x);
+                    }
+                }
+            }
             StreamFx::Waveshaper(core) => {
                 for (ch, buf) in [l, r].into_iter().enumerate() {
                     for x in buf.iter_mut() {
@@ -2652,7 +2662,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Phaser(_) => Streamable,
         Effect::Flanger(_) => Streamable,
         Effect::Autopan(_) => Streamable,
-        Effect::Saturator(_) => OneShot("saturator: unverified (ADAA state carry pending)"),
+        Effect::Saturator(_) => Streamable,
         Effect::Haas(_) => Streamable,
         Effect::FreqShift(_) => OneShot("freq shift: unverified"),
         Effect::RingMod(_) => Streamable,
@@ -3214,6 +3224,9 @@ impl ChainStreamer {
                         att_n: (p.attack_ms.max(0.1) * 0.001 * SR) as usize,
                         amount: p.amount.clamp(0.0, 1.0),
                     }
+                }
+                Effect::Saturator(p) => {
+                    StreamFx::Saturator(Box::new(crate::fx_sat::SaturatorCore::new(p)))
                 }
                 Effect::Waveshaper(p) => {
                     StreamFx::Waveshaper(Box::new(crate::fx_char::WaveshaperCore::new(p)))
@@ -4070,6 +4083,7 @@ mod tests {
                 "rectifier",
                 "reverb",
                 "ring_mod",
+                "saturator",
                 "sidechain",
                 "soft_clipper",
                 "stereo_shaper",
@@ -6479,6 +6493,84 @@ mod tests {
         }
         assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
         assert!(r.iter().zip(&r0).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    #[test]
+    fn stream_fx_saturator_bit_identical_to_offline() {
+        // All six modes, oversample on and off: the core carries the
+        // tone/output biquads and the 2x oversampler taps per channel,
+        // so chunked RT blocks equal the offline whole-buffer pass bit
+        // for bit.
+        let n = 30_000usize;
+        let l0: Vec<f32> = (0..n)
+            .map(|i| ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3)
+            .collect();
+        let r0: Vec<f32> = l0.iter().rev().copied().collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        let variants = [
+            serde_json::json!({"type":"saturator"}),
+            serde_json::json!({"type":"saturator","mode":"tube","drive_db":24.0,
+                "bias":0.3,"mix":0.5,"output_db":-6.0}),
+            serde_json::json!({"type":"saturator","mode":"fold","drive_db":36.0,
+                "oversample":false,"tone_hz":4000.0}),
+            serde_json::json!({"type":"saturator","mode":"exciter","drive_db":18.0,
+                "tone_hz":2500.0,"mix":0.8}),
+            serde_json::json!({"type":"saturator","mode":"diode","drive_db":12.0,
+                "bias":-0.4,"oversample":false,"mix":0.35}),
+        ];
+        for (vi, v) in variants.iter().enumerate() {
+            let fx: crate::fx::Effect = serde_json::from_value(v.clone()).unwrap();
+            assert!(matches!(classify(&fx), FxClass::Streamable));
+            let mut ol = l0.clone();
+            let mut or_ = r0.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let seqs: Vec<Vec<usize>> = vec![
+                vec![1],
+                vec![7],
+                vec![64],
+                vec![512],
+                vec![999],
+                vec![1000],
+                vec![1 << 16],
+                vec![1, 999, 7, 256, 64],
+            ];
+            for seq in seqs {
+                let mut l = l0.clone();
+                let mut r = r0.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("saturator streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                let mut si = 0usize;
+                while pos < n {
+                    let k = seq[si % seq.len()].min(n - pos);
+                    si += 1;
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left variant {vi} blocks {seq:?} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right variant {vi} blocks {seq:?} i {i}"
+                    );
+                }
+            }
+        }
     }
 
     /// RT4 PDC test fixture: trap seed 9 with a 10ms-lookahead soft-knee
