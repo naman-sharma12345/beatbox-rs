@@ -4026,6 +4026,7 @@ mod tests {
                 "soft_clipper",
                 "stutter",
                 "transient",
+                "vocoder",
                 "width",
             ]
         );
