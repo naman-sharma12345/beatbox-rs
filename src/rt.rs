@@ -1487,6 +1487,10 @@ pub enum StreamFx {
         chans: [Vec<Biquad>; 2],
         out: f32,
     },
+    /// sc_dsp FDN reverb modes (room/plate/hall): the same Fdn the
+    /// offline pass runs - Fdn::process is block-chunkable by design,
+    /// so a chunked render is the full render bit for bit.
+    ReverbFdn(Box<crate::sc_dsp::Fdn>),
 }
 
 impl StreamFx {
@@ -2490,6 +2494,12 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::ReverbFdn(core) => {
+                // sc_dsp::Fdn::process: block-chunkable by design (all
+                // state in self), so chunked blocks equal the offline
+                // whole-buffer pass bit for bit.
+                core.process(l, r);
+            }
             StreamFx::ReverbFreeverb {
                 cl,
                 cr,
@@ -2581,11 +2591,10 @@ pub fn classify(fx: &Effect) -> FxClass {
         {
             Streamable
         }
-        Effect::Reverb(p) if p.mode == crate::fx::ReverbMode::Freeverb => Streamable,
+        Effect::Reverb(_) => Streamable,
         // OneShot, one-line reason each (latency in samples for RT4 PDC
         // comes from oneshot_latency_samples):
         Effect::Compressor(_) => Streamable,
-        Effect::Reverb(_) => OneShot("FDN reverb modes unverified for chunking"),
         Effect::Limiter(p) if !p.true_peak => Streamable,
         Effect::Limiter(_) => OneShot("true-peak limiter: whole-buffer iterative passes"),
         Effect::Maximizer(_) => Streamable,
@@ -3157,6 +3166,12 @@ impl ChainStreamer {
                         att_n: (p.attack_ms.max(0.1) * 0.001 * SR) as usize,
                         amount: p.amount.clamp(0.0, 1.0),
                     }
+                }
+                Effect::Reverb(p) if p.mode != crate::fx::ReverbMode::Freeverb => {
+                    // FDN modes: the same sc_dsp::Fdn the offline pass
+                    // runs, from sample 0 (offset 0).
+                    let (cfg, fp) = crate::fx::fdn_params(p);
+                    StreamFx::ReverbFdn(Box::new(crate::sc_dsp::Fdn::new(cfg, &fp, 0)))
                 }
                 Effect::Reverb(p) => {
                     const COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
@@ -6121,6 +6136,80 @@ mod tests {
                     or_[n - lat + i].to_bits(),
                     "mixed flush r i {i}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn stream_fx_reverb_fdn_bit_identical_to_offline() {
+        // FDN reverb modes (room/plate/hall): sc_dsp::Fdn::process is
+        // block-chunkable by design, so chunked RT blocks must equal the
+        // offline whole-buffer pass bit for bit.
+        let n = 30_000usize;
+        let l0: Vec<f32> = (0..n)
+            .map(|i| ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3)
+            .collect();
+        let r0: Vec<f32> = l0.iter().rev().copied().collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        let variants = [
+            serde_json::json!({"type":"reverb","mode":"fdn_room"}),
+            serde_json::json!({"type":"reverb","mode":"fdn_plate","size":0.85,
+                "decay_s":2.8,"damping":0.35,"mix":0.45,"width":1.4,
+                "predelay_ms":25.0,"diffusion":0.85,"low_cut_hz":120.0}),
+            serde_json::json!({"type":"reverb","mode":"fdn_hall","decay_s":5.0,
+                "mix":1.0,"width":2.0,"predelay_ms":0.0,"size":0.2}),
+        ];
+        for (vi, v) in variants.iter().enumerate() {
+            let fx: crate::fx::Effect = serde_json::from_value(v.clone()).unwrap();
+            assert!(matches!(classify(&fx), FxClass::Streamable));
+            let mut ol = l0.clone();
+            let mut or_ = r0.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let seqs: Vec<Vec<usize>> = vec![
+                vec![1],
+                vec![7],
+                vec![64],
+                vec![512],
+                vec![999],
+                vec![1000],
+                vec![1 << 16],
+                vec![1, 999, 7, 256, 64],
+            ];
+            for seq in seqs {
+                let mut l = l0.clone();
+                let mut r = r0.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("FDN reverb streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                let mut si = 0usize;
+                while pos < n {
+                    let k = seq[si % seq.len()].min(n - pos);
+                    si += 1;
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left variant {vi} blocks {seq:?} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right variant {vi} blocks {seq:?} i {i}"
+                    );
+                }
             }
         }
     }
