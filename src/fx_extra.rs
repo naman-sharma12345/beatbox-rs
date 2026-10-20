@@ -469,6 +469,68 @@ pub fn gate_levels(pattern: &str) -> Vec<f32> {
     }
 }
 
+/// slice-repeat stutter (part B): a pure function of the buffer, the slice
+/// length, the repeat count and the trigger sample. Repeats
+/// `buffer[trigger..trigger + slice]` `repeats` times starting at `trigger`,
+/// with a raised-cosine crossfade at every loop wrap (and at the exit back
+/// to the source) so the repeats do not click. The slice's first pass IS the
+/// source, so it is left bit-exact untouched; no allocation, no locking.
+pub fn slice_repeat(
+    l: &mut [f32],
+    r: &mut [f32],
+    slice: usize,
+    repeats: usize,
+    trigger: usize,
+    fade: usize,
+    mix: f32,
+) {
+    let n = l.len().min(r.len());
+    if slice == 0 || repeats == 0 || trigger >= n {
+        return;
+    }
+    let slice = slice.min(n - trigger);
+    let fade = fade.clamp(1, slice);
+    let mix = mix.clamp(0.0, 1.0);
+    let span = slice.saturating_mul(repeats);
+    // repeats (pass 0 is the source playing through; writing it would only
+    // risk f32 rounding, so the span loop starts at pass 1)
+    for k in slice..span {
+        let pos = trigger + k;
+        if pos >= n {
+            break;
+        }
+        let i = k % slice;
+        // wrap-in crossfade over each pass's first `fade` samples: the slice
+        // tail replayed once more, raised-cosine blended into the head
+        let (wl, wr) = if i < fade {
+            let w = 0.5 - 0.5 * (std::f32::consts::PI * (i + 1) as f32 / (fade + 1) as f32).cos();
+            let tail = slice - fade + i;
+            (
+                l[trigger + tail] * (1.0 - w) + l[trigger + i] * w,
+                r[trigger + tail] * (1.0 - w) + r[trigger + i] * w,
+            )
+        } else {
+            (l[trigger + i], r[trigger + i])
+        };
+        l[pos] = l[pos] * (1.0 - mix) + wl * mix;
+        r[pos] = r[pos] * (1.0 - mix) + wr * mix;
+    }
+    // exit crossfade: the tail replayed once more, blended into the source
+    let e = trigger + span;
+    for i in 0..fade {
+        let pos = e + i;
+        if pos >= n {
+            break;
+        }
+        let w = 0.5 - 0.5 * (std::f32::consts::PI * (i + 1) as f32 / (fade + 1) as f32).cos();
+        let tail = slice - fade + i;
+        let wl = l[trigger + tail] * (1.0 - w) + l[pos] * w;
+        let wr = r[trigger + tail] * (1.0 - w) + r[pos] * w;
+        l[pos] = l[pos] * (1.0 - mix) + wl * mix;
+        r[pos] = r[pos] * (1.0 - mix) + wr * mix;
+    }
+}
+
 pub fn stutter(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
     stutter_at(p, l, r, step_secs, 0)
 }
@@ -497,6 +559,21 @@ fn stutter_guarded(
     let step = (step_secs * SR).max(1.0);
     let mix = p.mix.clamp(0.0, 1.0);
     if mix <= 0.0 {
+        return;
+    }
+    // part B: slice-repeat is a pure function of buffer/slice/repeat/trigger,
+    // block-snapped (512 default, 256 as the runtime option)
+    if p.mode == StutterMode::SliceRepeat {
+        let block = if p.block_samples <= 384.0 {
+            256usize
+        } else {
+            512
+        };
+        let slice = (p.slice_blocks.round().max(0.0) as usize).saturating_mul(block);
+        let repeats = p.repeat_count.round().max(0.0) as usize;
+        let trigger = p.trigger_sample.max(0.0) as usize;
+        let fade = ((p.wrap_fade_ms.clamp(2.0, 5.0) * 0.001 * SR) as usize).max(1);
+        slice_repeat(l, r, slice, repeats, trigger, fade, mix);
         return;
     }
     let fade = ((p.smooth_ms.max(0.5) * 0.001 * SR) as usize).max(1);
@@ -631,6 +708,8 @@ pub struct StutterCore {
     fade: usize,
     levels: Vec<f32>,
     total: usize,
+    repeats: usize,
+    trigger: usize,
     dc: (TapeDcGuard, TapeDcGuard),
     dc_cycle: Option<usize>,
     pub mix: f32,
@@ -641,10 +720,29 @@ impl StutterCore {
         let step = (step_secs * SR).max(1.0);
         let cycle = (p.cycle_steps.max(0.25) * step) as usize;
         let cycle = cycle.max(1);
-        let slice = ((p.slice_steps.max(0.0625) * step) as usize).clamp(1, cycle);
-        let fade = ((p.smooth_ms.max(0.5) * 0.001 * SR) as usize).max(1);
+        let trigger = (p.trigger_sample.max(0.0) as usize).min(total);
+        let (slice, fade) = match p.mode {
+            // part B: slice snaps to whole blocks (512 default, 256 as the
+            // runtime option); wrap crossfade 2-5 ms
+            StutterMode::SliceRepeat => {
+                let block = if p.block_samples <= 384.0 {
+                    256usize
+                } else {
+                    512
+                };
+                let s = (p.slice_blocks.round().max(0.0) as usize).saturating_mul(block);
+                let s = s.min(total.saturating_sub(trigger));
+                let f = ((p.wrap_fade_ms.clamp(2.0, 5.0) * 0.001 * SR) as usize).max(1);
+                (s, if s > 0 { f.min(s) } else { 1 })
+            }
+            _ => (
+                ((p.slice_steps.max(0.0625) * step) as usize).clamp(1, cycle),
+                ((p.smooth_ms.max(0.5) * 0.001 * SR) as usize).max(1),
+            ),
+        };
         let size = match p.mode {
             StutterMode::Gate => 1,
+            StutterMode::SliceRepeat => slice + fade + 2,
             _ => cycle + tape_dc::preroll() + 2,
         };
         StutterCore {
@@ -657,6 +755,8 @@ impl StutterCore {
             fade,
             levels: gate_levels(&p.pattern),
             total,
+            repeats: p.repeat_count.round().max(0.0) as usize,
+            trigger,
             dc: (TapeDcGuard::default(), TapeDcGuard::default()),
             dc_cycle: None,
             mix: p.mix.clamp(0.0, 1.0),
@@ -667,6 +767,15 @@ impl StutterCore {
     #[inline]
     pub fn step(&mut self, j: usize, l: f32, r: f32) -> (f32, f32) {
         let size = self.ring_l.len();
+        if self.mode == StutterMode::SliceRepeat {
+            // the ring holds the slice source, relative-indexed, written only
+            // while the slice plays (never overwritten afterwards)
+            if self.slice > 0 && j >= self.trigger && j < self.trigger + self.slice {
+                self.ring_l[(j - self.trigger) % size] = l;
+                self.ring_r[(j - self.trigger) % size] = r;
+            }
+            return self.step_slice_repeat(j, l, r);
+        }
         self.ring_l[j % size] = l;
         self.ring_r[j % size] = r;
         let mix = self.mix;
@@ -766,6 +875,50 @@ impl StutterCore {
                 rr = self.dc.1.process(rr);
                 (rl * g, rr * g)
             }
+        };
+        (l * (1.0 - mix) + wl * mix, r * (1.0 - mix) + wr * mix)
+    }
+
+    /// slice-repeat (part B), one song sample: the same math as the offline
+    /// [`slice_repeat`], reading the recorded slice from the ring.
+    fn step_slice_repeat(&self, j: usize, l: f32, r: f32) -> (f32, f32) {
+        let size = self.ring_l.len();
+        let slice = self.slice;
+        let fade = self.fade;
+        let mix = self.mix;
+        if slice == 0 || self.repeats == 0 || j < self.trigger {
+            return (l, r);
+        }
+        let k = j - self.trigger;
+        let span = slice.saturating_mul(self.repeats);
+        if k >= span {
+            // exit crossfade: the tail replayed once more, blended into the
+            // live source (no future read)
+            let i = k - span;
+            if i >= fade {
+                return (l, r);
+            }
+            let w = 0.5 - 0.5 * (std::f32::consts::PI * (i + 1) as f32 / (fade + 1) as f32).cos();
+            let tail = slice - fade + i;
+            let wl = self.ring_l[tail % size] * (1.0 - w) + l * w;
+            let wr = self.ring_r[tail % size] * (1.0 - w) + r * w;
+            return (l * (1.0 - mix) + wl * mix, r * (1.0 - mix) + wr * mix);
+        }
+        let i = k % slice;
+        let pass = k / slice;
+        if pass == 0 {
+            // the slice's first pass IS the source: bit-exact dry
+            return (l, r);
+        }
+        let (wl, wr) = if i < fade {
+            let w = 0.5 - 0.5 * (std::f32::consts::PI * (i + 1) as f32 / (fade + 1) as f32).cos();
+            let tail = slice - fade + i;
+            (
+                self.ring_l[tail % size] * (1.0 - w) + self.ring_l[i % size] * w,
+                self.ring_r[tail % size] * (1.0 - w) + self.ring_r[i % size] * w,
+            )
+        } else {
+            (self.ring_l[i % size], self.ring_r[i % size])
         };
         (l * (1.0 - mix) + wl * mix, r * (1.0 - mix) + wr * mix)
     }
@@ -1939,6 +2092,7 @@ mod tests {
             StutterMode::HalfTime,
             StutterMode::Reverse,
             StutterMode::TapeStop,
+            StutterMode::SliceRepeat,
         ] {
             let mut l = sine(300.0, 30000, 0.5);
             let mut r = l.clone();
@@ -1955,6 +2109,151 @@ mod tests {
                 assert!(rms(&l[500..step - 500]) > 0.3);
             }
         }
+    }
+
+    #[test]
+    fn slice_repeat_exact_repeat_count() {
+        // ramp of exactly-representable values; fade 1 keeps the blended
+        // region to each pass's first sample
+        let n = 8192usize;
+        let mut l: Vec<f32> = (0..n).map(|i| (i % 251) as f32).collect();
+        let mut r = l.clone();
+        let (l0, r0) = (l.clone(), r.clone());
+        slice_repeat(&mut l, &mut r, 1024, 3, 512, 1, 1.0);
+        // pass 0 is bit-exact dry (the slice source is the buffer itself)
+        for i in 512..512 + 1024 {
+            assert_eq!(l[i].to_bits(), l0[i].to_bits(), "pass0 i {i}");
+        }
+        // passes 1 and 2 repeat the slice; samples past the 1-sample wrap
+        // crossfade of each pass are raw
+        for k in 1024 + 1..3 * 1024 {
+            let i = k % 1024;
+            assert_eq!(l[512 + k].to_bits(), l0[512 + i].to_bits(), "rep l k {k}");
+            assert_eq!(r[512 + k].to_bits(), r0[512 + i].to_bits(), "rep r k {k}");
+        }
+        // the 4th would-be pass is not there: after the 1-sample exit
+        // crossfade the buffer is dry -> exactly 3 repeats
+        for i in 512 + 3 * 1024 + 1..n {
+            assert_eq!(l[i].to_bits(), l0[i].to_bits(), "tail i {i}");
+        }
+    }
+
+    #[test]
+    fn slice_repeat_trigger_offset_sample_accurate() {
+        let n = 6000usize;
+        let mut l: Vec<f32> = (0..n).map(|i| (i % 251) as f32 + 0.25).collect();
+        let mut r = l.clone();
+        let l0 = l.clone();
+        slice_repeat(&mut l, &mut r, 512, 2, 1000, 1, 1.0);
+        // everything before the trigger is untouched
+        for i in 0..1000 {
+            assert_eq!(l[i].to_bits(), l0[i].to_bits(), "pre i {i}");
+        }
+        // the first repeated sample lands exactly at trigger + slice + fade
+        assert_eq!(l[1000 + 512 + 1].to_bits(), l0[1000 + 1].to_bits());
+        // and the effect ends exactly at trigger + slice * repeats + fade
+        for i in 1000 + 1024 + 1..n {
+            assert_eq!(l[i].to_bits(), l0[i].to_bits(), "post i {i}");
+        }
+    }
+
+    #[test]
+    fn slice_repeat_zero_and_max_slice() {
+        let n = 8192usize;
+        let build = || {
+            (0..n)
+                .map(|i| ((i % 251) as f32 + 0.25).sin())
+                .collect::<Vec<f32>>()
+        };
+        // zero slice: dry
+        let mut l = build();
+        let mut r = build();
+        let l0 = l.clone();
+        slice_repeat(&mut l, &mut r, 0, 4, 100, 4, 1.0);
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        // zero repeats: dry
+        slice_repeat(&mut l, &mut r, 512, 0, 100, 4, 1.0);
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        // slice longer than the buffer: clamps to what is there; the repeat
+        // pass does not fit, so the buffer is dry and nothing panics
+        slice_repeat(&mut l, &mut r, 1_000_000, 2, 0, 4, 1.0);
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        // max that fits: the first half repeated once over the second
+        slice_repeat(&mut l, &mut r, 4096, 2, 0, 4, 1.0);
+        for k in 4096 + 4..8192 {
+            assert_eq!(l[k].to_bits(), l0[k % 4096].to_bits(), "max k {k}");
+        }
+    }
+
+    #[test]
+    fn slice_repeat_dry_wet() {
+        let n = 4096usize;
+        let build = || {
+            (0..n)
+                .map(|i| ((i % 251) as f32 + 0.25).sin())
+                .collect::<Vec<f32>>()
+        };
+        // mix 0: bit-exact dry
+        let mut l = build();
+        let mut r = build();
+        let l0 = l.clone();
+        slice_repeat(&mut l, &mut r, 512, 3, 100, 8, 0.0);
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        // mix 1: full wet, the raw repeat region equals the slice
+        slice_repeat(&mut l, &mut r, 512, 3, 100, 8, 1.0);
+        for k in 512 + 8..1024 {
+            assert_eq!(
+                l[100 + k].to_bits(),
+                l0[100 + (k % 512)].to_bits(),
+                "wet k {k}"
+            );
+        }
+    }
+
+    #[test]
+    fn slice_repeat_wrap_seam_golden() {
+        // the wrap-seam golden (repo golden standard: to_bits). The raised-
+        // cosine weights are irrational, so blended samples are locked by
+        // recomputing the pinned formula; structural values (raw repeat,
+        // untouched head/tail) are pinned literally.
+        let mut l = vec![0.0f32; 16];
+        let mut r = vec![0.0f32; 16];
+        l[..4].copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+        r[..4].copy_from_slice(&[5.0, 6.0, 7.0, 8.0]);
+        slice_repeat(&mut l, &mut r, 4, 2, 0, 3, 1.0);
+        let w = |i: usize| 0.5 - 0.5 * (std::f32::consts::PI * (i + 1) as f32 / 4.0).cos();
+        // wrap-in at pos 4..7: tail replayed, blended into the head
+        for i in 0..3 {
+            let e_l = [2.0f32, 3.0, 4.0][i] * (1.0 - w(i)) + [1.0f32, 2.0, 3.0][i] * w(i);
+            let e_r = [6.0f32, 7.0, 8.0][i] * (1.0 - w(i)) + [5.0f32, 6.0, 7.0][i] * w(i);
+            assert_eq!(l[4 + i].to_bits(), e_l.to_bits(), "wrap l {i}");
+            assert_eq!(r[4 + i].to_bits(), e_r.to_bits(), "wrap r {i}");
+        }
+        // the second pass's last head sample is raw
+        assert_eq!(l[7].to_bits(), 4.0f32.to_bits());
+        // exit seam at 8..11: tail replayed, blended into the source (zeros)
+        for i in 0..3 {
+            let e_l = [2.0f32, 3.0, 4.0][i] * (1.0 - w(i));
+            assert_eq!(l[8 + i].to_bits(), e_l.to_bits(), "exit l {i}");
+        }
+        // after the seam: dry
+        for i in 11..16 {
+            assert_eq!(l[i].to_bits(), 0.0f32.to_bits(), "dry {i}");
+        }
+    }
+
+    #[test]
+    fn slice_repeat_fx_zero_slice_is_dry() {
+        let mut l = sine(300.0, 5000, 0.5);
+        let mut r = l.clone();
+        let l0 = l.clone();
+        let p = StutterFx {
+            mode: StutterMode::SliceRepeat,
+            slice_blocks: 0.0,
+            ..Default::default()
+        };
+        stutter(&p, &mut l, &mut r, 0.125);
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
     }
 
     #[test]
