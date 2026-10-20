@@ -41,7 +41,48 @@ pick the better version (restore_snapshot to go back). Finish with validate_proj
 (true peak <= -1 dBTP, about -14 LUFS for streaming). undo/redo are always available, so experiment freely.";
 
 pub(crate) fn obj(props: Value, required: &[&str]) -> Value {
-    json!({ "type": "object", "properties": props, "required": required, "additionalProperties": false })
+    json!({ "type": "object", "properties": type_untyped(props), "required": required, "additionalProperties": false })
+}
+
+/// Arguments that accept more than one JSON type (a pitch as 60 or "C4", a
+/// rate as 4 or "1/16", one track name or a list) get their union type
+/// spelled out, so every argument a model sees carries a type.
+fn type_untyped(mut props: Value) -> Value {
+    if let Value::Object(m) = &mut props {
+        for (k, p) in m.iter_mut() {
+            let Value::Object(o) = p else { continue };
+            if ["type", "enum", "oneOf", "anyOf", "$ref", "const"]
+                .iter()
+                .any(|f| o.contains_key(*f))
+            {
+                continue;
+            }
+            let (ty, desc): (Value, &str) = match k.as_str() {
+                "pitch" | "pitch_min" | "pitch_max" | "pitch_from" | "pitch_to" | "key_min"
+                | "key_max" | "root" | "register" => (
+                    json!(["integer", "string"]),
+                    "MIDI number or note name (C4 = 60)",
+                ),
+                "rate" | "grid" | "every" => (
+                    json!(["number", "string"]),
+                    "16th steps, or a note value like '1/16', '1/8t', '1/4'",
+                ),
+                "patterns" | "to_patterns" | "track" => (
+                    json!(["string", "array"]),
+                    "a name, 'a,b', or a list of names",
+                ),
+                "sections" => (json!(["array", "string"]), "list of sections"),
+                _ => continue,
+            };
+            o.insert("type".into(), ty);
+            if k == "patterns" || k == "to_patterns" || k == "track" || k == "sections" {
+                o.entry("items")
+                    .or_insert(json!({"type": ["string", "object"]}));
+            }
+            o.entry("description").or_insert(Value::String(desc.into()));
+        }
+    }
+    props
 }
 
 // ---------- argument helpers ----------
@@ -301,7 +342,7 @@ pub(crate) fn notes_json(notes: &[Note]) -> Value {
     Value::Array(
         notes
             .iter()
-            .map(|n| json!({"start": n.start, "len": n.len, "pitch": n.pitch, "note": theory::note_name(n.pitch), "vel": (n.vel * 100.0).round() / 100.0}))
+            .map(|n| json!({"id": n.id, "start": n.start, "len": n.len, "pitch": n.pitch, "note": theory::note_name(n.pitch), "vel": (n.vel * 100.0).round() / 100.0}))
             .collect(),
     )
 }
@@ -666,20 +707,63 @@ fn build() -> Vec<Tool> {
     v.extend(crate::tools_sound::tools());
     v.extend(crate::tools_compose::tools());
     v.extend(crate::tools_ears::tools());
+    v.extend(crate::tools_tp_limit::tools());
     v.extend(crate::tools_delivery::tools());
+    v.extend(crate::judge::tools());
     v.extend(crate::tools_mix::tools());
+    v.extend(crate::tools_multiband::tools());
     v.extend(crate::tools_parity::tools());
+    v.extend(crate::midi_in::tools());
     v.extend(crate::tools_producer::tools());
     v.extend(crate::tools_creative::tools());
     v.extend(crate::tools_listen::tools());
+    v.extend(crate::tools_mix_analysis::tools());
+    v.extend(crate::tools_mix_primitives::tools());
     v.extend(crate::tools_ears_pro::tools());
     v.extend(crate::tools_fl::tools());
     v.extend(crate::tools_fx2::tools());
     v.extend(crate::tools_palette::tools());
+    v.extend(crate::tools_vocal::tools());
+    v.extend(crate::tools_groove::tools());
+    v.extend(crate::tools_prompt::tools());
+    v.extend(crate::tools_meta::tools());
+    v.extend(crate::tools_drone::tools());
+    v.extend(crate::tools_critic::tools());
+    v.extend(crate::tools_chain::tools());
+    v.extend(crate::tools_ids::tools());
+    v.extend(crate::tools_timeline::tools());
+    v.extend(crate::tools_ab_listen::tools());
+    v.extend(crate::tools_cover::tools());
+    v.extend(crate::tools_discovery::tools());
+    v.extend(crate::tools_bounce::tools());
+    v.extend(crate::tools_click::tools());
+    v.extend(crate::tools_markers::tools());
+    v.extend(crate::tools_tempo::tools());
+    v.extend(crate::stems::tools());
+    v.extend(crate::tools_transcribe::tools());
+    v.extend(crate::record_map::tools());
+    v.extend(crate::timbre_match::tools());
+    v.extend(crate::arrange_tx::tools());
+    v.extend(crate::resynth::tools());
+    v.extend(crate::rack::cmd::tools());
+    v.extend(crate::vocal_flex::tools());
+    v.extend(crate::vocal_repair::tools());
+    v.extend(crate::vocal_clarity::tools());
+    v.extend(crate::vocal_edits::tools());
+    v.extend(crate::vocal_sections::tools());
+    v.extend(crate::sc_strip::tools());
+    v.extend(crate::vocal_style::tools());
+    v.extend(crate::drill_engine::tools());
+    v.extend(crate::voice_ai::tools());
+    v.extend(crate::tools_library::tools());
+    v.extend(crate::song::tools());
+    v.extend(crate::recorder::tools());
+    v.extend(crate::sound_catalog::tools());
+    v.extend(crate::web_import::tools());
     v
 }
 
-fn core_tools() -> Vec<Tool> {
+pub(crate) fn core_tools() -> Vec<Tool> {
     vec![
         // ----- discovery -----
         Tool {
@@ -698,10 +782,13 @@ fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "list_tools",
-            description: "List every tool name with its one-line description.",
+            description: "Every tool, grouped by category (start, discover, project, notes, sound, compose, listen, mix, fx, playlist, produce, vocal, export...), one line each. Filter with category or search. Then describe_tool {name} for arguments and an example.",
             mutates: false,
-            schema: || obj(json!({}), &[]),
-            run: |_, _| Ok(Value::Array(registry().iter().map(|t| json!({"name": t.name, "description": t.description})).collect())),
+            schema: || obj(json!({
+                "category": {"type": "string", "description": "Only this category, e.g. vocal, fx, mix, notes"},
+                "search": {"type": "string", "description": "Only tools whose name or description contains this word"}
+            }), &[]),
+            run: |_, a| crate::tools_meta::list(a),
         },
         // ----- project -----
         Tool {
@@ -753,7 +840,7 @@ fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "save_project",
-            description: "Save the project as JSON. Snapshots (A/B versions) are saved alongside in <path>.snapshots.json and come back with load_project, so compare_variants works across sessions.",
+            description: "Save the project as JSON (with the MIDI controller setup: links, keys track, record grid). Snapshots (A/B versions) are saved alongside in <path>.snapshots.json and come back with load_project, so compare_variants works across sessions.",
             mutates: false,
             schema: || obj(json!({"path": {"type": "string", "description": "File path, e.g. mybeat.beatbox.json"}}), &["path"]),
             run: |e, a| {
@@ -761,6 +848,7 @@ fn core_tools() -> Vec<Tool> {
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent).ok();
                 }
+                e.project.midi = crate::midi_in::snapshot(e);
                 std::fs::write(&path, serde_json::to_string_pretty(&e.project)?)?;
                 let side = snapshots_path(&path);
                 if e.snapshots.is_empty() {
@@ -769,25 +857,33 @@ fn core_tools() -> Vec<Tool> {
                     let snaps: Vec<Value> = e.snapshots.iter().map(|(n, s)| json!({"name": n, "note": s.note, "revision": s.revision, "project": s.project})).collect();
                     std::fs::write(&side, serde_json::to_string(&snaps)?)?;
                 }
-                Ok(json!({"saved": path, "snapshots": e.snapshots.len()}))
+                Ok(json!({"saved": path, "snapshots": e.snapshots.len(), "midi_links": e.project.midi.as_ref().map_or(0, |m| m.links.len())}))
             },
         },
         Tool {
             name: "load_project",
-            description: "Load a project JSON file (replaces the current project; undo restores it).",
+            description: "Load a project JSON file (replaces the current project; undo restores it). Its saved MIDI links and keys track come back; a connected controller stays connected.",
             mutates: false,
             schema: || obj(json!({"path": {"type": "string"}}), &["path"]),
             run: |e, a| {
                 let path = e.resolve(&s_req(a, "path")?);
                 let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
                 let p: Project = serde_json::from_str(&text).context("not a beatbox project")?;
+                p.validate_effects().map_err(|m| anyhow!("load_project: {m}. Nothing was changed."))?;
                 e.replace_project(p);
+                let saved_midi = e.project.midi.clone();
+                let (midi_links, midi_skipped) = crate::midi_in::restore(e, saved_midi.as_ref());
                 let mut loaded = 0;
+                let mut snapshots_skipped = 0;
                 if let Ok(t) = std::fs::read_to_string(snapshots_path(&path)) {
                     if let Ok(Value::Array(v)) = serde_json::from_str::<Value>(&t) {
                         e.snapshots.clear();
                         for s in v {
                             if let (Some(n), Ok(pr)) = (s["name"].as_str(), serde_json::from_value::<Project>(s["project"].clone())) {
+                                if pr.validate_effects().is_err() {
+                                    snapshots_skipped += 1;
+                                    continue;
+                                }
                                 e.snapshots.push((n.to_string(), crate::engine::Snapshot { project: pr, note: s["note"].as_str().unwrap_or("").to_string(), revision: s["revision"].as_u64().unwrap_or(0) }));
                                 loaded += 1;
                             }
@@ -796,6 +892,16 @@ fn core_tools() -> Vec<Tool> {
                 }
                 let mut out = summary(&e.project);
                 out["snapshots_loaded"] = json!(loaded);
+                if snapshots_skipped > 0 {
+                    out["snapshots_skipped_invalid_effects"] = json!(snapshots_skipped);
+                }
+                if saved_midi.is_some() {
+                    out["midi"] = json!({"links": midi_links, "track": e.midi.track, "skipped": midi_skipped});
+                }
+                let missing = render::missing_clip_samples(&e.project, &e.bank);
+                if !missing.is_empty() {
+                    out["warnings"] = json!(missing.iter().map(|m| format!("audio clip {m}; renders fail until it is fixed")).collect::<Vec<_>>());
+                }
                 Ok(out)
             },
         },
@@ -832,17 +938,44 @@ fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "undo",
-            description: "Undo the last change.",
+            description: "Undo the last change, or the last `steps` changes.",
             mutates: false,
-            schema: || obj(json!({}), &[]),
-            run: |e, _| Ok(json!({"undone": e.undo(), "remaining": e.undo_depth().0})),
+            schema: || obj(json!({"steps": {"type": "integer", "minimum": 1, "maximum": 100, "description": "How many changes to undo (default 1)."}}), &[]),
+            run: |e, a| {
+                let n = a.get("steps").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 100);
+                let mut done = 0;
+                while done < n && e.undo() {
+                    done += 1;
+                }
+                Ok(json!({"undone": done > 0, "steps": done, "remaining": e.undo_depth().0}))
+            },
         },
         Tool {
             name: "redo",
-            description: "Redo the last undone change.",
+            description: "Redo the last undone change, or the next `steps` undone changes.",
             mutates: false,
-            schema: || obj(json!({}), &[]),
-            run: |e, _| Ok(json!({"redone": e.redo(), "remaining": e.undo_depth().1})),
+            schema: || obj(json!({"steps": {"type": "integer", "minimum": 1, "maximum": 100, "description": "How many undone changes to redo (default 1)."}}), &[]),
+            run: |e, a| {
+                let n = a.get("steps").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 100);
+                let mut done = 0;
+                while done < n && e.redo() {
+                    done += 1;
+                }
+                Ok(json!({"redone": done > 0, "steps": done, "remaining": e.undo_depth().1}))
+            },
+        },
+        Tool {
+            name: "history",
+            description: "The change history in plain words (\"Added clip · Drums · bar 5\"): `done` lists changes undo can take back, newest first; `undone` lists changes redo can bring back, the next redo last. undo/redo with `steps` jump to any line.",
+            mutates: false,
+            schema: || obj(json!({"limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Most lines per list (default 20)."}}), &[]),
+            run: |e, a| {
+                let n = a.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).clamp(1, 100) as usize;
+                let (done, undone) = e.history();
+                let ul = undone.len();
+                let undone: Vec<String> = undone.into_iter().skip(ul.saturating_sub(n)).collect();
+                Ok(json!({"done": done.into_iter().take(n).collect::<Vec<_>>(), "undone": undone, "can_undo": e.undo_depth().0, "can_redo": e.undo_depth().1}))
+            },
         },
         // ----- tracks -----
         Tool {
@@ -983,7 +1116,7 @@ fn core_tools() -> Vec<Tool> {
         // ----- effects -----
         Tool {
             name: "add_effect",
-            description: "Append an effect to a track's chain (or 'master'). Give `type` plus any params, e.g. {track:'pad', type:'reverb', params:{size:0.85, mix:0.35}} or {track:'bass', type:'sidechain', params:{source:'kick', amount:0.8}}.",
+            description: "Append an effect to a track's chain (or 'master'). Give `type` plus any params, e.g. {track:'pad', type:'reverb', params:{size:0.85, mix:0.35}} or {track:'bass', type:'sidechain', params:{source:'kick', amount:0.8}}. parametric_eq bands: {kind, freq, gain_db, q, stages} with kind bell | low_shelf | high_shelf | low_cut (= high-pass) | high_cut (= low-pass) | notch, e.g. {type:'parametric_eq', params:{bands:[{kind:'low_cut', freq:100}, {kind:'bell', freq:3200, gain_db:3}]}}. describe_effect lists every type's params.",
             mutates: true,
             schema: || obj(json!({
                 "track": {"type": "string", "description": "Track name or 'master'"},
@@ -1001,6 +1134,7 @@ fn core_tools() -> Vec<Tool> {
                 if let Some(p) = a.get("params") {
                     reject_unknown(p, &effective, &format!("add_effect {t}"))?;
                 }
+                fx.validate().map_err(|m| anyhow!("add_effect {t}: {m}. Nothing was changed."))?;
                 let track = s_req(a, "track")?;
                 if let Effect::Sidechain(sc) = &fx {
                     e.project.track_index(&sc.source).context("sidechain source track")?;
@@ -1023,9 +1157,11 @@ fn core_tools() -> Vec<Tool> {
                 let mut v = serde_json::to_value(&*fx)?;
                 let patch = a.get("params").ok_or_else(|| anyhow!("missing params"))?;
                 merge(&mut v, patch);
-                *fx = serde_json::from_value(v)?;
-                let eff = serde_json::to_value(&*fx)?;
+                let new_fx: Effect = serde_json::from_value(v)?;
+                let eff = serde_json::to_value(&new_fx)?;
                 reject_unknown(patch, &eff, "tweak_effect")?;
+                new_fx.validate().map_err(|m| anyhow!("tweak_effect: {m}. Nothing was changed."))?;
+                *fx = new_fx;
                 Ok(eff)
             },
         },
@@ -1198,6 +1334,7 @@ fn core_tools() -> Vec<Tool> {
                         prob: f_or(n, "prob", 1.0).clamp(0.0, 1.0),
                         offset: f_or(n, "offset", 0.0).clamp(-0.5, 0.5),
                         slide_to: n.get("slide_to").map(pitch_of).transpose()?,
+                        id: String::new(),
                     });
                 }
                 let pat = &mut e.project.patterns[pi];
@@ -1642,18 +1779,21 @@ fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "import_sample",
-            description: "Register a local audio file (wav/mp3/flac/ogg) as a sample.",
+            description: "Register a local audio file (wav/mp3/flac/ogg) as a sample. license / author / source (where it came from: a URL or a description) are kept for credits (list_samples, export_credits).",
             mutates: true,
-            schema: || obj(json!({"path": {"type": "string"}, "name": {"type": "string"}}), &["path"]),
+            schema: || obj(json!({"path": {"type": "string"}, "name": {"type": "string"},
+                "license": {"type": "string", "description": "e.g. CC0, CC-BY-4.0, own recording"},
+                "author": {"type": "string", "description": "who made or recorded it"},
+                "source": {"type": "string", "description": "where it came from (URL or description); default 'local file'"}}), &["path"]),
             run: |e, a| {
                 let path = e.resolve(&s_req(a, "path")?);
                 let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("sample").to_string();
                 let info = SampleInfo {
                     name: samples::sample_name(&s_opt(a, "name").unwrap_or(stem)),
                     path: path.to_string_lossy().into(),
-                    source: "local file".into(),
-                    license: String::new(),
-                    author: String::new(),
+                    source: s_opt(a, "source").filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "local file".into()),
+                    license: s_opt(a, "license").unwrap_or_default(),
+                    author: s_opt(a, "author").unwrap_or_default(),
                     duration: 0.0,
                 };
                 register_sample(e, info)
@@ -1694,7 +1834,8 @@ fn core_tools() -> Vec<Tool> {
             schema: || obj(json!({"path": {"type": "string", "description": "default renders/<project>.wav"}, "loops": {"type": "integer"}, "stems_dir": {"type": "string"},
                 "section": {"description": "Render only this arrangement section (index or pattern name)", "type": ["string", "integer"]},
                 "start_beat": {"type": "number", "description": "Region start in song beats"}, "end_beat": {"type": "number"},
-                "tail": {"type": "number", "description": "Seconds of ring-out after the last bar (default 1.5, max 30)"}}), &[]),
+                "tail": {"type": "number", "description": "Seconds of ring-out after the last bar (default 1.5, max 30)"},
+                "allow_missing_clips": {"type": "boolean", "description": "render even if audio clips point at missing samples (they stay silent; default false = fail and name them)"}}), &[]),
             run: |e, a| {
                 let path = match s_opt(a, "path") {
                     Some(p) => e.resolve(&p),
@@ -1715,7 +1856,7 @@ fn core_tools() -> Vec<Tool> {
                 } else { None };
                 let tail = f_opt(a, "tail").unwrap_or(1.5).clamp(0.0, 30.0);
                 e.bank.sync(&e.project.samples);
-                let mix = render::render(&e.project, &e.bank, &RenderOptions { loops, keep_stems: stems_dir.is_some(), step_range: range, tail, ..Default::default() })?;
+                let mix = render::render(&e.project, &e.bank, &RenderOptions { loops, keep_stems: stems_dir.is_some(), step_range: range, tail, allow_missing_clips: b_or(a, "allow_missing_clips", false), ..Default::default() })?;
                 render::write_wav(&path, &mix.left, &mix.right)?;
                 let mut stems = Vec::new();
                 if let Some(d) = stems_dir {

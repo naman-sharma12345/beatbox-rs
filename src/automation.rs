@@ -49,6 +49,11 @@ pub struct AutoPoint {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AutomationLane {
+    /// Stable id, unique in the project, kept across renames, undo and
+    /// save/load (assigned by the engine; tools accept it wherever they take
+    /// a name or index).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     /// Track name, bus name or "master".
     pub target: String,
     /// `volume`, `pan`, `instrument.<path>` or `fx.<index>.<param>`.
@@ -70,6 +75,7 @@ impl AutomationLane {
             param: param.to_string(),
             points: Vec::new(),
             enabled: true,
+            id: String::new(),
         }
     }
 
@@ -84,6 +90,14 @@ impl AutomationLane {
     /// Value at song position `beat`. Holds the first/last value outside the
     /// point range. `None` when the lane has no points.
     pub fn value_at(&self, beat: f32) -> Option<f32> {
+        self.value_at_in(beat, false)
+    }
+
+    /// `value_at`, with `log` interpolating between two positive points
+    /// geometrically (equal time per octave): what a frequency sweep needs.
+    /// Linear Hz from 18 kHz to 60 Hz spends ~1/300 of the segment below
+    /// 113 Hz, so the bottom octave flashes past in a few samples and clicks.
+    pub fn value_at_in(&self, beat: f32, log: bool) -> Option<f32> {
         let pts = &self.points;
         let first = pts.first()?;
         if beat <= first.beat {
@@ -104,6 +118,9 @@ impl AutomationLane {
             Curve::Step => 0.0,
             Curve::Smooth => t * t * (3.0 - 2.0 * t),
         };
+        if log && a.value > 0.0 && b.value > 0.0 {
+            return Some((a.value.ln() + (b.value.ln() - a.value.ln()) * t).exp());
+        }
         Some(a.value + (b.value - a.value) * t)
     }
 
@@ -132,6 +149,9 @@ pub enum Target {
     Pan,
     Instrument(Vec<String>),
     Fx(usize, Vec<String>),
+    /// `send.<bus>`: the level (dB) of the owner's aux send to that bus
+    /// (matched by bus name or send id, case-insensitively).
+    Send(String),
 }
 
 pub fn parse_target(param: &str) -> Option<Target> {
@@ -147,6 +167,11 @@ pub fn parse_target(param: &str) -> Option<Target> {
             let path: Vec<String> = parts.map(String::from).collect();
             (!path.is_empty() && path.iter().all(|s| !s.is_empty()))
                 .then_some(Target::Instrument(path))
+        }
+        "send" | "sends" => {
+            let bus: Vec<&str> = parts.collect();
+            let bus = bus.join(".");
+            (!bus.is_empty()).then_some(Target::Send(bus))
         }
         "fx" | "effect" => {
             let idx = parts.next()?.parse().ok()?;
@@ -165,6 +190,7 @@ pub fn canonical(param: &str) -> Option<String> {
         Target::Pan => "pan".into(),
         Target::Instrument(p) => format!("instrument.{}", p.join(".")),
         Target::Fx(i, p) => format!("fx.{i}.{}", p.join(".")),
+        Target::Send(b) => format!("send.{b}"),
     })
 }
 
@@ -203,6 +229,9 @@ pub fn set_path(v: &mut Value, path: &[String], x: f32) -> bool {
 /// Sensible (min, max) defaults for a parameter name, used by
 /// generate_automation and validation.
 pub fn default_range(param: &str) -> (f32, f32) {
+    if matches!(parse_target(param), Some(Target::Send(_))) {
+        return (-60.0, 0.0);
+    }
     let leaf = param.rsplit('.').next().unwrap_or(param).to_lowercase();
     match leaf.as_str() {
         "volume" | "volume_db" | "vol" => (-30.0, 0.0),
@@ -221,6 +250,9 @@ pub fn default_range(param: &str) -> (f32, f32) {
 
 /// True for parameters that feel logarithmic (frequencies).
 pub fn is_log_param(param: &str) -> bool {
+    if param.trim().to_lowercase().starts_with("send") {
+        return false;
+    }
     let leaf = param.rsplit('.').next().unwrap_or(param).to_lowercase();
     matches!(leaf.as_str(), "cutoff" | "tone" | "low_freq" | "high_freq") || leaf.ends_with("_hz")
 }
@@ -380,6 +412,53 @@ mod tests {
         let m = lane(&[(0.0, 0.0, Curve::Smooth), (4.0, 1.0, Curve::Linear)]);
         let q = m.value_at(1.0).unwrap();
         assert!(q < 0.25 && q > 0.0, "smoothstep eases in: {q}");
+    }
+
+    #[test]
+    fn frequency_lanes_sweep_geometrically() {
+        let mut l = AutomationLane::new("lead", "fx.0.cutoff");
+        l.points = vec![
+            AutoPoint {
+                beat: 0.0,
+                value: 18000.0,
+                curve: Curve::Linear,
+            },
+            AutoPoint {
+                beat: 1.0,
+                value: 60.0,
+                curve: Curve::Linear,
+            },
+        ];
+        // halfway in time is halfway in octaves (sqrt(18000*60) ~ 1039 Hz)
+        let mid = l.value_at_in(0.5, true).unwrap();
+        assert!((mid - (18000.0f32 * 60.0).sqrt()).abs() < 2.0, "{mid}");
+        // linear Hz is still what value_at gives (and what non-log lanes use)
+        assert!((l.value_at(0.5).unwrap() - 9030.0).abs() < 1.0);
+        // the bottom octave (60..120 Hz) takes ~1/8 of the segment, not ~1/300
+        let t120 = (0..=1000)
+            .map(|i| i as f32 / 1000.0)
+            .find(|&t| l.value_at_in(t, true).unwrap() <= 120.0)
+            .unwrap();
+        assert!(t120 < 0.9 && t120 > 0.85, "{t120}");
+    }
+
+    #[test]
+    fn send_targets_parse_with_a_db_range() {
+        assert_eq!(
+            parse_target("send.Reverb"),
+            Some(Target::Send("reverb".into()))
+        );
+        assert_eq!(
+            parse_target("sends.delay.bus"),
+            Some(Target::Send("delay.bus".into()))
+        );
+        assert_eq!(parse_target("send"), None);
+        assert_eq!(parse_target("send."), None);
+        assert_eq!(canonical("SEND.verb").as_deref(), Some("send.verb"));
+        assert_eq!(default_range("send.verb"), (-60.0, 0.0));
+        // a bus called "cutoff" is still a dB send, not a frequency
+        assert!(!is_log_param("send.cutoff"));
+        assert_eq!(default_range("send.cutoff"), (-60.0, 0.0));
     }
 
     #[test]

@@ -1,0 +1,82 @@
+# IWBY v4 / v4b offline post-process (B43, 2026-10-13)
+
+Vocal FX (hall reverb with ducking, phrase-end echo throws, doubler, slap), the arrangement (stem gain envelopes,
+fill, swells, crashes) and the master for "I Wanna Be Yours" v4 and v4b. Applied to the engine's pre-master stems.
+No audio and no vocal take are in the repo.
+
+Reproduce:
+    beatbox --workdir WD call export_stems '{"dir":"STEMS","format":"wav","mode":"pre_master"}' --project proj.json   # the IWBY v3 project, 11d587c binary
+    python3 iwby_v4_post.py STEMS v4.wav  params.json        # v4  (sha256 bb091780...d80a4)
+    python3 iwby_v4_post.py STEMS v4b.wav params_v4b.json    # v4b (sha256 8da5b07c...a8887e)
+Needs numpy, scipy, soundfile, pyloudnorm. Random draws come from default_rng(seed) in a fixed order, and the WAV is written
+without a PEAK/timestamp chunk, so a re-run is byte-identical on the same numpy/scipy build (checked twice for each).
+IWBY_STATS=1 prints the wet/dry levels and leaves the audio untouched.
+
+## iwby_post.py: the song map read from the project (B51, 2026-10-14)
+
+`iwby_v4_post.py` pins the v4b song map to the 30-bar legacy plan (section bars, seven throw times in absolute
+seconds, end fade and length). Under the yin_gated default, cover_song plans chorus 2 at 5 bars and puts the take
+0.915 s earlier, so that map no longer fits. `iwby_post.py` runs the same processing with nothing pinned:
+
+    python3 iwby_post.py STEMS OUT.wav proj.json [params_iwby.json]
+
+- bpm and section spans come from the project's arrangement (pattern bars x repeats): intro, verse (every verse*
+  entry), chorus1, chorus2, outro; the breakdown is the last `breakdown_bars` (2) before chorus2;
+- throws are phrase indices on the dry vocal stem (`throw_phrases`, 0-based, the 7 phrases v4b kept out of 20);
+  `expect_phrases` refuses a stem that splits into a different number of phrases;
+- end fade and length are offsets from the song end (`end_fade_from_end_s`, `length_from_end_s`), which are
+  v4b's 105.0 / 108.6 / 110.0 s measured against its 30-bar end.
+
+The map logic is in `iwby_map.py` (pure, no audio). `python3 test_iwby_map.py` checks it (6 checks).
+Checked byte-identical against the existing renders, on stems exported by 9c148854:
+the legacy-pitch IWBY v4b project (proj4) gives sha256 4cb0889a...e4280, the same as iwby_v4_post.py + params_v4b.json;
+the v5 project (yin_gated plan) gives 4c42f368...90441, the same as the hand-adapted v5 render.
+`iwby_v4_post.py` and its params stay as the record of the v4 and v4b renders on 11d587c.
+
+## iwby_v5_build.py: IWBY v5 end to end, stem gains pinned (B53, 2026-10-14)
+
+    python3 iwby_v5_build.py BEATBOX_BIN take_dn2.wav WORKDIR v5.wav                      # canonical v5, sha256 4c42f368...90441
+    python3 iwby_v5_build.py BEATBOX_BIN take_dn2.wav WORKDIR v5_7k.wav --sibilance-band  # opt-in 7 kHz band, threshold -27 dB
+
+The whole v5 recipe in one place: cover_song with `params_v5_build.json` (the v1 args, key E minor), the v3/cc4 project edits
+and v4b's later values (applied by role, not by effect index), export_stems, then `iwby_post.py`. The take is not in the repo.
+
+Stem gains are pinned (`params_v5_stems.json`). export_stems' default trims each stem until its own decoded true peak meets
+0 dBTP, so a stem's level follows its own peak: v5's vocal (+12 dB fader) was turned down 7.05 dB in 4 trim steps, and a
+de-essed vocal (lower peaks) came out 2.35 dB louder and split into 12 phrases instead of 20. The pins are the exact steps
+the trim took for v5 (`stem_gain_db_pin` in export_stems' report, as text), so v5 rebuilds bit for bit and a variant keeps v5's
+stem levels whatever its peaks do. Only vox was trimmed; the other stems' pins are empty (no gain).
+`--sibilance-band [DB]` asks cover_song for its opt-in `sibilance_band` (7 kHz dynamic bell, Q2, ratio 4, at most -4 dB,
+attack 1 ms, release 60 ms, default threshold -27 dB) and moves it LAST on the vocal chain, after this recipe's shelves and
+exciter. `IWBY_KEEP_STEMS=1` keeps WORKDIR/stems for measuring.
+
+## iwby_v6_build.py: IWBY v6 = v5 + the 7 kHz band + clean stems (B54, 2026-10-14)
+
+    python3 iwby_v6_build.py BEATBOX_BIN take_dn2.wav WORKDIR v6.wav                        # IWBY v6, sha256 8e024845...2d6a6b
+    python3 iwby_v6_build.py BEATBOX_BIN take_dn2.wav WORKDIR v5f.wav --no-sibilance-band   # v5 + clean stems only
+
+v5 stays locked (iwby_v5_build.py, 4c42f368, untouched). v6 is the v5 recipe with two changes: cover_song's opt-in
+`sibilance_band` ON (the 7 kHz band, threshold -27 dB, last on the vocal chain; Naman approved it by ear on 2026-10-14), and
+the stems exported as 32-bit float (`stem_format: "f32"`) at v5's pinned gains. v5's 24-bit vocal stem at the pinned gain
+sits at +0.85 dBTP with 382 samples hard clipped at full scale (the band variant d4c45e57: +0.04 dBTP, 374); as float the
+same gain carries those peaks (v6 vocal stem +1.94 dBTP, nothing clipped), and every stem keeps v5's level, so the phrase
+split and the throws are unchanged. iwby_post.py reads stems with soundfile as float32, so values over 1.0 pass through.
+The build refuses stems that report clipped samples or warnings.
+
+Measured against the band variant (iwby_v5_build.py --sibilance-band, d4c45e57), i.e. the clean stems alone: band shares
+5-9k / 2-4.5k / 10k+ unchanged (0.00 dB), 20 phrases with identical boundaries, dry vocal level +0.001 dB, throw and wet
+energy unchanged.
+
+`--int-exact` is the tested opt-in alternative (not v6): 24-bit stems with export_stems' `exact_trim: true` and no pins. The
+vocal stem meets -0.10 dBTP with 0 clipped samples, but the trim takes it down 9.09 dB instead of v5's 7.05, so the vocal sits
+2.0 dB lower against an unchanged backing. Measured against v5: dry vocal -2.0 dB inside iwby_post, 20 phrases but 7 boundaries
+moved more than 0.02 s (largest 0.35 s, phrase 15's end), throw windows moved up to 0.14 s, throw energy -2.0 to +0.4 dB and total wet -0.6 to -2.0 dB,
+master -10.41 LUFS / -1.15 dBTP, judge all pass (air_5_11k -22.0). sha256 a3fd9cca...a91126. v6 keeps float stems at v5's gains.
+
+`--f32-tp` (opt-in, not v6; Naman's call 2026-10-14 10:19 PM) keeps v6's float stems at v5's pinned gains and adds export_stems'
+`tp_trim: "common"`: one extra trim for every stem, set by the hottest stem's true peak read back from its file, aiming
+-0.1 dBTP, until every stem is at or under 0.0 dBTP (at most 12 trims). Every stem moves by the same gain, so v6's stem
+balance is kept exactly; iwby_post re-levels the master. The build fails unless the trim converged, every stem is under
+0 dBTP and there are no warnings; WORKDIR/stems.json carries the tp_trim block. Name the output `beatbox_iwby_v6_f32tp.wav`.
+
+    python3 iwby_v6_build.py BEATBOX_BIN take_dn2.wav WORKDIR beatbox_iwby_v6_f32tp.wav --f32-tp

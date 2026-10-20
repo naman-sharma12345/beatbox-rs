@@ -204,29 +204,6 @@ fn short(label: &str) -> String {
     }
 }
 
-/// Square console toggle (M / S style), drawn like SoundCraft's `text_toggle`.
-pub fn pill(ui: &mut Ui, text: &str, on: bool, color: Color32) -> Response {
-    let t = Tokens::DARK;
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(22.0, 18.0), Sense::click());
-    let fill = if on {
-        color
-    } else if resp.hovered() {
-        t.button_hi
-    } else {
-        t.button
-    };
-    ui.painter()
-        .rect(rect, 2.0, fill, Stroke::new(1.0_f32, t.button_border));
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        text,
-        FontId::proportional(11.0),
-        if on { t.text_dark } else { t.text },
-    );
-    resp
-}
-
 /// Big round transport button with a play / stop glyph.
 pub fn transport_button(ui: &mut Ui, playing: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::click());
@@ -261,50 +238,25 @@ pub fn transport_button(ui: &mut Ui, playing: bool) -> Response {
     resp
 }
 
-/// Circular score gauge 0..100.
-pub fn score_ring(ui: &mut Ui, score: u32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(76.0), Sense::hover());
+/// Record button: a red dot; while a take is running the dot turns into a
+/// solid red disc with a white ring.
+pub fn record_button(ui: &mut Ui, recording: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
     let c = rect.center();
-    let r = 31.0;
     let p = ui.painter();
-    let ring = |from: f32, to: f32| -> Vec<Pos2> {
-        (0..=48)
-            .map(|i| {
-                let a = from + (to - from) * i as f32 / 48.0;
-                Pos2::new(c.x + r * a.cos(), c.y + r * a.sin())
-            })
-            .collect()
-    };
-    p.add(Shape::line(
-        ring(-PI / 2.0, PI * 1.5),
-        Stroke::new(6.0_f32, Color32::from_rgb(52, 52, 54)),
-    ));
-    let t = score as f32 / 100.0;
-    let col = if score >= 85 {
-        GOOD
-    } else if score >= 65 {
-        WARN
-    } else {
+    let base = if resp.hovered() {
         HOT
+    } else {
+        HOT.gamma_multiply(0.85)
     };
-    p.add(Shape::line(
-        ring(-PI / 2.0, -PI / 2.0 + 2.0 * PI * t),
-        Stroke::new(6.0_f32, col),
-    ));
-    p.text(
-        c - Vec2::new(0.0, 5.0),
-        Align2::CENTER_CENTER,
-        score.to_string(),
-        FontId::proportional(22.0),
-        TEXT,
-    );
-    p.text(
-        c + Vec2::new(0.0, 14.0),
-        Align2::CENTER_CENTER,
-        "MIX",
-        FontId::proportional(9.5),
-        DIM,
-    );
+    if recording {
+        p.circle_filled(c, 14.0, base);
+        p.circle_stroke(c, 9.0, Stroke::new(2.0_f32, Color32::WHITE));
+    } else {
+        p.circle_stroke(c, 14.0, Stroke::new(1.5_f32, base));
+        p.circle_filled(c, 7.0, base);
+    }
+    resp
 }
 
 /// Gradient-ish filled bar used in meters/spectrum.
@@ -373,4 +325,210 @@ pub fn stat_chip(ui: &mut Ui, label: &str, value: &str, color: Color32) {
                 );
             });
         });
+}
+
+/// A small FL-style rack knob painted into `rect`: drag up/down to turn,
+/// double-click to reset. Returns the final value once (on release or
+/// reset), so one gesture is one undo step; while dragging the knob shows
+/// the working value. `bipolar` draws the arc from the centre (pan).
+#[allow(clippy::too_many_arguments)]
+pub fn mini_knob(
+    ui: &mut Ui,
+    rect: Rect,
+    id: egui::Id,
+    value: f32,
+    min: f32,
+    max: f32,
+    default: f32,
+    bipolar: bool,
+    color: Color32,
+    tip: &str,
+) -> Option<f32> {
+    let resp = ui.interact(rect, id, Sense::click_and_drag());
+    let mut v: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(value);
+    let mut done = None;
+    if resp.dragged() {
+        let fine = if ui.input(|i| i.modifiers.shift) {
+            0.2
+        } else {
+            1.0
+        };
+        v = (v - resp.drag_delta().y / 140.0 * (max - min) * fine).clamp(min, max);
+        ui.data_mut(|d| d.insert_temp(id, v));
+    }
+    if resp.drag_stopped() {
+        ui.data_mut(|d| d.remove::<f32>(id));
+        done = Some(v);
+    }
+    if resp.double_clicked() {
+        ui.data_mut(|d| d.remove::<f32>(id));
+        v = default;
+        done = Some(default);
+    }
+    let resp = resp.on_hover_text(format!("{tip}: {}", format_value(v)));
+    let p = ui.painter_at(rect.expand(2.0));
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.5 - 1.5;
+    let hot = resp.hovered() || resp.dragged();
+    p.circle_filled(c, r, Color32::from_rgb(28, 29, 33));
+    p.circle_stroke(
+        c,
+        r,
+        Stroke::new(
+            1.0_f32,
+            if hot {
+                Color32::from_rgb(110, 114, 124)
+            } else {
+                Color32::from_rgb(64, 67, 74)
+            },
+        ),
+    );
+    let ang = |t: f32| std::f32::consts::PI * (0.75 + 1.5 * t);
+    let at = |a: f32, rr: f32| Pos2::new(c.x + a.cos() * rr, c.y + a.sin() * rr);
+    let t = ((v - min) / (max - min)).clamp(0.0, 1.0);
+    let t0 = if bipolar { 0.5 } else { 0.0 };
+    let (a, b) = if t >= t0 { (t0, t) } else { (t, t0) };
+    let n = 18;
+    let pts: Vec<Pos2> = (0..=n)
+        .map(|k| at(ang(a + (b - a) * k as f32 / n as f32), r - 1.5))
+        .collect();
+    if b - a > 0.002 {
+        p.add(egui::Shape::line(pts, Stroke::new(2.0_f32, color)));
+    }
+    p.line_segment(
+        [at(ang(t), r * 0.25), at(ang(t), r - 2.5)],
+        Stroke::new(1.6_f32, Color32::from_rgb(232, 232, 236)),
+    );
+    done
+}
+
+/// A tiny piano-keys glyph button (the rack's "open in piano roll").
+pub fn keys_button(ui: &mut Ui, rect: Rect, id: egui::Id, on: bool, color: Color32) -> Response {
+    let resp = ui
+        .interact(rect, id, Sense::click())
+        .on_hover_text("Open in the piano roll");
+    let p = ui.painter_at(rect);
+    let bg = if on {
+        color.gamma_multiply(0.45)
+    } else if resp.hovered() {
+        Color32::from_rgb(58, 60, 66)
+    } else {
+        Color32::from_rgb(40, 41, 46)
+    };
+    p.rect_filled(rect, 3.0, bg);
+    let inner = rect.shrink2(Vec2::new(3.0, 4.0));
+    let kw = inner.width() / 4.0;
+    for k in 0..4 {
+        let x = inner.left() + k as f32 * kw;
+        p.rect_filled(
+            Rect::from_min_size(
+                Pos2::new(x + 0.5, inner.top()),
+                Vec2::new(kw - 1.0, inner.height()),
+            ),
+            1.0,
+            Color32::from_rgb(214, 214, 220),
+        );
+    }
+    for k in [1.0f32, 2.0, 3.0] {
+        if k == 2.0 {
+            continue;
+        }
+        let x = inner.left() + k * kw - kw * 0.3;
+        p.rect_filled(
+            Rect::from_min_size(
+                Pos2::new(x, inner.top()),
+                Vec2::new(kw * 0.6, inner.height() * 0.58),
+            ),
+            0.5,
+            Color32::from_rgb(24, 24, 28),
+        );
+    }
+    resp
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+    use eframe::egui::{Event, Modifiers, PointerButton, RawInput};
+
+    /// Drive mini_knob with real pointer events (what a mouse produces after
+    /// the windowing layer has mapped pixels to points) and return its result.
+    fn drag_knob(steps: &[f32], shift: bool, ppp: f32) -> Option<f32> {
+        let ctx = egui::Context::default();
+        ctx.set_pixels_per_point(ppp);
+        let rect = Rect::from_min_size(Pos2::new(100.0, 100.0), Vec2::splat(20.0));
+        // events in points (the windowing layer maps pixels through ppp)
+        let c = rect.center();
+        let mods = Modifiers {
+            shift,
+            ..Default::default()
+        };
+        let mut frames: Vec<Vec<Event>> = vec![
+            vec![],
+            vec![Event::PointerMoved(c)],
+            vec![Event::PointerButton {
+                pos: c,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: mods,
+            }],
+        ];
+        let mut y = c.y;
+        for dy in steps {
+            y += dy;
+            frames.push(vec![Event::PointerMoved(Pos2::new(c.x, y))]);
+        }
+        frames.push(vec![Event::PointerButton {
+            pos: Pos2::new(c.x, y),
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: mods,
+        }]);
+        frames.push(vec![]);
+        let mut out = None;
+        for (k, ev) in frames.into_iter().enumerate() {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(400.0))),
+                events: ev,
+                modifiers: mods,
+                time: Some(k as f64 * 0.05),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if let Some(v) = mini_knob(
+                        ui,
+                        rect,
+                        egui::Id::new("knob"),
+                        0.0,
+                        -1.0,
+                        1.0,
+                        0.0,
+                        true,
+                        Color32::WHITE,
+                        "pan",
+                    ) {
+                        out = Some(v);
+                    }
+                });
+            });
+        }
+        out
+    }
+
+    #[test]
+    fn a_mouse_drag_up_turns_the_knob_relatively_and_shift_is_fine() {
+        let up = [-10.0_f32; 7]; // 70 points up
+        let normal = drag_knob(&up, false, 1.0).expect("drag released -> value");
+        assert!(normal > 0.4 && normal <= 1.0, "{normal}");
+        let fine = drag_knob(&up, true, 1.0).expect("fine drag");
+        assert!(fine > 0.0 && fine < normal * 0.4, "{fine} vs {normal}");
+        // HiDPI: the same drag in points gives the same turn at 2x scale
+        let hidpi = drag_knob(&up, false, 2.0).expect("hidpi drag");
+        assert!((hidpi - normal).abs() < 0.05, "{hidpi} vs {normal}");
+        // dragging down turns it the other way; a bare click changes nothing
+        let down = drag_knob(&[10.0_f32; 7], false, 1.0).unwrap();
+        assert!(down < -0.4, "{down}");
+        assert_eq!(drag_knob(&[], false, 1.0), None);
+    }
 }

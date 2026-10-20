@@ -3,11 +3,121 @@
 use serde::{Deserialize, Serialize};
 use std::f32::consts::PI;
 
+pub mod adaa;
+
+/// Clean-room 2x/4x half-band oversampler and oversampled ADAA (opt-in;
+/// nothing existing calls it).
+pub mod oversample;
+
 /// Engine sample rate. Everything renders at 44.1 kHz.
 pub const SR: f32 = 44_100.0;
 
 pub fn midi_to_hz(m: f32) -> f32 {
     440.0 * 2f32.powf((m - 69.0) / 12.0)
+}
+
+/// Streaming true-peak lookahead limiter (opt-in; nothing existing calls it).
+pub mod tp_limiter;
+
+/// Resident memory of this process in MB (Linux /proc; 0 elsewhere).
+pub fn rss_mb() -> f32 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|k| k.parse::<f32>().ok())
+        })
+        .map(|k| k / 1024.0)
+        .unwrap_or(0.0)
+}
+
+/// Linkwitz-Riley LR4 crossover tree (opt-in; nothing existing calls it).
+pub mod crossover;
+/// LR4 multiband compressor (opt-in; nothing existing calls it).
+pub mod multiband;
+
+/// BEATBOX_MEMTRACE=1: one stderr line per traced step with the resident
+/// memory, so a long render that runs the box out of memory says where.
+pub fn memtrace(label: &str) {
+    if std::env::var_os("BEATBOX_MEMTRACE").is_some() {
+        eprintln!("[mem] {:.0} MB {label}", rss_mb());
+    }
+}
+
+/// Sidechain dynamic-EQ band carving (opt-in; nothing existing calls it).
+pub mod carve_eq;
+/// BS.1770-4 / R128 streaming loudness meter (opt-in; nothing existing calls it).
+pub mod loudness_meter;
+/// 20 Hz high-pass DC guard on the tape-stop ramps (`stutter` tape_stop, `gross_beat` tape_stop presets).
+pub mod tape_dc;
+
+thread_local! {
+    static FLUSH_DENORMALS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Whether renders started on this thread run with subnormals off
+/// (`NoDenormals`, on by default). Tests switch it off to compare.
+pub fn flush_denormals() -> bool {
+    FLUSH_DENORMALS.with(|f| f.get())
+}
+
+pub fn set_flush_denormals(on: bool) {
+    FLUSH_DENORMALS.with(|f| f.set(on));
+}
+
+/// Subnormal floats off (FTZ: results flush to zero; DAZ: subnormal inputs
+/// read as zero) on this thread until the guard drops, which restores the
+/// thread's previous mode. Decaying tails (reverbs, releases, the DC
+/// blocker) otherwise sink into subnormals, where each multiply is ~100x
+/// slower. Values below ~1.2e-38 (-758 dBFS) become 0. x86_64 (SSE MXCSR)
+/// and aarch64 (FPCR.FZ); elsewhere it does nothing.
+pub struct NoDenormals {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    prev: u64,
+}
+
+impl NoDenormals {
+    #[allow(deprecated, clippy::new_without_default)]
+    pub fn new() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        {
+            use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+            // SAFETY: MXCSR flag bits only; FTZ = 0x8000, DAZ = 0x0040
+            let prev = unsafe { _mm_getcsr() };
+            unsafe { _mm_setcsr(prev | 0x8040) };
+            NoDenormals { prev: prev as u64 }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            let prev: u64;
+            // SAFETY: FPCR.FZ (bit 24) only
+            unsafe {
+                std::arch::asm!("mrs {}, fpcr", out(reg) prev);
+                std::arch::asm!("msr fpcr, {}", in(reg) prev | (1 << 24));
+            }
+            NoDenormals { prev }
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            NoDenormals {}
+        }
+    }
+}
+
+impl Drop for NoDenormals {
+    #[allow(deprecated)]
+    fn drop(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            std::arch::x86_64::_mm_setcsr(self.prev as u32)
+        };
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            std::arch::asm!("msr fpcr, {}", in(reg) self.prev)
+        };
+    }
 }
 
 pub fn db_to_gain(db: f32) -> f32 {
@@ -282,7 +392,21 @@ impl Svf {
     }
 }
 
-/// One-pole DC blocker.
+/// One-pole DC blocker: `y = x - x1 + 0.995 * y1`.
+///
+/// Known legacy behavior / technical debt: at R = 0.995 this is a gentle low
+/// cut, not a pure DC blocker. At 44.1 kHz it is -3 dB at ~35 Hz, -6.1 dB at
+/// 20 Hz and -1.7 dB at 50 Hz, with ~10 degrees of phase shift at 200 Hz.
+///
+/// It runs in the master section (`render::master_section`, before the master
+/// chain): on the master sum in `render()` and on each stem in `export_stems`
+/// mode post_master. It also runs on `export_stems`' private copy of the
+/// pre-master stem sum for its null check, so both sides of that check match.
+///
+/// R = 0.995 is intentionally kept for byte-identity with the goldens, D11 and
+/// the IWBY v5/v6 renders. Do not change it in place. A true DC blocker
+/// (R ~ 0.9995, -3 dB at ~3.5 Hz) is deferred to a future major milestone or an
+/// opt-in mastering flag.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DcBlock {
     x1: f32,
@@ -551,3 +675,6 @@ mod tests {
         assert!((0.0..1.0).contains(&v));
     }
 }
+
+/// ITU-R BS.1770-4 Annex 2 true-peak interpolator and meter.
+pub mod true_peak;

@@ -1,0 +1,13 @@
+{
+ "_note": "cover_song args for IWBY v5 (the v1 args, take_dn2, key E minor given explicitly); vocal and out are filled in by iwby_v5_build.py",
+ "cover_song": {
+  "identify": false,
+  "force_free": true,
+  "bpm": 67.1,
+  "language": "en",
+  "style": "moody downtempo indie ballad (original arrangement), clean vintage electric guitar with tremolo and chorus, warm organ pad, warm round bass locked to minimal drums, spacious reverb and delay, vocal upfront",
+  "name": "iwby_v5",
+  "key": "E",
+  "scale": "minor"
+ }
+}

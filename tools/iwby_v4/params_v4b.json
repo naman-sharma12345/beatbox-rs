@@ -1,0 +1,97 @@
+{
+ "seed": 43,
+ "bpm": 67.1,
+ "phrase_thr_db": -22,
+ "phrase_gap_s": 0.4,
+ "tail_s": 7.0,
+ "length_s": 110.0,
+ "reverb": {
+  "rt_lo_s": 3.1,
+  "rt_mid_s": 2.9,
+  "rt_hi_s": 2.0,
+  "ir_len_s": 4.5,
+  "predelay_s": 0.03,
+  "return_hpf_hz": 300,
+  "return_lpf_hz": 6000
+ },
+ "reverb_return_db": 4.0,
+ "reverb_duck_db": 19,
+ "duck_attack_s": 0.005,
+ "duck_release_s": 0.28,
+ "throws": {
+  "window_s": 0.65,
+  "last_window_s": 0.9,
+  "repeats": 4,
+  "feedback": 0.42,
+  "last_repeats": 7,
+  "last_feedback": 0.5,
+  "first_lpf_hz": 5000,
+  "loop_lpf_hz": 2500,
+  "delay": "quarter (60/bpm s)"
+ },
+ "throw_send_db": 6.0,
+ "throw_duck_db": 19,
+ "doubler": {
+  "ms": [
+   15,
+   25
+  ],
+  "depth_ms": 2.7,
+  "rate_hz": [
+   0.3,
+   0.37
+  ],
+  "level_db": -15
+ },
+ "slap_ms": 105,
+ "slap_db": -19,
+ "crash_db": -26,
+ "master": {
+  "shelf_hz": 6000,
+  "shelf_db": 2.5,
+  "ceiling_db": -1.15,
+  "target_lufs": -10.3
+ },
+ "sections_s": {
+  "intro": [
+   0,
+   14.31
+  ],
+  "verse": [
+   14.31,
+   42.92
+  ],
+  "chorus1": [
+   42.92,
+   71.54
+  ],
+  "breakdown": [
+   64.38,
+   71.54
+  ],
+  "chorus2": [
+   71.54,
+   93.0
+  ],
+  "outro": [
+   93.0,
+   107.3
+  ]
+ },
+ "source": "engine export_stems (pre_master) of the IWBY v3 project proj4.json on beatbox 11d587c",
+ "wet_bell": {
+  "hz": 400,
+  "db": -3.5,
+  "q": 1.0
+ },
+ "throw_keep_s": [
+  24.89,
+  40.88,
+  57.27,
+  64.05,
+  71.88,
+  81.55,
+  90.83
+ ],
+ "note": "v4b: thinned throws, deeper/faster wet duck, 400 Hz cut on wet returns"
+}

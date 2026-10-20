@@ -9,7 +9,7 @@
 //! The piano roll panel. Notes are in Beatbox steps (16ths); the snap grid comes from the
 //! PPQ timebase (`timebase::NoteValue`). Every edit is ONE engine tool call
 //! (`add_notes` with `replace`, or `quantize` / `legato` / `edit_notes` for toolbar ops), so
-//! a gesture is one undo step and an AI watching the project sees the same change.
+//! a gesture is one undo step and an MCP client watching the project sees the same change.
 
 use super::theme::Tokens;
 use super::widgets::*;
@@ -151,8 +151,47 @@ impl Studio {
             }
         };
         let mut op: Option<(&str, Value)> = None;
-        if tb.small_button("Legato").clicked() {
+        if tb.small_button("Legato").on_hover_text("legato").clicked() {
             op = Some(("legato", json!({})));
+        }
+        // FL piano-roll tools, each the MCP call it names
+        if tb
+            .small_button("Stacc")
+            .on_hover_text("articulate {style: staccato}")
+            .clicked()
+        {
+            op = Some(("articulate", json!({"style": "staccato"})));
+        }
+        if tb
+            .small_button("Chop")
+            .on_hover_text("chop_notes {pattern: 'x.x.x.x.'}: held notes into 8ths")
+            .clicked()
+        {
+            op = Some(("chop_notes", json!({"pattern": "x.x.x.x."})));
+        }
+        if tb
+            .small_button("LFO")
+            .on_hover_text("A velocity wave across the notes (sine, one bar)")
+            .clicked()
+        {
+            op = Some((
+                "lfo_tool",
+                json!({"property": "velocity", "shape": "sine", "rate": "1 bar"}),
+            ));
+        }
+        if tb
+            .small_button("Rev")
+            .on_hover_text("flip_notes {mode: time}: play backwards")
+            .clicked()
+        {
+            op = Some(("flip_notes", json!({"mode": "time"})));
+        }
+        if tb
+            .small_button("Flip")
+            .on_hover_text("flip_notes {mode: pitch}: mirror the pitches")
+            .clicked()
+        {
+            op = Some(("flip_notes", json!({"mode": "pitch"})));
         }
         if tb
             .small_button("Vel-")

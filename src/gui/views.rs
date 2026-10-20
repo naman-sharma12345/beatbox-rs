@@ -615,6 +615,66 @@ impl Studio {
             }
             y = sec.max.y + 6.0;
         }
+        // the master lift (MixProfile: presence bell + air shelf): toggle it
+        // and drag its two gains; each change is one master_lift call (one
+        // undo step), so a song keeps it on re-mix
+        {
+            let cur = crate::mix_rules::current_master_lift(p);
+            let on = cur.is_some();
+            let prof = cur.unwrap_or_default();
+            let br = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(iw, 16.0));
+            let label = match (on, prof.extra_db.abs() >= 0.05) {
+                (false, _) => "LIFT off".to_string(),
+                (true, false) => format!("LIFT {:+.1} / {:+.1}", prof.presence_db, prof.air_db),
+                (true, true) => format!(
+                    "LIFT {:+.1} / {:+.1} / {:+.1}",
+                    prof.presence_db, prof.air_db, prof.extra_db
+                ),
+            };
+            let b = ui.put(
+                br,
+                egui::Button::new(egui::RichText::new(label).size(9.0)).selected(on),
+            );
+            if b.on_hover_text("Master lift: presence bell + air shelf (MixProfile). Click to turn it on/off; drag P (presence dB), A (air dB) and N (the extra bell nudge, dB at its centre, default 3.5 kHz) below.").clicked() {
+                self.call("master_lift", json!({"preset": if on { "off" } else { "default" }}));
+            }
+            y += 19.0;
+            if on {
+                let hw = iw / 3.0 - 3.0;
+                for (k, key, val, lim, pre) in [
+                    (0usize, "presence_db", prof.presence_db, 6.0f32, "P "),
+                    (1, "air_db", prof.air_db, 6.0, "A "),
+                    (2, "extra_db", prof.extra_db, 3.0, "N "),
+                ] {
+                    let id = egui::Id::new(("master-lift", k));
+                    let mut val_now: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(val);
+                    let cell = Rect::from_min_size(
+                        Pos2::new(x0 + k as f32 * (hw + 4.0), y),
+                        Vec2::new(hw, 16.0),
+                    );
+                    let resp = ui.put(
+                        cell,
+                        egui::DragValue::new(&mut val_now)
+                            .range(-lim..=lim)
+                            .speed(0.05)
+                            .fixed_decimals(1)
+                            .prefix(pre),
+                    );
+                    if resp.changed() {
+                        ui.ctx().data_mut(|d| d.insert_temp(id, val_now));
+                    }
+                    if resp.drag_stopped() || resp.lost_focus() {
+                        ui.ctx().data_mut(|d| d.remove::<f32>(id));
+                        if (val_now - val).abs() > 0.05 {
+                            let mut a = serde_json::Map::new();
+                            a.insert(key.to_string(), json!(val_now));
+                            self.call("master_lift", serde_json::Value::Object(a));
+                        }
+                    }
+                }
+                y += 19.0;
+            }
+        }
         let bottom_h = 58.0;
         let fh = (r.max.y - bottom_h - y).max(90.0);
         let vid = egui::Id::new("fader-master");
@@ -708,7 +768,7 @@ impl Studio {
                 egui::ScrollArea::vertical().id_salt("lanes").auto_shrink([false, false]).show(ui, |ui| {
                     ui.label(RichText::new("LANES").size(10.5).color(DIM).strong().extra_letter_spacing(1.2));
                     if lanes.is_empty() {
-                        ui.label(RichText::new("No automation yet. Add a lane below or ask your AI for a riser before the drop.").size(11.0).color(DIM));
+                        ui.label(RichText::new("No automation yet. Add a lane below, then draw on it or pick a shape.").size(11.0).color(DIM));
                     }
                     for (_, l) in &lanes {
                         let sel = self.auto_sel.as_ref().is_some_and(|s| l.is_target(&s.0, &s.1));
@@ -772,7 +832,7 @@ impl Studio {
                             .enumerate()
                             {
                                 let b = egui::Button::new(RichText::new(*label).size(11.5)).fill(PANEL2).min_size(Vec2::new(92.0, 24.0));
-                                if ui.add(b).on_hover_text(format!("generate_automation shape={shape}")).clicked() {
+                                if ui.add(b).on_hover_text(format!("draw a {label} curve on this lane")).clicked() {
                                     self.call("generate_automation", json!({"track": target, "param": param, "shape": shape, "section": section, "rate": rate}));
                                 }
                                 if i % 2 == 1 {

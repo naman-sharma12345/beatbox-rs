@@ -60,8 +60,95 @@ fn studio_screenshot(project: &Path, png: &Path, view: &str) -> Result<()> {
     Ok(())
 }
 
+fn perf_state(e: &crate::engine::Engine) -> Value {
+    let t = &e.transport;
+    let waiting = t
+        .pending_launch
+        .as_ref()
+        .map(|l| l.pattern.clone().unwrap_or_else(|| "song".into()));
+    json!({
+        "studio_attached": t.attached, "playing": t.playing,
+        "performing": t.perf_playing, "queued": t.perf_queued.clone().or(waiting),
+        "patterns": e.project.patterns.iter().map(|p| json!({"id": p.id, "name": p.name, "bars": p.bars})).collect::<Vec<_>>(),
+    })
+}
+
+/// A pattern by name, id, or 0-based index.
+fn perf_pattern(p: &crate::project::Project, key: &str) -> Result<usize> {
+    p.pattern_index(key)
+        .or_else(|err| match key.trim().parse::<usize>() {
+            Ok(i) if i < p.patterns.len() => Ok(i),
+            _ => Err(err),
+        })
+}
+
+/// Seconds between launch points: one bar of the pattern, one beat, or 0.
+fn perf_quantum(p: &crate::project::Project, pat: Option<usize>, q: &str) -> Result<f32> {
+    let spb = pat.map_or(crate::project::STEPS_PER_BAR, |i| {
+        p.patterns[i].steps_per_bar()
+    });
+    Ok(match q {
+        "bar" => spb as f32 * p.step_secs(),
+        "beat" => 4.0 * p.step_secs(),
+        "now" => 0.0,
+        other => bail!("unknown quantize '{other}' (bar, beat, now)"),
+    })
+}
+
 pub fn tools() -> Vec<Tool> {
     vec![
+        Tool {
+            name: "perform",
+            description: "Performance mode over the live link: loop patterns live and switch between them in time. action launch (pattern = name, id or index; starts looping it, or switches on the next bar while something plays) | exit (back to the song arrangement on the next bar) | prepare (render pattern loops ahead so launches are instant; all patterns unless pattern is given) | status. quantize bar (default) | beat | now. The project is not changed. Without an attached studio the launch is queued and studio_attached is false.",
+            mutates: false,
+            schema: || obj(json!({
+                "action": {"type": "string", "enum": ["launch", "exit", "prepare", "status"]},
+                "pattern": {"type": "string", "description": "Pattern name, id or 0-based index"},
+                "quantize": {"type": "string", "enum": ["bar", "beat", "now"], "description": "When the switch happens (default bar)"},
+            }), &["action"]),
+            run: |e, a| {
+                let act = s_opt(a, "action").unwrap_or_default();
+                let q = s_opt(a, "quantize").unwrap_or_else(|| "bar".into());
+                let mut extra = json!({});
+                match act.as_str() {
+                    "launch" => {
+                        let key = s_opt(a, "pattern").ok_or_else(|| anyhow!("launch needs pattern (name or id)"))?;
+                        let i = perf_pattern(&e.project, &key)?;
+                        let quantum = perf_quantum(&e.project, Some(i), &q)?;
+                        let name = e.project.patterns[i].name.clone();
+                        let (mix, loop_secs) = e.render_pattern_loop(&name)?;
+                        extra = json!({"launched": name, "loop_secs": (loop_secs * 1000.0).round() / 1000.0,
+                            "loop_bars": e.project.patterns[i].bars, "quantize": q,
+                            "switch_in": if e.transport.playing && quantum > 0.0 { format!("next {q}") } else { "now".into() }});
+                        e.transport.pending_launch = Some(crate::engine::PerfLaunch { pattern: Some(name), mix: Some(mix), loop_secs, quantum_secs: quantum });
+                    }
+                    "exit" => {
+                        let quantum = perf_quantum(&e.project, None, &q)?;
+                        e.transport.pending_launch = Some(crate::engine::PerfLaunch { pattern: None, mix: None, loop_secs: e.project.song_seconds(), quantum_secs: quantum });
+                        extra = json!({"exit": true, "quantize": q});
+                    }
+                    "prepare" => {
+                        let keys: Vec<String> = match s_opt(a, "pattern") {
+                            Some(k) => vec![e.project.patterns[perf_pattern(&e.project, &k)?].name.clone()],
+                            None => e.project.patterns.iter().map(|p| p.name.clone()).collect(),
+                        };
+                        let t0 = std::time::Instant::now();
+                        for k in &keys { e.render_pattern_loop(k)?; }
+                        extra = json!({"prepared": keys, "seconds": (t0.elapsed().as_secs_f32() * 100.0).round() / 100.0});
+                    }
+                    "status" => {}
+                    other => bail!("unknown action '{other}' (launch, exit, prepare, status)"),
+                }
+                let mut v = perf_state(e);
+                if let (Some(o), Some(x)) = (v.as_object_mut(), extra.as_object()) {
+                    for (k, val) in x { o.insert(k.clone(), val.clone()); }
+                }
+                if !e.transport.attached && matches!(act.as_str(), "launch" | "exit") {
+                    v["note"] = json!("no studio attached: run `beatbox studio` and connect with `beatbox mcp --connect`; the launch is queued");
+                }
+                Ok(v)
+            },
+        },
         Tool {
             name: "transport",
             description: "Studio transport over the live link (beatbox mcp --connect to a running `beatbox studio`): action play | stop | toggle | seek (position_s or beat) | status. Returns playing state and the play-head position in seconds and beats. Without an attached studio the command is queued and studio_attached is false.",
@@ -122,10 +209,10 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "screenshot",
-            description: "Take a screenshot of Beatbox Studio showing the current project in a view (sequencer, mixer, automation, playlist): saves a PNG and returns it as an MCP image. Runs the studio offscreen (xvfb-run when headless); needs a build with the GUI feature.",
+            description: "Take a screenshot of Beatbox Studio showing the current project in a view (sequencer, mixer, automation, playlist, vocal, browser): saves a PNG and returns it as an MCP image. Runs the studio offscreen (xvfb-run when headless); needs a build with the GUI feature.",
             mutates: false,
             schema: || obj(json!({
-                "view": {"type": "string", "enum": ["sequencer", "mixer", "automation", "playlist"], "description": "default sequencer"},
+                "view": {"type": "string", "enum": ["sequencer", "mixer", "automation", "playlist", "vocal", "browser"], "description": "default sequencer"},
                 "out": {"type": "string", "description": "PNG path (default renders/screenshot_<view>.png)"},
                 "inline": {"type": "boolean", "description": "Return the image block (default true)"},
             }), &[]),
@@ -155,6 +242,84 @@ pub fn tools() -> Vec<Tool> {
 mod tests {
     use crate::engine::Engine;
     use serde_json::json;
+
+    #[test]
+    fn perform_launches_a_pattern_loop_on_the_bar_grid() {
+        let mut e = Engine::new(std::env::temp_dir().join("beatbox_perform_tests"));
+        e.call("generate_beat", &json!({"style": "house", "seed": 2}))
+            .unwrap();
+        let before = serde_json::to_string(&e.project).unwrap();
+        let rev = e.revision;
+        let pat = e.project.patterns[0].clone();
+        let r = e
+            .call("perform", &json!({"action": "launch", "pattern": pat.name}))
+            .unwrap();
+        assert_eq!(r["launched"], pat.name.as_str());
+        assert_eq!(r["studio_attached"], false);
+        let l = e.transport.pending_launch.clone().expect("launch queued");
+        let bar = pat.steps_per_bar() as f32 * e.project.step_secs();
+        assert!((l.quantum_secs - bar).abs() < 1e-4);
+        assert!(
+            (l.loop_secs - pat.bars as f32 * bar).abs() < 1e-3,
+            "{} vs {}",
+            l.loop_secs,
+            pat.bars as f32 * bar
+        );
+        let m = l.mix.unwrap();
+        assert!(m.left.len() as f32 >= l.loop_secs * crate::dsp::SR * 0.99);
+        assert!(m.left.iter().any(|x| x.abs() > 1e-3), "loop is silent");
+        // by id, beat grid, cached second time
+        let r = e
+            .call(
+                "perform",
+                &json!({"action": "launch", "pattern": pat.id, "quantize": "beat"}),
+            )
+            .unwrap();
+        assert_eq!(r["queued"], pat.name.as_str());
+        assert!(
+            (e.transport.pending_launch.as_ref().unwrap().quantum_secs
+                - 4.0 * e.project.step_secs())
+            .abs()
+                < 1e-4
+        );
+        assert!(e
+            .call("perform", &json!({"action": "launch", "pattern": "nope"}))
+            .is_err());
+        assert_eq!(
+            e.call(
+                "perform",
+                &json!({"action": "launch", "pattern": "0", "quantize": "now"})
+            )
+            .unwrap()["launched"],
+            pat.name.as_str()
+        );
+        assert!(e
+            .call(
+                "perform",
+                &json!({"action": "launch", "pattern": pat.name, "quantize": "2bars"})
+            )
+            .is_err());
+        let x = e.call("perform", &json!({"action": "exit"})).unwrap();
+        assert_eq!(x["queued"], "song");
+        assert!(e
+            .transport
+            .pending_launch
+            .as_ref()
+            .unwrap()
+            .pattern
+            .is_none());
+        let pr = e.call("perform", &json!({"action": "prepare"})).unwrap();
+        assert_eq!(
+            pr["prepared"].as_array().unwrap().len(),
+            e.project.patterns.len()
+        );
+        assert_eq!(
+            serde_json::to_string(&e.project).unwrap(),
+            before,
+            "perform must not edit the project"
+        );
+        assert_eq!(e.revision, rev);
+    }
 
     #[test]
     fn transport_queue_history_and_region_render() {

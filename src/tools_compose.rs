@@ -720,4 +720,27 @@ mod tests {
         .unwrap();
         assert_eq!(e.project.patterns, a.patterns);
     }
+
+    #[test]
+    fn every_generation_seed_is_logged_in_the_project_and_reproduces() {
+        let mut e = tempo_eng();
+        let r = e.call("generate_drums", &json!({"style": "trap"})).unwrap();
+        let seed = r["seed"].as_u64().unwrap();
+        let last = e.project.seed_log.last().cloned().expect("logged");
+        assert_eq!(
+            (last.tool.as_str(), last.seed, last.source.as_str()),
+            ("generate_drums", seed, "fresh")
+        );
+        assert_eq!(last.args["seed"].as_u64(), Some(seed));
+        let made = e.project.patterns.clone();
+        // the log survives a save/load round trip
+        let saved = serde_json::to_string(&e.project).unwrap();
+        let back: crate::project::Project = serde_json::from_str(&saved).unwrap();
+        assert_eq!(back.seed_log, e.project.seed_log);
+        // rerunning the logged call on a fresh project rebuilds the same thing
+        let mut f = tempo_eng();
+        f.call(&last.tool, &last.args).unwrap();
+        assert_eq!(f.project.patterns, made);
+        assert_eq!(f.project.seed_log.last().unwrap().source, "given");
+    }
 }

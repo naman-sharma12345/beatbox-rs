@@ -7,7 +7,11 @@ env:
   CARGO_TERM_COLOR: always
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # runner size: ubuntu-24.04 is 4 vCPU / 16 GB RAM, and the 16 GB is
+    # required - the 107k-line lib test target OOMs below ~2 GB RSS during
+    # codegen/link (proven on a 1.9 GB box, SIGKILL even at opt-level=0 -j1).
+    # Do not move this job to a smaller runner class.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       # keep in step with rust-toolchain.toml
@@ -19,14 +23,24 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libxkbcommon-dev libwayland-dev libx11-dev ffmpeg
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
-      - run: cargo clippy --locked --all-targets -- -D warnings
+      - name: clippy (default features, public errors)
+        run: |
+          set +o pipefail
+          cargo clippy --locked --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.txt
+          status=${PIPESTATUS[0]}
+          grep -E "(error|warning)" clippy.txt | head -50 | while read -r line; do echo "::error::$line"; done
+          exit $status
       - run: cargo test --locked --no-default-features
+      - name: tests (default features)
+        run: cargo test --locked
       - name: rust-toolchain.toml matches the CI toolchain
         run: grep -q 'channel = "1.99.0"' rust-toolchain.toml
   beats:
+    # runner size: same 16 GB / 4 vCPU requirement as check - release codegen
+    # of the crate does not fit in small runners.
     # prove the producer: render the reference beats with produce_track
     # (fresh seeds), compare them with the previous sprint, build a blind A/B
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read

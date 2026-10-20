@@ -6,6 +6,7 @@
 //! Every processor is a whole-buffer stereo function (like the rest of the
 //! rack), deterministic and allocation-light.
 
+use crate::dsp::tape_dc::{self, TapeDcGuard};
 use crate::dsp::*;
 use crate::fx::*;
 use std::f32::consts::PI;
@@ -195,6 +196,87 @@ pub fn dynamic_eq(p: &DynamicEqFx, l: &mut [f32], r: &mut [f32]) {
     }
 }
 
+/// Keyed dynamic EQ: the band dips by `range_db` (cut) or lifts (boost)
+/// while the `source` track is playing. Each trigger (a note start or a
+/// word onset in an audio clip) holds the dip for `release_ms` after it,
+/// with an `attack_ms` ramp in and a smooth recovery, so a pad steps out
+/// of the voice's band under the words and comes back between lines.
+pub fn keyed_dynamic_eq(p: &DynamicEqFx, trig: &[usize], l: &mut [f32], r: &mut [f32]) {
+    let n = l.len();
+    let mut bp = [
+        Biquad::new(BiquadKind::Bandpass, p.freq, p.q, 0.0),
+        Biquad::new(BiquadKind::Bandpass, p.freq, p.q, 0.0),
+    ];
+    let range = p.range_db.clamp(-24.0, 12.0);
+    let hold = (p.release_ms.max(5.0) * 0.001 * SR) as usize;
+    let (att, rel) = (
+        coef(p.attack_ms.max(1.0)),
+        coef(p.release_ms.max(5.0) * 0.5),
+    );
+    let mut ti = 0usize;
+    let mut until = 0usize;
+    let mut env = 0.0f32;
+    for i in 0..n {
+        while ti < trig.len() && trig[ti] <= i {
+            until = until.max(trig[ti] + hold);
+            ti += 1;
+        }
+        let target = if i < until && ti > 0 { 1.0 } else { 0.0 };
+        let c = if target > env { att } else { rel };
+        env = c * env + (1.0 - c) * target;
+        let g = db_to_gain(range * env) - 1.0;
+        let (bl, br) = (bp[0].process(l[i]), bp[1].process(r[i]));
+        l[i] += bl * g;
+        r[i] += br * g;
+    }
+}
+
+/// Where a level-keyed band starts and finishes dipping: the source's
+/// level (a 5 ms power follower) from -45 dBFS (no dip, the same floor
+/// `render::audio_onsets` uses) to -35 dBFS (the full `range_db`).
+pub const LEVEL_KEY_FLOOR_DB: f32 = -45.0;
+pub const LEVEL_KEY_KNEE_DB: f32 = 10.0;
+
+/// The dip amount (0 = flat, 1 = the full `range_db`) of a level-keyed band
+/// at each of `n` samples: the source's level through a 5 ms power follower,
+/// mapped over the -45..-35 dBFS knee, then smoothed per sample with the
+/// band's attack (rising) and release (falling) time constants, so the gain
+/// glides and never steps.
+pub fn level_duck_curve(p: &DynamicEqFx, key: &[f32], n: usize) -> Vec<f32> {
+    let pc = coef(5.0);
+    let (att, rel) = (coef(p.attack_ms.max(1.0)), coef(p.release_ms.max(5.0)));
+    let (mut pw, mut env) = (0.0f32, 0.0f32);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let x = key.get(i).copied().unwrap_or(0.0);
+        pw = pc * pw + (1.0 - pc) * x * x;
+        let db = 10.0 * (pw + 1e-12).log10();
+        let target = ((db - LEVEL_KEY_FLOOR_DB) / LEVEL_KEY_KNEE_DB).clamp(0.0, 1.0);
+        let c = if target > env { att } else { rel };
+        env = c * env + (1.0 - c) * target;
+        out.push(env);
+    }
+    out
+}
+
+/// Level-keyed dynamic EQ: the band dips by up to `range_db` while `key`
+/// (the source's mono audio, aligned with this buffer) sounds, following its
+/// level (see `level_duck_curve`), so a held vowel keeps the dip down.
+pub fn level_keyed_dynamic_eq(p: &DynamicEqFx, key: &[f32], l: &mut [f32], r: &mut [f32]) {
+    let n = l.len();
+    let mut bp = [
+        Biquad::new(BiquadKind::Bandpass, p.freq, p.q, 0.0),
+        Biquad::new(BiquadKind::Bandpass, p.freq, p.q, 0.0),
+    ];
+    let range = p.range_db.clamp(-24.0, 12.0);
+    for (i, env) in level_duck_curve(p, key, n).into_iter().enumerate() {
+        let g = db_to_gain(range * env) - 1.0;
+        let (bl, br) = (bp[0].process(l[i]), bp[1].process(r[i]));
+        l[i] += bl * g;
+        r[i] += br * g;
+    }
+}
+
 pub fn deesser(p: &DeesserFx, l: &mut [f32], r: &mut [f32]) {
     let n = l.len();
     let q = std::f32::consts::FRAC_1_SQRT_2;
@@ -300,7 +382,9 @@ fn lfo_rate(rate_hz: f32, sync_steps: f32, step_secs: f32) -> f32 {
     }
 }
 
-pub fn phaser(p: &PhaserFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
+/// `offset`: the buffer's first sample's place in the song (samples), so
+/// a window's LFO is where a whole-song render's is.
+pub fn phaser(p: &PhaserFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
     let rate = lfo_rate(p.rate_hz, p.sync_steps, step_secs);
     let stages = p.stages.clamp(2, 12) as usize;
     let mix = p.mix.clamp(0.0, 1.0);
@@ -312,8 +396,13 @@ pub fn phaser(p: &PhaserFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
         let mut a = 0.0f32;
         let phase0 = ci as f32 * 0.25;
         for (i, s) in ch.iter_mut().enumerate() {
-            if i % 16 == 0 {
-                let lfo = 0.5 + 0.5 * (2.0 * PI * (rate * i as f32 / SR + phase0)).sin();
+            // coefficients update on the song's 16-sample grid; a window
+            // that starts between grid points computes its first set at the
+            // grid point before it, as a whole-song render did
+            let k = i + offset;
+            if k % 16 == 0 || i == 0 {
+                let k16 = k - k % 16;
+                let lfo = 0.5 + 0.5 * (2.0 * PI * (rate * k16 as f32 / SR + phase0)).sin();
                 let f = (p.center_hz * 2f32.powf((lfo - 0.5) * 4.0 * p.depth.clamp(0.0, 1.0)))
                     .clamp(40.0, 16000.0);
                 let t = (PI * f / SR).tan();
@@ -335,7 +424,8 @@ pub fn phaser(p: &PhaserFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
     }
 }
 
-pub fn flanger(p: &FlangerFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
+/// `offset`: the buffer's place in the song (samples), see `phaser`.
+pub fn flanger(p: &FlangerFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
     let rate = lfo_rate(p.rate_hz, p.sync_steps, step_secs);
     let max = ((p.delay_ms + p.depth_ms).max(0.1) * 0.001 * SR) as usize + 8;
     let mix = p.mix.clamp(0.0, 1.0);
@@ -344,9 +434,10 @@ pub fn flanger(p: &FlangerFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
         let mut buf = vec![0.0f32; max];
         let phase0 = ci as f32 * 0.25;
         for (i, s) in ch.iter_mut().enumerate() {
-            let lfo = 0.5 + 0.5 * (2.0 * PI * (rate * i as f32 / SR + phase0)).sin();
+            let k = i + offset;
+            let lfo = 0.5 + 0.5 * (2.0 * PI * (rate * k as f32 / SR + phase0)).sin();
             let d = ((p.delay_ms.max(0.05) + p.depth_ms.max(0.0) * lfo) * 0.001 * SR).max(1.0);
-            let w = i % max;
+            let w = k % max;
             let pos = (w as f32 - d).rem_euclid(max as f32);
             let i0 = pos as usize % max;
             let i1 = (i0 + 1) % max;
@@ -378,11 +469,111 @@ pub fn gate_levels(pattern: &str) -> Vec<f32> {
     }
 }
 
+/// slice-repeat stutter (part B): a pure function of the buffer, the slice
+/// length, the repeat count and the trigger sample. Repeats
+/// `buffer[trigger..trigger + slice]` `repeats` times starting at `trigger`,
+/// with a raised-cosine crossfade at every loop wrap (and at the exit back
+/// to the source) so the repeats do not click. The slice's first pass IS the
+/// source, so it is left bit-exact untouched; no allocation, no locking.
+pub fn slice_repeat(
+    l: &mut [f32],
+    r: &mut [f32],
+    slice: usize,
+    repeats: usize,
+    trigger: usize,
+    fade: usize,
+    mix: f32,
+) {
+    let n = l.len().min(r.len());
+    if slice == 0 || repeats == 0 || trigger >= n {
+        return;
+    }
+    let slice = slice.min(n - trigger);
+    let fade = fade.clamp(1, slice);
+    let mix = mix.clamp(0.0, 1.0);
+    let span = slice.saturating_mul(repeats);
+    // repeats (pass 0 is the source playing through; writing it would only
+    // risk f32 rounding, so the span loop starts at pass 1)
+    for k in slice..span {
+        let pos = trigger + k;
+        if pos >= n {
+            break;
+        }
+        let i = k % slice;
+        // wrap-in crossfade over each pass's first `fade` samples: the slice
+        // tail replayed once more, raised-cosine blended into the head
+        let (wl, wr) = if i < fade {
+            let w = 0.5 - 0.5 * (std::f32::consts::PI * (i + 1) as f32 / (fade + 1) as f32).cos();
+            let tail = slice - fade + i;
+            (
+                l[trigger + tail] * (1.0 - w) + l[trigger + i] * w,
+                r[trigger + tail] * (1.0 - w) + r[trigger + i] * w,
+            )
+        } else {
+            (l[trigger + i], r[trigger + i])
+        };
+        l[pos] = l[pos] * (1.0 - mix) + wl * mix;
+        r[pos] = r[pos] * (1.0 - mix) + wr * mix;
+    }
+    // exit crossfade: the tail replayed once more, blended into the source
+    let e = trigger + span;
+    for i in 0..fade {
+        let pos = e + i;
+        if pos >= n {
+            break;
+        }
+        let w = 0.5 - 0.5 * (std::f32::consts::PI * (i + 1) as f32 / (fade + 1) as f32).cos();
+        let tail = slice - fade + i;
+        let wl = l[trigger + tail] * (1.0 - w) + l[pos] * w;
+        let wr = r[trigger + tail] * (1.0 - w) + r[pos] * w;
+        l[pos] = l[pos] * (1.0 - mix) + wl * mix;
+        r[pos] = r[pos] * (1.0 - mix) + wr * mix;
+    }
+}
+
 pub fn stutter(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
+    stutter_at(p, l, r, step_secs, 0)
+}
+
+/// `stutter` for a buffer that starts `offset` samples into the song: the
+/// step grid and the cycles count from the song's start, so a window
+/// matches the same samples of a whole-song pass (source audio from before
+/// the buffer reads as silence).
+pub fn stutter_at(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
+    stutter_guarded(p, l, r, step_secs, offset, true)
+}
+
+/// `stutter_at` with the tape-stop DC guard switchable (`dc_guard`; the
+/// rack always runs it on). The guard (`crate::dsp::tape_dc`, a 20 Hz
+/// 2-pole high-pass) touches only `tape_stop` mode: the other modes never
+/// read it, so their output is the same bit for bit either way.
+fn stutter_guarded(
+    p: &StutterFx,
+    l: &mut [f32],
+    r: &mut [f32],
+    step_secs: f32,
+    offset: usize,
+    dc_guard: bool,
+) {
     let n = l.len();
     let step = (step_secs * SR).max(1.0);
     let mix = p.mix.clamp(0.0, 1.0);
     if mix <= 0.0 {
+        return;
+    }
+    // part B: slice-repeat is a pure function of buffer/slice/repeat/trigger,
+    // block-snapped (512 default, 256 as the runtime option)
+    if p.mode == StutterMode::SliceRepeat {
+        let block = if p.block_samples <= 384.0 {
+            256usize
+        } else {
+            512
+        };
+        let slice = (p.slice_blocks.round().max(0.0) as usize).saturating_mul(block);
+        let repeats = p.repeat_count.round().max(0.0) as usize;
+        let trigger = p.trigger_sample.max(0.0) as usize;
+        let fade = ((p.wrap_fade_ms.clamp(2.0, 5.0) * 0.001 * SR) as usize).max(1);
+        slice_repeat(l, r, slice, repeats, trigger, fade, mix);
         return;
     }
     let fade = ((p.smooth_ms.max(0.5) * 0.001 * SR) as usize).max(1);
@@ -397,12 +588,37 @@ pub fn stutter(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
         a.min(b)
     };
     let levels = gate_levels(&p.pattern);
+    // source sample at song position `a` (silence before the buffer)
+    let at = |src: &[f32], a: usize| {
+        if a >= offset {
+            src.get(a - offset).copied().unwrap_or(0.0)
+        } else {
+            0.0
+        }
+    };
+    let lerp_at = |src: &[f32], f: f32| lerp_read(src, f - offset as f32);
+    let end = offset + n;
+    // tape stop: source position of song sample `j` (speed falls 1 -> 0 over
+    // each cycle: position = c0 + T*(u - u^2/2))
+    let tape_pos = |j: usize| -> f32 {
+        let c0 = (j / cycle) * cycle;
+        let u = (j - c0) as f32 / cycle as f32;
+        c0 as f32 + cycle as f32 * (u - 0.5 * u * u)
+    };
+    // the DC guard on the tape-stop read, one per channel, and the cycle it
+    // was warmed for
+    let mut dc = (TapeDcGuard::default(), TapeDcGuard::default());
+    let mut dc_cycle: Option<usize> = None;
     for i in 0..n {
+        let j = i + offset;
         let (wl, wr) = match p.mode {
+            StutterMode::SliceRepeat => {
+                unreachable!("slice_repeat returns before the per-sample loop")
+            }
             StutterMode::Gate => {
-                let k = (i as f32 / step) as usize;
+                let k = (j as f32 / step) as usize;
                 let lv = levels[k % levels.len()];
-                let pos = i - (k as f32 * step) as usize;
+                let pos = j - (k as f32 * step) as usize;
                 let seg = step as usize;
                 // smooth edges only where the level changes
                 let next = levels[(k + 1) % levels.len()];
@@ -419,37 +635,55 @@ pub fn stutter(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
                 (src_l[i] * g, src_r[i] * g)
             }
             StutterMode::Stutter => {
-                let c0 = (i / cycle) * cycle;
-                let pos = (i - c0) % slice;
+                let c0 = (j / cycle) * cycle;
+                let pos = (j - c0) % slice;
                 let src = c0 + pos;
                 let g = win(pos, slice);
-                (
-                    src_l.get(src).copied().unwrap_or(0.0) * g,
-                    src_r.get(src).copied().unwrap_or(0.0) * g,
-                )
+                (at(&src_l, src) * g, at(&src_r, src) * g)
             }
             StutterMode::HalfTime => {
-                let c0 = (i / cycle) * cycle;
-                let pos = i - c0;
+                let c0 = (j / cycle) * cycle;
+                let pos = j - c0;
                 let srcf = c0 as f32 + pos as f32 * 0.5;
                 let g = win(pos, cycle);
-                (lerp_read(&src_l, srcf) * g, lerp_read(&src_r, srcf) * g)
+                (lerp_at(&src_l, srcf) * g, lerp_at(&src_r, srcf) * g)
             }
             StutterMode::Reverse => {
-                let c0 = (i / cycle) * cycle;
-                let pos = i - c0;
-                let len = cycle.min(n - c0);
+                let c0 = (j / cycle) * cycle;
+                let pos = j - c0;
+                let len = cycle.min(end - c0);
                 let src = c0 + len - 1 - pos.min(len - 1);
                 let g = win(pos, len);
-                (src_l[src] * g, src_r[src] * g)
+                (at(&src_l, src) * g, at(&src_r, src) * g)
             }
             StutterMode::TapeStop => {
-                // speed falls 1 -> 0 over each cycle: position = c0 + T*(u - u^2/2)
-                let c0 = (i / cycle) * cycle;
-                let u = (i - c0) as f32 / cycle as f32;
-                let srcf = c0 as f32 + cycle as f32 * (u - 0.5 * u * u);
-                let g = (1.0 - u).powf(0.3) * win(i - c0, cycle).max(0.0);
-                (lerp_read(&src_l, srcf) * g, lerp_read(&src_r, srcf) * g)
+                let c0 = (j / cycle) * cycle;
+                let u = (j - c0) as f32 / cycle as f32;
+                let srcf = tape_pos(j);
+                let g = (1.0 - u).powf(0.3) * win(j - c0, cycle).max(0.0);
+                let (mut rl, mut rr) = (lerp_at(&src_l, srcf), lerp_at(&src_r, srcf));
+                if dc_guard {
+                    if dc_cycle != Some(c0) {
+                        // a new ramp: warm the guard on the source playing at
+                        // unity speed into it, then on this cycle's reads up to
+                        // here (a buffer that starts mid-ramp)
+                        dc_cycle = Some(c0);
+                        dc.0.reset();
+                        dc.1.reset();
+                        for a in c0.saturating_sub(tape_dc::preroll())..c0 {
+                            dc.0.process(at(&src_l, a));
+                            dc.1.process(at(&src_r, a));
+                        }
+                        for jj in c0..j {
+                            let f = tape_pos(jj);
+                            dc.0.process(lerp_at(&src_l, f));
+                            dc.1.process(lerp_at(&src_r, f));
+                        }
+                    }
+                    rl = dc.0.process(rl);
+                    rr = dc.1.process(rr);
+                }
+                (rl * g, rr * g)
             }
         };
         l[i] = src_l[i] * (1.0 - mix) + wl * mix;
@@ -457,18 +691,269 @@ pub fn stutter(p: &StutterFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
     }
 }
 
+// ---------------- stutter (streamed) ----------------
+
+/// stutter as a per-sample state machine: the same grid/ring math as
+/// [`stutter_guarded`] one sample at a time, so the streamed chain is
+/// bit-identical to the offline pass at any block size. The gate, stutter,
+/// half-time and tape-stop modes only read past samples, so they stream
+/// with zero latency; reverse reads up to a whole cycle of future samples
+/// and stays on the one-shot path. The history ring (cycle + tape-stop
+/// preroll + lerp margin) and the parsed gate levels are allocated at
+/// build, never on the audio path.
+pub struct StutterCore {
+    mode: StutterMode,
+    ring_l: Vec<f32>,
+    ring_r: Vec<f32>,
+    step: f32,
+    cycle: usize,
+    slice: usize,
+    fade: usize,
+    levels: Vec<f32>,
+    total: usize,
+    repeats: usize,
+    trigger: usize,
+    dc: (TapeDcGuard, TapeDcGuard),
+    dc_cycle: Option<usize>,
+    pub mix: f32,
+}
+
+impl StutterCore {
+    pub fn new(p: &StutterFx, step_secs: f32, total: usize) -> Self {
+        let step = (step_secs * SR).max(1.0);
+        let cycle = (p.cycle_steps.max(0.25) * step) as usize;
+        let cycle = cycle.max(1);
+        let trigger = (p.trigger_sample.max(0.0) as usize).min(total);
+        let (slice, fade) = match p.mode {
+            // part B: slice snaps to whole blocks (512 default, 256 as the
+            // runtime option); wrap crossfade 2-5 ms
+            StutterMode::SliceRepeat => {
+                let block = if p.block_samples <= 384.0 {
+                    256usize
+                } else {
+                    512
+                };
+                let s = (p.slice_blocks.round().max(0.0) as usize).saturating_mul(block);
+                let s = s.min(total.saturating_sub(trigger));
+                let f = ((p.wrap_fade_ms.clamp(2.0, 5.0) * 0.001 * SR) as usize).max(1);
+                (s, if s > 0 { f.min(s) } else { 1 })
+            }
+            _ => (
+                ((p.slice_steps.max(0.0625) * step) as usize).clamp(1, cycle),
+                ((p.smooth_ms.max(0.5) * 0.001 * SR) as usize).max(1),
+            ),
+        };
+        let size = match p.mode {
+            StutterMode::Gate => 1,
+            StutterMode::SliceRepeat => slice + fade + 2,
+            _ => cycle + tape_dc::preroll() + 2,
+        };
+        StutterCore {
+            mode: p.mode,
+            ring_l: vec![0.0; size],
+            ring_r: vec![0.0; size],
+            step,
+            cycle,
+            slice,
+            fade,
+            levels: gate_levels(&p.pattern),
+            total,
+            repeats: p.repeat_count.round().max(0.0) as usize,
+            trigger,
+            dc: (TapeDcGuard::default(), TapeDcGuard::default()),
+            dc_cycle: None,
+            mix: p.mix.clamp(0.0, 1.0),
+        }
+    }
+
+    /// One song sample (`j` is its absolute index from the song start).
+    #[inline]
+    pub fn step(&mut self, j: usize, l: f32, r: f32) -> (f32, f32) {
+        let size = self.ring_l.len();
+        if self.mode == StutterMode::SliceRepeat {
+            // the ring holds the slice source, relative-indexed, written only
+            // while the slice plays (never overwritten afterwards)
+            if self.slice > 0 && j >= self.trigger && j < self.trigger + self.slice {
+                self.ring_l[(j - self.trigger) % size] = l;
+                self.ring_r[(j - self.trigger) % size] = r;
+            }
+            return self.step_slice_repeat(j, l, r);
+        }
+        self.ring_l[j % size] = l;
+        self.ring_r[j % size] = r;
+        let mix = self.mix;
+        let fade = self.fade;
+        let cycle = self.cycle;
+        let win = |pos: usize, len: usize| -> f32 {
+            let a = (pos as f32 / fade as f32).min(1.0);
+            let b = ((len.saturating_sub(pos)) as f32 / fade as f32).min(1.0);
+            a.min(b)
+        };
+        let at = |ring: &[f32], a: usize| ring[a % size];
+        // lerp_read over the ring with the song length as the bound,
+        // offset 0: the same branches as the offline whole-song pass.
+        let lerp_at = |ring: &[f32], f: f32, total: usize| -> f32 {
+            if f < 0.0 {
+                return 0.0;
+            }
+            let i = f as usize;
+            if i + 1 >= total {
+                return if i < total { at(ring, i) } else { 0.0 };
+            }
+            let frac = f - i as f32;
+            // frac == 0.0: the i + 1 tap would only be multiplied by 0.0,
+            // and streamed that slot can hold stale wrapped history - stale *
+            // 0.0 is NaN for an inf/NaN stale value. Skip the read.
+            // Known limit (R2): at an exact -0.0 input the offline pass takes
+            // the result's zero sign from the future sample; the streamed pass
+            // cannot see it, so the zero sign may differ (numerically equal).
+            if frac == 0.0 {
+                return at(ring, i);
+            }
+            at(ring, i) * (1.0 - frac) + at(ring, i + 1) * frac
+        };
+        let total = self.total;
+        let (wl, wr) = match self.mode {
+            StutterMode::SliceRepeat => {
+                unreachable!("slice_repeat returns before the per-sample loop")
+            }
+            StutterMode::Gate => {
+                let step = self.step;
+                let k = (j as f32 / step) as usize;
+                let lv = self.levels[k % self.levels.len()];
+                let pos = j - (k as f32 * step) as usize;
+                let seg = step as usize;
+                let next = self.levels[(k + 1) % self.levels.len()];
+                let prev = self.levels[(k + self.levels.len() - 1) % self.levels.len()];
+                let mut g = lv;
+                if pos < fade && prev != lv {
+                    let t = pos as f32 / fade as f32;
+                    g = prev + (lv - prev) * t;
+                }
+                if seg.saturating_sub(pos) < fade && next != lv {
+                    let t = (seg.saturating_sub(pos)) as f32 / fade as f32;
+                    g = next + (lv - next) * t;
+                }
+                (l * g, r * g)
+            }
+            StutterMode::Stutter => {
+                let c0 = (j / cycle) * cycle;
+                let pos = (j - c0) % self.slice;
+                let src = c0 + pos;
+                let g = win(pos, self.slice);
+                (at(&self.ring_l, src) * g, at(&self.ring_r, src) * g)
+            }
+            StutterMode::HalfTime => {
+                let c0 = (j / cycle) * cycle;
+                let pos = j - c0;
+                let srcf = c0 as f32 + pos as f32 * 0.5;
+                let g = win(pos, cycle);
+                (
+                    lerp_at(&self.ring_l, srcf, total) * g,
+                    lerp_at(&self.ring_r, srcf, total) * g,
+                )
+            }
+            StutterMode::Reverse => unreachable!("reverse stutter stays one-shot"),
+            StutterMode::TapeStop => {
+                let c0 = (j / cycle) * cycle;
+                let u = (j - c0) as f32 / cycle as f32;
+                let tape_pos = |jj: usize| -> f32 {
+                    let c = (jj / cycle) * cycle;
+                    let uu = (jj - c) as f32 / cycle as f32;
+                    c as f32 + cycle as f32 * (uu - 0.5 * uu * uu)
+                };
+                let srcf = tape_pos(j);
+                let g = (1.0 - u).powf(0.3) * win(j - c0, cycle).max(0.0);
+                let (mut rl, mut rr) = (
+                    lerp_at(&self.ring_l, srcf, total),
+                    lerp_at(&self.ring_r, srcf, total),
+                );
+                if self.dc_cycle != Some(c0) {
+                    self.dc_cycle = Some(c0);
+                    self.dc.0.reset();
+                    self.dc.1.reset();
+                    for a in c0.saturating_sub(tape_dc::preroll())..c0 {
+                        self.dc.0.process(at(&self.ring_l, a));
+                        self.dc.1.process(at(&self.ring_r, a));
+                    }
+                }
+                rl = self.dc.0.process(rl);
+                rr = self.dc.1.process(rr);
+                (rl * g, rr * g)
+            }
+        };
+        (l * (1.0 - mix) + wl * mix, r * (1.0 - mix) + wr * mix)
+    }
+
+    /// slice-repeat (part B), one song sample: the same math as the offline
+    /// [`slice_repeat`], reading the recorded slice from the ring.
+    fn step_slice_repeat(&self, j: usize, l: f32, r: f32) -> (f32, f32) {
+        let size = self.ring_l.len();
+        let slice = self.slice;
+        let fade = self.fade;
+        let mix = self.mix;
+        if slice == 0 || self.repeats == 0 || j < self.trigger {
+            return (l, r);
+        }
+        let k = j - self.trigger;
+        let span = slice.saturating_mul(self.repeats);
+        if k >= span {
+            // exit crossfade: the tail replayed once more, blended into the
+            // live source (no future read)
+            let i = k - span;
+            if i >= fade {
+                return (l, r);
+            }
+            let w = 0.5 - 0.5 * (std::f32::consts::PI * (i + 1) as f32 / (fade + 1) as f32).cos();
+            let tail = slice - fade + i;
+            let wl = self.ring_l[tail % size] * (1.0 - w) + l * w;
+            let wr = self.ring_r[tail % size] * (1.0 - w) + r * w;
+            return (l * (1.0 - mix) + wl * mix, r * (1.0 - mix) + wr * mix);
+        }
+        let i = k % slice;
+        let pass = k / slice;
+        if pass == 0 {
+            // the slice's first pass IS the source: bit-exact dry
+            return (l, r);
+        }
+        let (wl, wr) = if i < fade {
+            let w = 0.5 - 0.5 * (std::f32::consts::PI * (i + 1) as f32 / (fade + 1) as f32).cos();
+            let tail = slice - fade + i;
+            (
+                self.ring_l[tail % size] * (1.0 - w) + self.ring_l[i % size] * w,
+                self.ring_r[tail % size] * (1.0 - w) + self.ring_r[i % size] * w,
+            )
+        } else {
+            (self.ring_l[i % size], self.ring_r[i % size])
+        };
+        (l * (1.0 - mix) + wl * mix, r * (1.0 - mix) + wr * mix)
+    }
+}
 // ---------------- pitch shifter ----------------
 
 pub fn pitch_shift(p: &PitchShiftFx, l: &mut [f32], r: &mut [f32]) {
+    pitch_shift_at(p, l, r, 0)
+}
+
+/// `pitch_shift` for a buffer that starts `offset` samples into the song:
+/// the ring-buffer slot and the grain clock run from the song's start (the
+/// clock is stepped through the first `offset` samples), so a window matches
+/// the same samples of a whole-song pass once its first window has filled.
+pub fn pitch_shift_at(p: &PitchShiftFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     let ratio = 2f32.powf((p.semitones.clamp(-24.0, 24.0) + p.cents / 100.0) / 12.0);
     let w = ((p.window_ms.clamp(10.0, 200.0) * 0.001 * SR) as usize).max(64) as f32;
     let mix = p.mix.clamp(0.0, 1.0);
     let size = w as usize * 2 + 4;
+    // the grain clock at the buffer's first sample
+    let mut d0 = 0.0f32;
+    for _ in 0..offset {
+        d0 = (d0 + (1.0 - ratio)).rem_euclid(w);
+    }
     for ch in [&mut *l, &mut *r] {
         let mut buf = vec![0.0f32; size];
-        let mut d = 0.0f32;
+        let mut d = d0;
         for (i, s) in ch.iter_mut().enumerate() {
-            let wi = i % size;
+            let wi = (i + offset) % size;
             buf[wi] = *s;
             d = (d + (1.0 - ratio)).rem_euclid(w);
             let tap = |delay: f32| {
@@ -483,6 +968,65 @@ pub fn pitch_shift(p: &PitchShiftFx, l: &mut [f32], r: &mut [f32]) {
             let wet = tap(d) * g1 + tap(d2) * g2;
             *s = *s * (1.0 - mix) + wet * mix;
         }
+    }
+}
+
+/// pitch_shift as a per-sample state machine: the same dual-tap delay/ring
+/// math as [`pitch_shift_at`] one sample at a time, so the streamed chain is
+/// bit-identical to the offline pass at any block size. Causal (the taps
+/// only read past samples), so zero latency. Both rings are allocated at
+/// build, never on the audio path.
+pub struct PitchShiftCore {
+    bufl: Vec<f32>,
+    bufr: Vec<f32>,
+    wi: usize,
+    d: f32,
+    w: f32,
+    ratio: f32,
+    pub mix: f32,
+}
+
+impl PitchShiftCore {
+    pub fn new(p: &PitchShiftFx) -> Self {
+        let ratio = 2f32.powf((p.semitones.clamp(-24.0, 24.0) + p.cents / 100.0) / 12.0);
+        let w = ((p.window_ms.clamp(10.0, 200.0) * 0.001 * SR) as usize).max(64) as f32;
+        let size = w as usize * 2 + 4;
+        PitchShiftCore {
+            bufl: vec![0.0; size],
+            bufr: vec![0.0; size],
+            wi: 0,
+            d: 0.0,
+            w,
+            ratio,
+            mix: p.mix.clamp(0.0, 1.0),
+        }
+    }
+
+    #[inline]
+    pub fn step(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let size = self.bufl.len();
+        let wi = self.wi;
+        self.bufl[wi] = l;
+        self.bufr[wi] = r;
+        self.d = (self.d + (1.0 - self.ratio)).rem_euclid(self.w);
+        let d = self.d;
+        let d2 = (d + self.w * 0.5).rem_euclid(self.w);
+        let g1 = (PI * d / self.w).sin();
+        let g2 = (PI * d2 / self.w).sin();
+        let sf = size as f32;
+        let tap = |buf: &[f32], delay: f32| {
+            let pos = (wi as f32 - delay - 1.0).rem_euclid(sf);
+            let i0 = pos as usize % size;
+            let f = pos - pos.floor();
+            buf[i0] * (1.0 - f) + buf[(i0 + 1) % size] * f
+        };
+        let wetl = tap(&self.bufl, d) * g1 + tap(&self.bufl, d2) * g2;
+        let wetr = tap(&self.bufr, d) * g1 + tap(&self.bufr, d2) * g2;
+        self.wi = (wi + 1) % size;
+        (
+            l * (1.0 - self.mix) + wetl * self.mix,
+            r * (1.0 - self.mix) + wetr * self.mix,
+        )
     }
 }
 
@@ -588,6 +1132,342 @@ pub fn synth_ir(p: &ConvolutionFx) -> (Vec<f32>, Vec<f32>) {
     (l, r)
 }
 
+/// Windowed-sinc lowpass FIR, odd length, unity DC gain, linear phase
+/// (group delay (taps-1)/2). Deterministic: a pure function of the
+/// cutoff and tap count. Blackman window.
+pub fn lowpass_fir(cutoff_hz: f32, taps: usize) -> Vec<f32> {
+    let n = taps.max(3) | 1;
+    let m = (n - 1) / 2;
+    let fc = (cutoff_hz / SR).clamp(1e-4, 0.4999);
+    let mut h = vec![0.0f32; n];
+    let mut sum = 0.0f32;
+    for (j, v) in h.iter_mut().enumerate() {
+        let k = j as f32 - m as f32;
+        let sinc = if j == m {
+            2.0 * fc
+        } else {
+            (2.0 * std::f32::consts::PI * fc * k).sin() / (std::f32::consts::PI * k)
+        };
+        // window from the distance to the nearer end, so mirrored taps get
+        // the same bits (linear phase needs an exactly symmetric IR)
+        let jw = j.min(n - 1 - j);
+        let w = 0.42 - 0.5 * (2.0 * std::f32::consts::PI * jw as f32 / (n - 1) as f32).cos()
+            + 0.08 * (4.0 * std::f32::consts::PI * jw as f32 / (n - 1) as f32).cos();
+        *v = sinc * w;
+        sum += *v;
+    }
+    for v in h.iter_mut() {
+        *v /= sum;
+    }
+    h
+}
+
+/// Linear-phase 3-way frequency split (Frequency Splitter class):
+/// windowed-sinc FIR crossovers, complementary by construction. With
+/// h1 = lowpass(low_hz), h2 = lowpass(high_hz) and x_d = the input
+/// delayed by the FIR group delay m = (taps-1)/2: low = x*h1,
+/// mid = x*h2 - x*h1, high = x_d - x*h2, so the three bands share one
+/// linear phase and sum back to the delayed input. The insert solos
+/// ONE band (`p.band`) - band sends are one insert per lane. Latency
+/// is m samples; the rt arm reports it like cab_ir reports its own.
+pub fn freq_splitter(p: &crate::fx::FreqSplitterFx, l: &mut [f32], r: &mut [f32]) {
+    let taps = (p.taps as usize).max(3) | 1;
+    let m = (taps - 1) / 2;
+    let lo = p.low_hz.min(p.high_hz);
+    let hi = p.high_hz.max(p.low_hz);
+    let h1 = lowpass_fir(lo, taps);
+    let h2 = lowpass_fir(hi, taps);
+    let g = db_to_gain(p.gain_db);
+    let mix = p.mix.clamp(0.0, 1.0);
+    for chan in [l, r] {
+        let x = chan.to_vec();
+        let s1 = if p.band == crate::fx::FreqSplitBand::High {
+            Vec::new()
+        } else {
+            convolve(&x, &h1)
+        };
+        let s2 = if p.band == crate::fx::FreqSplitBand::Low {
+            Vec::new()
+        } else {
+            convolve(&x, &h2)
+        };
+        for i in 0..chan.len() {
+            let wet = match p.band {
+                crate::fx::FreqSplitBand::Low => s1[i],
+                crate::fx::FreqSplitBand::Mid => s2[i] - s1[i],
+                crate::fx::FreqSplitBand::High => (if i >= m { x[i - m] } else { 0.0 }) - s2[i],
+            };
+            chan[i] = (wet * g) * mix + x[i] * (1.0 - mix);
+        }
+    }
+}
+
+/// Rejects only configs that are nonsense today: out-of-range or
+/// non-finite crossover/gain/mix, equal crossovers (silent mid band), and
+/// tap counts that are degenerate (< 33) or unbounded cost (> 65537).
+/// Inverted low/high stays valid (it is swapped, as before).
+pub fn check_freq_splitter(p: &crate::fx::FreqSplitterFx) -> Result<(), String> {
+    let rng = |name: &str, v: f32, lo: f32, hi: f32| {
+        if v.is_finite() && v >= lo && v <= hi {
+            Ok(())
+        } else {
+            Err(format!(
+                "freq_splitter: {name} must be {lo}..{hi} (got {v})"
+            ))
+        }
+    };
+    if !(33..=65_537).contains(&p.taps) {
+        return Err(format!(
+            "freq_splitter: taps must be 33..65537 (got {})",
+            p.taps
+        ));
+    }
+    rng("low_hz", p.low_hz, 20.0, 20_000.0)?;
+    rng("high_hz", p.high_hz, 20.0, 20_000.0)?;
+    if p.low_hz == p.high_hz {
+        return Err(
+            "freq_splitter: low_hz and high_hz must differ (equal gives a silent mid band)".into(),
+        );
+    }
+    rng("gain_db", p.gain_db, -60.0, 24.0)?;
+    rng("mix", p.mix, 0.0, 1.0)
+}
+
+pub fn check_granular(p: &crate::fx::GranularFx) -> Result<(), String> {
+    let rng = |name: &str, v: f32, lo: f32, hi: f32| {
+        if v.is_finite() && v >= lo && v <= hi {
+            Ok(())
+        } else {
+            Err(format!("granular: {name} must be {lo}..{hi} (got {v})"))
+        }
+    };
+    rng("grain_ms", p.grain_ms, 5.0, 500.0)?;
+    rng("density_hz", p.density_hz, 0.5, 200.0)?;
+    rng("pitch_semitones", p.pitch_semitones, -24.0, 24.0)?;
+    rng("position_jitter_ms", p.position_jitter_ms, 0.0, 500.0)?;
+    rng("spread", p.spread, 0.0, 1.0)?;
+    rng("mix", p.mix, 0.0, 1.0)?;
+    if !p.freeze_at_ms.is_finite() {
+        return Err("granular: freeze_at_ms must be finite (negative = off)".into());
+    }
+    Ok(())
+}
+
+struct Grain {
+    start: usize,
+    src0: f32,
+    gl: f32,
+    gr: f32,
+    /// Frozen region first index; `flen` 0 = read the live input.
+    a: usize,
+    flen: usize,
+}
+
+/// Most grains that can sound at once. The densest legal setting
+/// (200 grains/s, 500 ms, scheduler gaps >= 0.75 of the interval) needs
+/// ~140, so this cap is never the thing that shapes the sound.
+pub const GRANULAR_MAX_GRAINS: usize = 512;
+/// Input history kept for grains (2^17 samples): the furthest a grain can
+/// read behind the write head is jitter + grain * (rate - 1) <= 88 202.
+const GR_RING: usize = 1 << 17;
+/// Largest frozen slice: grain (<= 22 050) + jitter (<= 22 050) samples.
+const GR_FREEZE_MAX: usize = 44_101;
+
+#[inline]
+fn gr_clean(x: f32) -> f32 {
+    if x.is_finite() && x.abs() >= f32::MIN_POSITIVE {
+        x
+    } else {
+        0.0
+    }
+}
+
+/// The granular scheduler as a per-sample state machine. The offline pass
+/// and the streamed arm both run exactly this code, so they agree to the
+/// bit at any block size. Every buffer is sized in `new`; `step` never
+/// allocates.
+pub struct GranularCore {
+    ring: [Vec<f32>; 2],
+    frozen: [Vec<f32>; 2],
+    grains: Vec<Grain>,
+    glen: usize,
+    rate: f32,
+    interval: f64,
+    jit: f32,
+    pub(crate) mix: f32,
+    norm: f32,
+    spread: f32,
+    freeze: Option<usize>,
+    fa: usize,
+    flen: usize,
+    state: u32,
+    next: f64,
+    i: usize,
+    /// Most grains alive at once so far (for the cap test).
+    pub peak_active: usize,
+}
+
+impl GranularCore {
+    /// `total` = clip length in samples (the freeze point is clamped to it,
+    /// as in the offline pass).
+    pub fn new(p: &crate::fx::GranularFx, total: usize) -> Self {
+        let glen = ((p.grain_ms * 0.001 * SR) as usize).max(16);
+        GranularCore {
+            ring: [vec![0.0; GR_RING], vec![0.0; GR_RING]],
+            frozen: [vec![0.0; GR_FREEZE_MAX], vec![0.0; GR_FREEZE_MAX]],
+            grains: Vec::with_capacity(GRANULAR_MAX_GRAINS),
+            glen,
+            rate: 2.0f32.powf(p.pitch_semitones / 12.0),
+            interval: (SR / p.density_hz.max(0.5)).max(1.0) as f64,
+            jit: p.position_jitter_ms.max(0.0) * 0.001 * SR,
+            mix: p.mix.clamp(0.0, 1.0),
+            norm: 1.0 / (p.density_hz * p.grain_ms * 0.001 * 0.5).max(1.0).sqrt(),
+            spread: p.spread.clamp(0.0, 1.0),
+            freeze: if p.freeze_at_ms >= 0.0 && total > 0 {
+                Some(((p.freeze_at_ms * 0.001 * SR) as usize).min(total - 1))
+            } else {
+                None
+            },
+            fa: 0,
+            flen: 0,
+            state: if p.seed == 0 { 0x9E37_79B9 } else { p.seed },
+            next: 0.0,
+            i: 0,
+            peak_active: 0,
+        }
+    }
+
+    #[inline]
+    fn rand01(&mut self) -> f32 {
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 17;
+        self.state ^= self.state << 5;
+        (self.state >> 8) as f32 / 16_777_216.0
+    }
+
+    #[inline]
+    fn read_live(&self, c: usize, pos: f32, hi: usize) -> f32 {
+        if pos < 0.0 {
+            return 0.0;
+        }
+        let i0 = (pos as usize).min(hi);
+        let fr = pos - i0 as f32;
+        let a = self.ring[c][i0 & (GR_RING - 1)];
+        let b = self.ring[c][(i0 + 1).min(hi) & (GR_RING - 1)];
+        a + (b - a) * fr
+    }
+
+    #[inline]
+    fn read_frozen(&self, c: usize, pos: f32, a0: usize, flen: usize) -> f32 {
+        let hi = a0 + flen - 1;
+        let i0 = (pos.max(0.0) as usize).clamp(a0, hi);
+        let fr = pos - i0 as f32;
+        let a = self.frozen[c][i0 - a0];
+        let b = self.frozen[c][(i0 + 1).min(hi) - a0];
+        a + (b - a) * fr
+    }
+
+    /// One stereo sample in, one out (wet/dry mixed).
+    pub fn step(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        let i = self.i;
+        let (xl, xr) = (gr_clean(xl), gr_clean(xr));
+        self.ring[0][i & (GR_RING - 1)] = xl;
+        self.ring[1][i & (GR_RING - 1)] = xr;
+        if self.freeze == Some(i) {
+            let flen = ((self.glen as f32 + self.jit) as usize)
+                .min(i + 1)
+                .clamp(1, GR_FREEZE_MAX);
+            self.fa = i + 1 - flen;
+            self.flen = flen;
+            for k in 0..flen {
+                let src = (self.fa + k) & (GR_RING - 1);
+                self.frozen[0][k] = self.ring[0][src];
+                self.frozen[1][k] = self.ring[1][src];
+            }
+        }
+        while self.next <= i as f64 {
+            let u = (self.rand01() * 2.0 - 1.0) * self.spread;
+            let ang = (u + 1.0) * std::f32::consts::FRAC_PI_4;
+            let (gl, gr) = (
+                ang.cos() * std::f32::consts::SQRT_2,
+                ang.sin() * std::f32::consts::SQRT_2,
+            );
+            let pos_r = self.rand01();
+            let mut g = Grain {
+                start: i,
+                src0: 0.0,
+                gl,
+                gr,
+                a: 0,
+                flen: 0,
+            };
+            match self.freeze {
+                Some(f) if i >= f => {
+                    g.a = self.fa;
+                    g.flen = self.flen;
+                    g.src0 = self.fa as f32 + pos_r * self.flen as f32;
+                }
+                _ => {
+                    let lead = if self.rate > 1.0 {
+                        self.glen as f32 * (self.rate - 1.0)
+                    } else {
+                        0.0
+                    };
+                    g.src0 = i as f32 - lead - pos_r * self.jit;
+                }
+            }
+            if self.grains.len() < GRANULAR_MAX_GRAINS {
+                self.grains.push(g);
+            }
+            let jitter = self.rand01() as f64;
+            self.next += self.interval * (0.75 + 0.5 * jitter);
+        }
+        self.peak_active = self.peak_active.max(self.grains.len());
+        let (mut wl, mut wr) = (0.0f32, 0.0f32);
+        for g in &self.grains {
+            let t = i - g.start;
+            let w = 0.5 - 0.5 * (2.0 * PI * (t as f32 + 0.5) / self.glen as f32).cos();
+            let mut pos = g.src0 + self.rate * t as f32;
+            if g.flen > 0 {
+                let rel = (pos - g.a as f32).rem_euclid(g.flen as f32);
+                pos = g.a as f32 + rel;
+                wl += self.read_frozen(0, pos, g.a, g.flen) * w * g.gl;
+                wr += self.read_frozen(1, pos, g.a, g.flen) * w * g.gr;
+            } else {
+                wl += self.read_live(0, pos, i) * w * g.gl;
+                wr += self.read_live(1, pos, i) * w * g.gr;
+            }
+        }
+        let glen = self.glen;
+        self.grains.retain(|g| i + 1 - g.start < glen);
+        self.i = i + 1;
+        let (wl, wr) = (
+            if wl.is_finite() { wl } else { 0.0 },
+            if wr.is_finite() { wr } else { 0.0 },
+        );
+        (
+            (wl * self.norm) * self.mix + xl * (1.0 - self.mix),
+            (wr * self.norm) * self.mix + xr * (1.0 - self.mix),
+        )
+    }
+}
+
+/// Live-input granular insert, offline. Causal: a grain only reads input
+/// at or before the sample being produced. `mix` 0 leaves the buffers
+/// untouched (bit-exact).
+pub fn granular(p: &crate::fx::GranularFx, l: &mut [f32], r: &mut [f32]) {
+    let n = l.len();
+    if p.mix <= 0.0 || n == 0 {
+        return;
+    }
+    let mut core = GranularCore::new(p, n);
+    for i in 0..n {
+        let (a, b) = core.step(l[i], r[i]);
+        l[i] = a;
+        r[i] = b;
+    }
+}
+
 /// Uniformly partitioned FFT convolution; output has `x.len()` samples.
 pub fn convolve(x: &[f32], ir: &[f32]) -> Vec<f32> {
     const B: usize = 2048;
@@ -645,7 +1525,22 @@ pub fn convolve(x: &[f32], ir: &[f32]) -> Vec<f32> {
 }
 
 pub fn convolution(p: &ConvolutionFx, l: &mut [f32], r: &mut [f32]) {
-    let (irl, irr) = synth_ir(p);
+    let file = if p.ir_path.is_empty() {
+        None
+    } else {
+        crate::fx_amp::load_ir(&p.ir_path, 10.0)
+    };
+    let (irl, irr) = match &file {
+        Some(a) => (
+            a.0.clone(),
+            if a.1.is_empty() {
+                a.0.clone()
+            } else {
+                a.1.clone()
+            },
+        ),
+        None => synth_ir(p),
+    };
     let mono: Vec<f32> = l.iter().zip(r.iter()).map(|(a, b)| 0.5 * (a + b)).collect();
     let wl = convolve(&mono, &irl);
     let wr = convolve(&mono, &irr);
@@ -660,11 +1555,12 @@ pub fn convolution(p: &ConvolutionFx, l: &mut [f32], r: &mut [f32]) {
 
 // ---------------- auto-pan / tremolo ----------------
 
-pub fn autopan(p: &AutopanFx, l: &mut [f32], r: &mut [f32], step_secs: f32) {
+/// `offset`: the buffer's place in the song (samples), see `phaser`.
+pub fn autopan(p: &AutopanFx, l: &mut [f32], r: &mut [f32], step_secs: f32, offset: usize) {
     let period = (p.steps.max(0.25) * step_secs * SR).max(1.0);
     let depth = p.depth.clamp(0.0, 1.0);
     for i in 0..l.len() {
-        let ph = (i as f32 / period).fract();
+        let ph = ((i + offset) as f32 / period).fract();
         let lfo = (2.0 * PI * ph).sin();
         if p.tremolo {
             let g = 1.0 - depth * (0.5 - 0.5 * lfo);
@@ -778,6 +1674,425 @@ mod tests {
         assert!(a.len() > 10000 && a.iter().chain(b.iter()).all(|v| v.is_finite()));
     }
 
+    /// Worst |mean| of the last `tail` samples of each `cycle`-long ramp: the
+    /// DC a tape stop leaves where the tape has all but stopped (speed under
+    /// 5% for 100 ms of a 2 s ramp, so every tone here is below 11 Hz).
+    fn stop_tail_dc(x: &[f32], cycle: usize, tail: usize) -> f32 {
+        (1..=x.len() / cycle)
+            .map(|k| {
+                let s = &x[k * cycle - tail..k * cycle];
+                (s.iter().map(|v| *v as f64).sum::<f64>() / tail as f64).abs() as f32
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// B75: the tape-stop DC guard. A 0.5 FS sine under a 2 s tape-stop ramp,
+    /// at 55 / 110 / 220 Hz and 8 start phases; the DC is the worst mean of
+    /// the ramp's last 100 ms. Measured: unguarded 0.142 FS (producers saw
+    /// 0.12 FS on a real render), guarded 0.0100 FS.
+    #[test]
+    fn tape_stop_dc_guard_removes_the_stop_drift() {
+        let step = 0.125;
+        let cycle = (16.0 * step * SR) as usize;
+        let tail = (0.1 * SR) as usize;
+        let p = StutterFx {
+            mode: StutterMode::TapeStop,
+            cycle_steps: 16.0,
+            ..Default::default()
+        };
+        let (mut off, mut on) = (0.0f32, 0.0f32);
+        for f in [55.0f32, 110.0, 220.0] {
+            for k in 0..8 {
+                let ph = k as f32 * PI / 4.0;
+                let x: Vec<f32> = (0..2 * cycle)
+                    .map(|i| (2.0 * PI * f * i as f32 / SR + ph).sin() * 0.5)
+                    .collect();
+                let (mut l0, mut r0) = (x.clone(), x.clone());
+                stutter_guarded(&p, &mut l0, &mut r0, step, 0, false);
+                let (mut l1, mut r1) = (x.clone(), x.clone());
+                stutter_guarded(&p, &mut l1, &mut r1, step, 0, true);
+                assert!(l1.iter().all(|v| v.is_finite()) && l1 == r1);
+                off = off.max(stop_tail_dc(&l0, cycle, tail));
+                on = on.max(stop_tail_dc(&l1, cycle, tail));
+            }
+        }
+        eprintln!("tape-stop DC (worst mean of the last 100 ms): guard off {off:.4} FS, on {on:.4} FS ({:.1} dB)", 20.0 * (on / off).log10());
+        assert!(off > 0.10, "the unguarded stop drifts: {off}");
+        assert!(on < 0.015, "the guarded stop: {on}");
+        // the rack's entry point runs the guard
+        let x: Vec<f32> = (0..cycle)
+            .map(|i| (2.0 * PI * 110.0 * i as f32 / SR).sin() * 0.5)
+            .collect();
+        let (mut a, mut b) = (x.clone(), x.clone());
+        stutter(&p, &mut a, &mut b, step);
+        let (mut c, mut d) = (x.clone(), x.clone());
+        stutter_guarded(&p, &mut c, &mut d, step, 0, true);
+        assert_eq!(a, c);
+    }
+
+    /// Re-trigger: the ramp starts again at every cycle. Warm-started, the
+    /// guard adds no blip there: the mean of the output over a whole number
+    /// of source periods just after the fade-in at each re-trigger (where
+    /// the speed is still ~1) stays under the same 0.015 FS bound. A guard
+    /// started cold at the re-trigger (computed here for comparison) blips.
+    #[test]
+    fn tape_stop_dc_guard_retrigger_has_no_blip() {
+        let step = 0.125;
+        let cycle = (16.0 * step * SR) as usize;
+        let p = StutterFx {
+            mode: StutterMode::TapeStop,
+            cycle_steps: 16.0,
+            ..Default::default()
+        };
+        let fade = ((p.smooth_ms.max(0.5) * 0.001 * SR) as usize).max(1);
+        let (mut off, mut on, mut cold) = (0.0f32, 0.0f32, 0.0f32);
+        for (f, periods) in [(55.0f32, 2.0f32), (110.0, 3.0), (220.0, 6.0)] {
+            let w = (periods / f * SR).round() as usize;
+            for k in 0..16 {
+                let ph = k as f32 * PI / 8.0;
+                let x: Vec<f32> = (0..3 * cycle)
+                    .map(|i| (2.0 * PI * f * i as f32 / SR + ph).sin() * 0.5)
+                    .collect();
+                let (mut l0, mut r0) = (x.clone(), x.clone());
+                stutter_guarded(&p, &mut l0, &mut r0, step, 0, false);
+                let (mut l1, mut r1) = (x.clone(), x.clone());
+                stutter_guarded(&p, &mut l1, &mut r1, step, 0, true);
+                // the same ramp with the guard started from zero at the re-trigger
+                let mut c = vec![0.0f32; 3 * cycle];
+                for c0 in [cycle, 2 * cycle] {
+                    let mut g = TapeDcGuard::default();
+                    for j in c0..c0 + cycle {
+                        let u = (j - c0) as f32 / cycle as f32;
+                        let srcf = c0 as f32 + cycle as f32 * (u - 0.5 * u * u);
+                        let a = ((j - c0) as f32 / fade as f32)
+                            .min(1.0)
+                            .min(((c0 + cycle - j) as f32 / fade as f32).min(1.0));
+                        c[j] = g.process(lerp_read(&x, srcf)) * (1.0 - u).powf(0.3) * a;
+                    }
+                }
+                let dc = |y: &[f32], c0: usize| {
+                    (y[c0 + fade..c0 + fade + w]
+                        .iter()
+                        .map(|v| *v as f64)
+                        .sum::<f64>()
+                        / w as f64)
+                        .abs() as f32
+                };
+                for c0 in [cycle, 2 * cycle] {
+                    off = off.max(dc(&l0, c0));
+                    on = on.max(dc(&l1, c0));
+                    cold = cold.max(dc(&c, c0));
+                }
+            }
+        }
+        eprintln!("tape-stop re-trigger DC (whole periods after the fade-in): guard off {off:.4} FS, warm guard {on:.4} FS, cold-started guard {cold:.4} FS");
+        assert!(on < 0.015, "no blip at the re-trigger: {on}");
+        assert!(cold > 0.015, "a cold start would blip: {cold}");
+    }
+
+    /// Rate to zero: one 16 s ramp, the last seconds crawling toward rate 0.
+    /// Finite, bounded, and decaying to silence; bypassed, the effect leaves
+    /// the audio untouched and keeps no state (the next pass is a fresh one).
+    #[test]
+    fn tape_stop_dc_guard_long_ramp_and_bypass() {
+        let step = 0.125;
+        let p = StutterFx {
+            mode: StutterMode::TapeStop,
+            cycle_steps: 128.0,
+            ..Default::default()
+        };
+        let cycle = (128.0 * step * SR) as usize;
+        let x: Vec<f32> = (0..cycle)
+            .map(|i| (2.0 * PI * 41.2 * i as f32 / SR).sin() * 0.5)
+            .collect();
+        let (mut l, mut r) = (x.clone(), x.clone());
+        stutter(&p, &mut l, &mut r, step);
+        assert!(l.iter().all(|v| v.is_finite() && v.abs() <= 0.75));
+        let tail = l[cycle - (0.05 * SR) as usize..]
+            .iter()
+            .fold(0.0f32, |a, v| a.max(v.abs()));
+        let early = rms(&l[..SR as usize]);
+        eprintln!("16 s tape stop: rms first second {early:.3}, max |y| last 50 ms {tail:.2e}");
+        assert!(tail < 0.01, "decays toward the stop: {tail}");
+        // bypass: untouched, and un-bypassed it is the same as a fresh pass
+        let mut b = Effect::Stutter(StutterFx {
+            bypass: true,
+            ..p.clone()
+        });
+        let ctx_tr = std::collections::HashMap::new();
+        let ctx = FxContext {
+            step_secs: step,
+            triggers: &ctx_tr,
+            offset: 0,
+            levels: None,
+        };
+        let (mut bl, mut br) = (x.clone(), x.clone());
+        b.process(&mut bl, &mut br, &ctx);
+        assert!(bl == x && br == x);
+        b.set_bypass(false);
+        let (mut ul, mut ur) = (x.clone(), x.clone());
+        b.process(&mut ul, &mut ur, &ctx);
+        assert!(ul == l && ur == r);
+    }
+
+    /// Rate to exactly 0, held, then back up to 1: a tape transport whose
+    /// read position integrates a rate envelope (1 -> 0 over 1 s, exactly 0.0
+    /// for 2 s, 0 -> 1 over 1 s, then 1 for 0.5 s) reads a 110 + 41.2 Hz
+    /// source through the guard. (The effects' own ramps only run 1 -> 0 and
+    /// restart; this drives the guard through the full stop-and-start.)
+    /// Every sample is finite, the state is never denormal (outputs under
+    /// 1e-20 flush to 0), the output stays bounded, settles to exactly 0
+    /// during the hold, comes back with the source, and the restart has no
+    /// sample-to-sample jump larger than the source's own.
+    #[test]
+    fn tape_stop_dc_guard_rate_to_zero_and_back() {
+        let sr = SR as usize;
+        let x: Vec<f32> = (0..6 * sr)
+            .map(|i| {
+                let t = i as f32 / SR;
+                (2.0 * PI * 110.0 * t).sin() * 0.5 + (2.0 * PI * 41.2 * t).sin() * 0.25
+            })
+            .collect();
+        let src_jump = x
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        let rate = |i: usize| -> f64 {
+            let t = i as f64 / SR as f64;
+            if t < 1.0 {
+                1.0 - t
+            } else if t < 3.0 {
+                0.0
+            } else if t < 4.0 {
+                t - 3.0
+            } else {
+                1.0
+            }
+        };
+        let (mut gl, mut gr) = (TapeDcGuard::default(), TapeDcGuard::default());
+        let mut pos = 0.0f64;
+        let n = (4.5 * SR) as usize;
+        let mut y = Vec::with_capacity(n);
+        for i in 0..n {
+            let rd = lerp_read(&x, pos as f32);
+            let (a, b) = (gl.process(rd), gr.process(-rd));
+            assert!(a.is_finite() && b.is_finite(), "sample {i}");
+            for v in gl.state().into_iter().chain(gr.state()) {
+                assert!(
+                    v == 0.0 || v.is_normal(),
+                    "denormal state {v:e} at sample {i}"
+                );
+            }
+            y.push(a);
+            pos += rate(i);
+        }
+        let peak = y.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let hold_end = y[3 * sr - sr / 2..3 * sr]
+            .iter()
+            .fold(0.0f32, |m, v| m.max(v.abs()));
+        let back = rms(&y[4 * sr..]);
+        let restart_jump = y[3 * sr..4 * sr]
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!("rate 1 -> 0 -> hold -> 1: peak {peak:.3}, max |y| last 0.5 s of the hold {hold_end:e}, rms back at rate 1 {back:.3}, max jump on the restart {restart_jump:.5} (source's own {src_jump:.5})");
+        assert!(peak <= 1.0, "bounded: {peak}");
+        assert_eq!(hold_end, 0.0, "the hold settles to exactly 0");
+        assert!(back > 0.3, "back with the source: {back}");
+        assert!(
+            restart_jump <= src_jump,
+            "the restart: {restart_jump} vs the source's {src_jump}"
+        );
+    }
+
+    /// Rapid trigger -> interrupt -> retrigger, the way a transition plays a
+    /// tape stop: the effect's mix automated (fx.0.mix, step points) through
+    /// the rack's own automation path, ramps restarting every 1/8 note, the
+    /// wet interrupted and re-triggered three times, each re-trigger
+    /// mid-ramp (60%, 20%, 70% in). The guard is warm at every onset (it
+    /// runs on the wet whether or not the mix lets it through, and each ramp
+    /// starts from its warm-up): the largest sample-to-sample jump from 64
+    /// samples before to 512 after each onset stays within the source's own
+    /// largest jump (tolerance 0%). The wet alone, guarded and unguarded, is
+    /// printed beside it.
+    #[test]
+    fn tape_stop_dc_guard_rapid_retrigger_no_onset_click() {
+        use crate::automation::{AutoPoint, AutomationLane, Curve};
+        let mut p = crate::project::Project::new("t", 120.0);
+        for pt in p.patterns.iter_mut() {
+            pt.bars = 16;
+        }
+        let tl = crate::render::Timeline::new(&p, &crate::render::RenderOptions::default());
+        let sr = SR as usize;
+        let n = 3 * sr;
+        let x: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                (2.0 * PI * 110.0 * t).sin() * 0.5 + (2.0 * PI * 41.2 * t + 0.7).sin() * 0.25
+            })
+            .collect();
+        let src_jump = x
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        // trigger at 0; interrupt / re-trigger (beats; a ramp restarts every 0.5 beat)
+        let edges = [
+            (1.3f32, 0.0f32),
+            (1.8, 1.0),
+            (2.6, 0.0),
+            (3.1, 1.0),
+            (3.9, 0.0),
+            (4.35, 1.0),
+        ];
+        let mut lane = AutomationLane::new("x", "fx.0.mix");
+        lane.points.push(AutoPoint {
+            beat: 0.0,
+            value: 1.0,
+            curve: Curve::Step,
+        });
+        for (b, v) in edges {
+            lane.points.push(AutoPoint {
+                beat: b,
+                value: v,
+                curve: Curve::Step,
+            });
+        }
+        let onsets: Vec<usize> = edges
+            .iter()
+            .filter(|e| e.1 > 0.0)
+            .map(|e| (e.0 * 0.5 * SR) as usize)
+            .collect();
+        let tr = std::collections::HashMap::new();
+        let ctx = FxContext {
+            step_secs: 0.125,
+            triggers: &tr,
+            offset: 0,
+            levels: None,
+        };
+        let effects = [
+            (
+                "stutter tape_stop",
+                Effect::Stutter(StutterFx {
+                    mode: StutterMode::TapeStop,
+                    cycle_steps: 2.0,
+                    ..Default::default()
+                }),
+            ),
+            (
+                "gross_beat tape_stop",
+                Effect::GrossBeat(crate::fx::GrossBeatFx {
+                    time: "tape_stop".into(),
+                    cycle_steps: 2.0,
+                    ..Default::default()
+                }),
+            ),
+            (
+                "gross_beat tape_stop_end",
+                Effect::GrossBeat(crate::fx::GrossBeatFx {
+                    time: "tape_stop_end".into(),
+                    cycle_steps: 2.0,
+                    ..Default::default()
+                }),
+            ),
+        ];
+        for (name, fx) in effects {
+            let (mut l, mut r) = (x.clone(), x.clone());
+            crate::render::process_chain(
+                std::slice::from_ref(&fx),
+                &[&lane],
+                &mut l,
+                &mut r,
+                &ctx,
+                &tl,
+            );
+            assert!(l.iter().all(|v| v.is_finite()));
+            // the same automation over the effect without the guard
+            let unguarded = |l: &mut [f32], r: &mut [f32]| match &fx {
+                Effect::Stutter(s) => stutter_guarded(s, l, r, 0.125, 0, false),
+                Effect::GrossBeat(g) => crate::fx_time::gross_beat_unguarded(g, l, r, 0.125, 0),
+                _ => unreachable!(),
+            };
+            let (mut wl, mut wr) = (x.clone(), x.clone());
+            unguarded(&mut wl, &mut wr);
+            let (mut gl, mut gr) = (x.clone(), x.clone());
+            fx.process(&mut gl, &mut gr, &ctx);
+            for &o in &onsets {
+                let w = o - 64..o + 512;
+                let jump = |y: &[f32]| {
+                    y[w.clone()]
+                        .windows(2)
+                        .map(|v| (v[1] - v[0]).abs())
+                        .fold(0.0f32, f32::max)
+                };
+                let j = jump(&l);
+                // the guarded vs unguarded wet at the onset (the automation
+                // blends these with the dry)
+                let (jg, ju) = (jump(&gl), jump(&wl));
+                eprintln!("{name} re-trigger at {:.3} s: max jump {j:.5} (source's own {src_jump:.5}); wet alone guarded {jg:.5} / unguarded {ju:.5}", o as f32 / SR);
+                assert!(
+                    j <= src_jump,
+                    "{name}: onset click at {o}: {j} > {src_jump}"
+                );
+            }
+        }
+    }
+
+    /// The guard touches nothing but tape_stop mode: every other mode is the
+    /// same bit for bit with it on or off.
+    #[test]
+    fn tape_stop_dc_guard_leaves_other_modes_bit_identical() {
+        let x: Vec<f32> = (0..40_000)
+            .map(|i| (2.0 * PI * 97.0 * i as f32 / SR).sin() * 0.4 + 0.1 * (i as f32 * 0.37).sin())
+            .collect();
+        for mode in [
+            StutterMode::Gate,
+            StutterMode::Stutter,
+            StutterMode::HalfTime,
+            StutterMode::Reverse,
+        ] {
+            let p = StutterFx {
+                mode,
+                mix: 0.8,
+                ..Default::default()
+            };
+            let (mut a, mut b) = (x.clone(), x.clone());
+            stutter_guarded(&p, &mut a, &mut b, 0.125, 0, false);
+            let (mut c, mut d) = (x.clone(), x.clone());
+            stutter_guarded(&p, &mut c, &mut d, 0.125, 0, true);
+            assert!(a == c && b == d, "{mode:?}");
+        }
+    }
+
+    /// With the guard warmed per ramp from the song position, a buffer that
+    /// starts `offset` into the song (silent before it, as the windowed
+    /// renders read it, and for 0.5 s after: the live-splice convention) matches the same samples of a whole-song pass exactly,
+    /// including a buffer that starts mid-ramp.
+    #[test]
+    fn tape_stop_dc_guard_follows_the_song_position() {
+        let p = StutterFx {
+            mode: StutterMode::TapeStop,
+            cycle_steps: 4.0,
+            ..Default::default()
+        };
+        let n = 200_000;
+        for off in [44_100usize, 50_000] {
+            let x: Vec<f32> = (0..n)
+                .map(|i| {
+                    if i >= off + 22_050 {
+                        (2.0 * PI * 61.0 * i as f32 / SR).sin() * 0.5
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            let (mut fl, mut fr) = (x.clone(), x.clone());
+            stutter_at(&p, &mut fl, &mut fr, 0.125, 0);
+            let (mut wl, mut wr) = (x[off..].to_vec(), x[off..].to_vec());
+            stutter_at(&p, &mut wl, &mut wr, 0.125, off);
+            assert!(fl[off..] == wl[..] && fr[off..] == wr[..], "offset {off}");
+        }
+    }
+
     #[test]
     fn stutter_modes_are_finite_and_gate_mutes() {
         for mode in [
@@ -786,6 +2101,7 @@ mod tests {
             StutterMode::HalfTime,
             StutterMode::Reverse,
             StutterMode::TapeStop,
+            StutterMode::SliceRepeat,
         ] {
             let mut l = sine(300.0, 30000, 0.5);
             let mut r = l.clone();
@@ -802,6 +2118,155 @@ mod tests {
                 assert!(rms(&l[500..step - 500]) > 0.3);
             }
         }
+    }
+
+    #[test]
+    fn slice_repeat_exact_repeat_count() {
+        // ramp of exactly-representable values; fade 1 keeps the blended
+        // region to each pass's first sample
+        let n = 8192usize;
+        let mut l: Vec<f32> = (0..n).map(|i| (i % 251) as f32).collect();
+        let mut r = l.clone();
+        let (l0, r0) = (l.clone(), r.clone());
+        slice_repeat(&mut l, &mut r, 1024, 3, 512, 1, 1.0);
+        // pass 0 is bit-exact dry (the slice source is the buffer itself)
+        for i in 512..512 + 1024 {
+            assert_eq!(l[i].to_bits(), l0[i].to_bits(), "pass0 i {i}");
+        }
+        // passes 1 and 2 repeat the slice; each pass's first sample is the
+        // wrap crossfade (the enum documents a crossfade at every loop wrap,
+        // and the streamed arm matches it bit for bit), the rest are raw
+        for k in 1024..3 * 1024 {
+            let i = k % 1024;
+            if i < 1 {
+                continue;
+            }
+            assert_eq!(l[512 + k].to_bits(), l0[512 + i].to_bits(), "rep l k {k}");
+            assert_eq!(r[512 + k].to_bits(), r0[512 + i].to_bits(), "rep r k {k}");
+        }
+        // the 4th would-be pass is not there: after the 1-sample exit
+        // crossfade the buffer is dry -> exactly 3 repeats
+        for i in 512 + 3 * 1024 + 1..n {
+            assert_eq!(l[i].to_bits(), l0[i].to_bits(), "tail i {i}");
+        }
+    }
+
+    #[test]
+    fn slice_repeat_trigger_offset_sample_accurate() {
+        let n = 6000usize;
+        let mut l: Vec<f32> = (0..n).map(|i| (i % 251) as f32 + 0.25).collect();
+        let mut r = l.clone();
+        let l0 = l.clone();
+        slice_repeat(&mut l, &mut r, 512, 2, 1000, 1, 1.0);
+        // everything before the trigger is untouched
+        for i in 0..1000 {
+            assert_eq!(l[i].to_bits(), l0[i].to_bits(), "pre i {i}");
+        }
+        // the first repeated sample lands exactly at trigger + slice + fade
+        assert_eq!(l[1000 + 512 + 1].to_bits(), l0[1000 + 1].to_bits());
+        // and the effect ends exactly at trigger + slice * repeats + fade
+        for i in 1000 + 1024 + 1..n {
+            assert_eq!(l[i].to_bits(), l0[i].to_bits(), "post i {i}");
+        }
+    }
+
+    #[test]
+    fn slice_repeat_zero_and_max_slice() {
+        let n = 8192usize;
+        let build = || {
+            (0..n)
+                .map(|i| ((i % 251) as f32 + 0.25).sin())
+                .collect::<Vec<f32>>()
+        };
+        // zero slice: dry
+        let mut l = build();
+        let mut r = build();
+        let l0 = l.clone();
+        slice_repeat(&mut l, &mut r, 0, 4, 100, 4, 1.0);
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        // zero repeats: dry
+        slice_repeat(&mut l, &mut r, 512, 0, 100, 4, 1.0);
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        // slice longer than the buffer: clamps to what is there; the repeat
+        // pass does not fit, so the buffer is dry and nothing panics
+        slice_repeat(&mut l, &mut r, 1_000_000, 2, 0, 4, 1.0);
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        // max that fits: the first half repeated once over the second
+        slice_repeat(&mut l, &mut r, 4096, 2, 0, 4, 1.0);
+        for k in 4096 + 4..8192 {
+            assert_eq!(l[k].to_bits(), l0[k % 4096].to_bits(), "max k {k}");
+        }
+    }
+
+    #[test]
+    fn slice_repeat_dry_wet() {
+        let n = 4096usize;
+        let build = || {
+            (0..n)
+                .map(|i| ((i % 251) as f32 + 0.25).sin())
+                .collect::<Vec<f32>>()
+        };
+        // mix 0: bit-exact dry
+        let mut l = build();
+        let mut r = build();
+        let l0 = l.clone();
+        slice_repeat(&mut l, &mut r, 512, 3, 100, 8, 0.0);
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        // mix 1: full wet, the raw repeat region equals the slice
+        slice_repeat(&mut l, &mut r, 512, 3, 100, 8, 1.0);
+        for k in 512 + 8..1024 {
+            assert_eq!(
+                l[100 + k].to_bits(),
+                l0[100 + (k % 512)].to_bits(),
+                "wet k {k}"
+            );
+        }
+    }
+
+    #[test]
+    fn slice_repeat_wrap_seam_golden() {
+        // the wrap-seam golden (repo golden standard: to_bits). The raised-
+        // cosine weights are irrational, so blended samples are locked by
+        // recomputing the pinned formula; structural values (raw repeat,
+        // untouched head/tail) are pinned literally.
+        let mut l = vec![0.0f32; 16];
+        let mut r = vec![0.0f32; 16];
+        l[..4].copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+        r[..4].copy_from_slice(&[5.0, 6.0, 7.0, 8.0]);
+        slice_repeat(&mut l, &mut r, 4, 2, 0, 3, 1.0);
+        let w = |i: usize| 0.5 - 0.5 * (std::f32::consts::PI * (i + 1) as f32 / 4.0).cos();
+        // wrap-in at pos 4..7: tail replayed, blended into the head
+        for i in 0..3 {
+            let e_l = [2.0f32, 3.0, 4.0][i] * (1.0 - w(i)) + [1.0f32, 2.0, 3.0][i] * w(i);
+            let e_r = [6.0f32, 7.0, 8.0][i] * (1.0 - w(i)) + [5.0f32, 6.0, 7.0][i] * w(i);
+            assert_eq!(l[4 + i].to_bits(), e_l.to_bits(), "wrap l {i}");
+            assert_eq!(r[4 + i].to_bits(), e_r.to_bits(), "wrap r {i}");
+        }
+        // the second pass's last head sample is raw
+        assert_eq!(l[7].to_bits(), 4.0f32.to_bits());
+        // exit seam at 8..11: tail replayed, blended into the source (zeros)
+        for i in 0..3 {
+            let e_l = [2.0f32, 3.0, 4.0][i] * (1.0 - w(i));
+            assert_eq!(l[8 + i].to_bits(), e_l.to_bits(), "exit l {i}");
+        }
+        // after the seam: dry
+        for i in 11..16 {
+            assert_eq!(l[i].to_bits(), 0.0f32.to_bits(), "dry {i}");
+        }
+    }
+
+    #[test]
+    fn slice_repeat_fx_zero_slice_is_dry() {
+        let mut l = sine(300.0, 5000, 0.5);
+        let mut r = l.clone();
+        let l0 = l.clone();
+        let p = StutterFx {
+            mode: StutterMode::SliceRepeat,
+            slice_blocks: 0.0,
+            ..Default::default()
+        };
+        stutter(&p, &mut l, &mut r, 0.125);
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
     }
 
     #[test]
@@ -829,5 +2294,735 @@ mod tests {
         let mut r = l.clone();
         parametric_eq(&p, &mut l, &mut r);
         assert!(rms(&l[5000..]) < 0.1);
+    }
+
+    #[test]
+    fn level_keyed_duck_holds_through_a_held_vowel_and_glides_without_steps() {
+        let p = DynamicEqFx {
+            freq: 500.0,
+            q: 2.0,
+            range_db: -4.0,
+            attack_ms: 12.0,
+            release_ms: 100.0,
+            source: "vocal".into(),
+            key: "level".into(),
+            ..Default::default()
+        };
+        let sec = SR as usize;
+        // a 1 s held vowel (no new onsets), 1 s of silence, then a hard entry
+        let mut key = sine(220.0, sec, 0.3);
+        key.extend(vec![0.0; sec]);
+        key.extend(sine(220.0, sec, 0.3));
+        let env = level_duck_curve(&p, &key, key.len());
+        let held = &env[(0.1 * SR) as usize..sec];
+        assert!(
+            held.iter().all(|&e| e > 0.95),
+            "the dip sags inside a held vowel: min {}",
+            held.iter().cloned().fold(1.0, f32::min)
+        );
+        assert!(
+            env[sec + (0.7 * SR) as usize..2 * sec]
+                .iter()
+                .all(|&e| e < 0.01),
+            "the dip lingers in the silence"
+        );
+        // the gain curve glides: no per-sample step over 1e-3 (a -4 dB dip is a 0.37 swing)
+        let g: Vec<f32> = env.iter().map(|&e| db_to_gain(-4.0 * e)).collect();
+        let step = g
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(step < 1e-3, "gain step {step}");
+        // silent key: the band is untouched, sample for sample
+        let mut l = sine(500.0, sec, 0.5);
+        let mut r = l.clone();
+        let dry = l.clone();
+        level_keyed_dynamic_eq(&p, &vec![0.0; sec], &mut l, &mut r);
+        assert!(l == dry && r == dry);
+        // sounding key: the band comes down by about the range
+        let mut l2 = sine(500.0, sec, 0.5);
+        let mut r2 = l2.clone();
+        level_keyed_dynamic_eq(&p, &sine(220.0, sec, 0.3), &mut l2, &mut r2);
+        let drop = 20.0 * (rms(&l2[sec / 2..]) / rms(&dry[sec / 2..])).log10();
+        assert!(drop < -3.0 && drop > -4.5, "drop {drop}");
+    }
+
+    #[test]
+    fn freq_splitter_bands_sum_back_to_the_delayed_input() {
+        let n = 8000usize;
+        let sig: Vec<f32> = (0..n)
+            .map(|i| {
+                ((i as f32) * 0.05).sin() * 0.4
+                    + ((i as f32) * 0.4).sin() * 0.2
+                    + ((i as f32) * 1.7).sin() * 0.1
+            })
+            .collect();
+        let taps = 513u32;
+        let m = ((taps - 1) / 2) as usize;
+        let band = |b: FreqSplitBand, x: &[f32]| {
+            let mut l = x.to_vec();
+            let mut r = x.to_vec();
+            freq_splitter(
+                &FreqSplitterFx {
+                    band: b,
+                    taps,
+                    ..Default::default()
+                },
+                &mut l,
+                &mut r,
+            );
+            l
+        };
+        let lo = band(FreqSplitBand::Low, &sig);
+        let mid = band(FreqSplitBand::Mid, &sig);
+        let hi = band(FreqSplitBand::High, &sig);
+        // the bands share one linear phase, so their sum tracks the
+        // delayed input to convolution round-off (not bit-exact: f32
+        // addition does not reassociate)
+        let mut worst = 0.0f32;
+        for i in m..n {
+            let xd = sig[i - m];
+            let sum = lo[i] + mid[i] + hi[i];
+            worst = worst.max((sum - xd).abs());
+        }
+        assert!(worst < 1e-4, "band-sum error {worst}");
+        // crossover placement: a 100 Hz sine lands in low, a 6 kHz sine
+        // in high, each down > 40 dB in the other band
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let lo_sig: Vec<f32> = (0..n).map(|i| (i as f32 * 0.014).sin() * 0.5).collect();
+        let hi_sig: Vec<f32> = (0..n).map(|i| (i as f32 * 0.85).sin() * 0.5).collect();
+        let l_in_lo = rms(&band(FreqSplitBand::Low, &lo_sig)[m..]);
+        let l_in_hi = rms(&band(FreqSplitBand::High, &lo_sig)[m..]);
+        let h_in_hi = rms(&band(FreqSplitBand::High, &hi_sig)[m..]);
+        let h_in_lo = rms(&band(FreqSplitBand::Low, &hi_sig)[m..]);
+        assert!(
+            l_in_lo > 20.0 * l_in_hi,
+            "low sine leak {l_in_lo}/{l_in_hi}"
+        );
+        assert!(
+            h_in_hi > 20.0 * h_in_lo,
+            "high sine leak {h_in_hi}/{h_in_lo}"
+        );
+    }
+
+    #[test]
+    fn freq_splitter_is_deterministic_and_forces_odd_taps() {
+        let n = 2000usize;
+        let sig: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.11).sin() * 0.5).collect();
+        let run = |taps: u32| {
+            let mut l = sig.clone();
+            let mut r = sig.clone();
+            freq_splitter(
+                &FreqSplitterFx {
+                    taps,
+                    band: FreqSplitBand::Mid,
+                    ..Default::default()
+                },
+                &mut l,
+                &mut r,
+            );
+            l
+        };
+        let a = run(257);
+        let b = run(257);
+        assert!(a
+            .iter()
+            .zip(b.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits()));
+        // even taps are forced odd: 256 == 257 bit for bit
+        let c = run(256);
+        assert!(a
+            .iter()
+            .zip(c.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits()));
+        // unity DC through the low band: DC in, same DC out (post-delay)
+        let dc = vec![0.5f32; n];
+        let mut l = dc.clone();
+        let mut r = dc.clone();
+        freq_splitter(
+            &FreqSplitterFx {
+                band: FreqSplitBand::Low,
+                ..Default::default()
+            },
+            &mut l,
+            &mut r,
+        );
+        let m = 256usize;
+        for i in m + 512..n {
+            assert!((l[i] - 0.5).abs() < 1e-5, "dc at {i}: {}", l[i]);
+        }
+    }
+
+    fn gr_sig(n: usize) -> (Vec<f32>, Vec<f32>) {
+        let l: Vec<f32> = (0..n)
+            .map(|i| (i as f32 * 0.05).sin() * 0.5 + (i as f32 * 0.013).sin() * 0.3)
+            .collect();
+        let r: Vec<f32> = l.iter().rev().copied().collect();
+        (l, r)
+    }
+
+    #[test]
+    fn granular_mix_zero_is_bit_exact_bypass() {
+        let (l0, r0) = gr_sig(20_000);
+        let (mut l, mut r) = (l0.clone(), r0.clone());
+        let p = crate::fx::GranularFx {
+            mix: 0.0,
+            ..Default::default()
+        };
+        granular(&p, &mut l, &mut r);
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(r.iter().zip(&r0).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    #[test]
+    fn granular_is_deterministic_per_seed_and_seeds_differ() {
+        let (l0, r0) = gr_sig(30_000);
+        let run = |seed: u32| {
+            let (mut l, mut r) = (l0.clone(), r0.clone());
+            let p = crate::fx::GranularFx {
+                mix: 1.0,
+                seed,
+                ..Default::default()
+            };
+            granular(&p, &mut l, &mut r);
+            (l, r)
+        };
+        let (a, b) = (run(7), run(7));
+        assert!(a
+            .0
+            .iter()
+            .zip(&b.0)
+            .all(|(x, y)| x.to_bits() == y.to_bits()));
+        assert!(a
+            .1
+            .iter()
+            .zip(&b.1)
+            .all(|(x, y)| x.to_bits() == y.to_bits()));
+        let c = run(8);
+        assert!(a
+            .0
+            .iter()
+            .zip(&c.0)
+            .any(|(x, y)| x.to_bits() != y.to_bits()));
+        assert!(a.0.iter().chain(&a.1).all(|v| v.is_finite()));
+        assert!(a.0.iter().any(|v| v.abs() > 1e-3), "wet path is silent");
+    }
+
+    #[test]
+    fn granular_is_causal_and_pitch_up_does_not_peek_ahead() {
+        let n = 30_000;
+        let mut l = vec![0.0f32; n];
+        l[20_000] = 1.0;
+        let r = l.clone();
+        for semis in [0.0f32, 12.0, 24.0] {
+            let (mut a, mut b) = (l.clone(), r.clone());
+            let p = crate::fx::GranularFx {
+                mix: 1.0,
+                pitch_semitones: semis,
+                ..Default::default()
+            };
+            granular(&p, &mut a, &mut b);
+            assert!(
+                a[..20_000].iter().chain(&b[..20_000]).all(|v| *v == 0.0),
+                "output before the impulse at {semis} st"
+            );
+        }
+    }
+
+    #[test]
+    fn granular_freeze_keeps_sounding_after_the_input_stops() {
+        let n = 60_000;
+        let (mut l, mut r) = gr_sig(n);
+        for i in 20_000..n {
+            l[i] = 0.0;
+            r[i] = 0.0;
+        }
+        let tail_energy = |freeze_at_ms: f32| {
+            let (mut a, mut b) = (l.clone(), r.clone());
+            let p = crate::fx::GranularFx {
+                mix: 1.0,
+                freeze_at_ms,
+                ..Default::default()
+            };
+            granular(&p, &mut a, &mut b);
+            a[40_000..].iter().map(|v| v * v).sum::<f32>()
+        };
+        let off = tail_energy(-1.0);
+        let held = tail_energy(400.0);
+        assert!(off < 1e-9, "unfrozen tail should be silent, got {off}");
+        assert!(held > 1e-3, "frozen tail should keep sounding, got {held}");
+    }
+
+    #[test]
+    fn granular_validation_rejects_nonsense() {
+        use crate::fx::GranularFx;
+        assert!(check_granular(&GranularFx::default()).is_ok());
+        for bad in [
+            GranularFx {
+                grain_ms: 1.0,
+                ..Default::default()
+            },
+            GranularFx {
+                density_hz: 0.0,
+                ..Default::default()
+            },
+            GranularFx {
+                pitch_semitones: 30.0,
+                ..Default::default()
+            },
+            GranularFx {
+                mix: 1.5,
+                ..Default::default()
+            },
+            GranularFx {
+                spread: f32::NAN,
+                ..Default::default()
+            },
+        ] {
+            assert!(check_granular(&bad).is_err());
+        }
+    }
+
+    #[test]
+    fn granular_density_cap_bounds_active_grains() {
+        let p = crate::fx::GranularFx {
+            density_hz: 200.0,
+            grain_ms: 500.0,
+            mix: 1.0,
+            ..Default::default()
+        };
+        let mut core = GranularCore::new(&p, 200_000);
+        for i in 0..200_000usize {
+            let x = (i as f32 * 0.02).sin() * 0.3;
+            core.step(x, x);
+        }
+        assert!(core.peak_active > 50, "peak {}", core.peak_active);
+        assert!(
+            core.peak_active <= GRANULAR_MAX_GRAINS,
+            "peak {} over the cap",
+            core.peak_active
+        );
+    }
+
+    #[test]
+    fn granular_survives_nan_inf_and_denormal_input() {
+        let n = 20_000usize;
+        let mut l: Vec<f32> = (0..n).map(|i| (i as f32 * 0.03).sin() * 0.5).collect();
+        let mut r = l.clone();
+        for i in (0..n).step_by(997) {
+            l[i] = f32::NAN;
+            r[i] = f32::INFINITY;
+        }
+        for i in (3..n).step_by(1013) {
+            l[i] = f32::NEG_INFINITY;
+            r[i] = 1.0e-42;
+        }
+        for freeze_at_ms in [-1.0f32, 100.0] {
+            let (mut a, mut b) = (l.clone(), r.clone());
+            let p = crate::fx::GranularFx {
+                mix: 0.7,
+                freeze_at_ms,
+                pitch_semitones: 9.0,
+                ..Default::default()
+            };
+            granular(&p, &mut a, &mut b);
+            assert!(a.iter().chain(&b).all(|v| v.is_finite()));
+        }
+    }
+
+    #[test]
+    fn granular_freeze_on_an_empty_buffer_is_silent_and_does_not_panic() {
+        let p = crate::fx::GranularFx {
+            mix: 1.0,
+            freeze_at_ms: 0.0,
+            ..Default::default()
+        };
+        let (mut l, mut r) = (vec![0.0f32; 10_000], vec![0.0f32; 10_000]);
+        granular(&p, &mut l, &mut r);
+        assert!(l.iter().chain(&r).all(|v| *v == 0.0));
+        let (mut el, mut er): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
+        granular(&p, &mut el, &mut er);
+        let mut core = GranularCore::new(&p, 0);
+        assert_eq!(core.step(0.0, 0.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn granular_two_instances_same_seed_agree() {
+        let p = crate::fx::GranularFx {
+            mix: 1.0,
+            seed: 99,
+            ..Default::default()
+        };
+        let (mut a, mut b) = (GranularCore::new(&p, 40_000), GranularCore::new(&p, 40_000));
+        for i in 0..40_000usize {
+            let x = (i as f32 * 0.011).sin() * 0.4;
+            let (ya, yb) = (a.step(x, -x), b.step(x, -x));
+            assert_eq!(ya.0.to_bits(), yb.0.to_bits());
+            assert_eq!(ya.1.to_bits(), yb.1.to_bits());
+        }
+    }
+
+    #[test]
+    fn freq_splitter_validation_rejects_only_nonsense() {
+        use crate::fx::FreqSplitterFx as F;
+        assert!(check_freq_splitter(&F::default()).is_ok());
+        // inverted stays valid (swapped as before)
+        assert!(check_freq_splitter(&F {
+            low_hz: 2500.0,
+            high_hz: 250.0,
+            ..Default::default()
+        })
+        .is_ok());
+        for taps in [33u32, 513, 65_537] {
+            assert!(check_freq_splitter(&F {
+                taps,
+                ..Default::default()
+            })
+            .is_ok());
+        }
+        for bad in [
+            F {
+                taps: 1,
+                ..Default::default()
+            },
+            F {
+                taps: 31,
+                ..Default::default()
+            },
+            F {
+                taps: 1_048_577,
+                ..Default::default()
+            },
+            F {
+                taps: u32::MAX,
+                ..Default::default()
+            },
+            F {
+                low_hz: 1000.0,
+                high_hz: 1000.0,
+                ..Default::default()
+            },
+            F {
+                low_hz: f32::NAN,
+                ..Default::default()
+            },
+            F {
+                high_hz: f32::INFINITY,
+                ..Default::default()
+            },
+            F {
+                low_hz: -100.0,
+                ..Default::default()
+            },
+            F {
+                high_hz: 30_000.0,
+                ..Default::default()
+            },
+            F {
+                gain_db: 80.0,
+                ..Default::default()
+            },
+            F {
+                mix: 1.5,
+                ..Default::default()
+            },
+        ] {
+            assert!(check_freq_splitter(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    fn fs_sig(n: usize) -> (Vec<f32>, Vec<f32>) {
+        let l: Vec<f32> = (0..n)
+            .map(|i| (i as f32 * 0.05).sin() * 0.5 + (i as f32 * 0.013).sin() * 0.3)
+            .collect();
+        let r: Vec<f32> = l.iter().rev().copied().collect();
+        (l, r)
+    }
+
+    fn fs_hash(l: &[f32], r: &[f32]) -> u64 {
+        l.iter().chain(r).fold(0u64, |h, v| {
+            h.rotate_left(5) ^ (v.to_bits() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        })
+    }
+
+    #[test]
+    fn freq_splitter_validation_edges_and_non_finite() {
+        use crate::fx::FreqSplitterFx as F;
+        let ok = |p: F| check_freq_splitter(&p).is_ok();
+        // each bound: edge accepted, one past rejected
+        assert!(ok(F {
+            taps: 33,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            taps: 32,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            taps: 65_537,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            taps: 65_538,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            low_hz: 20.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            low_hz: 19.99,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            high_hz: 20_000.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            high_hz: 20_000.1,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            gain_db: -60.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            gain_db: -60.1,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            gain_db: 24.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            gain_db: 24.1,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            mix: 0.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            mix: -0.01,
+            ..Default::default()
+        }));
+        assert!(ok(F {
+            mix: 1.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            mix: 1.01,
+            ..Default::default()
+        }));
+        // inverted accepted, equal rejected
+        assert!(ok(F {
+            low_hz: 900.0,
+            high_hz: 300.0,
+            ..Default::default()
+        }));
+        assert!(!ok(F {
+            low_hz: 300.0,
+            high_hz: 300.0,
+            ..Default::default()
+        }));
+        // NaN and infinities per float param
+        for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(!ok(F {
+                low_hz: v,
+                ..Default::default()
+            }));
+            assert!(!ok(F {
+                high_hz: v,
+                ..Default::default()
+            }));
+            assert!(!ok(F {
+                gain_db: v,
+                ..Default::default()
+            }));
+            assert!(!ok(F {
+                mix: v,
+                ..Default::default()
+            }));
+        }
+        // the error is a plain message naming the field, raised before
+        // any buffer exists (taps is checked first, no Vec is sized by it)
+        let e = check_freq_splitter(&F {
+            taps: u32::MAX,
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(e.contains("taps"), "{e}");
+    }
+
+    #[test]
+    fn freq_splitter_mix_zero_is_bit_exact_and_even_taps_round_up() {
+        use crate::fx::{FreqSplitBand, FreqSplitterFx as F};
+        let (l0, r0) = fs_sig(8192);
+        let (mut l, mut r) = (l0.clone(), r0.clone());
+        freq_splitter(
+            &F {
+                mix: 0.0,
+                ..Default::default()
+            },
+            &mut l,
+            &mut r,
+        );
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(r.iter().zip(&r0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        // even taps round UP to the next odd (513 and 514 -> 513 and 515)
+        let run = |taps: u32| {
+            let (mut a, mut b) = (l0.clone(), r0.clone());
+            freq_splitter(
+                &F {
+                    taps,
+                    band: FreqSplitBand::Mid,
+                    ..Default::default()
+                },
+                &mut a,
+                &mut b,
+            );
+            fs_hash(&a, &b)
+        };
+        assert_eq!(run(514), run(515));
+        assert_ne!(run(513), run(515));
+    }
+
+    /// Frozen copy of freq_splitter as it was when validation landed. The
+    /// live fn must stay bit-identical to it on the same build (no libm
+    /// dependence: both run here).
+    fn freq_splitter_reference(p: &crate::fx::FreqSplitterFx, l: &mut [f32], r: &mut [f32]) {
+        let taps = (p.taps as usize).max(3) | 1;
+        let m = (taps - 1) / 2;
+        let lo = p.low_hz.min(p.high_hz);
+        let hi = p.high_hz.max(p.low_hz);
+        let h1 = lowpass_fir(lo, taps);
+        let h2 = lowpass_fir(hi, taps);
+        let g = db_to_gain(p.gain_db);
+        let mix = p.mix.clamp(0.0, 1.0);
+        for chan in [l, r] {
+            let x = chan.to_vec();
+            let s1 = if p.band == crate::fx::FreqSplitBand::High {
+                Vec::new()
+            } else {
+                convolve(&x, &h1)
+            };
+            let s2 = if p.band == crate::fx::FreqSplitBand::Low {
+                Vec::new()
+            } else {
+                convolve(&x, &h2)
+            };
+            for i in 0..chan.len() {
+                let wet = match p.band {
+                    crate::fx::FreqSplitBand::Low => s1[i],
+                    crate::fx::FreqSplitBand::Mid => s2[i] - s1[i],
+                    crate::fx::FreqSplitBand::High => (if i >= m { x[i - m] } else { 0.0 }) - s2[i],
+                };
+                chan[i] = (wet * g) * mix + x[i] * (1.0 - mix);
+            }
+        }
+    }
+
+    #[test]
+    fn freq_splitter_matches_its_frozen_reference_bit_for_bit() {
+        use crate::fx::{FreqSplitBand, FreqSplitterFx as F};
+        let (l0, r0) = fs_sig(6000);
+        for band in [FreqSplitBand::Low, FreqSplitBand::Mid, FreqSplitBand::High] {
+            for (taps, low_hz, high_hz, gain_db, mix) in [
+                (513u32, 250.0f32, 2500.0f32, 0.0f32, 1.0f32),
+                (34, 250.0, 2500.0, 0.0, 1.0),
+                (64, 900.0, 300.0, 3.0, 0.6),
+                (257, 120.0, 8000.0, -6.0, 0.0),
+            ] {
+                let p = F {
+                    taps,
+                    low_hz,
+                    high_hz,
+                    gain_db,
+                    mix,
+                    band,
+                    ..Default::default()
+                };
+                let (mut a, mut b) = (l0.clone(), r0.clone());
+                let (mut c, mut d) = (l0.clone(), r0.clone());
+                freq_splitter(&p, &mut a, &mut b);
+                freq_splitter_reference(&p, &mut c, &mut d);
+                let same = a.iter().zip(&c).all(|(x, y)| x.to_bits() == y.to_bits())
+                    && b.iter().zip(&d).all(|(x, y)| x.to_bits() == y.to_bits());
+                assert!(same, "band {band:?} taps {taps}");
+            }
+        }
+    }
+
+    /// A linear-phase FIR must be exactly symmetric: mirrored taps of the
+    /// low-pass IR have identical bits.
+    #[test]
+    fn lowpass_fir_is_bit_exact_symmetric() {
+        let mut worst = (0usize, 0usize, 0usize, 0.0f32);
+        let mut asym = 0usize;
+        for taps in [33usize, 34, 64, 65, 129, 513, 1025, 4097] {
+            for cutoff in [20.0f32, 250.0, 1000.0, 2500.0, 12000.0, 20000.0] {
+                let h = lowpass_fir(cutoff, taps);
+                let n = h.len();
+                for i in 0..n / 2 {
+                    if h[i].to_bits() != h[n - 1 - i].to_bits() {
+                        asym += 1;
+                        let d = (h[i] - h[n - 1 - i]).abs();
+                        if d > worst.3 {
+                            worst = (taps, cutoff as usize, i, d);
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            asym, 0,
+            "{asym} mirrored tap pairs differ in bits; worst (taps, cutoff, index, diff) = {worst:?}"
+        );
+    }
+
+    /// The f32 IR must stay within 1e-5 (absolute) of the same design
+    /// computed in f64 (measured worst on this grid: 1.25e-6). Hashes of the
+    /// IR bits are printed as a diagnostic only; they depend on libm and are
+    /// never asserted.
+    #[test]
+    fn lowpass_fir_matches_an_f64_reference_within_tolerance() {
+        let pi = std::f64::consts::PI;
+        let mut worst = 0.0f64;
+        for taps in [33usize, 34, 64, 65, 129, 257, 513, 1025, 4097] {
+            for cutoff in [
+                20.0f32, 120.0, 250.0, 1000.0, 2500.0, 8000.0, 12000.0, 20000.0,
+            ] {
+                let h = lowpass_fir(cutoff, taps);
+                let n = h.len();
+                let m = ((n - 1) / 2) as i64;
+                let fc = ((cutoff / SR).clamp(1e-4, 0.4999)) as f64;
+                let nn = (n - 1) as f64;
+                let mut r = vec![0.0f64; n];
+                let mut sum = 0.0f64;
+                for (j, v) in r.iter_mut().enumerate() {
+                    let k = (j as i64 - m) as f64;
+                    let sinc = if j as i64 == m {
+                        2.0 * fc
+                    } else {
+                        (2.0 * pi * fc * k).sin() / (pi * k)
+                    };
+                    let jj = j as f64;
+                    let w =
+                        0.42 - 0.5 * (2.0 * pi * jj / nn).cos() + 0.08 * (4.0 * pi * jj / nn).cos();
+                    *v = sinc * w;
+                    sum += *v;
+                }
+                let mut hash = 0xcbf2_9ce4_8422_2325u64;
+                for (a, b) in h.iter().zip(&r) {
+                    worst = worst.max((*a as f64 - b / sum).abs());
+                    for byte in a.to_bits().to_le_bytes() {
+                        hash ^= byte as u64;
+                        hash = hash.wrapping_mul(0x0100_0000_01b3);
+                    }
+                }
+                eprintln!("lowpass_fir taps {taps} cutoff {cutoff} ir_hash {hash:016x}");
+            }
+        }
+        assert!(worst < 1e-5, "worst abs error vs f64 reference {worst:e}");
     }
 }

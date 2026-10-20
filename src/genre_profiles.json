@@ -1,0 +1,153 @@
+{
+ "_doc": "Genre target profiles for song_critique / song_improve: what a finished song in the genre measures like on the delivered file. Each genre entry overrides 'default' field by field. Ranges are [least, most]. Calibrated on the hand remix the person approved (naman_freestyle_song2 as this engine measures it: sub -19.4, LRA 2.2, width -18.2, 8.1 onsets/s, 2-5k -22.4, 5-10k -24.2; the desi_hiphop ranges all hold it; a test keeps it so) and on genre conventions; not on commercial reference files (none are bundled). Tone gates (2-5k, 5-10k) are the song checks' own and are not repeated here.",
+ "default": {
+  "sub_rel_lufs_db": [
+   -21.0,
+   -9.0
+  ],
+  "hook_lift_db": [
+   2.0,
+   4.0
+  ],
+  "lra_lu": [
+   2.0,
+   9.0
+  ],
+  "width_db": [
+   -22.0,
+   -8.0
+  ],
+  "onsets_per_s": [
+   3.0,
+   11.0
+  ],
+  "hook_vs_verse_onsets": 0.95,
+  "words": "a finished song"
+ },
+ "desi_hiphop": {
+  "sub_rel_lufs_db": [
+   -20.5,
+   -9.5
+  ],
+  "onsets_per_s": [
+   4.0,
+   10.0
+  ],
+  "words": "desi hip-hop: a heavy 808 under the words, a tight groove, a hook that lifts"
+ },
+ "punjabi_party": {
+  "sub_rel_lufs_db": [
+   -17.5,
+   -9.0
+  ],
+  "hook_lift_db": [
+   2.5,
+   4.5
+  ],
+  "lra_lu": [
+   2.0,
+   7.5
+  ],
+  "width_db": [
+   -19.0,
+   -8.0
+  ],
+  "onsets_per_s": [
+   5.0,
+   12.0
+  ],
+  "hook_vs_verse_onsets": 1.05,
+  "words": "Punjabi party rap (Honey Singh / Badshah): a busy dhol chaal, a thumping 808, the hook busier and louder than the verse"
+ },
+ "drill": {
+  "sub_rel_lufs_db": [
+   -14.0,
+   -7.5
+  ],
+  "onsets_per_s": [
+   4.0,
+   12.0
+  ],
+  "words": "drill: sliding 808s up front, skippy hats"
+ },
+ "trap": {
+  "sub_rel_lufs_db": [
+   -15.0,
+   -8.0
+  ],
+  "words": "trap: a big 808, rolling hats"
+ },
+ "lofi": {
+  "sub_rel_lufs_db": [
+   -20.0,
+   -11.0
+  ],
+  "lra_lu": [
+   2.0,
+   10.0
+  ],
+  "onsets_per_s": [
+   2.0,
+   8.0
+  ],
+  "hook_vs_verse_onsets": 0.8,
+  "words": "lo-fi: soft low end, relaxed groove"
+ },
+ "boom_bap": {
+  "sub_rel_lufs_db": [
+   -19.0,
+   -10.0
+  ],
+  "onsets_per_s": [
+   3.0,
+   9.0
+  ],
+  "words": "boom bap: a dusty kick and a cracking snare, the low end rounder than trap"
+ },
+ "melodic_rap": {
+  "sub_rel_lufs_db": [
+   -16.0,
+   -8.5
+  ],
+  "words": "melodic rap: a warm 808 and room for the melody"
+ },
+ "rnb": {
+  "sub_rel_lufs_db": [
+   -18.0,
+   -10.0
+  ],
+  "lra_lu": [
+   3.0,
+   10.0
+  ],
+  "onsets_per_s": [
+   2.5,
+   9.0
+  ],
+  "hook_vs_verse_onsets": 0.85,
+  "words": "R&B: smooth low end, space in the groove"
+ },
+ "phonk": {
+  "sub_rel_lufs_db": [
+   -14.0,
+   -7.5
+  ],
+  "onsets_per_s": [
+   4.0,
+   12.0
+  ],
+  "words": "phonk: a distorted 808 and cowbells up front"
+ },
+ "afrobeats": {
+  "sub_rel_lufs_db": [
+   -17.0,
+   -9.0
+  ],
+  "onsets_per_s": [
+   4.5,
+   12.0
+  ],
+  "hook_vs_verse_onsets": 1.0,
+  "words": "afrobeats: a bouncing log-drum low end, busy percussion"
+ }
+}

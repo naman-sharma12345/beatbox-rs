@@ -110,6 +110,22 @@ pub fn selection_of(a: &Value) -> Result<Selection> {
     if let Some(v) = f_opt(a, "vel_max") {
         s.vel_max = v;
     }
+    match a.get("ids") {
+        Some(Value::Array(v)) => {
+            s.ids = v
+                .iter()
+                .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+                .collect()
+        }
+        Some(Value::String(v)) => {
+            s.ids = v
+                .split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        }
+        _ => {}
+    }
     Ok(s)
 }
 
@@ -121,7 +137,8 @@ pub fn selection_props() -> Value {
         "pitch": {"description": "Only this pitch (MIDI or 'C4')"},
         "pitches": {"type": "array", "items": {}},
         "pitch_min": {}, "pitch_max": {},
-        "vel_min": {"type": "number"}, "vel_max": {"type": "number"}
+        "vel_min": {"type": "number"}, "vel_max": {"type": "number"},
+        "ids": {"type": ["array", "string"], "items": {"type": "string"}, "description": "Only the notes with these stable ids (from get_pattern / lookup_id)"}
     })
 }
 
@@ -1129,6 +1146,27 @@ pub fn build_structure(e: &mut Engine, a: &Value) -> Result<Value> {
 
 // ---------------- the tools ----------------
 
+/// One LFO sample in -1..1 at `pos` periods (fractional part is the phase).
+/// tension > 1 sharpens the peaks, < 1 rounds them.
+pub fn lfo_value(shape: &str, pos: f32, tension: f32, rng: &mut Rng) -> f32 {
+    let ph = pos - pos.floor();
+    let v = match shape {
+        "triangle" => 1.0 - 4.0 * (ph - 0.5).abs(),
+        "saw_up" => 2.0 * ph - 1.0,
+        "saw_down" => 1.0 - 2.0 * ph,
+        "square" => {
+            if ph < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        "random" => rng.bipolar(),
+        _ => (2.0 * std::f32::consts::PI * ph).sin(),
+    };
+    v.signum() * v.abs().powf(tension)
+}
+
 pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
@@ -1226,6 +1264,26 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "articulate",
+            description: "FL Articulate: set note lengths from the gap to the next note in one call. style staccatissimo (0.18), staccato (0.35), portato (0.7), tenuto (0.95), legato (1.0), or ratio (0.05-1.5) directly; max_len caps lengths in steps. Bouncy plucks = staccato, held pads = legato.",
+            mutates: true,
+            schema: || obj(props(props(target_props(), selection_props()), json!({
+                "style": {"type": "string", "enum": mo::ARTICULATIONS.iter().map(|x| x.0).collect::<Vec<_>>()},
+                "ratio": {"type": "number", "description": "Length as a fraction of the gap to the next note (overrides style)"},
+                "max_len": {"type": "number", "description": "Cap in steps (0 = none)"}
+            })), &["track"]),
+            run: |e, a| {
+                let sel = selection_of(a)?;
+                let ratio = match (f_opt(a, "ratio"), s_opt(a, "style")) {
+                    (Some(r), _) => r,
+                    (None, Some(s)) => mo::ARTICULATIONS.iter().find(|x| x.0 == s).map(|x| x.1).ok_or_else(|| anyhow!("style '{s}' ({})", mo::ARTICULATIONS.iter().map(|x| x.0).collect::<Vec<_>>().join(", ")))?,
+                    (None, None) => 0.35,
+                };
+                let max_len = f_or(a, "max_len", 0.0);
+                with_notes(e, a, |n, steps, _| Ok(mo::articulate(n, &sel, ratio, max_len, steps)))
+            },
+        },
+        Tool {
             name: "arpeggiate",
             description: "Turn selected chords into arpeggios. style: up, down, updown, downup, random, converge, chord (rhythmic chord stabs). rate: steps or '1/16', '1/8', '1/8t'. octaves 1-4 spans extra octaves; gate 0.1-1 = note length vs rate.",
             mutates: true,
@@ -1256,6 +1314,51 @@ pub fn tools() -> Vec<Tool> {
                 let sel = selection_of(a)?;
                 let (sp, dir, vt) = (f_or(a, "spread", 0.5), s_opt(a, "direction").unwrap_or_else(|| "down".into()), f_or(a, "vel_taper", 0.2));
                 with_notes(e, a, |n, _, _| Ok(mo::strum(n, &sel, sp, &dir, vt)))
+            },
+        },
+        Tool {
+            name: "flip_notes",
+            description: "Flip selected notes (FL piano roll Flip). mode pitch: mirror pitches around axis (MIDI, default the middle of the selection) so a rising line falls; mode time: play the selected phrase backwards inside the span it occupies (lengths kept).",
+            mutates: true,
+            schema: || obj(props(props(target_props(), selection_props()), json!({
+                "mode": {"type": "string", "enum": ["pitch", "time"], "default": "pitch"},
+                "axis": {"type": "number", "minimum": 0, "maximum": 127, "description": "pitch mode: MIDI note to mirror around"}
+            })), &["track"]),
+            run: |e, a| {
+                let sel = selection_of(a)?;
+                let mode = s_opt(a, "mode").unwrap_or_else(|| "pitch".into());
+                let axis = f_opt(a, "axis");
+                with_notes(e, a, |n, _, _| mo::flip(n, &sel, &mode, axis))
+            },
+        },
+        Tool {
+            name: "chop_notes",
+            description: "Chop selected notes with a rhythm (FL's pattern Chop): pattern is one character per `step` ('1/16' default) on the song grid, repeating: x = hit, X = accented hit, - = keep holding, . = rest. A held chord or 808 becomes that rhythm, e.g. 'x.x-x..x' for a stab pattern, 'x--x--x-' for a tresillo 808.",
+            mutates: true,
+            schema: || obj(props(props(target_props(), selection_props()), json!({
+                "pattern": {"type": "string", "description": "x hit, X accent, - hold, . rest; e.g. 'x.x-x..x'"},
+                "step": {"type": "string", "description": "length of one character: '1/16' (default), '1/8', '1/8t', or steps as a number"}
+            })), &["track", "pattern"]),
+            run: |e, a| {
+                let sel = selection_of(a)?;
+                let pat = s_req(a, "pattern")?;
+                let step = steps_of(a.get("step"), 1.0)?;
+                with_notes(e, a, |n, _, _| mo::chop(n, &sel, &pat, step))
+            },
+        },
+        Tool {
+            name: "limit_notes",
+            description: "Keep selected notes inside a pitch range by moving them whole octaves (FL's Limit): lo and hi are MIDI notes at least an octave apart, e.g. a bass between 36 and 55.",
+            mutates: true,
+            schema: || obj(props(props(target_props(), selection_props()), json!({
+                "lo": {"type": "integer", "minimum": 0, "maximum": 127},
+                "hi": {"type": "integer", "minimum": 0, "maximum": 127}
+            })), &["track", "lo", "hi"]),
+            run: |e, a| {
+                let sel = selection_of(a)?;
+                let lo = u_or(a, "lo", 36).min(127) as u8;
+                let hi = u_or(a, "hi", 72).min(127) as u8;
+                with_notes(e, a, |n, _, _| mo::limit_range(n, &sel, lo, hi))
             },
         },
         Tool {
@@ -1661,6 +1764,50 @@ pub fn tools() -> Vec<Tool> {
             }), &["into", "type"]),
             run: add_transition,
         },
+        Tool {
+            name: "lfo_tool",
+            description: "FL's LFO tool for the piano roll: shape a note property with a tempo-synced LFO across the selected notes. property velocity | gate (note length, times the current one) | timing (microtiming nudge in steps) | chance (probability). shape sine | triangle | saw_up | saw_down | square | random (held per note, seeded). rate '1/4', '1/8t', '1 bar', '2 bars' or beats; center and depth set the swing (velocity: center 0.7 depth 0.25 = 0.45..0.95); phase 0..1; tension bends the curve (>1 sharper peaks). For parameter LFOs (cutoff, pan, volume) use generate_automation shape lfo.",
+            mutates: true,
+            schema: || obj(props(props(target_props(), selection_props()), json!({
+                "property": {"type": "string", "enum": ["velocity", "gate", "timing", "chance"]},
+                "shape": {"type": "string", "enum": ["sine", "triangle", "saw_up", "saw_down", "square", "random"]},
+                "rate": {"type": ["string", "number"], "description": "LFO period: '1/4', '1/8t', '1 bar', '2 bars' or beats (default 1 bar)"},
+                "center": {"type": "number"}, "depth": {"type": "number"}, "phase": {"type": "number"}, "tension": {"type": "number"}, "seed": {"type": "integer"}
+            })), &["track", "property"]),
+            run: |e, a| {
+                let sel = selection_of(a)?;
+                let prop = s_req(a, "property")?;
+                let shape = s_opt(a, "shape").unwrap_or_else(|| "sine".into());
+                if !["sine", "triangle", "saw_up", "saw_down", "square", "random"].contains(&shape.as_str()) { bail!("unknown shape '{shape}'"); }
+                let rate = a.get("rate").cloned().unwrap_or_else(|| json!("1 bar"));
+                let period_steps = (crate::tools_studio::parse_rate(Some(&rate))? * 4.0).max(0.25);
+                let (dc, dd) = match prop.as_str() {
+                    "velocity" => (0.7, 0.25),
+                    "gate" => (1.0, 0.4),
+                    "timing" => (0.0, 0.08),
+                    "chance" => (0.8, 0.2),
+                    p => bail!("unknown property '{p}' (velocity, gate, timing, chance)"),
+                };
+                let (center, depth) = (f_or(a, "center", dc), f_or(a, "depth", dd));
+                let (phase, tension) = (f_or(a, "phase", 0.0), f_or(a, "tension", 1.0).clamp(0.1, 10.0));
+                let mut rng = Rng::new(seed_of(a));
+                with_notes(e, a, |notes, _, _| {
+                    let mut k = 0;
+                    for n in notes.iter_mut().filter(|n| sel.matches(n)) {
+                        let v = lfo_value(&shape, n.start / period_steps + phase, tension, &mut rng);
+                        let x = center + depth * v;
+                        match prop.as_str() {
+                            "velocity" => n.vel = x.clamp(0.01, 1.0),
+                            "gate" => n.len = (n.len * x).max(0.05),
+                            "timing" => n.offset = x.clamp(-0.5, 0.5),
+                            _ => n.prob = x.clamp(0.0, 1.0),
+                        }
+                        k += 1;
+                    }
+                    Ok(k)
+                })
+            },
+        },
     ]
 }
 
@@ -1670,6 +1817,45 @@ mod tests {
 
     fn eng() -> Engine {
         Engine::new(std::env::temp_dir().join("beatbox_midi_tests"))
+    }
+
+    #[test]
+    fn lfo_tool_shapes_velocity_and_gate() {
+        let mut e = Engine::new(std::env::temp_dir().join("beatbox_midi_lfo"));
+        e.call("add_track", &json!({"name": "hat", "preset": "hat"}))
+            .unwrap();
+        let notes: Vec<Value> = (0..16)
+            .map(|i| json!({"start": i, "len": 1, "pitch": 60}))
+            .collect();
+        e.call("add_notes", &json!({"track": "hat", "notes": notes}))
+            .unwrap();
+        let r = e.call("lfo_tool", &json!({"track": "hat", "property": "velocity", "shape": "sine", "rate": "1 bar", "center": 0.6, "depth": 0.3})).unwrap();
+        assert_eq!(r["affected"], 16);
+        let v: Vec<f32> = e.project.patterns[0]
+            .notes("hat")
+            .iter()
+            .map(|n| n.vel)
+            .collect();
+        assert!(
+            (v[0] - 0.6).abs() < 1e-3 && (v[4] - 0.9).abs() < 1e-3 && (v[12] - 0.3).abs() < 1e-3,
+            "{v:?}"
+        );
+        e.call("lfo_tool", &json!({"track": "hat", "property": "gate", "shape": "saw_down", "rate": 4, "center": 1.0, "depth": 0.5, "from": 8})).unwrap();
+        let l: Vec<f32> = e.project.patterns[0]
+            .notes("hat")
+            .iter()
+            .map(|n| n.len)
+            .collect();
+        assert!(
+            (l[0] - 1.0).abs() < 1e-3
+                && (l[8] - 1.0).abs() < 1e-3
+                && (l[9] - 0.9375).abs() < 1e-3
+                && l[15] < l[9],
+            "{l:?}"
+        );
+        assert!(e
+            .call("lfo_tool", &json!({"track": "hat", "property": "pan"}))
+            .is_err());
     }
 
     #[test]

@@ -14,6 +14,15 @@ pub struct FxContext<'a> {
     pub step_secs: f32,
     /// Note-on sample positions for each track (lowercase name).
     pub triggers: &'a HashMap<String, Vec<usize>>,
+    /// Mono audio of each track a level-keyed dynamic EQ follows (lowercase
+    /// name), aligned with this buffer's first sample; None outside a song
+    /// render (a level-keyed band then falls back to the triggers).
+    pub levels: Option<&'a HashMap<String, Vec<f32>>>,
+    /// Where this buffer's first sample sits in the song, in samples (0
+    /// for a whole-song render; the window start for a live-splice window).
+    /// LFOs take their phase from it, so a window modulates exactly as the
+    /// same samples of a full render do.
+    pub offset: usize,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -21,11 +30,11 @@ fn is_false(b: &bool) -> bool {
 }
 
 macro_rules! fx_struct {
-    ($name:ident { $($field:ident : $ty:ty = $def:expr),* $(,)? }) => {
+    ($name:ident { $($(#[$m:meta])* $field:ident : $ty:ty = $def:expr),* $(,)? }) => {
         #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
         #[serde(default)]
         pub struct $name {
-            $(pub $field: $ty,)*
+            $($(#[$m])* pub $field: $ty,)*
             /// Stable id within its chain (e.g. "reverb1"); assigned by the
             /// engine, survives reordering, usable wherever an index is.
             #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -113,7 +122,10 @@ fx_struct!(SidechainFx {
     release_ms: f32 = 180.0,
     attack_ms: f32 = 3.0
 });
-fx_struct!(WidthFx { amount: f32 = 1.4 });
+fx_struct!(WidthFx {
+    amount: f32 = 1.4,
+    low_mono_hz: f32 = 0.0
+});
 fx_struct!(GainFx { db: f32 = 0.0 });
 fx_struct!(LimiterFx {
     ceiling_db: f32 = -1.0,
@@ -148,6 +160,11 @@ pub struct EqBand {
     /// Cut filters only: 1 = 12 dB/oct, 2 = 24, 4 = 48.
     pub stages: u32,
     pub enabled: bool,
+    /// Written by the song's auto-EQ (/mix/auto_eq), not by a person: the
+    /// next song build takes it out and measures again. Left out of the
+    /// project file when false (projects without auto bands are unchanged).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub auto: bool,
 }
 
 impl Default for EqBand {
@@ -159,6 +176,7 @@ impl Default for EqBand {
             q: 0.707,
             stages: 1,
             enabled: true,
+            auto: false,
         }
     }
 }
@@ -190,7 +208,15 @@ fx_struct!(DynamicEqFx {
     ratio: f32 = 3.0,
     range_db: f32 = -8.0,
     attack_ms: f32 = 3.0,
-    release_ms: f32 = 90.0
+    release_ms: f32 = 90.0,
+    source: String = String::new(),
+    /// How a keyed band (one with a `source`) follows its source: empty =
+    /// the source's note starts and word onsets; "level" = the source's own
+    /// audio level through an envelope follower (attack_ms in, release_ms
+    /// out), so the dip holds for as long as the source sounds. Left out of
+    /// the project file when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    key: String = String::new()
 });
 fx_struct!(DeesserFx {
     freq: f32 = 6000.0,
@@ -239,6 +265,9 @@ pub enum StutterMode {
     HalfTime,
     Reverse,
     TapeStop,
+    /// part B: repeat a block-snapped slice `repeat_count` times from
+    /// `trigger_sample`, raised-cosine crossfade at every loop wrap.
+    SliceRepeat,
 }
 
 fx_struct!(StutterFx {
@@ -247,6 +276,80 @@ fx_struct!(StutterFx {
     slice_steps: f32 = 1.0,
     cycle_steps: f32 = 4.0,
     smooth_ms: f32 = 3.0,
+    mix: f32 = 1.0,
+    // slice_repeat mode only (part B); ignored by the other modes
+    block_samples: f32 = 512.0,
+    slice_blocks: f32 = 4.0,
+    repeat_count: f32 = 8.0,
+    trigger_sample: f32 = 0.0,
+    wrap_fade_ms: f32 = 3.0
+});
+fx_struct!(GrossBeatFx {
+    time: String = "none".to_string(),
+    volume: String = "none".to_string(),
+    time_points: String = String::new(),
+    volume_points: String = String::new(),
+    cycle_steps: f32 = 16.0,
+    smooth_ms: f32 = 4.0,
+    mix: f32 = 1.0
+});
+fx_struct!(VocoderFx {
+    notes: String = "C3 Eb3 G3".to_string(),
+    bands: u32 = 16,
+    low_hz: f32 = 100.0,
+    high_hz: f32 = 8000.0,
+    attack_ms: f32 = 5.0,
+    release_ms: f32 = 40.0,
+    noise: f32 = 0.08,
+    sibilance: f32 = 0.5,
+    gain: f32 = 1.0,
+    mix: f32 = 1.0
+});
+fx_struct!(FreqShiftFx {
+    shift_hz: f32 = 5.0,
+    stereo_hz: f32 = 0.0,
+    feedback: f32 = 0.0,
+    mix: f32 = 1.0
+});
+fx_struct!(RingModFx {
+    freq_hz: f32 = 440.0,
+    shape: String = "sine".to_string(),
+    stereo_phase: f32 = 0.0,
+    lfo_hz: f32 = 0.0,
+    lfo_depth: f32 = 0.0,
+    mix: f32 = 1.0
+});
+fx_struct!(StereoShaperFx {
+    preset: String = "custom".to_string(),
+    left_from_left: f32 = 1.0,
+    left_from_right: f32 = 0.0,
+    right_from_left: f32 = 0.0,
+    right_from_right: f32 = 1.0,
+    delay_ms: f32 = 0.0,
+    delay_side: f32 = 1.0,
+    invert_left: bool = false,
+    invert_right: bool = false,
+    mix: f32 = 1.0
+});
+fx_struct!(VinylFx {
+    crackle: f32 = 6.0,
+    crackle_db: f32 = -30.0,
+    hiss_db: f32 = -54.0,
+    wow_cents: f32 = 6.0,
+    wow_hz: f32 = 0.5,
+    flutter_cents: f32 = 2.0,
+    flutter_hz: f32 = 7.0,
+    age: f32 = 0.3,
+    mono: f32 = 0.0,
+    seed: u32 = 7,
+    mix: f32 = 1.0
+});
+fx_struct!(WaveshaperFx {
+    preset: String = "soft".to_string(),
+    curve: String = String::new(),
+    symmetric: bool = true,
+    drive_db: f32 = 6.0,
+    output_db: f32 = -3.0,
     mix: f32 = 1.0
 });
 fx_struct!(PitchShiftFx {
@@ -275,7 +378,88 @@ fx_struct!(ConvolutionFx {
     damping: f32 = 0.4,
     early: f32 = 0.5,
     width: f32 = 1.0,
-    mix: f32 = 0.25
+    mix: f32 = 0.25,
+    ir_path: String = String::new()
+});
+fx_struct!(AmpSimFx {
+    model: String = "clean".to_string(),
+    gain_db: f32 = 6.0,
+    bass: f32 = 0.5,
+    mid: f32 = 0.5,
+    treble: f32 = 0.55,
+    presence: f32 = 0.5,
+    master_db: f32 = 0.0,
+    cab: String = "2x12".to_string(),
+    mic: String = "close".to_string(),
+    mix: f32 = 1.0
+});
+fx_struct!(ModDelayFx {
+    time_ms: f32 = 250.0,
+    feedback: f32 = 0.3,
+    mix: f32 = 0.3,
+    mod_rate_hz: f32 = 0.5,
+    mod_depth: f32 = 0.0,
+    lpf_hz: f32 = 12000.0
+});
+fx_struct!(MaximizerFx {
+    threshold_db: f32 = 0.0,
+    ceiling_db: f32 = -0.3,
+    release_ms: f32 = 50.0
+});
+fx_struct!(LoFiFx {
+    bits: f32 = 8.0,
+    sample_rate_hz: f32 = 11025.0,
+    noise: f32 = 0.0,
+    mix: f32 = 1.0
+});
+fx_struct!(RectifierFx {
+    mode: String = "full".to_string(),
+    mix: f32 = 1.0,
+    output_db: f32 = 0.0
+});
+fx_struct!(CabIrFx {
+    path: String = String::new(),
+    mix: f32 = 1.0,
+    gain_db: f32 = 0.0,
+    max_ms: f32 = 500.0
+});
+
+/// Which band a freq_splitter insert solos (low | mid | high).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FreqSplitBand {
+    #[default]
+    Low,
+    Mid,
+    High,
+}
+fx_struct!(FreqSplitterFx {
+    low_hz: f32 = 250.0,
+    high_hz: f32 = 2500.0,
+    /// FIR crossover length in samples, forced odd; group delay
+    /// (taps-1)/2 is this insert's latency.
+    taps: u32 = 513,
+    band: FreqSplitBand = FreqSplitBand::Low,
+    gain_db: f32 = 0.0,
+    mix: f32 = 1.0
+});
+fx_struct!(GranularFx {
+    /// Grain length, 5..500 ms (Hann window).
+    grain_ms: f32 = 80.0,
+    /// Grains started per second, 0.5..200.
+    density_hz: f32 = 20.0,
+    /// Grain playback pitch, -24..24 semitones.
+    pitch_semitones: f32 = 0.0,
+    /// How far back in the input a grain may start, 0..500 ms.
+    position_jitter_ms: f32 = 30.0,
+    /// Random stereo placement per grain, 0..1.
+    spread: f32 = 0.5,
+    /// Hold the input at this time (ms) and granulate the held slice for
+    /// the rest of the clip; negative = off.
+    freeze_at_ms: f32 = -1.0,
+    mix: f32 = 0.5,
+    /// Grain-scheduler seed: same seed, same bits.
+    seed: u32 = 1
 });
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -341,6 +525,21 @@ pub enum Effect {
     Autopan(AutopanFx),
     Saturator(SaturatorFx),
     Haas(HaasFx),
+    GrossBeat(GrossBeatFx),
+    Vocoder(VocoderFx),
+    FreqShift(FreqShiftFx),
+    RingMod(RingModFx),
+    StereoShaper(StereoShaperFx),
+    Vinyl(VinylFx),
+    Waveshaper(WaveshaperFx),
+    AmpSim(AmpSimFx),
+    CabIr(CabIrFx),
+    ModDelay(ModDelayFx),
+    Maximizer(MaximizerFx),
+    Lofi(LoFiFx),
+    Rectifier(RectifierFx),
+    FreqSplitter(FreqSplitterFx),
+    Granular(GranularFx),
 }
 
 macro_rules! each_fx {
@@ -373,6 +572,21 @@ macro_rules! each_fx {
             Effect::Autopan($p) => $body,
             Effect::Saturator($p) => $body,
             Effect::Haas($p) => $body,
+            Effect::GrossBeat($p) => $body,
+            Effect::Vocoder($p) => $body,
+            Effect::FreqShift($p) => $body,
+            Effect::RingMod($p) => $body,
+            Effect::StereoShaper($p) => $body,
+            Effect::Vinyl($p) => $body,
+            Effect::Waveshaper($p) => $body,
+            Effect::AmpSim($p) => $body,
+            Effect::CabIr($p) => $body,
+            Effect::ModDelay($p) => $body,
+            Effect::Maximizer($p) => $body,
+            Effect::Lofi($p) => $body,
+            Effect::Rectifier($p) => $body,
+            Effect::FreqSplitter($p) => $body,
+            Effect::Granular($p) => $body,
         }
     };
 }
@@ -388,13 +602,13 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("chorus", "Stereo chorus. rate_hz, depth_ms, mix"),
     ("compressor", "Feed-forward compressor. threshold_db, ratio, attack_ms, release_ms, makeup_db; soft-knee lookahead mode when any of knee_db (e.g. 6), lookahead_ms (0-10), sc_hpf_hz (sidechain high-pass, e.g. 120 so the kick does not pump), mix (<1 = parallel) is set"),
     ("sidechain", "Duck this track whenever `source` track hits (EDM pumping). source, amount 0..1, release_ms"),
-    ("width", "Mid/side stereo width. amount 0 = mono, 1 = unchanged, 2 = extra wide"),
+    ("width", "Mid/side stereo width. amount 0 = mono, 1 = unchanged, 2 = extra wide; low_mono_hz (e.g. 150) keeps everything below it mono"),
     ("gain", "Simple gain. db"),
     ("limiter", "Lookahead brickwall limiter. ceiling_db, release_ms, true_peak (default true: detects inter-sample peaks so the ceiling holds in dBTP)"),
     ("transient", "Transient shaper. attack -1..1 (punch), sustain -1..1 (tail)"),
     ("parametric_eq", "Up to 8-band parametric EQ. bands=[{kind bell|low_shelf|high_shelf|low_cut|high_cut|notch, freq Hz, gain_db, q, stages (cuts: 1=12 dB/oct, 2=24, 4=48), enabled}], output_db"),
     ("multiband", "3-band compressor (Maximus-style). low_freq/high_freq crossovers, {low,mid,high}_threshold_db, _ratio, _gain_db, attack_ms, release_ms, mix"),
-    ("dynamic_eq", "Dynamic bell: cuts (range_db<0) or boosts (range_db>0) a band only when it exceeds threshold_db. freq, q, threshold_db, ratio, range_db, attack_ms, release_ms. Tames harsh resonances, boomy notes"),
+    ("dynamic_eq", "Dynamic bell: cuts (range_db<0) or boosts (range_db>0) a band only when it exceeds threshold_db. freq, q, threshold_db, ratio, range_db, attack_ms, release_ms. Tames harsh resonances, boomy notes. With source (a track name, e.g. vocal) it is KEYED: the band dips by range_db while that track plays (notes or audio-clip word onsets), so a pad gives the voice its 300-900 Hz body only when the voice is there"),
     ("deesser", "De-esser: dynamically ducks highs above freq when they spike. freq Hz, threshold_db, range_db (max cut), release_ms"),
     ("soft_clipper", "Smooth soft clipper for loud drums/masters. threshold_db (knee start), ceiling_db, drive_db, mix, oversample"),
     ("gate", "Noise gate / expander. threshold_db, range_db (closed attenuation), attack_ms, hold_ms, release_ms"),
@@ -402,9 +616,24 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("flanger", "Through-zero-style flanger. rate_hz or sync_steps, delay_ms, depth_ms, feedback -0.95..0.95, mix"),
     ("stutter", "Tempo-synced gross-beat style FX. mode gate|stutter|half_time|reverse|tape_stop, pattern (gate: 'x.x.xx..' one char per 16th), slice_steps (stutter repeat length), cycle_steps, smooth_ms, mix (automate fx.<i>.mix 0->1 to apply only at a transition)"),
     ("pitch_shift", "Granular pitch shifter. semitones -24..24, cents, window_ms, mix (octave-up doubles, chipmunk/dark vocal FX)"),
-    ("convolution", "Convolution reverb with synthesized impulse responses. space room|hall|plate|chamber|spring|cathedral, decay_s, predelay_ms, damping, early (reflections), width, mix"),
+    ("amp_sim", "Guitar/bass amp: model clean|crunch|lead|bass (preamp waveshaper, 2x oversampled), gain_db, tone stack bass/mid/treble/presence 0..1, cab 1x12|2x12|4x12|bass_4x10|none (modelled speaker cabinet), mic close|room, master_db, mix. Output is level-matched to the input."),
+    ("cab_ir", "Cabinet impulse response insert: path = an IR audio file or a catalog id (search_instruments family:ir), mix, gain_db, max_ms"),
+    ("mod_delay", "Modulated feedback delay in milliseconds (not tempo-synced; use delay for that): time_ms 1..2000, feedback -0.99..0.99, mix 0..1, mod_rate_hz 0.01..10, mod_depth 0..1 (up to 5 ms of wobble, right channel a quarter cycle ahead), lpf_hz 500..20000 (low-pass inside the loop, so repeats darken). Tape echo, slapback, chorus-y doubling"),
+    ("maximizer", "Loudness maximizer: lookahead brickwall limiter driven by -threshold_db (threshold_db -30..0: -6 = 6 dB louder), never above ceiling_db (-30..0, default -0.3), release_ms 1..1000; latency compensated"),
+    ("lofi", "Lo-fi crusher: bits 1..24, sample_rate_hz 500..48000 (sample-and-hold decimation, aliasing on purpose), noise 0..1 (hiss), mix 0..1"),
+    ("rectifier", "Rectifier: mode full (octave up) | half (octave up plus the original), DC removed, mix 0..1, output_db -24..12. Octave fuzz on bass/synths, gritty textures"),
+    ("freq_splitter", "Linear-phase frequency splitter: windowed-sinc FIR crossover, phase-coherent (the three bands sum back to the delayed input). Solos one band: band low|mid|high, crossover low_hz/high_hz, taps (odd, latency (taps-1)/2), gain_db, mix"),
+    ("granular", "Live-input granular insert: Hann grains read back from the incoming audio (causal). grain_ms 5..500, density_hz 0.5..200, pitch_semitones -24..24, position_jitter_ms 0..500, spread 0..1 (random pan per grain), freeze_at_ms (>=0 holds the input from that time, negative off), mix 0..1 (0 = bit-exact bypass), seed (deterministic)"),
+    ("convolution", "Convolution reverb with synthesized impulse responses, or a real recorded space with ir_path (an IR file or catalog id). space room|hall|plate|chamber|spring|cathedral, decay_s, predelay_ms, damping, early (reflections), width, mix"),
     ("autopan", "Tempo-synced auto-pan or tremolo. steps (16ths per cycle), depth 0..1, tremolo (true = volume instead of pan)"),
     ("saturator", "Character saturator. mode tape (soft, even+odd warmth, high-end roll-off) | tube (asymmetric, even harmonics) | transistor (hard odd-harmonic edge) | diode (clipped, gritty) | fold (wavefolder, metallic) | exciter (adds only new harmonics above a corner of tone_hz, capped 1.5-8 kHz). drive_db 0..36, tone_hz (post low-pass), bias -0.5..0.5 (asymmetry), mix, output_db, oversample (2x, less aliasing)"),
+    ("gross_beat", "Gross Beat-style time + volume FX looping every cycle_steps 16ths (16 = 1 bar). time preset none|half_speed|half_speed_end|repeat_beat|repeat_end_8th|repeat_end_16th|reverse_end|reverse|tape_stop|tape_stop_end|scratch_end|freeze_end|double_speed; volume preset none|trance_gate|trance_gate_8th|pump|pump_hard|tresillo|offbeat|fade_in|fade_out|stop_end|swell; or draw them: time_points / volume_points 'u:v, u:v' (u = 0..1 through the cycle; time v = source position 0..1, volume v = gain). smooth_ms, mix (automate mix to apply it only on a transition)"),
+    ("vocoder", "Channel vocoder (Vocodex-style): the track's own audio (a vocal) is the modulator, a built-in detuned saw chord on notes ('C3 Eb3 G3' or MIDI '48,51,55', up to 8) is the carrier, so the chord speaks the words: robot voice, talk-box lead, vocoded hook. bands 4..40 (more = clearer words), low_hz/high_hz band range, attack_ms/release_ms (band envelope), noise 0..1 (carrier noise for consonants), sibilance 0..1 (the voice's own top above 5 kHz passes through), gain, mix"),
+    ("freq_shift", "Frequency shifter (FL Frequency Shifter): moves every partial by shift_hz Hz (-5000..5000), not by a ratio, so harmonics turn inharmonic. 0.5-5 Hz = slow phasing swirl on pads; 50-500 Hz = metallic, robotic, sci-fi; automate shift_hz for risers. stereo_hz adds that much extra shift on the right (wide drifting stereo), feedback 0..0.9 (barber-pole), mix"),
+    ("ring_mod", "Ring modulator: multiplies the track by a carrier at freq_hz (0.1..10000), so each partial f becomes f-c and f+c: bells, robot voice, dirty 808, sci-fi FX. shape sine|triangle|square|saw, stereo_phase 0..1 (right carrier offset), lfo_hz + lfo_depth (semitones) wobble the carrier, mix (0.2-0.4 for subtle grit)"),
+    ("stereo_shaper", "Stereo Shaper (FL): a 2x2 L/R matrix + a delay + a phase flip. preset custom|mono|swap|left_only|right_only|wide|narrow|side_only|pseudo_stereo (mono source -> stereo with a 12 ms delayed side); custom gains left_from_left, left_from_right, right_from_left, right_from_right; delay_ms 0..50 on delay_side (1 right, -1 left); invert_left / invert_right (phase); mix"),
+    ("vinyl", "Vinyl / tape simulator (lo-fi): crackle (pops per second 0..200) at crackle_db, surface hiss_db (-120 = off), wow_cents + wow_hz (slow pitch drift, 0.05-4 Hz), flutter_cents + flutter_hz (fast wobble, 2-20 Hz), age 0..1 (a worn record: the band closes from both ends, 1 = AM-radio narrow), mono 0..1 (folds the sides in), seed, mix. Defaults are a gentle dusty record"),
+    ("waveshaper", "Waveshaper (FL Fruity WaveShaper): the transfer curve as drawn points curve 'x:y, x:y' (x 0..1 input level, y -1..1 output; mirrored for the negative half when symmetric) or preset soft|hard|tube|fold|sine|steps|crush_curve; drive_db (-24..36) pushes into the curve, output_db, symmetric false = the negative half passes softly (even harmonics), mix"),
     ("haas", "Haas widener: delays one side by delay_ms (1..40) for width without comb filtering the mix. side 1 = delay right, -1 = delay left, low_cut_hz keeps bass centred (only highs are widened), level_db trims the delayed side, mix"),
 ];
 
@@ -429,6 +658,22 @@ impl Effect {
         each_fx!(self, p => p.id = id.to_string())
     }
 
+    /// Parameter checks serde cannot express (preset names, drawn points).
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Effect::GrossBeat(p) => crate::fx_time::check(p),
+            Effect::Vocoder(p) => crate::fx_vocoder::check(p),
+            Effect::FreqShift(p) => crate::fx_mod::check_freq_shift(p),
+            Effect::RingMod(p) => crate::fx_mod::check_ring_mod(p),
+            Effect::StereoShaper(p) => crate::fx_mod::check_stereo_shaper(p),
+            Effect::Vinyl(p) => crate::fx_char::check_vinyl(p),
+            Effect::Waveshaper(p) => crate::fx_char::check_waveshaper(p),
+            Effect::Granular(p) => crate::fx_extra::check_granular(p),
+            Effect::FreqSplitter(p) => crate::fx_extra::check_freq_splitter(p),
+            _ => Ok(()),
+        }
+    }
+
     pub fn bypassed(&self) -> bool {
         each_fx!(self, p => p.bypass)
     }
@@ -445,18 +690,49 @@ impl Effect {
         match self {
             Effect::ParametricEq(p) => x::parametric_eq(p, l, r),
             Effect::Multiband(p) => x::multiband(p, l, r),
-            Effect::DynamicEq(p) => x::dynamic_eq(p, l, r),
+            Effect::DynamicEq(p) => {
+                if p.source.is_empty() {
+                    x::dynamic_eq(p, l, r)
+                } else if let Some(key) = ctx
+                    .levels
+                    .filter(|_| p.key == "level")
+                    .and_then(|m| m.get(&p.source.to_lowercase()))
+                {
+                    x::level_keyed_dynamic_eq(p, key, l, r)
+                } else if let Some(trig) = ctx.triggers.get(&p.source.to_lowercase()) {
+                    x::keyed_dynamic_eq(p, trig, l, r)
+                }
+            }
             Effect::Deesser(p) => x::deesser(p, l, r),
             Effect::SoftClipper(p) => x::soft_clipper(p, l, r),
             Effect::Gate(p) => x::gate(p, l, r),
-            Effect::Phaser(p) => x::phaser(p, l, r, ctx.step_secs),
-            Effect::Flanger(p) => x::flanger(p, l, r, ctx.step_secs),
-            Effect::Stutter(p) => x::stutter(p, l, r, ctx.step_secs),
-            Effect::PitchShift(p) => x::pitch_shift(p, l, r),
+            Effect::Phaser(p) => x::phaser(p, l, r, ctx.step_secs, ctx.offset),
+            Effect::Flanger(p) => x::flanger(p, l, r, ctx.step_secs, ctx.offset),
+            Effect::Stutter(p) => x::stutter_at(p, l, r, ctx.step_secs, ctx.offset),
+            Effect::PitchShift(p) => x::pitch_shift_at(p, l, r, ctx.offset),
             Effect::Convolution(p) => x::convolution(p, l, r),
-            Effect::Autopan(p) => x::autopan(p, l, r, ctx.step_secs),
+            Effect::Autopan(p) => x::autopan(p, l, r, ctx.step_secs, ctx.offset),
             Effect::Saturator(p) => crate::fx_sat::saturator(p, l, r),
             Effect::Haas(p) => crate::fx_sat::haas(p, l, r),
+            Effect::GrossBeat(p) => {
+                crate::fx_time::gross_beat_at(p, l, r, ctx.step_secs, ctx.offset)
+            }
+            Effect::Vocoder(p) => crate::fx_vocoder::vocoder_at(p, l, r, ctx.offset),
+            Effect::FreqShift(p) => crate::fx_mod::freq_shift_at(p, l, r, ctx.offset),
+            Effect::RingMod(p) => crate::fx_mod::ring_mod_at(p, l, r, ctx.offset),
+            Effect::StereoShaper(p) => crate::fx_mod::stereo_shaper(p, l, r),
+            Effect::Vinyl(p) => crate::fx_char::vinyl_at(p, l, r, ctx.offset),
+            Effect::Waveshaper(p) => crate::fx_char::waveshaper(p, l, r),
+            Effect::AmpSim(p) => crate::fx_amp::amp_sim(p, l, r),
+            Effect::CabIr(p) => crate::fx_amp::cab_ir(p, l, r),
+            Effect::ModDelay(p) => crate::fx_sc::mod_delay(p, l, r, ctx.offset),
+            Effect::Maximizer(p) => {
+                crate::fx_sc::maximizer(p, l, r);
+            }
+            Effect::Lofi(p) => crate::fx_sc::lofi_at(p, l, r, ctx.offset),
+            Effect::Rectifier(p) => crate::fx_sc::rectifier(p, l, r),
+            Effect::FreqSplitter(p) => crate::fx_extra::freq_splitter(p, l, r),
+            Effect::Granular(p) => crate::fx_extra::granular(p, l, r),
             Effect::Filter(p) => {
                 let (mut fl, mut fr) = (Svf::default(), Svf::default());
                 for i in 0..l.len() {
@@ -494,7 +770,8 @@ impl Effect {
                 for ch in [&mut *l, &mut *r] {
                     let mut held = 0.0;
                     for (i, s) in ch.iter_mut().enumerate() {
-                        if i % ds == 0 {
+                        // grabs on the song's grid, not the buffer's
+                        if (i + ctx.offset) % ds == 0 {
                             held = (*s * levels).round() / levels;
                         }
                         *s = *s * (1.0 - p.mix) + held * p.mix;
@@ -523,16 +800,19 @@ impl Effect {
                     r[i] = inr + dr * p.mix;
                 }
             }
-            Effect::Reverb(p) => reverb(p, l, r),
+            Effect::Reverb(p) => reverb(p, l, r, ctx.offset),
             Effect::Chorus(p) => {
                 let max = ((p.depth_ms + 20.0) * 0.001 * SR) as usize + 4;
                 let mut bl = vec![0.0f32; max];
                 let mut br = vec![0.0f32; max];
                 for i in 0..l.len() {
-                    let w = i % max;
+                    // song position: the phase and the ring index match a
+                    // full render's at the same sample
+                    let k = i + ctx.offset;
+                    let w = k % max;
                     bl[w] = l[i];
                     br[w] = r[i];
-                    let t = i as f32 / SR;
+                    let t = k as f32 / SR;
                     let base = 12.0;
                     let dl = (base + p.depth_ms * (0.5 + 0.5 * (2.0 * PI * p.rate_hz * t).sin()))
                         * 0.001
@@ -635,9 +915,17 @@ impl Effect {
                 }
             }
             Effect::Width(p) => {
+                // low_mono_hz > 0: the side signal is high-passed there, so the
+                // low end stays mono (bass translates on phones and clubs)
+                let mut hp = Svf::default();
+                let mono_lo = p.low_mono_hz.clamp(0.0, 500.0);
                 for i in 0..l.len() {
                     let m = 0.5 * (l[i] + r[i]);
-                    let s = 0.5 * (l[i] - r[i]) * p.amount.clamp(0.0, 3.0);
+                    let mut s = 0.5 * (l[i] - r[i]);
+                    if mono_lo > 0.0 {
+                        s = hp.process(s, mono_lo, 0.0, FilterMode::Highpass);
+                    }
+                    let s = s * p.amount.clamp(0.0, 3.0);
                     l[i] = m + s;
                     r[i] = m - s;
                 }
@@ -672,21 +960,24 @@ impl Effect {
     }
 }
 
-struct Comb {
+#[doc(hidden)]
+pub struct Comb {
     buf: Vec<f32>,
     idx: usize,
     store: f32,
 }
 
 impl Comb {
-    fn new(n: usize) -> Self {
+    #[doc(hidden)]
+    pub fn new(n: usize) -> Self {
         Comb {
             buf: vec![0.0; n.max(1)],
             idx: 0,
             store: 0.0,
         }
     }
-    fn process(&mut self, x: f32, fb: f32, damp: f32) -> f32 {
+    #[doc(hidden)]
+    pub fn process(&mut self, x: f32, fb: f32, damp: f32) -> f32 {
         let out = self.buf[self.idx];
         self.store = out * (1.0 - damp) + self.store * damp;
         self.buf[self.idx] = x + self.store * fb;
@@ -695,19 +986,22 @@ impl Comb {
     }
 }
 
-struct Allpass {
+#[doc(hidden)]
+pub struct Allpass {
     buf: Vec<f32>,
     idx: usize,
 }
 
 impl Allpass {
-    fn new(n: usize) -> Self {
+    #[doc(hidden)]
+    pub fn new(n: usize) -> Self {
         Allpass {
             buf: vec![0.0; n.max(1)],
             idx: 0,
         }
     }
-    fn process(&mut self, x: f32) -> f32 {
+    #[doc(hidden)]
+    pub fn process(&mut self, x: f32) -> f32 {
         let b = self.buf[self.idx];
         let out = -x + b;
         self.buf[self.idx] = x + b * 0.5;
@@ -716,7 +1010,7 @@ impl Allpass {
     }
 }
 
-fn reverb(p: &ReverbFx, l: &mut [f32], r: &mut [f32]) {
+fn reverb(p: &ReverbFx, l: &mut [f32], r: &mut [f32], offset: usize) {
     if p.mode != ReverbMode::Freeverb {
         use crate::sc_dsp::{fdn_reverb, FdnParams, HALL, PLATE, ROOM};
         let (cfg, default_decay) = match p.mode {
@@ -739,7 +1033,7 @@ fn reverb(p: &ReverbFx, l: &mut [f32], r: &mut [f32]) {
             low_cut_hz: p.low_cut_hz,
             mix: p.mix,
         };
-        fdn_reverb(cfg, &fp, l, r);
+        fdn_reverb(cfg, &fp, l, r, offset);
         return;
     }
     const COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
@@ -817,6 +1111,16 @@ fn limiter(p: &LimiterFx, l: &mut [f32], r: &mut [f32]) {
 }
 
 fn limiter_pass(p: &LimiterFx, ceiling_db: f32, l: &mut [f32], r: &mut [f32]) {
+    limiter_pass_impl(p, ceiling_db, l, r, true)
+}
+
+/// Samples per block of the detector's quiet-skip bound.
+const SKIP_BLOCK: usize = 16;
+
+/// One limiter pass. `skip` lets the inter-sample-peak detector skip
+/// samples that provably cannot reach the ceiling (the output is the same
+/// bit for bit either way; tests compare the two).
+fn limiter_pass_impl(p: &LimiterFx, ceiling_db: f32, l: &mut [f32], r: &mut [f32], skip: bool) {
     let ceiling = db_to_gain(ceiling_db);
     let look = (0.002 * SR) as usize;
     let rel = (-1.0 / (p.release_ms.max(1.0) * 0.001 * SR)).exp();
@@ -861,11 +1165,51 @@ fn limiter_pass(p: &LimiterFx, ceiling_db: f32, l: &mut [f32], r: &mut [f32]) {
         }
         m * 1.06
     };
+    // Quiet skip (exact): the estimate above is at most
+    // 1.06 * kabs * max|x| over the taps around i (kabs = the largest
+    // kernel's sum of |taps|, >= 1 so it also covers |x[i]|). Where that
+    // bound, with a 1e-4 margin for f32 rounding, stays under the ceiling,
+    // the full estimate would also say "under" and need is 1.0 either way.
+    // max|x| comes from per-block maxima (the 16 taps span at most two
+    // 16-sample blocks). Besides quiet passages this skips decaying tails,
+    // where subnormal floats made every tap ~100x slower (B40 profile: 209 of
+    // a window render's 237 ms master time).
+    let kabs = kernels
+        .iter()
+        .map(|h| h.iter().map(|c| c.abs()).sum::<f32>())
+        .fold(1.0f32, f32::max);
+    let skip_under = ceiling / (1.06 * kabs * (1.0 + 1e-4));
+    let block_max: Vec<f32> = if p.true_peak && skip {
+        (0..n.div_ceil(SKIP_BLOCK))
+            .map(|b| {
+                let (s, e) = (b * SKIP_BLOCK, ((b + 1) * SKIP_BLOCK).min(n));
+                let mut m = 0f32;
+                for i in s..e {
+                    m = m.max(l[i].abs()).max(r[i].abs());
+                }
+                m
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let quiet = |i: usize| -> bool {
+        if block_max.is_empty() {
+            return false;
+        }
+        let b0 = (i as isize - HALF + 1).max(0) as usize / SKIP_BLOCK;
+        let b1 = (i + HALF as usize).min(n - 1) / SKIP_BLOCK;
+        block_max[b0..=b1].iter().all(|m| *m <= skip_under)
+    };
     // required gain per sample, then look-ahead min + smoothing
     let mut need: Vec<f32> = (0..n)
         .map(|i| {
             let x = if p.true_peak {
-                isp(l, i).max(isp(r, i))
+                if quiet(i) {
+                    0.0
+                } else {
+                    isp(l, i).max(isp(r, i))
+                }
             } else {
                 l[i].abs().max(r[i].abs())
             };
@@ -954,11 +1298,125 @@ pub fn find(chain: &[Effect], key: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::TAU;
 
     fn ctx(t: &HashMap<String, Vec<usize>>) -> FxContext<'_> {
         FxContext {
             step_secs: 0.125,
             triggers: t,
+            offset: 0,
+            levels: None,
+        }
+    }
+
+    #[test]
+    fn the_limiter_detector_skip_is_bit_identical() {
+        // (a) D11-style: dense loud material, a decaying tail that runs
+        // into subnormals, silence; (b) near-ceiling transients: isolated
+        // clicks just under, at and just over the ceiling after silence,
+        // where the skip bound is tightest
+        let mut rng = crate::dsp::Rng::new(11);
+        let n = 4 * 44100;
+        let a: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / 44100.0;
+                let env = if t < 2.0 {
+                    1.0
+                } else {
+                    (-(t - 2.0) * 50.0).exp()
+                };
+                ((t * 55.0 * TAU).sin() * 0.8 + 0.4 * rng.bipolar()) * 1.4 * env
+            })
+            .collect();
+        assert!(
+            a.iter().any(|v| *v != 0.0 && v.abs() < f32::MIN_POSITIVE),
+            "the tail reaches subnormals"
+        );
+        let ceiling = db_to_gain(-1.0);
+        let mut b = vec![0.0f32; 44100];
+        for (k, g) in [0.80f32, 0.88, 0.89, 0.8913, 0.9, 0.95, 1.2]
+            .iter()
+            .enumerate()
+        {
+            let at = 2000 + k * 5000;
+            b[at] = *g;
+            b[at + 1] = -*g * 0.97;
+            b[at + 2] = *g * 0.5;
+        }
+        // a click right at the bound's level
+        b[40000] = ceiling / 1.06;
+        let p = LimiterFx {
+            ceiling_db: -1.0,
+            release_ms: 80.0,
+            ..Default::default()
+        };
+        assert!(p.true_peak, "the default limiter is true-peak");
+        for (name, x) in [("d11_style", &a), ("near_ceiling", &b)] {
+            for ceil_db in [-1.0f32, -1.6, -3.0] {
+                let (mut l0, mut r0) = (x.clone(), x.iter().map(|v| v * 0.9).collect::<Vec<f32>>());
+                let (mut l1, mut r1) = (l0.clone(), r0.clone());
+                limiter_pass_impl(&p, ceil_db, &mut l0, &mut r0, false);
+                limiter_pass_impl(&p, ceil_db, &mut l1, &mut r1, true);
+                let same = l0
+                    .iter()
+                    .zip(&l1)
+                    .chain(r0.iter().zip(&r1))
+                    .all(|(u, v)| u.to_bits() == v.to_bits());
+                assert!(same, "{name} at {ceil_db} dB: skip changed the output");
+            }
+        }
+    }
+
+    /// Timing of the detector skip (run with `--ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn bench_limiter_detector_skip() {
+        let mut rng = crate::dsp::Rng::new(5);
+        let n = 20 * 44100;
+        // a 16 s loud passage then a 4 s tail decaying into subnormals
+        let song: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / 44100.0;
+                let env = if t < 16.0 {
+                    1.0
+                } else {
+                    (-(t - 16.0) * 30.0).exp()
+                };
+                ((t * 55.0 * TAU).sin() * 0.7 + 0.3 * rng.bipolar()) * 1.3 * env
+            })
+            .collect();
+        // worst case for the skip: loud everywhere, nothing to skip
+        let loud: Vec<f32> = (0..n).map(|i| (i as f32 * 0.05).sin() * 1.3).collect();
+        let p = LimiterFx {
+            ceiling_db: -1.0,
+            release_ms: 80.0,
+            ..Default::default()
+        };
+        for (name, x) in [
+            ("loud 16 s + subnormal tail", &song),
+            ("loud throughout (no skip possible)", &loud),
+        ] {
+            let mut row = Vec::new();
+            for skip in [false, true] {
+                let mut best = f64::MAX;
+                for _ in 0..3 {
+                    let (mut l, mut r) = (x.clone(), x.clone());
+                    let t = std::time::Instant::now();
+                    limiter_pass_impl(&p, -1.0, &mut l, &mut r, skip);
+                    best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+                }
+                row.push(best);
+            }
+            let mut best = f64::MAX;
+            for _ in 0..3 {
+                let (mut l, mut r) = (x.clone(), x.clone());
+                let _ftz = crate::dsp::NoDenormals::new();
+                let t = std::time::Instant::now();
+                limiter_pass_impl(&p, -1.0, &mut l, &mut r, true);
+                best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            row.push(best);
+            eprintln!("limiter pass, {name}, 20 s: without skip {:.1} ms, with skip {:.1} ms, with skip + FTZ/DAZ {:.1} ms", row[0], row[1], row[2]);
         }
     }
 
@@ -1062,5 +1520,48 @@ mod tests {
         assert_eq!(l[500], 1.0);
         assert!(l[1300] < 0.5);
         assert!(l[19000] > 0.99);
+    }
+
+    #[test]
+    fn keyed_dynamic_eq_dips_only_while_the_key_plays() {
+        // a 500 Hz tone; the vocal key plays from sample 20000
+        let t = HashMap::from([("vocal".to_string(), vec![20000usize, 24000])]);
+        let n = 60000;
+        let mut l: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * 500.0 * i as f32 / SR).sin() * 0.5)
+            .collect();
+        let mut r = l.clone();
+        let fx = Effect::DynamicEq(DynamicEqFx {
+            freq: 520.0,
+            q: 0.85,
+            range_db: -6.0,
+            source: "vocal".into(),
+            release_ms: 300.0,
+            attack_ms: 10.0,
+            ..Default::default()
+        });
+        fx.process(&mut l, &mut r, &ctx(&t));
+        let rms = |a: &[f32]| (a.iter().map(|x| x * x).sum::<f32>() / a.len() as f32).sqrt();
+        let before = rms(&l[10000..19000]);
+        let during = rms(&l[26000..34000]);
+        let after = rms(&l[54000..60000]);
+        assert!(
+            (before - 0.3535).abs() < 0.02,
+            "untouched before the key: {before}"
+        );
+        assert!(
+            during < before * 0.65,
+            "dips under the key: {during} vs {before}"
+        );
+        assert!(after > before * 0.95, "recovers after: {after}");
+        // no key track: untouched
+        let mut l2 = vec![0.3f32; 1000];
+        let mut r2 = l2.clone();
+        Effect::DynamicEq(DynamicEqFx {
+            source: "nobody".into(),
+            ..Default::default()
+        })
+        .process(&mut l2, &mut r2, &ctx(&t));
+        assert_eq!(l2[999], 0.3);
     }
 }

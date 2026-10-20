@@ -134,6 +134,7 @@ pub fn set_param(p: &mut Project, owner: &str, param: &str, x: &Value) -> Result
                 bail!("{} has no parameter '{}' (describe_effect lists them)", fxv.type_name(), parts[2..].join("."));
             }
             let e: Effect = serde_json::from_value(v).map_err(|e| anyhow!("invalid value for {param}: {e}"))?;
+            e.validate().map_err(|m| anyhow!("invalid value for {param}: {m}. Nothing was changed."))?;
             chain[idx] = e;
             Ok(x.clone())
         }
@@ -227,7 +228,7 @@ fn range_of(field: &str) -> (f32, f32, &'static str, bool) {
     }
 }
 
-fn describe_value(kind: &str, prefix: &str, v: &Value, out: &mut Vec<Value>) {
+pub(crate) fn describe_value(kind: &str, prefix: &str, v: &Value, out: &mut Vec<Value>) {
     if let Value::Object(o) = v {
         for (k, x) in o {
             if k == "type" {
@@ -896,10 +897,14 @@ pub fn tools() -> Vec<Tool> {
                     let path = e.resolve(&sfz);
                     let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
                     let (regions, rel) = multisample::parse_sfz(&text)?;
+                    let regions = multisample::playable_regions(regions);
                     if let Some(r) = rel { if a.get("release").is_none() { params.release = r; } }
                     let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                    let mut skipped = 0usize;
                     for (k, r) in regions.iter().enumerate() {
                         let sp = dir.join(&r.sample);
+                        // a fetched program keeps only some round robins on disk
+                        if !sp.is_file() { skipped += 1; continue; }
                         let sname = samples::sample_name(&format!("{}_{}", name, sp.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| k.to_string())));
                         if !e.project.samples.iter().any(|s| s.name == sname) {
                             crate::tools::register_sample(e, SampleInfo { name: sname.clone(), path: sp.to_string_lossy().to_string(), source: path.to_string_lossy().to_string(), license: "see sfz".into(), author: String::new(), duration: 0.0 })?;
@@ -907,6 +912,7 @@ pub fn tools() -> Vec<Tool> {
                         params.zones.push(Zone { sample: sname, root: r.root, lo_note: r.lo, hi_note: r.hi, vel_lo: r.vel_lo as f32 / 127.0, vel_hi: (r.vel_hi as f32 + 1.0) / 128.0, tune_cents: r.tune, gain_db: r.volume, rr: r.seq.saturating_sub(1) });
                     }
                     params.source = path.to_string_lossy().to_string();
+                    if params.zones.is_empty() { bail!("none of the SFZ's {} sample files exist next to it", skipped); }
                 } else {
                     let zs = a.get("zones").and_then(|v| v.as_array()).ok_or_else(|| anyhow!("give zones or sfz"))?;
                     for z in zs {
@@ -1057,8 +1063,84 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "denoise_sample",
+            description: "Noise reduction (FL Edison denoise) into a new sample: a spectral gate reads the noise floor per frequency from the quietest frames and pulls bins near it down. Use it on a hissy recording, an old tape or a vocal take before tuning. strength 0..1 (default 0.8), floor_db = the deepest cut (default -24; -12 is gentle). new_name defaults to <sample>_denoised.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "strength": {"type": "number"}, "floor_db": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
+            run: |e, a| {
+                let (info, d) = sample_data(e, &s_req(a, "sample")?)?;
+                let strength = f_or(a, "strength", 0.8).clamp(0.0, 1.0);
+                let floor = f_or(a, "floor_db", -24.0).clamp(-60.0, 0.0);
+                if d.len() < 4096 {
+                    bail!("sample too short to read a noise floor (needs ~0.1 s)");
+                }
+                let (y, reduced) = crate::speech_song::denoise(&d, floor, strength);
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_denoised", info.name));
+                let what = format!("denoise strength {strength} floor {floor} dB");
+                let mut r = save_new_sample(e, &info, &nn, &y, &what)?;
+                r["noise_reduced_db"] = json!((reduced * 10.0).round() / 10.0);
+                Ok(r)
+            },
+        },
+        Tool {
+            name: "sample_spectrogram",
+            description: "See a sample's spectrum over time (the audio editor's spectrogram): frames (default 160) x bands (default 48, log-spaced from_hz..to_hz, default 30-16000) of dB relative to the loudest cell (0 = loudest). Use it to find where a squeak, hum or cymbal sits before spectral_edit_sample.",
+            mutates: false,
+            schema: || obj(json!({"sample": {"type": "string"}, "frames": {"type": "integer"}, "bands": {"type": "integer"}, "from_hz": {"type": "number"}, "to_hz": {"type": "number"}}), &["sample"]),
+            run: |e, a| {
+                let (info, d) = sample_data(e, &s_req(a, "sample")?)?;
+                let (edges, grid, peak) = audio_edit::spectrogram_grid(&d, SR, u_or(a, "frames", 160) as usize, u_or(a, "bands", 48) as usize, f_or(a, "from_hz", 30.0), f_or(a, "to_hz", 16000.0));
+                let db: Vec<Vec<i32>> = grid.iter().map(|r| r.iter().map(|v| ((v - peak).max(-90.0)).round() as i32).collect()).collect();
+                Ok(json!({"sample": info.name, "duration": d.len() as f32 / SR, "frames": db.len(), "bands": edges.len() - 1,
+                          "band_edges_hz": edges.iter().map(|v| v.round()).collect::<Vec<_>>(), "peak_db": (peak * 10.0).round() / 10.0, "db": db}))
+            },
+        },
+        Tool {
+            name: "spectral_edit_sample",
+            description: "Spectral edit (FL Edison) into a new sample: pick a time span (start_s..end_s, default the whole clip) and a band (low_hz..high_hz) and change only that part of the spectrum. gain_db -60 (default) removes it (a squeak, a cough, a hum, a cymbal wash), a positive gain lifts it. mode \"band\" (default) changes the band inside the span; \"outside\" keeps only the band there. soft_ms / soft_octaves round the region's edges (default 10 ms, 0.1 oct). Returns the new sample and changed_db (energy change of the clip).",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "start_s": {"type": "number"}, "end_s": {"type": "number"}, "low_hz": {"type": "number"}, "high_hz": {"type": "number"}, "gain_db": {"type": "number"}, "mode": {"type": "string", "enum": ["band", "outside"]}, "soft_ms": {"type": "number"}, "soft_octaves": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
+            run: |e, a| {
+                let (info, d) = sample_data(e, &s_req(a, "sample")?)?;
+                let dur = d.len() as f32 / SR;
+                let t0 = f_or(a, "start_s", 0.0).max(0.0);
+                let t1 = f_opt(a, "end_s").unwrap_or(dur).min(dur);
+                if t1 <= t0 {
+                    bail!("end_s must be after start_s (clip is {dur:.2} s)");
+                }
+                let lo = f_or(a, "low_hz", 20.0).max(1.0);
+                let hi = f_or(a, "high_hz", SR / 2.0).min(SR / 2.0);
+                if hi <= lo {
+                    bail!("high_hz must be above low_hz");
+                }
+                let mode = s_opt(a, "mode").unwrap_or_else(|| "band".into());
+                let outside = match mode.as_str() {
+                    "band" => false,
+                    "outside" => true,
+                    m => bail!("mode '{m}': use band or outside"),
+                };
+                let reg = audio_edit::SpectralRegion {
+                    t0,
+                    t1,
+                    lo_hz: lo,
+                    hi_hz: hi,
+                    gain_db: f_or(a, "gain_db", -60.0),
+                    outside,
+                    soft_ms: f_or(a, "soft_ms", 10.0),
+                    soft_oct: f_or(a, "soft_octaves", 0.1),
+                };
+                let (y, ch) = audio_edit::spectral_edit(&d, SR, &reg);
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_spectral", info.name));
+                let what = format!("spectral {mode} {lo:.0}-{hi:.0} Hz {t0:.2}-{t1:.2} s {:+} dB", reg.gain_db);
+                let mut r = save_new_sample(e, &info, &nn, &y, &what)?;
+                r["changed_db"] = json!((ch * 10.0).round() / 10.0);
+                r["region"] = json!({"start_s": t0, "end_s": t1, "low_hz": lo, "high_hz": hi, "mode": mode});
+                Ok(r)
+            },
+        },
+        Tool {
             name: "analyze_audio",
-            description: "Listen to any audio: a registered sample (sample), a file (path: wav/mp3/flac/ogg) or the current mix (neither). Returns tempo (BPM + confidence), key candidates, onset count/times, LUFS, true peak, loudness range, crest, spectral balance, stereo width. Use it to check a downloaded loop's tempo/key before stretch_sample, or to inspect a bounce.",
+            description: "Listen to any audio: a registered sample (sample), a file (path: wav/mp3/flac/ogg) or the current mix (neither). Returns tempo (BPM + confidence; bpm_reliable false under 0.35 means it is a guess), key candidates, onset count/times, LUFS, true peak, loudness range, crest, spectral balance, stereo width. Use it to check a downloaded loop's tempo/key before stretch_sample, or to inspect a bounce.",
             mutates: false,
             schema: || obj(json!({"sample": {"type": "string"}, "path": {"type": "string"}, "max_onsets": {"type": "integer"}}), &[]),
             run: |e, a| {
@@ -1070,6 +1152,12 @@ pub fn tools() -> Vec<Tool> {
                 let mut v = serde_json::to_value(&prof)?;
                 v["key_candidates"] = json!(keys.iter().map(|(k, c)| json!({"key": k, "score": c})).collect::<Vec<_>>());
                 v["key_detail"] = audio_edit::key_report(&mono);
+                // a tempo read at low confidence is a guess (speech, rubato, a pad): say so
+                let conf = v["bpm_confidence"].as_f64().unwrap_or(0.0);
+                v["bpm_reliable"] = json!(conf >= 0.35);
+                if conf < 0.35 {
+                    v["bpm_note"] = json!(format!("low confidence ({conf:.2}): no steady pulse found (speech, free rhythm or a sustained sound); do not build on this tempo; pick the beat's tempo yourself or use detect_vocal_onsets"));
+                }
                 v["onsets"] = json!(on.len());
                 v["onset_times_s"] = json!(on.iter().take(u_or(a, "max_onsets", 32) as usize).map(|s| (*s as f32 / SR * 1000.0).round() / 1000.0).collect::<Vec<_>>());
                 Ok(v)
@@ -1116,6 +1204,44 @@ mod tests {
 
     fn eng() -> Engine {
         Engine::new(std::env::temp_dir().join("beatbox_sound_tests"))
+    }
+
+    #[test]
+    fn denoise_sample_lowers_the_hiss_floor() {
+        let mut e = eng();
+        let dir = std::env::temp_dir().join("bb_denoise_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut rng = crate::dsp::Rng::new(3);
+        // 1 s hiss, then 1 s tone + hiss
+        let x: Vec<f32> = (0..(2.0 * SR) as usize)
+            .map(|i| {
+                0.02 * rng.bipolar()
+                    + if i as f32 > SR {
+                        0.4 * (i as f32 * 440.0 / SR * std::f32::consts::TAU).sin()
+                    } else {
+                        0.0
+                    }
+            })
+            .collect();
+        let wav = dir.join("hiss.wav");
+        crate::render::write_wav(&wav, &x, &x).unwrap();
+        e.call(
+            "import_sample",
+            &json!({"path": wav.to_string_lossy(), "name": "hiss"}),
+        )
+        .unwrap();
+        let r = e
+            .call("denoise_sample", &json!({"sample": "hiss"}))
+            .unwrap();
+        // (the tone dominates the total, so the overall figure is small)
+        assert!(r["noise_reduced_db"].as_f64().unwrap() <= 0.0, "{r}");
+        let (_, y) = sample_data(&mut e, r["sample"].as_str().unwrap()).unwrap();
+        let rms = |s: &[f32]| (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt();
+        let q = (0.8 * SR) as usize;
+        assert!(
+            rms(&y[2048..q]) < 0.5 * rms(&x[2048..q]),
+            "hiss not reduced"
+        );
     }
 
     #[test]
@@ -1269,5 +1395,90 @@ mod tests {
             .call("add_multisample_track", &json!({"name": "sfz", "sfz": sfz}))
             .unwrap();
         assert_eq!(r["zones"], 1);
+    }
+
+    #[test]
+    fn spectral_edit_removes_a_band_in_a_span() {
+        let mut e = eng();
+        let n = (1.0 * SR) as usize;
+        let x: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                0.4 * (std::f32::consts::TAU * 440.0 * t).sin()
+                    + 0.3 * (std::f32::consts::TAU * 5000.0 * t).sin()
+            })
+            .collect();
+        let path = std::env::temp_dir().join("beatbox_sound_tests/two_tones.wav");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        crate::render::write_wav(&path, &x, &x).unwrap();
+        e.call("import_sample", &json!({"path": path, "name": "tones"}))
+            .unwrap();
+        let r = e.call("spectral_edit_sample", &json!({"sample": "tones", "start_s": 0.25, "end_s": 0.75, "low_hz": 3000, "high_hz": 8000})).unwrap();
+        assert!(r["changed_db"].as_f64().unwrap() < -0.5, "{r}");
+        let (_, y) = sample_data(&mut e, "tones_spectral").unwrap();
+        // energy of each tone in a 0.1 s window: inside the span the 5 kHz tone is gone, 440 stays
+        let band = |d: &[f32], a: f32, f: f32| -> f32 {
+            let (s0, s1) = ((a * SR) as usize, ((a + 0.1) * SR) as usize);
+            let (mut c, mut s) = (0.0f32, 0.0f32);
+            for i in s0..s1 {
+                let ph = std::f32::consts::TAU * f * i as f32 / SR;
+                c += d[i] * ph.cos();
+                s += d[i] * ph.sin();
+            }
+            (c * c + s * s).sqrt() / (s1 - s0) as f32
+        };
+        let db = |a: f32, b: f32| 20.0 * (a.max(1e-9) / b.max(1e-9)).log10();
+        assert!(db(band(&y, 0.45, 5000.0), band(&x, 0.45, 5000.0)) < -40.0);
+        assert!(db(band(&y, 0.45, 440.0), band(&x, 0.45, 440.0)).abs() < 0.5);
+        // outside the span nothing changes
+        assert!(db(band(&y, 0.05, 5000.0), band(&x, 0.05, 5000.0)).abs() < 0.5);
+        // keep only the band: the 440 tone goes, 5 kHz stays
+        e.call("spectral_edit_sample", &json!({"sample": "tones", "low_hz": 3000, "high_hz": 8000, "mode": "outside", "new_name": "hi_only"})).unwrap();
+        let (_, z) = sample_data(&mut e, "hi_only").unwrap();
+        assert!(db(band(&z, 0.45, 440.0), band(&x, 0.45, 440.0)) < -40.0);
+        assert!(db(band(&z, 0.45, 5000.0), band(&x, 0.45, 5000.0)).abs() < 0.5);
+        assert!(e
+            .call(
+                "spectral_edit_sample",
+                &json!({"sample": "tones", "low_hz": 900, "high_hz": 100})
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn sample_spectrogram_finds_the_tone() {
+        let mut e = eng();
+        let n = (0.5 * SR) as usize;
+        let x: Vec<f32> = (0..n)
+            .map(|i| 0.5 * (std::f32::consts::TAU * 2000.0 * i as f32 / SR).sin())
+            .collect();
+        let path = std::env::temp_dir().join("beatbox_sound_tests/tone2k.wav");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        crate::render::write_wav(&path, &x, &x).unwrap();
+        e.call("import_sample", &json!({"path": path, "name": "tone2k"}))
+            .unwrap();
+        let r = e
+            .call(
+                "sample_spectrogram",
+                &json!({"sample": "tone2k", "frames": 20, "bands": 24}),
+            )
+            .unwrap();
+        assert_eq!(r["frames"], 20);
+        let edges: Vec<f64> = r["band_edges_hz"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let row = r["db"][10].as_array().unwrap();
+        let best = (0..row.len())
+            .max_by_key(|&b| row[b].as_i64().unwrap())
+            .unwrap();
+        assert!(
+            edges[best] <= 2100.0 && edges[best + 1] >= 1900.0,
+            "loudest band {}..{}",
+            edges[best],
+            edges[best + 1]
+        );
     }
 }

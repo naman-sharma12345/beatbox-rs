@@ -1,22 +1,29 @@
 //! Beatbox Studio — the native desktop GUI (egui).
 //!
-//! Every click goes through `Engine::call`, exactly like an AI would, so the
+//! Every click goes through `Engine::call`, exactly like an MCP client would, so the
 //! studio and MCP clients always see the same project. A local control server
 //! lets `beatbox mcp --connect` drive this window live.
 
+mod analyze_view;
+mod browser_view;
+mod channel_rack;
 mod console;
+mod fl_automation;
+mod fl_playlist;
 mod piano;
 mod player;
 mod playlist;
+mod rack_view;
 mod shortcuts;
 mod theme;
 mod views;
+mod vocal_view;
 mod widgets;
 
 use crate::analysis::{self, Report};
-use crate::engine::{Engine, LogEntry};
+use crate::engine::Engine;
 use crate::instruments;
-use crate::project::{Project, STEPS_PER_BAR};
+use crate::project::Project;
 use crate::render::{self, Mix, RenderOptions};
 use crate::{fx, theory};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2};
@@ -35,6 +42,8 @@ struct Rendered {
     report: Report,
     loop_secs: f32,
     strips: Vec<views::StripMeter>,
+    /// The project this render is of (the base a live edit splices into).
+    project: Arc<Project>,
 }
 
 #[derive(Clone)]
@@ -51,12 +60,16 @@ pub struct Studio {
     project_path: Option<PathBuf>,
     listen: String,
     server_ok: bool,
+    show_about: bool,
     // view state
     pattern: usize,
     selected: usize,
     // render pipeline
     rendered: Option<Rendered>,
     rendering: Option<(u64, Receiver<Rendered>)>,
+    /// Live edit while playing: the affected bars' splice, ahead of the
+    /// full render (crate::live_splice).
+    live: Option<Receiver<Arc<Mix>>>,
     inspector: Option<InspectorCache>,
     dragging: bool,
     toast: Option<(String, f64, bool)>,
@@ -64,13 +77,36 @@ pub struct Studio {
     screenshot: Option<PathBuf>,
     frames: u64,
     shot_requested: bool,
+    /// Performance mode: the pattern looping live, and a launch waiting for
+    /// its boundary (Some(None) = back to the song).
+    perf: Option<String>,
+    perf_next: Option<Option<String>>,
     // central view: 0 sequencer, 1 mixer, 2 automation, 3 playlist
     view: usize,
     auto_sel: Option<(String, String)>,
     piano: piano::PianoState,
+    /// vocal view: (sample, waveform peaks, seconds)
+    vocal_wave: Option<(String, Vec<(f32, f32)>, f32)>,
+    /// browser view: presets, effects, palettes, samples
+    browser: browser_view::BrowserState,
+    /// analysis panel: file, grid source, background job
+    analyze: analyze_view::AnalyzeState,
+    /// playlist view: the selected audio clip's stable id
+    clip_sel: Option<String>,
 }
 
-const VIEWS: [&str; 4] = ["SEQUENCER", "MIXER", "AUTOMATION", "PLAYLIST"];
+/// The studio is a hand-operated DAW: one view per manual workspace. The
+/// one-call production tools (make_beat, produce_song, critique_mix, ...)
+/// are MCP tools only and have no place in the GUI.
+pub const VIEWS: [&str; 7] = [
+    "SEQUENCER",
+    "MIXER",
+    "AUTOMATION",
+    "PLAYLIST",
+    "VOCAL",
+    "BROWSER",
+    "RACK",
+];
 
 pub fn run(
     engine: Engine,
@@ -103,22 +139,30 @@ pub fn run(
                 project_path: project,
                 listen,
                 server_ok,
+                show_about: false,
                 pattern: 0,
                 selected: 0,
                 rendered: None,
                 rendering: None,
+                live: None,
                 inspector: None,
                 dragging: false,
                 toast: None,
                 screenshot,
                 frames: 0,
                 shot_requested: false,
+                perf: None,
+                perf_next: None,
                 view,
                 auto_sel: None,
                 piano: piano::PianoState {
                     snap: 2,
                     ..Default::default()
                 },
+                vocal_wave: None,
+                browser: Default::default(),
+                analyze: Default::default(),
+                clip_sel: None,
             }))
         }),
     )
@@ -304,17 +348,33 @@ impl Studio {
         }
     }
 
-    fn snapshot(&self) -> (Project, u64, Vec<LogEntry>, (usize, usize)) {
+    fn snapshot(&self) -> (Project, u64, (Vec<String>, Vec<String>), (usize, usize)) {
         let e = self.engine.lock().unwrap();
-        let log = e.log.iter().rev().take(40).cloned().collect();
-        (e.project.clone(), e.revision, log, e.undo_depth())
+        (e.project.clone(), e.revision, e.history(), e.undo_depth())
     }
 
     fn pump_render(&mut self, project: &Project, rev: u64, ctx: &egui::Context) {
+        // an edit made while playing: its bars are heard as soon as they are
+        // spliced in (the player swaps at its next block, crossfaded)
+        if let Some(rx) = &self.live {
+            if let Ok(m) = rx.try_recv() {
+                if self.perf.is_none() && self.perf_next.is_none() {
+                    if let Some(r) = &self.rendered {
+                        self.player.set_mix(m, r.loop_secs);
+                    }
+                }
+                self.live = None;
+            }
+        }
         if let Some((want, rx)) = &self.rendering {
             if let Ok(r) = rx.try_recv() {
                 let _ = want;
-                self.player.set_mix(r.mix.clone(), r.loop_secs);
+                self.live = None;
+                // performance mode keeps looping its pattern; the song comes
+                // back on exit
+                if self.perf.is_none() && self.perf_next.is_none() {
+                    self.player.set_mix(r.mix.clone(), r.loop_secs);
+                }
                 self.rendered = Some(r);
                 self.rendering = None;
             }
@@ -332,7 +392,33 @@ impl Studio {
             p.arrangement = project.arrangement.clone();
             let (tx, rx) = channel();
             let ctx = ctx.clone();
+            // while the song plays, splice the edited bars into the playing
+            // buffer first; the full render below still follows
+            let prev =
+                (self.player.is_playing() && self.perf.is_none() && self.perf_next.is_none())
+                    .then(|| {
+                        self.rendered
+                            .as_ref()
+                            .map(|r| (r.project.clone(), r.mix.clone()))
+                    })
+                    .flatten();
+            let (ltx, lrx) = channel();
+            self.live = prev.is_some().then_some(lrx);
             std::thread::spawn(move || {
+                if let Some((op, om)) = prev {
+                    if let crate::live_splice::Dirty::Steps(a, b) =
+                        crate::live_splice::dirty_steps(&op, &p)
+                    {
+                        if !crate::live_splice::worth_splicing(&op, &p, a, b) {
+                            // the full render below is as quick
+                        } else if let Ok((m, _)) =
+                            crate::live_splice::splice(&op, &p, &bank, &om, a, b)
+                        {
+                            let _ = ltx.send(Arc::new(m));
+                            ctx.request_repaint();
+                        }
+                    }
+                }
                 if let Ok(mix) = render::render(
                     &p,
                     &bank,
@@ -366,6 +452,7 @@ impl Studio {
                         spectrum,
                         report,
                         loop_secs,
+                        project: Arc::new(p.clone()),
                     });
                     ctx.request_repaint();
                 }
@@ -476,6 +563,29 @@ impl Studio {
                     self.player.play();
                 }
             }
+            // record: start/stop a take from the default input; the take is
+            // placed on the "rec" track where recording started
+            let rec = crate::recorder::recording_seconds();
+            let tip = match rec {
+                Some(s) => format!("Recording ({s:.0} s). Click to stop; the take goes on the 'rec' track."),
+                None => "Record from the default audio input. Click again to stop; the take goes on the 'rec' track where recording started.".to_string(),
+            };
+            if record_button(ui, rec.is_some()).on_hover_text(tip).clicked() {
+                match rec {
+                    None => self.call("start_recording", json!({})),
+                    Some(s) => {
+                        let start_beat = if self.player.is_playing() {
+                            (self.player.position_secs() - s).max(0.0) * p.bpm / 60.0
+                        } else {
+                            0.0
+                        };
+                        self.call("stop_recording", json!({"track": "rec", "start_beat": start_beat}));
+                    }
+                }
+            }
+            if rec.is_some() {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+            }
             let pos = self.player.position_secs();
             let total = p.song_seconds();
             ui.add_space(6.0);
@@ -569,35 +679,9 @@ impl Studio {
                 self.call("set_key", json!({"root": root, "scale": scale}));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // live AI badge
-                let (r, _) = ui.allocate_exact_size(Vec2::new(214.0, 26.0), Sense::hover());
-                let t = ui.input(|i| i.time) as f32;
-                let pulse = 0.55 + 0.45 * (t * 2.5).sin().abs();
-                let col = if self.server_ok { GOOD } else { HOT };
-                ui.painter().rect_filled(r, 13.0, col.gamma_multiply(0.12));
-                ui.painter().circle_filled(
-                    Pos2::new(r.left() + 14.0, r.center().y),
-                    4.5,
-                    col.gamma_multiply(pulse),
-                );
-                ui.painter().text(
-                    Pos2::new(r.left() + 26.0, r.center().y),
-                    Align2::LEFT_CENTER,
-                    if self.server_ok {
-                        format!("AI LINK {}", self.listen.rsplit(':').next().unwrap_or(""))
-                    } else {
-                        "AI LINK OFF".into()
-                    },
-                    FontId::proportional(11.5),
-                    col,
-                );
-                ui.painter().text(
-                    Pos2::new(r.right() - 12.0, r.center().y),
-                    Align2::RIGHT_CENTER,
-                    format!("{} tools", crate::tools::registry().len()),
-                    FontId::proportional(10.5),
-                    DIM,
-                );
+                if ui.button("About").clicked() {
+                    self.show_about = !self.show_about;
+                }
                 ui.add_space(6.0);
                 if ui.button("Render WAV").on_hover_text("Cmd+R").clicked() {
                     self.render_wav();
@@ -625,79 +709,72 @@ impl Studio {
 
     // ---------------- browser ----------------
     fn browser(&mut self, ui: &mut egui::Ui, p: &Project) {
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            section_label(ui, "INSTANT BEAT");
-            let styles: Vec<&str> = theory::GROOVES.iter().map(|g| g.name).collect();
-            egui::Grid::new("styles").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
-                for (i, s) in styles.iter().enumerate() {
-                    let hue = i as f32 / styles.len() as f32;
-                    let col = lerp_color(ACCENT, ACCENT2, hue);
-                    let b = egui::Button::new(RichText::new(s.replace('_', " ")).size(12.5).color(TEXT))
-                        .fill(col.gamma_multiply(0.22))
-                        .stroke(Stroke::new(1.0_f32, col.gamma_multiply(0.6)))
-                        .min_size(Vec2::new(98.0, 30.0));
-                    if ui.add(b).on_hover_text(format!("generate_beat style={s}")).clicked() {
-                        self.call("generate_beat", json!({"style": s, "seed": (ui.input(|i| i.time) * 1000.0) as u64 % 9973}));
-                        self.pattern = 0;
-                        self.selected = 0;
-                    }
-                    if i % 2 == 1 {
-                        ui.end_row();
-                    }
-                }
-            });
-            ui.add_space(8.0);
-            section_label(ui, "PATTERNS");
-            for (i, pat) in p.patterns.iter().enumerate() {
-                let sel = i == self.pattern;
-                let r = ui.add(
-                    egui::Button::new(RichText::new(format!("{}   {} bars", pat.name, pat.bars)).size(12.5))
-                        .fill(if sel { ACCENT.gamma_multiply(0.35) } else { PANEL2 })
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                section_label(ui, "PATTERNS");
+                for (i, pat) in p.patterns.iter().enumerate() {
+                    let sel = i == self.pattern;
+                    let r = ui.add(
+                        egui::Button::new(
+                            RichText::new(format!("{}   {} bars", pat.name, pat.bars)).size(12.5),
+                        )
+                        .fill(if sel {
+                            ACCENT.gamma_multiply(0.35)
+                        } else {
+                            PANEL2
+                        })
                         .min_size(Vec2::new(ui.available_width(), 26.0)),
-                );
-                if r.clicked() {
-                    self.pattern = i;
+                    );
+                    if r.clicked() {
+                        self.pattern = i;
+                    }
                 }
-            }
-            ui.horizontal(|ui| {
-                if ui.small_button("+ new").clicked() {
-                    let name = format!("P{}", p.patterns.len() + 1);
-                    self.call("add_pattern", json!({"name": name, "bars": 4}));
-                    self.pattern = p.patterns.len();
-                }
-                if ui.small_button("duplicate").clicked() {
-                    if let Some(src) = p.patterns.get(self.pattern) {
-                        let name = format!("{}_v{}", src.name, p.patterns.len() + 1);
-                        self.call("add_pattern", json!({"name": name, "copy_from": src.name}));
+                ui.horizontal(|ui| {
+                    if ui.small_button("+ new").clicked() {
+                        let name = format!("P{}", p.patterns.len() + 1);
+                        self.call("add_pattern", json!({"name": name, "bars": 4}));
                         self.pattern = p.patterns.len();
                     }
+                    if ui.small_button("duplicate").clicked() {
+                        if let Some(src) = p.patterns.get(self.pattern) {
+                            let name = format!("{}_v{}", src.name, p.patterns.len() + 1);
+                            self.call("add_pattern", json!({"name": name, "copy_from": src.name}));
+                            self.pattern = p.patterns.len();
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+                section_label(ui, "INSTRUMENTS");
+                for (name, desc) in instruments::PRESETS {
+                    let kind = instruments::preset(name)
+                        .map(|i| i.kind_name())
+                        .unwrap_or("synth");
+                    let col = track_color(name, kind);
+                    let r = ui
+                        .horizontal(|ui| {
+                            let (dot, _) =
+                                ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                            ui.painter().circle_filled(dot.center(), 4.0, col);
+                            ui.add(
+                                egui::Label::new(RichText::new(name.replace('_', " ")).size(12.5))
+                                    .sense(Sense::click()),
+                            )
+                        })
+                        .inner
+                        .on_hover_text(format!("{desc}\nclick to add a track"));
+                    if r.clicked() {
+                        let mut n = name.to_string();
+                        let mut k = 2;
+                        while p.track_index(&n).is_ok() {
+                            n = format!("{name}{k}");
+                            k += 1;
+                        }
+                        self.call("add_track", json!({"name": n, "preset": name}));
+                        self.selected = p.tracks.len();
+                    }
                 }
             });
-            ui.add_space(8.0);
-            section_label(ui, "INSTRUMENTS");
-            for (name, desc) in instruments::PRESETS {
-                let kind = instruments::preset(name).map(|i| i.kind_name()).unwrap_or("synth");
-                let col = track_color(name, kind);
-                let r = ui
-                    .horizontal(|ui| {
-                        let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-                        ui.painter().circle_filled(dot.center(), 4.0, col);
-                        ui.add(egui::Label::new(RichText::new(name.replace('_', " ")).size(12.5)).sense(Sense::click()))
-                    })
-                    .inner
-                    .on_hover_text(format!("{desc}\nclick to add a track"));
-                if r.clicked() {
-                    let mut n = name.to_string();
-                    let mut k = 2;
-                    while p.track_index(&n).is_ok() {
-                        n = format!("{name}{k}");
-                        k += 1;
-                    }
-                    self.call("add_track", json!({"name": n, "preset": name}));
-                    self.selected = p.tracks.len();
-                }
-            }
-        });
     }
 
     // ---------------- arrangement strip ----------------
@@ -757,103 +834,40 @@ impl Studio {
 
     // ---------------- sequencer ----------------
     fn sequencer(&mut self, ui: &mut egui::Ui, p: &Project) {
-        let Some(pat) = p.patterns.get(self.pattern) else {
+        // the pattern picker: select / add a pattern, send it to the playlist
+        let mut pat = self.pattern;
+        let mut pgeo = channel_rack::PatternBarGeo::default();
+        // drop target: the selected playlist clip's track and bar (a collision
+        // there routes the new clip to the next free track)
+        let target = self
+            .clip_sel
+            .as_ref()
+            .and_then(|id| p.playlist.iter().find(|c| &c.id == id))
+            .map(|c| (c.lane, c.start_bar));
+        let picks = channel_rack::pattern_bar(ui, p, &mut pat, target, &mut pgeo);
+        self.pattern = pat;
+        for (tool, args) in picks {
+            self.call(tool, args);
+        }
+        if p.patterns.get(self.pattern).is_none() {
             return;
-        };
-        let steps = pat.steps() as usize;
-        let header_w = 210.0;
+        }
         let playing_here = locate(p, self.player.position_secs())
             .filter(|(pi, _)| *pi == self.pattern)
             .map(|(_, s)| s);
         egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("seq").show(ui, |ui| {
-            // ruler
-            let (ruler, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 18.0), Sense::hover());
-            let grid_left = ruler.left() + header_w;
-            let cell = ((ruler.width() - header_w - 6.0) / steps as f32).max(4.0);
-            for b in 0..pat.bars {
-                let x = grid_left + (b * STEPS_PER_BAR) as f32 * cell;
-                ui.painter().text(Pos2::new(x + 3.0, ruler.center().y), Align2::LEFT_CENTER, format!("{}", b + 1), FontId::monospace(11.0), DIM);
-            }
-            for (ti, t) in p.tracks.iter().enumerate() {
-                let kind = t.instrument.kind_name();
-                let color = track_color(&t.name, kind);
-                let is_drum = t.instrument.is_drum() || matches!(&t.instrument, instruments::Instrument::Sampler(s) if s.one_shot);
-                let row_h = if is_drum { 30.0 } else { 46.0 };
-                let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::hover());
-                let painter = ui.painter_at(row);
-                let selected = ti == self.selected;
-                // header
-                let head = Rect::from_min_size(row.min, Vec2::new(header_w - 8.0, row_h - 4.0));
-                painter.rect_filled(head, 7.0, if selected { Color32::from_rgb(54, 58, 64) } else { PANEL2 });
-                painter.rect_filled(Rect::from_min_size(head.min, Vec2::new(4.0, head.height())), 2.0, color);
-                painter.text(head.left_center() + Vec2::new(14.0, -6.0), Align2::LEFT_CENTER, &t.name, FontId::proportional(13.0), if t.mute { DIM } else { TEXT });
-                painter.text(head.left_center() + Vec2::new(14.0, 8.0), Align2::LEFT_CENTER, kind, FontId::proportional(10.0), DIM);
-                let head_resp = ui.interact(head, ui.id().with(("head", ti)), Sense::click());
-                if head_resp.clicked() {
-                    self.selected = ti;
-                }
-                // M / S pills
-                let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(Pos2::new(head.right() - 54.0, head.center().y - 9.0), Vec2::new(54.0, 18.0))));
-                cui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    if pill(ui, "M", t.mute, WARN).clicked() {
-                        self.call("set_mixer", json!({"track": t.name, "mute": !t.mute}));
-                    }
-                    if pill(ui, "S", t.solo, SOLO).clicked() {
-                        self.call("set_mixer", json!({"track": t.name, "solo": !t.solo}));
-                    }
-                });
-                // grid
-                let grid = Rect::from_min_max(Pos2::new(row.left() + header_w, row.top()), Pos2::new(row.left() + header_w + cell * steps as f32, row.bottom() - 4.0));
-                painter.rect_filled(grid, 6.0, BG);
-                let notes = pat.notes(&t.name);
-                if is_drum {
-                    for s in 0..steps {
-                        let r = Rect::from_min_size(Pos2::new(grid.left() + s as f32 * cell + 1.5, grid.top() + 3.0), Vec2::new(cell - 3.0, grid.height() - 6.0));
-                        let hit = notes.iter().find(|n| n.start >= s as f32 && n.start < s as f32 + 1.0);
-                        let beat = (s / 4) % 2 == 0;
-                        let base = if beat { Color32::from_rgb(54, 54, 57) } else { Color32::from_rgb(46, 46, 48) };
-                        let fill = match hit {
-                            Some(n) => color.gamma_multiply(0.35 + 0.65 * n.vel),
-                            None => base,
-                        };
-                        painter.rect_filled(r, 3.5, fill);
-                        if playing_here.map(|ps| ps as usize == s).unwrap_or(false) {
-                            painter.rect_stroke(r, 3.5, Stroke::new(1.5_f32, Color32::WHITE));
-                        }
-                        let resp = ui.interact(r, ui.id().with(("pad", ti, s)), Sense::click());
-                        if resp.clicked() {
-                            self.selected = ti;
-                            self.call("toggle_step", json!({"track": t.name, "step": s, "pattern": pat.name}));
-                        }
-                    }
-                } else {
-                    // mini piano roll lane
-                    for b in 0..=pat.bars {
-                        let x = grid.left() + (b * STEPS_PER_BAR) as f32 * cell;
-                        painter.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.0_f32, LINE));
-                    }
-                    let (lo, hi) = notes.iter().fold((127u8, 0u8), |(l, h), n| (l.min(n.pitch), h.max(n.pitch)));
-                    let span = (hi.saturating_sub(lo)).max(12) as f32;
-                    for n in notes {
-                        let y = grid.bottom() - 5.0 - (n.pitch.saturating_sub(lo)) as f32 / span * (grid.height() - 12.0);
-                        let r = Rect::from_min_size(Pos2::new(grid.left() + n.start * cell, y - 2.5), Vec2::new((n.len * cell - 1.0).max(2.0), 5.0));
-                        painter.rect_filled(r, 2.0, color.gamma_multiply(0.5 + 0.5 * n.vel));
-                    }
-                    let lane = ui.interact(grid, ui.id().with(("lane", ti)), Sense::click());
-                    if lane.clicked() {
-                        self.selected = ti;
-                    }
-                }
-                if let Some(ps) = playing_here {
-                    let x = grid.left() + ps * cell;
-                    painter.line_segment([Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())], Stroke::new(1.5_f32, Color32::WHITE.gamma_multiply(0.8)));
-                }
+            // the FL-style channel rack (channel_rack.rs): every gesture
+            // comes back as one tool call
+            let mut sel = channel_rack::RackSel { selected: self.selected, rows: Vec::new() };
+            let actions = channel_rack::channel_rack(ui, p, self.pattern, &mut sel, playing_here);
+            self.selected = sel.selected;
+            for (tool, args) in actions {
+                self.call(tool, args);
             }
             if p.tracks.is_empty() {
                 ui.add_space(40.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("Pick a style on the left or ask your AI to start a beat").size(16.0).color(DIM));
+                    ui.label(RichText::new("Add a track to start: click an instrument under INSTRUMENTS on the left").size(16.0).color(DIM));
                 });
             }
         });
@@ -866,7 +880,6 @@ impl Studio {
             return;
         };
         ui.horizontal(|ui| {
-            score_ring(ui, r.report.score);
             ui.vertical(|ui| {
                 ui.label(RichText::new("MASTER").size(11.0).color(DIM).strong());
                 ui.label(
@@ -977,19 +990,17 @@ impl Studio {
                 DIM,
             );
         }
-        ui.add_space(4.0);
-        ui.label(RichText::new("AI MIX NOTES").size(10.5).color(DIM).strong());
-        for s in r.report.suggestions.iter().take(2) {
-            if ui.available_height() < 30.0 {
-                break;
-            }
-            ui.label(RichText::new(format!("- {s}")).size(11.5).color(WARN));
-        }
         let _ = p;
     }
 
     // ---------------- inspector ----------------
-    fn inspector(&mut self, ui: &mut egui::Ui, p: &Project, rev: u64, log: &[LogEntry]) {
+    fn inspector(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: &Project,
+        rev: u64,
+        log: &(Vec<String>, Vec<String>),
+    ) {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             if let Some(t) = p.tracks.get(self.selected) {
                 let color = track_color(&t.name, t.instrument.kind_name());
@@ -1119,28 +1130,26 @@ impl Studio {
             }
             ui.add_space(8.0);
             card().show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("ACTIVITY").size(10.5).color(DIM).strong());
-                    ui.label(RichText::new("every action is a tool call").size(10.0).color(DIM));
-                });
-                for e in log.iter().take(9) {
-                    ui.horizontal(|ui| {
-                        let (col, tag) = match e.source.as_str() {
-                            "ai" | "mcp" => (ACCENT, "AI"),
-                            "you" => (ACCENT2, "YOU"),
-                            _ => (DIM, "SYS"),
-                        };
-                        let (r, _) = ui.allocate_exact_size(Vec2::new(30.0, 16.0), Sense::hover());
-                        ui.painter().rect_filled(r, 4.0, col.gamma_multiply(0.25));
-                        ui.painter().text(r.center(), Align2::CENTER_CENTER, tag, FontId::proportional(9.5), col);
-                        ui.label(RichText::new(&e.tool).monospace().size(11.5).color(if e.ok { TEXT } else { HOT }));
-                        let budget = ((236.0 - e.tool.len() as f32 * 7.2) / 5.6).max(6.0) as usize;
-                        let mut s: String = e.summary.chars().take(budget).collect();
-                        if e.summary.chars().count() > budget {
-                            s.push('…');
-                        }
-                        ui.label(RichText::new(s).size(10.5).color(DIM));
-                    });
+                ui.label(RichText::new("HISTORY").size(10.5).color(DIM).strong());
+                let (done, undone) = log;
+                if done.is_empty() && undone.is_empty() {
+                    ui.label(RichText::new("No changes yet").size(11.5).color(DIM));
+                }
+                // undone steps (redo brings them back), farthest first, dimmed
+                let skip = undone.len().saturating_sub(4);
+                for (i, l) in undone.iter().enumerate().skip(skip) {
+                    let steps = undone.len() - i;
+                    let r = ui.add(egui::Label::new(RichText::new(l).size(11.5).color(DIM).italics()).sense(Sense::click()).truncate());
+                    if r.on_hover_text("Redo up to here").clicked() {
+                        self.call("redo", json!({"steps": steps}));
+                    }
+                }
+                for (k, l) in done.iter().enumerate().take(9) {
+                    let col = if k == 0 { TEXT } else { TEXT.gamma_multiply(0.8) };
+                    let r = ui.add(egui::Label::new(RichText::new(l).size(11.5).color(col)).sense(Sense::click()).truncate());
+                    if k > 0 && r.on_hover_text("Go back to this step").clicked() {
+                        self.call("undo", json!({"steps": k}));
+                    }
                 }
             });
         });
@@ -1150,6 +1159,7 @@ impl Studio {
 impl eframe::App for Studio {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frames += 1;
+        let midi_live;
         // live link: apply transport commands from MCP and publish the state
         {
             let mut e = self.engine.lock().unwrap();
@@ -1162,11 +1172,77 @@ impl eframe::App for Studio {
                     crate::engine::TransportCmd::Seek(s) => self.player.seek(s.max(0.0)),
                 }
             }
+            match e.transport.pending_audition.take() {
+                Some(Some(buf)) => self.player.audition(buf),
+                Some(None) => self.player.stop_audition(),
+                None => {}
+            }
+            if let Some(l) = e.transport.pending_launch.take() {
+                let song = self.rendered.as_ref().map(|r| (r.mix.clone(), r.loop_secs));
+                match (l.mix, song) {
+                    (Some(m), _) => {
+                        self.player.launch(m, l.loop_secs, l.quantum_secs);
+                        self.perf_next = Some(l.pattern);
+                    }
+                    (None, Some((m, secs))) => {
+                        self.player.launch(m, secs, l.quantum_secs);
+                        self.perf_next = Some(None);
+                    }
+                    (None, None) => {
+                        self.perf = None;
+                        self.perf_next = None;
+                    }
+                }
+            }
+            self.player.poll();
+            if self.perf_next.is_some() && !self.player.launch_pending() {
+                self.perf = self.perf_next.take().unwrap();
+                if self.perf.is_none() {
+                    // the song render may be newer than the one queued on exit
+                    if let Some(r) = &self.rendered {
+                        self.player.set_mix(r.mix.clone(), r.loop_secs);
+                    }
+                }
+            }
+            e.transport.perf_playing = self.perf.clone();
+            e.transport.perf_queued = self
+                .perf_next
+                .clone()
+                .map(|n| n.unwrap_or_else(|| "song".into()));
+            // MIDI controller: apply what it sent, then sound the live notes
+            crate::midi_in::pump(&mut e);
+            for buf in std::mem::take(&mut e.transport.pending_notes) {
+                self.player.layer(buf);
+            }
+            midi_live = e.midi.port.is_some();
+            e.transport.auditioning = self.player.auditioning();
             e.transport.playing = self.player.is_playing();
             e.transport.position_s = self.player.position_secs();
         }
-        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        // a connected controller is polled every few ms so playing feels live
+        ctx.request_repaint_after(std::time::Duration::from_millis(if midi_live {
+            5
+        } else {
+            250
+        }));
         let (p, rev, log, undo) = self.snapshot();
+        if self.show_about {
+            let mut open = true;
+            egui::Window::new("About Beatbox Studio")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("Beatbox Studio {}", env!("CARGO_PKG_VERSION")));
+                    let port = self.listen.rsplit(':').next().unwrap_or("").to_string();
+                    ui.label(if self.server_ok {
+                        format!("Remote control on port {port}")
+                    } else {
+                        "Remote control is off".to_string()
+                    });
+                });
+            self.show_about = open;
+        }
         if self.pattern >= p.patterns.len() {
             self.pattern = 0;
         }
@@ -1193,8 +1269,8 @@ impl eframe::App for Studio {
             )
             .show(ctx, |ui| self.top_bar(ui, &p, undo));
 
-        // the mixer takes the browser's space: strips need the width
-        if self.view != 1 {
+        // the mixer and the rack take the browser's space: strips need the width
+        if self.view != 1 && self.view != 6 {
             egui::SidePanel::left("browser")
                 .exact_width(232.0)
                 .resizable(false)
@@ -1264,6 +1340,27 @@ impl eframe::App for Studio {
                             crate::timebase::TICKS_PER_QUARTER,
                             p.bpm
                         ),
+                        4 => match &p.vocal_map {
+                            Some(m) => format!(
+                                "{} words · {} sung notes · {} chords",
+                                m.words.len(),
+                                m.notes.len(),
+                                m.chords.len()
+                            ),
+                            None => "no vocal take in this project".to_string(),
+                        },
+                        5 => format!(
+                            "{} samples \u{00B7} presets, effects, palettes",
+                            p.samples.len()
+                        ),
+                        6 => format!(
+                            "{} strips \u{00B7} {} devices \u{00B7} every control by id",
+                            p.tracks.len() + p.buses.len() + 1,
+                            p.tracks.len()
+                                + p.tracks.iter().map(|t| t.effects.len()).sum::<usize>()
+                                + p.buses.iter().map(|b| b.effects.len()).sum::<usize>()
+                                + p.master_effects.len()
+                        ),
                         2 => format!(
                             "{} lanes · {:.0} beats · {:.0} BPM",
                             p.automation.len(),
@@ -1288,6 +1385,9 @@ impl eframe::App for Studio {
                     1 => self.mixer(ui, &p),
                     3 => self.playlist_view(ui, &p),
                     2 => self.automation_view(ui, &p),
+                    4 => self.vocal_view(ui, &p),
+                    5 => self.browser_view(ui, &p),
+                    6 => self.rack_view(ui, &p, rev),
                     _ => self.sequencer(ui, &p),
                 }
             });
@@ -1362,3 +1462,6 @@ impl eframe::App for Studio {
         ));
     }
 }
+
+#[cfg(test)]
+mod manual_ui_tests;

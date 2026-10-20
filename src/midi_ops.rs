@@ -20,6 +20,8 @@ pub struct Selection {
     pub pitches: Vec<u8>,
     pub vel_min: f32,
     pub vel_max: f32,
+    /// Only notes with these stable ids (empty = no id filter).
+    pub ids: Vec<String>,
 }
 
 impl Default for Selection {
@@ -32,6 +34,7 @@ impl Default for Selection {
             pitches: Vec::new(),
             vel_min: 0.0,
             vel_max: 1.0,
+            ids: Vec::new(),
         }
     }
 }
@@ -45,6 +48,7 @@ impl Selection {
             && (self.pitches.is_empty() || self.pitches.contains(&n.pitch))
             && n.vel >= self.vel_min - 1e-4
             && n.vel <= self.vel_max + 1e-4
+            && (self.ids.is_empty() || self.ids.contains(&n.id))
     }
 }
 
@@ -245,6 +249,49 @@ pub fn legato(notes: &mut [Note], sel: &Selection, overlap: f32, pattern_steps: 
             .copied()
             .unwrap_or(pattern_steps);
         n.len = (next - n.start + overlap).max(0.05);
+        k += 1;
+    }
+    k
+}
+
+/// FL Articulate: each selected note's length becomes `ratio` of the gap to
+/// the next onset (staccato 0.35, portato 0.7, tenuto 0.95, legato 1.0), so
+/// a whole part changes feel in one call; max_len caps it (steps, 0 = none).
+pub const ARTICULATIONS: &[(&str, f32)] = &[
+    ("staccatissimo", 0.18),
+    ("staccato", 0.35),
+    ("portato", 0.7),
+    ("tenuto", 0.95),
+    ("legato", 1.0),
+];
+
+pub fn articulate(
+    notes: &mut [Note],
+    sel: &Selection,
+    ratio: f32,
+    max_len: f32,
+    pattern_steps: f32,
+) -> usize {
+    sort(notes);
+    let mut starts: Vec<f32> = notes
+        .iter()
+        .filter(|n| sel.matches(n))
+        .map(|n| n.start)
+        .collect();
+    starts.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+    let r = ratio.clamp(0.05, 1.5);
+    let mut k = 0;
+    for n in notes.iter_mut().filter(|n| sel.matches(n)) {
+        let next = starts
+            .iter()
+            .find(|s| **s > n.start + 1e-3)
+            .copied()
+            .unwrap_or(pattern_steps);
+        let mut len = ((next - n.start) * r).max(0.05);
+        if max_len > 0.0 {
+            len = len.min(max_len);
+        }
+        n.len = len;
         k += 1;
     }
     k
@@ -901,9 +948,177 @@ pub fn counter_melody(
     out
 }
 
+// ---------------- flip / chop / limit (FL piano-roll tools) ----------------
+
+/// Flip selected notes. mode "pitch": mirror pitches around `axis` (default
+/// the middle of the selection's range), so a rising line falls. mode
+/// "time": reverse their order inside the span they occupy (a phrase played
+/// backwards, lengths kept). Returns how many notes moved.
+pub fn flip(notes: &mut [Note], sel: &Selection, mode: &str, axis: Option<f32>) -> Result<usize> {
+    let idx = selected(notes, sel);
+    if idx.is_empty() {
+        return Ok(0);
+    }
+    match mode {
+        "pitch" => {
+            let lo = idx.iter().map(|&i| notes[i].pitch).min().unwrap_or(60) as f32;
+            let hi = idx.iter().map(|&i| notes[i].pitch).max().unwrap_or(60) as f32;
+            let ax = axis.unwrap_or((lo + hi) / 2.0);
+            for &i in &idx {
+                notes[i].pitch = (2.0 * ax - notes[i].pitch as f32).round().clamp(0.0, 127.0) as u8;
+            }
+        }
+        "time" => {
+            let s0 = idx.iter().map(|&i| notes[i].start).fold(f32::MAX, f32::min);
+            let e1 = idx.iter().map(|&i| notes[i].end()).fold(0.0, f32::max);
+            for &i in &idx {
+                notes[i].start = (s0 + e1 - notes[i].end()).max(0.0);
+            }
+        }
+        other => bail!("unknown mode '{other}'. Options: pitch, time"),
+    }
+    Ok(idx.len())
+}
+
+/// Chop selected notes with a rhythm: `pattern` is one character per `step`
+/// steps, read on the song grid ('x' = hit, '-' = keep holding the previous
+/// hit, '.' = rest), repeating. A held chord or 808 becomes that rhythm
+/// (FL's pattern-based Chop). Returns how many notes came out.
+pub fn chop(notes: &mut Vec<Note>, sel: &Selection, pattern: &str, step: f32) -> Result<usize> {
+    let pat: Vec<char> = pattern
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '|')
+        .collect();
+    if pat.is_empty() || pat.iter().any(|c| !matches!(c, 'x' | 'X' | '-' | '.')) {
+        bail!("pattern uses x (hit), - (hold), . (rest), e.g. 'x.x-x..x'");
+    }
+    if !pat.iter().any(|c| *c == 'x' || *c == 'X') {
+        bail!("the pattern has no hit (x)");
+    }
+    let step = step.max(0.125);
+    let idx = selected(notes, sel);
+    let mut out = Vec::new();
+    let mut made = 0;
+    for &i in idx.iter().rev() {
+        let n = notes.remove(i);
+        let mut t = (n.start / step).floor() * step;
+        let mut cur: Option<Note> = None;
+        while t < n.end() - 1e-4 {
+            let k = ((t / step).round() as usize) % pat.len();
+            let c = pat[k];
+            let s = t.max(n.start);
+            let e = (t + step).min(n.end());
+            match c {
+                'x' | 'X' => {
+                    if let Some(c0) = cur.take() {
+                        out.push(c0);
+                    }
+                    let mut m = n.clone();
+                    m.start = s;
+                    m.len = e - s;
+                    m.vel = if c == 'X' { n.vel } else { n.vel * 0.85 };
+                    cur = Some(m);
+                }
+                '-' => {
+                    if let Some(c0) = cur.as_mut() {
+                        c0.len = e - c0.start;
+                    }
+                }
+                _ => {
+                    if let Some(c0) = cur.take() {
+                        out.push(c0);
+                    }
+                }
+            }
+            t += step;
+        }
+        if let Some(c0) = cur.take() {
+            out.push(c0);
+        }
+    }
+    for m in out {
+        if m.len > 1e-3 {
+            notes.push(m);
+            made += 1;
+        }
+    }
+    sort(notes);
+    Ok(made)
+}
+
+/// Keep selected notes inside [lo, hi] by moving them whole octaves (FL's
+/// Limit): a bass line that wandered too high, a lead too low for the mix.
+pub fn limit_range(notes: &mut [Note], sel: &Selection, lo: u8, hi: u8) -> Result<usize> {
+    if hi < lo || hi - lo < 11 {
+        bail!("the range must span at least an octave (lo {lo}, hi {hi})");
+    }
+    let mut moved = 0;
+    for i in selected(notes, sel) {
+        let mut p = notes[i].pitch as i32;
+        while p < lo as i32 {
+            p += 12;
+        }
+        while p > hi as i32 {
+            p -= 12;
+        }
+        if p != notes[i].pitch as i32 {
+            notes[i].pitch = p as u8;
+            moved += 1;
+        }
+    }
+    Ok(moved)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn flip_chop_limit() {
+        let mut v = vec![
+            Note::new(0.0, 2.0, 60, 0.8),
+            Note::new(2.0, 2.0, 64, 0.8),
+            Note::new(4.0, 4.0, 67, 0.8),
+        ];
+        flip(&mut v, &Selection::default(), "pitch", None).unwrap();
+        // mirrored around 63.5: a major triad comes back as a minor one
+        assert_eq!(
+            v.iter().map(|n| n.pitch).collect::<Vec<_>>(),
+            vec![67, 63, 60]
+        );
+        let mut t = vec![Note::new(0.0, 1.0, 60, 0.8), Note::new(1.0, 3.0, 62, 0.8)];
+        flip(&mut t, &Selection::default(), "time", None).unwrap();
+        assert!((t[0].start - 3.0).abs() < 1e-4 && t[1].start.abs() < 1e-4);
+        let mut c = vec![Note::new(0.0, 8.0, 48, 1.0)];
+        let made = chop(&mut c, &Selection::default(), "x-.x", 1.0).unwrap();
+        sort(&mut c);
+        assert_eq!(made, 4, "{c:?}");
+        assert!((c[0].len - 2.0).abs() < 1e-4 && (c[1].start - 3.0).abs() < 1e-4);
+        assert!(chop(&mut c, &Selection::default(), "..", 1.0).is_err());
+        let mut l = vec![Note::new(0.0, 1.0, 80, 0.8), Note::new(1.0, 1.0, 30, 0.8)];
+        assert_eq!(
+            limit_range(&mut l, &Selection::default(), 36, 59).unwrap(),
+            2
+        );
+        assert!(l.iter().all(|n| (36..=59).contains(&n.pitch)));
+    }
+
     use super::*;
+
+    #[test]
+    fn articulate_sets_length_from_the_gap() {
+        let mut n = vec![
+            Note::new(0.0, 1.0, 60, 0.8),
+            Note::new(4.0, 1.0, 62, 0.8),
+            Note::new(6.0, 1.0, 64, 0.8),
+        ];
+        assert_eq!(articulate(&mut n, &Selection::default(), 0.5, 0.0, 16.0), 3);
+        assert!(
+            (n[0].len - 2.0).abs() < 1e-4
+                && (n[1].len - 1.0).abs() < 1e-4
+                && (n[2].len - 5.0).abs() < 1e-4
+        );
+        articulate(&mut n, &Selection::default(), 1.0, 3.0, 16.0);
+        assert!((n[2].len - 3.0).abs() < 1e-4);
+    }
 
     const MINOR: [u8; 7] = [0, 2, 3, 5, 7, 8, 10];
     const MAJOR: [u8; 7] = [0, 2, 4, 5, 7, 9, 11];
