@@ -2718,7 +2718,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::StereoShaper(_) => Streamable,
         Effect::Vinyl(_) => Streamable,
         Effect::Waveshaper(_) => Streamable,
-        Effect::AmpSim(_) => OneShot("amp sim: unverified"),
+        Effect::AmpSim(_) => OneShot("amp sim: whole-buffer RMS normalize, needs the full signal"),
         Effect::ModDelay(_) => Streamable,
         Effect::Lofi(_) => Streamable,
         Effect::Rectifier(_) => Streamable,
