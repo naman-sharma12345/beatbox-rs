@@ -88,42 +88,26 @@ pub fn freq_shift(p: &FreqShiftFx, l: &mut [f32], r: &mut [f32]) {
     freq_shift_at(p, l, r, 0)
 }
 
-/// `freq_shift` for a buffer that starts `offset` samples into the song: the
-/// oscillator is stepped through the first `offset` samples (renormalised on
-/// the same song positions), so its phase is the whole-song pass's.
-pub fn freq_shift_at(p: &FreqShiftFx, l: &mut [f32], r: &mut [f32], offset: usize) {
-    let mix = p.mix.clamp(0.0, 1.0);
-    let fb = p.feedback.clamp(0.0, 0.9);
-    // the right side shifts by shift + stereo_hz: the two sides drift apart
-    for (ci, ch) in [&mut *l, &mut *r].into_iter().enumerate() {
-        let f = p.shift_hz + if ci == 1 { p.stereo_hz } else { 0.0 };
+/// One channel of the frequency shifter as a per-sample state machine:
+/// Hilbert pair, feedback tap and the rotating oscillator. Pre-warmed by
+/// `offset` rotations (renormalised on the same song positions) so a stream
+/// started at a song offset matches the whole-song pass bit-for-bit.
+pub struct FreqShiftChan {
+    h: Hilbert,
+    last: f32,
+    c: f32,
+    s: f32,
+    cw: f32,
+    sw: f32,
+    i: usize,
+}
+
+impl FreqShiftChan {
+    fn new(f: f32, offset: usize) -> Self {
         let w = 2.0 * PI * f / SR;
-        let mut h = Hilbert::new();
-        let mut last = 0.0f32;
-        let (mut c, mut s) = (1.0f32, 0.0f32);
         let (cw, sw) = (w.cos(), w.sin());
-        // the rotation each sample does after its output, for the samples before the buffer
-        let rotate = |i: usize, c: &mut f32, s: &mut f32| {
-            let nc = *c * cw - *s * sw;
-            *s = *s * cw + *c * sw;
-            *c = nc;
-            if i % 4096 == 0 {
-                let m = (*c * *c + *s * *s).sqrt().max(1e-9);
-                *c /= m;
-                *s /= m;
-            }
-        };
+        let (mut c, mut s) = (1.0f32, 0.0f32);
         for i in 0..offset {
-            rotate(i, &mut c, &mut s);
-        }
-        for (i, x) in ch.iter_mut().enumerate() {
-            let i = i + offset;
-            let (re, im) = h.process(*x + last * fb);
-            // upper sideband for a positive shift (sign checked by the test)
-            let y = re * c + im * s;
-            last = y;
-            *x = *x * (1.0 - mix) + y * mix;
-            // rotate the oscillator; renormalise now and then
             let nc = c * cw - s * sw;
             s = s * cw + c * sw;
             c = nc;
@@ -132,6 +116,74 @@ pub fn freq_shift_at(p: &FreqShiftFx, l: &mut [f32], r: &mut [f32], offset: usiz
                 c /= m;
                 s /= m;
             }
+        }
+        Self {
+            h: Hilbert::new(),
+            last: 0.0,
+            c,
+            s,
+            cw,
+            sw,
+            i: offset,
+        }
+    }
+
+    #[inline]
+    fn step(&mut self, x: f32, fb: f32, mix: f32) -> f32 {
+        let (re, im) = self.h.process(x + self.last * fb);
+        // upper sideband for a positive shift (sign checked by the test)
+        let y = re * self.c + im * self.s;
+        self.last = y;
+        let out = x * (1.0 - mix) + y * mix;
+        // rotate the oscillator; renormalise now and then
+        let nc = self.c * self.cw - self.s * self.sw;
+        self.s = self.s * self.cw + self.c * self.sw;
+        self.c = nc;
+        if self.i % 4096 == 0 {
+            let m = (self.c * self.c + self.s * self.s).sqrt().max(1e-9);
+            self.c /= m;
+            self.s /= m;
+        }
+        self.i += 1;
+        out
+    }
+}
+
+/// Streaming core of `freq_shift_at`: one `FreqShiftChan` per side (the
+/// right side shifts by shift + stereo_hz, so the two sides drift apart).
+pub struct FreqShiftCore {
+    ch: [FreqShiftChan; 2],
+    mix: f32,
+    fb: f32,
+}
+
+impl FreqShiftCore {
+    pub fn new(p: &FreqShiftFx, offset: usize) -> Self {
+        Self {
+            ch: [
+                FreqShiftChan::new(p.shift_hz, offset),
+                FreqShiftChan::new(p.shift_hz + p.stereo_hz, offset),
+            ],
+            mix: p.mix.clamp(0.0, 1.0),
+            fb: p.feedback.clamp(0.0, 0.9),
+        }
+    }
+
+    /// One channel's sample (`ci` 0 = left, 1 = right).
+    #[inline]
+    pub fn step(&mut self, ci: usize, x: f32) -> f32 {
+        self.ch[ci].step(x, self.fb, self.mix)
+    }
+}
+
+/// `freq_shift` for a buffer that starts `offset` samples into the song: the
+/// oscillator is stepped through the first `offset` samples (renormalised on
+/// the same song positions), so its phase is the whole-song pass's.
+pub fn freq_shift_at(p: &FreqShiftFx, l: &mut [f32], r: &mut [f32], offset: usize) {
+    let mut core = FreqShiftCore::new(p, offset);
+    for (ci, ch) in [&mut *l, &mut *r].into_iter().enumerate() {
+        for x in ch.iter_mut() {
+            *x = core.step(ci, *x);
         }
     }
 }
