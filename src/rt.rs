@@ -6165,7 +6165,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn stream_fx_reverb_fdn_bit_identical_to_offline() {
         // FDN reverb modes (room/plate/hall): sc_dsp::Fdn::process is
         // block-chunkable by design, so chunked RT blocks must equal the
