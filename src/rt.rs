@@ -1491,6 +1491,9 @@ pub enum StreamFx {
     /// offline pass runs - Fdn::process is block-chunkable by design,
     /// so a chunked render is the full render bit for bit.
     ReverbFdn(Box<crate::sc_dsp::Fdn>),
+    /// fx_vocoder: the same VocoderCore the offline pass runs (no
+    /// lookahead, zero latency).
+    Vocoder(Box<crate::fx_vocoder::VocoderCore>),
 }
 
 impl StreamFx {
@@ -2453,6 +2456,16 @@ impl StreamFx {
                     r[i] = (wet_r * *g) * *mix + dr * (1.0 - *mix);
                 }
             }
+            StreamFx::Vocoder(core) => {
+                // fx_vocoder::VocoderCore::step per sample: the same
+                // state machine the offline pass runs, so a chunked
+                // render is the full render bit for bit.
+                for i in 0..l.len() {
+                    let (a, b) = core.step(l[i], r[i]);
+                    l[i] = a;
+                    r[i] = b;
+                }
+            }
             StreamFx::CabIrNop => {}
             StreamFx::Sidechain {
                 trig,
@@ -2604,7 +2617,7 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::GrossBeat(_) => OneShot("gross beat: time-windowed"),
         Effect::Stutter(p) if p.mode != crate::fx::StutterMode::Reverse => Streamable,
         Effect::Stutter(_) => OneShot("reverse stutter: reads future samples in the cycle"),
-        Effect::Vocoder(_) => OneShot("vocoder: windowed analysis"),
+        Effect::Vocoder(_) => Streamable,
         Effect::Multiband(_) => Streamable,
         Effect::DynamicEq(p) if p.source.is_empty() => Streamable,
         Effect::DynamicEq(_) => OneShot("dynamic EQ: keyed"),
@@ -3005,6 +3018,17 @@ impl ChainStreamer {
                         in_pos: 0,
                         total,
                     }))
+                }
+                Effect::Vocoder(p) => {
+                    // fx_vocoder: the same VocoderCore the offline pass
+                    // runs, from sample 0 (offset 0, no carrier
+                    // pre-warm). Unparseable notes make the offline pass
+                    // return early; a unity gain is that bypass, bit for
+                    // bit (x * 1.0 is exact, even for -0.0 and NaN).
+                    match crate::fx_vocoder::VocoderCore::new(p) {
+                        Some(core) => StreamFx::Vocoder(Box::new(core)),
+                        None => StreamFx::Gain { g: 1.0 },
+                    }
                 }
                 Effect::Phaser(p) => {
                     // fx_extra::phaser, chunked: lfo_rate() and the
@@ -4016,6 +4040,7 @@ mod tests {
                 "soft_clipper",
                 "stutter",
                 "transient",
+                "vocoder",
                 "width",
             ]
         );
@@ -6140,6 +6165,7 @@ mod tests {
     }
 
     #[test]
+    #[test]
     fn stream_fx_reverb_fdn_bit_identical_to_offline() {
         // FDN reverb modes (room/plate/hall): sc_dsp::Fdn::process is
         // block-chunkable by design, so chunked RT blocks must equal the
@@ -6211,6 +6237,118 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn stream_fx_vocoder_bit_identical_to_offline() {
+        let n = 30_000usize;
+        let l0: Vec<f32> = (0..n)
+            .map(|i| ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3)
+            .collect();
+        let r0: Vec<f32> = l0.iter().rev().copied().collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        let variants = [
+            serde_json::json!({"type":"vocoder"}),
+            serde_json::json!({"type":"vocoder","mix":0.6,"bands":24,
+                "noise":0.3,"notes":"A2 C3 E3 G3","low_hz":200.0}),
+            serde_json::json!({"type":"vocoder","mix":1.0,"bands":8,
+                "sibilance":0.0,"attack_ms":1.0,"release_ms":80.0,
+                "gain":1.5,"notes":"36,43,48,55","high_hz":12000.0}),
+        ];
+        for (vi, v) in variants.iter().enumerate() {
+            let fx: crate::fx::Effect = serde_json::from_value(v.clone()).unwrap();
+            assert!(matches!(classify(&fx), FxClass::Streamable));
+            let mut ol = l0.clone();
+            let mut or_ = r0.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let seqs: Vec<Vec<usize>> = vec![
+                vec![1],
+                vec![7],
+                vec![64],
+                vec![256],
+                vec![512],
+                vec![999],
+                vec![1000],
+                vec![1 << 16],
+                vec![1, 999, 7, 256, 64],
+            ];
+            for seq in seqs {
+                let mut l = l0.clone();
+                let mut r = r0.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("vocoder streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                let mut si = 0usize;
+                while pos < n {
+                    let k = seq[si % seq.len()].min(n - pos);
+                    si += 1;
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left variant {vi} blocks {seq:?} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right variant {vi} blocks {seq:?} i {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stream_fx_vocoder_mix_zero_is_bit_exact_bypass() {
+        let n = 5_000usize;
+        let l0: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.07).sin() * 0.4).collect();
+        let r0: Vec<f32> = l0.iter().rev().copied().collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let fx: crate::fx::Effect =
+            serde_json::from_value(serde_json::json!({"type":"vocoder","mix":0.0})).unwrap();
+        let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], 0.1, &triggers, n)
+            .expect("vocoder streams");
+        let (mut l, mut r) = (l0.clone(), r0.clone());
+        for (a, b) in l.chunks_mut(333).zip(r.chunks_mut(333)) {
+            cs.process_block(a, b);
+        }
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(r.iter().zip(&r0).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    #[test]
+    fn stream_fx_vocoder_bad_notes_is_bit_exact_bypass() {
+        // Unparseable notes make the offline pass return early; the
+        // streamer must bypass the same way, bit for bit.
+        let n = 5_000usize;
+        let l0: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.07).sin() * 0.4).collect();
+        let r0: Vec<f32> = l0.iter().rev().copied().collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let fx: crate::fx::Effect =
+            serde_json::from_value(serde_json::json!({"type":"vocoder","notes":"H3"})).unwrap();
+        let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], 0.1, &triggers, n)
+            .expect("vocoder streams");
+        let (mut l, mut r) = (l0.clone(), r0.clone());
+        for (a, b) in l.chunks_mut(777).zip(r.chunks_mut(777)) {
+            cs.process_block(a, b);
+        }
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(r.iter().zip(&r0).all(|(a, b)| a.to_bits() == b.to_bits()));
     }
 
     /// RT4 PDC test fixture: trap seed 9 with a 10ms-lookahead soft-knee
