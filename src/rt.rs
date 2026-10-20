@@ -1454,6 +1454,10 @@ pub enum StreamFx {
     /// as a per-sample state machine, zero latency, rings allocated at
     /// build; bit-identical to the offline pass at any block size.
     PitchShift(Box<crate::fx_extra::PitchShiftCore>),
+    /// stutter (gate/stutter/half-time/tape-stop): fx_extra::StutterCore,
+    /// the offline grid/ring math as a per-sample state machine; zero
+    /// latency. Reverse stays one-shot (reads future samples).
+    Stutter(Box<crate::fx_extra::StutterCore>),
     Sidechain {
         trig: std::sync::Arc<Vec<usize>>,
         ti: usize,
@@ -2354,6 +2358,15 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::Stutter(core) => {
+                if core.mix > 0.0 {
+                    for i in 0..l.len() {
+                        let (a, b) = core.step(pos + i, l[i], r[i]);
+                        l[i] = a;
+                        r[i] = b;
+                    }
+                }
+            }
             StreamFx::FreqSplit(arm) => {
                 let FreqSplitArm {
                     conv1,
@@ -2580,7 +2593,8 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::CabIr(_) => Streamable,
         Effect::PitchShift(_) => Streamable,
         Effect::GrossBeat(_) => OneShot("gross beat: time-windowed"),
-        Effect::Stutter(_) => OneShot("stutter: time-windowed"),
+        Effect::Stutter(p) if p.mode != crate::fx::StutterMode::Reverse => Streamable,
+        Effect::Stutter(_) => OneShot("reverse stutter: reads future samples in the cycle"),
         Effect::Vocoder(_) => OneShot("vocoder: windowed analysis"),
         Effect::Multiband(_) => Streamable,
         Effect::DynamicEq(p) if p.source.is_empty() => Streamable,
@@ -2943,6 +2957,9 @@ impl ChainStreamer {
                     // allocated here and never on the audio path
                     StreamFx::PitchShift(Box::new(crate::fx_extra::PitchShiftCore::new(p)))
                 }
+                Effect::Stutter(p) => StreamFx::Stutter(Box::new(
+                    crate::fx_extra::StutterCore::new(p, step_secs, total),
+                )),
                 Effect::FreqSplitter(p) => {
                     // fx_extra::freq_splitter, chunked (RT19): the same
                     // FIR design, convolvers built here (part FFTs at
@@ -3983,6 +4000,7 @@ mod tests {
                 "ring_mod",
                 "sidechain",
                 "soft_clipper",
+                "stutter",
                 "transient",
                 "width",
             ]
@@ -5754,6 +5772,212 @@ mod tests {
         }
         assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
         assert!(r.iter().zip(&r0).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    #[test]
+    fn stream_fx_stutter_bit_identical_to_offline() {
+        let n = 50_000usize;
+        let l0: Vec<f32> = (0..n)
+            .map(|i| ((i as f32) * 0.031).sin() * 0.6 + ((i as f32) * 0.0013).cos() * 0.3)
+            .collect();
+        let r0: Vec<f32> = l0.iter().rev().copied().collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let step = 60.0 / 140.0 / 4.0;
+        let variants = [
+            serde_json::json!({"type":"stutter"}),
+            serde_json::json!({"type":"stutter","pattern":"x...x.xx","smooth_ms":0.5,
+                "mix":0.7}),
+            serde_json::json!({"type":"stutter","mode":"stutter","slice_steps":0.5,
+                "cycle_steps":8.0,"smooth_ms":5.0,"mix":0.8}),
+            serde_json::json!({"type":"stutter","mode":"half_time","cycle_steps":2.0,
+                "mix":1.0}),
+            serde_json::json!({"type":"stutter","mode":"tape_stop","cycle_steps":4.0,
+                "smooth_ms":2.0,"mix":0.9}),
+        ];
+        for (vi, v) in variants.iter().enumerate() {
+            let fx: crate::fx::Effect = serde_json::from_value(v.clone()).unwrap();
+            let mut ol = l0.clone();
+            let mut or_ = r0.clone();
+            let ctx = crate::fx::FxContext {
+                step_secs: step,
+                triggers: &triggers,
+                offset: 0,
+                levels: None,
+            };
+            fx.process(&mut ol, &mut or_, &ctx);
+            let seqs: Vec<Vec<usize>> = vec![
+                vec![1],
+                vec![7],
+                vec![64],
+                vec![256],
+                vec![512],
+                vec![999],
+                vec![1000],
+                vec![1 << 16],
+                vec![1, 999, 7, 256, 64],
+            ];
+            for seq in seqs {
+                let mut l = l0.clone();
+                let mut r = r0.clone();
+                let mut cs =
+                    ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+                        .expect("stutter streams");
+                assert_eq!(cs.latency_samples(), 0);
+                let mut pos = 0usize;
+                let mut si = 0usize;
+                while pos < n {
+                    let k = seq[si % seq.len()].min(n - pos);
+                    si += 1;
+                    cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                    pos += k;
+                }
+                for i in 0..n {
+                    assert_eq!(
+                        l[i].to_bits(),
+                        ol[i].to_bits(),
+                        "left variant {vi} blocks {seq:?} i {i}"
+                    );
+                    assert_eq!(
+                        r[i].to_bits(),
+                        or_[i].to_bits(),
+                        "right variant {vi} blocks {seq:?} i {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stream_fx_stutter_mix_zero_is_bit_exact_bypass() {
+        let n = 5_000usize;
+        let l0: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.07).sin() * 0.4).collect();
+        let r0: Vec<f32> = l0.iter().rev().copied().collect();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let fx: crate::fx::Effect =
+            serde_json::from_value(serde_json::json!({"type":"stutter","mix":0.0})).unwrap();
+        let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], 0.1, &triggers, n)
+            .expect("stutter streams");
+        let (mut l, mut r) = (l0.clone(), r0.clone());
+        for (a, b) in l.chunks_mut(333).zip(r.chunks_mut(333)) {
+            cs.process_block(a, b);
+        }
+        assert!(l.iter().zip(&l0).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(r.iter().zip(&r0).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    #[test]
+    fn stream_fx_stutter_reverse_stays_one_shot() {
+        let fx: crate::fx::Effect =
+            serde_json::from_value(serde_json::json!({"type":"stutter","mode":"reverse"})).unwrap();
+        assert!(matches!(classify(&fx), FxClass::OneShot(_)));
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        assert!(
+            ChainStreamer::build(std::slice::from_ref(&fx), &[], 0.1, &triggers, 1000).is_none()
+        );
+    }
+
+    #[test]
+    fn stream_fx_stutter_inf_in_history_no_nan_at_boundary() {
+        // One ring-wrap before a cycle boundary, the streamed lerp's i + 1
+        // slot holds old history where the offline pass reads the real future
+        // sample; the frac == 0.0 guard in StutterCore::step skips that read,
+        // so an inf/NaN there cannot poison the boundary sample.
+        let n = 40_000usize;
+        let mut l0: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.031).sin() * 0.6).collect();
+        // same expressions as StutterCore::new for cycle_steps = 2.0
+        let step = 60.0 / 140.0 / 4.0;
+        let step_samples = (step * SR).max(1.0);
+        let cycle = (2.0f32.max(0.25) * step_samples) as usize;
+        let size = cycle + crate::dsp::tape_dc::preroll() + 2;
+        let c0 = 3 * cycle;
+        let p_inf = c0 + 1 - size; // the stale slot an unguarded lerp reads at c0
+        l0[p_inf] = f32::INFINITY;
+        let r0: Vec<f32> = l0.clone();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let fx: crate::fx::Effect = serde_json::from_value(
+            serde_json::json!({"type":"stutter","mode":"half_time","cycle_steps":2.0,"mix":1.0}),
+        )
+        .unwrap();
+        let mut ol = l0.clone();
+        let mut or_ = r0.clone();
+        let ctx = crate::fx::FxContext {
+            step_secs: step,
+            triggers: &triggers,
+            offset: 0,
+            levels: None,
+        };
+        fx.process(&mut ol, &mut or_, &ctx);
+        let mut l = l0.clone();
+        let mut r = r0.clone();
+        let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+            .expect("stutter streams");
+        let mut pos = 0usize;
+        while pos < n {
+            let k = 777usize.min(n - pos);
+            cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+            pos += k;
+        }
+        assert!(
+            l[c0].is_finite() && ol[c0].is_finite(),
+            "boundary sample poisoned"
+        );
+        for i in 0..n {
+            assert_eq!(l[i].to_bits(), ol[i].to_bits(), "left i {i}");
+            assert_eq!(r[i].to_bits(), or_[i].to_bits(), "right i {i}");
+        }
+    }
+
+    #[test]
+    fn stream_fx_stutter_neg_zero_boundary_matches_by_value() {
+        // Known limit (R2): at an exact -0.0 input on a cycle boundary the
+        // offline pass takes the zero sign from the future sample, which the
+        // streamed pass cannot see; the values are equal, the bits may not
+        // be. Asserted by value, not to_bits.
+        let n = 40_000usize;
+        let mut l0: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.031).sin() * 0.6).collect();
+        let step = 60.0 / 140.0 / 4.0;
+        let step_samples = (step * SR).max(1.0);
+        let cycle = (2.0f32.max(0.25) * step_samples) as usize;
+        let mut c0 = 0usize;
+        while c0 < n {
+            l0[c0] = -0.0;
+            c0 += cycle;
+        }
+        let r0: Vec<f32> = l0.clone();
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        let fx: crate::fx::Effect = serde_json::from_value(
+            serde_json::json!({"type":"stutter","mode":"half_time","cycle_steps":2.0,"mix":1.0}),
+        )
+        .unwrap();
+        let mut ol = l0.clone();
+        let mut or_ = r0.clone();
+        let ctx = crate::fx::FxContext {
+            step_secs: step,
+            triggers: &triggers,
+            offset: 0,
+            levels: None,
+        };
+        fx.process(&mut ol, &mut or_, &ctx);
+        let mut l = l0.clone();
+        let mut r = r0.clone();
+        let mut cs = ChainStreamer::build(std::slice::from_ref(&fx), &[], step, &triggers, n)
+            .expect("stutter streams");
+        let mut pos = 0usize;
+        while pos < n {
+            let k = 777usize.min(n - pos);
+            cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+            pos += k;
+        }
+        assert!(l[0] == 0.0 && l[cycle] == 0.0, "boundary sample by value");
+        for i in 0..n {
+            assert!(l[i] == ol[i], "left i {i}");
+            assert!(r[i] == or_[i], "right i {i}");
+        }
     }
 
     #[test]
