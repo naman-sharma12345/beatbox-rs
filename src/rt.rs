@@ -5794,6 +5794,10 @@ mod tests {
                 "mix":1.0}),
             serde_json::json!({"type":"stutter","mode":"tape_stop","cycle_steps":4.0,
                 "smooth_ms":2.0,"mix":0.9}),
+            serde_json::json!({"type":"stutter","mode":"slice_repeat","slice_blocks":2.0,
+                "repeat_count":3.0,"trigger_sample":1000.0,"wrap_fade_ms":3.0,"mix":0.9}),
+            serde_json::json!({"type":"stutter","mode":"slice_repeat","block_samples":256.0,
+                "slice_blocks":1.0,"repeat_count":40.0,"trigger_sample":999.0,"mix":1.0}),
         ];
         for (vi, v) in variants.iter().enumerate() {
             let fx: crate::fx::Effect = serde_json::from_value(v.clone()).unwrap();
@@ -5978,6 +5982,14 @@ mod tests {
             assert!(l[i] == ol[i], "left i {i}");
             assert!(r[i] == or_[i], "right i {i}");
         }
+    }
+
+    #[test]
+    fn stream_fx_stutter_slice_repeat_streams() {
+        let fx: crate::fx::Effect =
+            serde_json::from_value(serde_json::json!({"type":"stutter","mode":"slice_repeat"}))
+                .unwrap();
+        assert!(matches!(classify(&fx), FxClass::Streamable));
     }
 
     #[test]
