@@ -935,4 +935,39 @@ mod tests {
         let (mlo, mhi) = e.project.automation.last().unwrap().range().unwrap();
         assert!(mlo >= 0.0 && mhi <= 1.0);
     }
+
+    /// A clip whose points would drive freq_splitter taps below its valid
+    /// range is pulled back into range when it is placed, and on a
+    /// re-stamp. A clip on a parameter with no rule is untouched.
+    #[test]
+    fn automation_clips_are_clamped_to_the_validated_range_when_stamped() {
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "keep", "preset": "acid_bass"}))
+            .unwrap();
+        e.call(
+            "place_fx",
+            &json!({"track": "keep", "type": "freq_splitter"}),
+        )
+        .unwrap();
+        let idx = e.project.tracks[0].effects.len() - 1;
+        let param = format!("fx.{idx}.taps");
+        e.call(
+            "create_automation_clip",
+            &json!({"name": "c", "track": "keep", "param": param, "points": [
+                {"beat": 0, "value": 0.0}, {"beat": 4, "value": 1.0}]}),
+        )
+        .unwrap();
+        e.call("place_automation_clip", &json!({"name": "c", "at_beat": 0}))
+            .unwrap();
+        e.project.validate_lanes().unwrap();
+        let (lo, hi) = e.project.automation.last().unwrap().range().unwrap();
+        assert!(lo >= 33.0 && hi >= 33.0, "taps lane {lo}..{hi}");
+        e.call(
+            "create_automation_clip",
+            &json!({"name": "c", "track": "keep", "param": param, "points": [
+                {"beat": 0, "value": 1.0}, {"beat": 4, "value": 0.0}]}),
+        )
+        .unwrap();
+        e.project.validate_lanes().unwrap();
+    }
 }
