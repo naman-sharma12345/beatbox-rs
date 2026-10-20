@@ -1142,8 +1142,11 @@ pub fn lowpass_fir(cutoff_hz: f32, taps: usize) -> Vec<f32> {
         } else {
             (2.0 * std::f32::consts::PI * fc * k).sin() / (std::f32::consts::PI * k)
         };
-        let w = 0.42 - 0.5 * (2.0 * std::f32::consts::PI * j as f32 / (n - 1) as f32).cos()
-            + 0.08 * (4.0 * std::f32::consts::PI * j as f32 / (n - 1) as f32).cos();
+        // window from the distance to the nearer end, so mirrored taps get
+        // the same bits (linear phase needs an exactly symmetric IR)
+        let jw = j.min(n - 1 - j);
+        let w = 0.42 - 0.5 * (2.0 * std::f32::consts::PI * jw as f32 / (n - 1) as f32).cos()
+            + 0.08 * (4.0 * std::f32::consts::PI * jw as f32 / (n - 1) as f32).cos();
         *v = sinc * w;
         sum += *v;
     }
@@ -2938,5 +2941,78 @@ mod tests {
                 assert!(same, "band {band:?} taps {taps}");
             }
         }
+    }
+
+    /// A linear-phase FIR must be exactly symmetric: mirrored taps of the
+    /// low-pass IR have identical bits.
+    #[test]
+    fn lowpass_fir_is_bit_exact_symmetric() {
+        let mut worst = (0usize, 0usize, 0usize, 0.0f32);
+        let mut asym = 0usize;
+        for taps in [33usize, 34, 64, 65, 129, 513, 1025, 4097] {
+            for cutoff in [20.0f32, 250.0, 1000.0, 2500.0, 12000.0, 20000.0] {
+                let h = lowpass_fir(cutoff, taps);
+                let n = h.len();
+                for i in 0..n / 2 {
+                    if h[i].to_bits() != h[n - 1 - i].to_bits() {
+                        asym += 1;
+                        let d = (h[i] - h[n - 1 - i]).abs();
+                        if d > worst.3 {
+                            worst = (taps, cutoff as usize, i, d);
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            asym, 0,
+            "{asym} mirrored tap pairs differ in bits; worst (taps, cutoff, index, diff) = {worst:?}"
+        );
+    }
+
+    /// The f32 IR must stay within 1e-5 (absolute) of the same design
+    /// computed in f64 (measured worst on this grid: 1.25e-6). Hashes of the
+    /// IR bits are printed as a diagnostic only; they depend on libm and are
+    /// never asserted.
+    #[test]
+    fn lowpass_fir_matches_an_f64_reference_within_tolerance() {
+        let pi = std::f64::consts::PI;
+        let mut worst = 0.0f64;
+        for taps in [33usize, 34, 64, 65, 129, 257, 513, 1025, 4097] {
+            for cutoff in [
+                20.0f32, 120.0, 250.0, 1000.0, 2500.0, 8000.0, 12000.0, 20000.0,
+            ] {
+                let h = lowpass_fir(cutoff, taps);
+                let n = h.len();
+                let m = ((n - 1) / 2) as i64;
+                let fc = ((cutoff / SR).clamp(1e-4, 0.4999)) as f64;
+                let nn = (n - 1) as f64;
+                let mut r = vec![0.0f64; n];
+                let mut sum = 0.0f64;
+                for (j, v) in r.iter_mut().enumerate() {
+                    let k = (j as i64 - m) as f64;
+                    let sinc = if j as i64 == m {
+                        2.0 * fc
+                    } else {
+                        (2.0 * pi * fc * k).sin() / (pi * k)
+                    };
+                    let jj = j as f64;
+                    let w =
+                        0.42 - 0.5 * (2.0 * pi * jj / nn).cos() + 0.08 * (4.0 * pi * jj / nn).cos();
+                    *v = sinc * w;
+                    sum += *v;
+                }
+                let mut hash = 0xcbf2_9ce4_8422_2325u64;
+                for (a, b) in h.iter().zip(&r) {
+                    worst = worst.max((*a as f64 - b / sum).abs());
+                    for byte in a.to_bits().to_le_bytes() {
+                        hash ^= byte as u64;
+                        hash = hash.wrapping_mul(0x0100_0000_01b3);
+                    }
+                }
+                eprintln!("lowpass_fir taps {taps} cutoff {cutoff} ir_hash {hash:016x}");
+            }
+        }
+        assert!(worst < 1e-5, "worst abs error vs f64 reference {worst:e}");
     }
 }
