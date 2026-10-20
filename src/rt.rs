@@ -388,34 +388,39 @@ impl<'a> MixNode<'a> {
             // RT3: chunked synth+chain when the whole chain is in the
             // verified subset; one-shot buffers otherwise (fallback list
             // in ChainStreamer::build).
-            let audio =
-                match ChainStreamer::build(&track.effects, &lanes, p.step_secs(), &triggers, total)
-                {
-                    Some(chain) => TrackAudio::Streamed(Box::new(StreamedTrack {
-                        synth: VoiceStreamer::new(p, bank, opts, block_size, ti),
-                        chain,
-                        bl: vec![0.0; block_size],
-                        br: vec![0.0; block_size],
-                    })),
-                    None => {
-                        let (l, r, _fresh) = render_track_synth(
-                            &TrackSynth {
-                                p,
-                                bank,
-                                opts,
-                                events: &events,
-                                total,
-                                tl: &tl,
-                                tcurve: &tcurve,
-                                ctx: &ctx,
-                                index_base: None,
-                            },
-                            ti,
-                            false,
-                        );
-                        TrackAudio::Buffered { l, r }
-                    }
-                };
+            let audio = match ChainStreamer::build_with_offset(
+                &track.effects,
+                &lanes,
+                p.step_secs(),
+                &triggers,
+                total,
+                offset,
+            ) {
+                Some(chain) => TrackAudio::Streamed(Box::new(StreamedTrack {
+                    synth: VoiceStreamer::new(p, bank, opts, block_size, ti),
+                    chain,
+                    bl: vec![0.0; block_size],
+                    br: vec![0.0; block_size],
+                })),
+                None => {
+                    let (l, r, _fresh) = render_track_synth(
+                        &TrackSynth {
+                            p,
+                            bank,
+                            opts,
+                            events: &events,
+                            total,
+                            tl: &tl,
+                            tcurve: &tcurve,
+                            ctx: &ctx,
+                            index_base: None,
+                        },
+                        ti,
+                        false,
+                    );
+                    TrackAudio::Buffered { l, r }
+                }
+            };
             let lane = lanes
                 .iter()
                 .find(|x| parse_target(&x.param) == Some(Target::Volume))
@@ -469,12 +474,13 @@ impl<'a> MixNode<'a> {
         let master_chain = if p.master_effects.is_empty() {
             None
         } else {
-            ChainStreamer::build(
+            ChainStreamer::build_with_offset(
                 &p.master_effects,
                 &master_lanes,
                 p.step_secs(),
                 &triggers,
                 total,
+                offset,
             )
         };
         let latency = latency
@@ -1458,6 +1464,13 @@ pub enum StreamFx {
     /// the offline grid/ring math as a per-sample state machine; zero
     /// latency. Reverse stays one-shot (reads future samples).
     Stutter(Box<crate::fx_extra::StutterCore>),
+    /// modulated feedback delay: fx_sc::ModDelayCore, the offline line/LFO
+    /// math as a per-sample state machine; zero latency, offset pre-warmed.
+    ModDelay(crate::fx_sc::ModDelayCore),
+    /// lo-fi sample-and-hold crusher: fx_sc::LofiCore, the offline
+    /// clock/quantize/hiss math as a per-sample state machine; zero
+    /// latency, offset pre-warmed.
+    Lofi(crate::fx_sc::LofiCore),
     Sidechain {
         trig: std::sync::Arc<Vec<usize>>,
         ti: usize,
@@ -2380,6 +2393,20 @@ impl StreamFx {
                     }
                 }
             }
+            StreamFx::ModDelay(core) => {
+                for i in 0..l.len() {
+                    let (a, b) = core.step(l[i], r[i]);
+                    l[i] = a;
+                    r[i] = b;
+                }
+            }
+            StreamFx::Lofi(core) => {
+                for i in 0..l.len() {
+                    let (a, b) = core.step(l[i], r[i]);
+                    l[i] = a;
+                    r[i] = b;
+                }
+            }
             StreamFx::FreqSplit(arm) => {
                 let FreqSplitArm {
                     conv1,
@@ -2672,8 +2699,8 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Vinyl(_) => OneShot("vinyl: unverified"),
         Effect::Waveshaper(_) => Streamable,
         Effect::AmpSim(_) => OneShot("amp sim: unverified"),
-        Effect::ModDelay(_) => OneShot("mod delay: unverified"),
-        Effect::Lofi(_) => OneShot("lofi: unverified"),
+        Effect::ModDelay(_) => Streamable,
+        Effect::Lofi(_) => Streamable,
         Effect::Rectifier(_) => Streamable,
     }
 }
@@ -2708,6 +2735,20 @@ impl ChainStreamer {
         step_secs: f32,
         triggers: &std::collections::HashMap<String, Vec<usize>>,
         total: usize,
+    ) -> Option<ChainStreamer> {
+        Self::build_with_offset(effects, lanes, step_secs, triggers, total, 0)
+    }
+
+    /// `build` for a render starting `offset` samples into the song:
+    /// position-anchored effects (stutter, mod_delay, lofi) pre-warm by the
+    /// offset, so a windowed render reproduces the offline pass bit-for-bit.
+    pub fn build_with_offset(
+        effects: &[Effect],
+        lanes: &[&AutomationLane],
+        step_secs: f32,
+        triggers: &std::collections::HashMap<String, Vec<usize>>,
+        total: usize,
+        offset: usize,
     ) -> Option<ChainStreamer> {
         // FX automation takes the multi-combo one-shot path: not streamed.
         let automated = lanes.iter().any(|l| {
@@ -3016,6 +3057,10 @@ impl ChainStreamer {
                 Effect::Stutter(p) => StreamFx::Stutter(Box::new(
                     crate::fx_extra::StutterCore::new(p, step_secs, total),
                 )),
+                Effect::ModDelay(p) => {
+                    StreamFx::ModDelay(crate::fx_sc::ModDelayCore::new(p, offset))
+                }
+                Effect::Lofi(p) => StreamFx::Lofi(crate::fx_sc::LofiCore::new(p, offset)),
                 Effect::FreqSplitter(p) => {
                     // fx_extra::freq_splitter, chunked (RT19): the same
                     // FIR design, convolvers built here (part FFTs at
@@ -3294,7 +3339,7 @@ impl ChainStreamer {
                 _ => unreachable!("classify said Streamable but no construction arm"),
             });
         }
-        Some(ChainStreamer { fx, pos: 0 })
+        Some(ChainStreamer { fx, pos: offset })
     }
 
     /// Process one block; pos advances so song-grid effects (chorus,
@@ -4075,7 +4120,9 @@ mod tests {
                 "gate",
                 "granular",
                 "haas",
+                "lofi",
                 "maximizer",
+                "mod_delay",
                 "multiband",
                 "parametric_eq",
                 "phaser",
@@ -6021,6 +6068,160 @@ mod tests {
         for i in 0..n {
             assert_eq!(l[i].to_bits(), ol[i].to_bits(), "left i {i}");
             assert_eq!(r[i].to_bits(), or_[i].to_bits(), "right i {i}");
+        }
+    }
+
+    #[test]
+    fn mod_delay_stream_matches_offline() {
+        // The streamed modulated delay bit-matches the offline pass for any
+        // block split, at offset 0 and at a nonzero song offset: the core
+        // pre-warms the LFO phase by `offset` samples, the same f32
+        // accumulation the offline pass runs.
+        let n = 48_000usize;
+        let l0: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.021).sin() * 0.6).collect();
+        let r0: Vec<f32> = (0..n)
+            .map(|i| ((i as f32) * 0.017 + 0.4).cos() * 0.6)
+            .collect();
+        let step = 60.0 / 140.0 / 4.0;
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        for params in [
+            serde_json::json!({"type":"mod_delay","time_ms":380.0,"feedback":0.4,"mix":0.5,"mod_rate_hz":0.4,"mod_depth":0.6,"lpf_hz":8000.0}),
+            serde_json::json!({"type":"mod_delay","time_ms":7.0,"feedback":0.7,"mix":1.0,"mod_rate_hz":5.0,"mod_depth":1.0,"lpf_hz":12000.0}),
+        ] {
+            let fx: crate::fx::Effect = serde_json::from_value(params).unwrap();
+            for off in [0usize, 12_345] {
+                let mut ol = l0.clone();
+                let mut or_ = r0.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: off,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let seqs: Vec<Vec<usize>> = vec![
+                    vec![1],
+                    vec![7],
+                    vec![64],
+                    vec![512],
+                    vec![999],
+                    vec![1000],
+                    vec![1 << 16],
+                    vec![1, 999, 7, 256, 64],
+                ];
+                for seq in seqs {
+                    let mut l = l0.clone();
+                    let mut r = r0.clone();
+                    let mut cs = ChainStreamer::build_with_offset(
+                        std::slice::from_ref(&fx),
+                        &[],
+                        step,
+                        &triggers,
+                        n,
+                        off,
+                    )
+                    .expect("mod_delay streams");
+                    assert_eq!(cs.latency_samples(), 0);
+                    let mut pos = 0usize;
+                    let mut si = 0usize;
+                    while pos < n {
+                        let k = seq[si % seq.len()].min(n - pos);
+                        si += 1;
+                        cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                        pos += k;
+                    }
+                    for i in 0..n {
+                        assert_eq!(
+                            l[i].to_bits(),
+                            ol[i].to_bits(),
+                            "left off {off} blocks {seq:?} i {i}"
+                        );
+                        assert_eq!(
+                            r[i].to_bits(),
+                            or_[i].to_bits(),
+                            "right off {off} blocks {seq:?} i {i}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lofi_stream_matches_offline() {
+        // The streamed lo-fi crusher bit-matches the offline pass for any
+        // block split, at offset 0 and at a nonzero song offset: the core
+        // pre-warms the sample-and-hold clock and the hiss RNG draws the
+        // clock makes (one draw per channel per grab when noise > 0).
+        let n = 48_000usize;
+        let l0: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.021).sin() * 0.6).collect();
+        let r0: Vec<f32> = (0..n)
+            .map(|i| ((i as f32) * 0.017 + 0.4).cos() * 0.6)
+            .collect();
+        let step = 60.0 / 140.0 / 4.0;
+        let triggers: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        for params in [
+            serde_json::json!({"type":"lofi","bits":8.0,"sample_rate_hz":11025.0,"noise":0.3,"mix":1.0}),
+            serde_json::json!({"type":"lofi","bits":4.0,"sample_rate_hz":6000.0,"noise":0.0,"mix":0.7}),
+        ] {
+            let fx: crate::fx::Effect = serde_json::from_value(params).unwrap();
+            for off in [0usize, 12_345] {
+                let mut ol = l0.clone();
+                let mut or_ = r0.clone();
+                let ctx = crate::fx::FxContext {
+                    step_secs: step,
+                    triggers: &triggers,
+                    offset: off,
+                    levels: None,
+                };
+                fx.process(&mut ol, &mut or_, &ctx);
+                let seqs: Vec<Vec<usize>> = vec![
+                    vec![1],
+                    vec![7],
+                    vec![64],
+                    vec![512],
+                    vec![999],
+                    vec![1000],
+                    vec![1 << 16],
+                    vec![1, 999, 7, 256, 64],
+                ];
+                for seq in seqs {
+                    let mut l = l0.clone();
+                    let mut r = r0.clone();
+                    let mut cs = ChainStreamer::build_with_offset(
+                        std::slice::from_ref(&fx),
+                        &[],
+                        step,
+                        &triggers,
+                        n,
+                        off,
+                    )
+                    .expect("lofi streams");
+                    assert_eq!(cs.latency_samples(), 0);
+                    let mut pos = 0usize;
+                    let mut si = 0usize;
+                    while pos < n {
+                        let k = seq[si % seq.len()].min(n - pos);
+                        si += 1;
+                        cs.process_block(&mut l[pos..pos + k], &mut r[pos..pos + k]);
+                        pos += k;
+                    }
+                    for i in 0..n {
+                        assert_eq!(
+                            l[i].to_bits(),
+                            ol[i].to_bits(),
+                            "left off {off} blocks {seq:?} i {i}"
+                        );
+                        assert_eq!(
+                            r[i].to_bits(),
+                            or_[i].to_bits(),
+                            "right off {off} blocks {seq:?} i {i}"
+                        );
+                    }
+                }
+            }
         }
     }
 

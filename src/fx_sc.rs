@@ -104,49 +104,83 @@ impl Line {
 const MAX_DELAY_MS: f32 = 2000.0;
 const MOD_DEPTH_MS: f32 = 5.0;
 
+/// Streaming core of `mod_delay`: one modulated delay line per channel with
+/// a one-pole low-pass inside the feedback loop. All state lives here,
+/// pre-warmed by `offset` samples of LFO phase, so a stream started at a
+/// song offset reproduces the offline pass bit-for-bit.
+pub struct ModDelayCore {
+    lines: [Line; 2],
+    lp: [f32; 2],
+    phase: f32,
+    inc: f32,
+    fb: f32,
+    mix: f32,
+    time: f32,
+    depth: f32,
+    a: f32,
+}
+
+impl ModDelayCore {
+    pub(crate) fn new(p: &ModDelayFx, offset: usize) -> Self {
+        let inc = (p.mod_rate_hz.clamp(0.01, 10.0) / SR).min(0.5);
+        let mut phase = 0.0f32;
+        // the same f32 accumulation a whole-song render runs up to `offset`
+        for _ in 0..offset {
+            phase += inc;
+            if phase >= 1.0 {
+                phase -= 1.0;
+            }
+        }
+        let max = ms_to_samples(MAX_DELAY_MS + 2.0 * MOD_DEPTH_MS) as usize + 8;
+        Self {
+            lines: [Line::new(max), Line::new(max)],
+            lp: [0.0; 2],
+            phase,
+            inc,
+            fb: p.feedback.clamp(-0.99, 0.99),
+            mix: p.mix.clamp(0.0, 1.0),
+            time: p.time_ms.clamp(1.0, MAX_DELAY_MS),
+            depth: p.mod_depth.clamp(0.0, 1.0) * MOD_DEPTH_MS,
+            a: (-TAU * p.lpf_hz.clamp(500.0, 20000.0) / SR).exp(),
+        }
+    }
+
+    pub(crate) fn step(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        self.phase += self.inc;
+        if self.phase >= 1.0 {
+            self.phase -= 1.0;
+        }
+        let xs = [xl, xr];
+        let mut out = [0.0f32; 2];
+        for c in 0..2 {
+            let dry = fin(xs[c]);
+            let ph = if c == 1 {
+                (self.phase + 0.25).fract()
+            } else {
+                self.phase
+            };
+            let modv = self.depth * 0.5 * (1.0 + (ph * TAU).sin());
+            let y = self.lines[c].read_cubic(ms_to_samples(self.time + modv));
+            self.lp[c] = flush(y + (self.lp[c] - y) * self.a);
+            self.lines[c].push(flush(dry + self.fb * self.lp[c]));
+            out[c] = dry * (1.0 - self.mix) + self.lp[c] * self.mix;
+        }
+        (out[0], out[1])
+    }
+}
+
 /// Feedback delay in milliseconds with LFO modulation of the delay time
 /// (right channel a quarter cycle ahead) and a one-pole low-pass inside
 /// the feedback loop, so repeats darken.
 /// `offset`: the buffer's place in the song (samples); the modulation LFO
 /// starts where a whole-song render's would be there.
 pub fn mod_delay(p: &ModDelayFx, l: &mut [f32], r: &mut [f32], offset: usize) {
-    let time = p.time_ms.clamp(1.0, MAX_DELAY_MS);
-    let fb = p.feedback.clamp(-0.99, 0.99);
-    let mix = p.mix.clamp(0.0, 1.0);
-    let depth = p.mod_depth.clamp(0.0, 1.0) * MOD_DEPTH_MS;
-    let inc = (p.mod_rate_hz.clamp(0.01, 10.0) / SR).min(0.5);
-    let a = (-TAU * p.lpf_hz.clamp(500.0, 20000.0) / SR).exp();
-    let max = ms_to_samples(MAX_DELAY_MS + 2.0 * MOD_DEPTH_MS) as usize + 8;
-    let mut lines = [Line::new(max), Line::new(max)];
-    let mut lp = [0.0f32; 2];
-    let mut phase = 0.0f32;
-    // the same f32 accumulation a whole-song render runs up to `offset`
-    for _ in 0..offset {
-        phase += inc;
-        if phase >= 1.0 {
-            phase -= 1.0;
-        }
-    }
+    let mut core = ModDelayCore::new(p, offset);
     let n = l.len().min(r.len());
     for i in 0..n {
-        phase += inc;
-        if phase >= 1.0 {
-            phase -= 1.0;
-        }
-        for c in 0..2 {
-            let x = if c == 0 { &mut l[i] } else { &mut r[i] };
-            let dry = fin(*x);
-            let ph = if c == 1 {
-                (phase + 0.25).fract()
-            } else {
-                phase
-            };
-            let modv = depth * 0.5 * (1.0 + (ph * TAU).sin());
-            let y = lines[c].read_cubic(ms_to_samples(time + modv));
-            lp[c] = flush(y + (lp[c] - y) * a);
-            lines[c].push(flush(dry + fb * lp[c]));
-            *x = dry * (1.0 - mix) + lp[c] * mix;
-        }
+        let (yl, yr) = core.step(l[i], r[i]);
+        l[i] = yl;
+        r[i] = yr;
     }
 }
 
@@ -228,47 +262,86 @@ pub fn lofi(p: &LoFiFx, l: &mut [f32], r: &mut [f32]) {
     lofi_at(p, l, r, 0)
 }
 
+/// Streaming core of `lofi_at`: the sample-and-hold clock, the quantizer
+/// and the hiss RNG. Pre-warmed by `offset` samples of clock steps (and the
+/// noise draws those steps make), so a stream started at a song offset
+/// grabs and hisses on the whole-song pass's samples.
+pub struct LofiCore {
+    rng: Rng,
+    phase: f32,
+    inc: f32,
+    step: f32,
+    nz: f32,
+    mix: f32,
+    held: [f32; 2],
+}
+
+impl LofiCore {
+    pub(crate) fn new(p: &LoFiFx, offset: usize) -> Self {
+        let inc = (p.sample_rate_hz.clamp(500.0, 48000.0) / SR).min(1.0);
+        let nz = {
+            let v = p.noise.clamp(0.0, 1.0);
+            v * v * 0.1
+        };
+        let mut rng = Rng(77);
+        let mut phase = 1.0f32;
+        for _ in 0..offset {
+            phase += inc;
+            if phase >= 1.0 {
+                phase -= 1.0;
+                if nz > 0.0 {
+                    // one draw per channel per grab, as in `step`
+                    rng.bipolar();
+                    rng.bipolar();
+                }
+            }
+        }
+        Self {
+            rng,
+            phase,
+            inc,
+            step: 2f32.powf(1.0 - p.bits.clamp(1.0, 24.0)),
+            nz,
+            mix: p.mix.clamp(0.0, 1.0),
+            held: [0.0; 2],
+        }
+    }
+
+    pub(crate) fn step(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        self.phase += self.inc;
+        let grab = self.phase >= 1.0;
+        if grab {
+            self.phase -= 1.0;
+        }
+        let xs = [xl, xr];
+        let mut out = [0.0f32; 2];
+        for c in 0..2 {
+            let dry = fin(xs[c]);
+            if grab {
+                let noisy = dry
+                    + if self.nz > 0.0 {
+                        self.rng.bipolar() * self.nz
+                    } else {
+                        0.0
+                    };
+                self.held[c] = (noisy / self.step).round() * self.step;
+            }
+            out[c] = dry * (1.0 - self.mix) + self.held[c] * self.mix;
+        }
+        (out[0], out[1])
+    }
+}
+
 /// `lofi` for a buffer that starts `offset` samples into the song: the
 /// sample-and-hold clock (and the noise draws it makes) is stepped through the
 /// first `offset` samples, so grabs land on the whole-song pass's samples.
 pub fn lofi_at(p: &LoFiFx, l: &mut [f32], r: &mut [f32], offset: usize) {
-    let step = 2f32.powf(1.0 - p.bits.clamp(1.0, 24.0));
-    let inc = (p.sample_rate_hz.clamp(500.0, 48000.0) / SR).min(1.0);
-    let nz = {
-        let v = p.noise.clamp(0.0, 1.0);
-        v * v * 0.1
-    };
-    let mix = p.mix.clamp(0.0, 1.0);
-    let mut rng = Rng(77);
-    let mut phase = 1.0f32;
-    let mut held = [0.0f32; 2];
-    for _ in 0..offset {
-        phase += inc;
-        if phase >= 1.0 {
-            phase -= 1.0;
-            if nz > 0.0 {
-                // one draw per channel per grab, as below
-                rng.bipolar();
-                rng.bipolar();
-            }
-        }
-    }
+    let mut core = LofiCore::new(p, offset);
     let n = l.len().min(r.len());
     for i in 0..n {
-        phase += inc;
-        let grab = phase >= 1.0;
-        if grab {
-            phase -= 1.0;
-        }
-        for c in 0..2 {
-            let x = if c == 0 { &mut l[i] } else { &mut r[i] };
-            let dry = fin(*x);
-            if grab {
-                let noisy = dry + if nz > 0.0 { rng.bipolar() * nz } else { 0.0 };
-                held[c] = (noisy / step).round() * step;
-            }
-            *x = dry * (1.0 - mix) + held[c] * mix;
-        }
+        let (yl, yr) = core.step(l[i], r[i]);
+        l[i] = yl;
+        r[i] = yr;
     }
 }
 
