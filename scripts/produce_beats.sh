@@ -84,6 +84,12 @@ run_fixed rt_house "$ROOT/examples/beats/rt_house.json"
 # transient) on a generated afrobeats project (generate_beat style=afrobeats
 # seed=11, effects added, self-contained)
 run_fixed rt_afro "$ROOT/examples/beats/rt_afro.json"
+# dnb demo: distortion, soft_clipper, haas, deesser (generate_beat style=dnb
+# seed=5, effects added, self-contained)
+run_fixed rt_dnb "$ROOT/examples/beats/rt_dnb.json"
+# reggaeton demo: bitcrush, gate, filter (generate_beat style=reggaeton
+# seed=8, effects added, self-contained)
+run_fixed rt_reggaeton "$ROOT/examples/beats/rt_reggaeton.json"
 # novelty matrix: s9 against itself and the previous sprint
 CMP=""
 for n in trap_2 desi_hiphop boom_bap drill; do CMP="$CMP\"$OUT/${n}_${TAG}\","; done
