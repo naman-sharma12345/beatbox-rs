@@ -3145,16 +3145,38 @@ impl ChainStreamer {
                     // fx_extra::phaser, chunked: lfo_rate() and the
                     // clamps verbatim, stage state zeroed as offline.
                     let stages = p.stages.clamp(2, 12) as usize;
+                    let rate = if p.sync_steps > 0.0 {
+                        1.0 / (p.sync_steps * step_secs).max(1e-3)
+                    } else {
+                        p.rate_hz.max(0.0)
+                    };
+                    let depth = p.depth.clamp(0.0, 1.0);
+                    // a window that starts between two grid points of the
+                    // song's 16-sample coefficient grid computes its first
+                    // set at the grid point before it, as the offline does
+                    let mut a0 = [0.0f32; 2];
+                    if offset % 16 != 0 {
+                        let k16 = offset - offset % 16;
+                        for (ci, a) in a0.iter_mut().enumerate() {
+                            let phase0 = ci as f32 * 0.25;
+                            let lfo = 0.5
+                                + 0.5
+                                    * (2.0
+                                        * std::f32::consts::PI
+                                        * (rate * k16 as f32 / SR + phase0))
+                                        .sin();
+                            let f = (p.center_hz * 2f32.powf((lfo - 0.5) * 4.0 * depth))
+                                .clamp(40.0, 16000.0);
+                            let t = (std::f32::consts::PI * f / SR).tan();
+                            *a = (t - 1.0) / (t + 1.0);
+                        }
+                    }
                     StreamFx::Phaser {
                         x1: [vec![0.0f32; stages], vec![0.0f32; stages]],
                         y1: [vec![0.0f32; stages], vec![0.0f32; stages]],
                         last: [0.0; 2],
-                        a: [0.0; 2],
-                        rate: if p.sync_steps > 0.0 {
-                            1.0 / (p.sync_steps * step_secs).max(1e-3)
-                        } else {
-                            p.rate_hz.max(0.0)
-                        },
+                        a: a0,
+                        rate,
                         stages,
                         mix: p.mix.clamp(0.0, 1.0),
                         fb: p.feedback.clamp(-0.95, 0.95),
@@ -3190,12 +3212,28 @@ impl ChainStreamer {
                 }
                 Effect::RingMod(p) => {
                     // fx_mod::ring_mod_at, chunked: phase seeds and
-                    // clamps verbatim (the offline replays advance()
-                    // over 0..offset; the streamed chain starts at
-                    // sample 0, so carrying the phase is the same
-                    // sequence).
+                    // clamps verbatim; the offline replays advance()
+                    // over 0..offset, so the phase is replayed here.
+                    let inc = p.freq_hz / SR;
+                    let mut ph = [0.0f32, p.stereo_phase.rem_euclid(1.0)];
+                    // a window that starts past 0: replay the carrier
+                    // phase over 0..offset with the offline's exact ops
+                    for phc in ph.iter_mut() {
+                        for i in 0..offset {
+                            let semis = if p.lfo_hz > 0.0 {
+                                p.lfo_depth
+                                    * (2.0 * std::f32::consts::PI * p.lfo_hz * i as f32 / SR).sin()
+                            } else {
+                                0.0
+                            };
+                            *phc += inc * 2f32.powf(semis / 12.0);
+                            if *phc >= 1.0 {
+                                *phc -= phc.floor();
+                            }
+                        }
+                    }
                     StreamFx::RingMod {
-                        ph: [0.0, p.stereo_phase.rem_euclid(1.0)],
+                        ph,
                         shape: p.shape.clone(),
                         inc: p.freq_hz / SR,
                         lfo_hz: p.lfo_hz,
@@ -3936,6 +3974,36 @@ mod tests {
             assert_bit_identical("left", block, &one_shot.left, &l);
             assert_bit_identical("right", block, &one_shot.right, &r);
         }
+    }
+
+    /// `assert_windowed_offset_chain` with the chain on every track, so
+    /// each effect has audible input in the window.
+    fn assert_windowed_offset_chain_all_tracks(chain: &[serde_json::Value]) {
+        let (mut e, mut opts) = reference_project();
+        opts.step_range = Some((6, 26));
+        for t in e.project.tracks.iter_mut() {
+            t.effects = chain
+                .iter()
+                .map(|v| serde_json::from_value(v.clone()).unwrap())
+                .collect();
+        }
+        let one_shot = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        for block in [64usize, 999, 1 << 16] {
+            let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
+            let (l, r) = node.render();
+            assert_bit_identical("left", block, &one_shot.left, &l);
+            assert_bit_identical("right", block, &one_shot.right, &r);
+        }
+    }
+
+    #[test]
+    fn engine_windowed_offset_phaser_all_tracks() {
+        assert_windowed_offset_chain_all_tracks(&[serde_json::json!({"type":"phaser"})]);
+    }
+
+    #[test]
+    fn engine_windowed_offset_ring_mod_all_tracks() {
+        assert_windowed_offset_chain_all_tracks(&[serde_json::json!({"type":"ring_mod"})]);
     }
 
     fn offset_fx_json() -> [serde_json::Value; 5] {
