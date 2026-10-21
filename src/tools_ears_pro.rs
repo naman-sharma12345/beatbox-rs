@@ -7,7 +7,7 @@ use crate::ears_pro as ep;
 use crate::engine::Engine;
 use crate::render::{self, RenderOptions};
 use crate::samples;
-use crate::tools::{b_or, f_opt, obj, s_opt, Tool};
+use crate::tools::{b_or, f_opt, obj, s_opt, s_req, u_or, Tool};
 use crate::tools_ears::{region, render_track};
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
@@ -475,6 +475,61 @@ pub fn reference_match_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     }))
 }
 
+/// Close the loop reference_match opens: apply its own ordered fixes, top
+/// `per_round` each round, re-measuring after every round. A round is kept
+/// only when the match score improves by at least a point; a flat or worse
+/// round is undone call by call and the loop stops. Actions that fail to
+/// apply (e.g. a track the suggestion named does not exist) are skipped and
+/// reported. Matches sound, never composition.
+pub fn chase_reference_tool(e: &mut Engine, a: &Value) -> Result<Value> {
+    let rsrc = s_req(a, "reference")?;
+    let rounds = u_or(a, "rounds", 3).clamp(1, 5);
+    let per_round = u_or(a, "per_round", 3).clamp(1, 5) as usize;
+    let first = reference_match_tool(e, &json!({"reference": rsrc}))?;
+    let score_before = first["match_score"].as_f64().unwrap_or(0.0);
+    let mut best = score_before;
+    let mut log = Vec::new();
+    for round in 1..=rounds {
+        let cur = reference_match_tool(e, &json!({"reference": rsrc}))?;
+        let score = cur["match_score"].as_f64().unwrap_or(0.0);
+        let actions = cur["actions"].as_array().cloned().unwrap_or_default();
+        let mut applied: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        for act in actions.iter().take(per_round) {
+            let tool = act["tool"].as_str().unwrap_or_default().to_string();
+            let args = act["args"].clone();
+            let why = act["why"].as_str().unwrap_or_default().to_string();
+            match e.call(&tool, &args) {
+                Ok(_) => applied.push(why),
+                Err(err) => skipped.push(format!("{tool}: {err}")),
+            }
+        }
+        if applied.is_empty() {
+            log.push(json!({"round": round, "score": score, "applied": [], "skipped": skipped, "kept": false, "note": "nothing applicable"}));
+            break;
+        }
+        let after = reference_match_tool(e, &json!({"reference": rsrc}))?;
+        let new_score = after["match_score"].as_f64().unwrap_or(0.0);
+        if new_score >= best + 1.0 {
+            best = new_score;
+            log.push(json!({"round": round, "score": new_score, "applied": applied, "skipped": skipped, "kept": true}));
+        } else {
+            for _ in 0..applied.len() {
+                let _ = e.call("undo", &json!({}));
+            }
+            log.push(json!({"round": round, "score": new_score, "applied": applied, "skipped": skipped, "kept": false, "note": "undone: did not improve the score by a point"}));
+            break;
+        }
+    }
+    Ok(json!({
+        "reference": rsrc,
+        "score_before": score_before,
+        "score_after": best,
+        "rounds": log,
+        "note": "each round applies reference_match's own ordered fixes and is kept only when the match score improves by at least a point; matches sound, never composition",
+    }))
+}
+
 pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
@@ -535,6 +590,15 @@ pub fn tools() -> Vec<Tool> {
             },
             run: reference_match_tool,
         },
+        Tool {
+            name: "chase_reference",
+            description: "Close the loop reference_match opens: apply its own ordered fixes to the project (top per_round, default 3, each round), re-measure after every round, and keep a round only when the match score rises by at least a point - a flat or worse round is undone and the loop stops. Rounds default 3 (max 5). Returns the score before/after and what each round changed and why. Matches sound, never composition.",
+            mutates: true,
+            schema: || {
+                obj(json!({"reference": {"type": "string", "description": "audio file path or snapshot name, as reference_match"}, "rounds": {"type": "integer"}, "per_round": {"type": "integer"}}), &["reference"])
+            },
+            run: chase_reference_tool,
+        },
     ]
 }
 
@@ -569,5 +633,49 @@ mod tests {
             .call("reference_match", &json!({"reference": "a"}))
             .unwrap();
         assert!(r["match_score"].as_f64().unwrap() >= 90.0, "{r}");
+    }
+
+    #[test]
+    fn chase_reference_improves_a_bent_mix() {
+        let d = std::env::temp_dir().join("beatbox_chase_ref_tests");
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d);
+        // a small hook-section beat: penalties accrue on the hook pair
+        e.call("new_project", &json!({"name": "t", "bpm": 120}))
+            .unwrap();
+        e.call("add_pattern", &json!({"name": "hook", "bars": 2}))
+            .unwrap();
+        e.call(
+            "generate_drums",
+            &json!({"style": "trap", "pattern": "hook", "seed": 4}),
+        )
+        .unwrap();
+        e.call(
+            "set_arrangement",
+            &json!({"sections": [{"pattern": "hook", "repeats": 2}]}),
+        )
+        .unwrap();
+        e.call("snapshot", &json!({"name": "a"})).unwrap();
+        // bend the master away from the snapshot: +8 dB at 1.6k
+        e.call(
+            "add_effect",
+            &json!({"track": "master", "type": "parametric_eq", "params": {"bands": [{"kind": "bell", "freq": 1600.0, "gain_db": 8.0, "q": 0.8}]}}),
+        )
+        .unwrap();
+        let r = e
+            .call("chase_reference", &json!({"reference": "a", "rounds": 3}))
+            .unwrap();
+        let before = r["score_before"].as_f64().unwrap();
+        let after = r["score_after"].as_f64().unwrap();
+        assert!(before < 96.0, "{r}");
+        assert!(after > before, "{r}");
+        assert!(
+            r["rounds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|rd| rd["kept"].as_bool().unwrap_or(false)),
+            "{r}"
+        );
     }
 }
