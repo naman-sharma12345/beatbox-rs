@@ -15,6 +15,85 @@ use crate::vocal::{self, Lyrics, VocalAnalysis};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
+/// Decode the take a vocal tool works on: a project sample by name (bank
+/// first, then its file) or an arbitrary audio path. Returns the mono
+/// samples, the sample name when it came from the project, and its path.
+fn vocal_source(e: &Engine, a: &Value) -> Result<(Vec<f32>, Option<String>, std::path::PathBuf)> {
+    match (s_opt(a, "sample"), s_opt(a, "path")) {
+        (Some(n), _) => {
+            let info = e
+                .project
+                .samples
+                .iter()
+                .find(|s| s.name == n)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no sample '{n}'"))?;
+            let d = e
+                .bank
+                .get(&n)
+                .map(|d| d.to_vec())
+                .map(Ok)
+                .unwrap_or_else(|| samples::decode_file(std::path::Path::new(&info.path)))?;
+            Ok((d, Some(n), std::path::PathBuf::from(info.path)))
+        }
+        (None, Some(p)) => {
+            let p = e.resolve(&p);
+            Ok((samples::decode_file(&p)?, None, p))
+        }
+        _ => bail!("give sample (a project sample name) or path"),
+    }
+}
+
+/// Write a processed take next to the samples dir, register it as
+/// <name>_<suffix> and switch the source's audio clips (and vocal map) to
+/// it, the tune_vocal writeback pattern: the result includes the lead, so
+/// replacing the clips' sample is the print-and-continue workflow (undoable).
+fn vocal_writeback(
+    e: &mut Engine,
+    y: &[f32],
+    src_path: &std::path::Path,
+    src_name: Option<&str>,
+    suffix: &str,
+    what: &str,
+) -> Result<Value> {
+    let stem = src_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("vocal")
+        .to_string();
+    std::fs::create_dir_all(e.samples_dir())?;
+    let out = e
+        .samples_dir()
+        .join(format!("{}_{}.wav", samples::sample_name(&stem), suffix));
+    crate::render::write_wav(&out, y, y)?;
+    let mut res = json!({"path": out.to_string_lossy(), "what": what});
+    if let Some(n) = src_name {
+        let info = SampleInfo {
+            name: format!("{n}_{suffix}"),
+            path: out.to_string_lossy().into(),
+            source: format!("{n}, {what}"),
+            license: String::new(),
+            author: String::new(),
+            duration: 0.0,
+        };
+        let reg = register_sample(e, info)?;
+        let tuned = reg["sample"].as_str().unwrap_or_default().to_string();
+        let mut switched = 0;
+        for c in e.project.audio_clips.iter_mut().filter(|c| c.sample == n) {
+            c.sample = tuned.clone();
+            switched += 1;
+        }
+        if let Some(m) = e.project.vocal_map.as_mut() {
+            if m.sample == n {
+                m.sample = tuned.clone();
+            }
+        }
+        res["sample"] = json!(tuned);
+        res["clips_switched"] = json!(switched);
+    }
+    Ok(res)
+}
+
 fn call(e: &mut Engine, name: &str, args: Value) -> Result<Value> {
     (find(name).expect("tool").run)(e, &args)
 }
@@ -858,6 +937,42 @@ pub fn tools() -> Vec<Tool> {
                     res["clips_switched"] = json!(switched);
                 }
                 Ok(res)
+            },
+        },
+        Tool {
+            name: "double_vocal",
+            description: "Classic ADT double of a sung take: the lead plus a slightly detuned (cents, default 6), slightly late (delay_ms, default 14) copy of itself, mixed (0..1, default 0.5). The result INCLUDES the lead, so clips switch to it like tune_vocal (undoable). Give a sample name or a path; writes <name>_dbl.wav.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "path": {"type": "string"}, "cents": {"type": "number"}, "delay_ms": {"type": "number"}, "mix": {"type": "number"}}), &[]),
+            run: |e, a| {
+                let (x, src_name, src_path) = vocal_source(e, a)?;
+                let y = vocal::double_track(
+                    &x,
+                    SR,
+                    f_opt(a, "cents").unwrap_or(6.0),
+                    f_opt(a, "delay_ms").unwrap_or(14.0),
+                    f_opt(a, "mix").unwrap_or(0.5),
+                );
+                vocal_writeback(e, &y, &src_path, src_name.as_deref(), "dbl", "ADT double")
+            },
+        },
+        Tool {
+            name: "harmonize_vocal",
+            description: "Stack harmony voices on a sung take: one TD-PSOLA copy per interval in semitones (e.g. [4, 7] adds a third and a fifth, -12 an octave below), each at level_db (default -6) under the lead. Formants kept, unvoiced parts pass through, the stack never clips. The result INCLUDES the lead, so clips switch to it like tune_vocal (undoable). Give a sample name or a path; writes <name>_harm.wav.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "path": {"type": "string"}, "intervals": {"type": "array", "items": {"type": "number"}}, "level_db": {"type": "number"}}), &["intervals"]),
+            run: |e, a| {
+                let intervals: Vec<f32> = a
+                    .get("intervals")
+                    .and_then(|v| v.as_array())
+                    .map(|v| v.iter().filter_map(|n| n.as_f64().map(|f| f as f32)).collect())
+                    .unwrap_or_default();
+                if intervals.is_empty() {
+                    bail!("intervals must be a non-empty array of semitone shifts, e.g. [4, 7]");
+                }
+                let (x, src_name, src_path) = vocal_source(e, a)?;
+                let y = vocal::harmony_stack(&x, SR, &intervals, f_opt(a, "level_db").unwrap_or(-6.0));
+                vocal_writeback(e, &y, &src_path, src_name.as_deref(), "harm", "harmony stack")
             },
         },
         Tool {

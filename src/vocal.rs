@@ -1291,6 +1291,61 @@ pub fn autotune(
     )
 }
 
+/// One pitch-shifted copy of a take at a constant interval (TD-PSOLA,
+/// formants kept): the voice that doubles and harmonies are built from.
+/// `semitones` is the shift (+4 a major third, +7 a fifth, -12 an octave
+/// down). Unvoiced parts pass through unshifted; the ratio clamp is wide
+/// (+-18 semitones) so octave shifts are not bent back.
+pub fn harmony_voice(x: &[f32], sr: f32, semitones: f32) -> Vec<f32> {
+    let frames = pitch_track(x, sr);
+    let f = vec![semitones; frames.len()];
+    psola(x, sr, &frames, &f, 0.35, 2.8)
+}
+
+/// Classic ADT double: the take plus a slightly detuned, slightly late copy
+/// of itself. `cents` is the copy's detune (+-10 sounds wide, +-3 subtle),
+/// `delay_ms` how late it follows (10-20 ms reads as a second take, not an
+/// echo), `mix` 0..1 how much of the copy is in the result (0.5 = even).
+/// Output length equals the input length, so clips stay on the grid.
+pub fn double_track(x: &[f32], sr: f32, cents: f32, delay_ms: f32, mix: f32) -> Vec<f32> {
+    let d = ((delay_ms.max(0.0) * sr / 1000.0) as usize).min(x.len());
+    let copy = harmony_voice(x, sr, cents / 100.0);
+    let m = mix.clamp(0.0, 1.0);
+    let mut y = vec![0.0f32; x.len()];
+    for i in 0..x.len() {
+        let c = if i >= d { copy[i - d] } else { 0.0 };
+        y[i] = (1.0 - m) * x[i] + m * c;
+    }
+    y
+}
+
+/// Stack harmony voices under (or over) a take: one PSOLA copy per interval
+/// in `semitones` (e.g. [4.0, 7.0] adds a third and a fifth), each at
+/// `level_db` relative to the lead. The lead passes through at unity. If the
+/// stack would clip, it is scaled down to the lead's own peak, never harder.
+pub fn harmony_stack(x: &[f32], sr: f32, intervals: &[f32], level_db: f32) -> Vec<f32> {
+    let g = 10f32.powf(level_db / 20.0);
+    let mut y = x.to_vec();
+    for &iv in intervals {
+        if !iv.is_finite() || iv.abs() < 0.01 || iv.abs() > 24.0 {
+            continue;
+        }
+        let v = harmony_voice(x, sr, iv);
+        for (o, s) in y.iter_mut().zip(v.iter()) {
+            *o += g * s;
+        }
+    }
+    let peak_in = x.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+    let peak_out = y.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+    if peak_out > 1.0 && peak_in > 0.0 {
+        let k = peak_in.min(1.0) / peak_out;
+        for s in y.iter_mut() {
+            *s *= k;
+        }
+    }
+    y
+}
+
 // ------------------------------------------------------------ lyrics
 
 /// The lyrics helper, shipped inside the binary and written next to the
@@ -2120,5 +2175,124 @@ mod tests {
         assert!(!lyrics_looped(&fine));
         let same = mk((0..8).map(|_| line("ना ना ना")).collect());
         assert!(lyrics_looped(&same));
+    }
+
+    /// A steady voiced "singer": harmonic-rich source at `midi` with vibrato,
+    /// voiced throughout, so pitch_track has something to hold on to.
+    fn steady_singer(sr: f32, midi: f32, secs: f32) -> Vec<f32> {
+        let n = (secs * sr) as usize;
+        let hz = 440.0f32 * 2f32.powf((midi - 69.0) / 12.0);
+        let mut phase = 0.0f32;
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / sr;
+                let vib = 1.0 + 0.004 * (2.0 * std::f32::consts::PI * 5.5 * t).sin();
+                phase += hz * vib / sr;
+                let p = phase.fract();
+                let mut s = 0.0f32;
+                for h in 1..=6 {
+                    s += (2.0 * std::f32::consts::PI * h as f32 * p).sin() / h as f32;
+                }
+                let env = (t * 40.0).min(1.0).min(((secs - t) * 40.0).min(1.0));
+                0.5 * s * env
+            })
+            .collect()
+    }
+
+    #[test]
+    fn harmony_voice_holds_the_interval_within_half_a_semitone() {
+        let sr = SR;
+        let x = steady_singer(sr, 57.0, 1.2); // A3 220 Hz
+        let up = harmony_voice(&x, sr, 7.0);
+        assert_eq!(up.len(), x.len());
+        let fr = pitch_track(&up, sr);
+        let mut mids: Vec<f32> = fr.iter().map(|f| f.midi).filter(|&m| m > 0.0).collect();
+        mids.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let med = mids[mids.len() / 2];
+        assert!(
+            (med - 64.0).abs() < 0.5,
+            "a fifth above A3 should sit near E4 (64), got {med}"
+        );
+        // onsets stay put: the shifted copy starts and stops with the lead
+        let voiced = |v: &[f32]| {
+            let w = (0.02 * sr) as usize;
+            let mut span = (0usize, 0usize);
+            for (i, c) in v.chunks(w).enumerate() {
+                let e: f32 = c.iter().map(|s| s * s).sum();
+                if e > 1e-3 {
+                    if span.0 == 0 {
+                        span.0 = i * w;
+                    }
+                    span.1 = i * w;
+                }
+            }
+            span
+        };
+        let (a0, a1) = voiced(&x);
+        let (b0, b1) = voiced(&up);
+        assert!(
+            (a0 as i64 - b0 as i64).abs() < (0.03 * sr) as i64,
+            "onset moved"
+        );
+        assert!(
+            (a1 as i64 - b1 as i64).abs() < (0.03 * sr) as i64,
+            "offset moved"
+        );
+        let down = harmony_voice(&x, sr, -12.0);
+        let fr2 = pitch_track(&down, sr);
+        let mut m2: Vec<f32> = fr2.iter().map(|f| f.midi).filter(|&m| m > 0.0).collect();
+        m2.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let med2 = m2[m2.len() / 2];
+        assert!(
+            (med2 - 45.0).abs() < 0.5,
+            "an octave below A3 should sit near A2 (45), got {med2}"
+        );
+    }
+
+    #[test]
+    fn double_track_adds_a_late_detuned_copy_without_moving_the_lead() {
+        let sr = SR;
+        let x = steady_singer(sr, 57.0, 1.0);
+        let d_ms = 14.0;
+        let y = double_track(&x, sr, 8.0, d_ms, 0.5);
+        assert_eq!(y.len(), x.len());
+        // the double is late: the first delay_ms of the output is the lead alone
+        let d = (d_ms * sr / 1000.0) as usize;
+        for i in 0..d.min(x.len()) {
+            assert!(
+                (y[i] - 0.5 * x[i]).abs() < 1e-4,
+                "sample {i} before the delay line fills should be the lead only"
+            );
+        }
+        // and after it the copy adds real energy on top of the lead
+        let lead_e: f32 = x[d..].iter().map(|s| 0.25 * s * s).sum();
+        let res_e: f32 = y[d..]
+            .iter()
+            .zip(x[d..].iter())
+            .map(|(o, l)| {
+                let r = o - 0.5 * l;
+                r * r
+            })
+            .sum();
+        assert!(
+            res_e > 0.5 * lead_e,
+            "the double should add energy comparable to the lead copy ({res_e} vs {lead_e})"
+        );
+        // mix=0 returns the lead untouched
+        let solo = double_track(&x, sr, 8.0, d_ms, 0.0);
+        assert!(solo.iter().zip(x.iter()).all(|(a, b)| (a - b).abs() < 1e-6));
+    }
+
+    #[test]
+    fn harmony_stack_adds_voices_and_never_clips() {
+        let sr = SR;
+        let x = steady_singer(sr, 57.0, 1.0);
+        let y = harmony_stack(&x, sr, &[4.0, 7.0, -12.0], -6.0);
+        assert_eq!(y.len(), x.len());
+        let peak = y.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(peak <= 1.0, "harmony stack clipped at {peak}");
+        // degenerate intervals are skipped, not fatal
+        let z = harmony_stack(&x, sr, &[0.0, f32::NAN, 99.0], 0.0);
+        assert!(z.iter().zip(x.iter()).all(|(a, b)| (a - b).abs() < 1e-6));
     }
 }
