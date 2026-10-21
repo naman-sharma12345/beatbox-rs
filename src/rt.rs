@@ -3985,8 +3985,9 @@ mod tests {
 
     /// Windowed render (step_range starting past zero) with an automated
     /// pan lane on track 0 must be bit-identical to the one-shot render at
-    /// several block sizes. Points sit inside and outside the window, so
-    /// the lane-curve offset path is exercised.
+    /// several block sizes, including 1, 7 and 513 (per-sample stepping and
+    /// non-alignment through the lane-curve offset path). Points sit inside
+    /// and outside the window.
     /// The stutter modes with non-default parameters: half-time and
     /// tape-stop read their source near the render's end, and slice-repeat
     /// is buffer-relative offline, so a windowed render exercises both the
@@ -4034,7 +4035,7 @@ mod tests {
         lane.sort();
         e.project.automation.push(lane);
         let one_shot = crate::render::render(&e.project, &e.bank, &opts).unwrap();
-        for block in [64usize, 999, 1 << 16] {
+        for block in [1usize, 7, 64, 513, 999, 1 << 16] {
             let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
             let (l, r) = node.render();
             assert_bit_identical("left", block, &one_shot.left, &l);
@@ -4054,7 +4055,7 @@ mod tests {
             .collect();
         e.project.tracks[0].effects = fx;
         let one_shot = crate::render::render(&e.project, &e.bank, &opts).unwrap();
-        for block in [64usize, 999, 1 << 16] {
+        for block in [1usize, 7, 64, 513, 999, 1 << 16] {
             let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
             let (l, r) = node.render();
             assert_bit_identical("left", block, &one_shot.left, &l);
