@@ -1708,10 +1708,27 @@ pub(crate) fn plan_track_clips<'a>(
             .unwrap_or(avail);
         let g = crate::dsp::db_to_gain(c.gain_db);
         let shifted = if c.pitch_st != 0.0 && len > 0 {
-            Some(std::sync::Arc::new(crate::audio_edit::pitch_shift(
-                &data[off..off + len],
-                c.pitch_st,
-            )))
+            let span = &data[off..off + len];
+            let mut audio = if c.pitch_voice {
+                // voice mode: constant-correction TD-PSOLA (formants kept),
+                // cascaded in steps of at most 6 semitones. A single big step
+                // lands the synthesis hop on a ratio commensurate with the
+                // period (2:1 at +12, 1:2 at -12) where the windowed overlap
+                // cancels a steady tone; half steps stay incommensurate.
+                let steps = ((c.pitch_st.abs() / 6.0).ceil() as usize).max(1);
+                let per = c.pitch_st / steps as f32;
+                let mut cur = span.to_vec();
+                for _ in 0..steps {
+                    let frames = crate::vocal::pitch_track(&cur, crate::dsp::SR);
+                    let corr = vec![per; frames.len()];
+                    cur = crate::vocal::psola(&cur, crate::dsp::SR, &frames, &corr, 0.5, 2.0);
+                }
+                cur
+            } else {
+                crate::audio_edit::pitch_shift(span, c.pitch_st)
+            };
+            audio.resize(len, 0.0); // span() promises exactly len samples
+            Some(std::sync::Arc::new(audio))
         } else {
             None
         };

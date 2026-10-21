@@ -88,6 +88,10 @@ fn one_f32() -> f32 {
 fn is_one(x: &f32) -> bool {
     (*x - 1.0).abs() < 1e-9
 }
+fn is_false(x: &bool) -> bool {
+    !*x
+}
+
 fn is_zero(x: &f32) -> bool {
     *x == 0.0
 }
@@ -536,6 +540,11 @@ pub struct AudioClip {
     /// default) renders the sample untouched, bit for bit.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub pitch_st: f32,
+    /// Voice mode for `pitch_st`: a TD-PSOLA (vocal::psola, formants kept)
+    /// instead of the default WSOLA+resample shifter - a transposed singer
+    /// keeps their tone. Best within +-7 semitones.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pitch_voice: bool,
     /// Equal-power fade at the clip's start / end in ms (None = a 4 ms ramp).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_in_ms: Option<f32>,

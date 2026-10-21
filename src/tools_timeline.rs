@@ -65,7 +65,7 @@ fn clip_json(e: &mut Engine, i: usize) -> Value {
     let end = end_beat(&e.project, c, len);
     json!({"id": c.id, "index": i, "track": c.track, "sample": c.sample, "start_beat": c.start_beat,
         "end_beat": (end * 1000.0).round() / 1000.0, "offset_s": c.offset_s, "length_s": (len * 1000.0).round() / 1000.0,
-        "gain_db": c.gain_db, "pitch_st": c.pitch_st, "fade_in_ms": c.fade_in_ms, "fade_out_ms": c.fade_out_ms})
+        "gain_db": c.gain_db, "pitch_st": c.pitch_st, "pitch_voice": c.pitch_voice, "fade_in_ms": c.fade_in_ms, "fade_out_ms": c.fade_out_ms})
 }
 
 fn id_prop() -> Value {
@@ -387,16 +387,20 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "pitch_clip",
-            description: "Transpose an audio clip by semitones (-24..24: +12 = an octave up, -7 = a fifth down) without moving it or changing its length - an acapella or loop drops into the song's key while every hit stays on the grid. Render-time pitch, not a bounce: undo or set 0 and the original audio is back bit for bit.",
+            description: "Transpose an audio clip by semitones (-24..24: +12 = an octave up, -7 = a fifth down) without moving it or changing its length - an acapella or loop drops into the song's key while every hit stays on the grid. Render-time pitch, not a bounce: undo or set 0 and the original audio is back bit for bit. voice (default false) switches sung takes to a TD-PSOLA that keeps the singer's formants, so a transposed vocal keeps its tone instead of going chipmunk; best within +-7 semitones.",
             mutates: true,
-            schema: || obj(json!({"id": id_prop(), "semitones": {"type": "number", "minimum": -24, "maximum": 24}}), &["id", "semitones"]),
+            schema: || obj(json!({"id": id_prop(), "semitones": {"type": "number", "minimum": -24, "maximum": 24}, "voice": {"type": "boolean"}}), &["id", "semitones"]),
             run: |e, a| {
                 let i = audio_clip_index(&e.project, a)?;
                 let st = a
                     .get("semitones")
                     .and_then(|v| v.as_f64())
                     .ok_or_else(|| anyhow!("give semitones (-24..24)"))? as f32;
-                e.project.audio_clips[i].pitch_st = st.clamp(-24.0, 24.0);
+                let c = &mut e.project.audio_clips[i];
+                c.pitch_st = st.clamp(-24.0, 24.0);
+                if let Some(v) = a.get("voice").and_then(|v| v.as_bool()) {
+                    c.pitch_voice = v;
+                }
                 Ok(clip_json(e, i))
             },
         },
@@ -518,7 +522,7 @@ pub fn tools() -> Vec<Tool> {
                     !drop
                 });
                 let id = crate::ids::next_id(&mut e.project, "clip");
-                e.project.audio_clips.push(AudioClip { track: track.clone(), sample: sample.clone(), start_beat: from, offset_s: 0.0, length_s: None, gain_db: 0.0, pitch_st: 0.0, fade_in_ms: None, fade_out_ms: None, id: id.clone() });
+                e.project.audio_clips.push(AudioClip { track: track.clone(), sample: sample.clone(), start_beat: from, offset_s: 0.0, length_s: None, gain_db: 0.0, pitch_st: 0.0, pitch_voice: false, fade_in_ms: None, fade_out_ms: None, id: id.clone() });
                 Ok(json!({"id": id, "track": track, "sample": sample, "file": file.to_string_lossy(), "replaced": gone,
                     "start_beat": from, "seconds": (buf.len() as f32 / SR * 1000.0).round() / 1000.0}))
             },
@@ -647,6 +651,40 @@ mod tests {
         assert!(e
             .call("pitch_clip", &json!({"id": "clip999", "semitones": 3}))
             .is_err());
+    }
+
+    #[test]
+    fn pitch_clip_voice_mode_also_transposes_and_keeps_length() {
+        let (mut e, _dir) = eng();
+        let id = e.project.audio_clips[0].id.clone();
+        let opts = crate::render::RenderOptions::default();
+        let base = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        let crossings = |m: &crate::render::Mix, secs: f32| -> usize {
+            let n = ((secs * SR) as usize).min(m.left.len());
+            m.left[..n]
+                .windows(2)
+                .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+                .count()
+        };
+        let base_x = crossings(&base, 0.4);
+        e.call(
+            "pitch_clip",
+            &json!({"id": id, "semitones": 12, "voice": true}),
+        )
+        .unwrap();
+        assert!(e.project.audio_clips[0].pitch_voice);
+        let up = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert_eq!(up.left.len(), base.left.len(), "render length kept");
+        let up_x = crossings(&up, 0.4);
+        assert!(
+            up_x > (base_x as f32 * 1.5) as usize,
+            "voice mode 220 Hz {base_x} crossings -> {up_x} (want higher)"
+        );
+        // both fields survive a project save/load round-trip
+        let json = serde_json::to_string(&e.project).unwrap();
+        let back: crate::project::Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.audio_clips[0].pitch_st, 12.0);
+        assert!(back.audio_clips[0].pitch_voice);
     }
 
     #[test]
