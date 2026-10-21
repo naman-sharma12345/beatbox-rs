@@ -4065,6 +4065,13 @@ mod tests {
     /// `assert_windowed_offset_chain` with the chain on every track, so
     /// each effect has audible input in the window.
     fn assert_windowed_offset_chain_all_tracks(chain: &[serde_json::Value]) {
+        assert_windowed_offset_chain_all_tracks_at(chain, &[64, 999, 1 << 16]);
+    }
+
+    /// `assert_windowed_offset_chain_all_tracks` with a caller-chosen block
+    /// list, so edge-case sizes don't have to run in every parametrized
+    /// test.
+    fn assert_windowed_offset_chain_all_tracks_at(chain: &[serde_json::Value], blocks: &[usize]) {
         let (mut e, mut opts) = reference_project();
         opts.step_range = Some((6, 26));
         for t in e.project.tracks.iter_mut() {
@@ -4074,12 +4081,29 @@ mod tests {
                 .collect();
         }
         let one_shot = crate::render::render(&e.project, &e.bank, &opts).unwrap();
-        for block in [64usize, 999, 1 << 16] {
+        for &block in blocks {
             let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
             let (l, r) = node.render();
             assert_bit_identical("left", block, &one_shot.left, &l);
             assert_bit_identical("right", block, &one_shot.right, &r);
         }
+    }
+
+    /// Windowed render at odd block sizes - 1 (per-sample stepping), 7 and
+    /// 513 (no alignment to power-of-two buffers) - with an offset-sensitive
+    /// heavy chain on every track. Bit-identical to the one-shot render.
+    #[test]
+    fn engine_windowed_offset_odd_block_sizes() {
+        assert_windowed_offset_chain_all_tracks_at(
+            &[
+                serde_json::json!({"type":"stutter","mode":"tape_stop","cycle_steps":4.0,
+                    "smooth_ms":2.0,"mix":0.9}),
+                serde_json::json!({"type":"phaser"}),
+                serde_json::json!({"type":"pitch_shift"}),
+                serde_json::json!({"type":"compressor"}),
+            ],
+            &[1, 7, 513],
+        );
     }
 
     #[test]
