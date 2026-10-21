@@ -868,8 +868,9 @@ pub(crate) fn core_tools() -> Vec<Tool> {
             run: |e, a| {
                 let path = e.resolve(&s_req(a, "path")?);
                 let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-                let p: Project = serde_json::from_str(&text).context("not a beatbox project")?;
+                let mut p: Project = serde_json::from_str(&text).context("not a beatbox project")?;
                 p.validate_effects().map_err(|m| anyhow!("load_project: {m}. Nothing was changed."))?;
+                p.sanitize_timing();
                 e.replace_project(p);
                 let saved_midi = e.project.midi.clone();
                 let (midi_links, midi_skipped) = crate::midi_in::restore(e, saved_midi.as_ref());
@@ -879,11 +880,12 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                     if let Ok(Value::Array(v)) = serde_json::from_str::<Value>(&t) {
                         e.snapshots.clear();
                         for s in v {
-                            if let (Some(n), Ok(pr)) = (s["name"].as_str(), serde_json::from_value::<Project>(s["project"].clone())) {
+                            if let (Some(n), Ok(mut pr)) = (s["name"].as_str(), serde_json::from_value::<Project>(s["project"].clone())) {
                                 if pr.validate_effects().is_err() {
                                     snapshots_skipped += 1;
                                     continue;
                                 }
+                                pr.sanitize_timing();
                                 e.snapshots.push((n.to_string(), crate::engine::Snapshot { project: pr, note: s["note"].as_str().unwrap_or("").to_string(), revision: s["revision"].as_u64().unwrap_or(0) }));
                                 loaded += 1;
                             }
@@ -2094,6 +2096,35 @@ mod tests {
                 &json!({"progression": "i-VI-III-VII", "octave": oct}),
             )
             .unwrap();
+        }
+    }
+
+    #[test]
+    fn load_project_clamps_hostile_timing_fields() {
+        // bpm 0 / negative / huge and extreme swing used to reach raw-`bpm`
+        // math in some voice paths and hang the render; load clamps them to
+        // the same ranges the use sites already clamp to.
+        let dir = std::env::temp_dir().join("bb_hostile_timing_load");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (bpm, swing, want_bpm, want_swing) in [
+            (0.0, 0.0, 20.0, 0.0),
+            (-120.0, 5.0, 20.0, 1.0),
+            (1e300, -1.0, 400.0, 0.0),
+            (140.0, 0.4, 140.0, 0.4),
+        ] {
+            let path = dir.join("p.json");
+            std::fs::write(
+                &path,
+                format!(
+                    r#"{{"name":"h","bpm":{bpm},"swing":{swing},"key_root":"C","scale":"minor","tracks":[],"patterns":[],"arrangement":[],"master_effects":[],"master_volume_db":0.0,"samples":[],"schema_version":2,"id_seq":0,"seed_log":[]}}"#
+                ),
+            )
+            .unwrap();
+            let mut e = eng();
+            e.call("load_project", &json!({"path": path.to_str().unwrap()}))
+                .unwrap();
+            assert_eq!(e.project.bpm, want_bpm, "bpm {bpm}");
+            assert_eq!(e.project.swing, want_swing, "swing {swing}");
         }
     }
 

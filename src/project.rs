@@ -783,6 +783,24 @@ impl Project {
     /// Run `Effect::validate` over every effect in the project (tracks,
     /// buses, master). Cheap: reads plain parameter fields, allocates
     /// nothing sized by them. The message names where the bad effect is.
+    /// Bring global timing fields into the ranges every use site already
+    /// clamps to (`step_secs` and `TempoCurve` clamp bpm to 20..=400, the
+    /// renderer clamps swing to 0..=1). A hostile or corrupt project file
+    /// with bpm 0 / negative / 1e300 or an extreme swing otherwise reaches
+    /// raw-`bpm` math in some voice paths and hangs the render instead of
+    /// making bad music. Clamping (not rejecting) keeps degenerate projects
+    /// loadable and renderable, matching validate_effects' callers' policy.
+    pub fn sanitize_timing(&mut self) {
+        self.bpm = self.bpm.clamp(20.0, 400.0);
+        if !self.bpm.is_finite() {
+            self.bpm = 120.0;
+        }
+        self.swing = self.swing.clamp(0.0, 1.0);
+        if !self.swing.is_finite() {
+            self.swing = 0.0;
+        }
+    }
+
     pub fn validate_effects(&self) -> Result<(), String> {
         for t in &self.tracks {
             for (i, fx) in t.effects.iter().enumerate() {
