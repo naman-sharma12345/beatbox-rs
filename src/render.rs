@@ -2256,6 +2256,98 @@ pub(crate) mod tests {
     use super::*;
     use crate::project::{Note, Track};
 
+    /// Degenerate-but-parseable project JSONs must never panic render and
+    /// never emit NaN/inf: odd values from hand-edited or half-corrupt
+    /// project files hit the audio path raw, so the engine has to take
+    /// them in stride (clamped, ignored or erroring cleanly). Found by
+    /// fuzzing examples/rt_fuzz-style mutations; 0 panics, 0 NaN outputs.
+    #[test]
+    fn render_degenerate_projects_never_panic_nor_nan() {
+        let base = || {
+            serde_json::json!({
+                "name":"f","bpm":120.0,"swing":0.0,"key_root":"C","scale":"minor",
+                "tracks":[{"id":"t1","name":"kick","instrument":{"type":"drum","kind":"kick"},
+                    "volume_db":-1.0,"pan":0.0,"mute":false,"solo":false,"effects":[]}],
+                "patterns":[{"id":"p1","name":"main","bars":1,"clips":{
+                    "kick":[{"start":0.0,"len":1.0,"pitch":36,"vel":0.9,"id":"n1"}]}}],
+                "arrangement":[{"pattern":"main","repeats":1}],
+                "master_effects":[],"master_volume_db":0.0,"samples":[],
+                "schema_version":2,"id_seq":10,"seed_log":[]
+            })
+        };
+        let cases: Vec<fn(&mut serde_json::Value)> = vec![
+            |v| v["bpm"] = 0.0.into(),
+            |v| v["bpm"] = (-120.0).into(),
+            |v| v["bpm"] = 1e300.into(),
+            |v| v["swing"] = 5.0.into(),
+            |v| v["swing"] = (-1.0).into(),
+            |v| v["tracks"] = serde_json::json!([]),
+            |v| v["patterns"][0]["bars"] = 0.into(),
+            |v| v["patterns"][0]["clips"]["kick"][0]["len"] = (-2.0).into(),
+            |v| v["patterns"][0]["clips"]["kick"][0]["start"] = 1e9.into(),
+            |v| v["patterns"][0]["clips"]["kick"][0]["pitch"] = 255.into(),
+            |v| v["patterns"][0]["clips"]["kick"][0]["vel"] = 1e9.into(),
+            |v| v["tracks"][0]["volume_db"] = (-400.0).into(),
+            |v| v["tracks"][0]["volume_db"] = 1e38.into(),
+            |v| v["tracks"][0]["pan"] = 99.0.into(),
+            |v| v["arrangement"] = serde_json::json!([{"pattern":"ghost","repeats":1}]),
+            |v| v["arrangement"][0]["repeats"] = 0.into(),
+            |v| {
+                v["arrangement"] = serde_json::json!([]);
+                v["patterns"] = serde_json::json!([]);
+            },
+            |v| v["key_root"] = "H".into(),
+            |v| v["scale"] = "weird".into(),
+            |v| v["tracks"][0]["effects"] = serde_json::json!([{"type":"filter","mode":"lowpass","cutoff":-100.0,"resonance":0.2}]),
+            |v| {
+                v["tracks"][0]["effects"] =
+                    serde_json::json!([{"type":"delay","steps":0.0,"feedback":2.0,"mix":0.3}])
+            },
+            |v| v["tracks"][0]["effects"] = serde_json::json!([{"type":"stutter","slice_steps":0.0,"cycle_steps":8.0,"mix":1.0}]),
+            |v| {
+                v["tracks"][0]["effects"] =
+                    serde_json::json!([{"type":"bitcrush","bits":0.0,"downsample":1,"mix":1.0}])
+            },
+            |v| {
+                v["tracks"][0]["effects"] =
+                    serde_json::json!([{"type":"pitch_shift","semitones":1e9}])
+            },
+            |v| {
+                v["tracks"][0]["effects"] =
+                    serde_json::json!([{"type":"distortion","drive":0.5,"mix":-1.0}])
+            },
+            |v| v["master_effects"] = serde_json::json!([{"type":"limiter","ceiling_db":20.0,"release_ms":80.0,"true_peak":true}]),
+            |v| v["automation"] = serde_json::json!([{"target":"kick","param":"volume","points":[{"beat":-5.0,"value":0.0},{"beat":2.0,"value":-6.0}]}]),
+            |v| v["automation"] = serde_json::json!([{"target":"kick","param":"volume","points":[{"beat":8.0,"value":0.0},{"beat":2.0,"value":-6.0}]}]),
+            |v| v["automation"] = serde_json::json!([{"target":"ghost","param":"volume","points":[{"beat":0.0,"value":0.0},{"beat":2.0,"value":-6.0}]}]),
+            |v| v["automation"] = serde_json::json!([{"target":"kick","param":"fx.99.nonexistent","points":[{"beat":0.0,"value":0.0},{"beat":2.0,"value":1.0}]}]),
+        ];
+        let bank = crate::samples::SampleBank::default();
+        let opts = RenderOptions {
+            tail: 0.1,
+            ..Default::default()
+        };
+        for (i, mutate) in cases.iter().enumerate() {
+            let mut v = base();
+            mutate(&mut v);
+            // a serde rejection is also a fine answer (typed bounds work)
+            let Ok(p) = serde_json::from_value::<crate::project::Project>(v) else {
+                continue;
+            };
+            let r =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render(&p, &bank, &opts)));
+            let mix = match r {
+                Ok(Ok(m)) => m,
+                Ok(Err(_)) => continue, // clean validation error
+                Err(_) => panic!("case {i}: render panicked on degenerate project"),
+            };
+            assert!(
+                mix.left.iter().all(|x| x.is_finite()) && mix.right.iter().all(|x| x.is_finite()),
+                "case {i}: NaN/inf in render output"
+            );
+        }
+    }
+
     /// The pre-fader track cache must not change a single sample: a render
     /// with faders/master moved and tracks reused equals a fresh render.
     #[test]
