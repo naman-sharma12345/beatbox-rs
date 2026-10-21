@@ -114,13 +114,23 @@ fn tune_drums(e: &mut Engine, a: &Value) -> Result<Value> {
             DrumKind::Kick => (30.0, 160.0, vec![0, 7]),
             DrumKind::Tom => (60.0, 400.0, vec![0, third, 7]),
             DrumKind::Snare => (120.0, 400.0, vec![0, third, 7]),
+            // the dayan rings on its fundamental: tune it to the sa (root)
+            DrumKind::Tabla => (150.0, 500.0, vec![0]),
+            DrumKind::Bayan => (55.0, 200.0, vec![0]),
             _ => continue,
         };
-        let hit = crate::instruments::render_note(&t.instrument, 60.0, 0.9, 0.3, &e.bank, 1);
-        let Some(f0) = drum_fundamental(&hit, crate::dsp::SR, lo, hi) else {
-            continue;
+        let m = if matches!(d.kind, DrumKind::Bayan) {
+            // the bayan's palm gamak slides the pitch up through the hit, so
+            // a windowed f0 read smears across semitones; its base is a fixed
+            // 82 Hz at tune 0, so compute the current pitch instead
+            69.0 + 12.0 * (82.0 * 2f32.powf(d.tune / 12.0) / 440.0).log2()
+        } else {
+            let hit = crate::instruments::render_note(&t.instrument, 60.0, 0.9, 0.3, &e.bank, 1);
+            let Some(f0) = drum_fundamental(&hit, crate::dsp::SR, lo, hi) else {
+                continue;
+            };
+            69.0 + 12.0 * (f0 / 440.0).log2()
         };
-        let m = 69.0 + 12.0 * (f0 / 440.0).log2();
         // nearest key target (root / fifth / third) in any octave
         let mut best = (0.0f32, f32::INFINITY, 0i32);
         for &iv in &targets {
@@ -139,10 +149,11 @@ fn tune_drums(e: &mut Engine, a: &Value) -> Result<Value> {
         if let Instrument::Drum(dm) = &mut e.project.tracks[ti].instrument {
             dm.tune = ((old + shift) * 100.0).round() / 100.0;
         }
-        rows.push(json!({"track": name, "measured_hz": (f0 * 10.0).round() / 10.0, "measured_note": crate::theory::note_name(m.round().clamp(0.0, 127.0) as u8), "target": crate::theory::note_name(best.0 as u8), "degree": match best.2 { 0 => "root", 7 => "fifth", _ => "third" }, "shift_semitones": (shift * 100.0).round() / 100.0}));
+        let cur_hz = 440.0 * 2f32.powf((m - 69.0) / 12.0);
+        rows.push(json!({"track": name, "measured_hz": (cur_hz * 10.0).round() / 10.0, "measured_note": crate::theory::note_name(m.round().clamp(0.0, 127.0) as u8), "target": crate::theory::note_name(best.0 as u8), "degree": match best.2 { 0 => "root", 7 => "fifth", _ => "third" }, "shift_semitones": (shift * 100.0).round() / 100.0}));
     }
     if rows.is_empty() {
-        bail!("no kick / tom / snare drum tracks to tune");
+        bail!("no kick / tom / snare / tabla / bayan drum tracks to tune");
     }
     Ok(json!({"key": format!("{} {}", e.project.key_root, e.project.scale), "tuned": rows}))
 }
@@ -151,7 +162,7 @@ pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "tune_drums_to_key",
-            description: "Tune the kick (to the root or fifth), toms and snare body (root / third / fifth) to the song key: renders a hit, measures its fundamental, shifts the drum's tune by the nearest interval (<= 6 semitones). Kicks that sit in key make the low end stop fighting the bass. tracks narrows it.",
+            description: "Tune the kick (to the root or fifth), toms and snare body (root / third / fifth) to the song key: renders a hit, measures its fundamental, shifts the drum's tune by the nearest interval (<= 6 semitones). Tabla and bayan tune to the root (the sa; the bayan's gamak slide is computed from its fixed 82 Hz base instead of measured). Kicks that sit in key make the low end stop fighting the bass. tracks narrows it.",
             mutates: true,
             schema: || obj(json!({"tracks": {"type": "array", "items": {"type": "string"}}}), &[]),
             run: tune_drums,
@@ -223,5 +234,40 @@ mod tests {
         let m = 69.0 + 12.0 * (f / 440.0).log2();
         let pc = (m.round() as i32).rem_euclid(12);
         assert!(pc == 5 || pc == 0, "kick at {f} Hz ({m}) {r}");
+    }
+
+    #[test]
+    fn tabla_and_bayan_land_on_the_root() {
+        let mut e = Engine::new(std::env::temp_dir().join("beatbox_tune_drums_desi"));
+        e.call("new_project", &json!({"name": "t", "bpm": 90}))
+            .unwrap();
+        e.call("set_key", &json!({"root": "D", "scale": "major"}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "tabla", "preset": "tabla"}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "bayan", "preset": "bayan"}))
+            .unwrap();
+        let r = e.call("tune_drums_to_key", &json!({})).unwrap();
+        let rows = r["tuned"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{r}");
+        for row in rows {
+            assert_eq!(row["degree"].as_str().unwrap(), "root", "{row}");
+            assert!(row["target"].as_str().unwrap().starts_with('D'), "{row}");
+        }
+        // read the tunes back: both fundamentals must sit within 30 cents
+        // of a D in some octave (tabla near D4 293.66, bayan near D2 73.42)
+        for (name, base) in [("tabla", 261.63f32), ("bayan", 82.0f32)] {
+            let t = e.project.tracks.iter().find(|t| t.name == name).unwrap();
+            let crate::instruments::Instrument::Drum(d) = &t.instrument else {
+                panic!("{name} is not a drum");
+            };
+            let f0 = base * 2f32.powf(d.tune / 12.0);
+            let cents_to_d = |d_hz: f32| (1200.0 * (f0 / d_hz).log2()).abs();
+            assert!(
+                cents_to_d(293.66) < 30.0 || cents_to_d(146.83) < 30.0 || cents_to_d(73.42) < 30.0,
+                "{name} at {f0} Hz (tune {}) not on a D",
+                d.tune
+            );
+        }
     }
 }
