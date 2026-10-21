@@ -1412,6 +1412,10 @@
  ],
  "master_effects": [
   {
+   "type": "gain",
+   "db": 4.5
+  },
+  {
    "type": "limiter"
   }
  ]
