@@ -88,7 +88,7 @@ pub fn edit(notes: &mut [Note], sel: &Selection, e: &EditSpec, max_steps: f32) -
     let mut k = 0;
     for n in notes.iter_mut().filter(|n| sel.matches(n)) {
         n.start = (n.start + e.move_steps).clamp(0.0, (max_steps - 0.01).max(0.0));
-        n.pitch = (n.pitch as i32 + e.transpose).clamp(0, 127) as u8;
+        n.pitch = (n.pitch as i32).saturating_add(e.transpose).clamp(0, 127) as u8;
         if let Some(l) = e.set_len {
             n.len = l;
         }

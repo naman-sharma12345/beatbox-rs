@@ -87,7 +87,7 @@ pub fn tools() -> Vec<Tool> {
                 let hits = rhythm_hits(&rhythm);
                 if hits.is_empty() { bail!("rhythm has no hits (use X, x or o)"); }
                 let rlen = rhythm_len(&rhythm);
-                let degrees: Vec<i32> = a.get("degrees").and_then(|v| v.as_array()).map(|v| v.iter().filter_map(|x| x.as_i64().map(|d| d as i32)).collect()).unwrap_or_else(|| vec![1, 3, 5, 8]);
+                let degrees: Vec<i32> = a.get("degrees").and_then(|v| v.as_array()).map(|v| v.iter().filter_map(|x| x.as_i64().map(|d| d.clamp(-1024, 1024) as i32)).collect()).unwrap_or_else(|| vec![1, 3, 5, 8]);
                 if degrees.is_empty() { bail!("degrees is empty"); }
                 let octave = u_or(a, "octave", 4) as i32;
                 let gate = f_or(a, "gate", 0.9).clamp(0.1, 1.0);
@@ -215,7 +215,7 @@ pub fn tools() -> Vec<Tool> {
                 let span = match f_opt(a, "bars") { Some(b) => b * 16.0, None => ((motif.iter().map(|n| n.end()).fold(0.0f32, f32::max) / 16.0).ceil() * 16.0).max(16.0) };
                 let key = key_pc(&e.project);
                 let scale = theory::scale_intervals(&e.project.scale)?.to_vec();
-                let trans: Vec<i32> = a.get("transpose_repeats").and_then(|v| v.as_array()).map(|v| v.iter().filter_map(|x| x.as_i64().map(|d| d as i32)).collect()).unwrap_or_default();
+                let trans: Vec<i32> = a.get("transpose_repeats").and_then(|v| v.as_array()).map(|v| v.iter().filter_map(|x| x.as_i64().map(|d| d.clamp(-1024, 1024) as i32)).collect()).unwrap_or_default();
                 let var = f_or(a, "variation", 0.0).clamp(0.0, 1.0);
                 let kind = s_opt(a, "kind").unwrap_or_else(|| "melodic".into());
                 let answer = b_or(a, "answer", false);
@@ -283,7 +283,7 @@ pub fn tools() -> Vec<Tool> {
                     _ => bail!("give to_pattern or to_patterns"),
                 };
                 let to0 = f_or(a, "to_bar", 0.0) * 16.0;
-                let tr = f_or(a, "transpose", 0.0) as i32;
+                let tr = f_or(a, "transpose", 0.0) as i64;
                 let vs = f_or(a, "velocity_scale", 1.0);
                 let len = f1 - f0;
                 let mut out = Vec::new();
@@ -300,7 +300,7 @@ pub fn tools() -> Vec<Tool> {
                         for n in &slice {
                             let s = n.start + off;
                             if s < end - 1e-3 {
-                                dst.push(Note { start: s, pitch: (n.pitch as i32 + tr).clamp(0, 127) as u8, vel: (n.vel * vs).clamp(0.02, 1.0), ..n.clone() });
+                                dst.push(Note { start: s, pitch: (n.pitch as i64 + tr).clamp(0, 127) as u8, vel: (n.vel * vs).clamp(0.02, 1.0), ..n.clone() });
                                 k += 1;
                             }
                         }

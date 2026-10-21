@@ -1402,9 +1402,9 @@ pub(crate) fn core_tools() -> Vec<Tool> {
             run: |e, a| {
                 let track = e.project.tracks[e.project.track_index(&s_req(a, "track")?)?].name.clone();
                 let pi = pattern_idx(&e.project, a)?;
-                let st = a.get("semitones").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                let st = a.get("semitones").and_then(|v| v.as_i64()).unwrap_or(0);
                 for n in e.project.patterns[pi].notes_mut(&track).iter_mut() {
-                    n.pitch = (n.pitch as i32 + st).clamp(0, 127) as u8;
+                    n.pitch = (n.pitch as i64 + st).clamp(0, 127) as u8;
                 }
                 Ok(json!({"track": track, "semitones": st}))
             },
@@ -2021,6 +2021,53 @@ mod tests {
         let n = e.project.patterns[0].notes("keys");
         assert_eq!(n[0].pitch, 60);
         assert_eq!(n[1].pitch, 67);
+    }
+
+    #[test]
+    fn transpose_extreme_values_clamp_instead_of_overflowing() {
+        let mut e = eng();
+        e.call(
+            "generate_beat",
+            &json!({"style": "trap", "bars": 1, "seed": 1}),
+        )
+        .unwrap();
+        let track = e.project.tracks[0].name.clone();
+
+        // legacy transpose: i64 extremes (JSON integers parse as i64)
+        e.call(
+            "transpose",
+            &json!({"track": track, "semitones": 9000000000000000000i64}),
+        )
+        .unwrap();
+        e.call(
+            "transpose",
+            &json!({"track": track, "semitones": -9000000000000000000i64}),
+        )
+        .unwrap();
+        // edit_notes: huge floats saturate the f64 -> i32 cast
+        e.call(
+            "edit_notes",
+            &json!({"track": track, "all_patterns": true, "transpose": 1e18}),
+        )
+        .unwrap();
+        e.call(
+            "edit_notes",
+            &json!({"track": track, "all_patterns": true, "transpose": -1e18}),
+        )
+        .unwrap();
+        // copy_notes: same via its own transpose arg
+        let pat = e.project.patterns[0].name.clone();
+        e.call(
+            "copy_notes",
+            &json!({"track": track, "from_pattern": pat, "to_pattern": pat, "to_bar": 0.5, "transpose": 1e18}),
+        )
+        .unwrap();
+
+        for p in &e.project.patterns {
+            for n in p.notes(&track) {
+                assert!(n.pitch <= 127, "pitch out of range");
+            }
+        }
     }
 
     #[test]
