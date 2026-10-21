@@ -3961,6 +3961,41 @@ mod tests {
         }
     }
 
+    /// Windowed render (step_range starting past zero) with an automated
+    /// pan lane on track 0 must be bit-identical to the one-shot render at
+    /// several block sizes. Points sit inside and outside the window, so
+    /// the lane-curve offset path is exercised.
+    #[test]
+    fn engine_windowed_offset_pan_lane() {
+        use crate::automation::{AutoPoint, AutomationLane};
+        let (mut e, mut opts) = reference_project();
+        opts.step_range = Some((6, 26));
+        let pt = |beat: f32, value: f32| AutoPoint {
+            beat,
+            value,
+            curve: Default::default(),
+        };
+        let name = e.project.tracks[0].name.clone();
+        e.project.automation.retain(|l| !l.is_target(&name, "pan"));
+        let mut lane = AutomationLane::new(&name, "pan");
+        lane.points = vec![
+            pt(0.0, -0.8),
+            pt(4.0, -0.8),
+            pt(4.5, 0.5),
+            pt(12.0, -0.5),
+            pt(16.0, 0.9),
+        ];
+        lane.sort();
+        e.project.automation.push(lane);
+        let one_shot = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        for block in [64usize, 999, 1 << 16] {
+            let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
+            let (l, r) = node.render();
+            assert_bit_identical("left", block, &one_shot.left, &l);
+            assert_bit_identical("right", block, &one_shot.right, &r);
+        }
+    }
+
     /// Windowed render (step_range starting past zero) of track 0 with the
     /// given chain must be bit-identical to the one-shot render at several
     /// block sizes. Covers build_with_offset at the engine's track site.
