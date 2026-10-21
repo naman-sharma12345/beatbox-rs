@@ -3078,7 +3078,7 @@ impl ChainStreamer {
                 Effect::PitchShift(p) => {
                     // fx_extra::pitch_shift: the same core, rings
                     // allocated here and never on the audio path
-                    StreamFx::PitchShift(Box::new(crate::fx_extra::PitchShiftCore::new(p)))
+                    StreamFx::PitchShift(Box::new(crate::fx_extra::PitchShiftCore::new(p, offset)))
                 }
                 Effect::Stutter(p) => StreamFx::Stutter(Box::new(
                     crate::fx_extra::StutterCore::new(p, step_secs, total),
@@ -3137,7 +3137,12 @@ impl ChainStreamer {
                     // return early; a unity gain is that bypass, bit for
                     // bit (x * 1.0 is exact, even for -0.0 and NaN).
                     match crate::fx_vocoder::VocoderCore::new(p) {
-                        Some(core) => StreamFx::Vocoder(Box::new(core)),
+                        Some(mut core) => {
+                            // a window that starts past 0 pre-warms the
+                            // carrier, as vocoder_at does
+                            core.warm_carrier(offset);
+                            StreamFx::Vocoder(Box::new(core))
+                        }
                         None => StreamFx::Gain { g: 1.0 },
                     }
                 }
@@ -3999,6 +4004,16 @@ mod tests {
     #[test]
     fn engine_windowed_offset_phaser_all_tracks() {
         assert_windowed_offset_chain_all_tracks(&[serde_json::json!({"type":"phaser"})]);
+    }
+
+    #[test]
+    fn engine_windowed_offset_pitch_shift_all_tracks() {
+        assert_windowed_offset_chain_all_tracks(&[serde_json::json!({"type":"pitch_shift"})]);
+    }
+
+    #[test]
+    fn engine_windowed_offset_vocoder_all_tracks() {
+        assert_windowed_offset_chain_all_tracks(&[serde_json::json!({"type":"vocoder"})]);
     }
 
     #[test]

@@ -987,15 +987,22 @@ pub struct PitchShiftCore {
 }
 
 impl PitchShiftCore {
-    pub fn new(p: &PitchShiftFx) -> Self {
+    /// `offset`: the stream's first sample in the song. The grain clock is
+    /// stepped through the first `offset` samples and the ring slot counts
+    /// from the song's start, as `pitch_shift_at` does.
+    pub fn new(p: &PitchShiftFx, offset: usize) -> Self {
         let ratio = 2f32.powf((p.semitones.clamp(-24.0, 24.0) + p.cents / 100.0) / 12.0);
         let w = ((p.window_ms.clamp(10.0, 200.0) * 0.001 * SR) as usize).max(64) as f32;
         let size = w as usize * 2 + 4;
+        let mut d0 = 0.0f32;
+        for _ in 0..offset {
+            d0 = (d0 + (1.0 - ratio)).rem_euclid(w);
+        }
         PitchShiftCore {
             bufl: vec![0.0; size],
             bufr: vec![0.0; size],
-            wi: 0,
-            d: 0.0,
+            wi: offset % size,
+            d: d0,
             w,
             ratio,
             mix: p.mix.clamp(0.0, 1.0),
