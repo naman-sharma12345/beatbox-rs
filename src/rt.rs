@@ -595,7 +595,9 @@ impl<'a> Node for MixNode<'a> {
             for t in &mut self.tracks {
                 let g = match t.lane {
                     Some(lane) => {
-                        let raw = lane_raw_at(lane, tl, a, |db| db_to_gain(db.clamp(-120.0, 24.0)));
+                        let raw = lane_raw_at(lane, tl, tl.sample0 + a, |db| {
+                            db_to_gain(db.clamp(-120.0, 24.0))
+                        });
                         if !t.smoothed {
                             t.y = raw;
                             t.smoothed = true;
@@ -628,7 +630,9 @@ impl<'a> Node for MixNode<'a> {
             }
             let gm = match master_lane {
                 Some(lane) => {
-                    let raw = lane_raw_at(lane, tl, a, |db| db_to_gain(db.clamp(-120.0, 24.0)));
+                    let raw = lane_raw_at(lane, tl, tl.sample0 + a, |db| {
+                        db_to_gain(db.clamp(-120.0, 24.0))
+                    });
                     if !master_smoothed {
                         master_y = raw;
                         master_smoothed = true;
@@ -3910,6 +3914,66 @@ mod tests {
             assert_bit_identical("left", block, &one_shot.left, &l);
             assert_bit_identical("right", block, &one_shot.right, &r);
         }
+    }
+
+    /// Windowed render (step_range starting past zero) of track 0 with the
+    /// given chain must be bit-identical to the one-shot render at several
+    /// block sizes. Covers build_with_offset at the engine's track site.
+    fn assert_windowed_offset_chain(chain: &[serde_json::Value]) {
+        let (mut e, mut opts) = reference_project();
+        opts.step_range = Some((6, 26));
+        let fx: Vec<crate::fx::Effect> = chain
+            .iter()
+            .map(|v| serde_json::from_value(v.clone()).unwrap())
+            .collect();
+        e.project.tracks[0].effects = fx;
+        let one_shot = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        for block in [64usize, 999, 1 << 16] {
+            let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
+            let (l, r) = node.render();
+            assert_bit_identical("left", block, &one_shot.left, &l);
+            assert_bit_identical("right", block, &one_shot.right, &r);
+        }
+    }
+
+    fn offset_fx_json() -> [serde_json::Value; 5] {
+        [
+            serde_json::json!({"type":"stutter","mode":"half_time","cycle_steps":2.0,"mix":1.0}),
+            serde_json::json!({"type":"mod_delay","time_ms":120.0,"feedback":0.4,"mix":0.4,"mod_rate_hz":0.7,"mod_depth":0.5}),
+            serde_json::json!({"type":"lofi","bits":10.0,"sample_rate_hz":14000.0,"noise":0.2,"mix":0.6}),
+            serde_json::json!({"type":"freq_shift","shift_hz":40.0,"mix":0.5}),
+            serde_json::json!({"type":"vinyl","crackle":40.0,"wow_cents":15.0,"flutter_cents":6.0,"age":0.4,"mix":0.7}),
+        ]
+    }
+
+    #[test]
+    fn engine_windowed_render_with_offset_effects_matches_one_shot() {
+        assert_windowed_offset_chain(&offset_fx_json());
+    }
+
+    #[test]
+    fn engine_windowed_offset_stutter_alone() {
+        assert_windowed_offset_chain(&offset_fx_json()[0..1]);
+    }
+
+    #[test]
+    fn engine_windowed_offset_mod_delay_alone() {
+        assert_windowed_offset_chain(&offset_fx_json()[1..2]);
+    }
+
+    #[test]
+    fn engine_windowed_offset_lofi_alone() {
+        assert_windowed_offset_chain(&offset_fx_json()[2..3]);
+    }
+
+    #[test]
+    fn engine_windowed_offset_freq_shift_alone() {
+        assert_windowed_offset_chain(&offset_fx_json()[3..4]);
+    }
+
+    #[test]
+    fn engine_windowed_offset_vinyl_alone() {
+        assert_windowed_offset_chain(&offset_fx_json()[4..5]);
     }
 
     /// RT3: VoiceStreamer == render_track_prechain, bit for bit, at every
