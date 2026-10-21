@@ -80,6 +80,10 @@ run_fixed rt_lofi "$ROOT/examples/beats/rt_lofi.json"
 # house demo: the windowed-offset fixes (phaser, pitch_shift, ring_mod) on a
 # generated house project (generate_beat style=house seed=7, self-contained)
 run_fixed rt_house "$ROOT/examples/beats/rt_house.json"
+# afrobeats demo: more streamed effects (chorus, flanger, autopan,
+# transient) on a generated afrobeats project (generate_beat style=afrobeats
+# seed=11, effects added, self-contained)
+run_fixed rt_afro "$ROOT/examples/beats/rt_afro.json"
 # novelty matrix: s9 against itself and the previous sprint
 CMP=""
 for n in trap_2 desi_hiphop boom_bap drill; do CMP="$CMP\"$OUT/${n}_${TAG}\","; done
