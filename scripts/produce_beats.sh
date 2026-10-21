@@ -75,6 +75,8 @@ run drill "{\"brief\":\"UK drill with sliding 808s and an eerie choir\",\"genre\
 # RT-effects showcase: fixed deterministic project (slice_repeat, streamed
 # stutter, vocoder, granular, pitch shift, freq splitter), no novelty check
 run_fixed rt_showcase "$ROOT/examples/beats/rt_showcase.json"
+# lo-fi demo: the newly streamed effects (mod_delay, lofi, vinyl, freq_shift)
+run_fixed rt_lofi "$ROOT/examples/beats/rt_lofi.json"
 # novelty matrix: s9 against itself and the previous sprint
 CMP=""
 for n in trap_2 desi_hiphop boom_bap drill; do CMP="$CMP\"$OUT/${n}_${TAG}\","; done
