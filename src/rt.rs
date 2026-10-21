@@ -4002,6 +4002,43 @@ mod tests {
     }
 
     #[test]
+    fn engine_windowed_offset_zero_latency_streamables_all_tracks() {
+        // the remaining zero-latency streamables not covered by their own
+        // windowed test above. Latency effects are out: freq_splitter,
+        // cab_ir, maximizer and the non-true-peak limiter report their
+        // delay, and true-peak limiter chains are not streamable.
+        let effects = [
+            serde_json::json!({"type":"filter"}),
+            serde_json::json!({"type":"eq"}),
+            serde_json::json!({"type":"distortion"}),
+            serde_json::json!({"type":"bitcrush"}),
+            serde_json::json!({"type":"delay"}),
+            serde_json::json!({"type":"chorus"}),
+            serde_json::json!({"type":"width"}),
+            serde_json::json!({"type":"gain"}),
+            serde_json::json!({"type":"reverb"}),
+            serde_json::json!({"type":"compressor"}),
+            serde_json::json!({"type":"multiband"}),
+            serde_json::json!({"type":"deesser"}),
+            serde_json::json!({"type":"soft_clipper"}),
+            serde_json::json!({"type":"gate"}),
+            serde_json::json!({"type":"transient"}),
+            serde_json::json!({"type":"flanger"}),
+            serde_json::json!({"type":"autopan"}),
+            serde_json::json!({"type":"haas"}),
+            serde_json::json!({"type":"stereo_shaper"}),
+            serde_json::json!({"type":"waveshaper"}),
+            serde_json::json!({"type":"rectifier"}),
+            serde_json::json!({"type":"saturator"}),
+            serde_json::json!({"type":"granular"}),
+        ];
+        for v in &effects {
+            eprintln!("windowed offset all-tracks: {v}");
+            assert_windowed_offset_chain_all_tracks(std::slice::from_ref(v));
+        }
+    }
+
+    #[test]
     fn engine_windowed_offset_phaser_all_tracks() {
         assert_windowed_offset_chain_all_tracks(&[serde_json::json!({"type":"phaser"})]);
     }
