@@ -893,9 +893,9 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "tune_vocal",
-            description: "Auto-tune a sung take to the key (TD-PSOLA pitch correction, formants kept). Every sung note moves to the nearest scale note; amount 0..1 (default 1) scales the move, hard 0..1 (default 0.15) also flattens wobble/vibrato toward the note (1 = the hard T-Pain effect), speed_ms (default 35) is how fast it follows. Give a sample name (its audio clips switch to the tuned take, undoable) or a path (writes <name>_tuned.wav). key/scale default to the project's.",
+            description: "Auto-tune a sung take to the key (TD-PSOLA pitch correction, formants kept). Every sung note moves to the nearest scale note; amount 0..1 (default 1) scales the move, hard 0..1 (default 0.15) also flattens wobble/vibrato toward the note (1 = the hard T-Pain effect), speed_ms (default 35) is how fast it follows, scoop 0..1 (default 0) keeps that much of a note's onset slide: the pull ramps in over the scoop so the glide survives and the note still lands in tune. Give a sample name (its audio clips switch to the tuned take, undoable) or a path (writes <name>_tuned.wav). key/scale default to the project's.",
             mutates: true,
-            schema: || obj(json!({"sample": {"type": "string"}, "path": {"type": "string"}, "key": {"type": "string"}, "scale": {"type": "string"}, "amount": {"type": "number"}, "hard": {"type": "number"}, "speed_ms": {"type": "number"}}), &[]),
+            schema: || obj(json!({"sample": {"type": "string"}, "path": {"type": "string"}, "key": {"type": "string"}, "scale": {"type": "string"}, "amount": {"type": "number"}, "hard": {"type": "number"}, "speed_ms": {"type": "number"}, "scoop": {"type": "number"}}), &[]),
             run: |e, a| {
                 let key = s_opt(a, "key").unwrap_or_else(|| e.project.key_root.clone());
                 let scale = s_opt(a, "scale").unwrap_or_else(|| e.project.scale.clone());
@@ -913,7 +913,7 @@ pub fn tools() -> Vec<Tool> {
                     }
                     _ => bail!("give sample (a project sample name) or path"),
                 };
-                let (y, st) = vocal::autotune(&x, SR, key_pc, ivs, f_opt(a, "amount").unwrap_or(1.0), f_opt(a, "hard").unwrap_or(0.15), f_opt(a, "speed_ms").unwrap_or(35.0));
+                let (y, st) = vocal::autotune_scoop(&x, SR, key_pc, ivs, f_opt(a, "amount").unwrap_or(1.0), f_opt(a, "hard").unwrap_or(0.15), f_opt(a, "speed_ms").unwrap_or(35.0), f_opt(a, "scoop").unwrap_or(0.0));
                 let stem = src_path.file_stem().and_then(|s| s.to_str()).unwrap_or("vocal").to_string();
                 std::fs::create_dir_all(e.samples_dir())?;
                 let out = e.samples_dir().join(format!("{}_tuned.wav", samples::sample_name(&stem)));

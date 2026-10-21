@@ -1232,6 +1232,27 @@ pub fn autotune(
     hard: f32,
     speed_ms: f32,
 ) -> (Vec<f32>, TuneStats) {
+    autotune_scoop(x, sr, key_pc, scale, amount, hard, speed_ms, 0.0)
+}
+
+/// Auto-tune with scoop-aware onsets. Behaves exactly like `autotune` when
+/// `scoop` is 0 (bit-identical). With `scoop` in 0..1, a note's onset slide
+/// keeps that fraction of its freedom: the per-frame pull toward the target
+/// ramps in over the slide instead of grabbing from the first frame, so a
+/// singer's scoop survives as a glide and the note still lands in tune.
+/// The window is the slide's own arrival time (first frame within 20 cents
+/// of the target), capped at half the note, defaulting to 120 ms.
+pub fn autotune_scoop(
+    x: &[f32],
+    sr: f32,
+    key_pc: u8,
+    scale: &[u8],
+    amount: f32,
+    hard: f32,
+    speed_ms: f32,
+    scoop: f32,
+) -> (Vec<f32>, TuneStats) {
+    let scoop = scoop.clamp(0.0, 1.0);
     let frames = pitch_track(x, sr);
     // absolute pitch (A440): the beat is in concert tuning even if the singer is not
     let mut notes = segment_notes(&frames, 0.0);
@@ -1247,6 +1268,30 @@ pub fn autotune(
         }
         let i0 = ((n.start - 0.02) / HOP_S).max(0.0) as usize;
         let i1 = (((n.end - 0.02) / HOP_S) as usize).min(frames.len());
+        // scoop window: frames from the onset until the slide arrives within
+        // half a semitone of the target (default 120 ms, capped at half the
+        // note). Inside it the hard pull is eased in, so the glide survives.
+        let mut w_frames = (0.12 / HOP_S) as usize;
+        if scoop > 0.0 {
+            for i in i0..i1 {
+                let m = frames[i].midi;
+                if m <= 0.0 {
+                    continue;
+                }
+                let mut fm = m;
+                while fm - n.midi > 6.0 {
+                    fm -= 12.0;
+                }
+                while n.midi - fm > 6.0 {
+                    fm += 12.0;
+                }
+                if (target - fm).abs() <= 0.2 {
+                    w_frames = i - i0;
+                    break;
+                }
+            }
+            w_frames = w_frames.clamp(1, ((i1 - i0) / 2).max(1));
+        }
         for i in i0..i1 {
             let m = frames[i].midi;
             if m <= 0.0 {
@@ -1261,7 +1306,11 @@ pub fn autotune(
                 fm += 12.0;
             }
             let soft = target - n.midi;
-            let firm = (target - fm).clamp(-1.0, 1.0);
+            let mut firm = (target - fm).clamp(-1.0, 1.0);
+            if scoop > 0.0 {
+                let w = ((i - i0) as f32 / w_frames as f32).min(1.0);
+                firm *= (1.0 - scoop) + scoop * w;
+            }
             corr[i] = amount.clamp(0.0, 1.0) * ((1.0 - hard) * soft + hard * firm);
         }
     }
@@ -2294,5 +2343,73 @@ mod tests {
         // degenerate intervals are skipped, not fatal
         let z = harmony_stack(&x, sr, &[0.0, f32::NAN, 99.0], 0.0);
         assert!(z.iter().zip(x.iter()).all(|(a, b)| (a - b).abs() < 1e-6));
+    }
+
+    /// A "singer" holding one note whose onset scoops: the pitch starts
+    /// `scoop_st` semitones flat and slides up to `midi` over `slide_s`
+    /// seconds, then holds steady. Voiced throughout for the pitch track.
+    fn scoop_singer(sr: f32, midi: f32, scoop_st: f32, slide_s: f32, secs: f32) -> Vec<f32> {
+        let n = (secs * sr) as usize;
+        let mut phase = 0.0f32;
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / sr;
+                // exponential slide from (midi + scoop_st) up to midi
+                let k = (-t / (slide_s / 3.0)).exp();
+                let m = midi + scoop_st * k;
+                let hz = 440.0f32 * 2f32.powf((m - 69.0) / 12.0);
+                phase += hz / sr;
+                let p = phase.fract();
+                let mut s = 0.0f32;
+                for h in 1..=6 {
+                    s += (2.0 * std::f32::consts::PI * h as f32 * p).sin() / h as f32;
+                }
+                let env = (t * 40.0).min(1.0).min(((secs - t) * 40.0).min(1.0));
+                s * env * 0.5
+            })
+            .collect()
+    }
+
+    fn median_midi_in(v: &[f32], sr: f32, t0: f32, t1: f32) -> f32 {
+        let fr = pitch_track(v, sr);
+        let mut w: Vec<f32> = fr
+            .iter()
+            .filter(|f| f.t >= t0 && f.t < t1 && f.midi > 0.0)
+            .map(|f| f.midi)
+            .collect();
+        assert!(!w.is_empty(), "no voiced frames in {t0}..{t1}");
+        median(&mut w)
+    }
+
+    #[test]
+    fn scoop_aware_tuning_keeps_the_slide_and_lands_the_note() {
+        let sr = SR;
+        // A4 sung with a 60-cent onset scoop over ~450 ms, in C major (A is in key)
+        let x = scoop_singer(sr, 69.0, -0.6, 0.45, 1.5);
+        let sc = theory::scale_intervals("major").unwrap();
+        let (y_hard, _) = autotune_scoop(&x, sr, 0, sc, 1.0, 1.0, 30.0, 0.0);
+        let (y_scoop, _) = autotune_scoop(&x, sr, 0, sc, 1.0, 1.0, 30.0, 0.9);
+        // inside the slide the scoop-aware run stays flatter (the glide survives)
+        let on_hard = median_midi_in(&y_hard, sr, 0.03, 0.09);
+        let on_scoop = median_midi_in(&y_scoop, sr, 0.03, 0.09);
+        assert!(
+            on_hard > on_scoop + 0.1,
+            "onset: hard {on_hard} vs scoop {on_scoop}"
+        );
+        // both still land the note in tune in the sustain
+        let su_hard = median_midi_in(&y_hard, sr, 0.95, 1.25);
+        let su_scoop = median_midi_in(&y_scoop, sr, 0.95, 1.25);
+        assert!((su_hard - 69.0).abs() < 0.2, "sustain hard {su_hard}");
+        assert!((su_scoop - 69.0).abs() < 0.2, "sustain scoop {su_scoop}");
+    }
+
+    #[test]
+    fn autotune_scoop_zero_is_bit_identical_to_autotune() {
+        let sr = SR;
+        let x = steady_singer(sr, 65.3, 1.5);
+        let sc = theory::scale_intervals("major").unwrap();
+        let (a, _) = autotune(&x, sr, 0, sc, 1.0, 0.4, 35.0);
+        let (b, _) = autotune_scoop(&x, sr, 0, sc, 1.0, 0.4, 35.0, 0.0);
+        assert_eq!(a, b);
     }
 }
