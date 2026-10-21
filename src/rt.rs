@@ -3961,6 +3961,28 @@ mod tests {
         }
     }
 
+    /// Windowed render (step_range starting past zero) with a streamable
+    /// master chain must be bit-identical to the one-shot render at several
+    /// block sizes. The master site builds its ChainStreamer with
+    /// build_with_offset like the track sites.
+    #[test]
+    fn engine_windowed_offset_master_chain() {
+        let (mut e, mut opts) = reference_project();
+        opts.step_range = Some((6, 26));
+        e.project.master_effects = vec![
+            serde_json::from_value(serde_json::json!({"type":"stutter"})).unwrap(),
+            serde_json::from_value(serde_json::json!({"type":"freq_shift"})).unwrap(),
+            serde_json::from_value(serde_json::json!({"type":"phaser"})).unwrap(),
+        ];
+        let one_shot = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        for block in [64usize, 999, 1 << 16] {
+            let mut node = MixNode::new(&e.project, &e.bank, &opts, block);
+            let (l, r) = node.render();
+            assert_bit_identical("left", block, &one_shot.left, &l);
+            assert_bit_identical("right", block, &one_shot.right, &r);
+        }
+    }
+
     /// Windowed render (step_range starting past zero) with an automated
     /// pan lane on track 0 must be bit-identical to the one-shot render at
     /// several block sizes. Points sit inside and outside the window, so
