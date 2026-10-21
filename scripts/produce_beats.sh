@@ -77,6 +77,9 @@ run drill "{\"brief\":\"UK drill with sliding 808s and an eerie choir\",\"genre\
 run_fixed rt_showcase "$ROOT/examples/beats/rt_showcase.json"
 # lo-fi demo: the newly streamed effects (mod_delay, lofi, vinyl, freq_shift)
 run_fixed rt_lofi "$ROOT/examples/beats/rt_lofi.json"
+# house demo: the windowed-offset fixes (phaser, pitch_shift, ring_mod) on a
+# generated house project (generate_beat style=house seed=7, self-contained)
+run_fixed rt_house "$ROOT/examples/beats/rt_house.json"
 # novelty matrix: s9 against itself and the previous sprint
 CMP=""
 for n in trap_2 desi_hiphop boom_bap drill; do CMP="$CMP\"$OUT/${n}_${TAG}\","; done
