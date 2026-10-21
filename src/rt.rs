@@ -2699,7 +2699,9 @@ pub fn classify(fx: &Effect) -> FxClass {
         Effect::Convolution(_) => OneShot("IR convolution: block processing"),
         Effect::CabIr(_) => Streamable,
         Effect::PitchShift(_) => Streamable,
-        Effect::GrossBeat(_) => OneShot("gross beat: time-windowed"),
+        Effect::GrossBeat(_) => OneShot(
+            "gross beat: reads source up to 2 cycles ahead of the output, so it is not causal",
+        ),
         Effect::Stutter(p) if p.mode != crate::fx::StutterMode::Reverse => Streamable,
         Effect::Stutter(_) => OneShot("reverse stutter: reads future samples in the cycle"),
         Effect::Vocoder(_) => Streamable,
