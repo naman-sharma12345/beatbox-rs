@@ -775,6 +775,9 @@ impl ActiveVoice {
 struct ActiveClip<'a> {
     start: i64,
     data: &'a [f32],
+    /// Transposed span (see PlannedClip::shifted); shared, never allocated
+    /// in the block loop.
+    shifted: Option<std::sync::Arc<Vec<f32>>>,
     off: usize,
     len: usize,
     gain: f32,
@@ -881,6 +884,7 @@ impl<'a> VoiceStreamer<'a> {
             self.active_c.push(ActiveClip {
                 start: c.start,
                 data: c.data,
+                shifted: c.shifted.clone(),
                 off: c.off,
                 len: c.len,
                 gain: c.gain,
@@ -922,7 +926,12 @@ impl<'a> VoiceStreamer<'a> {
                             .min((ac.len - i) as f32 / ac.fade as f32)
                             .min(1.0)
                     };
-                    let v = ac.data[ac.off + i] * ac.gain * env;
+                    let v = ac
+                        .shifted
+                        .as_deref()
+                        .map_or(&ac.data[ac.off..ac.off + ac.len], |v| &v[..])[i]
+                        * ac.gain
+                        * env;
                     m += v;
                     if two {
                         m2 += v;

@@ -531,6 +531,11 @@ pub struct AudioClip {
     pub length_s: Option<f32>,
     #[serde(default)]
     pub gain_db: f32,
+    /// Semitones the clip's audio is transposed (-24..24; length and grid
+    /// place kept, so an acapella or loop sits in the song's key). 0 (the
+    /// default) renders the sample untouched, bit for bit.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pitch_st: f32,
     /// Equal-power fade at the clip's start / end in ms (None = a 4 ms ramp).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_in_ms: Option<f32>,

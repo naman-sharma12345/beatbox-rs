@@ -1655,11 +1655,25 @@ pub(crate) fn plan_track_voices(
 pub(crate) struct PlannedClip<'a> {
     pub start: i64,
     pub data: &'a [f32],
+    /// The clip's audio (off..off+len) transposed by `AudioClip::pitch_st`
+    /// (length kept); Arc so the block renderer (rt) can share it without a
+    /// borrow tie. None renders the bank audio untouched, bit for bit.
+    pub shifted: Option<std::sync::Arc<Vec<f32>>>,
     pub off: usize,
     pub len: usize,
     pub gain: f32,
     pub fade_in_ms: Option<f32>,
     pub fade_out_ms: Option<f32>,
+}
+
+impl PlannedClip<'_> {
+    /// The samples that actually play: the transposed span when the clip is
+    /// pitched, else the bank span. Either way exactly `len` samples.
+    pub(crate) fn span(&self) -> &[f32] {
+        self.shifted
+            .as_deref()
+            .map_or(&self.data[self.off..self.off + self.len], |v| &v[..])
+    }
 }
 
 /// Audio-clip schedule for one track: one entry per (clip, loop pass), in
@@ -1693,6 +1707,14 @@ pub(crate) fn plan_track_clips<'a>(
             .map(|l| ((l.max(0.0) * SR) as usize).min(avail))
             .unwrap_or(avail);
         let g = crate::dsp::db_to_gain(c.gain_db);
+        let shifted = if c.pitch_st != 0.0 && len > 0 {
+            Some(std::sync::Arc::new(crate::audio_edit::pitch_shift(
+                &data[off..off + len],
+                c.pitch_st,
+            )))
+        } else {
+            None
+        };
         for lp in 0..opts.loops.max(1) {
             let start_step = c.start_beat * 4.0 + lp as f32 * song_steps - r0;
             let start = if tcurve.is_constant() {
@@ -1707,6 +1729,7 @@ pub(crate) fn plan_track_clips<'a>(
             out.push(PlannedClip {
                 start,
                 data,
+                shifted: shifted.clone(),
                 off,
                 len,
                 gain: g,
@@ -1773,6 +1796,7 @@ pub(crate) fn render_track_prechain(args: &TrackSynth<'_>, ti: usize) -> (Vec<f3
     }
     let fade = (0.004 * SR) as usize;
     for c in &clips {
+        let span = c.span();
         for i in 0..c.len {
             let o = c.start + i as i64;
             if o < 0 {
@@ -1794,7 +1818,7 @@ pub(crate) fn render_track_prechain(args: &TrackSynth<'_>, ti: usize) -> (Vec<f3
                     .min((c.len - i) as f32 / fade as f32)
                     .min(1.0)
             };
-            let v = c.data[c.off + i] * c.gain * env;
+            let v = span[i] * c.gain * env;
             mono[o] += v;
             if spread > 0.0 {
                 mono2[o] += v;
