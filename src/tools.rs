@@ -1718,7 +1718,7 @@ pub(crate) fn core_tools() -> Vec<Tool> {
             run: |_, a| {
                 let pc = theory::pitch_class(&s_req(a, "root")?)? as i32;
                 let iv = theory::scale_intervals(&s_req(a, "scale")?)?;
-                let oct = a.get("octave").and_then(|v| v.as_i64()).unwrap_or(4) as i32;
+                let oct = a.get("octave").and_then(|v| v.as_i64()).unwrap_or(4).clamp(-2, 8) as i32;
                 let notes: Vec<String> = iv.iter().map(|i| theory::note_name(((oct + 1) * 12 + pc + *i as i32).clamp(0, 127) as u8)).collect();
                 Ok(json!({"notes": notes, "intervals": iv}))
             },
@@ -2067,6 +2067,33 @@ mod tests {
             for n in p.notes(&track) {
                 assert!(n.pitch <= 127, "pitch out of range");
             }
+        }
+    }
+
+    #[test]
+    fn octave_extreme_values_clamp_instead_of_overflowing() {
+        let mut e = eng();
+        e.call(
+            "generate_beat",
+            &json!({"style": "trap", "bars": 1, "seed": 1}),
+        )
+        .unwrap();
+        for oct in [9000000000000000000i64, -9000000000000000000, 2147483647] {
+            e.call(
+                "theory_scale",
+                &json!({"root": "C", "scale": "major", "octave": oct}),
+            )
+            .unwrap();
+            e.call(
+                "theory_chords",
+                &json!({"progression": "i-VI-III-VII", "octave": oct}),
+            )
+            .unwrap();
+            e.call(
+                "generate_bassline",
+                &json!({"progression": "i-VI-III-VII", "octave": oct}),
+            )
+            .unwrap();
         }
     }
 

@@ -272,6 +272,8 @@ pub fn parse_progression(prog: &str, key_pc: u8, scale: &str) -> Result<Vec<Chor
 
 /// Voice chords around `octave`, choosing inversions for smooth voice leading.
 pub fn voice_chords(chords: &[Chord], octave: i32, smooth: bool) -> Vec<Vec<u8>> {
+    // MIDI range guard: hostile octaves must clamp, not overflow the pitch math
+    let octave = octave.clamp(-2, 8);
     let mut out: Vec<Vec<u8>> = Vec::new();
     let mut prev_center: Option<f32> = None;
     for c in chords {
@@ -723,9 +725,12 @@ pub fn bass_notes(
     bars_per_chord: f32,
     total_steps: u32,
     octave: i32,
+
     style: &str,
     rng: &mut Rng,
 ) -> Result<Vec<Note>> {
+    // MIDI range guard: hostile octaves must clamp, not overflow the pitch math
+    let octave = octave.clamp(-2, 8);
     let span = (bars_per_chord * STEPS_PER_BAR as f32).max(1.0);
     let n_chords = (total_steps as f32 / span).ceil() as usize;
     let mut notes = Vec::new();
@@ -827,7 +832,8 @@ pub struct MelodySpec<'a> {
 }
 
 pub fn melody_notes(spec: &MelodySpec, rng: &mut Rng) -> Vec<Note> {
-    let low = (spec.octave + 1) * 12 + spec.key_pc as i32;
+    // MIDI range guard: hostile octaves must clamp, not overflow the pitch math
+    let low = (spec.octave.clamp(-2, 8) + 1) * 12 + spec.key_pc as i32;
     let high = low + spec.range_semitones.max(5);
     let pool: Vec<i32> = (low - 12..=high)
         .filter(|p| {
