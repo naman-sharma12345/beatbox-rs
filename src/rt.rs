@@ -3081,7 +3081,7 @@ impl ChainStreamer {
                     StreamFx::PitchShift(Box::new(crate::fx_extra::PitchShiftCore::new(p, offset)))
                 }
                 Effect::Stutter(p) => StreamFx::Stutter(Box::new(
-                    crate::fx_extra::StutterCore::new(p, step_secs, total),
+                    crate::fx_extra::StutterCore::new(p, step_secs, total, offset),
                 )),
                 Effect::Vinyl(p) => {
                     StreamFx::Vinyl(Box::new(crate::fx_char::VinylCore::new(p, offset)))
@@ -3987,6 +3987,30 @@ mod tests {
     /// pan lane on track 0 must be bit-identical to the one-shot render at
     /// several block sizes. Points sit inside and outside the window, so
     /// the lane-curve offset path is exercised.
+    /// The stutter modes with non-default parameters: half-time and
+    /// tape-stop read their source near the render's end, and slice-repeat
+    /// is buffer-relative offline, so a windowed render exercises both the
+    /// absolute lerp bound and the buffer-relative indexing.
+    #[test]
+    fn engine_windowed_offset_stutter_modes_all_tracks() {
+        let variants = [
+            serde_json::json!({"type":"stutter","mode":"stutter","slice_steps":0.5,
+                "cycle_steps":8.0,"smooth_ms":5.0,"mix":0.8}),
+            serde_json::json!({"type":"stutter","mode":"half_time","cycle_steps":2.0,
+                "mix":1.0}),
+            serde_json::json!({"type":"stutter","mode":"tape_stop","cycle_steps":4.0,
+                "smooth_ms":2.0,"mix":0.9}),
+            serde_json::json!({"type":"stutter","mode":"slice_repeat","slice_blocks":2.0,
+                "repeat_count":4.0,"trigger_sample":0.0,"mix":0.9}),
+            serde_json::json!({"type":"stutter","mode":"slice_repeat","block_samples":256.0,
+                "slice_blocks":1.0,"repeat_count":8.0,"trigger_sample":999.0,"mix":0.9}),
+        ];
+        for v in &variants {
+            eprintln!("windowed offset all-tracks: {v}");
+            assert_windowed_offset_chain_all_tracks(std::slice::from_ref(v));
+        }
+    }
+
     #[test]
     fn engine_windowed_offset_pan_lane() {
         use crate::automation::{AutoPoint, AutomationLane};

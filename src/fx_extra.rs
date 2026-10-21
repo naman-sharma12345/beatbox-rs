@@ -710,16 +710,27 @@ pub struct StutterCore {
     slice: usize,
     fade: usize,
     levels: Vec<f32>,
-    total: usize,
     repeats: usize,
     trigger: usize,
     dc: (TapeDcGuard, TapeDcGuard),
     dc_cycle: Option<usize>,
+    /// absolute sample index one past the render's end (`offset + total`)
+    end: usize,
+    /// the stream's first sample in the song; slice-repeat is buffer-
+    /// relative offline (its trigger counts from the buffer start), so
+    /// the streamed slice-repeat indexes from `j - offset` too
+    offset: usize,
     pub mix: f32,
 }
 
 impl StutterCore {
-    pub fn new(p: &StutterFx, step_secs: f32, total: usize) -> Self {
+    /// `offset`: the stream's first sample in the song. `total` stays the
+    /// clip length; the lerp bound below is the absolute end `offset +
+    /// total`, matching the offline pass whose reads stop at the buffer
+    /// end. Without it a windowed half-time or tape-stop read past
+    /// `total` (but before the buffer end) returned silence instead of
+    /// the tail audio.
+    pub fn new(p: &StutterFx, step_secs: f32, total: usize, offset: usize) -> Self {
         let step = (step_secs * SR).max(1.0);
         let cycle = (p.cycle_steps.max(0.25) * step) as usize;
         let cycle = cycle.max(1);
@@ -757,11 +768,12 @@ impl StutterCore {
             slice,
             fade,
             levels: gate_levels(&p.pattern),
-            total,
+            end: offset + total,
             repeats: p.repeat_count.round().max(0.0) as usize,
             trigger,
             dc: (TapeDcGuard::default(), TapeDcGuard::default()),
             dc_cycle: None,
+            offset,
             mix: p.mix.clamp(0.0, 1.0),
         }
     }
@@ -771,13 +783,16 @@ impl StutterCore {
     pub fn step(&mut self, j: usize, l: f32, r: f32) -> (f32, f32) {
         let size = self.ring_l.len();
         if self.mode == StutterMode::SliceRepeat {
+            // buffer-relative, like the offline slice_repeat (its trigger
+            // counts from the buffer start, not the song start)
+            let jj = j - self.offset;
             // the ring holds the slice source, relative-indexed, written only
             // while the slice plays (never overwritten afterwards)
-            if self.slice > 0 && j >= self.trigger && j < self.trigger + self.slice {
-                self.ring_l[(j - self.trigger) % size] = l;
-                self.ring_r[(j - self.trigger) % size] = r;
+            if self.slice > 0 && jj >= self.trigger && jj < self.trigger + self.slice {
+                self.ring_l[(jj - self.trigger) % size] = l;
+                self.ring_r[(jj - self.trigger) % size] = r;
             }
-            return self.step_slice_repeat(j, l, r);
+            return self.step_slice_repeat(jj, l, r);
         }
         self.ring_l[j % size] = l;
         self.ring_r[j % size] = r;
@@ -812,7 +827,7 @@ impl StutterCore {
             }
             at(ring, i) * (1.0 - frac) + at(ring, i + 1) * frac
         };
-        let total = self.total;
+        let total = self.end;
         let (wl, wr) = match self.mode {
             StutterMode::SliceRepeat => {
                 unreachable!("slice_repeat returns before the per-sample loop")
