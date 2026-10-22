@@ -1229,7 +1229,16 @@ pub(crate) fn sidechain_inputs(
             .map(|l| ((l.max(0.0) * SR) as usize).min(avail))
             .unwrap_or(avail);
         let song_steps = p.song_steps() as f32;
-        let ons = audio_onsets(&data[off..off + len]);
+        // a stretched clip plays its take slower/faster on the timeline, so
+        // its ducking must follow the stretched material, not the source
+        let stretched;
+        let span: &[f32] = if c.stretch != 1.0 && len > 0 {
+            stretched = crate::audio_edit::time_stretch(&data[off..off + len], c.stretch);
+            &stretched
+        } else {
+            &data[off..off + len]
+        };
+        let ons = audio_onsets(span);
         let tr = triggers.entry(c.track.to_lowercase()).or_default();
         for lp in 0..opts.loops.max(1) {
             let start = if tcurve.is_constant() {
@@ -1252,7 +1261,7 @@ pub(crate) fn sidechain_inputs(
                 let buf = levels
                     .entry(c.track.to_lowercase())
                     .or_insert_with(|| vec![0.0; total]);
-                for (k, &v) in data[off..off + len].iter().enumerate() {
+                for (k, &v) in span.iter().enumerate() {
                     let at = start + k as i64;
                     if at >= 0 && (at as usize) < total {
                         buf[at as usize] += v;
@@ -3206,6 +3215,74 @@ pub(crate) mod tests {
     /// feed, nothing orthogonal; a send or routing change dirties only the
     /// buses on its path; faders re-synthesise no track. Counted from the
     /// cache, and the cached render equals a fresh one byte for byte.
+    /// An audio clip's ducking onsets must follow the take as it actually
+    /// plays: a 2x-stretched clip hits at half rate, so its sidechain
+    /// triggers land twice as far apart.
+    #[test]
+    fn sidechain_onsets_follow_a_stretched_clip() {
+        let d =
+            std::env::temp_dir().join(format!("beatbox_sidechain_stretch_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = crate::engine::Engine::new(d.clone());
+        e.call(
+            "new_project",
+            &serde_json::json!({"name": "sc", "bpm": 120}),
+        )
+        .unwrap();
+        // 2 s with four fast-decay impulses 0.5 s apart
+        let mut take = vec![0.0f32; (2.0 * SR) as usize];
+        for k in 0..4 {
+            let at = ((0.25 + 0.5 * k as f32) * SR) as usize;
+            for i in 0..(0.01 * SR) as usize {
+                take[at + i] = 0.8 * (-(i as f32) / (0.002 * SR)).exp();
+            }
+        }
+        let wav = d.join("hits.wav");
+        write_wav(&wav, &take, &take).unwrap();
+        e.call(
+            "import_sample",
+            &serde_json::json!({"path": wav.to_string_lossy(), "name": "hits"}),
+        )
+        .unwrap();
+        e.call(
+            "add_track",
+            &serde_json::json!({"name": "vox", "preset": "pad"}),
+        )
+        .unwrap();
+        e.call(
+            "add_audio_clip",
+            &serde_json::json!({"track": "vox", "sample": "hits", "start_beat": 0.0}),
+        )
+        .unwrap();
+        let onsets = |e: &crate::engine::Engine| -> Vec<usize> {
+            let o = RenderOptions::default();
+            let (events, body) = schedule(&e.project, &o);
+            let total = body + (o.tail.max(0.0) * SR) as usize;
+            let (triggers, _) = sidechain_inputs(&e.project, &e.bank, &o, &events, total);
+            triggers.get("vox").cloned().unwrap_or_default()
+        };
+        let plain = onsets(&e);
+        assert_eq!(plain.len(), 4, "four impulses, got {plain:?}");
+        let id = e.project.audio_clips[0].id.clone();
+        e.call(
+            "stretch_clip",
+            &serde_json::json!({"id": id, "factor": 2.0}),
+        )
+        .unwrap();
+        let slow = onsets(&e);
+        assert_eq!(slow.len(), 4, "the stretched take keeps its hits: {slow:?}");
+        for (a, b) in plain.iter().zip(slow.iter()) {
+            let d = (*b as i64 - 2 * *a as i64).abs();
+            assert!(
+                d < 10000,
+                "onset at {a} samples should land near {} at 2x, got {b}",
+                2 * a
+            );
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn render_dag_sidechain_and_send_routing() {
         let d = std::env::temp_dir().join("beatbox_render_cache_dag_tests");

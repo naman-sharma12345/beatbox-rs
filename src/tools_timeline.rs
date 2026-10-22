@@ -77,13 +77,16 @@ fn id_prop() -> Value {
 pub fn split(e: &mut Engine, i: usize, at: f32) -> Result<(String, String)> {
     let (len, _) = clip_len(e, i)?;
     let c = e.project.audio_clips[i].clone();
-    let t = (secs_at(&e.project, at) - secs_at(&e.project, c.start_beat)) as f32;
+    // the cut lands `t` timeline seconds in; under a stretch that consumes
+    // t / stretch of the take (offsets and lengths are source seconds)
+    let st = c.stretch.max(1e-3);
+    let t = (secs_at(&e.project, at) - secs_at(&e.project, c.start_beat)) as f32 / st;
     if t < MIN_LEN_S || t > len - MIN_LEN_S {
         bail!(
             "beat {at} is not inside clip '{}' (beats {} to {:.3})",
             c.id,
             c.start_beat,
-            end_beat(&e.project, &c, len)
+            end_beat(&e.project, &c, len * st)
         );
     }
     let rid = crate::ids::next_id(&mut e.project, "clip");
@@ -105,7 +108,9 @@ pub fn split(e: &mut Engine, i: usize, at: f32) -> Result<(String, String)> {
 fn trim_start(e: &mut Engine, i: usize, new_start: f32) -> Result<()> {
     let (len, _) = clip_len(e, i)?;
     let c = e.project.audio_clips[i].clone();
-    let d = (secs_at(&e.project, new_start) - secs_at(&e.project, c.start_beat)) as f32;
+    // `d` is a timeline distance; the take moves d / stretch in source seconds
+    let st = c.stretch.max(1e-3);
+    let d = (secs_at(&e.project, new_start) - secs_at(&e.project, c.start_beat)) as f32 / st;
     let d = d.max(-c.offset_s.max(0.0));
     if d > len - MIN_LEN_S {
         bail!(
@@ -113,7 +118,8 @@ fn trim_start(e: &mut Engine, i: usize, new_start: f32) -> Result<()> {
             c.id
         );
     }
-    let start_s = secs_at(&e.project, c.start_beat) + d as f64;
+    // the start moves by the timeline distance: d source seconds x stretch
+    let start_s = secs_at(&e.project, c.start_beat) + d as f64 * st as f64;
     let start = beat_at(&e.project, start_s);
     let cl = &mut e.project.audio_clips[i];
     cl.offset_s = c.offset_s.max(0.0) + d;
@@ -125,7 +131,9 @@ fn trim_start(e: &mut Engine, i: usize, new_start: f32) -> Result<()> {
 fn trim_end(e: &mut Engine, i: usize, new_end: f32) -> Result<()> {
     let (_, total) = clip_len(e, i)?;
     let c = e.project.audio_clips[i].clone();
-    let want = (secs_at(&e.project, new_end) - secs_at(&e.project, c.start_beat)) as f32;
+    // `want` is a timeline length; length_s is stored in source seconds
+    let st = c.stretch.max(1e-3);
+    let want = (secs_at(&e.project, new_end) - secs_at(&e.project, c.start_beat)) as f32 / st;
     let avail = (total - c.offset_s.max(0.0)).max(0.0);
     if want < MIN_LEN_S {
         bail!(
@@ -170,7 +178,7 @@ fn ripple(
             if clips_on(&e.project, &tracks).contains(&i) {
                 let (len, _) = clip_len(e, i)?;
                 let c = e.project.audio_clips[i].clone();
-                let end = end_beat(&e.project, &c, len);
+                let end = end_beat(&e.project, &c, len * c.stretch.max(1e-3));
                 if c.start_beat < edge - 1e-4 && end > edge + 1e-4 {
                     split(e, i, edge)?;
                     trimmed += 1;
@@ -327,13 +335,14 @@ pub fn tools() -> Vec<Tool> {
                 let (len, _) = clip_len(e, i)?;
                 let c = e.project.audio_clips[i].clone();
                 let n = u_or(a, "count", 1).clamp(1, 64) as usize;
-                let mut at = f_opt(a, "at_beat").unwrap_or_else(|| end_beat(&e.project, &c, len));
+                let mut at = f_opt(a, "at_beat")
+                    .unwrap_or_else(|| end_beat(&e.project, &c, len * c.stretch.max(1e-3)));
                 let mut made = Vec::new();
                 for _ in 0..n {
                     let mut d = c.clone();
                     d.id = crate::ids::next_id(&mut e.project, "clip");
                     d.start_beat = at;
-                    at = end_beat(&e.project, &d, len);
+                    at = end_beat(&e.project, &d, len * d.stretch.max(1e-3));
                     made.push(d.id.clone());
                     e.project.audio_clips.push(d);
                 }
@@ -461,7 +470,11 @@ pub fn tools() -> Vec<Tool> {
                     bail!("the clips are on different tracks ({} and {})", ca.track, cb.track);
                 }
                 let (len_a, total_a) = clip_len(e, ia)?;
-                let a_end = secs_at(&e.project, ca.start_beat) + len_a as f64;
+                let st_a = ca.stretch.max(1e-3) as f64;
+                let st_b = cb.stretch.max(1e-3) as f64;
+                // a_end/gap/want are timeline seconds; offsets and lengths are
+                // source seconds, so take room converts through each stretch
+                let a_end = secs_at(&e.project, ca.start_beat) + len_a as f64 * st_a;
                 let b_start = secs_at(&e.project, cb.start_beat);
                 if b_start < secs_at(&e.project, ca.start_beat) {
                     bail!("'{}' starts before '{}': pass them in timeline order", cb.id, ca.id);
@@ -475,25 +488,26 @@ pub fn tools() -> Vec<Tool> {
                 if have < want {
                     let need = want - have;
                     // half from each side, as far as the takes allow
-                    let a_room = (total_a - ca.offset_s.max(0.0) - len_a).max(0.0) as f64;
-                    let b_room = cb.offset_s.max(0.0) as f64;
+                    let a_room = (total_a - ca.offset_s.max(0.0) - len_a).max(0.0) as f64 * st_a;
+                    let b_room = cb.offset_s.max(0.0) as f64 * st_b;
                     let mut ext_a = (need / 2.0).min(a_room);
                     let mut ext_b = (need - ext_a).min(b_room);
                     ext_a = (need - ext_b).min(a_room);
                     if ext_a + ext_b < need - 1e-6 {
                         ext_b = ext_b.min(b_room);
                     }
-                    e.project.audio_clips[ia].length_s = Some(len_a + ext_a as f32);
+                    e.project.audio_clips[ia].length_s = Some(len_a + (ext_a / st_a) as f32);
                     let nb_start = b_start - ext_b;
                     let (len_b, _) = clip_len(e, ib)?;
                     let cbm = &mut e.project.audio_clips[ib];
-                    cbm.offset_s = cb.offset_s.max(0.0) - ext_b as f32;
-                    cbm.length_s = Some(len_b + ext_b as f32);
+                    cbm.offset_s = cb.offset_s.max(0.0) - (ext_b / st_b) as f32;
+                    cbm.length_s = Some(len_b + (ext_b / st_b) as f32);
                     let nb = beat_at(&e.project, nb_start);
                     e.project.audio_clips[ib].start_beat = nb;
                 }
                 let (len_a2, _) = clip_len(e, ia)?;
-                let a_end2 = secs_at(&e.project, e.project.audio_clips[ia].start_beat) + len_a2 as f64;
+                let a_end2 = secs_at(&e.project, e.project.audio_clips[ia].start_beat)
+                    + len_a2 as f64 * st_a;
                 let overlap = (a_end2 - secs_at(&e.project, e.project.audio_clips[ib].start_beat)).max(0.0);
                 if overlap < 0.0005 {
                     bail!("no room in the takes for a crossfade (both clips already sit at their sample's edge)");
@@ -527,7 +541,7 @@ pub fn tools() -> Vec<Tool> {
                         continue;
                     }
                     let (len, _) = clip_len(e, i)?;
-                    let end = end_beat(&e.project, &c, len);
+                    let end = end_beat(&e.project, &c, len * c.stretch.max(1e-3));
                     if f_opt(a, "from_beat").is_some_and(|f| end <= f) || f_opt(a, "to_beat").is_some_and(|t| c.start_beat >= t) {
                         continue;
                     }
@@ -580,7 +594,7 @@ pub fn tools() -> Vec<Tool> {
                     let (len, _) = clip_len(e, i)?;
                     let c = e.project.audio_clips[i].clone();
                     let tracks = if b_or(a, "all_tracks", false) { None } else { Some(vec![c.track.clone()]) };
-                    (tracks, c.start_beat, end_beat(&e.project, &c, len))
+                    (tracks, c.start_beat, end_beat(&e.project, &c, len * c.stretch.max(1e-3)))
                 } else {
                     let (Some(f), Some(t)) = (f_opt(a, "from_beat"), f_opt(a, "to_beat")) else {
                         bail!("give the clip's id, or from_beat and to_beat");
@@ -726,6 +740,80 @@ mod tests {
         let back: crate::project::Project = serde_json::from_str(&json).unwrap();
         assert_eq!(back.audio_clips[0].pitch_st, 12.0);
         assert!(back.audio_clips[0].pitch_voice);
+    }
+
+    #[test]
+    fn stretched_clip_edits_follow_the_placed_span() {
+        let (mut e, _dir) = eng();
+        let opts = crate::render::RenderOptions::default();
+        // the 2 s take (4 beats at 120 bpm) stretched 2x plays 4 s = 8 beats
+        let id = e.project.audio_clips[0].id.clone();
+        e.call("stretch_clip", &json!({"id": id, "factor": 2.0}))
+            .unwrap();
+        let pre = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        let crossings = |m: &crate::render::Mix, secs: f32| -> usize {
+            let n = ((secs * SR) as usize).min(m.left.len());
+            m.left[..n]
+                .windows(2)
+                .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+                .count()
+        };
+        let rms = |m: &crate::render::Mix| -> f32 {
+            (m.left.iter().map(|s| s * s).sum::<f32>() / m.left.len().max(1) as f32).sqrt()
+        };
+
+        // split at beat 4 (half of the PLACED span): at 2x the take is
+        // consumed at half rate, so each side holds 1 source second
+        let r = e
+            .call("split_clip", &json!({"id": id, "at_beat": 4.0}))
+            .unwrap();
+        let right = r["right_id"].as_str().unwrap().to_string();
+        assert!((e.project.audio_clips[0].length_s.unwrap() - 1.0).abs() < 1e-3);
+        assert!((e.project.audio_clips[1].offset_s - 1.0).abs() < 1e-3);
+        assert_eq!(e.project.audio_clips[1].stretch, 2.0);
+        // the two halves keep the stretched playback: same crossings, same level
+        let post = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert_eq!(crossings(&post, 0.4), crossings(&pre, 0.4));
+        assert!(
+            (rms(&post) - rms(&pre)).abs() < 0.05,
+            "split seam keeps the level: {} -> {}",
+            rms(&pre),
+            rms(&post)
+        );
+        // trim the right clip's start to beat 5: 0.5 timeline s at 2x eats
+        // 0.25 source seconds; the placed end stays at beat 8
+        e.call("trim_clip", &json!({"id": right, "start_beat": 5.0}))
+            .unwrap();
+        let rc = e.project.audio_clips[1].clone();
+        assert!(
+            (rc.offset_s - 1.25).abs() < 1e-3,
+            "offset {:?}",
+            rc.offset_s
+        );
+        assert!((rc.length_s.unwrap() - 0.75).abs() < 1e-3);
+        assert_eq!(rc.start_beat, 5.0);
+
+        // trim the right clip's end to beat 7: 1.0 timeline s at 2x = 0.5
+        // source seconds of take
+        e.call("trim_clip", &json!({"id": right, "end_beat": 7.0}))
+            .unwrap();
+        assert!((e.project.audio_clips[1].length_s.unwrap() - 0.5).abs() < 1e-3);
+
+        // duplicate lands after the PLACED end (beat 7), not the source end
+        let v = e
+            .call("duplicate_clip", &json!({"id": right, "count": 1}))
+            .unwrap();
+        let copy = v["copies"][0].as_str().unwrap().to_string();
+        let ci = e
+            .project
+            .audio_clips
+            .iter()
+            .position(|c| c.id == copy)
+            .unwrap();
+        assert_eq!(e.project.audio_clips[ci].start_beat, 7.0);
+
+        // the edited arrangement still renders
+        crate::render::render(&e.project, &e.bank, &opts).unwrap();
     }
 
     #[test]
