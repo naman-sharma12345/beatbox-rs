@@ -545,6 +545,12 @@ pub struct AudioClip {
     /// keeps their tone. Best within +-7 semitones.
     #[serde(default, skip_serializing_if = "is_false")]
     pub pitch_voice: bool,
+    /// In-place time-stretch: 1 (default) plays the clip untouched; 2 plays
+    /// it twice as long at the same pitch, 0.5 half as long. The start stays
+    /// on its beat and the end follows the stretch. Render-time, not a
+    /// bounce - 1 renders the sample bit for bit.
+    #[serde(default = "one_f32", skip_serializing_if = "is_one")]
+    pub stretch: f32,
     /// Equal-power fade at the clip's start / end in ms (None = a 4 ms ramp).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_in_ms: Option<f32>,

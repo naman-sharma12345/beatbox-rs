@@ -1655,9 +1655,11 @@ pub(crate) fn plan_track_voices(
 pub(crate) struct PlannedClip<'a> {
     pub start: i64,
     pub data: &'a [f32],
-    /// The clip's audio (off..off+len) transposed by `AudioClip::pitch_st`
-    /// (length kept); Arc so the block renderer (rt) can share it without a
-    /// borrow tie. None renders the bank audio untouched, bit for bit.
+    /// The clip's audio transformed by `AudioClip` (stretch and/or
+    /// `pitch_st`; unstretched pitch keeps the source length, a stretch
+    /// resizes `len` to the placed span); Arc so the block renderer (rt)
+    /// can share it without a borrow tie. None renders the bank audio
+    /// untouched, bit for bit.
     pub shifted: Option<std::sync::Arc<Vec<f32>>>,
     pub off: usize,
     pub len: usize,
@@ -1667,12 +1669,13 @@ pub(crate) struct PlannedClip<'a> {
 }
 
 impl PlannedClip<'_> {
-    /// The samples that actually play: the transposed span when the clip is
-    /// pitched, else the bank span. Either way exactly `len` samples.
+    /// The samples that actually play: the transformed span when the clip
+    /// is stretched and/or pitched, else the bank span. Either way exactly
+    /// `len` samples (a stretch makes `len` the placed length).
     pub(crate) fn span(&self) -> &[f32] {
         self.shifted
             .as_deref()
-            .map_or(&self.data[self.off..self.off + self.len], |v| &v[..])
+            .map_or_else(|| &self.data[self.off..self.off + self.len], |v| &v[..])
     }
 }
 
@@ -1707,30 +1710,44 @@ pub(crate) fn plan_track_clips<'a>(
             .map(|l| ((l.max(0.0) * SR) as usize).min(avail))
             .unwrap_or(avail);
         let g = crate::dsp::db_to_gain(c.gain_db);
-        let shifted = if c.pitch_st != 0.0 && len > 0 {
+        // Stretch changes the placed length (the clip's end follows it from
+        // its beat); pitch, either mode, keeps the length of what it gets.
+        let stretched = c.stretch != 1.0 && len > 0;
+        let (shifted, placed) = if (c.pitch_st != 0.0 || stretched) && len > 0 {
             let span = &data[off..off + len];
-            let mut audio = if c.pitch_voice {
-                // voice mode: constant-correction TD-PSOLA (formants kept),
-                // cascaded in steps of at most 6 semitones. A single big step
-                // lands the synthesis hop on a ratio commensurate with the
-                // period (2:1 at +12, 1:2 at -12) where the windowed overlap
-                // cancels a steady tone; half steps stay incommensurate.
-                let steps = ((c.pitch_st.abs() / 6.0).ceil() as usize).max(1);
-                let per = c.pitch_st / steps as f32;
-                let mut cur = span.to_vec();
-                for _ in 0..steps {
-                    let frames = crate::vocal::pitch_track(&cur, crate::dsp::SR);
-                    let corr = vec![per; frames.len()];
-                    cur = crate::vocal::psola(&cur, crate::dsp::SR, &frames, &corr, 0.5, 2.0);
-                }
-                cur
+            let mut audio = if stretched {
+                crate::audio_edit::time_stretch(span, c.stretch)
             } else {
-                crate::audio_edit::pitch_shift(span, c.pitch_st)
+                span.to_vec()
             };
-            audio.resize(len, 0.0); // span() promises exactly len samples
-            Some(std::sync::Arc::new(audio))
+            if c.pitch_st != 0.0 {
+                audio = if c.pitch_voice {
+                    // voice mode: constant-correction TD-PSOLA (formants
+                    // kept), cascaded in steps of at most 6 semitones. A
+                    // single big step lands the synthesis hop on a ratio
+                    // commensurate with the period (2:1 at +12, 1:2 at -12)
+                    // where the windowed overlap cancels a steady tone; half
+                    // steps stay incommensurate.
+                    let steps = ((c.pitch_st.abs() / 6.0).ceil() as usize).max(1);
+                    let per = c.pitch_st / steps as f32;
+                    let mut cur = audio;
+                    for _ in 0..steps {
+                        let frames = crate::vocal::pitch_track(&cur, crate::dsp::SR);
+                        let corr = vec![per; frames.len()];
+                        cur = crate::vocal::psola(&cur, crate::dsp::SR, &frames, &corr, 0.5, 2.0);
+                    }
+                    cur
+                } else {
+                    crate::audio_edit::pitch_shift(&audio, c.pitch_st)
+                };
+            }
+            if !stretched {
+                audio.resize(len, 0.0); // span() promises exactly len samples
+            }
+            let placed = audio.len();
+            (Some(std::sync::Arc::new(audio)), placed)
         } else {
-            None
+            (None, len)
         };
         for lp in 0..opts.loops.max(1) {
             let start_step = c.start_beat * 4.0 + lp as f32 * song_steps - r0;
@@ -1748,7 +1765,7 @@ pub(crate) fn plan_track_clips<'a>(
                 data,
                 shifted: shifted.clone(),
                 off,
-                len,
+                len: placed,
                 gain: g,
                 fade_in_ms: c.fade_in_ms,
                 fade_out_ms: c.fade_out_ms,

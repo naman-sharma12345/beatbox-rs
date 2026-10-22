@@ -62,10 +62,10 @@ fn end_beat(p: &Project, c: &AudioClip, len_s: f32) -> f32 {
 fn clip_json(e: &mut Engine, i: usize) -> Value {
     let (len, _) = clip_len(e, i).unwrap_or((0.0, 0.0));
     let c = &e.project.audio_clips[i];
-    let end = end_beat(&e.project, c, len);
+    let end = end_beat(&e.project, c, len * c.stretch);
     json!({"id": c.id, "index": i, "track": c.track, "sample": c.sample, "start_beat": c.start_beat,
         "end_beat": (end * 1000.0).round() / 1000.0, "offset_s": c.offset_s, "length_s": (len * 1000.0).round() / 1000.0,
-        "gain_db": c.gain_db, "pitch_st": c.pitch_st, "pitch_voice": c.pitch_voice, "fade_in_ms": c.fade_in_ms, "fade_out_ms": c.fade_out_ms})
+        "gain_db": c.gain_db, "pitch_st": c.pitch_st, "pitch_voice": c.pitch_voice, "stretch": c.stretch, "fade_in_ms": c.fade_in_ms, "fade_out_ms": c.fade_out_ms})
 }
 
 fn id_prop() -> Value {
@@ -405,6 +405,47 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "stretch_clip",
+            description: "Time-stretch an audio clip in place (0.25..4: 2 = twice as long, 0.5 = half as long) while its pitch stays put - a fast loop slows into the song without going dark, a take fills a longer slot. The start stays on its beat; the end follows the stretch. Render-time, not a bounce: undo or factor 1 restores the original bit for bit. For an exact length on the grid use fit_clip.",
+            mutates: true,
+            schema: || obj(json!({"id": id_prop(), "factor": {"type": "number", "minimum": 0.25, "maximum": 4}}), &["id", "factor"]),
+            run: |e, a| {
+                let i = audio_clip_index(&e.project, a)?;
+                let f = a
+                    .get("factor")
+                    .and_then(|v| v.as_f64())
+                    .ok_or_else(|| anyhow!("give factor (0.25..4)"))? as f32;
+                let c = &mut e.project.audio_clips[i];
+                c.stretch = f.clamp(0.25, 4.0);
+                Ok(clip_json(e, i))
+            },
+        },
+        Tool {
+            name: "fit_clip",
+            description: "Stretch an audio clip so it fills exactly beats on the timeline (measured from its natural length after offset_s/length_s, at the project tempo): a loop that runs 7.3 beats becomes exactly 8, hits and phrasing intact. Sets the clip's stretch; undo or stretch_clip 1 restores the original.",
+            mutates: true,
+            schema: || obj(json!({"id": id_prop(), "beats": {"type": "number", "exclusiveMinimum": 0}}), &["id", "beats"]),
+            run: |e, a| {
+                let i = audio_clip_index(&e.project, a)?;
+                let beats = a
+                    .get("beats")
+                    .and_then(|v| v.as_f64())
+                    .ok_or_else(|| anyhow!("give beats"))? as f32;
+                if beats <= 0.0 {
+                    bail!("beats must be positive");
+                }
+                let (len, _) = clip_len(e, i)?;
+                if len <= 0.0 {
+                    bail!("clip has no audio to fit");
+                }
+                let want = beats * e.project.step_secs() * 4.0;
+                let factor = (want / len).clamp(0.25, 4.0);
+                let c = &mut e.project.audio_clips[i];
+                c.stretch = factor;
+                Ok(clip_json(e, i))
+            },
+        },
+        Tool {
             name: "crossfade_clips",
             description: "Crossfade two touching or overlapping audio clips on the same track (first, then second): the first is extended and the second starts earlier into the take so they overlap by ms, with an equal-power fade out / fade in across the overlap.",
             mutates: true,
@@ -522,7 +563,7 @@ pub fn tools() -> Vec<Tool> {
                     !drop
                 });
                 let id = crate::ids::next_id(&mut e.project, "clip");
-                e.project.audio_clips.push(AudioClip { track: track.clone(), sample: sample.clone(), start_beat: from, offset_s: 0.0, length_s: None, gain_db: 0.0, pitch_st: 0.0, pitch_voice: false, fade_in_ms: None, fade_out_ms: None, id: id.clone() });
+                e.project.audio_clips.push(AudioClip { track: track.clone(), sample: sample.clone(), start_beat: from, offset_s: 0.0, length_s: None, gain_db: 0.0, pitch_st: 0.0, pitch_voice: false, stretch: 1.0, fade_in_ms: None, fade_out_ms: None, id: id.clone() });
                 Ok(json!({"id": id, "track": track, "sample": sample, "file": file.to_string_lossy(), "replaced": gone,
                     "start_beat": from, "seconds": (buf.len() as f32 / SR * 1000.0).round() / 1000.0}))
             },
@@ -685,6 +726,78 @@ mod tests {
         let back: crate::project::Project = serde_json::from_str(&json).unwrap();
         assert_eq!(back.audio_clips[0].pitch_st, 12.0);
         assert!(back.audio_clips[0].pitch_voice);
+    }
+
+    #[test]
+    fn stretch_clip_and_fit_clip_resize_on_the_grid_and_keep_pitch() {
+        let (mut e, _dir) = eng();
+        let id = e.project.audio_clips[0].id.clone();
+        let opts = crate::render::RenderOptions {
+            tail: 4.5,
+            ..Default::default()
+        };
+        let base = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        let crossings = |m: &crate::render::Mix, from: f32, secs: f32| -> usize {
+            let a = ((from * SR) as usize).min(m.left.len());
+            let b = (((from + secs) * SR) as usize).min(m.left.len());
+            m.left[a..b]
+                .windows(2)
+                .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+                .count()
+        };
+        let rms = |m: &crate::render::Mix, from: f32, secs: f32| -> f32 {
+            let a = ((from * SR) as usize).min(m.left.len());
+            let b = (((from + secs) * SR) as usize).min(m.left.len());
+            (m.left[a..b].iter().map(|s| s * s).sum::<f32>() / (b - a).max(1) as f32).sqrt()
+        };
+        // the unstretched 2 s take has decayed by 3.4 s (default tail 4.5 s)
+        let tail_base = rms(&base, 3.4, 0.8);
+        // stretch 2x: pitch kept (still ~88 crossings per 0.4 s), the take
+        // now plays to 4 s, and clip_json reports the stretch and new end
+        let v = e
+            .call("stretch_clip", &json!({"id": id, "factor": 2.0}))
+            .unwrap();
+        assert_eq!(e.project.audio_clips[0].stretch, 2.0);
+        assert_eq!(v["stretch"], 2.0);
+        assert_eq!(v["end_beat"], 8.0);
+        let up = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert_eq!(up.left.len(), base.left.len(), "render length kept");
+        let x = crossings(&up, 0.0, 0.4);
+        assert!(
+            (x as f32 - 88.0).abs() < 20.0,
+            "stretch keeps pitch: {x} crossings in 0.4s (want ~88)"
+        );
+        let tail_up = rms(&up, 3.4, 0.8);
+        assert!(
+            tail_up > 0.05 && tail_base < tail_up * 0.5,
+            "stretched take plays past the old end: {tail_base} -> {tail_up}"
+        );
+        // fit_clip to exactly 2 beats (1 s at 120 bpm): factor 0.5
+        e.call("fit_clip", &json!({"id": id, "beats": 2.0}))
+            .unwrap();
+        assert!((e.project.audio_clips[0].stretch - 0.5).abs() < 1e-3);
+        // back to 1: the original render is back bit for bit
+        e.call("stretch_clip", &json!({"id": id, "factor": 1.0}))
+            .unwrap();
+        let back = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert_eq!(
+            back.left.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            base.left.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            "stretch 1 restores the untouched render"
+        );
+        // the field survives a project save/load round-trip
+        e.call("stretch_clip", &json!({"id": id, "factor": 1.5}))
+            .unwrap();
+        let json = serde_json::to_string(&e.project).unwrap();
+        let rt: crate::project::Project = serde_json::from_str(&json).unwrap();
+        assert!((rt.audio_clips[0].stretch - 1.5).abs() < 1e-6);
+        // unknown id errors on both tools
+        assert!(e
+            .call("stretch_clip", &json!({"id": "clip999", "factor": 2.0}))
+            .is_err());
+        assert!(e
+            .call("fit_clip", &json!({"id": "clip999", "beats": 4.0}))
+            .is_err());
     }
 
     #[test]

@@ -99,6 +99,8 @@ fn bounce(e: &mut Engine, a: &Value) -> Result<Value> {
         gain_db: 0.0,
         pitch_st: 0.0,
         pitch_voice: false,
+
+        stretch: 1.0,
         fade_in_ms: None,
         fade_out_ms: None,
         id: String::new(),

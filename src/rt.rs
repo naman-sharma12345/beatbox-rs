@@ -929,7 +929,7 @@ impl<'a> VoiceStreamer<'a> {
                     let v = ac
                         .shifted
                         .as_deref()
-                        .map_or(&ac.data[ac.off..ac.off + ac.len], |v| &v[..])[i]
+                        .map_or_else(|| &ac.data[ac.off..ac.off + ac.len], |v| &v[..])[i]
                         * ac.gain
                         * env;
                     m += v;
