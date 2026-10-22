@@ -1056,6 +1056,54 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "shift_take",
+            description: "Line a recorded take up with the song (recording latency compensation): finds the constant offset between the take and a reference from their onset times, then shifts the take into a new sample that starts exactly with the music. reference is a sample name or 'mix' (the rendered song - what was playing while you recorded). max_offset_s caps the search (default 2 s, plenty for interface + monitoring latency); min_confidence (default 0.5) bails instead of guessing when the take shares no rhythm with the reference. Use it right after record_audio instead of hand-tuning trim_start_ms. Returns the offset in ms, how many onsets agreed, and the new sample.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "reference": {"type": "string", "description": "reference sample name, or 'mix' for the rendered song"}, "max_offset_s": {"type": "number"}, "min_confidence": {"type": "number"}, "new_name": {"type": "string"}}), &["sample", "reference"]),
+            run: |e, a| {
+                let (info, data) = sample_data(e, &s_req(a, "sample")?)?;
+                let reference = s_req(a, "reference")?;
+                let ref_data = if reference.eq_ignore_ascii_case("mix") {
+                    let mix = crate::render::render(
+                        &e.project.clone(),
+                        &e.bank,
+                        &crate::render::RenderOptions::default(),
+                    )?;
+                    mix.left
+                        .iter()
+                        .zip(mix.right.iter())
+                        .map(|(l, r)| (l + r) * 0.5)
+                        .collect::<Vec<f32>>()
+                } else {
+                    sample_data(e, &reference)?.1
+                };
+                let max_off = f_or(a, "max_offset_s", 2.0);
+                let min_conf = f_or(a, "min_confidence", 0.5);
+                let (off, votes, conf) = audio_edit::find_offset(&ref_data, &data, max_off);
+                if conf < min_conf {
+                    bail!(
+                        "only {conf:.2} of the take's onsets agree with the reference (want {min_conf:.2}) - pass a reference the take was actually recorded against"
+                    );
+                }
+                let out = if off > 0 {
+                    data[off as usize..].to_vec()
+                } else if off < 0 {
+                    let mut o = vec![0.0f32; (-off) as usize];
+                    o.extend_from_slice(&data);
+                    o
+                } else {
+                    data.clone()
+                };
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_aligned", info.name));
+                let what = format!("aligned to {reference}: shifted {:+.1} ms", off as f32 / SR * 1000.0);
+                let mut r = save_new_sample(e, &info, &nn, &out, &what)?;
+                r["offset_ms"] = json!((off as f32 / SR * 1000.0 * 10.0).round() / 10.0);
+                r["votes"] = json!(votes);
+                r["confidence"] = json!((conf * 100.0).round() / 100.0);
+                Ok(r)
+            },
+        },
+        Tool {
             name: "edit_sample",
             description: "Non-destructive sample editing into a new sample: trim_silence_db (cut leading/trailing audio below this, e.g. -50), start_s + length_s or length_beats (cut a region at the project tempo), reverse, fade_in_ms / fade_out_ms, normalize_db (peak) or normalize_lufs, gain_db, highpass_hz. Applied in that order. new_name defaults to <sample>_edit.",
             mutates: true,

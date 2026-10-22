@@ -461,6 +461,47 @@ pub fn quantize_onsets(x: &[f32], grid_samples: usize, amount: f32) -> (Vec<f32>
     (out, hits, moved)
 }
 
+/// Constant offset of a take against a reference, from onset times: every
+/// take-onset/reference-onset pair within `max_offset_s` votes in a 1 ms
+/// histogram and the winning bin's median is the offset. Returns
+/// (offset_samples, votes, confidence 0..1). Positive means the take is LATE
+/// by that many samples. Confidence is the winning bin's share of the take's
+/// onsets; near-ties break toward the smallest |offset| (latency is small,
+/// musical repeats are a beat or more).
+pub fn find_offset(reference: &[f32], take: &[f32], max_offset_s: f32) -> (isize, usize, f32) {
+    let r = onsets(reference, 0.5, 30.0);
+    let t = onsets(take, 0.5, 30.0);
+    if r.is_empty() || t.is_empty() {
+        return (0, 0, 0.0);
+    }
+    let max = (max_offset_s.max(0.05) * SR) as isize;
+    let bin = (0.001 * SR) as isize;
+    let mut hist: std::collections::BTreeMap<isize, Vec<isize>> = std::collections::BTreeMap::new();
+    for &to in &t {
+        for &ro in &r {
+            let d = to as isize - ro as isize;
+            if d.abs() <= max {
+                hist.entry(d / bin).or_default().push(d);
+            }
+        }
+    }
+    if hist.is_empty() {
+        return (0, 0, 0.0);
+    }
+    let best = hist.values().map(|v| v.len()).max().unwrap();
+    let diffs = hist
+        .iter()
+        .filter(|(_, v)| v.len() * 5 >= best * 4)
+        .min_by_key(|(&b, _)| b.abs())
+        .map(|(_, v)| v)
+        .unwrap();
+    let mut d = diffs.clone();
+    d.sort_unstable();
+    let med = d[d.len() / 2];
+    let conf = (d.len() as f32 / t.len() as f32).min(1.0);
+    (med, d.len(), conf)
+}
+
 /// Pitch shift by semitones keeping duration (stretch + resample).
 pub fn pitch_shift(x: &[f32], semitones: f32) -> Vec<f32> {
     let r = 2f32.powf(semitones.clamp(-24.0, 24.0) / 12.0);
@@ -1130,5 +1171,31 @@ mod tests {
         let (p, ph, _) = quantize_onsets(&pad, grid, 1.0);
         assert!(ph < 2);
         assert_eq!(p, pad);
+    }
+
+    #[test]
+    fn find_offset_measures_a_delayed_take() {
+        let r = clicks(120.0, 4.0);
+        // the same performance 100 ms late (recording latency)
+        let delay = 4410usize;
+        let mut t = vec![0.0f32; delay];
+        t.extend_from_slice(&r);
+        let (off, votes, conf) = find_offset(&r, &t, 2.0);
+        assert!(
+            (off - delay as isize).abs() <= 88,
+            "offset {off}, want {delay}"
+        );
+        assert!(votes >= 6, "votes {votes}");
+        assert!(conf > 0.6, "conf {conf}");
+        // a take that is early comes out negative
+        let early = &r[2205..];
+        let (off2, _, conf2) = find_offset(&r, early, 2.0);
+        assert!((off2 + 2205).abs() <= 88, "early offset {off2}");
+        assert!(conf2 > 0.6, "early conf {conf2}");
+        // noise agrees on nothing
+        let mut rng = crate::dsp::Rng::new(3);
+        let noise: Vec<f32> = (0..r.len()).map(|_| rng.bipolar() * 0.1).collect();
+        let (_, _, conf3) = find_offset(&r, &noise, 2.0);
+        assert!(conf3 < 0.5, "noise conf {conf3}");
     }
 }
