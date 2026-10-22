@@ -69,7 +69,7 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "sample",
         description: "Samples: search/download/import audio (Freesound, any URL), sample tracks, slice/stretch/edit, kits, palettes, flips, chops, stem separation, credits.",
-        actions: &["search_samples", "download_sample", "import_sample", "list_samples", "add_sample_track", "freesound_search", "freesound_fetch", "import_from_url", "import_from_page", "list_imports", "export_credits", "slice_sample", "stretch_sample", "edit_sample", "denoise_sample", "sample_spectrogram", "spectral_edit_sample", "install_kit", "index_samples", "find_samples", "flip_sample", "vocal_chop", "list_palettes", "apply_palette", "install_palette_samples", "audition_palette", "separate_stems"],
+        actions: &["search_samples", "download_sample", "import_sample", "list_samples", "add_sample_track", "freesound_search", "freesound_fetch", "import_from_url", "import_from_page", "list_imports", "export_credits", "slice_sample", "stretch_sample", "quantize_sample", "edit_sample", "denoise_sample", "sample_spectrogram", "spectral_edit_sample", "install_kit", "index_samples", "find_samples", "flip_sample", "vocal_chop", "list_palettes", "apply_palette", "install_palette_samples", "audition_palette", "separate_stems"],
     },
     Category {
         name: "arrange",

@@ -1024,6 +1024,38 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "quantize_sample",
+            description: "Snap a take's hits to the grid (beat detective / flex-time quantize) into a new sample: every onset moves toward the nearest grid point by amount (0..1, default 1 = hard quantize), the audio between hits stretches to fit its new slot, overall length kept. grid 1/4 | 1/8 | 1/16 (default 1/16) at bpm (default the project's). The take should start on a downbeat. Returns the new sample, hits found and how many moved.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "grid": {"type": "string", "enum": ["1/4", "1/8", "1/16"], "description": "grid note (default 1/16)"}, "amount": {"type": "number", "minimum": 0, "maximum": 1}, "bpm": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
+            run: |e, a| {
+                let (info, data) = sample_data(e, &s_req(a, "sample")?)?;
+                let bpm = f_opt(a, "bpm").unwrap_or(e.project.bpm);
+                if bpm <= 0.0 {
+                    bail!("give a bpm (or set the project tempo)");
+                }
+                let denom = match s_opt(a, "grid").as_deref().unwrap_or("1/16") {
+                    "1/4" => 1.0,
+                    "1/8" => 0.5,
+                    "1/16" => 0.25,
+                    other => bail!("unknown grid '{other}' (1/4, 1/8, 1/16)"),
+                };
+                let g = (60.0 / bpm * denom * SR) as usize;
+                let amount = f_or(a, "amount", 1.0).clamp(0.0, 1.0);
+                let (out, hits, moved) = audio_edit::quantize_onsets(&data, g, amount);
+                if hits < 2 {
+                    bail!("found {hits} hits to snap - quantize needs clear transients (try stretch_sample for smooth material)");
+                }
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_q", info.name));
+                let grid = s_opt(a, "grid").unwrap_or_else(|| "1/16".into());
+                let what = format!("quantize {grid} grid x{amount} at {bpm} BPM");
+                let mut r = save_new_sample(e, &info, &nn, &out, &what)?;
+                r["hits"] = json!(hits);
+                r["moved"] = json!(moved);
+                Ok(r)
+            },
+        },
+        Tool {
             name: "edit_sample",
             description: "Non-destructive sample editing into a new sample: trim_silence_db (cut leading/trailing audio below this, e.g. -50), start_s + length_s or length_beats (cut a region at the project tempo), reverse, fade_in_ms / fade_out_ms, normalize_db (peak) or normalize_lufs, gain_db, highpass_hz. Applied in that order. new_name defaults to <sample>_edit.",
             mutates: true,

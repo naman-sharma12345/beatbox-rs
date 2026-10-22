@@ -381,6 +381,86 @@ pub fn time_stretch_beats(x: &[f32], factor: f32) -> Vec<f32> {
     out
 }
 
+/// Snap a take's hits to a grid (beat detective / flex-time quantize):
+/// every onset moves toward the nearest grid point by `amount` (1 = hard
+/// quantize), the audio between hits stretches to fit its new slot, and the
+/// overall length is kept. The take should start on a downbeat. Returns the
+/// warped audio, the number of hits found, and how many of them moved.
+pub fn quantize_onsets(x: &[f32], grid_samples: usize, amount: f32) -> (Vec<f32>, usize, usize) {
+    let amount = amount.clamp(0.0, 1.0);
+    let g = grid_samples.max(HOP * 4) as f64;
+    if x.len() < 4096 || amount < 1e-3 {
+        return (x.to_vec(), 0, 0);
+    }
+    let env = onset_envelope(x);
+    let mean = env.iter().sum::<f32>() / env.len().max(1) as f32;
+    let mut marks: Vec<usize> = onsets(x, 0.5, ((g / SR as f64 * 500.0).max(30.0)) as f32);
+    marks.retain(|&m| m > 256 && m + 256 < x.len());
+    marks.dedup();
+    // only confident hits move: a steady pad's flux wobbles to ~2x its own
+    // mean and fakes hits, while a real attack stands many times above it
+    marks.retain(|&m| {
+        let f = m / HOP;
+        let lo = f.saturating_sub(1);
+        let hi = (f + 2).min(env.len());
+        env[lo..hi].iter().cloned().fold(0.0f32, f32::max) >= mean * 4.0
+    });
+    let hits = marks.len();
+    if hits < 2 {
+        return (x.to_vec(), hits, 0);
+    }
+    marks.insert(0, 0);
+    marks.push(x.len());
+    // moved position of each mark: the ends stay put, the rest snap
+    let mut moved = 0usize;
+    let mut pos: Vec<f64> = Vec::with_capacity(marks.len());
+    for (i, &m) in marks.iter().enumerate() {
+        if i == 0 || i == marks.len() - 1 {
+            pos.push(m as f64);
+            continue;
+        }
+        let t = ((m as f64 / g).round() * g).clamp(0.0, x.len() as f64);
+        if (t - m as f64).abs() > SR as f64 * 0.002 {
+            moved += 1;
+        }
+        pos.push(m as f64 + amount as f64 * (t - m as f64));
+    }
+    // a snapped hit must not cross its neighbours
+    for i in 1..pos.len() {
+        if pos[i] < pos[i - 1] {
+            pos[i] = pos[i - 1];
+        }
+    }
+    let fade = (0.005 * SR) as usize;
+    let mut out = vec![0.0f32; x.len()];
+    for i in 0..marks.len() - 1 {
+        let seg = &x[marks[i]..marks[i + 1]];
+        let slot = (pos[i + 1] - pos[i]).max(1.0);
+        let factor = (slot / seg.len() as f64) as f32;
+        let mut piece = if (factor - 1.0).abs() < 0.02 {
+            seg.to_vec()
+        } else {
+            time_stretch(seg, factor.clamp(0.5, 2.0))
+        };
+        piece.resize(slot as usize, 0.0);
+        piece.truncate(slot as usize);
+        let start = pos[i] as usize;
+        if start >= out.len() {
+            break;
+        }
+        let n = piece.len().min(out.len() - start);
+        // click-free joins: the piece's tail fades into the next hit, whose
+        // attack starts unfaded (beat-slice style, like Recycle)
+        let f = fade.min(n / 2);
+        for j in 0..f {
+            let gc = 0.5 * (1.0 + (std::f32::consts::PI * j as f32 / f as f32).cos());
+            piece[n - f + j] *= gc;
+        }
+        out[start..start + n].copy_from_slice(&piece[..n]);
+    }
+    (out, hits, moved)
+}
+
 /// Pitch shift by semitones keeping duration (stretch + resample).
 pub fn pitch_shift(x: &[f32], semitones: f32) -> Vec<f32> {
     let r = 2f32.powf(semitones.clamp(-24.0, 24.0) / 12.0);
@@ -1003,5 +1083,52 @@ mod tests {
         assert_eq!(z.len(), x.len() / 2, "0.5x length");
         let oz = onsets(&z, 0.5, 100.0);
         assert_eq!(oz.len(), 4, "fast onsets {oz:?}");
+    }
+    #[test]
+    fn quantize_snaps_drunk_hits_to_the_grid() {
+        // four hits at 120 bpm played drunk: +20 ms, -30 ms, +15 ms late
+        let n = (2.0 * SR) as usize;
+        let mut x = vec![0.0f32; n];
+        let mut rng = crate::dsp::Rng::new(7);
+        let grid = (0.5 * SR) as usize; // quarter notes at 120 bpm
+        for (k, off) in [441isize, -1323, 662, 0].iter().enumerate() {
+            let start = (k * grid) as isize + off;
+            for j in 0..2000usize {
+                let idx = start + j as isize;
+                if idx >= 0 && (idx as usize) < n {
+                    x[idx as usize] = rng.bipolar() * (-(j as f32) / 300.0).exp() * 0.8;
+                }
+            }
+        }
+        // hard quantize: every hit lands on the grid
+        let (y, hits, moved) = quantize_onsets(&x, grid, 1.0);
+        assert_eq!(y.len(), x.len(), "length kept");
+        assert_eq!(hits, 4, "four hits found");
+        assert!(moved >= 3, "the drunk hits moved: {moved}");
+        let ons = onsets(&y, 0.5, 200.0);
+        assert_eq!(ons.len(), 4, "quantized onsets {ons:?}");
+        for (k, &o) in ons.iter().enumerate() {
+            let want = k * grid;
+            assert!(
+                (o as i64 - want as i64).abs() < (0.015 * SR) as i64,
+                "hit {k} at {o}, want {want}"
+            );
+        }
+        // half quantize halves the error instead
+        let (h, _, _) = quantize_onsets(&x, grid, 0.5);
+        let oh = onsets(&h, 0.5, 200.0);
+        assert_eq!(oh.len(), 4);
+        let err_half = (oh[1] as i64 - grid as i64).abs();
+        assert!(
+            err_half > (0.008 * SR) as i64 && err_half < (0.022 * SR) as i64,
+            "half-quantize error {err_half} (want ~half of 30 ms)"
+        );
+        // a pad with no clear hits comes back untouched
+        let pad: Vec<f32> = (0..n)
+            .map(|i| 0.3 * (i as f32 * 220.0 / SR * std::f32::consts::TAU).sin())
+            .collect();
+        let (p, ph, _) = quantize_onsets(&pad, grid, 1.0);
+        assert!(ph < 2);
+        assert_eq!(p, pad);
     }
 }
