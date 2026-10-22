@@ -556,6 +556,16 @@ pub struct AudioClip {
     /// Render-time, not a bounce - false (the default) renders untouched.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reverse: bool,
+    /// Muted: kept on the grid with every edit but silent - park a take
+    /// instead of deleting it; the basis of comping (mute all but the
+    /// keeper in each range).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub muted: bool,
+    /// Take group: alternate takes of one passage share this tag, so
+    /// `comp_take` knows which clips to silence when a keeper is picked.
+    /// Empty = not in a group.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub take_group: String,
     /// Equal-power fade at the clip's start / end in ms (None = a 4 ms ramp).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_in_ms: Option<f32>,

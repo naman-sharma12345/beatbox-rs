@@ -102,6 +102,8 @@ fn bounce(e: &mut Engine, a: &Value) -> Result<Value> {
 
         stretch: 1.0,
         reverse: false,
+        muted: false,
+        take_group: String::new(),
         fade_in_ms: None,
         fade_out_ms: None,
         id: String::new(),

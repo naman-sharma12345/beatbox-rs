@@ -65,11 +65,35 @@ fn clip_json(e: &mut Engine, i: usize) -> Value {
     let end = end_beat(&e.project, c, len * c.stretch);
     json!({"id": c.id, "index": i, "track": c.track, "sample": c.sample, "start_beat": c.start_beat,
         "end_beat": (end * 1000.0).round() / 1000.0, "offset_s": c.offset_s, "length_s": (len * 1000.0).round() / 1000.0,
-        "gain_db": c.gain_db, "pitch_st": c.pitch_st, "pitch_voice": c.pitch_voice, "stretch": c.stretch, "reverse": c.reverse, "fade_in_ms": c.fade_in_ms, "fade_out_ms": c.fade_out_ms})
+        "gain_db": c.gain_db, "pitch_st": c.pitch_st, "pitch_voice": c.pitch_voice, "stretch": c.stretch, "reverse": c.reverse, "muted": c.muted, "take_group": c.take_group, "fade_in_ms": c.fade_in_ms, "fade_out_ms": c.fade_out_ms})
 }
 
 fn id_prop() -> Value {
     json!({"type": "string", "description": "the clip's stable id (\"clip3\", list_audio_clips); an index also works"})
+}
+
+/// Cut clip `base` at every interior beat in `cuts`, returning the ids of
+/// the pieces left standing (the base id survives on the first piece).
+fn cut_pieces(e: &mut Engine, base: &str, cuts: &[f32]) -> Result<Vec<String>> {
+    let mut ids = vec![base.to_string()];
+    for &cut in cuts {
+        let mut next = Vec::new();
+        for id in ids {
+            let i = audio_clip_index(&e.project, &json!({"id": id}))?;
+            let (len, _) = clip_len(e, i)?;
+            let c = &e.project.audio_clips[i];
+            let end = end_beat(&e.project, c, len * c.stretch.max(1e-3));
+            if cut > c.start_beat + MIN_LEN_S && cut < end - MIN_LEN_S {
+                let (l, r) = split(e, i, cut)?;
+                next.push(l);
+                next.push(r);
+            } else {
+                next.push(id);
+            }
+        }
+        ids = next;
+    }
+    Ok(ids)
 }
 
 /// Split clip `i` at song beat `at`: the left part keeps the id, the right
@@ -498,6 +522,116 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "mute_clip",
+            description: "Mute or unmute an audio clip in place: it keeps its grid spot and every edit but goes silent - park a take instead of deleting it, or quiet everything but the keeper while you comp.",
+            mutates: true,
+            schema: || obj(json!({"id": id_prop(), "muted": {"type": "boolean"}}), &["id"]),
+            run: |e, a| {
+                let i = audio_clip_index(&e.project, a)?;
+                let on = a.get("muted").and_then(|v| v.as_bool()).unwrap_or(true);
+                e.project.audio_clips[i].muted = on;
+                Ok(clip_json(e, i))
+            },
+        },
+        Tool {
+            name: "group_takes",
+            description: "Tag audio clips as alternate takes of one passage (the stacked recordings of that vocal, that solo) so comp_take can switch which one sounds: every clip gets the same group name. The clips must sit on one track.",
+            mutates: true,
+            schema: || obj(json!({"ids": {"type": "array", "items": {"type": "string"}, "description": "the takes' stable ids (list_audio_clips)"}, "group": {"type": "string", "description": "group name (default: a fresh one)"}}), &["ids"]),
+            run: |e, a| {
+                let ids: Vec<String> = a
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|xs| xs.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+                    .unwrap_or_default();
+                if ids.len() < 2 {
+                    bail!("pass at least two clip ids");
+                }
+                let mut idxs = Vec::new();
+                for id in &ids {
+                    idxs.push(audio_clip_index(&e.project, &json!({"id": id}))?);
+                }
+                let track = e.project.audio_clips[idxs[0]].track.clone();
+                for &i in &idxs {
+                    if !e.project.audio_clips[i].track.eq_ignore_ascii_case(&track) {
+                        bail!("the clips are on different tracks; takes of one passage sit on one track");
+                    }
+                }
+                let g = a
+                    .get("group")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| crate::ids::next_id(&mut e.project, "take"));
+                for &i in &idxs {
+                    e.project.audio_clips[i].take_group = g.clone();
+                }
+                Ok(json!({"group": g, "takes": ids}))
+            },
+        },
+        Tool {
+            name: "comp_take",
+            description: "Pick the keeper from a take group: in the beat range (default the clip's whole span) the chosen take plays and every other take in its group goes silent, cut neatly at the range edges - the best chorus from take 2, the rest from take 1. Repeat range by range to comp the whole passage. Nothing is bounced: undo or another comp_take reshuffles freely.",
+            mutates: true,
+            schema: || obj(json!({"id": id_prop(), "start_beat": {"type": "number"}, "end_beat": {"type": "number"}}), &["id"]),
+            run: |e, a| {
+                let i = audio_clip_index(&e.project, a)?;
+                let (len, _) = clip_len(e, i)?;
+                let c = e.project.audio_clips[i].clone();
+                if c.take_group.is_empty() {
+                    bail!("clip '{}' is not in a take group - group_takes first", c.id);
+                }
+                let st = c.stretch.max(1e-3);
+                let c_end = end_beat(&e.project, &c, len * st);
+                let a0 = f_opt(a, "start_beat").unwrap_or(c.start_beat);
+                let b0 = f_opt(a, "end_beat").unwrap_or(c_end);
+                if a0 < c.start_beat - 1e-3 || b0 > c_end + 1e-3 || b0 - a0 < 1e-3 {
+                    bail!(
+                        "the range {a0}..{b0} must sit inside clip '{}' (beats {} to {:.3})",
+                        c.id,
+                        c.start_beat,
+                        c_end
+                    );
+                }
+                // other takes in the group (collected before the keeper is
+                // cut, so its fresh pieces are not mistaken for mates)
+                let mates: Vec<String> = e
+                    .project
+                    .audio_clips
+                    .iter()
+                    .filter(|x| x.take_group == c.take_group && x.id != c.id)
+                    .map(|x| x.id.clone())
+                    .collect();
+                // unmute the keeper's piece inside the range
+                for id in cut_pieces(e, &c.id, &[a0, b0])? {
+                    let j = audio_clip_index(&e.project, &json!({"id": id}))?;
+                    let (l, _) = clip_len(e, j)?;
+                    let (s0, e0) = {
+                        let cc = &e.project.audio_clips[j];
+                        (cc.start_beat, end_beat(&e.project, cc, l * cc.stretch.max(1e-3)))
+                    };
+                    if s0 < b0 - 1e-4 && e0 > a0 + 1e-4 {
+                        e.project.audio_clips[j].muted = false;
+                    }
+                }
+                // silence the other takes where they overlap the range
+                for m in mates {
+                    for id in cut_pieces(e, &m, &[a0, b0])? {
+                        let j = audio_clip_index(&e.project, &json!({"id": id}))?;
+                        let (l, _) = clip_len(e, j)?;
+                        let (s0, e0) = {
+                            let cc = &e.project.audio_clips[j];
+                            (cc.start_beat, end_beat(&e.project, cc, l * cc.stretch.max(1e-3)))
+                        };
+                        if s0 < b0 - 1e-4 && e0 > a0 + 1e-4 {
+                            e.project.audio_clips[j].muted = true;
+                        }
+                    }
+                }
+                let j = audio_clip_index(&e.project, a)?;
+                Ok(clip_json(e, j))
+            },
+        },
+        Tool {
             name: "crossfade_clips",
             description: "Crossfade two touching or overlapping audio clips on the same track (first, then second): the first is extended and the second starts earlier into the take so they overlap by ms, with an equal-power fade out / fade in across the overlap.",
             mutates: true,
@@ -642,7 +776,7 @@ pub fn tools() -> Vec<Tool> {
                     !drop
                 });
                 let id = crate::ids::next_id(&mut e.project, "clip");
-                e.project.audio_clips.push(AudioClip { track: track.clone(), sample: sample.clone(), start_beat: from, offset_s: 0.0, length_s: None, gain_db: 0.0, pitch_st: 0.0, pitch_voice: false, stretch: 1.0, reverse: false, fade_in_ms: None, fade_out_ms: None, id: id.clone() });
+                e.project.audio_clips.push(AudioClip { track: track.clone(), sample: sample.clone(), start_beat: from, offset_s: 0.0, length_s: None, gain_db: 0.0, pitch_st: 0.0, pitch_voice: false, stretch: 1.0, reverse: false, muted: false, take_group: String::new(), fade_in_ms: None, fade_out_ms: None, id: id.clone() });
                 Ok(json!({"id": id, "track": track, "sample": sample, "file": file.to_string_lossy(), "replaced": gone,
                     "start_beat": from, "seconds": (buf.len() as f32 / SR * 1000.0).round() / 1000.0}))
             },
@@ -919,6 +1053,153 @@ mod tests {
         assert!(rt.audio_clips[0].reverse);
         // unknown id errors
         assert!(e.call("reverse_clip", &json!({"id": "clip999"})).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn comp_take_picks_the_keeper_and_mute_renders_silence() {
+        // two stacked takes of one passage: a swelling 220 Hz tone and a
+        // steady 440 Hz tone, so the render says which one is playing
+        let dir = std::env::temp_dir().join(format!("beatbox_comp_{}_{}", std::process::id(), "t"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = Engine::new(dir.clone());
+        e.call("new_project", &json!({"name": "cp", "bpm": 120}))
+            .unwrap();
+        let n = (2.0 * SR) as usize;
+        let tau = std::f32::consts::TAU;
+        let a_tone: Vec<f32> = (0..n)
+            .map(|i| {
+                0.8 * (0.25 + 0.75 * i as f32 / n as f32) * (i as f32 * 220.0 / SR * tau).sin()
+            })
+            .collect();
+        let b_tone: Vec<f32> = (0..n)
+            .map(|i| 0.8 * (i as f32 * 440.0 / SR * tau).sin())
+            .collect();
+        let wa = dir.join("a.wav");
+        crate::render::write_wav(&wa, &a_tone, &a_tone).unwrap();
+        let wb = dir.join("b.wav");
+        crate::render::write_wav(&wb, &b_tone, &b_tone).unwrap();
+        e.call(
+            "import_sample",
+            &json!({"path": wa.to_string_lossy(), "name": "takea"}),
+        )
+        .unwrap();
+        e.call(
+            "import_sample",
+            &json!({"path": wb.to_string_lossy(), "name": "takeb"}),
+        )
+        .unwrap();
+        e.call("add_track", &json!({"name": "vox", "preset": "pad"}))
+            .unwrap();
+        e.call(
+            "add_audio_clip",
+            &json!({"track": "vox", "sample": "takea", "start_beat": 0.0}),
+        )
+        .unwrap();
+        e.call(
+            "add_audio_clip",
+            &json!({"track": "vox", "sample": "takeb", "start_beat": 0.0}),
+        )
+        .unwrap();
+        let (ida, idb) = (
+            e.project.audio_clips[0].id.clone(),
+            e.project.audio_clips[1].id.clone(),
+        );
+        let opts = crate::render::RenderOptions::default();
+        let crossings = |m: &crate::render::Mix, from: f32, secs: f32| -> usize {
+            let a = ((from * SR) as usize).min(m.left.len());
+            let b = (((from + secs) * SR) as usize).min(m.left.len());
+            m.left[a..b]
+                .windows(2)
+                .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+                .count()
+        };
+
+        // comping needs a group first
+        assert!(e.call("comp_take", &json!({"id": ida})).is_err());
+
+        // muted clips render silence
+        e.call("mute_clip", &json!({"id": ida})).unwrap();
+        e.call("mute_clip", &json!({"id": idb})).unwrap();
+        let silent = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        let peak = silent.left.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+        assert!(peak < 1e-4, "both muted but peak {peak}");
+        e.call("mute_clip", &json!({"id": ida, "muted": false}))
+            .unwrap();
+        e.call("mute_clip", &json!({"id": idb, "muted": false}))
+            .unwrap();
+
+        // tag them as one passage's takes
+        e.call(
+            "group_takes",
+            &json!({"ids": [ida, idb], "group": "chorus"}),
+        )
+        .unwrap();
+        assert_eq!(e.project.audio_clips[0].take_group, "chorus");
+        assert_eq!(e.project.audio_clips[1].take_group, "chorus");
+
+        // whole-span comp of take a: b goes silent, the 220 Hz swell plays
+        e.call("comp_take", &json!({"id": ida})).unwrap();
+        assert!(!e.project.audio_clips[0].muted);
+        assert!(e.project.audio_clips[1].muted);
+        let solo_a = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        let xa = crossings(&solo_a, 1.2, 0.4);
+        assert!(
+            (xa as f32 - 88.0).abs() < 25.0,
+            "220 Hz over 0.4 s should give ~88 crossings, got {xa}"
+        );
+
+        // range comp: take b keeps beats 1..3, take a keeps the rest
+        e.call(
+            "comp_take",
+            &json!({"id": idb, "start_beat": 1.0, "end_beat": 3.0}),
+        )
+        .unwrap();
+        assert_eq!(
+            e.project.audio_clips.len(),
+            6,
+            "both takes cut at the range edges"
+        );
+        let piece = |start: f32, sample: &str| {
+            e.project
+                .audio_clips
+                .iter()
+                .find(|c| c.sample == sample && (c.start_beat - start).abs() < 1e-3)
+                .cloned()
+                .unwrap()
+        };
+        assert!(piece(1.0, "takea").muted, "a's middle is silenced");
+        assert!(!piece(1.0, "takeb").muted, "b's middle is the keeper");
+        assert!(!piece(0.0, "takea").muted && !piece(3.0, "takea").muted);
+        assert!(piece(0.0, "takeb").muted && piece(3.0, "takeb").muted);
+        let mixed = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        // at 120 bpm beats 1..3 are 0.5..1.5 s
+        let x1 = crossings(&mixed, 0.1, 0.3);
+        let x2 = crossings(&mixed, 0.7, 0.3);
+        let x3 = crossings(&mixed, 1.6, 0.3);
+        assert!(
+            x2 > x1 + x1 / 2,
+            "the middle plays 440 Hz ({x1} vs {x2} crossings)"
+        );
+        assert!(
+            (x3 as i64 - x1 as i64).abs() <= 15,
+            "the ends play 220 Hz again ({x1} vs {x3})"
+        );
+
+        // the fields survive a project save/load round-trip
+        let json = serde_json::to_string(&e.project).unwrap();
+        let rt: crate::project::Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.audio_clips.len(), 6);
+        assert!(rt.audio_clips.iter().all(|c| c.take_group == "chorus"));
+        assert_eq!(rt.audio_clips.iter().filter(|c| c.muted).count(), 3);
+
+        // unknown ids error on all three tools
+        assert!(e.call("mute_clip", &json!({"id": "clip999"})).is_err());
+        assert!(e.call("comp_take", &json!({"id": "clip999"})).is_err());
+        assert!(e
+            .call("group_takes", &json!({"ids": [ida, "clip999"]}))
+            .is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -579,6 +579,8 @@ fn vocal_to_song(e: &mut Engine, a: &Value) -> Result<Value> {
 
         stretch: 1.0,
         reverse: false,
+        muted: false,
+        take_group: String::new(),
         fade_in_ms: None,
         fade_out_ms: None,
         id: String::new(),
@@ -1034,7 +1036,7 @@ pub fn tools() -> Vec<Tool> {
                     offset_s: f_opt(a, "offset_s").unwrap_or(0.0),
                     length_s: f_opt(a, "length_s"),
                     gain_db: f_opt(a, "gain_db").unwrap_or(0.0),
-                    pitch_st: 0.0, pitch_voice: false, stretch: 1.0, reverse: false,
+                    pitch_st: 0.0, pitch_voice: false, stretch: 1.0, reverse: false, muted: false, take_group: String::new(),
                     fade_in_ms: f_opt(a, "fade_in_ms").map(|v| v.clamp(0.5, 200.0)),
                     fade_out_ms: f_opt(a, "fade_out_ms").map(|v| v.clamp(0.5, 200.0)),
                     id: String::new(),
@@ -1142,6 +1144,8 @@ mod tests {
 
             stretch: 1.0,
             reverse: false,
+            muted: false,
+            take_group: String::new(),
             fade_in_ms: None,
             fade_out_ms: None,
             id: String::new(),

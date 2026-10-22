@@ -1218,6 +1218,9 @@ pub(crate) fn sidechain_inputs(
     // so "duck the pads under the vocal" follows the words, not just the
     // clip's first sample
     for c in &p.audio_clips {
+        if c.muted {
+            continue;
+        }
         let Some(data) = bank.get(&c.sample) else {
             continue;
         };
@@ -1712,7 +1715,7 @@ pub(crate) fn plan_track_clips<'a>(
     for c in p
         .audio_clips
         .iter()
-        .filter(|c| c.track.eq_ignore_ascii_case(&track.name))
+        .filter(|c| c.track.eq_ignore_ascii_case(&track.name) && !c.muted)
     {
         let Some(data) = bank.get(&c.sample) else {
             continue;
