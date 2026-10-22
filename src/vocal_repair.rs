@@ -3,7 +3,7 @@
 //! and late-reverb reduction. Every tool writes a new sample and reports
 //! what it measured before and after.
 
-use crate::dsp::{Biquad, BiquadKind, Fft, SR};
+use crate::dsp::{db_to_gain, Biquad, BiquadKind, Fft, SR};
 use crate::engine::Engine;
 use crate::tools::{f_opt, f_or, obj, s_opt, s_req, u_or, Tool};
 use anyhow::{bail, Result};
@@ -407,6 +407,91 @@ pub fn dereverb(x: &[f32], amount: f32, rt60_s: f32, delay_ms: f32) -> Vec<f32> 
 }
 
 /// RMS (dB) of the quietest 10% and loudest 10% of 20 ms windows.
+/// Breath events between phrases: frames that are noisy (high spectral
+/// flatness between 1 and 8 kHz) and louder than the take's floor, grouped
+/// into regions. The take comes back with each region pulled down by
+/// `amount_db` (raised-cosine shoulders, so no clicks) and the regions as
+/// (start_s, end_s). Breaths are found by their noisy, unpitched character,
+/// not their level, so a loud breath is caught and a soft sung note (flat
+/// spectrum peak, low flatness) is left alone.
+pub fn reduce_breaths(x: &[f32], amount_db: f32, sensitivity: f32) -> (Vec<f32>, Vec<(f32, f32)>) {
+    let m = mags(x);
+    if m.len() < 8 {
+        return (x.to_vec(), Vec::new());
+    }
+    let hz = SR / N as f32;
+    let lo = (1000.0 / hz) as usize;
+    let hi = ((8000.0 / hz) as usize).min(N / 2);
+    let mut db = Vec::with_capacity(m.len());
+    let mut flat = Vec::with_capacity(m.len());
+    for f in &m {
+        let power: f32 = f.iter().map(|v| v * v).sum();
+        db.push(10.0 * (power + 1e-12).log10());
+        let band = &f[lo..=hi];
+        let gm = (band.iter().map(|v| (v + 1e-9).ln()).sum::<f32>() / band.len() as f32).exp();
+        let am = band.iter().sum::<f32>() / band.len() as f32;
+        flat.push(gm / (am + 1e-12));
+    }
+    let mut sorted = db.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let floor = sorted[sorted.len() / 10];
+    let flat_min = 0.55 - sensitivity.clamp(0.0, 1.0) * 0.3;
+    let cand: Vec<bool> = (0..m.len())
+        .map(|i| flat[i] >= flat_min && db[i] >= floor + 6.0)
+        .collect();
+    // group, bridging wobbles of a frame or two
+    let mut regions: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < m.len() {
+        if cand[i] {
+            let mut j = i;
+            while j + 1 < m.len() && (cand[j + 1] || (j + 2 < m.len() && cand[j + 2])) {
+                j += if cand[j + 1] { 1 } else { 2 };
+            }
+            if j - i + 1 >= 5 {
+                regions.push((i, j));
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    if regions.is_empty() {
+        return (x.to_vec(), Vec::new());
+    }
+    let g = db_to_gain(amount_db.min(0.0));
+    let fade = (0.015 * SR) as usize;
+    let mut gain = vec![1.0f32; x.len()];
+    for &(a, b) in &regions {
+        let s = a * H;
+        let e = ((b + 1) * H).min(x.len());
+        for k in s..e {
+            gain[k] = g;
+        }
+        for k in 0..fade {
+            let w = 0.5 * (1.0 - (std::f32::consts::PI * k as f32 / fade as f32).cos());
+            if s + k < e {
+                gain[s + k] = (1.0 - w) + g * w;
+            }
+            if e > fade + 1 && e - 1 - k >= s {
+                let p = e - 1 - k;
+                gain[p] = (1.0 - w) + g * w;
+            }
+        }
+    }
+    let out: Vec<f32> = x.iter().zip(gain.iter()).map(|(v, g)| v * g).collect();
+    let secs = regions
+        .iter()
+        .map(|&(a, b)| {
+            (
+                a as f32 * H as f32 / SR,
+                ((b + 1) * H).min(x.len()) as f32 / SR,
+            )
+        })
+        .collect();
+    (out, secs)
+}
+
 pub fn floor_and_peak_db(x: &[f32]) -> (f32, f32) {
     let w = (0.02 * SR) as usize;
     let mut v: Vec<f32> = x
@@ -566,6 +651,24 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "reduce_breaths",
+            description: "De-breath a vocal take (RX-style): finds breaths by their noisy, unpitched character between phrases and turns just those moments down, amount_db at a time (default -12; -6 gentle, -20 nearly silent). Unlike gate_vocal, detection is by breath character, not level, so a loud breath is caught and quiet singing is left alone. sensitivity 0..1 (default 0.5; higher catches softer, less obvious breaths and can nip at whispered or breathy singing). Writes <sample>_db and reports the breath regions found. Empty regions = no breaths found, take returned unchanged.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "amount_db": {"type": "number"}, "sensitivity": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
+            run: |e, a| {
+                let (info, x) = crate::tools_sound::sample_data(e, &s_req(a, "sample")?)?;
+                if x.len() < N * 4 {
+                    bail!("the sample is too short to de-breath");
+                }
+                let amount = f_or(a, "amount_db", -12.0).clamp(-40.0, 0.0);
+                let sens = f_or(a, "sensitivity", 0.5).clamp(0.0, 1.0);
+                let (y, regions) = reduce_breaths(&x, amount, sens);
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_db", info.name));
+                let s = save(e, &info, &nn, &y, &format!("de-breath {amount:.0} dB"))?;
+                Ok(json!({"sample": s, "breaths": regions.len(), "regions": regions.iter().map(|&(a, b)| json!({"start_s": r1(a), "end_s": r1(b)})).collect::<Vec<_>>(), "measured": report(&x, &y)}))
+            },
+        },
+        Tool {
             name: "reduce_reverb",
             description: "De-reverb: takes the room's late tail out of a vocal recorded in a reflective room (spectral late-reverb suppression). amount 0..1 (default 0.6), rt60_s = the room's decay (default 0.5), delay_ms = where the late tail starts (default 50). Strong settings thin the voice. Writes <sample>_dry.",
             mutates: true,
@@ -707,5 +810,90 @@ mod tests {
                 .sum::<f32>()
         };
         assert!(e(&y) < e(&x) * 0.6, "{} vs {}", e(&y), e(&x));
+    }
+    fn sung_phrase(len_s: f32, peak: f32) -> Vec<f32> {
+        // voice-like: 220 Hz with 1/k harmonics up to ~8 kHz
+        let n = (len_s * SR) as usize;
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                let env = (std::f32::consts::PI * i as f32 / n as f32).sin().powf(0.5);
+                let mut v = 0.0f32;
+                let mut k = 1usize;
+                while 220.0 * k as f32 <= 8000.0 {
+                    v += (std::f32::consts::TAU * 220.0 * k as f32 * t).sin() / k as f32;
+                    k += 1;
+                }
+                peak * env * v * 0.5
+            })
+            .collect()
+    }
+
+    fn breath_noise(len_s: f32, peak: f32, seed: u64) -> Vec<f32> {
+        let n = (len_s * SR) as usize;
+        let mut rng = crate::dsp::Rng::new(seed);
+        let mut hp_prev = 0.0f32;
+        let mut in_prev = 0.0f32;
+        (0..n)
+            .map(|i| {
+                let w = rng.bipolar();
+                let a = 0.82f32; // one-pole highpass pushes energy up-band
+                let hp = a * (hp_prev + w - in_prev);
+                hp_prev = hp;
+                in_prev = w;
+                let swell = (std::f32::consts::PI * i as f32 / n as f32).sin();
+                peak * swell * hp * 2.2
+            })
+            .collect()
+    }
+
+    #[test]
+    fn breaths_are_found_and_ducked_phrases_untouched() {
+        // phrase, gap, breath, gap, phrase, breath, phrase
+        let mut x = Vec::new();
+        x.extend(sung_phrase(0.6, 0.4));
+        x.extend(vec![0.0f32; (0.1 * SR) as usize]);
+        let b1_at = x.len();
+        x.extend(breath_noise(0.35, 0.06, 11));
+        let b1_end = x.len();
+        x.extend(vec![0.0f32; (0.05 * SR) as usize]);
+        x.extend(sung_phrase(0.6, 0.4));
+        let b2_at = x.len();
+        x.extend(breath_noise(0.3, 0.05, 12));
+        let b2_end = x.len();
+        x.extend(sung_phrase(0.6, 0.4));
+        let (y, regions) = reduce_breaths(&x, -12.0, 0.5);
+        assert_eq!(regions.len(), 2, "regions {regions:?}");
+        let tol = 0.1;
+        assert!(
+            (regions[0].0 - b1_at as f32 / SR).abs() < tol
+                && (regions[0].1 - b1_end as f32 / SR).abs() < tol,
+            "region 0 {:?} vs {}-{}",
+            regions[0],
+            b1_at as f32 / SR,
+            b1_end as f32 / SR
+        );
+        assert!(
+            (regions[1].0 - b2_at as f32 / SR).abs() < tol
+                && (regions[1].1 - b2_end as f32 / SR).abs() < tol,
+            "region 1 {:?} vs {}-{}",
+            regions[1],
+            b2_at as f32 / SR,
+            b2_end as f32 / SR
+        );
+        let rms = |v: &[f32], a: f32, b: f32| {
+            let s = (a * SR) as usize;
+            let e = (b * SR) as usize;
+            (v[s..e].iter().map(|v| v * v).sum::<f32>() / (e - s) as f32).sqrt()
+        };
+        let drop_db = 20.0 * (rms(&y, 0.75, 1.00) / rms(&x, 0.75, 1.00)).log10();
+        assert!(drop_db < -7.0, "breath ducked {drop_db:.1} dB");
+        let phrase_db = 20.0 * (rms(&y, 0.15, 0.55) / rms(&x, 0.15, 0.55)).log10();
+        assert!(phrase_db.abs() < 0.5, "phrase moved {phrase_db:.2} dB");
+        // a take that is all singing has no breaths, and silence stays silent
+        let (_, r2) = reduce_breaths(&sung_phrase(2.0, 0.4), -12.0, 0.5);
+        assert!(r2.is_empty(), "tone-only regions {r2:?}");
+        let (_, r3) = reduce_breaths(&vec![0.0f32; (2.0 * SR) as usize], -12.0, 0.5);
+        assert!(r3.is_empty(), "silence regions {r3:?}");
     }
 }
