@@ -673,6 +673,85 @@ fn install_pack(
 
 // ---------------- tools ----------------
 
+// ---------------- formant shift ----------------
+
+/// Smooth spectral envelope via cepstral liftering: the log-magnitude
+/// spectrum's slow curve (the formants), with the pitch-harmonic ripple
+/// removed. The lifter cutoff adapts to the detected pitch period when one
+/// is clear, so the harmonics of a low voice are separated from its
+/// formants instead of taking the formants with them.
+fn formant_envelope(fft: &crate::dsp::Fft, m: &[f32]) -> Vec<f32> {
+    let n = crate::vocal_repair::N;
+    let mut re = vec![0.0f32; n];
+    let mut im = vec![0.0f32; n];
+    for k in 0..=n / 2 {
+        re[k] = (m[k] + 1e-9).ln();
+    }
+    for k in 1..n / 2 {
+        re[n - k] = re[k];
+    }
+    fft.inverse(&mut re, &mut im);
+    // pitch quefrency: f0 80..500 Hz -> q in 88..551 samples
+    let qmin = (SR / 500.0) as usize;
+    let qmax = ((SR / 80.0) as usize).min(n / 2 - 1);
+    let mean = (qmin..=qmax).map(|q| re[q].abs()).sum::<f32>() / (qmax - qmin + 1) as f32;
+    let (mut qstar, mut qbest) = (0usize, 0.0f32);
+    for q in qmin..=qmax {
+        if re[q] > qbest {
+            qbest = re[q];
+            qstar = q;
+        }
+    }
+    // a clear pitch peak -> cutoff under it; otherwise a ~1.5 ms default
+    let q0 = if qbest > 2.0 * mean.max(1e-9) && qstar > 4 {
+        qstar / 2
+    } else {
+        (0.0015 * SR) as usize
+    };
+    for q in 1..n / 2 {
+        if q > q0 {
+            re[q] = 0.0;
+            re[n - q] = 0.0;
+        }
+    }
+    fft.forward(&mut re, &mut im);
+    (0..=n / 2).map(|k| re[k].exp()).collect()
+}
+
+/// Move a voice's formants by `ratio` (0.8 = a deeper, bigger head; 1.25 =
+/// a smaller, thinner one) without moving its pitch, blended by `amount`.
+/// Gain-domain over the STFT: phase and timing are untouched, and the
+/// output level is matched to the input.
+pub fn formant_shift(x: &[f32], ratio: f32, amount: f32) -> Vec<f32> {
+    use crate::vocal_repair::{spectral, N};
+    let ratio = ratio.clamp(0.5, 2.0);
+    let amount = amount.clamp(0.0, 1.0);
+    let fft = crate::dsp::Fft::new(N);
+    let mut prev = vec![1.0f32; N / 2 + 1];
+    let mut y = spectral(x, |_f, m, g| {
+        let e = formant_envelope(&fft, m);
+        for k in 0..=N / 2 {
+            let src = (k as f32 / ratio).min((N / 2 - 1) as f32);
+            let i = src as usize;
+            let t = src - i as f32;
+            let es = e[i] * (1.0 - t) + e[i + 1] * t;
+            // +-24 dB cap, smoothed over time so frames don't wobble
+            let v = (es / e[k].max(1e-9)).powf(amount).clamp(0.063, 15.8);
+            prev[k] = 0.4 * prev[k] + 0.6 * v;
+            g[k] = prev[k];
+        }
+    });
+    let rms = |s: &[f32]| (s.iter().map(|v| v * v).sum::<f32>() / s.len().max(1) as f32).sqrt();
+    let (a, b) = (rms(x), rms(&y));
+    if a > 1e-9 && b > 1e-9 {
+        let g = (a / b).min(4.0);
+        for v in y.iter_mut() {
+            *v *= g;
+        }
+    }
+    y
+}
+
 pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
@@ -1021,6 +1100,23 @@ pub fn tools() -> Vec<Tool> {
                 let mut r = save_new_sample(e, &info, &nn, &out, &note.join(", "))?;
                 r["seconds"] = json!((out.len() as f32 / SR * 100.0).round() / 100.0);
                 Ok(r)
+            },
+        },
+        Tool {
+            name: "formant_sample",
+            description: "Formant-shift a vocal sample into a new one: moves the voice's body/tone resonances up or down WITHOUT moving its pitch (Little AlterBoy / FL Pitcher formant knob). shift < 1 = a deeper, bigger-headed voice (0.85 gentle, 0.6 giant); shift > 1 = a smaller, thinner, more chipmunk-ish head (1.2 gentle, 1.5 cartoon). amount 0..1 blends (default 1). Pitch, timing and words stay exactly as sung and the level is matched to the input. Best on sung/spoken voice pitched 90-300 Hz. Pairs with double_vocal for character doubles. Writes <sample>_formant.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "shift": {"type": "number"}, "amount": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
+            run: |e, a| {
+                let (info, x) = sample_data(e, &s_req(a, "sample")?)?;
+                if x.len() < crate::vocal_repair::N * 2 {
+                    bail!("the sample is too short to formant-shift");
+                }
+                let shift = f_or(a, "shift", 0.85).clamp(0.5, 2.0);
+                let amount = f_or(a, "amount", 1.0).clamp(0.0, 1.0);
+                let y = formant_shift(&x, shift, amount);
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_formant", info.name));
+                save_new_sample(e, &info, &nn, &y, &format!("formant x{shift:.2}, amount {amount:.2}"))
             },
         },
         Tool {
@@ -1559,6 +1655,104 @@ mod tests {
             "loudest band {}..{}",
             edges[best],
             edges[best + 1]
+        );
+    }
+
+    fn vowel_fixture(f0: f32, formants: &[(f32, f32)], secs: f32, peak: f32) -> Vec<f32> {
+        let n = (secs * SR) as usize;
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                let mut v = 0.0f32;
+                let mut k = 1usize;
+                while f0 * k as f32 <= 8000.0 {
+                    let f = f0 * k as f32;
+                    let mut amp = 1.0 / k as f32;
+                    for &(fc, bw) in formants {
+                        let d = (f - fc) / bw;
+                        amp *= 1.0 + 9.0 * (-d * d).exp();
+                    }
+                    v += amp * (std::f32::consts::TAU * f * t).sin();
+                    k += 1;
+                }
+                peak * v * 0.2
+            })
+            .collect()
+    }
+
+    fn envelope_peaks(x: &[f32]) -> (f32, f32) {
+        use crate::vocal_repair::{mags, N};
+        let ms = mags(x);
+        let fft = crate::dsp::Fft::new(N);
+        let e = formant_envelope(&fft, &ms[ms.len() / 2]);
+        let hz = SR / N as f32;
+        let mut peaks: Vec<(usize, f32)> = Vec::new();
+        for k in 8..N / 2 - 1 {
+            if e[k] > e[k - 1] && e[k] >= e[k + 1] {
+                peaks.push((k, e[k]));
+            }
+        }
+        peaks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let f1 = peaks
+            .iter()
+            .map(|&(k, _)| k as f32 * hz)
+            .find(|&f| (300.0..1200.0).contains(&f))
+            .unwrap_or(0.0);
+        let f2 = peaks
+            .iter()
+            .map(|&(k, _)| k as f32 * hz)
+            .find(|&f| (1500.0..4000.0).contains(&f))
+            .unwrap_or(0.0);
+        (f1, f2)
+    }
+
+    fn pitch_hz(x: &[f32]) -> f32 {
+        let s = &x[x.len() / 2..x.len() / 2 + (0.1 * SR) as usize];
+        let qmin = (SR / 500.0) as usize;
+        let qmax = (SR / 80.0) as usize;
+        let (mut best_q, mut best_v) = (0usize, f32::MIN);
+        for q in qmin..=qmax.min(s.len() - 1) {
+            let acc: f32 = (0..s.len() - q).map(|i| s[i] * s[i + q]).sum();
+            if acc > best_v {
+                best_v = acc;
+                best_q = q;
+            }
+        }
+        SR / best_q as f32
+    }
+
+    #[test]
+    fn formant_shift_moves_the_body_not_the_pitch() {
+        let x = vowel_fixture(140.0, &[(700.0, 130.0), (2100.0, 260.0)], 1.2, 0.5);
+        let y = formant_shift(&x, 1.4, 1.0);
+        let (f1_in, f2_in) = envelope_peaks(&x);
+        let (f1_out, f2_out) = envelope_peaks(&y);
+        assert!((f1_in - 732.0).abs() < 45.0, "input F1 {f1_in}");
+        assert!((f1_out - 969.0).abs() < 60.0, "shifted F1 {f1_out}");
+        assert!((f2_in - 2110.0).abs() < 70.0, "input F2 {f2_in}");
+        assert!((f2_out - 2907.0).abs() < 90.0, "shifted F2 {f2_out}");
+        let (pa, pb) = (pitch_hz(&x), pitch_hz(&y));
+        assert!(
+            (pa - 140.0).abs() < 3.0 && (pb - 140.0).abs() < 3.0,
+            "pitch {pa} -> {pb}"
+        );
+        let rms = |s: &[f32]| (s.iter().map(|v| v * v).sum::<f32>() / s.len().max(1) as f32).sqrt();
+        let dl = (20.0 * (rms(&y) / rms(&x)).log10()).abs();
+        assert!(dl < 0.5, "level moved {dl:.2} dB");
+        // amount 0 is a no-op, the deeper direction moves F1 down
+        let y0 = formant_shift(&x, 1.4, 0.0);
+        let d0 = (20.0 * (rms(&y0) / rms(&x)).log10()).abs();
+        assert!(d0 < 0.5, "amount=0 moved {d0:.2} dB");
+        let yd = formant_shift(&x, 0.75, 1.0);
+        let (f1_deep, _) = envelope_peaks(&yd);
+        assert!((f1_deep - 517.0).abs() < 50.0, "deep F1 {f1_deep}");
+        // noise comes out finite
+        let mut rng = crate::dsp::Rng::new(5);
+        let nz: Vec<f32> = (0..44100).map(|_| 0.05 * rng.bipolar()).collect();
+        let yn = formant_shift(&nz, 1.3, 1.0);
+        assert!(
+            yn.iter().all(|v| v.is_finite()),
+            "noise produced non-finite"
         );
     }
 }
