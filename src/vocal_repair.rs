@@ -864,6 +864,7 @@ pub fn reduce_breaths(x: &[f32], amount_db: f32, sensitivity: f32) -> (Vec<f32>,
     let hi = ((8000.0 / hz) as usize).min(N / 2);
     let mut db = Vec::with_capacity(m.len());
     let mut flat = Vec::with_capacity(m.len());
+    let mut share = Vec::with_capacity(m.len());
     for f in &m {
         let power: f32 = f.iter().map(|v| v * v).sum();
         db.push(10.0 * (power + 1e-12).log10());
@@ -871,13 +872,19 @@ pub fn reduce_breaths(x: &[f32], amount_db: f32, sensitivity: f32) -> (Vec<f32>,
         let gm = (band.iter().map(|v| (v + 1e-9).ln()).sum::<f32>() / band.len() as f32).exp();
         let am = band.iter().sum::<f32>() / band.len() as f32;
         flat.push(gm / (am + 1e-12));
+        // how much of the frame's energy sits in the 1-8k band: a breath is
+        // broadband, so a real share lives there; a dark tonal note (all
+        // harmonics under 1k) leaves only floor noise in the band, and floor
+        // noise is always "flat"
+        let band_power: f32 = band.iter().map(|v| v * v).sum();
+        share.push(band_power / (power + 1e-12));
     }
     let mut sorted = db.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let floor = sorted[sorted.len() / 10];
     let flat_min = 0.55 - sensitivity.clamp(0.0, 1.0) * 0.3;
     let cand: Vec<bool> = (0..m.len())
-        .map(|i| flat[i] >= flat_min && db[i] >= floor + 6.0)
+        .map(|i| flat[i] >= flat_min && db[i] >= floor + 6.0 && share[i] >= 0.15)
         .collect();
     // group, bridging wobbles of a frame or two
     let mut regions: Vec<(usize, usize)> = Vec::new();
@@ -989,6 +996,83 @@ fn report(before: &[f32], after: &[f32]) -> Value {
     let (f0, p0) = floor_and_peak_db(before);
     let (f1, p1) = floor_and_peak_db(after);
     json!({"noise_floor_db": {"before": r1(f0), "after": r1(f1)}, "loud_parts_db": {"before": r1(p0), "after": r1(p1)}, "signal_to_noise_db": {"before": r1(p0 - f0), "after": r1(p1 - f1)}})
+}
+
+/// The full vocal repair chain in RX Repair Assistant order: de-clip first
+/// (waveform repair before any analysis), then de-plosive, de-click, de-hum
+/// (only when mains hum is actually detected), spectral de-noise, optional
+/// de-reverb (off by default: it can thin the voice), de-breath, and the
+/// gate last. Each stage runs with the same auto settings as its standalone
+/// tool, and a stage that finds nothing is skipped. Returns the repaired
+/// audio and a plain-language per-stage log.
+pub fn repair_chain(x: &[f32], de_reverb: bool, gate_on: bool) -> (Vec<f32>, Vec<String>) {
+    let mut y = x.to_vec();
+    let mut log: Vec<String> = Vec::new();
+    let (z, regions) = declip(&y);
+    if !regions.is_empty() {
+        log.push(format!("de-clip: {} regions repaired", regions.len()));
+        y = z;
+    }
+    let (z, regions) = deplosive(&y, 7.0, 12.0);
+    if !regions.is_empty() {
+        log.push(format!("de-plosive: {} regions repaired", regions.len()));
+        y = z;
+    }
+    let (z, n) = remove_clicks(&y, 8.0, 2.0);
+    if n > 0 {
+        log.push(format!("de-click: {n} clicks repaired"));
+        y = z;
+    }
+    let (f0, strength) = detect_hum(&y);
+    if strength >= 3.0 {
+        y = remove_hum(&y, f0, 8, 30.0);
+        log.push(format!("de-hum: {f0:.0} Hz, peak {strength:.1} dB"));
+    }
+    // de-noise only when the take has real noise-only passages: on a
+    // pause-free take the learned "noise" is quieter voice, and subtracting
+    // a voice-shaped profile carves the voice (measured ~5 dB on a
+    // sustained note). The learned profile must sit well under the take's
+    // loud frames and be free of strong harmonic peaks.
+    let p = learn_profile(&y, None);
+    let ms = mags(&y);
+    let mut e: Vec<f32> = ms
+        .iter()
+        .map(|m| m.iter().skip(4).map(|v| v * v).sum::<f32>())
+        .collect();
+    e.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let p90_e = e[(e.len() * 9) / 10].max(1e-12);
+    let p_e: f32 = p.iter().skip(4).map(|v| v * v).sum::<f32>();
+    let floor_db = 10.0 * (p_e / p90_e).log10();
+    let mut sp: Vec<f32> = p.iter().skip(4).cloned().collect();
+    sp.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let med_p = sp[sp.len() / 2].max(1e-12);
+    let peak_db = 20.0 * (sp[sp.len() - 1] / med_p).log10();
+    if floor_db <= -18.0 && peak_db <= 12.0 {
+        y = reduce_noise_ex(&y, &p, 12.0, 1.0, Some(4000.0));
+        log.push("de-noise: 12 dB".to_string());
+    } else {
+        log.push(
+            "de-noise: skipped (the quietest parts still sound like voice; learn_noise_profile on a noise-only region, then reduce_noise)"
+                .to_string(),
+        );
+    }
+    if de_reverb {
+        y = dereverb(&y, 0.6, 0.5, 50.0);
+        log.push("de-reverb: 0.6".to_string());
+    }
+    let (z, regions) = reduce_breaths(&y, -12.0, 0.5);
+    if !regions.is_empty() {
+        log.push(format!("de-breath: {} regions reduced", regions.len()));
+        y = z;
+    }
+    if gate_on {
+        let db = crate::vocal_flex::band_db(&y);
+        let thr = crate::vocal_flex::voice_threshold(&db, None);
+        let (z, closed) = gate(&y, thr, 6.0, 2.0, 90.0, 120.0, 24.0);
+        log.push(format!("gate: {thr:.1} dB, {:.0}% closed", closed * 100.0));
+        y = z;
+    }
+    (y, log)
 }
 
 pub fn tools() -> Vec<Tool> {
@@ -1197,6 +1281,24 @@ pub fn tools() -> Vec<Tool> {
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_dry", info.name));
                 let s = save(e, &info, &nn, &y, &format!("de-reverb {amt}"))?;
                 Ok(json!({"sample": s, "measured": report(&x, &y)}))
+            },
+        },
+        Tool {
+            name: "repair_take",
+            description: "Fix a rough vocal take in ONE call (RX Repair Assistant style): runs the full repair chain in the right order - de-clip, de-plosive, de-click, de-hum (only if mains hum is detected), spectral de-noise, de-breath, then a gate - each stage with its own auto settings, skipping whatever finds nothing to fix. reverb (default false) also runs de-reverb when the room is a problem (it can thin the voice); gate_on (default true). Writes <sample>_fixed and reports a plain-language log of what each stage found and did, plus the usual before/after measurements. For stage-by-stage control, call the individual tools (declip_sample, deplosive_sample, remove_clicks, remove_hum, reduce_noise, reduce_reverb, reduce_breaths, gate_vocal) instead.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "reverb": {"type": "boolean"}, "gate_on": {"type": "boolean"}, "new_name": {"type": "string"}}), &["sample"]),
+            run: |e, a| {
+                let (info, x) = crate::tools_sound::sample_data(e, &s_req(a, "sample")?)?;
+                if x.len() < N * 4 {
+                    bail!("the sample is too short to repair");
+                }
+                let de_reverb = a.get("reverb").and_then(|v| v.as_bool()).unwrap_or(false);
+                let gate_on = a.get("gate_on").and_then(|v| v.as_bool()).unwrap_or(true);
+                let (y, log) = repair_chain(&x, de_reverb, gate_on);
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_fixed", info.name));
+                let s = save(e, &info, &nn, &y, "full repair chain")?;
+                Ok(json!({"sample": s, "stages_run": log, "measured": report(&x, &y)}))
             },
         },
     ]
@@ -1671,5 +1773,189 @@ mod tests {
         assert!((src2 - 0.2).abs() < 0.03, "explicit source {src2}");
         // too short a take has no donor
         assert!(patch_region(&x[..(SR as usize)], 0.2, 0.5, None).is_none());
+    }
+
+    fn sung_dark(len_s: f32, peak: f32) -> Vec<f32> {
+        // dark voice: 3 harmonics, all below 1 kHz - the 1-8k band holds
+        // only floor noise, which used to fool the breath detector
+        let n = (len_s * SR) as usize;
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                let env = (std::f32::consts::PI * i as f32 / n as f32).sin().powf(0.5);
+                peak * env
+                    * (0.18 * (std::f32::consts::TAU * 220.0 * t).sin()
+                        + 0.09 * (std::f32::consts::TAU * 440.0 * t).sin()
+                        + 0.05 * (std::f32::consts::TAU * 660.0 * t).sin())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dark_voice_is_not_mistaken_for_breaths() {
+        let mut x = sung_dark(0.6, 1.0);
+        x.extend(vec![0.0f32; (0.1 * SR) as usize]);
+        let b_at = x.len();
+        x.extend(breath_noise(0.35, 0.06, 13));
+        let b_end = x.len();
+        x.extend(sung_dark(0.6, 1.0));
+        let (y, regions) = reduce_breaths(&x, -12.0, 0.5);
+        assert_eq!(regions.len(), 1, "regions {regions:?}");
+        assert!(
+            (regions[0].0 - b_at as f32 / SR).abs() < 0.1
+                && (regions[0].1 - b_end as f32 / SR).abs() < 0.1,
+            "region {:?} vs {}-{}",
+            regions[0],
+            b_at as f32 / SR,
+            b_end as f32 / SR
+        );
+        let rms = |v: &[f32], a: f32, b: f32| {
+            let s = (a * SR) as usize;
+            let e = (b * SR) as usize;
+            (v[s..e].iter().map(|v| v * v).sum::<f32>() / (e - s) as f32).sqrt()
+        };
+        let phrase_db = 20.0 * (rms(&y, 0.15, 0.55) / rms(&x, 0.15, 0.55)).log10();
+        assert!(phrase_db.abs() < 0.5, "dark phrase moved {phrase_db:.2} dB");
+    }
+
+    #[test]
+    fn repair_chain_fixes_a_wrecked_take_and_spares_a_clean_one() {
+        let sr = SR as usize;
+        let mut x = vec![0.0f32; 4 * sr];
+        let mut seed = 12345u64;
+        let mut noise = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as f32 / 2147483648.0 - 1.0
+        };
+        for v in x.iter_mut() {
+            *v += 0.004 * noise();
+        }
+        for (i, v) in x.iter_mut().enumerate() {
+            *v += 0.05 * (std::f32::consts::TAU * 50.0 * i as f32 / SR).sin();
+        }
+        let ph = sung_dark(0.5, 1.0);
+        for i in 0..ph.len() {
+            x[i] += ph[i];
+        }
+        for i in 0..ph.len() {
+            let j = 12 * sr / 10 + i;
+            x[j] = (x[j] + 4.5 * ph[i]).clamp(-0.95, 0.95);
+        }
+        for i in (2 * sr)..(212 * sr / 100) {
+            let t = (i - 2 * sr) as f32 / SR;
+            x[i] += 0.9 * (std::f32::consts::TAU * 55.0 * t).sin() * (1.0 - t / 0.12);
+        }
+        for i in (26 * sr / 10)..(295 * sr / 100) {
+            x[i] += 0.05 * noise();
+        }
+        for &c in &[32 * sr / 10, 34 * sr / 10, 36 * sr / 10] {
+            x[c] = 0.6;
+            x[c + 1] = -0.5;
+        }
+
+        let (y, log) = repair_chain(&x, false, true);
+        assert!(
+            log.iter().any(|l| l.starts_with("de-clip")),
+            "clip not repaired: {log:?}"
+        );
+        assert!(
+            log.iter().any(|l| l.starts_with("de-hum")),
+            "hum not removed: {log:?}"
+        );
+        assert!(
+            log.iter().any(|l| l.starts_with("de-breath")),
+            "breath not found: {log:?}"
+        );
+        // the clipped tops are gone
+        let mut pinned = 0;
+        let mut run = 0;
+        for i in 12 * sr / 10..17 * sr / 10 {
+            if (y[i] - 0.95).abs() < 1e-4 {
+                run += 1;
+                if run >= 3 {
+                    pinned += 1;
+                }
+            } else {
+                run = 0;
+            }
+        }
+        assert_eq!(pinned, 0, "flat tops remain");
+        // hum pulled below the detection gate
+        let (_a, hb) = detect_hum(&x);
+        let (_b, ha) = detect_hum(&y);
+        assert!(hb >= 3.0 && ha < 2.0, "hum {hb:.1} -> {ha:.1}");
+        // plosive pulled down
+        let rms = |v: &[f32]| (v.iter().map(|v| v * v).sum::<f32>() / v.len().max(1) as f32).sqrt();
+        let db = |v: f32| 20.0 * v.max(1e-9).log10();
+        let sub = |s: &[f32]| db(rms(&lp_zp(&s[2 * sr..212 * sr / 100], 90.0)));
+        assert!(
+            sub(&y) < sub(&x) - 6.0,
+            "pop {:.1} -> {:.1}",
+            sub(&x),
+            sub(&y)
+        );
+        // breath pulled down
+        let bl = |s: &[f32]| db(rms(&s[27 * sr / 10..295 * sr / 100]));
+        assert!(
+            bl(&y) < bl(&x) - 6.0,
+            "breath {:.1} -> {:.1}",
+            bl(&x),
+            bl(&y)
+        );
+        // the clean phrase survives
+        let vl = |s: &[f32]| db(rms(&s[sr / 10..5 * sr / 10]));
+        assert!(
+            (vl(&y) - vl(&x)).abs() < 3.0,
+            "phrase {:.1} -> {:.1}",
+            vl(&x),
+            vl(&y)
+        );
+        // a clean dark take is not mistaken for breaths and stays put
+        let clean = sung_dark(2.0, 1.0);
+        let (y2, log2) = repair_chain(&clean, false, false);
+        assert!(
+            !log2.iter().any(|l| l.starts_with("de-breath")),
+            "dark voice flagged as breath: {log2:?}"
+        );
+        assert!(
+            log2.iter().any(|l| l.starts_with("de-noise: skipped")),
+            "zero-noise take should skip de-noise: {log2:?}"
+        );
+        let cl = |s: &[f32]| db(rms(&s[sr / 2..3 * sr / 2]));
+        assert!(
+            (cl(&y2) - cl(&clean)).abs() < 3.0,
+            "clean take moved {:.1} dB",
+            cl(&y2) - cl(&clean)
+        );
+        // a pause-free take keeps its voice: de-noise must skip itself
+        // (unguarded, the learned "noise" is quieter voice and the
+        // subtraction carves a sustained note by ~5 dB)
+        let mut wall = Vec::new();
+        let mut seed2 = 999u64;
+        let mut nz = move || {
+            seed2 = seed2
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed2 >> 33) as f32 / 2147483648.0 - 1.0
+        };
+        for _ in 0..3 {
+            wall.extend(sung_dark(0.7, 1.0));
+        }
+        for v in wall.iter_mut() {
+            *v += 0.003 * nz();
+        }
+        let (y3, log3) = repair_chain(&wall, false, false);
+        assert!(
+            log3.iter().any(|l| l.starts_with("de-noise: skipped")),
+            "wall-of-voice log {log3:?}"
+        );
+        let wl = |s: &[f32]| db(rms(&s[sr + sr / 5..sr + sr / 2]));
+        assert!(
+            (wl(&y3) - wl(&wall)).abs() < 1.5,
+            "wall voice moved {:.1} dB",
+            wl(&y3) - wl(&wall)
+        );
     }
 }
