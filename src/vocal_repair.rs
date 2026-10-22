@@ -1,6 +1,7 @@
 //! Vocal repair, RX-style: spectral noise reduction from a learned noise
 //! profile, hum removal, click repair, de-clip, de-plosive, a breath/noise
-//! gate with hysteresis and late-reverb reduction. Every tool writes a new
+//! gate with hysteresis, late-reverb reduction and phrase-level
+//! level riding. Every tool writes a new
 //! sample and reports what it measured before and after.
 
 use crate::dsp::{db_to_gain, Biquad, BiquadKind, Fft, SR};
@@ -621,6 +622,90 @@ pub fn deplosive(x: &[f32], surge_db: f32, strength_db: f32) -> (Vec<f32>, Vec<(
     (y, regions)
 }
 
+/// Level riding, Vocal Rider style: even out loud and quiet phrases
+/// toward the take's own median voice level. The voice level is read in
+/// 23 ms frames; frames under the take's voice threshold (pauses, room
+/// tone, whispers far below the voice) are not ridden - they keep the
+/// last voiced gain instead of snapping back to unity, so room tone does
+/// not pump. The move is clamped to +/- up/down dB and slewed at
+/// `response_ms`, a hand on the fader rather than a compressor: instant
+/// jumps even out over about a second. Returns the ridden signal and the
+/// voice-level spread (p90-p10 of voiced frames, dB) before and after.
+pub fn ride_levels(x: &[f32], up_db: f32, down_db: f32, response_ms: f32) -> (Vec<f32>, f32, f32) {
+    let win = 1024usize;
+    let hop = 512usize;
+    // frame level is the 90th percentile of |x|, not the mean: a frame
+    // reads loud only when a good share of it is loud, so phrase-boundary
+    // frames (a few loud samples in a quiet window) don't set a wild gain
+    // that the gap-hold would then carry through the whole pause
+    let frame_db = |x: &[f32]| -> Vec<f32> {
+        let mut db = Vec::new();
+        let mut i = 0;
+        while i + win <= x.len() {
+            let mut m: Vec<f32> = x[i..i + win].iter().map(|v| v.abs()).collect();
+            m.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            db.push(20.0 * m[win * 9 / 10].max(1e-6).log10());
+            i += hop;
+        }
+        db
+    };
+    let db = frame_db(x);
+    if db.len() < 8 {
+        return (x.to_vec(), 0.0, 0.0);
+    }
+    let thr = crate::vocal_flex::voice_threshold(&db, None);
+    let mut active: Vec<f32> = db.iter().cloned().filter(|&d| d >= thr).collect();
+    if active.len() < 4 {
+        return (x.to_vec(), 0.0, 0.0);
+    }
+    active.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let target = active[active.len() / 2];
+    let spread = |v: &[f32]| -> f32 {
+        let mut s = v.to_vec();
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p90 = s[((s.len() as f32 * 0.90) as usize).min(s.len() - 1)];
+        let p10 = s[(s.len() as f32 * 0.10) as usize];
+        p90 - p10
+    };
+    let spread_before = spread(&active);
+    // per-frame gain targets; unvoiced frames hold the last voiced gain
+    let mut gf = vec![0.0f32; db.len()];
+    let mut last = 0.0f32;
+    for (f, &d) in db.iter().enumerate() {
+        if d >= thr {
+            last = (target - d).clamp(-down_db, up_db);
+        }
+        gf[f] = last;
+    }
+    // per-sample: linear interp between frame gains, then one-pole slew
+    let mut g = vec![0.0f32; x.len()];
+    for (i, gv) in g.iter_mut().enumerate() {
+        let pos = i as f32 / hop as f32;
+        let f0 = (pos.floor() as usize).min(db.len() - 1);
+        let f1 = (f0 + 1).min(db.len() - 1);
+        let t = pos - f0 as f32;
+        *gv = gf[f0] * (1.0 - t) + gf[f1] * t;
+    }
+    let a = (-1.0 / (response_ms * 0.001 * SR)).exp();
+    let mut gs = 0.0f32;
+    for gv in g.iter_mut() {
+        gs = a * gs + (1.0 - a) * *gv;
+        *gv = gs;
+    }
+    let mut y = x.to_vec();
+    for i in 0..x.len() {
+        y[i] = x[i] * db_to_gain(g[i]);
+    }
+    let db2 = frame_db(&y);
+    let active2: Vec<f32> = db2.iter().cloned().filter(|&d| d >= thr).collect();
+    let spread_after = if active2.len() >= 4 {
+        spread(&active2)
+    } else {
+        0.0
+    };
+    (y, spread_before, spread_after)
+}
+
 /// Breath events between phrases: frames that are noisy (high spectral
 /// flatness between 1 and 8 kHz) and louder than the take's floor, grouped
 /// into regions. The take comes back with each region pulled down by
@@ -896,6 +981,25 @@ pub fn tools() -> Vec<Tool> {
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_depop", info.name));
                 let s = save(e, &info, &nn, &y, "de-plosive")?;
                 Ok(json!({"sample": s, "regions_repaired": regions.len(), "measured": report(&x, &y)}))
+            },
+        },
+        Tool {
+            name: "ride_take",
+            description: "Ride a take's levels (Vocal Rider style): evens out loud and quiet phrases toward the take's own median voice level, at most up_db up and down_db down (default 9 each), moving at response_ms speed (default 250 - a hand on the fader, not a compressor, so jumps even out over about a second). Pauses keep the last gain instead of snapping back, so room tone does not pump; whispers far below the voice level count as room and are not lifted. A steady take comes back unchanged. Writes <sample>_ride and reports the voice-level spread before and after.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "up_db": {"type": "number"}, "down_db": {"type": "number"}, "response_ms": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
+            run: |e, a| {
+                let (info, x) = crate::tools_sound::sample_data(e, &s_req(a, "sample")?)?;
+                if x.len() < N {
+                    bail!("the sample is too short to ride");
+                }
+                let up = f_or(a, "up_db", 9.0).clamp(0.0, 18.0);
+                let down = f_or(a, "down_db", 9.0).clamp(0.0, 18.0);
+                let resp = f_or(a, "response_ms", 250.0).clamp(50.0, 1000.0);
+                let (y, sb, sa) = ride_levels(&x, up, down, resp);
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_ride", info.name));
+                let s = save(e, &info, &nn, &y, "level ride")?;
+                Ok(json!({"sample": s, "voice_spread_db": {"before": r1(sb), "after": r1(sa)}, "measured": report(&x, &y)}))
             },
         },
         Tool {
@@ -1272,5 +1376,59 @@ mod tests {
         let (y5, r5) = deplosive(&vec![0.01f32; 1000], 7.0, 12.0);
         assert!(r5.is_empty());
         assert_eq!(y5, vec![0.01f32; 1000]);
+    }
+    #[test]
+    fn ride_levels_evens_phrases_without_pumping_room() {
+        let tone = |len_s: f32, hz: f32, amp: f32| -> Vec<f32> {
+            let n = (len_s * SR) as usize;
+            (0..n)
+                .map(|i| amp * (i as f32 * hz / SR * std::f32::consts::TAU).sin())
+                .collect()
+        };
+        let rms_db = |x: &[f32]| -> f32 {
+            let e: f32 = x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32;
+            10.0 * e.max(1e-12).log10()
+        };
+        // three phrases at about -12, -24 and -6 dBFS with quiet gaps
+        let mut x = Vec::new();
+        x.extend(tone(1.0, 220.0, 0.35));
+        x.extend(tone(0.4, 220.0, 0.001));
+        x.extend(tone(1.0, 220.0, 0.09));
+        x.extend(tone(0.4, 220.0, 0.001));
+        x.extend(tone(1.0, 220.0, 0.7));
+        x.extend(tone(0.3, 220.0, 0.001));
+        let (y, sb, sa) = ride_levels(&x, 9.0, 9.0, 250.0);
+        assert!(sb > 14.0 && sa < sb - 6.0, "spread {sb:.1} -> {sa:.1}");
+        let sec =
+            |v: &[f32], from: f32, to: f32| rms_db(&v[(from * SR) as usize..(to * SR) as usize]);
+        // the quiet phrase is lifted by about the +9 dB clamp
+        let lift = sec(&y, 1.4, 2.4) - sec(&x, 1.4, 2.4);
+        assert!(lift > 7.0 && lift <= 9.5, "lift {lift:.1}");
+        // the loud phrase's tail (after the fader settles) is cut
+        let cut = sec(&x, 3.4, 3.8) - sec(&y, 3.4, 3.8);
+        assert!(cut > 3.0, "tail cut {cut:.1}");
+        // the first gap keeps the settled gain (~unity), no snap-back pump
+        let g1b = sec(&x, 1.05, 1.35);
+        let g1a = sec(&y, 1.05, 1.35);
+        assert!((g1a - g1b).abs() < 1.5, "gap1 {g1b:.1} -> {g1a:.1}");
+        // a steady take rides at ~0 dB, silence is untouched
+        let steady = tone(2.0, 220.0, 0.3);
+        let (y2, _, _) = ride_levels(&steady, 9.0, 9.0, 250.0);
+        let d2 = steady
+            .iter()
+            .zip(y2.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(d2 < 1e-3, "steady changed {d2}");
+        let sil = vec![0.0f32; (1.5 * SR) as usize];
+        let (y3, _, _) = ride_levels(&sil, 9.0, 9.0, 250.0);
+        assert_eq!(y3, sil, "silence changed");
+        // a whisper 40 dB under the voice counts as room: not pumped up
+        let mut x4 = tone(0.8, 220.0, 0.5);
+        x4.extend(tone(0.4, 220.0, 0.001));
+        x4.extend(tone(0.8, 220.0, 0.005));
+        let (y4, _, _) = ride_levels(&x4, 9.0, 9.0, 250.0);
+        let lift4 = sec(&y4, 1.2, 2.0) - sec(&x4, 1.2, 2.0);
+        assert!(lift4 < 4.0, "whisper pumped {lift4:.1}");
     }
 }
