@@ -69,7 +69,7 @@ run_fixed() {
   fi
   echo "$name: fixed project $(basename "$proj") rendered"
 }
-run desi_hiphop "{\"brief\":\"dark desi hip-hop with sitar, tabla and a hard 808, for a gully rap verse\",\"genre\":\"desi_hiphop\",$COMMON}"
+run desi_hiphop "{\"brief\":\"dark desi hip-hop with vocal chops, dark plucks and a sliding 808, for a gully rap verse\",\"genre\":\"desi_hiphop\",$COMMON}"
 run boom_bap "{\"brief\":\"90s boom bap with dusty jazzy keys\",\"genre\":\"boom_bap\",$COMMON}"
 run drill "{\"brief\":\"UK drill with sliding 808s and an eerie choir\",\"genre\":\"drill\",$COMMON}"
 # RT-effects showcase: fixed deterministic project (slice_repeat, streamed

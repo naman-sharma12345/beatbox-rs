@@ -26,7 +26,7 @@ jobs:
       - name: produce demo beats (rich projects)
         run: |
           mkdir -p demo
-          ./target/release/beatbox call produce_track '{"brief":"dark desi hip-hop with sitar, tabla and a hard 808, for a gully rap verse","genre":"desi_hiphop","bpm":92,"seed":21,"max_iterations":2,"out_dir":"demo/desi"}' > demo/desi.result.json
+          ./target/release/beatbox call produce_track '{"brief":"dark desi hip-hop with vocal chops, dark plucks and a sliding 808, for a gully rap verse","genre":"desi_hiphop","bpm":92,"seed":21,"max_iterations":2,"out_dir":"demo/desi"}' > demo/desi.result.json
           ./target/release/beatbox call produce_track '{"brief":"sad melodic trap with piano and gliding 808s","genre":"melodic_rap","bpm":144,"seed":7,"max_iterations":2,"out_dir":"demo/melodic"}' > demo/melodic.result.json
           for b in desi melodic; do
             p=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['files']['project'])" demo/$b.result.json)

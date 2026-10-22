@@ -74,7 +74,7 @@ pub const PALETTES: &[Palette] = &[
     },
     Palette {
         name: "dhh_grit",
-        description: "Desi hip-hop grit: driven punchy kick, tight SP-style snare, crisp hats, gritty 808, with harmonium keys, sitar, bansuri, santoor and tanpura for the melodic roles (pairs with the desi_hiphop generator: tabla + dholak in Kafi / Asavari / Bhairav)",
+        description: "Desi hip-hop grit: driven punchy kick, tight SP-style snare, crisp hats and a gritty 808 under dark keys, pads, plucks and bells - the modern gully sound (sitar, bansuri and tabla are opt-in colors, not the default)",
         genres: &["desi_hiphop", "dhh", "gully"],
         character: &["gritty", "raw", "desi", "punchy"],
         voices: &[
@@ -83,13 +83,13 @@ pub const PALETTES: &[Palette] = &[
             ("clap", "clap_wide"),
             ("hat", "hat_crisp"),
             ("open_hat", "open_hat_airy"),
-            ("perc", "tabla"),
+            ("perc", "shaker"),
             ("bass", "808_grit"),
-            ("keys", "harmonium"),
-            ("pad", "tanpura"),
-            ("lead", "bansuri"),
-            ("bell", "santoor"),
-            ("pluck", "sitar"),
+            ("keys", "dark_keys"),
+            ("pad", "dark_pad"),
+            ("lead", "pluck_lead"),
+            ("bell", "fm_bell"),
+            ("pluck", "guitar_pluck"),
         ],
         samples: &[
             ("kick", "sp_drum_bass_hard"),

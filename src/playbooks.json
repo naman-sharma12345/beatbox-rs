@@ -1096,7 +1096,7 @@
    "gully",
    "punjabi_rap"
   ],
-  "description": "Desi hip-hop: boom-bap/trap hybrid at 88-96 BPM with tabla (dayan + bayan) bols, a sitar or bansuri lead in a raag-flavoured scale (bhairav, phrygian dominant, harmonic minor) with meend glides, a tanpura drone, and punchy 808/kick under it.",
+  "description": "Desi hip-hop: modern trap/boom-bap hybrid at 88-96 BPM - hard kick and snare, rolling hats, a sliding 808, dark plucks, keys and a vocal-chop texture in a raag-flavoured scale (bhairav, phrygian dominant, harmonic minor). Sitar, tabla and tanpura join only when the brief asks for them.",
   "bpm": [
    88,
    96
@@ -1129,9 +1129,7 @@
     "snare": "snare",
     "hat": "hat",
     "open_hat": "open_hat",
-    "perc": "shaker",
-    "tabla": "tabla",
-    "bayan": "bayan"
+    "perc": "shaker"
    },
    "sample_kit": "tr808",
    "kick": [
@@ -1156,16 +1154,6 @@
     "",
     "x.x.x.x.x.x.x.x."
    ],
-   "tabla": [
-    "X.xxX.x.X.xxX.x.",
-    "X.x.xxX.X.x.xxX.",
-    "XxxXx.x.XxxXx.xx"
-   ],
-   "bayan": [
-    "X.....x...X.....",
-    "X.......X..x....",
-    "X..x....X......."
-   ],
    "ghost_snare": 0.2,
    "hat_rolls": 0.2,
    "hat_vel_accent": 0.3,
@@ -1180,26 +1168,26 @@
   },
   "harmony": {
    "presets": [
-    "tanpura"
+    "dark_pad",
+    "dark_keys"
    ],
    "style": "drone",
    "octave": 3
   },
   "lead": {
    "presets": [
-    "sitar",
-    "bansuri",
-    "santoor"
+    "pluck_lead",
+    "guitar_pluck",
+    "dark_keys"
    ],
    "density": 0.55,
-   "octave": 5,
-   "ornament": "meend"
+   "octave": 5
   },
   "counter": {
    "presets": [
-    "bansuri",
-    "string_section",
-    "sitar"
+    "fm_bell",
+    "epiano",
+    "strings"
    ],
    "octave": 5
   },
@@ -1214,9 +1202,8 @@
     "energy": 0.3,
     "layers": [
      "harmony",
-     "lead",
-     "tabla"
-    ]
+     "lead"
+     ]
    },
    {
     "kind": "verse",
@@ -1226,8 +1213,6 @@
      "kick",
      "snare",
      "hat",
-     "tabla",
-     "bayan",
      "bass",
      "harmony"
     ]
@@ -1241,8 +1226,6 @@
      "snare",
      "hat",
      "open_hat",
-     "tabla",
-     "bayan",
      "bass",
      "harmony",
      "lead",
@@ -1259,8 +1242,6 @@
      "snare",
      "hat",
      "perc",
-     "tabla",
-     "bayan",
      "bass",
      "harmony",
      "lead"
@@ -1275,8 +1256,6 @@
      "snare",
      "hat",
      "open_hat",
-     "tabla",
-     "bayan",
      "bass",
      "harmony",
      "lead",
@@ -1290,9 +1269,8 @@
     "energy": 0.3,
     "layers": [
      "harmony",
-     "lead",
-     "tabla"
-    ]
+     "lead"
+     ]
    }
   ],
   "mix": {

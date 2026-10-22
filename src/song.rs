@@ -3499,7 +3499,7 @@ fn genre_help() -> String {
         .iter()
         .map(|b| match b.name.as_str() {
             "punjabi_party" => "punjabi_party (Honey Singh / Badshah party rap: dhol, tumbi, 808; also 'bhangra', 'badshah', 'honey_singh')".to_string(),
-            "desi_hiphop" => "desi_hiphop (tabla, sitar, tanpura, 808)".to_string(),
+            "desi_hiphop" => "desi_hiphop (trap/boom-bap drums, 808, dark plucks in a raag-flavoured scale; sitar/tabla on request)".to_string(),
             n => n.to_string(),
         })
         .collect();

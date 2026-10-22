@@ -4287,11 +4287,20 @@ mod tests {
     }
 
     #[test]
-    fn desi_plan_uses_indian_palette_and_tabla() {
+    fn desi_plan_defaults_are_modern_and_sitar_is_opt_in() {
+        // no instrument words in the brief: the modern gully sound (plucks,
+        // keys, 808) and no tabla - 97% of dhh has no sitar
         let mut e = engine();
-        let plan = plan_track(&args("desi hip hop with sitar", None, 11)).unwrap();
+        let plan = plan_track(&args("dark desi hip hop", None, 11)).unwrap();
         assert_eq!(plan.genre, "desi_hiphop");
-        assert_eq!(plan.palette.get("lead").map(String::as_str), Some("sitar"));
+        assert!(matches!(
+            plan.palette.get("lead").map(String::as_str),
+            Some("pluck_lead") | Some("guitar_pluck") | Some("dark_keys")
+        ));
+        assert!(!matches!(
+            plan.palette.get("harmony").map(String::as_str),
+            Some("tanpura")
+        ));
         compose(&mut e, &plan).unwrap();
         let tabla: usize = e
             .project
@@ -4299,7 +4308,11 @@ mod tests {
             .iter()
             .map(|p| p.notes("tabla").len())
             .sum();
-        assert!(tabla > 20);
+        assert_eq!(tabla, 0);
+        // asked for by name, sitar leads (the brief override stays)
+        let plan = plan_track(&args("desi hip hop with sitar", None, 11)).unwrap();
+        assert_eq!(plan.genre, "desi_hiphop");
+        assert_eq!(plan.palette.get("lead").map(String::as_str), Some("sitar"));
     }
 
     #[test]

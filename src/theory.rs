@@ -545,9 +545,24 @@ pub const GROOVES: &[Groove] = &[
         ],
     },
     Groove {
-        // desi hip-hop: a boom-bap pocket under a keherwa-style tabla and a
-        // dholak (treble slaps + bass-head booms)
+        // desi hip-hop: modern gully production - a trap/boom-bap pocket and
+        // a sliding 808; Indian classical drums join only when asked for
+        // (the desi_classical groove below)
         name: "desi_hiphop",
+        bpm: 92.0,
+        swing: 0.12,
+        parts: &[
+            ("kick", "kick", "X.....x...x.....X.....x.x......."),
+            ("snare", "snare", "....X.......X.......X.......X..o"),
+            ("hat", "hat", "x.x.x.x.x.x.x.x."),
+            ("open_hat", "open_hat", "..............x...........x."),
+            ("808", "808", "X.....x...x.....X.....x.x......."),
+        ],
+    },
+    Groove {
+        // classical-flavoured desi: a boom-bap pocket under a keherwa-style
+        // tabla and a dholak (treble slaps + bass-head booms)
+        name: "desi_classical",
         bpm: 92.0,
         swing: 0.12,
         parts: &[
