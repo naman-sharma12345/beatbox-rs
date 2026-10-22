@@ -1229,12 +1229,20 @@ pub(crate) fn sidechain_inputs(
             .map(|l| ((l.max(0.0) * SR) as usize).min(avail))
             .unwrap_or(avail);
         let song_steps = p.song_steps() as f32;
-        // a stretched clip plays its take slower/faster on the timeline, so
-        // its ducking must follow the stretched material, not the source
-        let stretched;
-        let span: &[f32] = if c.stretch != 1.0 && len > 0 {
-            stretched = crate::audio_edit::time_stretch(&data[off..off + len], c.stretch);
-            &stretched
+        // a stretched or reversed clip plays its take reshaped on the
+        // timeline, so its ducking must follow what actually plays
+        let owned;
+        let span: &[f32] = if (c.stretch != 1.0 || c.reverse) && len > 0 {
+            let mut v: Vec<f32> = if c.reverse {
+                data[off..off + len].iter().rev().copied().collect()
+            } else {
+                data[off..off + len].to_vec()
+            };
+            if c.stretch != 1.0 {
+                v = crate::audio_edit::time_stretch(&v, c.stretch);
+            }
+            owned = v;
+            &owned
         } else {
             &data[off..off + len]
         };
@@ -1722,13 +1730,18 @@ pub(crate) fn plan_track_clips<'a>(
         // Stretch changes the placed length (the clip's end follows it from
         // its beat); pitch, either mode, keeps the length of what it gets.
         let stretched = c.stretch != 1.0 && len > 0;
-        let (shifted, placed) = if (c.pitch_st != 0.0 || stretched) && len > 0 {
+        let (shifted, placed) = if (c.pitch_st != 0.0 || stretched || c.reverse) && len > 0 {
             let span = &data[off..off + len];
-            let mut audio = if stretched {
-                crate::audio_edit::time_stretch(span, c.stretch)
+            // reverse first: the flipped take is the material stretch and
+            // pitch then work on
+            let mut audio: Vec<f32> = if c.reverse {
+                span.iter().rev().copied().collect()
             } else {
                 span.to_vec()
             };
+            if stretched {
+                audio = crate::audio_edit::time_stretch(&audio, c.stretch);
+            }
             if c.pitch_st != 0.0 {
                 audio = if c.pitch_voice {
                     // voice mode: constant-correction TD-PSOLA (formants

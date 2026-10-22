@@ -498,6 +498,7 @@ pub fn sing_over_plan(
         pitch_voice: false,
 
         stretch: 1.0,
+        reverse: false,
         fade_in_ms: None,
         fade_out_ms: None,
         id: String::new(),

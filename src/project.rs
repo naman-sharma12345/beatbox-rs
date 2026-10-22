@@ -551,6 +551,11 @@ pub struct AudioClip {
     /// bounce - 1 renders the sample bit for bit.
     #[serde(default = "one_f32", skip_serializing_if = "is_one")]
     pub stretch: f32,
+    /// Play the clip backwards: the take's last sample plays first, on the
+    /// same grid span as before (fades follow the timeline, not the take).
+    /// Render-time, not a bounce - false (the default) renders untouched.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reverse: bool,
     /// Equal-power fade at the clip's start / end in ms (None = a 4 ms ramp).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_in_ms: Option<f32>,

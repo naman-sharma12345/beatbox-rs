@@ -74,7 +74,7 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "arrange",
         description: "Song structure and playlist: arrangement, place patterns, clips (move/split/trim/fade), sections, transitions, markers, tempo changes, performance mode.",
-        actions: &["set_arrangement", "build_structure", "vary_section", "add_transition", "set_section_mix", "place_pattern", "arrangement_to_playlist", "list_playlist", "playlist_clip", "remove_clip", "clear_playlist", "split_clip", "trim_clip", "move_clip", "duplicate_clip", "slip_clip", "fade_clip", "pitch_clip", "stretch_clip", "fit_clip", "crossfade_clips", "consolidate_clips", "ripple_delete", "add_marker", "list_markers", "remove_marker", "add_tempo_point", "tempo_ramp", "list_tempo", "remove_tempo_point", "set_time_signature", "perform"],
+        actions: &["set_arrangement", "build_structure", "vary_section", "add_transition", "set_section_mix", "place_pattern", "arrangement_to_playlist", "list_playlist", "playlist_clip", "remove_clip", "clear_playlist", "split_clip", "trim_clip", "move_clip", "duplicate_clip", "slip_clip", "fade_clip", "pitch_clip", "stretch_clip", "fit_clip", "reverse_clip", "crossfade_clips", "consolidate_clips", "ripple_delete", "add_marker", "list_markers", "remove_marker", "add_tempo_point", "tempo_ramp", "list_tempo", "remove_tempo_point", "set_time_signature", "perform"],
     },
     Category {
         name: "automation",

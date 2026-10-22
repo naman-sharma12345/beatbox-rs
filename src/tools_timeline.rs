@@ -65,7 +65,7 @@ fn clip_json(e: &mut Engine, i: usize) -> Value {
     let end = end_beat(&e.project, c, len * c.stretch);
     json!({"id": c.id, "index": i, "track": c.track, "sample": c.sample, "start_beat": c.start_beat,
         "end_beat": (end * 1000.0).round() / 1000.0, "offset_s": c.offset_s, "length_s": (len * 1000.0).round() / 1000.0,
-        "gain_db": c.gain_db, "pitch_st": c.pitch_st, "pitch_voice": c.pitch_voice, "stretch": c.stretch, "fade_in_ms": c.fade_in_ms, "fade_out_ms": c.fade_out_ms})
+        "gain_db": c.gain_db, "pitch_st": c.pitch_st, "pitch_voice": c.pitch_voice, "stretch": c.stretch, "reverse": c.reverse, "fade_in_ms": c.fade_in_ms, "fade_out_ms": c.fade_out_ms})
 }
 
 fn id_prop() -> Value {
@@ -93,12 +93,22 @@ pub fn split(e: &mut Engine, i: usize, at: f32) -> Result<(String, String)> {
     let mut right = c.clone();
     right.id = rid.clone();
     right.start_beat = at;
-    right.offset_s = c.offset_s.max(0.0) + t;
-    right.length_s = Some(len - t);
     right.fade_in_ms = Some(CUT_FADE_MS);
-    let left = &mut e.project.audio_clips[i];
-    left.length_s = Some(t);
-    left.fade_out_ms = Some(CUT_FADE_MS);
+    if c.reverse {
+        // reversed playback consumes the take from its END, so the left
+        // (earlier) part holds the window's last t seconds
+        right.offset_s = c.offset_s.max(0.0);
+        right.length_s = Some(len - t);
+        let left = &mut e.project.audio_clips[i];
+        left.offset_s = c.offset_s.max(0.0) + (len - t);
+        left.length_s = Some(t);
+    } else {
+        right.offset_s = c.offset_s.max(0.0) + t;
+        right.length_s = Some(len - t);
+        let left = &mut e.project.audio_clips[i];
+        left.length_s = Some(t);
+    }
+    e.project.audio_clips[i].fade_out_ms = Some(CUT_FADE_MS);
     e.project.audio_clips.insert(i + 1, right);
     Ok((c.id, rid))
 }
@@ -106,12 +116,18 @@ pub fn split(e: &mut Engine, i: usize, at: f32) -> Result<(String, String)> {
 /// Trim the clip so it starts at `new_start` (song beat), keeping the audio
 /// where it was on the timeline.
 fn trim_start(e: &mut Engine, i: usize, new_start: f32) -> Result<()> {
-    let (len, _) = clip_len(e, i)?;
+    let (len, total) = clip_len(e, i)?;
     let c = e.project.audio_clips[i].clone();
     // `d` is a timeline distance; the take moves d / stretch in source seconds
     let st = c.stretch.max(1e-3);
     let d = (secs_at(&e.project, new_start) - secs_at(&e.project, c.start_beat)) as f32 / st;
-    let d = d.max(-c.offset_s.max(0.0));
+    // reveal room: unreversed reaches back into the take's start, reversed
+    // reaches forward into the take's end
+    let d = if c.reverse {
+        d.max(-((total - c.offset_s.max(0.0) - len).max(0.0)))
+    } else {
+        d.max(-c.offset_s.max(0.0))
+    };
     if d > len - MIN_LEN_S {
         bail!(
             "trimming clip '{}' to start at beat {new_start} would leave nothing",
@@ -122,14 +138,19 @@ fn trim_start(e: &mut Engine, i: usize, new_start: f32) -> Result<()> {
     let start_s = secs_at(&e.project, c.start_beat) + d as f64 * st as f64;
     let start = beat_at(&e.project, start_s);
     let cl = &mut e.project.audio_clips[i];
-    cl.offset_s = c.offset_s.max(0.0) + d;
-    cl.length_s = Some(len - d);
+    if c.reverse {
+        // the playback start is the take window's END: eat from there
+        cl.length_s = Some(len - d);
+    } else {
+        cl.offset_s = c.offset_s.max(0.0) + d;
+        cl.length_s = Some(len - d);
+    }
     cl.start_beat = start;
     Ok(())
 }
 
 fn trim_end(e: &mut Engine, i: usize, new_end: f32) -> Result<()> {
-    let (_, total) = clip_len(e, i)?;
+    let (len, total) = clip_len(e, i)?;
     let c = e.project.audio_clips[i].clone();
     // `want` is a timeline length; length_s is stored in source seconds
     let st = c.stretch.max(1e-3);
@@ -142,7 +163,17 @@ fn trim_end(e: &mut Engine, i: usize, new_end: f32) -> Result<()> {
             c.start_beat
         );
     }
-    e.project.audio_clips[i].length_s = Some(want.min(avail));
+    if c.reverse {
+        // the playback end is the take window's START: keep the window's
+        // last `want` seconds, extending back into the take as far as it
+        // goes (room at the source start is offset_s)
+        let keep = want.min(len + c.offset_s.max(0.0));
+        let cl = &mut e.project.audio_clips[i];
+        cl.offset_s = c.offset_s.max(0.0) + len - keep;
+        cl.length_s = Some(keep);
+    } else {
+        e.project.audio_clips[i].length_s = Some(want.min(avail));
+    }
     Ok(())
 }
 
@@ -455,6 +486,18 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "reverse_clip",
+            description: "Reverse an audio clip in place: the take's last sample plays first while the clip keeps its grid span, pitch, stretch and fades - a riser sucks back into the downbeat, a crash becomes a swell, a melody answers itself backwards. Render-time, not a bounce: undo or reverse false restores the original bit for bit. Splits and trims follow what you hear (the cut eats the end of the take).",
+            mutates: true,
+            schema: || obj(json!({"id": id_prop(), "reverse": {"type": "boolean"}}), &["id"]),
+            run: |e, a| {
+                let i = audio_clip_index(&e.project, a)?;
+                let on = a.get("reverse").and_then(|v| v.as_bool()).unwrap_or(true);
+                e.project.audio_clips[i].reverse = on;
+                Ok(clip_json(e, i))
+            },
+        },
+        Tool {
             name: "crossfade_clips",
             description: "Crossfade two touching or overlapping audio clips on the same track (first, then second): the first is extended and the second starts earlier into the take so they overlap by ms, with an equal-power fade out / fade in across the overlap.",
             mutates: true,
@@ -470,6 +513,7 @@ pub fn tools() -> Vec<Tool> {
                     bail!("the clips are on different tracks ({} and {})", ca.track, cb.track);
                 }
                 let (len_a, total_a) = clip_len(e, ia)?;
+                let (len_b, total_b) = clip_len(e, ib)?;
                 let st_a = ca.stretch.max(1e-3) as f64;
                 let st_b = cb.stretch.max(1e-3) as f64;
                 // a_end/gap/want are timeline seconds; offsets and lengths are
@@ -488,20 +532,41 @@ pub fn tools() -> Vec<Tool> {
                 if have < want {
                     let need = want - have;
                     // half from each side, as far as the takes allow
-                    let a_room = (total_a - ca.offset_s.max(0.0) - len_a).max(0.0) as f64 * st_a;
-                    let b_room = cb.offset_s.max(0.0) as f64 * st_b;
+                    // each clip grows at its playback edge: for a reversed
+                    // clip that edge is the opposite end of the take
+                    let a_room = if ca.reverse {
+                        ca.offset_s.max(0.0)
+                    } else {
+                        (total_a - ca.offset_s.max(0.0) - len_a).max(0.0)
+                    } as f64
+                        * st_a;
+                    let b_room = if cb.reverse {
+                        (total_b - cb.offset_s.max(0.0) - len_b).max(0.0)
+                    } else {
+                        cb.offset_s.max(0.0)
+                    } as f64
+                        * st_b;
                     let mut ext_a = (need / 2.0).min(a_room);
                     let mut ext_b = (need - ext_a).min(b_room);
                     ext_a = (need - ext_b).min(a_room);
                     if ext_a + ext_b < need - 1e-6 {
                         ext_b = ext_b.min(b_room);
                     }
-                    e.project.audio_clips[ia].length_s = Some(len_a + (ext_a / st_a) as f32);
+                    if ca.reverse {
+                        let cam = &mut e.project.audio_clips[ia];
+                        cam.offset_s = (ca.offset_s.max(0.0) - (ext_a / st_a) as f32).max(0.0);
+                        cam.length_s = Some(len_a + (ext_a / st_a) as f32);
+                    } else {
+                        e.project.audio_clips[ia].length_s = Some(len_a + (ext_a / st_a) as f32);
+                    }
                     let nb_start = b_start - ext_b;
-                    let (len_b, _) = clip_len(e, ib)?;
                     let cbm = &mut e.project.audio_clips[ib];
-                    cbm.offset_s = cb.offset_s.max(0.0) - (ext_b / st_b) as f32;
-                    cbm.length_s = Some(len_b + (ext_b / st_b) as f32);
+                    if cb.reverse {
+                        cbm.length_s = Some(len_b + (ext_b / st_b) as f32);
+                    } else {
+                        cbm.offset_s = cb.offset_s.max(0.0) - (ext_b / st_b) as f32;
+                        cbm.length_s = Some(len_b + (ext_b / st_b) as f32);
+                    }
                     let nb = beat_at(&e.project, nb_start);
                     e.project.audio_clips[ib].start_beat = nb;
                 }
@@ -577,7 +642,7 @@ pub fn tools() -> Vec<Tool> {
                     !drop
                 });
                 let id = crate::ids::next_id(&mut e.project, "clip");
-                e.project.audio_clips.push(AudioClip { track: track.clone(), sample: sample.clone(), start_beat: from, offset_s: 0.0, length_s: None, gain_db: 0.0, pitch_st: 0.0, pitch_voice: false, stretch: 1.0, fade_in_ms: None, fade_out_ms: None, id: id.clone() });
+                e.project.audio_clips.push(AudioClip { track: track.clone(), sample: sample.clone(), start_beat: from, offset_s: 0.0, length_s: None, gain_db: 0.0, pitch_st: 0.0, pitch_voice: false, stretch: 1.0, reverse: false, fade_in_ms: None, fade_out_ms: None, id: id.clone() });
                 Ok(json!({"id": id, "track": track, "sample": sample, "file": file.to_string_lossy(), "replaced": gone,
                     "start_beat": from, "seconds": (buf.len() as f32 / SR * 1000.0).round() / 1000.0}))
             },
@@ -740,6 +805,121 @@ mod tests {
         let back: crate::project::Project = serde_json::from_str(&json).unwrap();
         assert_eq!(back.audio_clips[0].pitch_st, 12.0);
         assert!(back.audio_clips[0].pitch_voice);
+    }
+
+    #[test]
+    fn reverse_clip_flips_the_take_and_edits_follow_what_you_hear() {
+        // own fixture: a 2 s tone decaying to silence, so direction is
+        // audible in the rms envelope
+        let dir =
+            std::env::temp_dir().join(format!("beatbox_reverse_{}_{}", std::process::id(), "t"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = Engine::new(dir.clone());
+        e.call("new_project", &json!({"name": "rv", "bpm": 120}))
+            .unwrap();
+        let n = (2.0 * SR) as usize;
+        let tone: Vec<f32> = (0..n)
+            .map(|i| {
+                0.8 * (1.0 - i as f32 / n as f32)
+                    * (i as f32 * 220.0 / SR * std::f32::consts::TAU).sin()
+            })
+            .collect();
+        let wav = dir.join("take.wav");
+        crate::render::write_wav(&wav, &tone, &tone).unwrap();
+        e.call(
+            "import_sample",
+            &json!({"path": wav.to_string_lossy(), "name": "take"}),
+        )
+        .unwrap();
+        e.call("add_track", &json!({"name": "vox", "preset": "pad"}))
+            .unwrap();
+        e.call(
+            "add_audio_clip",
+            &json!({"track": "vox", "sample": "take", "start_beat": 0.0}),
+        )
+        .unwrap();
+        let id = e.project.audio_clips[0].id.clone();
+        let opts = crate::render::RenderOptions::default();
+        let rms = |m: &crate::render::Mix, from: f32, secs: f32| -> f32 {
+            let a = ((from * SR) as usize).min(m.left.len());
+            let b = (((from + secs) * SR) as usize).min(m.left.len());
+            (m.left[a..b].iter().map(|s| s * s).sum::<f32>() / (b - a).max(1) as f32).sqrt()
+        };
+        let base = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        let (head, tail) = (rms(&base, 0.0, 0.4), rms(&base, 1.6, 0.4));
+        assert!(head > 2.0 * tail, "decaying take: {head} vs {tail}");
+
+        // reversed: the quiet tail plays first, the loud attack ends it
+        e.call("reverse_clip", &json!({"id": id})).unwrap();
+        assert!(e.project.audio_clips[0].reverse);
+        let rev = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert_eq!(rev.left.len(), base.left.len(), "render length kept");
+        let (rhead, rtail) = (rms(&rev, 0.0, 0.4), rms(&rev, 1.6, 0.4));
+        assert!(
+            (rhead - tail).abs() < 0.3 * head && (rtail - head).abs() < 0.3 * head,
+            "envelope flips: ({head},{tail}) -> ({rhead},{rtail})"
+        );
+
+        // reverse off: the untouched render is back bit for bit
+        e.call("reverse_clip", &json!({"id": id, "reverse": false}))
+            .unwrap();
+        let back = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert_eq!(
+            back.left.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            base.left.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            "reverse off restores the untouched render"
+        );
+        e.call("reverse_clip", &json!({"id": id})).unwrap();
+
+        // split the reversed clip at beat 2 (half the placed span): the
+        // left part must hold the take's LAST source second
+        let r = e
+            .call("split_clip", &json!({"id": id, "at_beat": 2.0}))
+            .unwrap();
+        let right = r["right_id"].as_str().unwrap().to_string();
+        let l = &e.project.audio_clips[0];
+        assert!(
+            (l.offset_s - 1.0).abs() < 1e-3,
+            "left offset {:?}",
+            l.offset_s
+        );
+        assert!((l.length_s.unwrap() - 1.0).abs() < 1e-3);
+        let rr = &e.project.audio_clips[1];
+        assert!(rr.reverse, "the right part stays reversed");
+        assert!((rr.offset_s - 0.0).abs() < 1e-3);
+        assert!((rr.length_s.unwrap() - 1.0).abs() < 1e-3);
+
+        // trim the left part's start to beat 1: eats the playback start,
+        // which is the take window's END - offset stays, length shrinks
+        e.call("trim_clip", &json!({"id": id, "start_beat": 1.0}))
+            .unwrap();
+        let l = &e.project.audio_clips[0];
+        assert!((l.offset_s - 1.0).abs() < 1e-3);
+        assert!((l.length_s.unwrap() - 0.5).abs() < 1e-3);
+        assert_eq!(l.start_beat, 1.0);
+
+        // trim the right part's end to beat 3: eats the playback end, the
+        // take window's START - offset grows, length shrinks
+        e.call("trim_clip", &json!({"id": right, "end_beat": 3.0}))
+            .unwrap();
+        let rr = &e.project.audio_clips[1];
+        assert!(
+            (rr.offset_s - 0.5).abs() < 1e-3,
+            "right offset {:?}",
+            rr.offset_s
+        );
+        assert!((rr.length_s.unwrap() - 0.5).abs() < 1e-3);
+
+        // the field survives a project save/load round-trip
+        e.call("reverse_clip", &json!({"id": id, "reverse": true}))
+            .unwrap();
+        let json = serde_json::to_string(&e.project).unwrap();
+        let rt: crate::project::Project = serde_json::from_str(&json).unwrap();
+        assert!(rt.audio_clips[0].reverse);
+        // unknown id errors
+        assert!(e.call("reverse_clip", &json!({"id": "clip999"})).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

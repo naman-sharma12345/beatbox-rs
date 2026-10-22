@@ -900,6 +900,7 @@ fn place_tool(e: &mut Engine, a: &Value) -> Result<Value> {
             pitch_voice: false,
 
             stretch: 1.0,
+            reverse: false,
             fade_in_ms: None,
             fade_out_ms: None,
             id: String::new(),
@@ -1017,6 +1018,7 @@ fn lock_tool(e: &mut Engine, a: &Value) -> Result<Value> {
             pitch_voice: false,
 
             stretch: 1.0,
+            reverse: false,
             fade_in_ms: Some(8.0),
             fade_out_ms: Some(40.0),
             id: String::new(),
