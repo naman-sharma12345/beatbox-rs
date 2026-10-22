@@ -544,6 +544,44 @@ pub fn clip_menu(
             "fade_clip",
             json!({"id": id, "fade_in_ms": 0, "fade_out_ms": 0}),
         ),
+        (
+            "Reverse",
+            "reverse_clip",
+            json!({"id": id, "reverse": true}),
+        ),
+        (
+            "Pitch up 1",
+            "pitch_clip",
+            json!({"id": id, "semitones": 1}),
+        ),
+        (
+            "Pitch down 1",
+            "pitch_clip",
+            json!({"id": id, "semitones": -1}),
+        ),
+        (
+            "Pitch up an octave",
+            "pitch_clip",
+            json!({"id": id, "semitones": 12}),
+        ),
+        (
+            "Pitch down an octave",
+            "pitch_clip",
+            json!({"id": id, "semitones": -12}),
+        ),
+        (
+            "Half speed",
+            "stretch_clip",
+            json!({"id": id, "factor": 2.0}),
+        ),
+        (
+            "Double speed",
+            "stretch_clip",
+            json!({"id": id, "factor": 0.5}),
+        ),
+        ("Mute", "mute_clip", json!({"id": id, "muted": true})),
+        ("Unmute", "mute_clip", json!({"id": id, "muted": false})),
+        ("Use this take for its span", "comp_take", json!({"id": id})),
     ];
     if let Some(n) = next {
         v.push((
