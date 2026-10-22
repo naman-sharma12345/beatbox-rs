@@ -1,7 +1,7 @@
 //! Vocal repair, RX-style: spectral noise reduction from a learned noise
-//! profile, hum removal, click repair, a breath/noise gate with hysteresis
-//! and late-reverb reduction. Every tool writes a new sample and reports
-//! what it measured before and after.
+//! profile, hum removal, click repair, de-clip, de-plosive, a breath/noise
+//! gate with hysteresis and late-reverb reduction. Every tool writes a new
+//! sample and reports what it measured before and after.
 
 use crate::dsp::{db_to_gain, Biquad, BiquadKind, Fft, SR};
 use crate::engine::Engine;
@@ -463,6 +463,164 @@ pub fn declip(x: &[f32]) -> (Vec<f32>, Vec<(f32, f32)>) {
     (y, regions)
 }
 
+/// Zero-phase low-pass (forward + backward biquad, 4th order): the split
+/// band lines up exactly with the input, so `x + band * (g - 1)` is
+/// bit-identical to `x` wherever g stays 1.
+fn lp_zp(x: &[f32], freq: f32) -> Vec<f32> {
+    let mut b = Biquad::new(
+        BiquadKind::HighCut,
+        freq,
+        std::f32::consts::FRAC_1_SQRT_2,
+        0.0,
+    );
+    let mut y: Vec<f32> = x.iter().map(|&v| b.process(v)).collect();
+    y.reverse();
+    let mut b2 = Biquad::new(
+        BiquadKind::HighCut,
+        freq,
+        std::f32::consts::FRAC_1_SQRT_2,
+        0.0,
+    );
+    for v in y.iter_mut() {
+        *v = b2.process(*v);
+    }
+    y.reverse();
+    y
+}
+
+/// One-pole envelope of |x|: fast attack, slow release, per-sample.
+fn env_follow(x: &[f32], attack_ms: f32, release_ms: f32) -> Vec<f32> {
+    let aa = (-1.0 / (attack_ms * 0.001 * SR)).exp();
+    let ar = (-1.0 / (release_ms * 0.001 * SR)).exp();
+    let mut out = vec![0.0f32; x.len()];
+    let mut e = 0.0f32;
+    for (i, v) in x.iter().enumerate() {
+        let a = v.abs();
+        e = if a > e {
+            aa * e + (1.0 - aa) * a
+        } else {
+            ar * e + (1.0 - ar) * a
+        };
+        out[i] = e;
+    }
+    out
+}
+
+/// Plosive pops (p/b bursts straight into the mic): a sudden surge of
+/// sub-90 Hz energy that dominates the low band and dies within a few
+/// hundred milliseconds. Detection compares a fast sub-band envelope
+/// against a slow context follower (1 s rise, 150 ms fall) so steady hum,
+/// bass lines and sung low notes are absorbed by the context and not
+/// flagged, and the sub band must dominate the low band so a note onset
+/// above 90 Hz is not a pop either. Each pop is repaired by pulling just
+/// the sub-90 Hz band down toward its context, never by more than
+/// `strength_db`; with the zero-phase split, audio outside a pop is
+/// bit-identical. Pops inside the first 250 ms are missed - the context
+/// needs a moment to learn the take. Returns the repaired signal and the
+/// pops as (start_s, end_s).
+pub fn deplosive(x: &[f32], surge_db: f32, strength_db: f32) -> (Vec<f32>, Vec<(f32, f32)>) {
+    let peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    if peak < 0.05 {
+        return (x.to_vec(), Vec::new());
+    }
+    let sub = lp_zp(x, 90.0);
+    let low = lp_zp(x, 250.0);
+    let sub_env = env_follow(&sub, 3.0, 50.0);
+    let low_env = env_follow(&low, 3.0, 50.0);
+    let ac = (-1.0 / SR).exp();
+    let rc = (-1.0 / (0.150 * SR)).exp();
+    let mut ctx = vec![0.0f32; x.len()];
+    let mut c = 0.0f32;
+    for (i, &v) in sub_env.iter().enumerate() {
+        c = if v > c {
+            ac * c + (1.0 - ac) * v
+        } else {
+            rc * c + (1.0 - rc) * v
+        };
+        ctx[i] = c;
+    }
+    let surge = db_to_gain(surge_db);
+    let floor = 0.01f32;
+    let warmup = (0.25 * SR) as usize;
+    let mut flag = vec![false; x.len()];
+    for i in warmup..x.len() {
+        flag[i] =
+            sub_env[i] > ctx[i] * surge && sub_env[i] > floor && sub_env[i] > 0.45 * low_env[i];
+    }
+    let merge_gap = (0.040 * SR) as usize;
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < x.len() {
+        if flag[i] {
+            let mut j = i;
+            while j + 1 < x.len() && flag[j + 1] {
+                j += 1;
+            }
+            runs.push((i, j));
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for r in runs {
+        if let Some(last) = merged.last_mut() {
+            if r.0.saturating_sub(last.1) <= merge_gap {
+                last.1 = r.1;
+                continue;
+            }
+        }
+        merged.push(r);
+    }
+    // a pop is a burst: 15-300 ms. Anything sustained is hum or bass.
+    let min_d = (0.015 * SR) as usize;
+    let max_d = (0.300 * SR) as usize;
+    let kept: Vec<(usize, usize)> = merged
+        .into_iter()
+        .filter(|r| {
+            let d = r.1 - r.0 + 1;
+            (min_d..=max_d).contains(&d)
+        })
+        .collect();
+    if kept.is_empty() {
+        return (x.to_vec(), Vec::new());
+    }
+    let min_g = db_to_gain(-strength_db);
+    let mut g = vec![1.0f32; x.len()];
+    for &(s, en) in &kept {
+        let s2 = s.saturating_sub((0.010 * SR) as usize);
+        let e2 = (en + (0.060 * SR) as usize).min(x.len() - 1);
+        for (i, gv) in g.iter_mut().enumerate().take(e2 + 1).skip(s2) {
+            let t = (ctx[i] * surge / sub_env[i].max(1e-9)).clamp(min_g, 1.0);
+            if t < *gv {
+                *gv = t;
+            }
+        }
+    }
+    // smooth the gain: 2 ms pull-down, 30 ms recover, so no zipper noise
+    let ga = (-1.0 / (0.002 * SR)).exp();
+    let gr = (-1.0 / (0.030 * SR)).exp();
+    let mut gs = 1.0f32;
+    for gv in g.iter_mut() {
+        let t = *gv;
+        gs = if t < gs {
+            ga * gs + (1.0 - ga) * t
+        } else {
+            gr * gs + (1.0 - gr) * t
+        };
+        *gv = gs;
+    }
+    let mut y = x.to_vec();
+    for i in 0..x.len() {
+        y[i] = x[i] + sub[i] * (g[i] - 1.0);
+    }
+    let regions = kept
+        .iter()
+        .map(|&(s, en)| (s as f32 / SR, en as f32 / SR))
+        .collect();
+    (y, regions)
+}
+
 /// Breath events between phrases: frames that are noisy (high spectral
 /// flatness between 1 and 8 kHz) and louder than the take's floor, grouped
 /// into regions. The take comes back with each region pulled down by
@@ -719,6 +877,24 @@ pub fn tools() -> Vec<Tool> {
                 let (y, regions) = declip(&x);
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_declip", info.name));
                 let s = save(e, &info, &nn, &y, "de-clip")?;
+                Ok(json!({"sample": s, "regions_repaired": regions.len(), "measured": report(&x, &y)}))
+            },
+        },
+        Tool {
+            name: "deplosive_sample",
+            description: "De-plosive a take (RX De-plosive style): finds mic pops from p/b consonants - sudden sub-90 Hz surges that dominate the low band and die fast - and pulls just that sub band down toward the take's own low-end level. surge_db sets how far above its surroundings a surge must be to count (default 7), strength_db the deepest pull-down allowed (default 12 dB). Steady hum, bass lines and sung low notes are left alone, and audio outside a pop is bit-identical. Pops in the first 250 ms of the take are missed. Writes <sample>_depop and reports the repaired regions. No regions found = no pops, returned unchanged.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "surge_db": {"type": "number"}, "strength_db": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
+            run: |e, a| {
+                let (info, x) = crate::tools_sound::sample_data(e, &s_req(a, "sample")?)?;
+                if x.len() < N {
+                    bail!("the sample is too short to de-plosive");
+                }
+                let surge = f_or(a, "surge_db", 7.0).clamp(3.0, 20.0);
+                let strength = f_or(a, "strength_db", 12.0).clamp(3.0, 30.0);
+                let (y, regions) = deplosive(&x, surge, strength);
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_depop", info.name));
+                let s = save(e, &info, &nn, &y, "de-plosive")?;
                 Ok(json!({"sample": s, "regions_repaired": regions.len(), "measured": report(&x, &y)}))
             },
         },
@@ -1026,5 +1202,75 @@ mod tests {
         let (y3, r3) = declip(&vec![0.01f32; 1000]);
         assert!(r3.is_empty());
         assert_eq!(y3, vec![0.01f32; 1000]);
+    }
+    #[test]
+    fn deplosive_pulls_pops_down_and_spares_everything_else() {
+        let n = (2.0 * SR) as usize;
+        let vocal: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                0.30 * (t * 220.0 * std::f32::consts::TAU).sin()
+                    + 0.12 * (t * 440.0 * std::f32::consts::TAU).sin()
+                    + 0.06 * (t * 660.0 * std::f32::consts::TAU).sin()
+            })
+            .collect();
+        // a pop at 0.5 s: 70 Hz burst decaying over ~150 ms
+        let mut popped = vocal.clone();
+        let b0 = (0.5 * SR) as usize;
+        for i in 0..(0.15 * SR) as usize {
+            let t = i as f32 / SR;
+            popped[b0 + i] += 0.9 * (t * 70.0 * std::f32::consts::TAU).sin() * (-t / 0.05).exp();
+        }
+        let (y, regions) = deplosive(&popped, 7.0, 12.0);
+        assert!(!regions.is_empty(), "pop not found");
+        assert!(
+            regions[0].0 > 0.4 && regions[0].0 < 0.6,
+            "pop start {:?}",
+            regions
+        );
+        let band_rms = |x: &[f32], from: usize, to: usize| {
+            let b = lp_zp(&x[from..to], 90.0);
+            (b.iter().map(|v| v * v).sum::<f32>() / b.len() as f32).sqrt()
+        };
+        let w0 = (0.50 * SR) as usize;
+        let w1 = (0.62 * SR) as usize;
+        let before = band_rms(&popped, w0, w1);
+        let after = band_rms(&y, w0, w1);
+        assert!(
+            20.0 * (before / after).log10() >= 5.0,
+            "pop only pulled {before:.4} -> {after:.4}"
+        );
+        // outside the pop the take is untouched
+        let pre = (0..(0.3 * SR) as usize)
+            .map(|i| (y[i] - popped[i]).abs())
+            .fold(0.0f32, f32::max);
+        let post = ((1.5 * SR) as usize..n)
+            .map(|i| (y[i] - popped[i]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(pre < 1e-4, "pre changed {pre}");
+        assert!(post < 1e-4, "post changed {post}");
+        // the clean take passes through untouched
+        let (y2, r2) = deplosive(&vocal, 7.0, 12.0);
+        assert!(r2.is_empty(), "clean regions {r2:?}");
+        assert_eq!(y2, vocal, "clean take changed");
+        // steady hum, a bass line and a sudden low note are not pops
+        for hz in [60.0f32, 110.0] {
+            let tone: Vec<f32> = (0..n)
+                .map(|i| 0.25 * (i as f32 * hz / SR * std::f32::consts::TAU).sin())
+                .collect();
+            let (_, r3) = deplosive(&tone, 7.0, 12.0);
+            assert!(r3.is_empty(), "{hz} Hz flagged {r3:?}");
+        }
+        let mut note = vec![0.0f32; n];
+        for i in (0.3 * SR) as usize..n {
+            let t = i as f32 / SR;
+            note[i] = 0.4 * (t * 150.0 * std::f32::consts::TAU).sin();
+        }
+        let (_, r4) = deplosive(&note, 7.0, 12.0);
+        assert!(r4.is_empty(), "note onset flagged {r4:?}");
+        // quiet takes are a no-op
+        let (y5, r5) = deplosive(&vec![0.01f32; 1000], 7.0, 12.0);
+        assert!(r5.is_empty());
+        assert_eq!(y5, vec![0.01f32; 1000]);
     }
 }
