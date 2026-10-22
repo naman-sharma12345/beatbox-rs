@@ -5,7 +5,8 @@
 use super::theme::Tokens;
 use super::Studio;
 use crate::project::Project;
-use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke};
+use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke};
+use serde_json::{json, Value};
 
 const HEAD_W: f32 = 110.0;
 
@@ -33,6 +34,130 @@ impl Studio {
             });
             return;
         };
+        // one-click vocal tools on the mapped take; every fix writes a NEW
+        // sample, the original take is always kept
+        let mut call: Option<(String, Value)> = None;
+        let smp = &m.sample;
+        for (group, items) in [
+            (
+                "FIX",
+                &[
+                    (
+                        "REPAIR",
+                        "repair_take",
+                        "one-pass fix: de-clip, de-pop, de-click, de-noise, de-breath, gate",
+                    ),
+                    (
+                        "DE-NOISE",
+                        "reduce_noise",
+                        "pull the noise floor down, the voice kept",
+                    ),
+                    ("DE-HUM", "remove_hum", "notch mains hum and its harmonics"),
+                    ("DE-CLICK", "remove_clicks", "remove clicks and crackle"),
+                    ("DE-REVERB", "reduce_reverb", "dry up a roomy take"),
+                    (
+                        "GATE",
+                        "gate_vocal",
+                        "silence the stretches between phrases",
+                    ),
+                    ("DE-ESS", "de_ess", "tame harsh s and sh sounds"),
+                    (
+                        "LEARN NOISE",
+                        "learn_noise_profile",
+                        "learn the take's noise floor for de-noise",
+                    ),
+                ][..],
+            ),
+            (
+                "POLISH",
+                &[
+                    ("TUNE", "tune_vocal", "tune the sung notes to the song key"),
+                    (
+                        "CLARITY EQ",
+                        "clarity_eq",
+                        "clear the mud, lift the presence",
+                    ),
+                    ("EXCITER", "exciter", "add air and sparkle"),
+                    (
+                        "EXTEND BW",
+                        "extend_bandwidth",
+                        "rebuild lost highs and lows",
+                    ),
+                    (
+                        "STRIP",
+                        "channel_strip",
+                        "gate, compressor and EQ in one pass",
+                    ),
+                    (
+                        "CLEAN CHAIN",
+                        "vocal_clean_chain",
+                        "the standard clean-vocal chain",
+                    ),
+                    (
+                        "MELODIC CHAIN",
+                        "melodic_vocal_chain",
+                        "chain for sung melodies",
+                    ),
+                    (
+                        "MATCH TONE",
+                        "match_vocal_tone",
+                        "match the take to a clean vocal tone",
+                    ),
+                    (
+                        "EQ MATCH",
+                        "match_eq",
+                        "match the take's EQ to a reference curve",
+                    ),
+                ][..],
+            ),
+            (
+                "TIME",
+                &[
+                    (
+                        "ALIGN GRID",
+                        "align_vocal_to_grid",
+                        "snap syllables to the grid",
+                    ),
+                    (
+                        "LOCK TO BEAT",
+                        "lock_vocal_to_beat",
+                        "lock the take's timing to the beat",
+                    ),
+                    (
+                        "MEASURE",
+                        "measure_vocal_vs_beat",
+                        "report how far the take sits off the beat",
+                    ),
+                    (
+                        "SPLIT PAUSES",
+                        "split_vocal_at_pauses",
+                        "cut the take into phrases at its pauses",
+                    ),
+                    (
+                        "FIT BEAT",
+                        "fit_beat_to_vocal",
+                        "fit the song's beat grid to this take",
+                    ),
+                ][..],
+            ),
+        ] {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(group).size(10.0).color(tk.text_dim));
+                for &(label, tool, hover) in items {
+                    if ui.small_button(label).on_hover_text(hover).clicked() {
+                        let args = if tool == "fit_beat_to_vocal" {
+                            json!({})
+                        } else {
+                            json!({"sample": smp})
+                        };
+                        call = Some((tool.into(), args));
+                    }
+                }
+            });
+        }
+        if let Some((tool, args)) = call {
+            self.call(&tool, args);
+        }
         // waveform peaks of the clip's sample, cached by sample name
         let clip = p.audio_clips.iter().find(|c| c.sample == m.sample).cloned();
         if self.vocal_wave.as_ref().map(|w| &w.0) != Some(&m.sample) {
