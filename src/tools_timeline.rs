@@ -65,7 +65,7 @@ fn clip_json(e: &mut Engine, i: usize) -> Value {
     let end = end_beat(&e.project, c, len * c.stretch);
     json!({"id": c.id, "index": i, "track": c.track, "sample": c.sample, "start_beat": c.start_beat,
         "end_beat": (end * 1000.0).round() / 1000.0, "offset_s": c.offset_s, "length_s": (len * 1000.0).round() / 1000.0,
-        "gain_db": c.gain_db, "pitch_st": c.pitch_st, "pitch_voice": c.pitch_voice, "stretch": c.stretch, "reverse": c.reverse, "muted": c.muted, "take_group": c.take_group, "fade_in_ms": c.fade_in_ms, "fade_out_ms": c.fade_out_ms})
+        "gain_db": c.gain_db, "pitch_st": c.pitch_st, "pitch_voice": c.pitch_voice, "stretch": c.stretch, "reverse": c.reverse, "muted": c.muted, "take_group": c.take_group, "stretch_mode": c.stretch_mode, "fade_in_ms": c.fade_in_ms, "fade_out_ms": c.fade_out_ms})
 }
 
 fn id_prop() -> Value {
@@ -470,17 +470,29 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "stretch_clip",
-            description: "Time-stretch an audio clip in place (0.25..4: 2 = twice as long, 0.5 = half as long) while its pitch stays put - a fast loop slows into the song without going dark, a take fills a longer slot. The start stays on its beat; the end follows the stretch. Render-time, not a bounce: undo or factor 1 restores the original bit for bit. For an exact length on the grid use fit_clip.",
+            description: "Time-stretch an audio clip in place (0.25..4: 2 = twice as long, 0.5 = half as long) while its pitch stays put - a fast loop slows into the song without going dark, a take fills a longer slot. The start stays on its beat; the end follows the stretch. Render-time, not a bounce: undo or factor 1 restores the original bit for bit. Pass mode \"beats\" for drums and percussion (slices at the onsets, transients kept). For an exact length on the grid use fit_clip.",
             mutates: true,
-            schema: || obj(json!({"id": id_prop(), "factor": {"type": "number", "minimum": 0.25, "maximum": 4}}), &["id", "factor"]),
+            schema: || obj(json!({"id": id_prop(), "factor": {"type": "number", "minimum": 0.25, "maximum": 4}, "mode": {"type": "string", "description": "\"smooth\" (default, tonal material) or \"beats\" (drums and percussion: slices at the onsets, transients kept)"}}), &["id", "factor"]),
             run: |e, a| {
                 let i = audio_clip_index(&e.project, a)?;
                 let f = a
                     .get("factor")
                     .and_then(|v| v.as_f64())
                     .ok_or_else(|| anyhow!("give factor (0.25..4)"))? as f32;
+                let mode = a.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+                if !mode.is_empty() && mode != "smooth" && mode != "beats" {
+                    bail!("mode is \"smooth\" or \"beats\"");
+                }
                 let c = &mut e.project.audio_clips[i];
                 c.stretch = f.clamp(0.25, 4.0);
+                if !mode.is_empty() {
+                    // "smooth" is the default: store it as unset
+                    c.stretch_mode = if mode == "smooth" {
+                        String::new()
+                    } else {
+                        mode.to_string()
+                    };
+                }
                 Ok(clip_json(e, i))
             },
         },
@@ -776,7 +788,7 @@ pub fn tools() -> Vec<Tool> {
                     !drop
                 });
                 let id = crate::ids::next_id(&mut e.project, "clip");
-                e.project.audio_clips.push(AudioClip { track: track.clone(), sample: sample.clone(), start_beat: from, offset_s: 0.0, length_s: None, gain_db: 0.0, pitch_st: 0.0, pitch_voice: false, stretch: 1.0, reverse: false, muted: false, take_group: String::new(), fade_in_ms: None, fade_out_ms: None, id: id.clone() });
+                e.project.audio_clips.push(AudioClip { track: track.clone(), sample: sample.clone(), start_beat: from, offset_s: 0.0, length_s: None, gain_db: 0.0, pitch_st: 0.0, pitch_voice: false, stretch: 1.0, reverse: false, muted: false, take_group: String::new(), stretch_mode: String::new(), fade_in_ms: None, fade_out_ms: None, id: id.clone() });
                 Ok(json!({"id": id, "track": track, "sample": sample, "file": file.to_string_lossy(), "replaced": gone,
                     "start_beat": from, "seconds": (buf.len() as f32 / SR * 1000.0).round() / 1000.0}))
             },
@@ -1201,6 +1213,44 @@ mod tests {
             .call("group_takes", &json!({"ids": [ida, "clip999"]}))
             .is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stretch_clip_mode_beats_sets_the_field_and_round_trips() {
+        let (mut e, _dir) = eng();
+        let id = e.project.audio_clips[0].id.clone();
+        e.call(
+            "stretch_clip",
+            &json!({"id": id, "factor": 2.0, "mode": "beats"}),
+        )
+        .unwrap();
+        let c = &e.project.audio_clips[0];
+        assert_eq!(c.stretch, 2.0);
+        assert_eq!(c.stretch_mode, "beats");
+        // a nonsense mode is refused and changes nothing
+        assert!(e
+            .call(
+                "stretch_clip",
+                &json!({"id": id, "factor": 1.5, "mode": "rubber"})
+            )
+            .is_err());
+        assert_eq!(e.project.audio_clips[0].stretch_mode, "beats");
+        // smooth restores the default (and the field drops out of the json)
+        e.call(
+            "stretch_clip",
+            &json!({"id": id, "factor": 1.0, "mode": "smooth"}),
+        )
+        .unwrap();
+        let json = serde_json::to_string(&e.project).unwrap();
+        assert!(!json.contains("stretch_mode"));
+        e.call(
+            "stretch_clip",
+            &json!({"id": id, "factor": 2.0, "mode": "beats"}),
+        )
+        .unwrap();
+        let json = serde_json::to_string(&e.project).unwrap();
+        let rt: crate::project::Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.audio_clips[0].stretch_mode, "beats");
     }
 
     #[test]

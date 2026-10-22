@@ -566,6 +566,12 @@ pub struct AudioClip {
     /// Empty = not in a group.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub take_group: String,
+    /// Stretch algorithm for `stretch`: "" or "smooth" (the default) is the
+    /// phase-coherent WSOLA; "beats" cuts at onsets and lays the slices on
+    /// the stretched grid, so drums keep their crack (Live's Beats, FL's
+    /// Slice). Tonal material wants smooth.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stretch_mode: String,
     /// Equal-power fade at the clip's start / end in ms (None = a 4 ms ramp).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_in_ms: Option<f32>,

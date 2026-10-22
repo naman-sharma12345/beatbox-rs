@@ -344,6 +344,43 @@ pub fn time_stretch(x: &[f32], factor: f32) -> Vec<f32> {
     out
 }
 
+/// Transient-first stretch ("beats" mode): cut the take at its onsets and
+/// lay the slices on the stretched grid - drums keep their crack instead of
+/// smearing like they do under WSOLA (Ableton's Beats, FL's Slice mode).
+/// Slower leaves short silences between hits; faster truncates each slice
+/// where the next lands. Sustained or tonal material wants `time_stretch`.
+pub fn time_stretch_beats(x: &[f32], factor: f32) -> Vec<f32> {
+    let factor = factor.clamp(0.25, 4.0);
+    if (factor - 1.0).abs() < 1e-3 || x.len() < 4096 {
+        return time_stretch(x, factor);
+    }
+    let out_len = ((x.len() as f32 * factor) as usize).max(1);
+    let mut out = vec![0.0f32; out_len];
+    let mut marks: Vec<usize> = onsets(x, 0.5, 60.0);
+    marks.retain(|&m| m > 512 && m + 512 < x.len());
+    marks.dedup();
+    marks.insert(0, 0);
+    marks.push(x.len());
+    let fade = (0.005 * SR) as usize;
+    for w in marks.windows(2) {
+        let (s, e) = (w[0], w[1]);
+        let d0 = ((s as f32 * factor) as usize).min(out_len);
+        let d1 = ((e as f32 * factor) as usize).min(out_len);
+        if d1 <= d0 {
+            continue;
+        }
+        let take = (e - s).min(d1 - d0);
+        out[d0..d0 + take].copy_from_slice(&x[s..s + take]);
+        // click-free edge at the slice's end (gap or truncation point)
+        let f = fade.min(take / 2);
+        for i in 0..f {
+            let g = 0.5 * (1.0 + (std::f32::consts::PI * i as f32 / f as f32).cos());
+            out[d0 + take - f + i] *= g;
+        }
+    }
+    out
+}
+
 /// Pitch shift by semitones keeping duration (stretch + resample).
 pub fn pitch_shift(x: &[f32], semitones: f32) -> Vec<f32> {
     let r = 2f32.powf(semitones.clamp(-24.0, 24.0) / 12.0);
@@ -939,5 +976,32 @@ mod tests {
         let (d, score) = compare(&p, &p);
         assert!(score >= 99, "{score}");
         assert!(d.iter().all(|r| r.fix.is_none()));
+    }
+    #[test]
+    fn beats_stretch_keeps_the_crack() {
+        // four hits at 120 bpm (0, 0.5, 1.0, 1.5 s)
+        let x = clicks(120.0, 2.0);
+        let y = time_stretch_beats(&x, 2.0);
+        assert_eq!(y.len(), x.len() * 2, "2x length");
+        let ons = onsets(&y, 0.5, 200.0);
+        assert_eq!(ons.len(), 4, "stretched onsets {ons:?}");
+        for (&o, want) in ons.iter().zip([0.0f32, 1.0, 2.0, 3.0]) {
+            assert!(
+                (o as f32 / SR - want).abs() < 0.03,
+                "onset {o} not near {want} s"
+            );
+        }
+        // each hit keeps its full-height attack (WSOLA smears these lower)
+        for &o in &ons {
+            let hi = (o + (0.02 * SR) as usize).min(y.len());
+            let p = y[o..hi].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            assert!(p > 0.5, "onset at {o} smeared to peak {p}");
+        }
+        assert_eq!(y, time_stretch_beats(&x, 2.0), "deterministic");
+        // faster keeps every hit too
+        let z = time_stretch_beats(&x, 0.5);
+        assert_eq!(z.len(), x.len() / 2, "0.5x length");
+        let oz = onsets(&z, 0.5, 100.0);
+        assert_eq!(oz.len(), 4, "fast onsets {oz:?}");
     }
 }

@@ -1242,7 +1242,11 @@ pub(crate) fn sidechain_inputs(
                 data[off..off + len].to_vec()
             };
             if c.stretch != 1.0 {
-                v = crate::audio_edit::time_stretch(&v, c.stretch);
+                v = if c.stretch_mode == "beats" {
+                    crate::audio_edit::time_stretch_beats(&v, c.stretch)
+                } else {
+                    crate::audio_edit::time_stretch(&v, c.stretch)
+                };
             }
             owned = v;
             &owned
@@ -1743,7 +1747,11 @@ pub(crate) fn plan_track_clips<'a>(
                 span.to_vec()
             };
             if stretched {
-                audio = crate::audio_edit::time_stretch(&audio, c.stretch);
+                audio = if c.stretch_mode == "beats" {
+                    crate::audio_edit::time_stretch_beats(&audio, c.stretch)
+                } else {
+                    crate::audio_edit::time_stretch(&audio, c.stretch)
+                };
             }
             if c.pitch_st != 0.0 {
                 audio = if c.pitch_voice {
