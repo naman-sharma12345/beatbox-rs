@@ -407,6 +407,62 @@ pub fn dereverb(x: &[f32], amount: f32, rt60_s: f32, delay_ms: f32) -> Vec<f32> 
 }
 
 /// RMS (dB) of the quietest 10% and loudest 10% of 20 ms windows.
+/// De-clip a digitally clipped take: samples pinned at the rail (within 0.1%
+/// of the take's full scale, same sign, zero slope for 3+ samples - a clean
+/// peak never stays exactly level that long) are redrawn as a cubic Hermite
+/// curve through the clean samples and slopes on both sides. Returns (audio,
+/// regions as (start_s, end_s)). Repaired peaks can exceed the old rail -
+/// normalise afterwards if 0 dBFS was the ceiling. Analog soft-clipping has
+/// no flat tops and is out of scope.
+pub fn declip(x: &[f32]) -> (Vec<f32>, Vec<(f32, f32)>) {
+    let peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    if peak < 0.05 {
+        return (x.to_vec(), Vec::new());
+    }
+    let rail = peak * 0.001;
+    let eps_d = 1e-6f32;
+    let pinned = |v: f32| (v.abs() - peak).abs() <= rail;
+    let mut y = x.to_vec();
+    let mut regions = Vec::new();
+    let mut i = 0usize;
+    while i < x.len() {
+        if pinned(x[i]) {
+            let sign = x[i].signum();
+            let mut j = i;
+            while j + 1 < x.len()
+                && pinned(x[j + 1])
+                && x[j + 1].signum() == sign
+                && (x[j + 1] - x[j]).abs() <= eps_d
+            {
+                j += 1;
+            }
+            // a real flat top is 3+ pinned samples; a clean peak is 1-2
+            if j - i + 1 >= 3 && i >= 3 && j + 4 < x.len() {
+                let p0 = x[i - 1] as f64;
+                let p1 = x[j + 1] as f64;
+                let m0 = (x[i - 1] - x[i - 3]) as f64 / 2.0;
+                let m1 = (x[j + 3] - x[j + 1]) as f64 / 2.0;
+                let n = (j + 2 - i) as f64;
+                for (k, v) in y.iter_mut().enumerate().take(j + 1).skip(i) {
+                    let t = (k - i + 1) as f64 / (n + 1.0);
+                    let t2 = t * t;
+                    let t3 = t2 * t;
+                    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+                    let h10 = t3 - 2.0 * t2 + t;
+                    let h01 = -2.0 * t3 + 3.0 * t2;
+                    let h11 = t3 - t2;
+                    *v = (h00 * p0 + h10 * m0 * n + h01 * p1 + h11 * m1 * n) as f32;
+                }
+                regions.push((i as f32 / SR, (j + 1) as f32 / SR));
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    (y, regions)
+}
+
 /// Breath events between phrases: frames that are noisy (high spectral
 /// flatness between 1 and 8 kHz) and louder than the take's floor, grouped
 /// into regions. The take comes back with each region pulled down by
@@ -648,6 +704,22 @@ pub fn tools() -> Vec<Tool> {
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_gated", info.name));
                 let s = save(e, &info, &nn, &y, &format!("gate {thr:.1} dB"))?;
                 Ok(json!({"sample": s, "threshold_db": r1(thr), "closed_pct": r1(closed * 100.0), "measured": report(&x, &y)}))
+            },
+        },
+        Tool {
+            name: "declip_sample",
+            description: "De-clip a take recorded too hot (RX De-clip style): finds the squared-off tops - samples pinned at full scale with zero slope - and redraws them as smooth curves through the clean audio on both sides. Works on digital clipping (an interface or DAW rail); analog soft-clipping has no flat tops and can't be detected this way. Repaired peaks can exceed the old rail, so normalise afterwards if you need 0 dBFS headroom. Writes <sample>_declip and reports the repaired regions. No regions found = the take wasn't clipped, returned unchanged.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "new_name": {"type": "string"}}), &["sample"]),
+            run: |e, a| {
+                let (info, x) = crate::tools_sound::sample_data(e, &s_req(a, "sample")?)?;
+                if x.len() < N {
+                    bail!("the sample is too short to de-clip");
+                }
+                let (y, regions) = declip(&x);
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_declip", info.name));
+                let s = save(e, &info, &nn, &y, "de-clip")?;
+                Ok(json!({"sample": s, "regions_repaired": regions.len(), "measured": report(&x, &y)}))
             },
         },
         Tool {
@@ -895,5 +967,64 @@ mod tests {
         assert!(r2.is_empty(), "tone-only regions {r2:?}");
         let (_, r3) = reduce_breaths(&vec![0.0f32; (2.0 * SR) as usize], -12.0, 0.5);
         assert!(r3.is_empty(), "silence regions {r3:?}");
+    }
+    #[test]
+    fn declip_redraws_clipped_tops_and_spares_clean_audio() {
+        let n = (2.0 * SR) as usize;
+        let orig: Vec<f32> = (0..n)
+            .map(|i| 1.6 * (i as f32 * 440.0 / SR * std::f32::consts::TAU).sin())
+            .collect();
+        let clipped: Vec<f32> = orig.iter().map(|v| v.clamp(-0.7, 0.7)).collect();
+        let (y, regions) = declip(&clipped);
+        assert!(regions.len() >= 800, "regions {}", regions.len());
+        let max_err = y
+            .iter()
+            .zip(orig.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        let clipped_err = clipped
+            .iter()
+            .zip(orig.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_err < clipped_err * 0.2,
+            "err {max_err} vs clipped {clipped_err}"
+        );
+        // no pinned runs left (3+ samples on the old rail, same sign)
+        let mut runs = 0;
+        let mut i = 0;
+        while i < y.len() {
+            if (y[i].abs() - 0.7).abs() <= 0.7 * 0.001 {
+                let s = y[i].signum();
+                let mut j = i;
+                while j + 1 < y.len()
+                    && (y[j + 1].abs() - 0.7).abs() <= 0.7 * 0.001
+                    && y[j + 1].signum() == s
+                {
+                    j += 1;
+                }
+                if j - i + 1 >= 3 {
+                    runs += 1;
+                }
+                i = j + 1;
+            } else {
+                i += 1;
+            }
+        }
+        assert_eq!(runs, 0, "pinned runs left");
+        // clean peaks are untouched, even deep bass
+        for hz in [50.0f32, 220.0, 1000.0] {
+            let clean: Vec<f32> = (0..n)
+                .map(|i| 0.5 * (i as f32 * hz / SR * std::f32::consts::TAU).sin())
+                .collect();
+            let (y2, r2) = declip(&clean);
+            assert!(r2.is_empty(), "{hz} Hz regions {r2:?}");
+            assert_eq!(y2, clean, "{hz} Hz changed");
+        }
+        // silence and quiet takes are no-ops
+        let (y3, r3) = declip(&vec![0.01f32; 1000]);
+        assert!(r3.is_empty());
+        assert_eq!(y3, vec![0.01f32; 1000]);
     }
 }
