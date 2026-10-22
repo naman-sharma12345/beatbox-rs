@@ -1,7 +1,7 @@
 //! Vocal repair, RX-style: spectral noise reduction from a learned noise
 //! profile, hum removal, click repair, de-clip, de-plosive, a breath/noise
-//! gate with hysteresis, late-reverb reduction and phrase-level
-//! level riding. Every tool writes a new
+//! gate with hysteresis, late-reverb reduction, phrase-level
+//! level riding and region patching from elsewhere in the take. Every tool writes a new
 //! sample and reports what it measured before and after.
 
 use crate::dsp::{db_to_gain, Biquad, BiquadKind, Fft, SR};
@@ -706,6 +706,147 @@ pub fn ride_levels(x: &[f32], up_db: f32, down_db: f32, response_ms: f32) -> (Ve
     (y, spread_before, spread_after)
 }
 
+/// A log-spaced band signature (24 bands, 100 Hz - 10 kHz, mean dB per
+/// band) of precomputed mags frames f0..f1: what the audio around a point
+/// sounds like, used to find a donor that matches a region's context.
+fn band_sig(m: &[Vec<f32>], f0: usize, f1: usize) -> Vec<f32> {
+    let mut out = Vec::new();
+    let mut lo = 100.0f32;
+    for _ in 0..24 {
+        let hi = lo * 10f32.powf(2.0 / 24.0);
+        let k0 = ((lo * N as f32 / SR) as usize).clamp(1, N / 2);
+        let k1 = ((hi * N as f32 / SR) as usize).max(k0 + 1).min(N / 2 + 1);
+        let mut acc = 0.0f32;
+        let mut cnt = 0usize;
+        for f in f0..f1.min(m.len()) {
+            for k in k0..k1 {
+                acc += m[f][k];
+                cnt += 1;
+            }
+        }
+        out.push(10.0 * (acc / cnt.max(1) as f32).max(1e-12).log10());
+        lo = hi;
+    }
+    out
+}
+
+fn sig_dist(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f32>() / a.len().max(1) as f32
+}
+
+/// Region repair, RX replace-style: swap the stretch from_s..to_s (a cough,
+/// a beep, a chair squeak over a held note) for the best-matching stretch
+/// found elsewhere in the same take. The donor is picked by how closely
+/// its surroundings match the region's surroundings (band signatures of
+/// 150 ms on both sides), then sample-aligned to the patch boundary by
+/// least squares so periodic material joins without a tick, gain-matched
+/// to the edge level, and crossfaded in over 20 ms at both ends. Returns
+/// the patched signal, the donor's start in seconds and the match error
+/// in dB (lower = the donor sounded more like the context; under ~3 dB is
+/// a confident patch). Returns None when the take is too short to hold a
+/// non-overlapping donor. Works when the take has similar material
+/// elsewhere - held notes, repeated phrases; a one-off sound with nothing
+/// like it in the take patches badly, so trust the reported match error.
+pub fn patch_region(
+    x: &[f32],
+    from_s: f32,
+    to_s: f32,
+    source_s: Option<f32>,
+) -> Option<(Vec<f32>, f32, f32)> {
+    let r0 = (from_s * SR) as usize;
+    let r1 = (to_s * SR) as usize;
+    let fade = (0.020 * SR) as usize;
+    let ctx = (0.150 * SR) as usize;
+    let guard = (0.050 * SR) as usize;
+    if r1 <= r0 || r1 > x.len() || r1 - r0 < 2 * fade || x.len() < 2 * (r1 - r0) + 2 * guard + ctx {
+        return None;
+    }
+    let rlen = r1 - r0;
+    let m = mags(x);
+    let target_pre = band_sig(&m, r0.saturating_sub(ctx) / H, r0 / H);
+    let target_post = band_sig(&m, r1 / H, (r1 + ctx).min(x.len()) / H);
+    let score_at = |s: usize| -> f32 {
+        let pre = band_sig(&m, s.saturating_sub(ctx) / H, s / H);
+        let post = band_sig(&m, (s + rlen) / H, (s + rlen + ctx).min(x.len()) / H);
+        (sig_dist(&pre, &target_pre) + sig_dist(&post, &target_post)) / 2.0
+    };
+    let mut best: Option<(f32, usize)> = None;
+    let mut s = 0usize;
+    while s + rlen <= x.len() {
+        let d0 = s.saturating_sub(ctx);
+        let d1 = (s + rlen + ctx).min(x.len());
+        if d1 < r0.saturating_sub(guard) || d0 > r1 + guard {
+            let dist = score_at(s);
+            if best.is_none_or(|(bd, _)| dist < bd) {
+                best = Some((dist, s));
+            }
+        }
+        s += H;
+    }
+    let (score, s0) = match source_s {
+        Some(ss) => {
+            let s = ((ss * SR) as usize).min(x.len() - rlen);
+            (score_at(s), s)
+        }
+        None => best?,
+    };
+    // sample-align the donor to the patch boundary (least squares over the
+    // 20 ms before the region) so periodic material joins without a tick
+    let aw = fade;
+    let mut best_off = 0isize;
+    let mut best_err = f32::MAX;
+    let mut off = -1024isize;
+    while off <= 1024 {
+        let d0 = s0 as isize + off - aw as isize;
+        if d0 >= 0 && (d0 as usize) + aw <= x.len() && (d0 as usize) + aw <= s0 + rlen {
+            let d0 = d0 as usize;
+            let c0 = r0.saturating_sub(aw);
+            let err: f32 = (0..aw)
+                .map(|i| {
+                    let d = x[c0 + i] - x[d0 + i];
+                    d * d
+                })
+                .sum();
+            if err < best_err {
+                best_err = err;
+                best_off = off;
+            }
+        }
+        off += 1;
+    }
+    let s0 = (s0 as isize + best_off).max(0) as usize;
+    // gain-match the donor to the region's edge level, clamped to +/-6 dB
+    let edge_rms = |v: &[f32], a: usize, b: usize| {
+        (v[a..b].iter().map(|s| s * s).sum::<f32>() / (b - a).max(1) as f32).sqrt()
+    };
+    let g_ref = edge_rms(x, r0.saturating_sub(ctx / 2), r0).max(edge_rms(
+        x,
+        r1,
+        (r1 + ctx / 2).min(x.len()),
+    ));
+    let g_don = edge_rms(x, s0.saturating_sub(ctx / 2), s0).max(edge_rms(
+        x,
+        s0 + rlen,
+        (s0 + rlen + ctx / 2).min(x.len()),
+    ));
+    let g = (g_ref / g_don.max(1e-9)).clamp(0.5, 2.0);
+    let mut y = x.to_vec();
+    for i in 0..rlen {
+        let d = x[s0 + i] * g;
+        y[r0 + i] = if i < fade {
+            let w = 0.5 * (1.0 - (std::f32::consts::PI * i as f32 / fade as f32).cos());
+            x[r0 + i] * (1.0 - w) + d * w
+        } else if i >= rlen - fade {
+            let w = 0.5
+                * (1.0 + (std::f32::consts::PI * (i - (rlen - fade)) as f32 / fade as f32).cos());
+            d * (1.0 - w) + x[r0 + i] * w
+        } else {
+            d
+        };
+    }
+    Some((y, s0 as f32 / SR, score))
+}
+
 /// Breath events between phrases: frames that are noisy (high spectral
 /// flatness between 1 and 8 kHz) and louder than the take's floor, grouped
 /// into regions. The take comes back with each region pulled down by
@@ -1000,6 +1141,30 @@ pub fn tools() -> Vec<Tool> {
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_ride", info.name));
                 let s = save(e, &info, &nn, &y, "level ride")?;
                 Ok(json!({"sample": s, "voice_spread_db": {"before": r1(sb), "after": r1(sa)}, "measured": report(&x, &y)}))
+            },
+        },
+        Tool {
+            name: "patch_take",
+            description: "Patch over an unwanted sound inside a take (RX replace-style): a cough, a phone beep, a chair squeak over a held note. from_s/to_s mark the bad stretch, including a little clean audio on both sides; the tool finds the best-matching stretch elsewhere in the SAME take (surroundings compared by band signature), sample-aligns and gain-matches it to the boundary and crossfades it in - audio outside the region is bit-identical. source_s pins the donor explicitly. Needs similar material elsewhere in the take (held notes, repeated phrases); a one-off sound patches badly, so check match_err_db in the result: under ~3 dB is a confident patch. Writes <sample>_patch.",
+            mutates: true,
+            schema: || obj(json!({"sample": {"type": "string"}, "from_s": {"type": "number"}, "to_s": {"type": "number"}, "source_s": {"type": "number"}, "new_name": {"type": "string"}}), &["sample", "from_s", "to_s"]),
+            run: |e, a| {
+                let (info, x) = crate::tools_sound::sample_data(e, &s_req(a, "sample")?)?;
+                let from = f_or(a, "from_s", 0.0).max(0.0);
+                let to = f_or(a, "to_s", 0.0);
+                if to <= from + 0.04 {
+                    bail!("to_s must be at least 40 ms after from_s");
+                }
+                if to * SR > x.len() as f32 {
+                    bail!("the region ends past the end of the take");
+                }
+                let src_t = f_opt(a, "source_s");
+                let Some((y, chosen, score)) = patch_region(&x, from, to, src_t) else {
+                    bail!("the take is too short to patch a region this long from a non-overlapping donor");
+                };
+                let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_patch", info.name));
+                let s = save(e, &info, &nn, &y, "region patch")?;
+                Ok(json!({"sample": s, "donor_start_s": r1(chosen), "match_err_db": r1(score), "measured": report(&x, &y)}))
             },
         },
         Tool {
@@ -1430,5 +1595,81 @@ mod tests {
         let (y4, _, _) = ride_levels(&x4, 9.0, 9.0, 250.0);
         let lift4 = sec(&y4, 1.2, 2.0) - sec(&x4, 1.2, 2.0);
         assert!(lift4 < 4.0, "whisper pumped {lift4:.1}");
+    }
+    #[test]
+    fn patch_region_swaps_a_beep_for_matching_audio() {
+        let n = (2.0 * SR) as usize;
+        let note: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                0.3 * (t * 220.0 * std::f32::consts::TAU).sin()
+                    + 0.12 * (t * 440.0 * std::f32::consts::TAU).sin()
+                    + 0.05 * (t * 660.0 * std::f32::consts::TAU).sin()
+            })
+            .collect();
+        // a 1500 Hz beep inside the patched region (region edges stay clean)
+        let mut x = note.clone();
+        for i in (0.82 * SR) as usize..(1.08 * SR) as usize {
+            let t = i as f32 / SR;
+            x[i] += 0.3 * (t * 1500.0 * std::f32::consts::TAU).sin();
+        }
+        let (y, src, score) = patch_region(&x, 0.8, 1.1, None).unwrap();
+        assert!(score < 6.0, "match {score}");
+        assert!((src - 0.8).abs() > 0.35, "donor overlaps region: {src}");
+        let band_e = |v: &[f32], from: f32, to: f32, f: f32| {
+            let (a, b) = ((from * SR) as usize, (to * SR) as usize);
+            let w = 2.0 * std::f32::consts::PI * f / SR;
+            let c = 2.0 * w.cos();
+            let (mut s1, mut s2) = (0.0f32, 0.0f32);
+            for i in a..b {
+                let s = v[i] + c * s1 - s2;
+                s2 = s1;
+                s1 = s;
+            }
+            (s1 * s1 + s2 * s2 - c * s1 * s2).sqrt() / (b - a) as f32
+        };
+        let beep_before = band_e(&x, 0.84, 1.06, 1500.0);
+        let beep_after = band_e(&y, 0.84, 1.06, 1500.0);
+        assert!(
+            beep_after < beep_before * 0.05,
+            "beep {beep_before:.4} -> {beep_after:.4}"
+        );
+        let f0_before = band_e(&x, 0.84, 1.06, 220.0);
+        let f0_after = band_e(&y, 0.84, 1.06, 220.0);
+        assert!(
+            (f0_after - f0_before).abs() / f0_before < 0.1,
+            "note {f0_before:.4} -> {f0_after:.4}"
+        );
+        // no ticks at the patch edges
+        let step_at = |v: &[f32], c: usize| {
+            (c.saturating_sub(12)..(c + 12).min(v.len() - 1))
+                .map(|i| (v[i + 1] - v[i]).abs())
+                .fold(0.0f32, f32::max)
+        };
+        let clean_step = (100..n - 1)
+            .map(|i| (note[i + 1] - note[i]).abs())
+            .fold(0.0f32, f32::max);
+        let r0 = (0.8 * SR) as usize;
+        let r1 = (1.1 * SR) as usize;
+        assert!(
+            step_at(&y, r0) <= clean_step * 1.5 && step_at(&y, r1) <= clean_step * 1.5,
+            "edge steps {} {}",
+            step_at(&y, r0),
+            step_at(&y, r1)
+        );
+        // outside the region, bit-identical
+        let pre = (0..(0.7 * SR) as usize)
+            .map(|i| (y[i] - x[i]).abs())
+            .fold(0.0f32, f32::max);
+        let post = ((1.2 * SR) as usize..n)
+            .map(|i| (y[i] - x[i]).abs())
+            .fold(0.0f32, f32::max);
+        assert_eq!(pre, 0.0, "pre changed");
+        assert_eq!(post, 0.0, "post changed");
+        // an explicit donor is respected
+        let (_, src2, _) = patch_region(&x, 0.8, 1.1, Some(0.2)).unwrap();
+        assert!((src2 - 0.2).abs() < 0.03, "explicit source {src2}");
+        // too short a take has no donor
+        assert!(patch_region(&x[..(SR as usize)], 0.2, 0.5, None).is_none());
     }
 }
