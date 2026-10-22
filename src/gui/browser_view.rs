@@ -625,6 +625,99 @@ fn audio_editor(
             call = Some(("slice_sample".into(), json!({"sample": name})));
         }
     });
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .small_button("REPAIR ALL")
+            .on_hover_text("one-pass fix: de-clip, de-pop, de-click, de-noise, de-breath, gate")
+            .clicked()
+        {
+            call = Some(("repair_take".into(), json!({"sample": name})));
+        }
+        if ui
+            .small_button("DE-CLIP")
+            .on_hover_text("redraw squared-off loud peaks")
+            .clicked()
+        {
+            call = Some(("declip_sample".into(), json!({"sample": name})));
+        }
+        if ui
+            .small_button("DE-POP")
+            .on_hover_text("tame p/b mic pops")
+            .clicked()
+        {
+            call = Some(("deplosive_sample".into(), json!({"sample": name})));
+        }
+        if ui
+            .small_button("DE-BREATH")
+            .on_hover_text("turn down breaths between phrases")
+            .clicked()
+        {
+            call = Some(("reduce_breaths".into(), json!({"sample": name})));
+        }
+        if ui
+            .small_button("RIDE LEVEL")
+            .on_hover_text("even out loud and quiet phrases toward the take's own level")
+            .clicked()
+        {
+            call = Some(("ride_take".into(), json!({"sample": name})));
+        }
+        if ui
+            .small_button("PATCH REGION")
+            .on_hover_text(
+                "replace the selected region with the best-matching stretch elsewhere in the take",
+            )
+            .clicked()
+        {
+            call = Some((
+                "patch_take".into(),
+                json!({"sample": name, "from_s": ed.start, "to_s": end}),
+            ));
+        }
+        if ui
+            .small_button("QUANTIZE HITS")
+            .on_hover_text("snap hits to the grid at the project tempo")
+            .clicked()
+        {
+            call = Some(("quantize_sample".into(), json!({"sample": name})));
+        }
+        if ui
+            .small_button("LINE UP")
+            .on_hover_text("shift the take so it starts exactly with the song")
+            .clicked()
+        {
+            call = Some((
+                "shift_take".into(),
+                json!({"sample": name, "reference": "mix"}),
+            ));
+        }
+        if ui
+            .small_button("DOUBLE")
+            .on_hover_text("add a slightly detuned, slightly late copy of the voice (ADT)")
+            .clicked()
+        {
+            call = Some(("double_vocal".into(), json!({"sample": name})));
+        }
+        if ui
+            .small_button("FORMANT DEEPER")
+            .on_hover_text("bigger, deeper voice body; pitch and words unchanged")
+            .clicked()
+        {
+            call = Some((
+                "formant_sample".into(),
+                json!({"sample": name, "shift": 0.85}),
+            ));
+        }
+        if ui
+            .small_button("FORMANT THINNER")
+            .on_hover_text("smaller, thinner voice body; pitch and words unchanged")
+            .clicked()
+        {
+            call = Some((
+                "formant_sample".into(),
+                json!({"sample": name, "shift": 1.2}),
+            ));
+        }
+    });
     ui.label(
         RichText::new("each edit keeps the original and adds a new sample")
             .size(10.0)
