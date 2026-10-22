@@ -49,10 +49,12 @@ jobs:
           shoot demo/desi.json mixer ${SHOT_TAG}_mixer
           shoot demo/desi.json automation ${SHOT_TAG}_automation
           shoot demo/desi.json playlist ${SHOT_TAG}_playlist
+          shoot demo/desi.json browser ${SHOT_TAG}_browser
           shoot demo/melodic.json sequencer ${SHOT_TAG}_sequencer_melodic
           shoot demo/melodic.json mixer ${SHOT_TAG}_mixer_melodic
           shoot demo/melodic.json automation ${SHOT_TAG}_automation_melodic
           shoot demo/melodic.json playlist ${SHOT_TAG}_playlist_melodic
+          shoot demo/melodic.json browser ${SHOT_TAG}_browser_melodic
           ls -la shots
           [ "$ok" -gt 0 ]
       - uses: actions/upload-artifact@v4
