@@ -512,7 +512,7 @@ impl Studio {
             let mut p = PathBuf::from("beat.beatbox.json");
             let mut n = 2;
             while eng.lock().unwrap().resolve(&p.to_string_lossy()).exists() {
-                p = PathBuf::from(format!("beat-{n}.{}", "beatbox.json"));
+                p = PathBuf::from(format!("beat-{n}.beatbox.json"));
                 n += 1;
             }
             p
