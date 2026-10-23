@@ -117,7 +117,7 @@ pub fn automation_lanes(
     let (full, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), strip_height(p)), Sense::hover());
     let painter = ui.painter_at(full);
-    painter.rect_filled(full, 0.0, Color32::from_rgb(24, 26, 30));
+    painter.rect_filled(full, 0.0, super::theme::Tokens::DARK.playlist_bg);
     painter.text(
         pos2(full.min.x + 4.0, full.min.y + 1.0),
         Align2::LEFT_TOP,
@@ -166,9 +166,9 @@ pub fn automation_lanes(
             head,
             3.0,
             if lane.enabled {
-                Color32::from_rgb(44, 52, 64)
+                super::theme::Tokens::DARK.button_hi
             } else {
-                Color32::from_rgb(34, 34, 38)
+                super::theme::Tokens::DARK.panel_bg2
             },
         );
         let label = format!("{} · {}", lane.target, lane.param);
@@ -194,7 +194,7 @@ pub fn automation_lanes(
         }
         // the row: background, then the envelope
         let row_bg = Rect::from_min_max(pos2(x_lo, top), pos2(x_hi, top + AUTO_H - 2.0));
-        painter.rect_filled(row_bg, 2.0, Color32::from_rgb(30, 33, 38));
+        painter.rect_filled(row_bg, 2.0, super::theme::Tokens::DARK.strip_section);
         // empty-spot click = add a point (registered first so the handles,
         // registered after it, win the hit test)
         let rr = ui.interact(row_bg, egui::Id::new(("auto-row", &key)), Sense::click());
@@ -667,4 +667,4 @@ mod tests {
             "{calls:?}"
         );
     }
-}
+                    }
