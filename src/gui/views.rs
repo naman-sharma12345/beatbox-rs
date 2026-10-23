@@ -585,7 +585,7 @@ impl Studio {
             "Show inserts, sends and outputs on each channel",
         );
         let mut op: Option<(&str, &str, serde_json::Value)> = None;
-        egui::CollapsingHeader::new("Mix analysis tools")
+        egui::CollapsingHeader::new("Mix analysis")
             .default_open(self.mix_readout.is_some())
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
