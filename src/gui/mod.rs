@@ -77,6 +77,8 @@ pub struct Studio {
     toast: Option<(String, f64, bool)>,
     /// Last mix-helper result, shown under the mixer helper row.
     mix_readout: Option<String>,
+    mix_job: Option<(u64, Receiver<Result<String, String>>)>,
+    mix_readout_revision: Option<u64>,
     // screenshot mode
     screenshot: Option<PathBuf>,
     frames: u64,
@@ -97,6 +99,10 @@ pub struct Studio {
     analyze: analyze_view::AnalyzeState,
     /// playlist view: the selected audio clip's stable id
     clip_sel: Option<String>,
+    brand: Option<egui::TextureHandle>,
+    rail_search: String,
+    note_editor: bool,
+    show_inspector: bool,
 }
 
 /// The studio is a hand-operated DAW: one view per manual workspace. The
@@ -121,13 +127,19 @@ pub fn run(
 ) -> anyhow::Result<()> {
     let view = view
         .and_then(|v| VIEWS.iter().position(|n| n.eq_ignore_ascii_case(&v)))
-        .unwrap_or(0);
+        .unwrap_or(3);
     let engine = Arc::new(Mutex::new(engine));
     let server_ok = crate::server::spawn(engine.clone(), listen).is_ok();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Beatbox Studio")
-            .with_inner_size([1480.0, 920.0])
+            .with_inner_size(
+                if screenshot.is_some() && std::env::var_os("BEATBOX_NARROW_SHOT").is_some() {
+                    [1100.0, 700.0]
+                } else {
+                    [1480.0, 920.0]
+                },
+            )
             .with_min_inner_size([1100.0, 700.0]),
         ..Default::default()
     };
@@ -154,6 +166,8 @@ pub fn run(
                 dragging: false,
                 toast: None,
                 mix_readout: None,
+                mix_job: None,
+                mix_readout_revision: None,
                 screenshot,
                 frames: 0,
                 shot_requested: false,
@@ -169,6 +183,10 @@ pub fn run(
                 browser: Default::default(),
                 analyze: Default::default(),
                 clip_sel: None,
+                brand: None,
+                rail_search: String::new(),
+                note_editor: false,
+                show_inspector: true,
             }))
         }),
     )
@@ -539,21 +557,19 @@ impl Studio {
     // ---------------- top bar ----------------
     fn top_bar(&mut self, ui: &mut egui::Ui, p: &Project, undo: (usize, usize)) {
         ui.horizontal_centered(|ui| {
-            // logo
-            let (r, _) = ui.allocate_exact_size(Vec2::new(30.0, 30.0), Sense::hover());
-            let c = r.center();
-            ui.painter().circle_filled(c, 14.0, ACCENT);
-            ui.painter().circle_filled(c, 8.0, ACCENT2);
-            ui.painter().circle_filled(c, 3.5, BG);
-            ui.label(
-                RichText::new("BEATBOX")
-                    .size(19.0)
-                    .strong()
-                    .color(TEXT)
-                    .extra_letter_spacing(2.0),
-            );
-            ui.label(RichText::new("STUDIO").size(11.0).color(DIM));
-            ui.add_space(18.0);
+            ui.spacing_mut().slider_width = 66.0;
+            if self.brand.is_none() {
+                if let Ok(im) = image::load_from_memory(include_bytes!("../../assets/reel/logo/mark.png")) {
+                    let im = im.to_rgba8();
+                    self.brand = Some(ui.ctx().load_texture("wound", egui::ColorImage::from_rgba_unmultiplied([im.width() as usize, im.height() as usize], im.as_raw()), egui::TextureOptions::LINEAR));
+                }
+            }
+            if let Some(mark) = &self.brand {
+                ui.image((mark.id(), Vec2::splat(34.0)));
+            }
+            ui.label(RichText::new("beatbox").font(FontId::new(19.0, egui::FontFamily::Name("brand".into()))).color(TEXT));
+            ui.label(RichText::new("rs").size(12.0).color(ACCENT));
+            ui.add_space(12.0);
             let playing = self.player.is_playing();
             if transport_button(ui, playing)
                 .on_hover_text(format!(
@@ -605,7 +621,7 @@ impl Studio {
                 let at = sr.samples(f64::from(pos));
                 let bb = format_position(at, TimeFormat::BarsBeats, sr, &map, FrameRate::Fps30, 0);
                 let ms = format_position(at, TimeFormat::MinSecs, sr, &map, FrameRate::Fps30, 0);
-                let len = format_position(
+                let _len = format_position(
                     sr.samples(f64::from(total)),
                     TimeFormat::MinSecs,
                     sr,
@@ -613,36 +629,30 @@ impl Studio {
                     FrameRate::Fps30,
                     0,
                 );
-                let (r, _) = ui.allocate_exact_size(Vec2::new(300.0, 34.0), Sense::hover());
+                let (r, _) = ui.allocate_exact_size(Vec2::new(244.0, 34.0), Sense::hover());
                 let pt = ui.painter();
-                let main = Rect::from_min_size(r.min, Vec2::new(150.0, 34.0));
+                let main = Rect::from_min_size(r.min, Vec2::new(122.0, 34.0));
                 console::counter_box(pt, main, &bb, 17.0);
                 pt.text(
                     main.left_top() + Vec2::new(5.0, 2.0),
                     Align2::LEFT_TOP,
                     "BARS|BEATS",
-                    FontId::proportional(7.5),
+                    FontId::monospace(9.0),
                     DIM,
                 );
                 let sub = Rect::from_min_size(
                     Pos2::new(main.right() + 4.0, r.top()),
-                    Vec2::new(146.0, 34.0),
+                    Vec2::new(118.0, 34.0),
                 );
                 console::counter_box(pt, sub, &ms, 13.0);
                 pt.text(
                     sub.left_top() + Vec2::new(5.0, 2.0),
                     Align2::LEFT_TOP,
                     "MIN:SECS",
-                    FontId::proportional(7.5),
+                    FontId::monospace(9.0),
                     DIM,
                 );
-                pt.text(
-                    sub.right_bottom() - Vec2::new(5.0, 2.0),
-                    Align2::RIGHT_BOTTOM,
-                    format!("/ {len}"),
-                    FontId::proportional(8.0),
-                    DIM,
-                );
+
             }
             ui.add_space(10.0);
             let mut bpm = p.bpm;
@@ -684,7 +694,7 @@ impl Studio {
             if root != p.key_root || scale != p.scale {
                 self.call("set_key", json!({"root": root, "scale": scale}));
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let actions = |ui: &mut egui::Ui| {
                 if ui.button("About").clicked() {
                     self.show_about = !self.show_about;
                 }
@@ -710,7 +720,11 @@ impl Studio {
                 {
                     self.call("undo", json!({}));
                 }
-            });
+            };
+            if ui.ctx().screen_rect().width() < 1300.0 {
+                ui.menu_button("Project", actions);
+            } else { ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), actions); }
+
         });
     }
 
@@ -753,33 +767,67 @@ impl Studio {
                 });
                 ui.add_space(8.0);
                 section_label(ui, "INSTRUMENTS");
-                for (name, desc) in instruments::PRESETS {
-                    let kind = instruments::preset(name)
-                        .map(|i| i.kind_name())
-                        .unwrap_or("synth");
-                    let col = track_color(name, kind);
-                    let r = ui
-                        .horizontal(|ui| {
-                            let (dot, _) =
-                                ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-                            ui.painter().circle_filled(dot.center(), 4.0, col);
-                            ui.add(
-                                egui::Label::new(RichText::new(name.replace('_', " ")).size(12.5))
-                                    .sense(Sense::click()),
-                            )
-                        })
-                        .inner
-                        .on_hover_text(format!("{desc}\nclick to add a track"));
-                    if r.clicked() {
-                        let mut n = name.to_string();
-                        let mut k = 2;
-                        while p.track_index(&n).is_ok() {
-                            n = format!("{name}{k}");
-                            k += 1;
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.rail_search)
+                        .hint_text("Search instruments")
+                        .desired_width(ui.available_width()),
+                );
+                for family in ["DRUMS", "PERCUSSION", "BASS", "MELODIC"] {
+                    egui::CollapsingHeader::new(
+                        RichText::new(family).monospace().size(11.0).color(DIM),
+                    )
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for (name, desc) in instruments::PRESETS {
+                            let kind = instruments::preset(name)
+                                .map(|i| i.kind_name())
+                                .unwrap_or("synth");
+                            let group = if name.contains("bass") || *name == "808" {
+                                "BASS"
+                            } else if ["kick", "snare", "clap", "hat", "open_hat"].contains(name) {
+                                "DRUMS"
+                            } else if kind == "drum" {
+                                "PERCUSSION"
+                            } else {
+                                "MELODIC"
+                            };
+                            if group != family {
+                                continue;
+                            }
+                            if !name
+                                .replace('_', " ")
+                                .contains(&self.rail_search.to_lowercase())
+                            {
+                                continue;
+                            }
+
+                            let col = track_color(name, kind);
+                            let r = ui
+                                .horizontal(|ui| {
+                                    let (dot, _) =
+                                        ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                                    ui.painter().circle_filled(dot.center(), 4.0, col);
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(name.replace('_', " ")).size(12.5),
+                                        )
+                                        .sense(Sense::click()),
+                                    )
+                                })
+                                .inner
+                                .on_hover_text(format!("{desc}\nclick to add a track"));
+                            if r.clicked() {
+                                let mut n = name.to_string();
+                                let mut k = 2;
+                                while p.track_index(&n).is_ok() {
+                                    n = format!("{name}{k}");
+                                    k += 1;
+                                }
+                                self.call("add_track", json!({"name": n, "preset": name}));
+                                self.selected = p.tracks.len();
+                            }
                         }
-                        self.call("add_track", json!({"name": n, "preset": name}));
-                        self.selected = p.tracks.len();
-                    }
+                    });
                 }
             });
     }
@@ -862,12 +910,15 @@ impl Studio {
         let playing_here = locate(p, self.player.position_secs())
             .filter(|(pi, _)| *pi == self.pattern)
             .map(|(_, s)| s);
-        egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("seq").show(ui, |ui| {
+        let seq_top = ui.next_widget_position().y;
+        egui::ScrollArea::vertical().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).auto_shrink([false, false]).id_salt("seq").show(ui, |ui| {
+            let mut clip = ui.clip_rect(); clip.min.y = clip.min.y.max(seq_top); ui.set_clip_rect(clip);
             // the FL-style channel rack (channel_rack.rs): every gesture
             // comes back as one tool call
-            let mut sel = channel_rack::RackSel { selected: self.selected, rows: Vec::new() };
+            let mut sel = channel_rack::RackSel { selected: self.selected, rows: Vec::new(), open_editor: false };
             let actions = channel_rack::channel_rack(ui, p, self.pattern, &mut sel, playing_here);
             self.selected = sel.selected;
+            if sel.open_editor { self.note_editor = true; }
             for (tool, args) in actions {
                 self.call(tool, args);
             }
@@ -882,10 +933,18 @@ impl Studio {
 
     // ---------------- master section ----------------
     fn master(&mut self, ui: &mut egui::Ui, p: &Project) {
-        let Some(r) = &self.rendered else {
-            ui.centered_and_justified(|ui| ui.label(RichText::new("rendering…").color(DIM)));
+        let Some(r) = self
+            .rendered
+            .as_ref()
+            .filter(|r| r.rev == self.engine.lock().unwrap().revision)
+        else {
+            ui.label(RichText::new("Updating analysis for current project...").color(DIM));
             return;
         };
+        if p.tracks.is_empty() || r.report.master.peak_dbfs < -69.0 {
+            ui.label(RichText::new("SILENCE - no audio to measure").color(DIM));
+            return;
+        }
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.label(RichText::new("MASTER").size(11.0).color(DIM).strong());
@@ -1030,7 +1089,7 @@ impl Studio {
                 // mixer row
                 card().show(ui, |ui| {
                     ui.label(RichText::new("MIXER").size(10.5).color(DIM).strong());
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let mut vol = t.volume_db;
                         let (_, d1) = knob(ui, "volume_db", &mut vol, -40.0, 12.0, false, color);
                         let mut pan = t.pan;
@@ -1045,7 +1104,8 @@ impl Studio {
                             self.call("set_mixer", json!({"track": t.name, "volume_db": v, "pan": pn}));
                             self.dragging = false;
                         }
-                        ui.vertical(|ui| {
+                    });
+                    ui.vertical(|ui| {
                             let mut preset = String::new();
                             egui::ComboBox::from_id_salt("preset_pick").width(130.0).selected_text("load preset…").show_ui(ui, |ui| {
                                 for (n, _) in instruments::PRESETS {
@@ -1060,7 +1120,6 @@ impl Studio {
                                 self.selected = self.selected.saturating_sub(1);
                             }
                         });
-                    });
                 });
                 ui.add_space(6.0);
                 card().show(ui, |ui| {
@@ -1076,9 +1135,9 @@ impl Studio {
                 });
                 ui.add_space(6.0);
                 card().show(ui, |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("EFFECTS").size(10.5).color(DIM).strong());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.vertical(|ui| {
                             let mut add = String::new();
                             egui::ComboBox::from_id_salt("add_fx").width(110.0).selected_text("+ add effect").show_ui(ui, |ui| {
                                 for (n, _) in fx::EFFECT_TYPES {
@@ -1135,6 +1194,8 @@ impl Studio {
                 });
                 self.inspector = Some(cache);
             }
+            ui.add_space(8.0);
+            egui::CollapsingHeader::new("MASTER ANALYSIS").default_open(false).show(ui, |ui| self.master(ui, p));
             ui.add_space(8.0);
             card().show(ui, |ui| {
                 ui.label(RichText::new("HISTORY").size(10.5).color(DIM).strong());
@@ -1267,45 +1328,91 @@ impl eframe::App for Studio {
         }
 
         egui::TopBottomPanel::top("top")
-            .exact_height(58.0)
+            .exact_height(62.0)
             .frame(
                 egui::Frame::none()
                     .fill(theme::Tokens::DARK.toolbar_bg)
                     .inner_margin(egui::Margin::symmetric(14.0, 8.0))
                     .stroke(Stroke::new(1.0_f32, LINE)),
             )
-            .show(ctx, |ui| self.top_bar(ui, &p, undo));
+            .show(ctx, |ui| {
+                egui::ScrollArea::horizontal()
+                    .id_salt("transport_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.top_bar(ui, &p, undo));
+            });
 
-        // the mixer and the rack take the browser's space: strips need the width
+        egui::TopBottomPanel::top("workspaces")
+            .exact_height(40.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(PANEL)
+                    .inner_margin(egui::Margin::symmetric(14.0, 6.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if let Some(v) = tabs(ui, &VIEWS, self.view) {
+                        self.view = v;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_inspector, "Inspector");
+                        ui.checkbox(&mut self.note_editor, "Note editor");
+                        ui.label(
+                            RichText::new(format!(
+                                "{} tracks / {} buses",
+                                p.tracks.len(),
+                                p.buses.len()
+                            ))
+                            .monospace()
+                            .size(11.0)
+                            .color(DIM),
+                        );
+                    });
+                });
+            });
+        // The dock uses actual tracks and buses. Overflow scrolls instead of inventing returns.
+        if self.view != 1 && self.view != 6 {
+            egui::TopBottomPanel::bottom("console_dock")
+                .exact_height(if ctx.screen_rect().height() < 800.0 {
+                    170.0
+                } else {
+                    205.0
+                })
+                .resizable(true)
+                .min_height(180.0)
+                .max_height(300.0)
+                .frame(
+                    egui::Frame::none()
+                        .fill(PANEL)
+                        .inner_margin(egui::Margin::symmetric(14.0, 8.0))
+                        .stroke(Stroke::new(1.0_f32, LINE)),
+                )
+                .show(ctx, |ui| self.console_dock(ui, &p));
+        }
         if self.view != 1 && self.view != 6 {
             egui::SidePanel::left("browser")
-                .exact_width(232.0)
+                .exact_width(if ctx.screen_rect().width() < 1300.0 {
+                    180.0
+                } else {
+                    220.0
+                })
                 .resizable(false)
                 .frame(egui::Frame::none().fill(PANEL).inner_margin(12.0))
                 .show(ctx, |ui| self.browser(ui, &p));
         }
-
-        egui::SidePanel::right("inspector")
-            .exact_width(352.0)
-            .resizable(false)
-            .frame(egui::Frame::none().fill(PANEL).inner_margin(12.0))
-            .show(ctx, |ui| self.inspector(ui, &p, rev, &log));
-
-        egui::TopBottomPanel::bottom("bottom")
-            .exact_height(300.0)
-            .frame(
-                egui::Frame::none()
-                    .fill(PANEL)
-                    .inner_margin(12.0)
-                    .stroke(Stroke::new(1.0_f32, LINE)),
-            )
-            .show(ctx, |ui| {
-                ui.columns(2, |cols| {
-                    self.piano_roll(&mut cols[0], &p);
-                    self.master(&mut cols[1], &p);
+        if self.show_inspector {
+            egui::SidePanel::right("inspector")
+                .exact_width(if ctx.screen_rect().width() < 1300.0 {
+                    280.0
+                } else {
+                    320.0
+                })
+                .resizable(false)
+                .frame(egui::Frame::none().fill(PANEL).inner_margin(12.0))
+                .show(ctx, |ui| {
+                    self.inspector(ui, &p, rev, &log);
                 });
-            });
-
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
@@ -1313,22 +1420,20 @@ impl eframe::App for Studio {
                     .inner_margin(egui::Margin::symmetric(14.0, 10.0)),
             )
             .show(ctx, |ui| {
+                if self.view == 0 {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("SONG").size(10.5).color(DIM).strong());
+                        let names: Vec<String> = p
+                            .song_sections()
+                            .iter()
+                            .map(|s| format!("{} x{}", s.pattern, s.repeats))
+                            .collect();
+                        ui.label(RichText::new(names.join("  >  ")).size(11.0).color(DIM));
+                    });
+                    self.arrangement(ui, &p);
+                    ui.add_space(8.0);
+                }
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("SONG").size(10.5).color(DIM).strong());
-                    let names: Vec<String> = p
-                        .song_sections()
-                        .iter()
-                        .map(|s| format!("{} x{}", s.pattern, s.repeats))
-                        .collect();
-                    ui.label(RichText::new(names.join("  >  ")).size(11.0).color(DIM));
-                });
-                self.arrangement(ui, &p);
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if let Some(v) = tabs(ui, &VIEWS, self.view) {
-                        self.view = v;
-                    }
-                    ui.add_space(10.0);
                     let name = p
                         .patterns
                         .get(self.pattern)
@@ -1342,8 +1447,9 @@ impl eframe::App for Studio {
                             p.tracks.iter().map(|t| t.sends.len()).sum::<usize>()
                         ),
                         3 => format!(
-                            "{} clips · {} PPQ · {:.0} BPM",
+                            "{} pattern section{} · {} PPQ · {:.0} BPM",
                             playlist::placed_clips(&p).len(),
+                            if playlist::placed_clips(&p).len()==1 { "" } else { "s" },
                             crate::timebase::TICKS_PER_QUARTER,
                             p.bpm
                         ),
@@ -1361,7 +1467,7 @@ impl eframe::App for Studio {
                             p.samples.len()
                         ),
                         6 => format!(
-                            "{} strips \u{00B7} {} devices \u{00B7} every control by id",
+                            "{} strips \u{00B7} {} devices",
                             p.tracks.len() + p.buses.len() + 1,
                             p.tracks.len()
                                 + p.tracks.iter().map(|t| t.effects.len()).sum::<usize>()
@@ -1388,19 +1494,50 @@ impl eframe::App for Studio {
                     }
                 });
                 ui.add_space(6.0);
-                match self.view {
-                    1 => self.mixer(ui, &p),
-                    3 => self.playlist_view(ui, &p),
-                    2 => self.automation_view(ui, &p),
-                    4 => self.vocal_view(ui, &p),
-                    5 => {
-                        egui::ScrollArea::vertical()
-                            .id_salt("browser_content")
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| self.browser_view(ui, &p));
-                    }
-                    6 => self.rack_view(ui, &p, rev),
-                    _ => self.sequencer(ui, &p),
+                if p.tracks.is_empty() {
+                    card().show(ui, |ui| {
+                        ui.label(RichText::new("Your next track starts here").size(22.0).strong());
+                        ui.label("Choose an instrument, load a sound, or record a take. All edits stay in your project history.");
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Add drum kit").clicked() { for name in ["kick","snare","hat"] { self.call("add_track",json!({"name":name,"preset":name})); } self.view=0; }
+                            if ui.button("Add synth").clicked() { self.call("add_track",json!({"name":"synth","preset":"supersaw"})); self.view=0; }
+                            if ui.button("Browse sounds").clicked() { self.view=5; }
+                        });
+                    });
+                    ui.add_space(12.0);
+                }
+                if self.view == 1 || self.view == 6 {
+                    match self.view { 1 => self.mixer(ui, &p), _ => self.rack_view(ui, &p, rev) }
+                } else if self.view == 4 || self.view == 2 {
+                    egui::ScrollArea::vertical().id_salt("vocal_full").auto_shrink([false,false]).show(ui, |ui| { if self.view == 4 { self.vocal_view(ui,&p); } else { self.automation_view(ui,&p); } });
+                } else if self.view == 5 {
+                    egui::ScrollArea::vertical().id_salt("browser_full").auto_shrink([false,false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show(ui, |ui| self.browser_view(ui,&p));
+                } else {
+                    let available = ui.available_height();
+                    let editor_h = if !self.note_editor { available } else if available < 480.0 { (available-274.0).max(100.0) } else if self.view==3 { (available*0.62).max(130.0) } else { (available*0.50).max(130.0) };
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(ui.available_width(), editor_h),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_clip_rect(ui.max_rect());
+                            ui.set_max_height(editor_h);
+                            match self.view {
+                                1 => self.mixer(ui, &p),
+                                3 => self.playlist_view(ui, &p),
+                                2 => self.automation_view(ui, &p),
+                                4 => self.vocal_view(ui, &p),
+                                5 => {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("browser_content")
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| self.browser_view(ui, &p));
+                                }
+                                6 => self.rack_view(ui, &p, rev),
+                                _ => self.sequencer(ui, &p),
+                            }
+                        },
+                    );
+                    if self.note_editor { ui.add_space(8.0); self.piano_roll(ui, &p); }
                 }
             });
 
