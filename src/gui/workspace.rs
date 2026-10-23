@@ -70,12 +70,16 @@ pub struct Workspace {
     changed_at: f64,
     path: PathBuf,
     requested: Option<Pane>,
+    /// No saved layout yet: rebuild the default once the real window size is known.
+    fresh: bool,
 }
 impl Workspace {
-    fn default_dock(view: usize) -> DockState<Pane> {
+    fn default_dock(view: usize, screen_h: f32) -> DockState<Pane> {
+        // The transport strip needs about 108 px; keep that on short windows.
+        let top = (108.0 / screen_h.max(1.0)).clamp(0.155, 0.4);
         let mut d = DockState::new(vec![Pane::ALL[view.min(6)]]);
         d.main_surface_mut()
-            .split_above(NodeIndex::root(), 0.155, vec![Pane::Transport]);
+            .split_above(NodeIndex::root(), top, vec![Pane::Transport]);
         d
     }
     pub fn load(ctx: &egui::Context, view: usize) -> Self {
@@ -85,6 +89,7 @@ impl Workspace {
             .unwrap_or_else(std::env::temp_dir);
         let path = base.join("beatbox/studio-layout-v1.json");
         let text = std::fs::read_to_string(&path).ok();
+        let fresh = text.is_none();
         let dock = Self::restore(text.as_deref(), view, ctx.screen_rect().shrink(12.0));
         Self {
             dock,
@@ -92,6 +97,7 @@ impl Workspace {
             changed_at: 0.0,
             path,
             requested: None,
+            fresh,
         }
     }
     fn restore(text: Option<&str>, view: usize, bounds: Rect) -> DockState<Pane> {
@@ -109,7 +115,7 @@ impl Workspace {
             })
             .filter(|s| s.version == 1)
             .map(|s| s.dock)
-            .unwrap_or_else(|| Self::default_dock(view));
+            .unwrap_or_else(|| Self::default_dock(view, bounds.height() + 24.0));
         for i in 1..dock.surfaces_count() {
             let si = egui_dock::SurfaceIndex(i);
             let rect = dock
@@ -361,9 +367,13 @@ impl Studio {
                 changed_at: 0.0,
                 path: PathBuf::new(),
                 requested: None,
+                fresh: false,
             },
         );
         let bounds = ctx.screen_rect().shrink(12.0);
+        if std::mem::take(&mut ws.fresh) {
+            ws.dock = Workspace::default_dock(self.view, ctx.screen_rect().height());
+        }
         if let Some(p) = ws.requested.take() {
             ws.open(p);
         }
@@ -418,7 +428,8 @@ impl Studio {
                     });
                     ui.menu_button("Layout", |ui| {
                         if ui.button("Reset workspace").clicked() {
-                            ws.dock = Workspace::default_dock(self.view);
+                            ws.dock =
+                                Workspace::default_dock(self.view, ui.ctx().screen_rect().height());
                             ui.close_menu();
                         }
                         if ui.button("Focus").clicked() {
@@ -426,7 +437,7 @@ impl Studio {
                             ui.close_menu();
                         }
                         if ui.button("Compose").clicked() {
-                            ws.dock = Workspace::default_dock(0);
+                            ws.dock = Workspace::default_dock(0, ui.ctx().screen_rect().height());
                             ws.dock.main_surface_mut().split_below(
                                 NodeIndex(2),
                                 0.48,
@@ -435,7 +446,7 @@ impl Studio {
                             ui.close_menu();
                         }
                         if ui.button("Mix").clicked() {
-                            ws.dock = Workspace::default_dock(1);
+                            ws.dock = Workspace::default_dock(1, ui.ctx().screen_rect().height());
                             ws.dock.main_surface_mut().split_right(
                                 NodeIndex(2),
                                 0.73,
@@ -520,7 +531,7 @@ mod tests {
     use super::*;
     fn workspace() -> Workspace {
         Workspace {
-            dock: Workspace::default_dock(3),
+            dock: Workspace::default_dock(3, 700.0),
             saved: String::new(),
             changed_at: 0.0,
             path: std::env::temp_dir()
@@ -531,6 +542,7 @@ mod tests {
                 ))
                 .join("layout.json"),
             requested: None,
+            fresh: false,
         }
     }
     #[test]
