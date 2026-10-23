@@ -153,6 +153,9 @@ fn export_summary(v: &Value) -> String {
         None => "Export finished\n".to_string(),
     };
     let mut facts = Vec::new();
+    if let Some(n) = v["stems"].as_array().map(|a| a.len()) {
+        facts.push(format!("{n} files"));
+    }
     if let Some(f) = v["format"].as_str() {
         facts.push(f.to_uppercase());
     }
@@ -317,6 +320,7 @@ mod tests {
         assert!(!t.contains("integrated lufs"));
         assert!(export_summary(&json!({"path":"/o/a.mid","bytes":7618})).contains("7.4 KB"));
         assert!(export_summary(&json!({"path":"/o/a.mid","bytes":300})).contains("300 bytes"));
+        assert!(export_summary(&json!({"dir":"/o/s","stems":[{},{}]})).contains("2 files"));
         assert!(export_summary(&json!({"dir":"/o/stems"})).starts_with("Exported to /o/stems"));
     }
     #[test]
