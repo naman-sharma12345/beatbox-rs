@@ -566,8 +566,22 @@ pub fn pattern_bar(
         let label = Rect::from_min_size(pos2(lx, row.top() + 2.0), vec2(56.0, h));
         lx += 60.0;
         let plus = Rect::from_min_size(pos2(lx, row.top() + 2.0), vec2(20.0, h));
+        let new_end = (bars.saturating_sub(1) * cur.steps_per_bar()) as f32;
+        let shrink_blocked = cur
+            .clips
+            .values()
+            .any(|v| v.iter().any(|n| n.start >= new_end));
         for (r, t) in [(minus, "\u{2212}"), (plus, "+")] {
-            painter.rect_filled(r, 3.0, tk.button);
+            let dim = r == minus && (bars <= 1 || shrink_blocked);
+            painter.rect_filled(
+                r,
+                3.0,
+                if dim {
+                    tk.button.gamma_multiply(0.45)
+                } else {
+                    tk.button
+                },
+            );
             painter.text(
                 r.center(),
                 Align2::CENTER_CENTER,
@@ -585,9 +599,14 @@ pub fn pattern_bar(
         );
         if ui
             .interact(minus, ui.id().with("pat-len-minus"), Sense::click())
-            .on_hover_text("Shorter pattern (notes past the end are dropped)")
+            .on_hover_text(if shrink_blocked {
+                "The last bar has notes. Clear them first (nothing is deleted for you)."
+            } else {
+                "Shorter pattern"
+            })
             .clicked()
             && bars > 1
+            && !shrink_blocked
         {
             actions.push((
                 "set_pattern_length",
