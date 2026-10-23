@@ -76,6 +76,8 @@ pub struct Studio {
     inspector: Option<InspectorCache>,
     dragging: bool,
     toast: Option<(String, f64, bool)>,
+    /// Render WAV runs off the UI thread, like Export.
+    render_job: Option<Receiver<Result<Value, String>>>,
     /// Last mix-helper result, shown under the mixer helper row.
     mix_readout: Option<String>,
     mix_job: Option<(u64, Receiver<Result<String, String>>)>,
@@ -166,6 +168,7 @@ pub fn run(
                 inspector: None,
                 dragging: false,
                 toast: None,
+                render_job: None,
                 mix_readout: None,
                 mix_job: None,
                 mix_readout_revision: None,
@@ -506,20 +509,49 @@ impl Studio {
     }
 
     fn render_wav(&mut self) {
-        let r = self
-            .engine
-            .lock()
-            .unwrap()
-            .call_from("render", &json!({}), "you");
-        match r {
-            Ok(v) => {
-                self.toast = Some((
-                    format!("Rendered {}", v["path"].as_str().unwrap_or("")),
-                    0.0,
-                    true,
-                ))
+        if self.render_job.is_some() {
+            self.toast = Some(("A render is already running".into(), 0.0, false));
+            return;
+        }
+        let (project, bank, workdir) = {
+            let e = self.engine.lock().unwrap();
+            (e.project.clone(), e.bank.clone(), e.workdir.clone())
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.render_job = Some(rx);
+        self.toast = Some(("Rendering WAV...".into(), 0.0, true));
+        std::thread::spawn(move || {
+            let mut own = Engine::new(workdir);
+            own.project = project;
+            own.bank = bank;
+            let r = own
+                .call_from("render", &json!({}), "you")
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(r);
+        });
+    }
+
+    fn poll_render_job(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.render_job else { return };
+        match rx.try_recv() {
+            Ok(r) => {
+                self.render_job = None;
+                self.toast = Some(match r {
+                    Ok(v) => (
+                        format!("Rendered {}", v["path"].as_str().unwrap_or("")),
+                        0.0,
+                        true,
+                    ),
+                    Err(e) => (e, 0.0, false),
+                });
             }
-            Err(e) => self.toast = Some((format!("{e:#}"), 0.0, false)),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.render_job = None;
+                self.toast = Some(("Render stopped before finishing".into(), 0.0, false));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
         }
     }
 
@@ -1320,6 +1352,7 @@ impl eframe::App for Studio {
             self.dragging = false;
         }
         self.pump_render(&p, rev, ctx);
+        self.poll_render_job(ctx);
 
         // keyboard shortcuts (ported table: shortcuts.rs)
         for a in shortcuts::pressed(ctx) {
