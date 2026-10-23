@@ -14,7 +14,6 @@ use eframe::egui::{self, Color32, FontFamily, FontId, Stroke, Vec2};
 pub struct Tokens {
     pub panel_bg: Color32,
     pub panel_bg2: Color32,
-    pub toolbar_bg: Color32,
     pub border: Color32,
     pub border_light: Color32,
     pub text: Color32,
@@ -56,7 +55,6 @@ impl Tokens {
     pub const DARK: Tokens = Tokens {
         panel_bg: Color32::from_rgb(29, 25, 20),
         panel_bg2: Color32::from_rgb(36, 31, 25),
-        toolbar_bg: Color32::from_rgb(24, 21, 17),
         border: Color32::from_rgb(48, 41, 32),
         border_light: Color32::from_rgb(89, 77, 58),
         text: Color32::from_rgb(241, 234, 217),
