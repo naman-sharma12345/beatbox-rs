@@ -2,7 +2,7 @@
 //! beatbox-rs is fully manual ... The whole beatbox-rs should be
 //! controllable through mcp." These checks keep it that way.
 
-const SOURCES: [(&str, &str); 14] = [
+const SOURCES: [(&str, &str); 15] = [
     ("analyze_view.rs", include_str!("analyze_view.rs")),
     ("browser_view.rs", include_str!("browser_view.rs")),
     ("console.rs", include_str!("console.rs")),
@@ -17,6 +17,7 @@ const SOURCES: [(&str, &str); 14] = [
     ("views.rs", include_str!("views.rs")),
     ("vocal_view.rs", include_str!("vocal_view.rs")),
     ("widgets.rs", include_str!("widgets.rs")),
+    ("workspace.rs", include_str!("workspace.rs")),
 ];
 
 /// String literals in Rust source (comments skipped), with their line.
