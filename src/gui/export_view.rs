@@ -442,3 +442,51 @@ mod collision_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+#[cfg(test)]
+mod extension_tests {
+    use super::*;
+
+    fn reserved(e: &crate::engine::Engine, kind: usize, args: Value) -> std::path::PathBuf {
+        let key = if kind == 1 { "dir" } else { "path" };
+        let mut a = args;
+        reserve_target(e, kind, &mut a).unwrap();
+        std::path::PathBuf::from(a[key].as_str().unwrap())
+    }
+
+    #[test]
+    fn typed_names_without_a_type_get_the_selected_formats_extension() {
+        let dir = std::env::temp_dir().join(format!("gui_export_ext_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let e = crate::engine::Engine::new(dir.clone());
+        let ext = |p: &std::path::Path| p.extension().map(|x| x.to_string_lossy().to_string());
+
+        // audio: the chosen format decides the extension
+        let wav = reserved(&e, 0, json!({"path": dir.join("a_song"), "format": "wav"}));
+        assert_eq!(ext(&wav).as_deref(), Some("wav"));
+        let flac = reserved(&e, 0, json!({"path": dir.join("b_song"), "format": "flac"}));
+        assert_eq!(ext(&flac).as_deref(), Some("flac"));
+        // MIDI and click track ignore the audio format
+        let mid = reserved(&e, 2, json!({"path": dir.join("c_song"), "format": "flac"}));
+        assert_eq!(ext(&mid).as_deref(), Some("mid"));
+        let click = reserved(&e, 3, json!({"path": dir.join("d_song"), "format": "flac"}));
+        assert_eq!(ext(&click).as_deref(), Some("wav"));
+        // a name that already has a type keeps it
+        let kept = reserved(
+            &e,
+            0,
+            json!({"path": dir.join("e_song.mp3"), "format": "wav"}),
+        );
+        assert_eq!(ext(&kept).as_deref(), Some("mp3"));
+        // a stems folder is a folder: no extension is added
+        let folder = reserved(&e, 1, json!({"dir": dir.join("f_stems")}));
+        assert_eq!(ext(&folder), None);
+        // a taken name is never replaced: the typed name still gets a number
+        std::fs::write(dir.join("g_song.wav"), b"keep").unwrap();
+        let next = reserved(&e, 0, json!({"path": dir.join("g_song"), "format": "wav"}));
+        assert_ne!(next, dir.join("g_song.wav"));
+        assert_eq!(ext(&next).as_deref(), Some("wav"));
+        assert_eq!(std::fs::read(dir.join("g_song.wav")).unwrap(), b"keep");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
