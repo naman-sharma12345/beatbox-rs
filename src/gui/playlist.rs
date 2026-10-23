@@ -105,7 +105,11 @@ impl Studio {
                     .size(11.0)
                     .color(tk.ruler_text),
             );
-            for pat in &p.patterns {
+            for pat in p
+                .patterns
+                .iter()
+                .filter(|q| !q.name.starts_with(crate::tools_fl::PL))
+            {
                 let live = self.perf.as_deref() == Some(pat.name.as_str());
                 let next = matches!(&self.perf_next, Some(Some(n)) if *n == pat.name);
                 let label = if next {
@@ -349,7 +353,7 @@ impl Studio {
                         pt.with_clip_rect(title).text(
                             pos2(title.min.x + 3.0, title.center().y),
                             Align2::LEFT_CENTER,
-                            &pat.name,
+                            super::fl_playlist::friendly_name(&pat.name),
                             FontId::proportional(8.5),
                             tk.text_dark,
                         );
