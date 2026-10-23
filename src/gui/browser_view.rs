@@ -251,6 +251,22 @@ impl Studio {
                             continue;
                         }
                         ui.horizontal(|ui| {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(340.0, 34.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_min_size(egui::vec2(340.0, 34.0));
+                                    ui.label(RichText::new(n).size(14.0).strong().color(tk.text));
+                                    if !d.is_empty() {
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(d).size(10.5).color(tk.text_dim),
+                                            )
+                                            .truncate(),
+                                        );
+                                    }
+                                },
+                            );
                             if ui
                                 .add_enabled(
                                     hear_busy.is_none(),
@@ -286,12 +302,6 @@ impl Studio {
                             {
                                 call = Some(("add_track".into(), json!({"name": n, "preset": n})));
                             }
-                            ui.vertical(|ui| {
-                                ui.label(RichText::new(n).size(13.0).strong().color(tk.text));
-                                if !d.is_empty() {
-                                    ui.label(RichText::new(d).size(10.5).color(tk.text_dim));
-                                }
-                            });
                         });
                         ui.add_space(3.0);
                     }
