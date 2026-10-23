@@ -118,7 +118,7 @@ impl Workspace {
             path,
             requested: None,
             fresh,
-            mode: 0,
+            mode: if fresh && view == 3 { 2 } else { 0 },
         }
     }
     fn restore(text: Option<&str>, view: usize, bounds: Rect) -> DockState<Pane> {
