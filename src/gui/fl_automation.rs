@@ -133,7 +133,13 @@ pub fn automation_lanes(
             pos2(full.min.x, full.min.y + AUTO_CAPTION_H),
             vec2(full.width(), AUTO_H),
         );
-        painter.text(r.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, "No automation lanes yet: add_automation / generate_automation (or the Automation view) put one here.", FontId::proportional(10.0), Color32::from_gray(120));
+        painter.text(
+            r.left_center() + vec2(6.0, 0.0),
+            Align2::LEFT_CENTER,
+            "No automation yet. Open the Automation panel to draw a lane.",
+            FontId::proportional(10.0),
+            Color32::from_gray(120),
+        );
         return actions;
     }
     for (li, lane) in p.automation.iter().enumerate() {
