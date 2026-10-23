@@ -68,6 +68,8 @@ pub struct Studio {
     /// "unsaved changes" prompt before File > New project
     confirm_new: bool,
     confirm_quit: bool,
+    open_list: bool,
+    pending_open: Option<PathBuf>,
     export: export_view::ExportState,
     // view state
     pattern: usize,
@@ -162,6 +164,8 @@ pub fn run(
                 saved_rev,
                 confirm_new: false,
                 confirm_quit: false,
+                open_list: false,
+                pending_open: None,
                 engine,
                 player: Player::new(),
                 project_path: project,
@@ -535,6 +539,50 @@ impl Studio {
         }
     }
 
+    fn open_project_file(&mut self, path: PathBuf) {
+        let r =
+            self.engine
+                .lock()
+                .unwrap()
+                .call_from("load_project", &json!({"path": path}), "you");
+        match r {
+            Ok(_) => {
+                self.project_path = Some(path.clone());
+                self.saved_rev = self.engine.lock().unwrap().revision;
+                self.toast = Some((format!("Opened {}", path.display()), 0.0, true));
+            }
+            Err(e) => {
+                self.toast = Some((
+                    format!(
+                        "Could not open {}: {e:#}. Your current project is unchanged",
+                        path.display()
+                    ),
+                    0.0,
+                    false,
+                ))
+            }
+        }
+    }
+
+    fn saved_projects(&self) -> Vec<PathBuf> {
+        let dir = self.engine.lock().unwrap().workdir.clone();
+        let mut v: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".beatbox.json"))
+            .map(|e| {
+                let t = e
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                (t, PathBuf::from(e.file_name()))
+            })
+            .collect();
+        v.sort_by(|a, b| b.0.cmp(&a.0));
+        v.into_iter().map(|x| x.1).collect()
+    }
+
     fn start_new_project(&mut self) {
         self.call(
             "new_project",
@@ -813,6 +861,14 @@ impl Studio {
                                 } else {
                                     self.start_new_project();
                                 }
+                                ui.close_menu();
+                            }
+                            if ui
+                                .button("Open project...")
+                                .on_hover_text("Reopen a saved beat from this folder")
+                                .clicked()
+                            {
+                                self.open_list = true;
                                 ui.close_menu();
                             }
                             ui.separator();
@@ -1476,6 +1532,80 @@ impl eframe::App for Studio {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 3 => self.confirm_quit = false,
+                _ => {}
+            }
+        }
+        if self.open_list {
+            let files = self.saved_projects();
+            let mut open = true;
+            let mut pick: Option<PathBuf> = None;
+            egui::Window::new("Open a project")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    if files.is_empty() {
+                        ui.label("No saved beats in this folder yet. Press Save first.");
+                    }
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            for f in &files {
+                                let name = f.to_string_lossy().replace(".beatbox.json", "");
+                                if ui.button(name).clicked() {
+                                    pick = Some(f.clone());
+                                }
+                            }
+                        });
+                });
+            if !open {
+                self.open_list = false;
+            }
+            if let Some(f) = pick {
+                self.open_list = false;
+                if self.engine.lock().unwrap().revision != self.saved_rev {
+                    self.pending_open = Some(f);
+                } else {
+                    self.open_project_file(f);
+                }
+            }
+        }
+        if let Some(target) = self.pending_open.clone() {
+            let mut action = 0; // 1 save first, 2 discard, 3 cancel
+            egui::Window::new("Open another project?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("This project has changes that are not saved.");
+                    ui.label("Undo history is lost when you open another project.");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save, then open").clicked() {
+                            action = 1;
+                        }
+                        if ui.button("Discard changes").clicked() {
+                            action = 2;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            action = 3;
+                        }
+                    });
+                });
+            match action {
+                1 => {
+                    self.save();
+                    self.pending_open = None;
+                    if self.engine.lock().unwrap().revision == self.saved_rev {
+                        self.open_project_file(target);
+                    }
+                }
+                2 => {
+                    self.pending_open = None;
+                    self.open_project_file(target);
+                }
+                3 => self.pending_open = None,
                 _ => {}
             }
         }
