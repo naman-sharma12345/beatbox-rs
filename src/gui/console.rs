@@ -314,4 +314,4 @@ pub fn name_plate(p: &egui::Painter, r: Rect, name: &str, selected: bool) {
     );
     p.with_clip_rect(r)
         .text(r.center(), Align2::CENTER_CENTER, name, bold(11.5), t.text);
-                         }
+}
