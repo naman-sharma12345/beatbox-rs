@@ -718,6 +718,78 @@ fn audio_editor(
             ));
         }
     });
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .small_button("RUMBLE CUT")
+            .on_hover_text("remove rumble below 90 Hz")
+            .clicked()
+        {
+            call = Some((
+                "eq_1band".into(),
+                json!({"sample": name, "type": "high_pass", "freq": 90.0}),
+            ));
+        }
+        if ui
+            .small_button("MUD CUT")
+            .on_hover_text("scoop the boxy sound around 300 Hz")
+            .clicked()
+        {
+            call = Some((
+                "eq_1band".into(),
+                json!({"sample": name, "type": "peak", "freq": 300.0, "gain": -4.0, "q": 1.0}),
+            ));
+        }
+        if ui
+            .small_button("PRESENCE")
+            .on_hover_text("bring the sound forward around 4 kHz")
+            .clicked()
+        {
+            call = Some((
+                "eq_1band".into(),
+                json!({"sample": name, "type": "peak", "freq": 4000.0, "gain": 3.0, "q": 1.0}),
+            ));
+        }
+        if ui
+            .small_button("AIR")
+            .on_hover_text("add brightness above 10 kHz")
+            .clicked()
+        {
+            call = Some((
+                "eq_1band".into(),
+                json!({"sample": name, "type": "high_shelf", "freq": 10000.0, "gain": 3.0}),
+            ));
+        }
+        if ui
+            .small_button("SMILE")
+            .on_hover_text("more lows and highs, fewer mids")
+            .clicked()
+        {
+            call = Some((
+                "eq_7band".into(),
+                json!({"sample": name, "low_shelf_freq": 120.0, "low_shelf_gain": 2.0, "mid_freq": 1000.0, "mid_gain": -2.0, "high_shelf_freq": 8000.0, "high_shelf_gain": 2.0}),
+            ));
+        }
+        if ui
+            .small_button("GATE")
+            .on_hover_text("silence the quiet parts between hits")
+            .clicked()
+        {
+            call = Some((
+                "expander_gate".into(),
+                json!({"sample": name, "ratio": 100.0}),
+            ));
+        }
+        if ui
+            .small_button("EXPAND")
+            .on_hover_text("gently turn down the quiet parts")
+            .clicked()
+        {
+            call = Some((
+                "expander_gate".into(),
+                json!({"sample": name, "ratio": 3.0}),
+            ));
+        }
+    });
     ui.label(
         RichText::new("each edit keeps the original and adds a new sample")
             .size(10.0)

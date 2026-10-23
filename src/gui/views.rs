@@ -229,49 +229,67 @@ impl Studio {
         // one-click mix helpers, each the engine call it names; answers show
         // under the row
         let tk = Tokens::DARK;
-        let mut op: Option<(&str, &str)> = None;
+        let mut op: Option<(&str, &str, serde_json::Value)> = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
-            for (label, tool, hover) in [
+            for (label, tool, args, hover) in [
                 (
                     "MIX REPORT",
                     "mix_report",
+                    json!({}),
                     "levels, peaks and balance for every track",
                 ),
                 (
                     "MASTER CHECK",
                     "check_master",
+                    json!({}),
                     "loudness and true peak against the target",
                 ),
                 (
                     "MASKING",
                     "masking_matrix",
+                    json!({}),
                     "which tracks fight for the same frequencies",
                 ),
-                ("LEVELS", "level_hints", "suggested level moves"),
-                ("BALANCE", "balance_mix", "even out the track levels"),
+                ("LEVELS", "level_hints", json!({}), "suggested level moves"),
+                (
+                    "BALANCE",
+                    "balance_mix",
+                    json!({}),
+                    "even out the track levels",
+                ),
                 (
                     "MASTER",
                     "master_assistant",
+                    json!({}),
                     "master the song to streaming loudness",
                 ),
                 (
                     "CARVE",
                     "carve_mix",
+                    json!({}),
                     "give each track its own frequency space",
+                ),
+                (
+                    "STEREO",
+                    "stereo_image",
+                    json!({}),
+                    "width and phase per frequency band",
+                ),
+                (
+                    "EQ CURVE",
+                    "eq_curve",
+                    json!({"track": "master"}),
+                    "the frequency shape of the master chain",
                 ),
             ] {
                 if ui.small_button(label).on_hover_text(hover).clicked() {
-                    op = Some((label, tool));
+                    op = Some((label, tool, args));
                 }
             }
         });
-        if let Some((label, tool)) = op {
-            let r = self
-                .engine
-                .lock()
-                .unwrap()
-                .call_from(tool, &json!({}), "you");
+        if let Some((label, tool, args)) = op {
+            let r = self.engine.lock().unwrap().call_from(tool, &args, "you");
             match r {
                 Ok(v) => {
                     let mut text = String::new();
