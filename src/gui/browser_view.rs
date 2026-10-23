@@ -234,6 +234,15 @@ impl Studio {
                     .strong()
                     .color(tk.header_text),
             );
+            let previewing = self.engine.lock().unwrap().transport.auditioning;
+            if previewing
+                && ui
+                    .button("\u{25A0} Stop preview")
+                    .on_hover_text("Stop the sound that is playing")
+                    .clicked()
+            {
+                self.engine.lock().unwrap().transport.pending_audition = Some(None);
+            }
             egui::ScrollArea::vertical()
                 .id_salt("br_inst")
                 .max_height(h)
