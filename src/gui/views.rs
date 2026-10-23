@@ -580,6 +580,10 @@ impl Studio {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
+        ui.checkbox(
+            &mut self.mixer_routing,
+            "Show inserts, sends and outputs on each channel",
+        );
         let mut op: Option<(&str, &str, serde_json::Value)> = None;
         egui::CollapsingHeader::new("Mix analysis tools")
             .default_open(self.mix_readout.is_some())
@@ -807,167 +811,170 @@ impl Studio {
             if is_bus { ACCENT2 } else { t.text_dim },
         );
         y += 14.0;
-        // INSERTS
-        let sec = Rect::from_min_size(
-            Pos2::new(x0, y),
-            Vec2::new(iw, 16.0 + insert_rows as f32 * 17.0),
-        );
-        let area = section(&pt, sec, "INSERTS");
-        let insert_start = slot_page(
-            ui,
-            sec,
-            egui::Id::new(("insert_page", name)),
-            s.inserts.len(),
-            insert_rows,
-        );
-        for row in 0..insert_rows {
-            let k = insert_start + row;
-            let sr = slot_rect(area, row);
-            let ins = s.inserts.get(k);
-            let resp = ui.interact(sr, ui.id().with(("ins", name, k)), Sense::click());
-            let fill = match ins {
-                Some((_, true)) => Color32::from_rgb(70, 56, 30),
-                Some(_) => super::theme::Tokens::DARK.button,
-                None => t.slot_bg,
-            };
-            pt.rect(
-                sr,
-                2.0,
-                if resp.hovered() {
-                    fill.gamma_multiply(1.3)
-                } else {
-                    fill
-                },
-                Stroke::new(1.0_f32, super::theme::Tokens::DARK.border),
+        if self.mixer_routing {
+            // INSERTS
+            let sec = Rect::from_min_size(
+                Pos2::new(x0, y),
+                Vec2::new(iw, 16.0 + insert_rows as f32 * 17.0),
             );
-            match ins {
-                Some((label, bypass)) => {
-                    pt.with_clip_rect(sr).text(
-                        sr.center(),
-                        Align2::CENTER_CENTER,
-                        label,
-                        FontId::proportional(10.0),
-                        if *bypass { t.text_dim } else { t.text },
-                    );
-                    let resp = resp.on_hover_text(format!(
-                        "{label}{} · click: edit in the inspector",
-                        if *bypass { " (bypassed)" } else { "" }
-                    ));
-                    if resp.clicked() {
-                        if let StripKind::Track(i) = s.kind {
-                            self.selected = i;
+            let area = section(&pt, sec, "INSERTS");
+            let insert_start = slot_page(
+                ui,
+                sec,
+                egui::Id::new(("insert_page", name)),
+                s.inserts.len(),
+                insert_rows,
+            );
+            for row in 0..insert_rows {
+                let k = insert_start + row;
+                let sr = slot_rect(area, row);
+                let ins = s.inserts.get(k);
+                let resp = ui.interact(sr, ui.id().with(("ins", name, k)), Sense::click());
+                let fill = match ins {
+                    Some((_, true)) => Color32::from_rgb(70, 56, 30),
+                    Some(_) => super::theme::Tokens::DARK.button,
+                    None => t.slot_bg,
+                };
+                pt.rect(
+                    sr,
+                    2.0,
+                    if resp.hovered() {
+                        fill.gamma_multiply(1.3)
+                    } else {
+                        fill
+                    },
+                    Stroke::new(1.0_f32, super::theme::Tokens::DARK.border),
+                );
+                match ins {
+                    Some((label, bypass)) => {
+                        pt.with_clip_rect(sr).text(
+                            sr.center(),
+                            Align2::CENTER_CENTER,
+                            label,
+                            FontId::proportional(10.0),
+                            if *bypass { t.text_dim } else { t.text },
+                        );
+                        let resp = resp.on_hover_text(format!(
+                            "{label}{} · click: edit in the inspector",
+                            if *bypass { " (bypassed)" } else { "" }
+                        ));
+                        if resp.clicked() {
+                            if let StripKind::Track(i) = s.kind {
+                                self.selected = i;
+                            }
                         }
                     }
-                }
-                None => {
-                    pt.circle_filled(Pos2::new(sr.min.x + 6.0, sr.center().y), 1.5, t.text_dim);
+                    None => {
+                        pt.circle_filled(Pos2::new(sr.min.x + 6.0, sr.center().y), 1.5, t.text_dim);
+                    }
                 }
             }
-        }
-        y = sec.max.y + 4.0;
-        // SENDS (drag horizontally to change)
-        let sec = Rect::from_min_size(
-            Pos2::new(x0, y),
-            Vec2::new(iw, 16.0 + send_rows as f32 * 17.0),
-        );
-        let area = section(&pt, sec, "SENDS");
-        let send_start = slot_page(
-            ui,
-            sec,
-            egui::Id::new(("send_page", name)),
-            s.sends.len(),
-            send_rows,
-        );
-        for row in 0..send_rows {
-            let sr = slot_rect(area, row);
-            let Some((bus, db)) = s.sends.get(send_start + row) else {
+            y = sec.max.y + 4.0;
+            // SENDS (drag horizontally to change)
+            let sec = Rect::from_min_size(
+                Pos2::new(x0, y),
+                Vec2::new(iw, 16.0 + send_rows as f32 * 17.0),
+            );
+            let area = section(&pt, sec, "SENDS");
+            let send_start = slot_page(
+                ui,
+                sec,
+                egui::Id::new(("send_page", name)),
+                s.sends.len(),
+                send_rows,
+            );
+            for row in 0..send_rows {
+                let sr = slot_rect(area, row);
+                let Some((bus, db)) = s.sends.get(send_start + row) else {
+                    pt.rect(
+                        sr,
+                        2.0,
+                        t.slot_bg,
+                        Stroke::new(1.0_f32, super::theme::Tokens::DARK.border),
+                    );
+                    continue;
+                };
+                let id = egui::Id::new(("send", name.to_string(), bus.clone()));
+                let rr = ui.interact(sr, id, Sense::drag());
+                let mut v: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(*db);
+                if rr.dragged() {
+                    v = (v + rr.drag_delta().x * 0.25).clamp(-60.0, 6.0);
+                    ui.ctx().data_mut(|d| d.insert_temp(id, v));
+                    self.dragging = true;
+                }
+                if rr.drag_stopped() {
+                    ui.ctx().data_mut(|d| d.remove::<f32>(id));
+                    self.call("set_send", json!({"track": name, "bus": bus, "db": v}));
+                    self.dragging = false;
+                }
                 pt.rect(
                     sr,
                     2.0,
                     t.slot_bg,
                     Stroke::new(1.0_f32, super::theme::Tokens::DARK.border),
                 );
-                continue;
-            };
-            let id = egui::Id::new(("send", name.to_string(), bus.clone()));
-            let rr = ui.interact(sr, id, Sense::drag());
-            let mut v: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(*db);
-            if rr.dragged() {
-                v = (v + rr.drag_delta().x * 0.25).clamp(-60.0, 6.0);
-                ui.ctx().data_mut(|d| d.insert_temp(id, v));
-                self.dragging = true;
+                let frac = fader_db_to_pos(v);
+                pt.rect_filled(
+                    Rect::from_min_size(sr.min, Vec2::new(sr.width() * frac, sr.height()))
+                        .shrink(1.0),
+                    1.0,
+                    t.accent_dark,
+                );
+                pt.with_clip_rect(sr).text(
+                    sr.left_center() + Vec2::new(4.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    bus,
+                    FontId::proportional(9.5),
+                    t.text,
+                );
+                pt.text(
+                    sr.right_center() - Vec2::new(3.0, 0.0),
+                    Align2::RIGHT_CENTER,
+                    format!("{v:.0}"),
+                    FontId::monospace(9.0),
+                    t.counter_text,
+                );
+                rr.on_hover_text(format!("send to {bus}: drag to change"));
             }
-            if rr.drag_stopped() {
-                ui.ctx().data_mut(|d| d.remove::<f32>(id));
-                self.call("set_send", json!({"track": name, "bus": bus, "db": v}));
-                self.dragging = false;
+            y = sec.max.y + 4.0;
+            // I / O
+            let sec = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(iw, 16.0 + 18.0));
+            let area = section(&pt, sec, "OUTPUT");
+            let out_r = Rect::from_min_size(area.min, Vec2::new(iw - 4.0, 16.0));
+            let mut c = ui.new_child(egui::UiBuilder::new().max_rect(out_r));
+            let resp = selector_box(
+                &mut c,
+                out_r.width(),
+                out_r.height(),
+                &s.out,
+                if s.out == "master" { t.text } else { ACCENT2 },
+            );
+            let popup = ui.id().with(("route", name));
+            if resp.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(popup));
             }
-            pt.rect(
-                sr,
-                2.0,
-                t.slot_bg,
-                Stroke::new(1.0_f32, super::theme::Tokens::DARK.border),
-            );
-            let frac = fader_db_to_pos(v);
-            pt.rect_filled(
-                Rect::from_min_size(sr.min, Vec2::new(sr.width() * frac, sr.height())).shrink(1.0),
-                1.0,
-                t.accent_dark,
-            );
-            pt.with_clip_rect(sr).text(
-                sr.left_center() + Vec2::new(4.0, 0.0),
-                Align2::LEFT_CENTER,
-                bus,
-                FontId::proportional(9.5),
-                t.text,
-            );
-            pt.text(
-                sr.right_center() - Vec2::new(3.0, 0.0),
-                Align2::RIGHT_CENTER,
-                format!("{v:.0}"),
-                FontId::monospace(9.0),
-                t.counter_text,
-            );
-            rr.on_hover_text(format!("send to {bus}: drag to change"));
-        }
-        y = sec.max.y + 4.0;
-        // I / O
-        let sec = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(iw, 16.0 + 18.0));
-        let area = section(&pt, sec, "OUTPUT");
-        let out_r = Rect::from_min_size(area.min, Vec2::new(iw - 4.0, 16.0));
-        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(out_r));
-        let resp = selector_box(
-            &mut c,
-            out_r.width(),
-            out_r.height(),
-            &s.out,
-            if s.out == "master" { t.text } else { ACCENT2 },
-        );
-        let popup = ui.id().with(("route", name));
-        if resp.clicked() {
-            ui.memory_mut(|m| m.toggle_popup(popup));
-        }
-        egui::popup_below_widget(
-            ui,
-            popup,
-            &resp,
-            egui::PopupCloseBehavior::CloseOnClick,
-            |ui| {
-                ui.set_min_width(110.0);
-                let dests = std::iter::once("master".to_string())
-                    .chain(buses.iter().filter(|b| b.as_str() != name).cloned());
-                for d in dests {
-                    if ui.selectable_label(d == s.out, &d).clicked() && d != s.out {
-                        if is_bus {
-                            self.call("route_bus", json!({"bus": name, "destination": d}));
-                        } else {
-                            self.call("route_track", json!({"track": name, "bus": d}));
+            egui::popup_below_widget(
+                ui,
+                popup,
+                &resp,
+                egui::PopupCloseBehavior::CloseOnClick,
+                |ui| {
+                    ui.set_min_width(110.0);
+                    let dests = std::iter::once("master".to_string())
+                        .chain(buses.iter().filter(|b| b.as_str() != name).cloned());
+                    for d in dests {
+                        if ui.selectable_label(d == s.out, &d).clicked() && d != s.out {
+                            if is_bus {
+                                self.call("route_bus", json!({"bus": name, "destination": d}));
+                            } else {
+                                self.call("route_track", json!({"track": name, "bus": d}));
+                            }
                         }
                     }
-                }
-            },
-        );
-        y = sec.max.y + 6.0;
+                },
+            );
+            y = sec.max.y + 6.0;
+        }
         // pan knob + counter readout
         let ks = 34.0;
         let pid = egui::Id::new(("pan", name.to_string()));
