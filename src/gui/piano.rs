@@ -23,7 +23,7 @@ use eframe::egui::{
 };
 use serde_json::{json, Value};
 
-const KEY_W: f32 = 40.0;
+const KEY_W: f32 = 52.0;
 const HEADER_H: f32 = 22.0;
 const VEL_H: f32 = 48.0;
 
@@ -122,7 +122,7 @@ impl Studio {
         painter.rect_filled(full, 0.0, tk.panel_bg);
         // ---- header: title, hint, snap selector, ops ----
         // title row plus three rows of helper buttons
-        let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER_H * 4.0));
+        let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER_H * 2.0));
         painter.rect_filled(header, 0.0, tk.panel_bg2);
         painter.text(
             pos2(header.min.x + 8.0, header.min.y + HEADER_H / 2.0),
@@ -132,15 +132,15 @@ impl Studio {
             tk.header_text,
         );
         let bar = Rect::from_min_max(
-            pos2(header.min.x + 84.0, header.min.y + 1.0),
+            pos2(header.min.x + 100.0, header.min.y + 1.0),
             pos2(header.max.x - 4.0, header.min.y + HEADER_H - 1.0),
         );
         let mut tb = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(bar)
-                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        tb.spacing_mut().item_spacing.x = 3.0;
+        tb.set_clip_rect(bar);
         let sel_or_all = |sel: &[usize]| -> Value {
             if sel.is_empty() {
                 json!({})
@@ -154,74 +154,11 @@ impl Studio {
             }
         };
         let mut op: Option<(&str, Value)> = None;
-        if tb.small_button("Legato").on_hover_text("legato").clicked() {
-            op = Some(("legato", json!({})));
-        }
-        // FL piano-roll tools, each the MCP call it names
-        if tb
-            .small_button("Stacc")
-            .on_hover_text("articulate {style: staccato}")
-            .clicked()
-        {
-            op = Some(("articulate", json!({"style": "staccato"})));
-        }
-        if tb
-            .small_button("Chop")
-            .on_hover_text("chop_notes {pattern: 'x.x.x.x.'}: held notes into 8ths")
-            .clicked()
-        {
-            op = Some(("chop_notes", json!({"pattern": "x.x.x.x."})));
-        }
-        if tb
-            .small_button("LFO")
-            .on_hover_text("A velocity wave across the notes (sine, one bar)")
-            .clicked()
-        {
-            op = Some((
-                "lfo_tool",
-                json!({"property": "velocity", "shape": "sine", "rate": "1 bar"}),
-            ));
-        }
-        if tb
-            .small_button("Rev")
-            .on_hover_text("flip_notes {mode: time}: play backwards")
-            .clicked()
-        {
-            op = Some(("flip_notes", json!({"mode": "time"})));
-        }
-        if tb
-            .small_button("Flip")
-            .on_hover_text("flip_notes {mode: pitch}: mirror the pitches")
-            .clicked()
-        {
-            op = Some(("flip_notes", json!({"mode": "pitch"})));
-        }
-        if tb
-            .small_button("Vel-")
-            .on_hover_text("velocity -10%")
-            .clicked()
-        {
-            op = Some(("edit_notes", json!({"vel_add": -0.1})));
-        }
-        if tb
-            .small_button("Vel+")
-            .on_hover_text("velocity +10%")
-            .clicked()
-        {
-            op = Some(("edit_notes", json!({"vel_add": 0.1})));
-        }
         let g = snap_steps(self.piano.snap);
-        if tb
-            .small_button("Quantize")
-            .on_hover_text("Quantize starts to the snap grid")
-            .clicked()
-        {
-            op = Some(("quantize", json!({"grid": g, "strength": 1.0})));
-        }
         egui::ComboBox::from_id_salt(("snap", self.selected))
-            .width(52.0)
+            .width(64.0)
             .selected_text(format!(
-                "snap {}",
+                "Snap {}",
                 SNAPS[self.piano.snap.min(SNAPS.len() - 1)].0
             ))
             .show_ui(&mut tb, |ui| {
@@ -229,28 +166,35 @@ impl Studio {
                     ui.selectable_value(&mut self.piano.snap, i, *label);
                 }
             });
-        // the title takes what the toolbar leaves (the toolbar grows right to left)
-        let title_end = tb.min_rect().min.x - 6.0;
-        if title_end > header.min.x + 90.0 {
-            painter
-                .with_clip_rect(Rect::from_min_max(
-                    header.min,
-                    pos2(title_end, header.max.y),
-                ))
-                .text(
-                    pos2(header.min.x + 84.0, header.min.y + HEADER_H / 2.0),
-                    Align2::LEFT_CENTER,
-                    format!(
-                        "{} · {} · {} notes · {} sel",
-                        t.name,
-                        pat.name,
-                        notes.len(),
-                        self.piano.selected.len()
-                    ),
-                    FontId::proportional(10.0),
-                    tk.text_dim,
-                );
+        if tb.small_button("Quantize").clicked() {
+            op = Some(("quantize", json!({"grid":g,"strength":1.0})));
         }
+        tb.menu_button("Note tools", |ui| {
+            for (label, tool, args) in [
+                ("Legato", "legato", json!({})),
+                ("Staccato", "articulate", json!({"style":"staccato"})),
+                ("Chop", "chop_notes", json!({"pattern":"x.x.x.x."})),
+                (
+                    "Velocity LFO",
+                    "lfo_tool",
+                    json!({"property":"velocity","shape":"sine","rate":"1 bar"}),
+                ),
+                ("Reverse time", "flip_notes", json!({"mode":"time"})),
+                ("Flip pitch", "flip_notes", json!({"mode":"pitch"})),
+                ("Velocity +10%", "edit_notes", json!({"vel_add":0.1})),
+                ("Velocity -10%", "edit_notes", json!({"vel_add":-0.1})),
+            ] {
+                if ui.button(label).clicked() {
+                    op = Some((tool, args));
+                    ui.close_menu();
+                }
+            }
+        });
+        tb.label(
+            RichText::new(format!("{} / {} notes", t.name, notes.len()))
+                .size(11.0)
+                .color(tk.text_dim),
+        );
         // ---- helper rows under the title row: gen helpers, then edit helpers
         // split across two rows. Fixed rows, each clipped to its own strip, so
         // every button stays inside the panel at any window size ----
@@ -346,39 +290,28 @@ impl Studio {
                 "velocity rising across the pattern",
             ),
         ];
-        for (row, (tag, items)) in [
-            ("GEN", &gen_items[..]),
-            ("EDIT", &edit_a[..]),
-            ("", &edit_b[..]),
-        ]
-        .iter()
-        .enumerate()
-        {
-            let bar = Rect::from_min_max(
-                pos2(
-                    header.min.x + 4.0,
-                    header.min.y + HEADER_H * (1.0 + row as f32),
-                ),
-                pos2(
-                    header.max.x - 4.0,
-                    header.min.y + HEADER_H * (2.0 + row as f32) - 1.0,
-                ),
-            );
-            let mut tr = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(bar)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            );
-            tr.set_clip_rect(bar);
-            tr.spacing_mut().item_spacing.x = 3.0;
-            if !tag.is_empty() {
-                tr.label(RichText::new(*tag).size(9.0).color(tk.text_dim));
-            }
-            for (label, tool, args, hover) in items.iter() {
-                if tr.small_button(*label).on_hover_text(*hover).clicked() {
-                    op = Some((*tool, args.clone()));
+        let helpers = Rect::from_min_max(
+            pos2(header.left() + 6.0, header.top() + HEADER_H),
+            pos2(header.right() - 4.0, header.bottom()),
+        );
+        let mut tr = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(helpers)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        for (label, items) in [
+            ("Compose", &gen_items[..]),
+            ("Timing & expression", &edit_a[..]),
+            ("Pitch & velocity", &edit_b[..]),
+        ] {
+            tr.menu_button(label, |ui| {
+                for (label, tool, args, hover) in items {
+                    if ui.button(*label).on_hover_text(*hover).clicked() {
+                        op = Some((*tool, args.clone()));
+                        ui.close_menu();
+                    }
                 }
-            }
+            });
         }
         if let Some((id, mut a)) = op {
             if let (Some(obj), Value::Object(sel)) =
@@ -414,9 +347,9 @@ impl Studio {
                 Rect::from_min_size(pos2(roll.min.x, y), vec2(roll.width(), row_h)),
                 0.0,
                 if black {
-                    Color32::from_rgb(30, 30, 32)
+                    super::theme::Tokens::DARK.playlist_bg
                 } else {
-                    Color32::from_rgb(40, 40, 42)
+                    super::theme::Tokens::DARK.playlist_alt
                 },
             );
             let key =
@@ -433,7 +366,7 @@ impl Studio {
             if pitch % 12 == 0 {
                 pp.line_segment(
                     [pos2(roll.min.x, y + row_h), pos2(roll.max.x, y + row_h)],
-                    Stroke::new(1.0_f32, Color32::from_rgb(64, 64, 68)),
+                    Stroke::new(1.0_f32, super::theme::Tokens::DARK.bar_line),
                 );
                 if row_h > 6.0 {
                     pp.text(
@@ -458,11 +391,11 @@ impl Studio {
                     Stroke::new(
                         1.0_f32,
                         if bar_line {
-                            Color32::from_rgb(90, 90, 96)
+                            super::theme::Tokens::DARK.border_light
                         } else if beat {
-                            Color32::from_rgb(64, 64, 68)
+                            super::theme::Tokens::DARK.bar_line
                         } else {
-                            Color32::from_rgb(48, 48, 52)
+                            super::theme::Tokens::DARK.grid_line
                         },
                     ),
                 );
@@ -668,7 +601,7 @@ impl Studio {
             }
         }
         // ---- velocity lane ----
-        painter.rect_filled(vel, 0.0, Color32::from_rgb(28, 28, 30));
+        painter.rect_filled(vel, 0.0, super::theme::Tokens::DARK.slot_bg);
         painter.text(
             pos2(full.min.x + 4.0, vel.center().y),
             Align2::LEFT_CENTER,
