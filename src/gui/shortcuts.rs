@@ -49,7 +49,12 @@ pub const SHORTCUTS: &[(&str, Action, &str)] = &[
     ("Cmd+2", Action::View(1), "Mixer"),
     ("Cmd+3", Action::View(2), "Automation"),
     ("Cmd+4", Action::View(3), "Playlist"),
-    ("F8", Action::View(5), "Browser"),
+    ("Alt+F8", Action::View(5), "Browser"),
+    (
+        "F8",
+        Action::View(5),
+        "Browser (FL Studio opens its plugin picker here)",
+    ),
     ("[", Action::PrevPattern, "Previous pattern"),
     ("]", Action::NextPattern, "Next pattern"),
     ("Alt+ArrowUp", Action::PrevTrack, "Select track above"),
