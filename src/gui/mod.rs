@@ -520,7 +520,16 @@ impl Studio {
                 self.saved_rev = self.engine.lock().unwrap().revision;
                 self.toast = Some((format!("Saved {}", path.display()), 0.0, true));
             }
-            Err(e) => self.toast = Some((format!("{e:#}"), 0.0, false)),
+            Err(e) => {
+                self.toast = Some((
+                    format!(
+                        "Could not save {}: {e:#}. Your project is still open with your edits; check the folder is writable and try again",
+                        path.display()
+                    ),
+                    0.0,
+                    false,
+                ))
+            }
         }
     }
 
