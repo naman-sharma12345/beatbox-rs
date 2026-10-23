@@ -67,6 +67,7 @@ pub struct Studio {
     saved_rev: u64,
     /// "unsaved changes" prompt before File > New project
     confirm_new: bool,
+    confirm_quit: bool,
     export: export_view::ExportState,
     // view state
     pattern: usize,
@@ -160,6 +161,7 @@ pub fn run(
             Ok(Box::new(Studio {
                 saved_rev,
                 confirm_new: false,
+                confirm_quit: false,
                 engine,
                 player: Player::new(),
                 project_path: project,
@@ -1430,6 +1432,53 @@ impl eframe::App for Studio {
             250
         }));
         let (p, rev, log, undo) = self.snapshot();
+        // closing the window with unsaved edits asks first
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.confirm_quit
+            && self.engine.lock().unwrap().revision != self.saved_rev
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm_quit = true;
+        }
+        if self.confirm_quit {
+            let mut action = 0; // 1 save and quit, 2 quit anyway, 3 stay
+            egui::Window::new("Quit without saving?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("This project has changes that are not saved.");
+                    ui.label("Undo history is lost when the app closes.");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save, then quit").clicked() {
+                            action = 1;
+                        }
+                        if ui.button("Quit without saving").clicked() {
+                            action = 2;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            action = 3;
+                        }
+                    });
+                });
+            match action {
+                1 => {
+                    self.save();
+                    if self.engine.lock().unwrap().revision == self.saved_rev {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    } else {
+                        self.confirm_quit = false;
+                    }
+                }
+                2 => {
+                    self.saved_rev = self.engine.lock().unwrap().revision;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                3 => self.confirm_quit = false,
+                _ => {}
+            }
+        }
         if self.confirm_new {
             let mut action = 0; // 1 save first, 2 discard, 3 cancel
             egui::Window::new("Start a new project?")
