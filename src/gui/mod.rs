@@ -491,9 +491,18 @@ impl Studio {
             .project_path
             .clone()
             .unwrap_or_else(|| PathBuf::from("beat.beatbox.json"));
-        self.call("save_project", json!({"path": path}));
-        self.project_path = Some(path.clone());
-        self.toast = Some((format!("Saved {}", path.display()), 0.0, true));
+        let result =
+            self.engine
+                .lock()
+                .unwrap()
+                .call_from("save_project", &json!({"path": path}), "you");
+        match result {
+            Ok(_) => {
+                self.project_path = Some(path.clone());
+                self.toast = Some((format!("Saved {}", path.display()), 0.0, true));
+            }
+            Err(e) => self.toast = Some((format!("{e:#}"), 0.0, false)),
+        }
     }
 
     fn render_wav(&mut self) {
