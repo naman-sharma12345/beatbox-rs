@@ -630,6 +630,20 @@ pub fn playlist_grid(
             Stroke::new(1.5_f32, Color32::from_rgb(120, 220, 140)),
         );
     }
+    let overlaps = p.playlist.iter().enumerate().any(|(i, a)| {
+        p.playlist[i + 1..].iter().any(|b| {
+            a.start_bar < b.start_bar + b.bars.max(1) && b.start_bar < a.start_bar + a.bars.max(1)
+        })
+    });
+    if overlaps {
+        pt.text(
+            grid.left_bottom() + vec2(6.0, -4.0),
+            Align2::LEFT_BOTTOM,
+            "Blocks that share the same bars play together, on any track.",
+            FontId::proportional(11.0),
+            DIM,
+        );
+    }
     if p.playlist.is_empty() {
         pt.text(
             grid.center(),
