@@ -83,6 +83,7 @@ impl RackRow {
 #[derive(Clone, Debug, Default)]
 pub struct RackSel {
     pub selected: usize,
+    pub open_editor: bool,
     pub rows: Vec<RackRow>,
 }
 
@@ -139,7 +140,7 @@ pub fn channel_rack(
             head,
             5.0,
             if selected {
-                Color32::from_rgb(54, 58, 64)
+                super::theme::Tokens::DARK.button_hi
             } else {
                 PANEL2
             },
@@ -173,7 +174,7 @@ pub fn channel_rack(
             if t.solo {
                 SOLO
             } else {
-                Color32::from_rgb(40, 40, 44)
+                super::theme::Tokens::DARK.button
             },
         );
         painter.text(
@@ -217,7 +218,7 @@ pub fn channel_rack(
             if selected {
                 lerp_color(PANEL2, color, 0.35)
             } else {
-                Color32::from_rgb(52, 54, 60)
+                super::theme::Tokens::DARK.button
             },
         );
         painter.rect_filled(
@@ -249,6 +250,7 @@ pub fn channel_rack(
         }
         if keys_button(ui, g.keys, keys_id, selected, color).clicked() {
             sel.selected = ti;
+            sel.open_editor = true;
         }
         // steps
         painter.rect_filled(g.steps, 4.0, BG);
@@ -261,9 +263,9 @@ pub fn channel_rack(
                     .find(|n| n.start >= s as f32 && n.start < s as f32 + 1.0);
                 // FL shades every other beat (group of 4 steps)
                 let base = if (s / 4) % 2 == 0 {
-                    Color32::from_rgb(58, 56, 60)
+                    super::theme::Tokens::DARK.button
                 } else {
-                    Color32::from_rgb(74, 52, 56)
+                    super::theme::Tokens::DARK.accent_dark
                 };
                 painter.rect_filled(
                     r,
@@ -471,7 +473,7 @@ pub fn pattern_bar(
             if on {
                 color.gamma_multiply(0.8)
             } else {
-                Color32::from_rgb(48, 50, 56)
+                super::theme::Tokens::DARK.button
             },
         );
         painter.text(
@@ -494,7 +496,7 @@ pub fn pattern_bar(
     }
     let add = Rect::from_min_size(pos2(x, row.top() + 2.0), vec2(22.0, h));
     geo.add = add;
-    painter.rect_filled(add, 3.0, Color32::from_rgb(48, 50, 56));
+    painter.rect_filled(add, 3.0, super::theme::Tokens::DARK.button);
     painter.text(
         add.center(),
         Align2::CENTER_CENTER,
@@ -978,4 +980,4 @@ mod tests {
         assert_eq!(drop_spot(&p, 1, Some((0, 0))), (2, 0));
         assert_eq!(drop_spot(&p, 3, None), (0, 5));
     }
-}
+            }
