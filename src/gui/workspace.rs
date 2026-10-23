@@ -112,7 +112,11 @@ impl Workspace {
             .unwrap_or_else(|| Self::default_dock(view));
         for i in 1..dock.surfaces_count() {
             let si = egui_dock::SurfaceIndex(i);
-            let rect = dock[si][NodeIndex::root()].rect();
+            let rect = dock
+                .get_surface(si)
+                .and_then(|s| s.node_tree())
+                .and_then(|tree| tree.iter().next())
+                .and_then(|node| node.rect());
             if let Some(r) = rect {
                 let size = (r.size() + Vec2::new(12.0, 44.0))
                     .max(Vec2::new(440.0, 360.0))
@@ -586,6 +590,23 @@ mod tests {
         assert!(x >= 12.0 && y >= 60.0);
         assert!(x + z["x"].as_f64().unwrap() <= 1088.0);
         assert!(y + z["y"].as_f64().unwrap() <= 688.0);
+    }
+    #[test]
+    fn closed_floating_surface_does_not_break_next_start() {
+        let mut w = workspace();
+        let closed = w.dock.add_window(vec![Pane::Analysis]);
+        w.dock.add_window(vec![Pane::History]);
+        w.dock.remove_surface(closed);
+        w.flush().unwrap();
+        let text = std::fs::read_to_string(&w.path).unwrap();
+        let _ = std::fs::remove_file(&w.path);
+        let d = Workspace::restore(
+            Some(&text),
+            3,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 700.0)),
+        );
+        assert!(d.find_tab(&Pane::History).is_some());
+        assert!(d.find_tab(&Pane::Analysis).is_none());
     }
     #[test]
     fn split_and_floating_layout_round_trip_separately_from_project() {
