@@ -1,0 +1,568 @@
+//! Movable studio panels. Layout data is separate from the musical project.
+use super::*;
+use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Pane {
+    Sequencer,
+    Mixer,
+    Automation,
+    Playlist,
+    Vocal,
+    Browser,
+    Rack,
+    Library,
+    Inspector,
+    Notes,
+    Console,
+    Transport,
+    Analysis,
+    History,
+}
+impl Pane {
+    const ALL: [Self; 14] = [
+        Self::Sequencer,
+        Self::Mixer,
+        Self::Automation,
+        Self::Playlist,
+        Self::Vocal,
+        Self::Browser,
+        Self::Rack,
+        Self::Library,
+        Self::Inspector,
+        Self::Notes,
+        Self::Console,
+        Self::Transport,
+        Self::Analysis,
+        Self::History,
+    ];
+    fn title(self) -> &'static str {
+        match self {
+            Self::Sequencer => "Sequencer",
+            Self::Mixer => "Mixer",
+            Self::Automation => "Automation",
+            Self::Playlist => "Playlist",
+            Self::Vocal => "Vocal",
+            Self::Browser => "Sounds",
+            Self::Rack => "Rack",
+            Self::Library => "Library",
+            Self::Inspector => "Channel",
+            Self::Notes => "Note editor",
+            Self::Console => "Console",
+            Self::Transport => "Transport",
+            Self::Analysis => "Analysis",
+            Self::History => "History",
+        }
+    }
+    fn view(self) -> Option<usize> {
+        Self::ALL[..7].iter().position(|p| *p == self)
+    }
+}
+#[derive(Serialize, Deserialize)]
+struct Saved {
+    version: u32,
+    dock: DockState<Pane>,
+}
+pub struct Workspace {
+    dock: DockState<Pane>,
+    saved: String,
+    changed_at: f64,
+    path: PathBuf,
+    requested: Option<Pane>,
+}
+impl Workspace {
+    fn default_dock(view: usize) -> DockState<Pane> {
+        let mut d = DockState::new(vec![Pane::ALL[view.min(6)]]);
+        d.main_surface_mut()
+            .split_above(NodeIndex::root(), 0.155, vec![Pane::Transport]);
+        d
+    }
+    pub fn load(ctx: &egui::Context, view: usize) -> Self {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .unwrap_or_else(std::env::temp_dir);
+        let path = base.join("beatbox/studio-layout-v1.json");
+        let mut dock = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| {
+                let mut v: Value = serde_json::from_str(&s).ok()?;
+                if let Some(a) = v["dock"]["surfaces"].as_array_mut() {
+                    for s in a {
+                        if let Some(w) = s.get_mut("Window") {
+                            w[1]["new"] = json!(true);
+                        }
+                    }
+                }
+                serde_json::from_value::<Saved>(v).ok()
+            })
+            .filter(|s| s.version == 1)
+            .map(|s| s.dock)
+            .unwrap_or_else(|| Self::default_dock(view));
+        let bounds = ctx.screen_rect().shrink(12.0);
+        for i in 1..dock.surfaces_count() {
+            let si = egui_dock::SurfaceIndex(i);
+            let rect = dock[si][NodeIndex::root()].rect();
+            if let Some(r) = rect {
+                let size = (r.size() + Vec2::new(12.0, 44.0))
+                    .max(Vec2::new(440.0, 360.0))
+                    .min(bounds.size());
+                let pos = Pos2::new(
+                    r.left()
+                        .clamp(bounds.left(), (bounds.right() - size.x).max(bounds.left())),
+                    (r.top() - 32.0).clamp(60.0, (bounds.bottom() - size.y).max(60.0)),
+                );
+                if let Some(w) = dock.get_window_state_mut(si) {
+                    w.set_position(pos).set_size(size);
+                }
+            }
+        }
+        Self {
+            dock,
+            saved: String::new(),
+            changed_at: 0.0,
+            path,
+            requested: None,
+        }
+    }
+    pub(super) fn request_view(&mut self, v: usize) {
+        self.requested = Some(Pane::ALL[v.min(6)]);
+    }
+    fn open(&mut self, p: Pane) {
+        if let Some((s, n, t)) = self.dock.find_tab(&p) {
+            self.dock[s].set_active_tab(n, t);
+            self.dock.set_focused_node_and_surface((s, n));
+        } else {
+            // Reopening an editor must not bury it in the short Transport strip.
+            let target = self
+                .dock
+                .iter_all_tabs()
+                .find(|(_, tab)| tab.view().is_some())
+                .map(|((s, n), _)| (s, n));
+            if let Some(t) = target {
+                self.dock.set_focused_node_and_surface(t);
+            }
+            self.dock.push_to_focused_leaf(p);
+        }
+    }
+    pub(super) fn flush(&self) -> std::io::Result<()> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut value = serde_json::to_value(Saved {
+            version: 1,
+            dock: self.dock.clone(),
+        })?;
+        fn finite(v: &mut Value) {
+            match v {
+                Value::Object(m) => {
+                    for (k, v) in m {
+                        if (k == "x" || k == "y") && v.is_null() {
+                            *v = json!(0.0);
+                        } else {
+                            finite(v);
+                        }
+                    }
+                }
+                Value::Array(a) => {
+                    for v in a {
+                        finite(v)
+                    }
+                }
+                _ => {}
+            }
+        }
+        finite(&mut value);
+        let bytes = serde_json::to_vec(&value)?;
+        let tmp = self.path.with_extension("tmp");
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(tmp, &self.path)
+    }
+    fn persist(&mut self, now: f64) {
+        if let Ok(s) = serde_json::to_string(&Saved {
+            version: 1,
+            dock: self.dock.clone(),
+        }) {
+            if s != self.saved {
+                self.saved = s;
+                self.changed_at = now;
+            }
+            if self.changed_at > 0.0 && now - self.changed_at > 0.8 {
+                if self.flush().is_ok() {
+                    self.changed_at = 0.0;
+                } else {
+                    self.changed_at = now;
+                }
+            }
+        }
+    }
+}
+struct Viewer<'a> {
+    studio: &'a mut Studio,
+    p: &'a Project,
+    rev: u64,
+    log: &'a (Vec<String>, Vec<String>),
+    undo: (usize, usize),
+    request: Option<Pane>,
+}
+impl TabViewer for Viewer<'_> {
+    type Tab = Pane;
+    fn title(&mut self, p: &mut Pane) -> egui::WidgetText {
+        egui::RichText::new(p.title()).size(12.0).into()
+    }
+    fn id(&mut self, p: &mut Pane) -> egui::Id {
+        egui::Id::new(("studio-panel", *p))
+    }
+    fn on_tab_button(&mut self, p: &mut Pane, r: &egui::Response) {
+        if r.clicked() {
+            if let Some(v) = p.view() {
+                self.studio.view = v;
+            }
+        }
+    }
+    fn scroll_bars(&self, _: &Pane) -> [bool; 2] {
+        [true, true]
+    }
+    fn ui(&mut self, ui: &mut egui::Ui, pane: &mut Pane) {
+        ui.set_min_size(match pane {
+            Pane::Transport => Vec2::new(800.0, 48.0),
+            Pane::Console => Vec2::new(420.0, 230.0),
+            Pane::Inspector | Pane::Library | Pane::Analysis | Pane::History => {
+                Vec2::new(250.0, 220.0)
+            }
+            _ => Vec2::new(420.0, 320.0),
+        });
+        let p = self.p;
+        let s = &mut self.studio;
+        if let Some(v) = pane.view() {
+            if ui.rect_contains_pointer(ui.max_rect()) {
+                s.view = v;
+            }
+        }
+        ui.push_id(*pane, |ui| match pane {
+            Pane::Transport => {
+                egui::ScrollArea::horizontal()
+                    .id_salt("transport")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| s.top_bar(ui, p, self.undo));
+            }
+            Pane::Library => s.browser(ui, p),
+            Pane::Inspector => s.inspector(ui, p, self.rev, self.log),
+            Pane::Console => s.console_dock(ui, p),
+            Pane::Notes => s.piano_roll(ui, p),
+            Pane::Analysis => {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| s.master(ui, p));
+            }
+            Pane::History => {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("Project history").size(20.0).strong());
+                        ui.add_space(12.0);
+                        for (i, line) in self.log.1.iter().enumerate() {
+                            if ui
+                                .selectable_label(false, RichText::new(line).color(DIM).italics())
+                                .on_hover_text("Redo up to here")
+                                .clicked()
+                            {
+                                s.call("redo", json!({"steps":self.log.1.len()-i}));
+                            }
+                        }
+                        for (i, line) in self.log.0.iter().enumerate() {
+                            if ui
+                                .selectable_label(i == 0, line)
+                                .on_hover_text("Go back to this step")
+                                .clicked()
+                                && i > 0
+                            {
+                                s.call("undo", json!({"steps":i}));
+                            }
+                        }
+                    });
+            }
+            _ => {
+                if p.tracks.is_empty() {
+                    ui.add_space(28.0);
+                    ui.label(
+                        RichText::new("Make room for your next idea.")
+                            .size(28.0)
+                            .strong(),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new("Start with a sound. Shape the workspace as you go.")
+                            .color(DIM),
+                    );
+                    ui.add_space(18.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Add drum kit").clicked() {
+                            for n in ["kick", "snare", "hat"] {
+                                s.call("add_track", json!({"name":n,"preset":n}));
+                            }
+                        }
+                        if ui.button("Add synth").clicked() {
+                            s.call("add_track", json!({"name":"synth","preset":"supersaw"}));
+                        }
+                        if ui.button("Browse sounds").clicked() {
+                            self.request = Some(Pane::Browser);
+                        }
+                    });
+                    ui.add_space(28.0);
+                }
+                match pane {
+                    Pane::Sequencer => {
+                        s.arrangement(ui, p);
+                        ui.add_space(12.0);
+                        s.sequencer(ui, p);
+                    }
+                    Pane::Mixer => s.mixer(ui, p),
+                    Pane::Rack => s.rack_view(ui, p, self.rev),
+                    Pane::Playlist => s.playlist_view(ui, p),
+                    Pane::Automation | Pane::Vocal | Pane::Browser => {
+                        egui::ScrollArea::vertical()
+                            .id_salt("content")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| match pane {
+                                Pane::Vocal => s.vocal_view(ui, p),
+                                Pane::Browser => s.browser_view(ui, p),
+                                _ => s.automation_view(ui, p),
+                            });
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+}
+impl Studio {
+    pub(super) fn workspace_ui(
+        &mut self,
+        ctx: &egui::Context,
+        p: &Project,
+        rev: u64,
+        log: &(Vec<String>, Vec<String>),
+        undo: (usize, usize),
+    ) {
+        let mut ws = std::mem::replace(
+            &mut self.workspace,
+            Workspace {
+                dock: DockState::new(vec![]),
+                saved: String::new(),
+                changed_at: 0.0,
+                path: PathBuf::new(),
+                requested: None,
+            },
+        );
+        let bounds = ctx.screen_rect().shrink(12.0);
+        if let Some(p) = ws.requested.take() {
+            ws.open(p);
+        }
+        egui::TopBottomPanel::top("workspace_header")
+            .exact_height(54.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(BG)
+                    .inner_margin(egui::Margin::symmetric(18.0, 10.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if self.brand.is_none() {
+                        if let Ok(im) = image::load_from_memory(include_bytes!(
+                            "../../assets/reel/logo/mark.png"
+                        )) {
+                            let im = im.to_rgba8();
+                            self.brand = Some(ctx.load_texture(
+                                "wound",
+                                egui::ColorImage::from_rgba_unmultiplied(
+                                    [im.width() as usize, im.height() as usize],
+                                    im.as_raw(),
+                                ),
+                                egui::TextureOptions::LINEAR,
+                            ));
+                        }
+                    }
+                    if let Some(mark) = &self.brand {
+                        ui.image((mark.id(), Vec2::splat(28.0)));
+                    }
+                    ui.label(
+                        RichText::new("beatbox")
+                            .font(FontId::new(19.0, egui::FontFamily::Name("brand".into()))),
+                    );
+                    ui.label(RichText::new("rs").color(ACCENT));
+                    ui.add_space(20.0);
+                    ui.menu_button("Panels", |ui| {
+                        for pane in Pane::ALL {
+                            let open = ws.dock.find_tab(&pane).is_some();
+                            let mut visible = open;
+                            if ui.checkbox(&mut visible, pane.title()).changed() {
+                                if open {
+                                    if let Some(loc) = ws.dock.find_tab(&pane) {
+                                        ws.dock.remove_tab(loc);
+                                    }
+                                } else {
+                                    ws.open(pane);
+                                }
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                    ui.menu_button("Layout", |ui| {
+                        if ui.button("Reset workspace").clicked() {
+                            ws.dock = Workspace::default_dock(self.view);
+                            ui.close_menu();
+                        }
+                        if ui.button("Focus").clicked() {
+                            ws.dock = DockState::new(vec![Pane::ALL[self.view.min(6)]]);
+                            ui.close_menu();
+                        }
+                        if ui.button("Compose").clicked() {
+                            ws.dock = Workspace::default_dock(0);
+                            ws.dock.main_surface_mut().split_below(
+                                NodeIndex(2),
+                                0.48,
+                                vec![Pane::Notes],
+                            );
+                            ui.close_menu();
+                        }
+                        if ui.button("Mix").clicked() {
+                            ws.dock = Workspace::default_dock(1);
+                            ws.dock.main_surface_mut().split_right(
+                                NodeIndex(2),
+                                0.73,
+                                vec![Pane::Inspector, Pane::Analysis],
+                            );
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        ui.label(
+                            RichText::new("Drag tabs to split, group or float panels.").size(11.0),
+                        );
+                        ui.label(
+                            RichText::new("Drag dividers to resize. Layout saves automatically.")
+                                .size(11.0),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(&p.name).color(DIM).size(12.0));
+                        if self.rendering.is_some() {
+                            ui.spinner();
+                        }
+                    });
+                });
+            });
+        let active_before = self.view;
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::none()
+                    .fill(BG)
+                    .inner_margin(egui::Margin::symmetric(14.0, 8.0)),
+            )
+            .show(ctx, |ui| {
+                let mut style = Style::from_egui(ui.style());
+                style.tab_bar.height = 30.0;
+                style.separator.extra = 48.0;
+                style.tab_bar.bg_fill = BG;
+                style.tab_bar.hline_color = LINE;
+                style.tab.tab_body.inner_margin = egui::Margin::same(16.0);
+                style.tab.tab_body.bg_fill = BG;
+                style.separator.width = 6.0;
+                style.separator.color_idle = BG;
+                style.separator.color_hovered = ACCENT;
+                style.separator.color_dragged = ACCENT;
+                style.tab.active.bg_fill = PANEL2;
+                style.tab_bar.rounding = egui::Rounding::same(6.0);
+                style.tab.focused.bg_fill = PANEL2;
+                style.tab.inactive.bg_fill = BG;
+                style.tab.inactive.text_color = DIM;
+                style.tab.active.text_color = TEXT;
+                style.tab.focused.text_color = TEXT;
+                let mut viewer = Viewer {
+                    studio: self,
+                    p,
+                    rev,
+                    log,
+                    undo,
+                    request: None,
+                };
+                DockArea::new(&mut ws.dock)
+                    .style(style)
+                    .window_bounds(bounds)
+                    .show_close_buttons(false)
+                    .show_inside(ui, &mut viewer);
+                if let Some(p) = viewer.request {
+                    ws.requested = Some(p);
+                }
+            });
+        if self.view != active_before {
+            ws.open(Pane::ALL[self.view.min(6)]);
+        }
+        if self.note_editor {
+            ws.open(Pane::Notes);
+            self.note_editor = false;
+        }
+        ws.persist(ctx.input(|i| i.time));
+        self.workspace = ws;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn workspace() -> Workspace {
+        Workspace {
+            dock: Workspace::default_dock(3),
+            saved: String::new(),
+            changed_at: 0.0,
+            path: std::env::temp_dir()
+                .join(format!("beatbox_layout_test_{}", std::process::id()))
+                .join("layout.json"),
+            requested: None,
+        }
+    }
+    #[test]
+    fn every_panel_can_hide_reopen_and_focus_without_duplicates() {
+        let mut w = workspace();
+        for p in Pane::ALL {
+            w.open(p);
+            w.open(p);
+            assert_eq!(w.dock.iter_all_tabs().filter(|(_, x)| **x == p).count(), 1);
+            let loc = w.dock.find_tab(&p).unwrap();
+            w.dock.remove_tab(loc);
+            assert!(w.dock.find_tab(&p).is_none());
+            w.open(p);
+            assert!(w.dock.find_tab(&p).is_some());
+        }
+    }
+    #[test]
+    fn split_and_floating_layout_round_trip_separately_from_project() {
+        let mut w = workspace();
+        for p in Pane::ALL[..7].iter() {
+            w.open(*p);
+        }
+        let loc = w.dock.find_tab(&Pane::Playlist).unwrap();
+        w.dock.remove_tab(loc);
+        w.dock.add_window(vec![Pane::Playlist]);
+        w.dock
+            .main_surface_mut()
+            .split_right(NodeIndex(2), 0.72, vec![Pane::Notes]);
+        w.flush().unwrap();
+        let saved: Saved = serde_json::from_slice(&std::fs::read(&w.path).unwrap()).unwrap();
+        assert_eq!(saved.version, 1);
+        assert_eq!(saved.dock.surfaces_count(), 2);
+        for p in Pane::ALL[..7].iter().chain([Pane::Notes].iter()) {
+            assert!(saved.dock.find_tab(p).is_some());
+        }
+        assert_eq!(
+            saved
+                .dock
+                .iter_all_tabs()
+                .map(|(_, p)| *p)
+                .collect::<Vec<_>>(),
+            w.dock.iter_all_tabs().map(|(_, p)| *p).collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(w.path.parent().unwrap());
+    }
+}
