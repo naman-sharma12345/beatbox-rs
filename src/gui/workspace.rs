@@ -72,6 +72,8 @@ pub struct Workspace {
     requested: Option<Pane>,
     /// No saved layout yet: rebuild the default once the real window size is known.
     fresh: bool,
+    /// Last workflow tab picked in the header: 0 none, 1 Beat, 2 Arrange, 3 Mix.
+    mode: u8,
 }
 impl Workspace {
     fn default_dock(view: usize, screen_h: f32) -> DockState<Pane> {
@@ -80,6 +82,24 @@ impl Workspace {
         let mut d = DockState::new(vec![Pane::ALL[view.min(6)]]);
         d.main_surface_mut()
             .split_above(NodeIndex::root(), top, vec![Pane::Transport]);
+        d
+    }
+    /// Beat: transport, step sequencer and piano roll.
+    fn beat_dock(h: f32) -> DockState<Pane> {
+        let mut d = Self::default_dock(0, h);
+        d.main_surface_mut()
+            .split_below(NodeIndex(2), 0.48, vec![Pane::Notes]);
+        d
+    }
+    /// Arrange: transport and the song timeline.
+    fn arrange_dock(h: f32) -> DockState<Pane> {
+        Self::default_dock(3, h)
+    }
+    /// Mix: transport, mixer, channel and master analysis.
+    fn mix_dock(h: f32) -> DockState<Pane> {
+        let mut d = Self::default_dock(1, h);
+        d.main_surface_mut()
+            .split_right(NodeIndex(2), 0.73, vec![Pane::Inspector, Pane::Analysis]);
         d
     }
     pub fn load(ctx: &egui::Context, view: usize) -> Self {
@@ -98,6 +118,7 @@ impl Workspace {
             path,
             requested: None,
             fresh,
+            mode: 0,
         }
     }
     fn restore(text: Option<&str>, view: usize, bounds: Rect) -> DockState<Pane> {
@@ -368,6 +389,7 @@ impl Studio {
                 path: PathBuf::new(),
                 requested: None,
                 fresh: false,
+                mode: 0,
             },
         );
         let bounds = ctx.screen_rect().shrink(12.0);
@@ -410,8 +432,41 @@ impl Studio {
                     );
                     ui.label(RichText::new("rs").color(ACCENT));
                     ui.add_space(20.0);
+                    let h = ui.ctx().screen_rect().height();
+                    for (m, name, tip) in [
+                        (
+                            1u8,
+                            "Beat",
+                            "Write drums and melodies: step sequencer and piano roll",
+                        ),
+                        (2u8, "Arrange", "Lay patterns out into a song"),
+                        (3u8, "Mix", "Balance levels, effects and the master"),
+                    ] {
+                        let on = ws.mode == m;
+                        let label = RichText::new(name).size(14.0).color(if on {
+                            egui::Color32::from_rgb(244, 232, 214)
+                        } else {
+                            DIM
+                        });
+                        let mut btn = egui::Button::new(label);
+                        btn = if on {
+                            btn.fill(egui::Color32::from_rgb(74, 30, 24))
+                                .stroke(egui::Stroke::new(1.0_f32, ACCENT))
+                        } else {
+                            btn.frame(false)
+                        };
+                        if ui.add(btn).on_hover_text(tip).clicked() {
+                            ws.mode = m;
+                            ws.dock = match m {
+                                1 => Workspace::beat_dock(h),
+                                2 => Workspace::arrange_dock(h),
+                                _ => Workspace::mix_dock(h),
+                            };
+                        }
+                    }
+                    ui.add_space(14.0);
                     ui.menu_button("Panels", |ui| {
-                        for pane in Pane::ALL {
+                        let mut toggle = |ui: &mut egui::Ui, pane: Pane| {
                             let open = ws.dock.find_tab(&pane).is_some();
                             let mut visible = open;
                             if ui.checkbox(&mut visible, pane.title()).changed() {
@@ -424,34 +479,34 @@ impl Studio {
                                 }
                                 ui.close_menu();
                             }
+                        };
+                        let main = [
+                            Pane::Playlist,
+                            Pane::Sequencer,
+                            Pane::Notes,
+                            Pane::Mixer,
+                            Pane::Browser,
+                        ];
+                        for pane in main {
+                            toggle(ui, pane);
                         }
+                        ui.menu_button("More panels", |ui| {
+                            for pane in Pane::ALL {
+                                if !main.contains(&pane) {
+                                    toggle(ui, pane);
+                                }
+                            }
+                        });
                     });
                     ui.menu_button("Layout", |ui| {
                         if ui.button("Reset workspace").clicked() {
-                            ws.dock =
-                                Workspace::default_dock(self.view, ui.ctx().screen_rect().height());
+                            ws.mode = 0;
+                            ws.dock = Workspace::default_dock(self.view, h);
                             ui.close_menu();
                         }
-                        if ui.button("Focus").clicked() {
+                        if ui.button("Focus on one panel").clicked() {
+                            ws.mode = 0;
                             ws.dock = DockState::new(vec![Pane::ALL[self.view.min(6)]]);
-                            ui.close_menu();
-                        }
-                        if ui.button("Compose").clicked() {
-                            ws.dock = Workspace::default_dock(0, ui.ctx().screen_rect().height());
-                            ws.dock.main_surface_mut().split_below(
-                                NodeIndex(2),
-                                0.48,
-                                vec![Pane::Notes],
-                            );
-                            ui.close_menu();
-                        }
-                        if ui.button("Mix").clicked() {
-                            ws.dock = Workspace::default_dock(1, ui.ctx().screen_rect().height());
-                            ws.dock.main_surface_mut().split_right(
-                                NodeIndex(2),
-                                0.73,
-                                vec![Pane::Inspector, Pane::Analysis],
-                            );
                             ui.close_menu();
                         }
                         ui.separator();
@@ -543,6 +598,7 @@ mod tests {
                 .join("layout.json"),
             requested: None,
             fresh: false,
+            mode: 0,
         }
     }
     #[test]
