@@ -706,7 +706,7 @@ impl Studio {
                     );
                 });
         }
-        let h = ui.available_height().clamp(300.0, 500.0);
+        let h = (ui.available_height() - 18.0).clamp(260.0, 500.0);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let scroll_w = ui.available_width() - MASTER_W - 8.0;
@@ -716,6 +716,7 @@ impl Studio {
             ui.allocate_ui(Vec2::new(scroll_w, h), |ui| {
                 egui::ScrollArea::horizontal()
                     .id_salt("mixer")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.horizontal_top(|ui| {
