@@ -581,68 +581,72 @@ impl Studio {
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
         let mut op: Option<(&str, &str, serde_json::Value)> = None;
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            for (label, tool, args, hover) in [
-                (
-                    "MIX REPORT",
-                    "mix_report",
-                    json!({}),
-                    "levels, peaks and balance for every track",
-                ),
-                (
-                    "MASTER CHECK",
-                    "check_master",
-                    json!({}),
-                    "loudness and true peak against the target",
-                ),
-                (
-                    "MASKING",
-                    "masking_matrix",
-                    json!({}),
-                    "which tracks fight for the same frequencies",
-                ),
-                ("LEVELS", "level_hints", json!({}), "suggested level moves"),
-                (
-                    "BALANCE",
-                    "balance_mix",
-                    json!({}),
-                    "even out the track levels",
-                ),
-                (
-                    "MASTER",
-                    "master_assistant",
-                    json!({}),
-                    "master the song to streaming loudness",
-                ),
-                (
-                    "CARVE",
-                    "carve_mix",
-                    json!({}),
-                    "give each track its own frequency space",
-                ),
-                (
-                    "STEREO",
-                    "stereo_image",
-                    json!({}),
-                    "width and phase per frequency band",
-                ),
-                (
-                    "EQ CURVE",
-                    "eq_curve",
-                    json!({"track": "master"}),
-                    "the frequency shape of the master chain",
-                ),
-            ] {
-                if ui
-                    .add_enabled(self.mix_job.is_none(), egui::Button::new(label).small())
-                    .on_hover_text(hover)
-                    .clicked()
-                {
-                    op = Some((label, tool, args));
-                }
-            }
-        });
+        egui::CollapsingHeader::new("Mix analysis tools")
+            .default_open(self.mix_readout.is_some())
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    for (label, tool, args, hover) in [
+                        (
+                            "MIX REPORT",
+                            "mix_report",
+                            json!({}),
+                            "levels, peaks and balance for every track",
+                        ),
+                        (
+                            "MASTER CHECK",
+                            "check_master",
+                            json!({}),
+                            "loudness and true peak against the target",
+                        ),
+                        (
+                            "MASKING",
+                            "masking_matrix",
+                            json!({}),
+                            "which tracks fight for the same frequencies",
+                        ),
+                        ("LEVELS", "level_hints", json!({}), "suggested level moves"),
+                        (
+                            "BALANCE",
+                            "balance_mix",
+                            json!({}),
+                            "even out the track levels",
+                        ),
+                        (
+                            "MASTER",
+                            "master_assistant",
+                            json!({}),
+                            "master the song to streaming loudness",
+                        ),
+                        (
+                            "CARVE",
+                            "carve_mix",
+                            json!({}),
+                            "give each track its own frequency space",
+                        ),
+                        (
+                            "STEREO",
+                            "stereo_image",
+                            json!({}),
+                            "width and phase per frequency band",
+                        ),
+                        (
+                            "EQ CURVE",
+                            "eq_curve",
+                            json!({"track": "master"}),
+                            "the frequency shape of the master chain",
+                        ),
+                    ] {
+                        if ui
+                            .add_enabled(self.mix_job.is_none(), egui::Button::new(label).small())
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            op = Some((label, tool, args));
+                        }
+                    }
+                });
+            });
         if let Some((label, tool, args)) = op {
             if matches!(
                 tool,
