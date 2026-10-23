@@ -18,7 +18,9 @@ use crate::note_edit::{apply_shift, keys_of, notes_json, reselect, snap_to, Note
 use crate::project::{Note, Project};
 use crate::theory;
 use crate::timebase::{tick_to_step, NoteValue};
-use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke};
+use eframe::egui::{
+    self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke,
+};
 use serde_json::{json, Value};
 
 const KEY_W: f32 = 40.0;
@@ -119,7 +121,7 @@ impl Studio {
         let painter = ui.painter_at(full);
         painter.rect_filled(full, 0.0, tk.panel_bg);
         // ---- header: title, hint, snap selector, ops ----
-        let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER_H));
+        let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER_H * 2.0));
         painter.rect_filled(header, 0.0, tk.panel_bg2);
         painter.text(
             pos2(header.min.x + 8.0, header.center().y),
@@ -130,7 +132,7 @@ impl Studio {
         );
         let bar = Rect::from_min_max(
             pos2(header.min.x + 84.0, header.min.y + 1.0),
-            pos2(header.max.x - 4.0, header.max.y - 1.0),
+            pos2(header.max.x - 4.0, header.min.y + HEADER_H - 1.0),
         );
         let mut tb = ui.new_child(
             egui::UiBuilder::new()
@@ -247,6 +249,118 @@ impl Studio {
                     FontId::proportional(10.0),
                     tk.text_dim,
                 );
+        }
+        // ---- second toolbar row: generate + edit helpers, each the MCP call it names ----
+        let bar2 = Rect::from_min_max(
+            pos2(header.min.x + 4.0, header.min.y + HEADER_H),
+            pos2(header.max.x - 4.0, header.max.y - 1.0),
+        );
+        let mut tb2 = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(bar2)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        tb2.spacing_mut().item_spacing.x = 3.0;
+        tb2.label(RichText::new("GEN").size(9.0).color(tk.text_dim));
+        for (label, tool, args, hover) in [
+            (
+                "Melody",
+                "generate_melody",
+                json!({}),
+                "a fresh melody on this track",
+            ),
+            (
+                "Fill",
+                "generate_fill",
+                json!({"style": "auto"}),
+                "a fill into the next section",
+            ),
+            (
+                "Ghost",
+                "generate_ghost_notes",
+                json!({}),
+                "quiet in-between hits",
+            ),
+            (
+                "Variation",
+                "generate_variation",
+                json!({"kind": "both"}),
+                "a twist on this pattern",
+            ),
+            (
+                "Counter",
+                "counter_melody",
+                json!({}),
+                "an answering line for this track",
+            ),
+            (
+                "Harmony",
+                "harmonize",
+                json!({"interval": "3rd"}),
+                "a harmony line above this track",
+            ),
+        ] {
+            if tb2.small_button(label).on_hover_text(hover).clicked() {
+                op = Some((tool, args));
+            }
+        }
+        tb2.separator();
+        tb2.label(RichText::new("EDIT").size(9.0).color(tk.text_dim));
+        for (label, tool, args, hover) in [
+            (
+                "Humanize",
+                "humanize",
+                json!({}),
+                "loosen timing and velocity",
+            ),
+            ("Slides", "add_slides", json!({}), "glides between notes"),
+            (
+                "Roll",
+                "roll_notes",
+                json!({"mode": "roll", "count": 3}),
+                "a roll on the selected steps",
+            ),
+            (
+                "Split",
+                "split_notes",
+                json!({"every": "1/8"}),
+                "cut held notes into 8ths",
+            ),
+            (
+                "Merge",
+                "merge_notes",
+                json!({}),
+                "glue touching notes together",
+            ),
+            (
+                "Snap",
+                "scale_snap",
+                json!({}),
+                "pull notes into the song scale",
+            ),
+            ("+12", "transpose", json!({"semitones": 12}), "up an octave"),
+            (
+                "-12",
+                "transpose",
+                json!({"semitones": -12}),
+                "down an octave",
+            ),
+            (
+                "Drop2",
+                "chord_voicing",
+                json!({"mode": "drop2"}),
+                "drop-2 chord voicing",
+            ),
+            (
+                "VelRamp",
+                "velocity_curve",
+                json!({"shape": "ramp_up"}),
+                "velocity rising across the pattern",
+            ),
+        ] {
+            if tb2.small_button(label).on_hover_text(hover).clicked() {
+                op = Some((tool, args));
+            }
         }
         if let Some((id, mut a)) = op {
             if let (Some(obj), Value::Object(sel)) =
