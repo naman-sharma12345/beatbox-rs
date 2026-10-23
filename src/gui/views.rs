@@ -1715,4 +1715,4 @@ fn denorm(t: f32, lo: f32, hi: f32, log: bool) -> f32 {
     } else {
         lo + (hi - lo) * t
     }
-    }
+}
