@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 #[derive(Default)]
 pub struct BrowserState {
     pub search: String,
+    pub section: usize,
     pub track: String,
     /// list_presets + list_palettes, fetched once
     pub catalog: Option<(Value, Value)>,
@@ -111,100 +112,124 @@ impl Studio {
                     }
                 });
         });
-        ui.add_space(6.0);
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            for (i, label) in [
+                "Sound library",
+                "Instruments",
+                "Effects & MIDI",
+                "Palettes",
+                "Analyze recording",
+            ]
+            .iter()
+            .enumerate()
+            {
+                ui.selectable_value(&mut self.browser.section, i, *label);
+            }
+        });
+        ui.separator();
+        let section = self.browser.section;
         let q = self.browser.search.clone();
         let track = self.browser.track.clone();
-        ui.add_space(10.0);
-        ui.label(
-            RichText::new(format!("PROJECT SAMPLES ({})", p.samples.len()))
-                .size(11.0)
-                .strong()
-                .color(tk.header_text),
-        );
-        if p.samples.is_empty() {
+        if section == 0 {
+            ui.add_space(10.0);
             ui.label(
-                RichText::new("none yet: import_sample {path}, download_sample {url}")
-                    .size(10.0)
-                    .color(tk.text_dim),
+                RichText::new(format!("PROJECT SAMPLES ({})", p.samples.len()))
+                    .size(11.0)
+                    .strong()
+                    .color(tk.header_text),
             );
-        }
-        for s in &p.samples {
-            if !matches(&q, &s.name, &s.source) {
-                continue;
-            }
-            ui.horizontal(|ui| {
-                if ui
-                    .small_button("+TRACK")
-                    .on_hover_text(format!(
-                        "add_sample_track {{name: {0}, sample: {0}}}",
-                        s.name
-                    ))
-                    .clicked()
-                {
-                    call = Some((
-                        "add_sample_track".into(),
-                        json!({"name": format!("{}_s", s.name), "sample": s.name}),
-                    ));
-                }
-                if ui
-                    .small_button("EDIT")
-                    .on_hover_text("open in the audio editor")
-                    .clicked()
-                {
-                    let ed = &mut self.browser.edit;
-                    *ed = SampleEdit {
-                        sample: s.name.clone(),
-                        start: 0.0,
-                        end: s.duration,
-                        lo: 2000.0,
-                        hi: 8000.0,
-                        gain: -60.0,
-                        outside: false,
-                        fade_ms: 10.0,
-                        ..Default::default()
-                    };
-                }
-                ui.label(RichText::new(&s.name).size(12.0).color(tk.text));
+            if p.samples.is_empty() {
                 ui.label(
-                    RichText::new(format!("{:.1} s \u{00B7} {}", s.duration, s.license))
+                    RichText::new("No project samples yet. Import a sound below, then open it in the audio editor.")
                         .size(10.0)
                         .color(tk.text_dim),
                 );
-            });
-        }
-        if !self.browser.edit.sample.is_empty()
-            && self.browser.edit.spec_for != self.browser.edit.sample
-        {
-            let nm = self.browser.edit.sample.clone();
-            let v = self
-                .engine
-                .lock()
-                .unwrap()
-                .call_from("sample_spectrogram", &json!({"sample": nm}), "you")
-                .ok();
-            self.browser.edit.spec = v;
-            self.browser.edit.spec_for = nm;
-        }
-        if let Some(si) = p
-            .samples
-            .iter()
-            .find(|x| !self.browser.edit.sample.is_empty() && x.name == self.browser.edit.sample)
-        {
-            if let Some(c) = audio_editor(ui, &tk, &mut self.browser.edit, si.duration) {
-                call = Some(c);
+            }
+            for s in &p.samples {
+                if !matches(&q, &s.name, &s.source) {
+                    continue;
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .small_button("+TRACK")
+                        .on_hover_text(format!(
+                            "add_sample_track {{name: {0}, sample: {0}}}",
+                            s.name
+                        ))
+                        .clicked()
+                    {
+                        call = Some((
+                            "add_sample_track".into(),
+                            json!({"name": format!("{}_s", s.name), "sample": s.name}),
+                        ));
+                    }
+                    if ui
+                        .small_button("EDIT")
+                        .on_hover_text("open in the audio editor")
+                        .clicked()
+                    {
+                        let ed = &mut self.browser.edit;
+                        *ed = SampleEdit {
+                            sample: s.name.clone(),
+                            start: 0.0,
+                            end: s.duration,
+                            lo: 2000.0,
+                            hi: 8000.0,
+                            gain: -60.0,
+                            outside: false,
+                            fade_ms: 10.0,
+                            ..Default::default()
+                        };
+                    }
+                    ui.label(RichText::new(&s.name).size(12.0).color(tk.text));
+                    ui.label(
+                        RichText::new(format!("{:.1} s \u{00B7} {}", s.duration, s.license))
+                            .size(10.0)
+                            .color(tk.text_dim),
+                    );
+                });
+            }
+            if !self.browser.edit.sample.is_empty()
+                && self.browser.edit.spec_for != self.browser.edit.sample
+            {
+                let nm = self.browser.edit.sample.clone();
+                let v = self
+                    .engine
+                    .lock()
+                    .unwrap()
+                    .call_from("sample_spectrogram", &json!({"sample": nm}), "you")
+                    .ok();
+                self.browser.edit.spec = v;
+                self.browser.edit.spec_for = nm;
+            }
+            if let Some(si) = p.samples.iter().find(|x| {
+                !self.browser.edit.sample.is_empty() && x.name == self.browser.edit.sample
+            }) {
+                if let Some(c) = audio_editor(ui, &tk, &mut self.browser.edit, si.duration) {
+                    call = Some(c);
+                }
             }
         }
-        self.sound_library(ui, &track);
+        if section == 0 {
+            self.sound_library(ui, &track);
+        }
         ui.add_space(6.0);
-        self.analyze_panel(ui);
+        if section == 4 {
+            self.analyze_panel(ui);
+        }
         ui.add_space(6.0);
         let h = ui.available_height() - 8.0;
         let hear_busy = self.browser.job.as_ref().map(|j| j.0.clone());
         let mut hear: Option<String> = None;
-        ui.columns(3, |cols| {
+        if section == 1 {
             // ---------- instrument presets
-            let ui = &mut cols[0];
-            ui.label(RichText::new("INSTRUMENTS").size(11.0).strong().color(tk.header_text));
+            ui.label(
+                RichText::new("INSTRUMENTS")
+                    .size(11.0)
+                    .strong()
+                    .color(tk.header_text),
+            );
             egui::ScrollArea::vertical().id_salt("br_inst").max_height(h).show(ui, |ui| {
                 for it in presets["instrument_presets"].as_array().cloned().unwrap_or_default() {
                     let (n, d) = (it["name"].as_str().unwrap_or(""), it["description"].as_str().unwrap_or(""));
@@ -225,14 +250,30 @@ impl Studio {
                     });
                 }
             });
-            // ---------- fx chains (Patcher-style presets) + effects
-            let ui = &mut cols[1];
+        }
+        if section == 2 {
+            // ---------- fx chains and MIDI
             let (port, rec, learning, links, keys) = {
                 let e = self.engine.lock().unwrap();
-                (e.midi.port.clone(), e.midi.record, e.midi.learn.clone(), e.midi.links.len(), if e.midi.track.is_empty() { p.tracks.first().map(|t| t.name.clone()).unwrap_or_default() } else { e.midi.track.clone() })
+                (
+                    e.midi.port.clone(),
+                    e.midi.record,
+                    e.midi.learn.clone(),
+                    e.midi.links.len(),
+                    if e.midi.track.is_empty() {
+                        p.tracks.first().map(|t| t.name.clone()).unwrap_or_default()
+                    } else {
+                        e.midi.track.clone()
+                    },
+                )
             };
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("MIDI IN").size(11.0).strong().color(tk.header_text));
+                ui.label(
+                    RichText::new("MIDI IN")
+                        .size(11.0)
+                        .strong()
+                        .color(tk.header_text),
+                );
                 match &port {
                     Some(n) => {
                         ui.label(RichText::new(n).size(11.0).color(tk.text));
@@ -241,8 +282,16 @@ impl Studio {
                         }
                     }
                     None => {
-                        if ui.small_button("FIND").on_hover_text("look for connected controllers").clicked() {
-                            let r = self.engine.lock().unwrap().call_from("midi_input", &json!({"action": "ports"}), "you");
+                        if ui
+                            .small_button("FIND")
+                            .on_hover_text("look for connected controllers")
+                            .clicked()
+                        {
+                            let r = self.engine.lock().unwrap().call_from(
+                                "midi_input",
+                                &json!({"action": "ports"}),
+                                "you",
+                            );
                             self.browser.midi_ports = Some(match r {
                                 Ok(v) => v["ports"].clone(),
                                 Err(err) => json!(format!("{err:#}")),
@@ -250,13 +299,24 @@ impl Studio {
                         }
                         match self.browser.midi_ports.clone() {
                             Some(Value::Array(list)) if list.is_empty() => {
-                                ui.label(RichText::new("no controller found").size(10.0).color(tk.text_dim));
+                                ui.label(
+                                    RichText::new("no controller found")
+                                        .size(10.0)
+                                        .color(tk.text_dim),
+                                );
                             }
                             Some(Value::Array(list)) => {
                                 for pt in list {
                                     let a = pt["port"].as_str().unwrap_or("").to_string();
-                                    if ui.small_button(pt["name"].as_str().unwrap_or(&a)).on_hover_text(format!("connect {a}")).clicked() {
-                                        call = Some(("midi_input".into(), json!({"action": "connect", "port": a})));
+                                    if ui
+                                        .small_button(pt["name"].as_str().unwrap_or(&a))
+                                        .on_hover_text(format!("connect {a}"))
+                                        .clicked()
+                                    {
+                                        call = Some((
+                                            "midi_input".into(),
+                                            json!({"action": "connect", "port": a}),
+                                        ));
                                     }
                                 }
                             }
@@ -269,29 +329,76 @@ impl Studio {
                 }
             });
             ui.horizontal_wrapped(|ui| {
-                if ui.small_button(format!("KEYS PLAY {track}")).on_hover_text("the keyboard plays this track").clicked() && !track.is_empty() {
-                    call = Some(("midi_input".into(), json!({"action": "set", "track": track})));
+                if ui
+                    .small_button(format!("KEYS PLAY {track}"))
+                    .on_hover_text("the keyboard plays this track")
+                    .clicked()
+                    && !track.is_empty()
+                {
+                    call = Some((
+                        "midi_input".into(),
+                        json!({"action": "set", "track": track}),
+                    ));
                 }
                 let mut r = rec;
-                if ui.checkbox(&mut r, "RECORD").on_hover_text("write what you play into the pattern under the play head").changed() {
+                if ui
+                    .checkbox(&mut r, "RECORD")
+                    .on_hover_text("write what you play into the pattern under the play head")
+                    .changed()
+                {
                     call = Some(("midi_input".into(), json!({"action": "set", "record": r})));
                 }
-                for (lbl, tgt) in [("LEARN VOL", format!("volume:{track}")), ("LEARN PAN", format!("pan:{track}"))] {
-                    if ui.small_button(lbl).on_hover_text(format!("the next knob you move controls {tgt}")).clicked() && !track.is_empty() {
-                        call = Some(("midi_input".into(), json!({"action": "learn", "target": tgt})));
+                for (lbl, tgt) in [
+                    ("LEARN VOL", format!("volume:{track}")),
+                    ("LEARN PAN", format!("pan:{track}")),
+                ] {
+                    if ui
+                        .small_button(lbl)
+                        .on_hover_text(format!("the next knob you move controls {tgt}"))
+                        .clicked()
+                        && !track.is_empty()
+                    {
+                        call = Some((
+                            "midi_input".into(),
+                            json!({"action": "learn", "target": tgt}),
+                        ));
                     }
                 }
                 if let Some(l) = &learning {
-                    ui.label(RichText::new(format!("move a control for {l}")).size(10.0).color(tk.text_dim));
+                    ui.label(
+                        RichText::new(format!("move a control for {l}"))
+                            .size(10.0)
+                            .color(tk.text_dim),
+                    );
                 } else {
-                    ui.label(RichText::new(format!("keys: {keys}  \u{00B7}  {links} linked")).size(10.0).color(tk.text_dim)).on_hover_text("links and the keys track are saved with the project");
+                    ui.label(
+                        RichText::new(format!("keys: {keys}  \u{00B7}  {links} linked"))
+                            .size(10.0)
+                            .color(tk.text_dim),
+                    )
+                    .on_hover_text("links and the keys track are saved with the project");
                 }
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("FX CHAINS").size(11.0).strong().color(tk.header_text));
-                if ui.small_button("SAVE TRACK'S CHAIN").on_hover_text(format!("save_fx_chain {{track: {track}, name: {track}_chain}}")).clicked() && !track.is_empty() {
-                    call = Some(("save_fx_chain".into(), json!({"track": track, "name": format!("{track}_chain")})));
+                ui.label(
+                    RichText::new("FX CHAINS")
+                        .size(11.0)
+                        .strong()
+                        .color(tk.header_text),
+                );
+                if ui
+                    .small_button("SAVE TRACK'S CHAIN")
+                    .on_hover_text(format!(
+                        "save_fx_chain {{track: {track}, name: {track}_chain}}"
+                    ))
+                    .clicked()
+                    && !track.is_empty()
+                {
+                    call = Some((
+                        "save_fx_chain".into(),
+                        json!({"track": track, "name": format!("{track}_chain")}),
+                    ));
                 }
             });
             for it in chains["chains"].as_array().cloned().unwrap_or_default() {
@@ -300,20 +407,39 @@ impl Studio {
                 if !matches(&q, n, d) {
                     continue;
                 }
-                let fx: Vec<String> = it["effects"].as_array().map(|a| a.iter().map(|x| x["type"].as_str().unwrap_or("?").to_string()).collect()).unwrap_or_default();
+                let fx: Vec<String> = it["effects"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|x| x["type"].as_str().unwrap_or("?").to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 ui.horizontal(|ui| {
-                    if ui.small_button("APPLY").on_hover_text(format!("apply_fx_chain {{track: {track}, chain: {n}}}")).clicked() && !track.is_empty() {
+                    if ui
+                        .small_button("APPLY")
+                        .on_hover_text(format!("apply_fx_chain {{track: {track}, chain: {n}}}"))
+                        .clicked()
+                        && !track.is_empty()
+                    {
                         call = Some(("apply_fx_chain".into(), json!({"track": track, "chain": n})));
                     }
-                    ui.label(RichText::new(n).size(12.0).color(tk.text)).on_hover_text(d);
-                    ui.add(egui::Label::new(RichText::new(fx.join(" > ")).size(10.0).color(tk.text_dim)).truncate()).on_hover_text(d);
+                    ui.label(RichText::new(n).size(12.0).color(tk.text))
+                        .on_hover_text(d);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(fx.join(" > ")).size(10.0).color(tk.text_dim),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(d);
                 });
             }
             ui.add_space(6.0);
             if self.browser.good_amount <= 0.0 {
                 self.browser.good_amount = 50.0;
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("SOUNDGOODIZER").size(11.0).strong().color(tk.header_text));
                 for (i, m) in ["A", "B", "C", "D"].iter().enumerate() {
                     let tip = ["even lift", "forward mids", "brighter top", "heavy low end"][i];
@@ -327,25 +453,57 @@ impl Studio {
             });
             ui.add_space(6.0);
             ui.add_space(8.0);
-            ui.label(RichText::new("EFFECTS").size(11.0).strong().color(tk.header_text));
-            egui::ScrollArea::vertical().id_salt("br_fx").max_height((ui.available_height() - 8.0).max(120.0)).show(ui, |ui| {
-                for it in presets["effects"].as_array().cloned().unwrap_or_default() {
-                    let (n, d) = (it["type"].as_str().unwrap_or(""), it["params"].as_str().unwrap_or(""));
-                    if !matches(&q, n, d) {
-                        continue;
-                    }
-                    ui.horizontal(|ui| {
-                        if ui.small_button("ADD").on_hover_text(format!("add_effect {{track: {track}, type: {n}}}")).clicked() && !track.is_empty() {
-                            call = Some(("add_effect".into(), json!({"track": track, "type": n})));
+            ui.label(
+                RichText::new("EFFECTS")
+                    .size(11.0)
+                    .strong()
+                    .color(tk.header_text),
+            );
+            egui::ScrollArea::vertical()
+                .id_salt("br_fx")
+                .max_height((ui.available_height() - 8.0).max(120.0))
+                .show(ui, |ui| {
+                    for it in presets["effects"].as_array().cloned().unwrap_or_default() {
+                        let (n, d) = (
+                            it["type"].as_str().unwrap_or(""),
+                            it["params"].as_str().unwrap_or(""),
+                        );
+                        if !matches(&q, n, d) {
+                            continue;
                         }
-                        ui.label(RichText::new(n).size(12.0).color(tk.text)).on_hover_text(d);
-                    });
-                    ui.add(egui::Label::new(RichText::new(format!("    {d}")).size(10.0).color(tk.text_dim)).truncate()).on_hover_text(d);
-                }
-            });
-            // ---------- palettes + samples
-            let ui = &mut cols[2];
-            ui.label(RichText::new("SOUND PALETTES").size(11.0).strong().color(tk.header_text));
+                        ui.horizontal(|ui| {
+                            if ui
+                                .small_button("ADD")
+                                .on_hover_text(format!("add_effect {{track: {track}, type: {n}}}"))
+                                .clicked()
+                                && !track.is_empty()
+                            {
+                                call =
+                                    Some(("add_effect".into(), json!({"track": track, "type": n})));
+                            }
+                            ui.label(RichText::new(n).size(12.0).color(tk.text))
+                                .on_hover_text(d);
+                        });
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("    {d}"))
+                                    .size(10.0)
+                                    .color(tk.text_dim),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(d);
+                    }
+                });
+        }
+        if section == 3 {
+            // ---------- palettes
+            ui.label(
+                RichText::new("SOUND PALETTES")
+                    .size(11.0)
+                    .strong()
+                    .color(tk.header_text),
+            );
             for it in palettes["palettes"].as_array().cloned().unwrap_or_default() {
                 let n = it["name"].as_str().unwrap_or("");
                 let d = it["description"].as_str().unwrap_or("");
@@ -353,14 +511,27 @@ impl Studio {
                     continue;
                 }
                 ui.horizontal(|ui| {
-                    if ui.small_button("APPLY").on_hover_text(format!("apply_palette {{palette: {n}}}")).clicked() {
+                    if ui
+                        .small_button("APPLY")
+                        .on_hover_text(format!("apply_palette {{palette: {n}}}"))
+                        .clicked()
+                    {
                         call = Some(("apply_palette".into(), json!({"palette": n})));
                     }
-                    ui.label(RichText::new(n).size(12.0).color(tk.text)).on_hover_text(d);
+                    ui.label(RichText::new(n).size(12.0).color(tk.text))
+                        .on_hover_text(d);
                 });
-                ui.add(egui::Label::new(RichText::new(format!("    {d}")).size(10.0).color(tk.text_dim)).truncate()).on_hover_text(d);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("    {d}"))
+                            .size(10.0)
+                            .color(tk.text_dim),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(d);
             }
-        });
+        }
         if let Some((tool, args)) = call {
             self.call(&tool, args);
             self.browser.chains = None;
@@ -507,7 +678,7 @@ impl Studio {
             .id_salt("br_library")
             .default_open(true)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("IMPORT FROM URL").size(11.0).color(tk.text_dim));
                     ui.add(egui::TextEdit::singleline(&mut self.browser.url).desired_width(360.0).hint_text("https://... .wav / .sf2 / .zip of samples"));
                     ui.add(egui::TextEdit::singleline(&mut self.browser.url_name).desired_width(120.0).hint_text("name (optional)"));
@@ -535,14 +706,18 @@ impl Studio {
                 ui.columns(2, |cols| {
                     let ui = &mut cols[0];
                     ui.label(RichText::new(format!("CATALOG ({} match the search box)", hits["matches"].as_u64().unwrap_or(0))).size(11.0).color(tk.text_dim));
-                    egui::ScrollArea::vertical().id_salt("br_cat").max_height(150.0).show(ui, |ui| {
+                    egui::ScrollArea::vertical().id_salt("br_cat").max_height(250.0).show(ui, |ui| {
                         for it in hits["results"].as_array().cloned().unwrap_or_default() {
                             let id = it["id"].as_str().unwrap_or("").to_string();
                             let name = it["name"].as_str().unwrap_or("");
                             let mb = it["mb"].as_f64().map(|m| format!("{m:.0} MB")).unwrap_or_default();
                             let lic = it["license"].as_str().unwrap_or("");
                             let fmt = it["format"].as_str().unwrap_or("");
-                            ui.horizontal(|ui| {
+                            ui.add_space(6.0);
+                            let installed = if it["installed"]==true { " (installed)" } else { "" };
+                            ui.label(RichText::new(format!("{name}{installed}")).size(13.0).strong().color(tk.text));
+                            ui.label(RichText::new(format!("{} / {fmt} / {mb} / {lic}",it["family"].as_str().unwrap_or(""))).monospace().size(10.5).color(tk.text_dim));
+                            ui.horizontal_wrapped(|ui| {
                                 let can = busy.is_none() && !track.is_empty() && (fmt == "sfz_git" || fmt == "vsco_pack");
                                 if ui.add_enabled(can, egui::Button::new("LOAD TO TRACK").small()).on_hover_text(format!("load_instrument {{track: {track}, catalog_id: {id}}}")).clicked() {
                                     job = Some((format!("loading {id}"), "load_instrument", json!({"track": track, "catalog_id": id})));
@@ -553,8 +728,7 @@ impl Studio {
                                 if ui.add_enabled(busy.is_none() && fmt == "sfz_git", egui::Button::new("AUDITION").small()).on_hover_text(format!("audition_instrument {{catalog_id: {id}, play: true}}: plays a 4 s preview")).clicked() {
                                     job = Some((format!("audition {id}"), "audition_instrument", json!({"catalog_id": id, "play": true})));
                                 }
-                                let inst = if it["installed"] == true { " \u{2713}" } else { "" };
-                                ui.add(egui::Label::new(RichText::new(format!("{name}{inst}")).size(12.0).color(tk.text)).truncate()).on_hover_text(format!("{id} \u{00B7} {} \u{00B7} {mb} \u{00B7} {lic}", it["family"].as_str().unwrap_or("")));
+
                             });
                         }
                     });
@@ -923,4 +1097,4 @@ fn spectrogram_view(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, sp: &Va
     );
     painter.rect_stroke(sel, 0.0, egui::Stroke::new(1.5_f32, tk.text));
     resp.on_hover_text("drag a box to choose the region and the band");
-}
+                    }
