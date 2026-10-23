@@ -84,10 +84,20 @@ impl Workspace {
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
             .unwrap_or_else(std::env::temp_dir);
         let path = base.join("beatbox/studio-layout-v1.json");
-        let mut dock = std::fs::read_to_string(&path)
-            .ok()
+        let text = std::fs::read_to_string(&path).ok();
+        let dock = Self::restore(text.as_deref(), view, ctx.screen_rect().shrink(12.0));
+        Self {
+            dock,
+            saved: String::new(),
+            changed_at: 0.0,
+            path,
+            requested: None,
+        }
+    }
+    fn restore(text: Option<&str>, view: usize, bounds: Rect) -> DockState<Pane> {
+        let mut dock = text
             .and_then(|s| {
-                let mut v: Value = serde_json::from_str(&s).ok()?;
+                let mut v: Value = serde_json::from_str(s).ok()?;
                 if let Some(a) = v["dock"]["surfaces"].as_array_mut() {
                     for s in a {
                         if let Some(w) = s.get_mut("Window") {
@@ -100,7 +110,6 @@ impl Workspace {
             .filter(|s| s.version == 1)
             .map(|s| s.dock)
             .unwrap_or_else(|| Self::default_dock(view));
-        let bounds = ctx.screen_rect().shrink(12.0);
         for i in 1..dock.surfaces_count() {
             let si = egui_dock::SurfaceIndex(i);
             let rect = dock[si][NodeIndex::root()].rect();
@@ -118,13 +127,7 @@ impl Workspace {
                 }
             }
         }
-        Self {
-            dock,
-            saved: String::new(),
-            changed_at: 0.0,
-            path,
-            requested: None,
-        }
+        dock
     }
     pub(super) fn request_view(&mut self, v: usize) {
         self.requested = Some(Pane::ALL[v.min(6)]);
@@ -517,7 +520,11 @@ mod tests {
             saved: String::new(),
             changed_at: 0.0,
             path: std::env::temp_dir()
-                .join(format!("beatbox_layout_test_{}", std::process::id()))
+                .join(format!(
+                    "beatbox_layout_test_{}_{}",
+                    std::process::id(),
+                    std::thread::current().name().unwrap_or("unnamed")
+                ))
                 .join("layout.json"),
             requested: None,
         }
@@ -535,6 +542,50 @@ mod tests {
             w.open(p);
             assert!(w.dock.find_tab(&p).is_some());
         }
+    }
+    #[test]
+    fn default_is_quiet_and_corrupt_or_old_layout_recovers() {
+        for text in [
+            None,
+            Some("broken"),
+            Some(r#"{"version":999,"dock":{"surfaces":[],"focused_surface":0}}"#),
+        ] {
+            let d = Workspace::restore(
+                text,
+                3,
+                Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 700.0)),
+            );
+            assert_eq!(d.iter_all_tabs().count(), 2);
+            assert!(d.find_tab(&Pane::Playlist).is_some());
+            assert!(d.find_tab(&Pane::Transport).is_some());
+        }
+    }
+    #[test]
+    fn saved_floating_editor_reopens_expanded_and_within_display() {
+        let mut d = DockState::new(vec![Pane::Transport]);
+        let si = d.add_window(vec![Pane::Notes]);
+        d[si][NodeIndex::root()].set_rect(Rect::from_min_size(
+            Pos2::new(2500.0, 1600.0),
+            Vec2::new(900.0, 500.0),
+        ));
+        let mut w = workspace();
+        w.path = w.path.with_file_name("recovery.json");
+        w.dock = d;
+        w.flush().unwrap();
+        let text = std::fs::read_to_string(&w.path).unwrap();
+        let _ = std::fs::remove_file(&w.path);
+        let bounds = Rect::from_min_max(Pos2::new(12.0, 12.0), Pos2::new(1088.0, 688.0));
+        let restored = Workspace::restore(Some(&text), 3, bounds);
+        let v = serde_json::to_value(restored).unwrap();
+        let w = &v["surfaces"][1]["Window"][1];
+        assert_eq!(w["new"], json!(true));
+        let p = &w["next_position"];
+        let z = &w["next_size"];
+        let x = p["x"].as_f64().unwrap();
+        let y = p["y"].as_f64().unwrap();
+        assert!(x >= 12.0 && y >= 60.0);
+        assert!(x + z["x"].as_f64().unwrap() <= 1088.0);
+        assert!(y + z["y"].as_f64().unwrap() <= 688.0);
     }
     #[test]
     fn split_and_floating_layout_round_trip_separately_from_project() {
