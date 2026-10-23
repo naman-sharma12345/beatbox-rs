@@ -67,6 +67,7 @@ fn matches(q: &str, a: &str, b: &str) -> bool {
 impl Studio {
     pub(super) fn browser_view(&mut self, ui: &mut egui::Ui, p: &Project) {
         let tk = Tokens::DARK;
+        self.poll_library_job();
         if !self.browser.opened {
             self.browser.opened = true;
             self.browser.section = 1;
@@ -653,8 +654,10 @@ impl Studio {
         self.browser.job_result.clear();
     }
 
-    fn sound_library(&mut self, ui: &mut egui::Ui, track: &str) {
-        let tk = Tokens::DARK;
+    /// Pick up the result of a finished library job (a sound preview, a
+    /// download). Runs from every Browser section, so a finished preview frees
+    /// the Hear buttons whichever list is showing.
+    fn poll_library_job(&mut self) {
         if let Some((label, rx)) = &self.browser.job {
             if let Ok(r) = rx.try_recv() {
                 self.browser.job_result = match r {
@@ -701,6 +704,11 @@ impl Studio {
                 self.browser.lib_hits = None;
             }
         }
+    }
+
+    fn sound_library(&mut self, ui: &mut egui::Ui, track: &str) {
+        let tk = Tokens::DARK;
+        self.poll_library_job();
         let q = self.browser.search.trim().to_string();
         if self
             .browser
