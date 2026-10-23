@@ -135,17 +135,54 @@ fn reserve_target(e: &crate::engine::Engine, kind: usize, args: &mut Value) -> s
     ))
 }
 
+/// A short plain summary of a finished export: where it went, what it is, and
+/// the measured loudness. Measurements describe level only, not quality.
+fn export_summary(v: &Value) -> String {
+    let mut t = match v["path"].as_str().or(v["dir"].as_str()) {
+        Some(p) => format!("Exported to {p}\n"),
+        None => "Export finished\n".to_string(),
+    };
+    let mut facts = Vec::new();
+    if let Some(f) = v["format"].as_str() {
+        facts.push(f.to_uppercase());
+    }
+    if let Some(b) = v["bits"].as_u64() {
+        facts.push(format!("{b}-bit"));
+    }
+    if let Some(r) = v["sample_rate"].as_u64() {
+        facts.push(format!("{r} Hz"));
+    }
+    if let Some(b) = v["bytes"].as_u64() {
+        facts.push(format!("{:.1} MB", b as f64 / 1_048_576.0));
+    }
+    if let Some(s) = v["seconds"].as_f64() {
+        facts.push(format!("{s:.1} s"));
+    }
+    if !facts.is_empty() {
+        t.push_str(&facts.join(", "));
+        t.push('\n');
+    }
+    if let (Some(l), Some(tp)) = (
+        v["after"]["integrated_lufs"].as_f64(),
+        v["after"]["true_peak_dbtp"].as_f64(),
+    ) {
+        t.push_str(&format!("Loudness {l:.1} LUFS, true peak {tp:.1} dBTP\n"));
+    }
+    if let Some(w) = v["warnings"].as_array() {
+        for w in w.iter().filter_map(|w| w.as_str()) {
+            t.push_str(&format!("Warning: {w}\n"));
+        }
+    }
+    t
+}
+
 impl Studio {
     pub(super) fn export_window(&mut self, ctx: &egui::Context) {
         if let Some(rx) = &self.export.job {
             match rx.try_recv() {
                 Ok(r) => {
                     self.export.result = match r {
-                        Ok(v) => {
-                            let mut text = String::new();
-                            super::views::plain_report(&v, 0, &mut text);
-                            text
-                        }
+                        Ok(v) => export_summary(&v),
                         Err(e) => format!("Export failed: {e}"),
                     };
                     self.export.job = None;
@@ -256,6 +293,20 @@ impl Studio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn export_summary_is_plain_and_keeps_path_and_levels() {
+        let t = export_summary(
+            &json!({"path":"/o/a.wav","format":"wav","bits":24,"sample_rate":44100,
+            "bytes":2097152,"seconds":3.5,"after":{"integrated_lufs":-10.64,"true_peak_dbtp":-1.43},
+            "warnings":["clipped"]}),
+        );
+        assert!(t.starts_with("Exported to /o/a.wav\n"));
+        assert!(t.contains("WAV, 24-bit, 44100 Hz, 2.0 MB, 3.5 s"));
+        assert!(t.contains("Loudness -10.6 LUFS, true peak -1.4 dBTP"));
+        assert!(t.contains("Warning: clipped"));
+        assert!(!t.contains("integrated lufs"));
+        assert!(export_summary(&json!({"dir":"/o/stems"})).starts_with("Exported to /o/stems"));
+    }
     #[test]
     fn export_requests_match_output_kind_and_scope() {
         let mut s = ExportState {
