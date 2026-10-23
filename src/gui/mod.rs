@@ -697,14 +697,17 @@ impl Studio {
             let actions = |ui: &mut egui::Ui| {
                 if ui.button("About").clicked() {
                     self.show_about = !self.show_about;
+                    ui.close_menu();
                 }
-                if ui.button("Export").clicked() { self.export.open = true; }
+                if ui.button("Export").clicked() { self.export.open = true; ui.close_menu(); }
                 ui.add_space(6.0);
                 if ui.button("Render WAV").on_hover_text("Cmd+R").clicked() {
                     self.render_wav();
+                    ui.close_menu();
                 }
                 if ui.button("Save").on_hover_text("Cmd+S").clicked() {
                     self.save();
+                    ui.close_menu();
                 }
                 if ui
                     .add_enabled(undo.1 > 0, egui::Button::new("Redo"))
@@ -712,6 +715,7 @@ impl Studio {
                     .clicked()
                 {
                     self.call("redo", json!({}));
+                    ui.close_menu();
                 }
                 if ui
                     .add_enabled(undo.0 > 0, egui::Button::new("Undo"))
@@ -719,6 +723,7 @@ impl Studio {
                     .clicked()
                 {
                     self.call("undo", json!({}));
+                    ui.close_menu();
                 }
             };
             if ui.ctx().screen_rect().width() < 1300.0 {
