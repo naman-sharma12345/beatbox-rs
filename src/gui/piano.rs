@@ -85,56 +85,6 @@ fn prepare_helper_args(id: &str, args: &mut Value, track: &str, pattern: &str, i
     }
 }
 
-#[cfg(test)]
-mod helper_tests {
-    use super::*;
-
-    #[test]
-    fn helper_scope_matches_live_tool_schema() {
-        for id in [
-            "edit_notes",
-            "quantize",
-            "legato",
-            "articulate",
-            "lfo_tool",
-            "flip_notes",
-            "generate_melody",
-            "generate_fill",
-            "generate_ghost_notes",
-            "generate_variation",
-            "counter_melody",
-            "harmonize",
-            "humanize",
-            "add_slides",
-            "roll_notes",
-            "split_notes",
-            "merge_notes",
-            "scale_snap",
-            "chord_voicing",
-            "velocity_curve",
-        ] {
-            let mut a = json!({});
-            prepare_helper_args(id, &mut a, "hat", "verse", &["n1"]);
-            let schema = (crate::tools::find(id).unwrap().schema)();
-            let props = schema["properties"].as_object().unwrap();
-            assert!(
-                a.as_object().unwrap().keys().all(|k| props.contains_key(k)),
-                "{id}: {a}"
-            );
-            assert_eq!(a.get("ids").is_some(), props.contains_key("ids"), "{id}");
-        }
-        let mut fill = json!({"style":"auto"});
-        prepare_helper_args("generate_fill", &mut fill, "hat", "verse", &["n1"]);
-        assert_eq!(fill, json!({"style":"auto","pattern":"verse"}));
-        let mut edit = json!({"transpose":12});
-        prepare_helper_args("edit_notes", &mut edit, "hat", "verse", &["n1"]);
-        assert_eq!(
-            edit,
-            json!({"transpose":12,"track":"hat","pattern":"verse","ids":["n1"]})
-        );
-    }
-}
-
 impl Studio {
     /// Replace the track's notes in the pattern with `notes` in one undoable call.
     fn write_notes(&mut self, track: &str, pattern: &str, notes: &[Note]) {
@@ -730,5 +680,55 @@ impl Studio {
             ui.ctx().data_mut(|d| d.remove::<(usize, f32)>(vid));
             self.dragging = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+
+    #[test]
+    fn helper_scope_matches_live_tool_schema() {
+        for id in [
+            "edit_notes",
+            "quantize",
+            "legato",
+            "articulate",
+            "lfo_tool",
+            "flip_notes",
+            "generate_melody",
+            "generate_fill",
+            "generate_ghost_notes",
+            "generate_variation",
+            "counter_melody",
+            "harmonize",
+            "humanize",
+            "add_slides",
+            "roll_notes",
+            "split_notes",
+            "merge_notes",
+            "scale_snap",
+            "chord_voicing",
+            "velocity_curve",
+        ] {
+            let mut a = json!({});
+            prepare_helper_args(id, &mut a, "hat", "verse", &["n1"]);
+            let schema = (crate::tools::find(id).unwrap().schema)();
+            let props = schema["properties"].as_object().unwrap();
+            assert!(
+                a.as_object().unwrap().keys().all(|k| props.contains_key(k)),
+                "{id}: {a}"
+            );
+            assert_eq!(a.get("ids").is_some(), props.contains_key("ids"), "{id}");
+        }
+        let mut fill = json!({"style":"auto"});
+        prepare_helper_args("generate_fill", &mut fill, "hat", "verse", &["n1"]);
+        assert_eq!(fill, json!({"style":"auto","pattern":"verse"}));
+        let mut edit = json!({"transpose":12});
+        prepare_helper_args("edit_notes", &mut edit, "hat", "verse", &["n1"]);
+        assert_eq!(
+            edit,
+            json!({"transpose":12,"track":"hat","pattern":"verse","ids":["n1"]})
+        );
     }
 }
