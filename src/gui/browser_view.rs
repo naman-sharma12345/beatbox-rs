@@ -1097,4 +1097,4 @@ fn spectrogram_view(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, sp: &Va
     );
     painter.rect_stroke(sel, 0.0, egui::Stroke::new(1.5_f32, tk.text));
     resp.on_hover_text("drag a box to choose the region and the band");
-                    }
+}
