@@ -736,42 +736,81 @@ impl Studio {
             if root != p.key_root || scale != p.scale {
                 self.call("set_key", json!({"root": root, "scale": scale}));
             }
-            let actions = |ui: &mut egui::Ui| {
-                if ui.button("About").clicked() {
-                    self.show_about = !self.show_about;
-                    ui.close_menu();
+            // Undo and Redo stay in reach; everything else lives under File.
+            let mut tail = |ui: &mut egui::Ui, right_to_left: bool| {
+                macro_rules! undo_redo {
+                    ($ui:expr) => {{
+                        if $ui
+                            .add_enabled(undo.0 > 0, egui::Button::new("Undo"))
+                            .on_hover_text("Undo")
+                            .clicked()
+                        {
+                            self.call("undo", json!({}));
+                        }
+                        if $ui
+                            .add_enabled(undo.1 > 0, egui::Button::new("Redo"))
+                            .on_hover_text("Redo")
+                            .clicked()
+                        {
+                            self.call("redo", json!({}));
+                        }
+                    }};
                 }
-                if ui.button("Export").clicked() { self.export.open = true; ui.close_menu(); }
-                ui.add_space(6.0);
-                if ui.button("Render WAV").on_hover_text("Cmd+R").clicked() {
-                    self.render_wav();
-                    ui.close_menu();
+                macro_rules! file_menu {
+                    ($ui:expr) => {{
+                        $ui.menu_button("File", |ui| {
+                            if ui.button("Export...").clicked() {
+                                self.export.open = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("Render WAV").on_hover_text("Cmd+R").clicked() {
+                                self.render_wav();
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button("About").clicked() {
+                                self.show_about = !self.show_about;
+                                ui.close_menu();
+                            }
+                        });
+                    }};
                 }
-                if ui.button("Save").on_hover_text("Cmd+S").clicked() {
-                    self.save();
-                    ui.close_menu();
-                }
-                if ui
-                    .add_enabled(undo.1 > 0, egui::Button::new("Redo"))
-                    .on_hover_text("Redo")
-                    .clicked()
-                {
-                    self.call("redo", json!({}));
-                    ui.close_menu();
-                }
-                if ui
-                    .add_enabled(undo.0 > 0, egui::Button::new("Undo"))
-                    .on_hover_text("Undo")
-                    .clicked()
-                {
-                    self.call("undo", json!({}));
-                    ui.close_menu();
+                if right_to_left {
+                    file_menu!(ui);
+                    if ui.button("Save").on_hover_text("Cmd+S").clicked() {
+                        self.save();
+                    }
+
+                    // right_to_left adds the rightmost item first
+                    if ui
+                        .add_enabled(undo.1 > 0, egui::Button::new("Redo"))
+                        .on_hover_text("Redo")
+                        .clicked()
+                    {
+                        self.call("redo", json!({}));
+                    }
+                    if ui
+                        .add_enabled(undo.0 > 0, egui::Button::new("Undo"))
+                        .on_hover_text("Undo")
+                        .clicked()
+                    {
+                        self.call("undo", json!({}));
+                    }
+                } else {
+                    undo_redo!(ui);
+                    if ui.button("Save").on_hover_text("Cmd+S").clicked() {
+                        self.save();
+                    }
+                    file_menu!(ui);
                 }
             };
             if ui.ctx().screen_rect().width() < 1300.0 {
-                ui.menu_button("Project", actions);
-            } else { ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), actions); }
-
+                tail(ui, false);
+            } else {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    tail(ui, true)
+                });
+            }
         });
     }
 
