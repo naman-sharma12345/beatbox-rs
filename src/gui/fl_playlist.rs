@@ -248,7 +248,28 @@ impl Studio {
             self.toast = Some((t, 0.0, false));
         }
         for (tool, args) in actions {
+            // "Make unique" appends a new pattern; edit that copy next, so
+            // the piano roll and step grid change what the block now plays.
+            let unique =
+                (args.get("action").and_then(|a| a.as_str()) == Some("make_unique")).then(|| {
+                    args.get("id")
+                        .and_then(|i| i.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                });
             self.call(tool, args);
+            if let Some(id) = unique {
+                let e = self.engine.lock().unwrap();
+                let now = &e.project;
+                if let Some(pi) = now
+                    .playlist
+                    .iter()
+                    .find(|c| c.id == id)
+                    .and_then(|c| now.pattern_index(&c.pattern).ok())
+                {
+                    self.pattern = pi;
+                }
+            }
         }
     }
 }
