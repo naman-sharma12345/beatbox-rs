@@ -305,7 +305,8 @@ pub fn channel_rack(
                 let base = if (s / 4) % 2 == 0 {
                     super::theme::Tokens::DARK.button
                 } else {
-                    super::theme::Tokens::DARK.accent_dark
+                    // a plain warm grey, so an unlit step never looks like a dim lit one
+                    Color32::from_rgb(58, 52, 44)
                 };
                 painter.rect_filled(
                     r,
