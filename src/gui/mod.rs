@@ -517,6 +517,14 @@ impl Studio {
             let e = self.engine.lock().unwrap();
             (e.project.clone(), e.bank.clone(), e.workdir.clone())
         };
+        if project_has_nothing_to_render(&project) {
+            self.toast = Some((
+                "Nothing to render: add a pattern or clip first".into(),
+                0.0,
+                false,
+            ));
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         self.render_job = Some(rx);
         self.toast = Some(("Rendering WAV...".into(), 0.0, true));
@@ -1436,3 +1444,13 @@ impl eframe::App for Studio {
 
 #[cfg(test)]
 mod manual_ui_tests;
+
+/// True only when no pattern, arrangement section, playlist clip, audio clip
+/// or vocal map exists, so a render could only produce silence.
+fn project_has_nothing_to_render(p: &crate::project::Project) -> bool {
+    p.patterns.is_empty()
+        && p.arrangement.is_empty()
+        && p.playlist.is_empty()
+        && p.audio_clips.is_empty()
+        && p.vocal_map.is_none()
+}
