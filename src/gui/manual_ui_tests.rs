@@ -467,3 +467,16 @@ fn piano_drag_uses_press_origin_before_hit_testing() {
     assert!(setup.contains("match hit(start)"));
     assert!(setup.contains("self.piano.band = Some(start)"));
 }
+
+#[test]
+fn save_success_feedback_is_guarded_by_tool_result() {
+    let studio = include_str!("mod.rs");
+    let save = studio.split("fn save(&mut self) {").nth(1).unwrap();
+    let save = save.split("fn render_wav").next().unwrap();
+    assert!(save.contains("match result"));
+    let success = save.split("Ok(_) => {").nth(1).unwrap();
+    let success = success.split("Err(e) =>").next().unwrap();
+    assert!(success.contains("self.project_path = Some(path.clone())"));
+    assert!(success.contains("format!(\"Saved {}\""));
+    assert!(save.contains("format!(\"{e:#}\"), 0.0, false"));
+}
