@@ -92,6 +92,12 @@ impl Studio {
         let mut actions: Vec<(&'static str, Value)> = Vec::new();
         let lanes = p.tracks.len().max(1);
         let want_h = RULER_H * 2.0 + LANE_H * lanes as f32 + 4.0;
+        ui.label(
+            egui::RichText::new("TRACK TIMELINE - scroll vertically for all tracks")
+                .monospace()
+                .size(11.0)
+                .color(tk.text_dim),
+        );
         // performance strip: launch any pattern live, on the next bar
         ui.horizontal_wrapped(|ui| {
             ui.label(
@@ -133,7 +139,13 @@ impl Studio {
             }
         });
         // FL-style pattern playlist: paint, drag and resize pattern clips
-        self.fl_playlist(ui, p);
+        if p.playlist.is_empty() {
+            egui::CollapsingHeader::new("PATTERN GRID - paint clips")
+                .default_open(false)
+                .show(ui, |ui| self.fl_playlist(ui, p));
+        } else {
+            self.fl_playlist(ui, p);
+        }
         ui.add_space(6.0);
         // pattern clips on the playlist, by stable id: click to select, right-click to edit
         if false && !p.playlist.is_empty() {
@@ -175,6 +187,8 @@ impl Studio {
         }
         egui::ScrollArea::vertical()
             .id_salt("playlist")
+            .max_height(ui.available_height().max(70.0))
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let (full, _) = ui.allocate_exact_size(
@@ -281,7 +295,7 @@ impl Studio {
                         head,
                         0.0,
                         if sel_track {
-                            Color32::from_rgb(54, 58, 64)
+                            super::theme::Tokens::DARK.button_hi
                         } else {
                             tk.panel_bg2
                         },
@@ -736,4 +750,4 @@ mod menu_tests {
             assert!(r["clips"].is_array(), "{label}");
         }
     }
-}
+            }
