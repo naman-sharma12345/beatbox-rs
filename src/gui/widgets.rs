@@ -284,6 +284,7 @@ pub fn vgradient_bar(p: &egui::Painter, rect: Rect, bottom: Color32, top: Color3
 }
 
 /// Segmented tab control. Returns the index clicked this frame, if any.
+#[allow(dead_code)]
 pub fn tabs(ui: &mut Ui, labels: &[&str], current: usize) -> Option<usize> {
     let mut clicked = None;
     let h = 28.0;
@@ -291,7 +292,7 @@ pub fn tabs(ui: &mut Ui, labels: &[&str], current: usize) -> Option<usize> {
     let total: f32 = widths.iter().sum::<f32>() + 6.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(total, h), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 3.0, Tokens::DARK.toolbar_bg);
+    p.rect_filled(rect, 3.0, Tokens::DARK.panel_bg);
     p.rect_stroke(rect, 3.0, Stroke::new(1.0_f32, Tokens::DARK.border));
     let mut x = rect.left() + 3.0;
     for (i, (l, w)) in labels.iter().zip(widths.iter()).enumerate() {
