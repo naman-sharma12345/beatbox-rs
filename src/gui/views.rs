@@ -291,6 +291,7 @@ impl Studio {
             ui.label(RichText::new("CONSOLE").monospace().size(11.0).color(DIM));
             if ui.small_button("Open mixer").clicked() {
                 self.view = 1;
+                self.workspace.request_view(1);
             }
             ui.label(
                 RichText::new("Drag a fader or pan. Open Mixer for inserts, sends and routing.")
@@ -1354,7 +1355,7 @@ impl Studio {
         ui.horizontal_top(|ui| {
             // ---- lane list + tools
             egui::Frame::none().fill(PANEL).rounding(10.0).stroke(Stroke::new(1.0_f32, LINE)).inner_margin(10.0).show(ui, |ui| ui.vertical(|ui| {
-                ui.set_width(214.0);
+                ui.set_width((avail.x * 0.32).clamp(150.0,214.0));
                 ui.set_height(avail.y - 22.0);
                 egui::ScrollArea::vertical().id_salt("lanes").auto_shrink([false, false]).show(ui, |ui| {
                     ui.label(RichText::new("LANES").size(10.5).color(DIM).strong().extra_letter_spacing(1.2));
@@ -1509,13 +1510,7 @@ impl Studio {
         }
         // grid: bars
         let bars = (song / 4.0).ceil() as usize;
-        let every = if bars > 32 {
-            4
-        } else if bars > 16 {
-            2
-        } else {
-            1
-        };
+        let every = ((bars as f32 * 36.0 / plot.width().max(1.0)).ceil() as usize).max(1);
         for b in 0..=bars {
             let x = bx(b as f32 * 4.0);
             let strong = b % 4 == 0;
@@ -1551,7 +1546,7 @@ impl Studio {
             pt.text(
                 plot.center(),
                 Align2::CENTER_CENTER,
-                "Select or add an automation lane",
+                "Select a lane",
                 FontId::proportional(15.0),
                 DIM,
             );
