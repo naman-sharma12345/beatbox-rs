@@ -458,13 +458,17 @@ impl Studio {
         };
         if resp.drag_started() {
             if let Some(pt) = resp.interact_pointer_pos() {
-                match hit(pt) {
+                // egui starts a drag only after the pointer crosses its threshold.
+                // Hit-test and measure from the original press, not that later point,
+                // so a narrow resize edge and short snapped move are not lost.
+                let start = ui.input(|i| i.pointer.press_origin()).unwrap_or(pt);
+                match hit(start) {
                     Some((i, edge)) => {
                         if !self.piano.selected.contains(&i) {
                             self.piano.selected = vec![i];
                         }
                         self.piano.drag = Some(NoteDrag {
-                            start: pt,
+                            start,
                             shift: NoteShift {
                                 index: i,
                                 resize: edge,
@@ -473,7 +477,7 @@ impl Studio {
                             },
                         });
                     }
-                    None => self.piano.band = Some(pt),
+                    None => self.piano.band = Some(start),
                 }
                 self.dragging = true;
             }
