@@ -713,8 +713,10 @@ impl Studio {
             let strip_w = ((scroll_w - strips.len().saturating_sub(1) as f32)
                 / strips.len().max(1) as f32)
                 .max(STRIP_W);
-            ui.allocate_ui(Vec2::new(scroll_w, h), |ui| {
+            ui.allocate_ui(Vec2::new(scroll_w, h + 18.0), |ui| {
+                ui.style_mut().spacing.scroll.floating = false;
                 egui::ScrollArea::horizontal()
+                    .max_height(h + 18.0)
                     .id_salt("mixer")
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                     .auto_shrink([false, false])
