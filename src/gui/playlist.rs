@@ -142,6 +142,18 @@ impl Studio {
                 }
             }
         });
+        if p.playlist.is_empty() && p.arrangement.is_empty() {
+            if let Some(first) = p.patterns.first() {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Nothing is placed in the playlist yet, so Play uses pattern {} alone. Open the pattern grid and click a cell to arrange a song.",
+                        first.name
+                    ))
+                    .size(11.0)
+                    .color(tk.text_dim),
+                );
+            }
+        }
         // FL-style pattern playlist: paint, drag and resize pattern clips
         if p.playlist.is_empty() {
             egui::CollapsingHeader::new("PATTERN GRID - paint clips")
