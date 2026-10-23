@@ -37,15 +37,20 @@ pub fn snap_drag(dx: f32, dy: f32, bar_px: f32) -> (i64, i64) {
 /// The calls that paint `pattern` at (bar, lane): the section arrangement is
 /// converted to playlist clips first when the playlist is still empty.
 pub fn paint_calls(p: &Project, pattern: &str, bar: u32, lane: u32) -> Vec<(&'static str, Value)> {
-    let mut v = Vec::new();
+    let place = json!({"pattern": pattern, "start_bar": bar, "lane": lane});
     if p.playlist.is_empty() && !p.arrangement.is_empty() {
-        v.push(("arrangement_to_playlist", json!({})));
+        // The implicit conversion belongs to this same paint gesture. A
+        // failed placement must roll it back; Undo must undo both together.
+        vec![(
+            "batch",
+            json!({"calls": [
+                {"tool": "arrangement_to_playlist", "args": {}},
+                {"tool": "place_pattern", "args": place}
+            ]}),
+        )]
+    } else {
+        vec![("place_pattern", place)]
     }
-    v.push((
-        "place_pattern",
-        json!({"pattern": pattern, "start_bar": bar, "lane": lane}),
-    ));
-    v
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -637,9 +642,11 @@ mod tests {
             &json!({"sections": [{"pattern": first, "repeats": 2}]}),
         )
         .unwrap();
+        let before = serde_json::to_value(&e.project).unwrap();
         let calls = paint_calls(&e.project, &first, 6, 1);
         if !e.project.arrangement.is_empty() {
-            assert_eq!(calls[0].0, "arrangement_to_playlist");
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].0, "batch");
         }
         for (t, a) in calls {
             e.call(t, &a).unwrap();
@@ -656,6 +663,8 @@ mod tests {
                 .map(|c| (c.start_bar, c.lane))
                 .collect::<Vec<_>>()
         );
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
     }
 
     #[test]
