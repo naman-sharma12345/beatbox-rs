@@ -63,6 +63,10 @@ pub struct Studio {
     listen: String,
     server_ok: bool,
     show_about: bool,
+    /// engine revision at the last Save (or when the app opened)
+    saved_rev: u64,
+    /// "unsaved changes" prompt before File > New project
+    confirm_new: bool,
     export: export_view::ExportState,
     // view state
     pattern: usize,
@@ -152,7 +156,10 @@ pub fn run(
         options,
         Box::new(move |cc| {
             apply_theme(&cc.egui_ctx);
+            let saved_rev = engine.lock().unwrap().revision;
             Ok(Box::new(Studio {
+                saved_rev,
+                confirm_new: false,
                 engine,
                 player: Player::new(),
                 project_path: project,
@@ -510,10 +517,23 @@ impl Studio {
         match result {
             Ok(_) => {
                 self.project_path = Some(path.clone());
+                self.saved_rev = self.engine.lock().unwrap().revision;
                 self.toast = Some((format!("Saved {}", path.display()), 0.0, true));
             }
             Err(e) => self.toast = Some((format!("{e:#}"), 0.0, false)),
         }
+    }
+
+    fn start_new_project(&mut self) {
+        self.call("new_project", json!({"name": "my beat", "bpm": 120}));
+        // never let Save overwrite the file of the project we just left
+        self.project_path = None;
+        self.saved_rev = self.engine.lock().unwrap().revision;
+        self.toast = Some((
+            "New empty project. Add sounds from the Browser (Alt+F8), then click steps in the Channel rack".into(),
+            0.0,
+            true,
+        ));
     }
 
     fn render_wav(&mut self) {
@@ -774,14 +794,11 @@ impl Studio {
                                 .on_hover_text("Start an empty beat. Undo brings the previous one back.")
                                 .clicked()
                             {
-                                self.call("new_project", json!({"name": "my beat", "bpm": 120}));
-                                // never let Save overwrite the file of the project we just left
-                                self.project_path = None;
-                                self.toast = Some((
-                                    "New empty project. Add sounds from the Browser (Alt+F8), then click steps in the Channel rack".into(),
-                                    0.0,
-                                    true,
-                                ));
+                                if self.engine.lock().unwrap().revision != self.saved_rev {
+                                    self.confirm_new = true;
+                                } else {
+                                    self.start_new_project();
+                                }
                                 ui.close_menu();
                             }
                             ui.separator();
@@ -1401,6 +1418,47 @@ impl eframe::App for Studio {
             250
         }));
         let (p, rev, log, undo) = self.snapshot();
+        if self.confirm_new {
+            let mut action = 0; // 1 save first, 2 discard, 3 cancel
+            egui::Window::new("Start a new project?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("This project has changes that are not saved.");
+                    ui.label("Undo only works until you close the app.");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save, then start new").clicked() {
+                            action = 1;
+                        }
+                        if ui.button("Discard changes").clicked() {
+                            action = 2;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            action = 3;
+                        }
+                    });
+                });
+            match action {
+                1 => {
+                    self.save();
+                    // only continue if the save went through
+                    if self.engine.lock().unwrap().revision == self.saved_rev {
+                        self.confirm_new = false;
+                        self.start_new_project();
+                    } else {
+                        self.confirm_new = false;
+                    }
+                }
+                2 => {
+                    self.confirm_new = false;
+                    self.start_new_project();
+                }
+                3 => self.confirm_new = false,
+                _ => {}
+            }
+        }
         if self.show_about {
             let mut open = true;
             egui::Window::new("About Beatbox Studio")
