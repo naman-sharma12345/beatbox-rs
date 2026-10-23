@@ -1389,7 +1389,12 @@ impl eframe::App for Studio {
                     3 => self.playlist_view(ui, &p),
                     2 => self.automation_view(ui, &p),
                     4 => self.vocal_view(ui, &p),
-                    5 => self.browser_view(ui, &p),
+                    5 => {
+                        egui::ScrollArea::vertical()
+                            .id_salt("browser_content")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.browser_view(ui, &p));
+                    }
                     6 => self.rack_view(ui, &p, rev),
                     _ => self.sequencer(ui, &p),
                 }

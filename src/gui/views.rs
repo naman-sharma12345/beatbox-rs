@@ -51,6 +51,90 @@ fn push_scalar(v: &serde_json::Value, out: &mut String) {
     }
 }
 
+/// A mixer helper answer as readable text: known reports become small grouped
+/// tables, anything else falls back to the generic field dump.
+fn format_readout(label: &str, tool: &str, v: &serde_json::Value) -> String {
+    let num = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0);
+    let mut out = format!("{label}\n");
+    match tool {
+        "stereo_image" => {
+            let o = &v["overall"];
+            out.push_str(&format!(
+                "overall    width {:>4.2}  corr {:>5.2}  balance {:>+5.1} dB  mono {:>+5.1} dB\n",
+                num(&o["width"]),
+                num(&o["correlation"]),
+                num(&o["balance_db"]),
+                num(&o["mono_loss_db"])
+            ));
+            out.push_str("band Hz        width   corr   level   mono  balance\n");
+            for b in v["bands"].as_array().cloned().unwrap_or_default() {
+                let (lo, hi) = (num(&b["band_hz"][0]), num(&b["band_hz"][1]));
+                out.push_str(&format!(
+                    "{:>5.0}-{:<5.0}   {:>5.2}  {:>5.2}  {:>6.1}  {:>+5.1}  {:>+5.1}\n",
+                    lo,
+                    hi,
+                    num(&b["width"]),
+                    num(&b["correlation"]),
+                    num(&b["level_db"]),
+                    num(&b["mono_loss_db"]),
+                    num(&b["balance_db"])
+                ));
+            }
+            for sec in v["per_section"].as_array().cloned().unwrap_or_default() {
+                out.push_str(&format!(
+                    "section {}: width {:>4.2}  corr {:>5.2}\n",
+                    sec["section"].as_str().unwrap_or("?"),
+                    num(&sec["width"]),
+                    num(&sec["correlation"])
+                ));
+            }
+            for f in v["findings"].as_array().cloned().unwrap_or_default() {
+                out.push_str(&format!("! {}\n", f["message"].as_str().unwrap_or("?")));
+            }
+        }
+        "eq_curve" => {
+            let used: Vec<String> = v["effects_measured"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|e| e.as_str().unwrap_or("?").to_string())
+                .collect();
+            out.push_str(&format!(
+                "chain: {}\n",
+                if used.is_empty() {
+                    "none (flat)".to_string()
+                } else {
+                    used.join(" > ")
+                }
+            ));
+            let pts: Vec<(f64, f64)> = v["points_hz_db"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|pt| (num(&pt[0]), num(&pt[1])))
+                .collect();
+            for row in pts.chunks(4) {
+                let cells: Vec<String> = row
+                    .iter()
+                    .map(|(hz, db)| format!("{:>6.0} Hz {:>+5.1}", hz, db))
+                    .collect();
+                out.push_str(&cells.join("   "));
+                out.push('\n');
+            }
+        }
+        _ => {
+            plain_report(v, 0, &mut out);
+        }
+    }
+    if out.len() > 4000 {
+        out.truncate(4000);
+        out.push_str(" ...");
+    }
+    out
+}
+
 use crate::automation::{self, AutomationLane};
 use crate::console_law::{db_text, fader_db_to_pos, pan_text};
 use crate::dsp::gain_to_db;
@@ -122,11 +206,38 @@ const MASTER_W: f32 = 150.0;
 /// Insert / send slot rows: (inserts, sends) for a strip of height `h`. Short windows get
 /// fewer rows so the fader keeps a usable throw.
 fn slot_rows(h: f32) -> (usize, usize) {
-    if h < 560.0 {
+    if h < 360.0 {
+        (1, 1)
+    } else if h < 560.0 {
         (2, 2)
     } else {
         (4, 3)
     }
+}
+
+/// Compact strips page their slots instead of hiding effects or aux sends.
+fn slot_page(ui: &mut egui::Ui, rect: Rect, id: egui::Id, count: usize, rows: usize) -> usize {
+    let pages = count.max(1).div_ceil(rows);
+    let mut page = ui.ctx().data(|d| d.get_temp::<usize>(id)).unwrap_or(0) % pages;
+    if pages > 1 {
+        let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 15.0));
+        let response = ui.interact(header, id, Sense::click());
+        ui.painter().text(
+            header.right_center() - Vec2::new(3.0, 0.0),
+            Align2::RIGHT_CENTER,
+            format!("{}/{} >", page + 1, pages),
+            FontId::proportional(9.0),
+            ACCENT,
+        );
+        if response
+            .on_hover_text("click to show the next slots")
+            .clicked()
+        {
+            page = (page + 1) % pages;
+            ui.ctx().data_mut(|d| d.insert_temp(id, page));
+        }
+    }
+    page * rows
 }
 
 fn fmt_db(db: f32) -> String {
@@ -182,7 +293,6 @@ impl Studio {
 
     // ---------------- mixer ----------------
     pub(super) fn mixer(&mut self, ui: &mut egui::Ui, p: &Project) {
-        let h = ui.available_height().max(300.0);
         let pos = self.live_pos();
         let bus_names: Vec<String> = p.buses.iter().map(|b| b.name.clone()).collect();
         let mut strips: Vec<StripData> = p
@@ -292,22 +402,36 @@ impl Studio {
             let r = self.engine.lock().unwrap().call_from(tool, &args, "you");
             match r {
                 Ok(v) => {
-                    let mut text = String::new();
-                    plain_report(&v, 0, &mut text);
-                    if text.len() > 4000 {
-                        text.truncate(4000);
-                        text.push_str(" ...");
-                    }
-                    self.mix_readout = Some(format!("{label}\n{text}"));
+                    self.mix_readout = Some(format_readout(label, tool, &v));
                 }
                 Err(e) => {
                     self.toast = Some((format!("{e:#}"), 0.0, false));
                 }
             }
         }
-        if let Some(readout) = self.mix_readout.clone() {
-            ui.label(RichText::new(readout).size(9.0).color(tk.text_dim));
+        if self.mix_readout.is_some()
+            && ui
+                .small_button("CLEAR ANSWER")
+                .on_hover_text("hide the helper answer")
+                .clicked()
+        {
+            self.mix_readout = None;
         }
+        if let Some(readout) = self.mix_readout.clone() {
+            egui::ScrollArea::vertical()
+                .id_salt("mix_readout")
+                .max_height((ui.available_height() * 0.22).clamp(48.0, 110.0))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(readout)
+                            .size(12.0)
+                            .monospace()
+                            .color(tk.text_dim),
+                    );
+                });
+        }
+        let h = ui.available_height().max(200.0);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let scroll_w = ui.available_width() - MASTER_W - 8.0;
@@ -393,8 +517,16 @@ impl Studio {
             Vec2::new(iw, 16.0 + insert_rows as f32 * 17.0),
         );
         let area = section(&pt, sec, "INSERTS");
-        for k in 0..insert_rows {
-            let sr = slot_rect(area, k);
+        let insert_start = slot_page(
+            ui,
+            sec,
+            egui::Id::new(("insert_page", name)),
+            s.inserts.len(),
+            insert_rows,
+        );
+        for row in 0..insert_rows {
+            let k = insert_start + row;
+            let sr = slot_rect(area, row);
             let ins = s.inserts.get(k);
             let resp = ui.interact(sr, ui.id().with(("ins", name, k)), Sense::click());
             let fill = match ins {
@@ -436,15 +568,6 @@ impl Studio {
                 }
             }
         }
-        if s.inserts.len() > insert_rows {
-            pt.text(
-                Pos2::new(sec.max.x - 3.0, sec.min.y + 7.0),
-                Align2::RIGHT_CENTER,
-                format!("+{}", s.inserts.len() - insert_rows),
-                FontId::proportional(8.5),
-                ACCENT,
-            );
-        }
         y = sec.max.y + 4.0;
         // SENDS (drag horizontally to change)
         let sec = Rect::from_min_size(
@@ -452,9 +575,16 @@ impl Studio {
             Vec2::new(iw, 16.0 + send_rows as f32 * 17.0),
         );
         let area = section(&pt, sec, "SENDS");
-        for k in 0..send_rows {
-            let sr = slot_rect(area, k);
-            let Some((bus, db)) = s.sends.get(k) else {
+        let send_start = slot_page(
+            ui,
+            sec,
+            egui::Id::new(("send_page", name)),
+            s.sends.len(),
+            send_rows,
+        );
+        for row in 0..send_rows {
+            let sr = slot_rect(area, row);
+            let Some((bus, db)) = s.sends.get(send_start + row) else {
                 pt.rect(
                     sr,
                     2.0,

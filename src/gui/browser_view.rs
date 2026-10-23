@@ -114,6 +114,86 @@ impl Studio {
         ui.add_space(6.0);
         let q = self.browser.search.clone();
         let track = self.browser.track.clone();
+        ui.add_space(10.0);
+        ui.label(
+            RichText::new(format!("PROJECT SAMPLES ({})", p.samples.len()))
+                .size(11.0)
+                .strong()
+                .color(tk.header_text),
+        );
+        if p.samples.is_empty() {
+            ui.label(
+                RichText::new("none yet: import_sample {path}, download_sample {url}")
+                    .size(10.0)
+                    .color(tk.text_dim),
+            );
+        }
+        for s in &p.samples {
+            if !matches(&q, &s.name, &s.source) {
+                continue;
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .small_button("+TRACK")
+                    .on_hover_text(format!(
+                        "add_sample_track {{name: {0}, sample: {0}}}",
+                        s.name
+                    ))
+                    .clicked()
+                {
+                    call = Some((
+                        "add_sample_track".into(),
+                        json!({"name": format!("{}_s", s.name), "sample": s.name}),
+                    ));
+                }
+                if ui
+                    .small_button("EDIT")
+                    .on_hover_text("open in the audio editor")
+                    .clicked()
+                {
+                    let ed = &mut self.browser.edit;
+                    *ed = SampleEdit {
+                        sample: s.name.clone(),
+                        start: 0.0,
+                        end: s.duration,
+                        lo: 2000.0,
+                        hi: 8000.0,
+                        gain: -60.0,
+                        outside: false,
+                        fade_ms: 10.0,
+                        ..Default::default()
+                    };
+                }
+                ui.label(RichText::new(&s.name).size(12.0).color(tk.text));
+                ui.label(
+                    RichText::new(format!("{:.1} s \u{00B7} {}", s.duration, s.license))
+                        .size(10.0)
+                        .color(tk.text_dim),
+                );
+            });
+        }
+        if !self.browser.edit.sample.is_empty()
+            && self.browser.edit.spec_for != self.browser.edit.sample
+        {
+            let nm = self.browser.edit.sample.clone();
+            let v = self
+                .engine
+                .lock()
+                .unwrap()
+                .call_from("sample_spectrogram", &json!({"sample": nm}), "you")
+                .ok();
+            self.browser.edit.spec = v;
+            self.browser.edit.spec_for = nm;
+        }
+        if let Some(si) = p
+            .samples
+            .iter()
+            .find(|x| !self.browser.edit.sample.is_empty() && x.name == self.browser.edit.sample)
+        {
+            if let Some(c) = audio_editor(ui, &tk, &mut self.browser.edit, si.duration) {
+                call = Some(c);
+            }
+        }
         self.sound_library(ui, &track);
         ui.add_space(6.0);
         self.analyze_panel(ui);
@@ -279,38 +359,6 @@ impl Studio {
                     ui.label(RichText::new(n).size(12.0).color(tk.text)).on_hover_text(d);
                 });
                 ui.add(egui::Label::new(RichText::new(format!("    {d}")).size(10.0).color(tk.text_dim)).truncate()).on_hover_text(d);
-            }
-            ui.add_space(10.0);
-            ui.label(RichText::new(format!("PROJECT SAMPLES ({})", p.samples.len())).size(11.0).strong().color(tk.header_text));
-            if p.samples.is_empty() {
-                ui.label(RichText::new("none yet: import_sample {path}, download_sample {url}").size(10.0).color(tk.text_dim));
-            }
-            for s in &p.samples {
-                if !matches(&q, &s.name, &s.source) {
-                    continue;
-                }
-                ui.horizontal(|ui| {
-                    if ui.small_button("+TRACK").on_hover_text(format!("add_sample_track {{name: {0}, sample: {0}}}", s.name)).clicked() {
-                        call = Some(("add_sample_track".into(), json!({"name": format!("{}_s", s.name), "sample": s.name})));
-                    }
-                    if ui.small_button("EDIT").on_hover_text("open in the audio editor").clicked() {
-                        let ed = &mut self.browser.edit;
-                        *ed = SampleEdit { sample: s.name.clone(), start: 0.0, end: s.duration, lo: 2000.0, hi: 8000.0, gain: -60.0, outside: false, fade_ms: 10.0, ..Default::default() };
-                    }
-                    ui.label(RichText::new(&s.name).size(12.0).color(tk.text));
-                    ui.label(RichText::new(format!("{:.1} s \u{00B7} {}", s.duration, s.license)).size(10.0).color(tk.text_dim));
-                });
-            }
-            if !self.browser.edit.sample.is_empty() && self.browser.edit.spec_for != self.browser.edit.sample {
-                let nm = self.browser.edit.sample.clone();
-                let v = self.engine.lock().unwrap().call_from("sample_spectrogram", &json!({"sample": nm}), "you").ok();
-                self.browser.edit.spec = v;
-                self.browser.edit.spec_for = nm;
-            }
-            if let Some(si) = p.samples.iter().find(|x| !self.browser.edit.sample.is_empty() && x.name == self.browser.edit.sample) {
-                if let Some(c) = audio_editor(ui, &tk, &mut self.browser.edit, si.duration) {
-                    call = Some(c);
-                }
             }
         });
         if let Some((tool, args)) = call {
