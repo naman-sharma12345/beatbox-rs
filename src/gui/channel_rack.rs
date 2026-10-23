@@ -555,6 +555,57 @@ pub fn pattern_bar(
         ));
         *current = p.patterns.len();
     }
+    // pattern length: how many bars this pattern loops (what Play and Render use)
+    if let Some(cur) = p.patterns.get(*current) {
+        let bars = cur.bars;
+        let name = cur.name.clone();
+        let tk = super::theme::Tokens::DARK;
+        let mut lx = add.right() + 16.0;
+        let minus = Rect::from_min_size(pos2(lx, row.top() + 2.0), vec2(20.0, h));
+        lx += 24.0;
+        let label = Rect::from_min_size(pos2(lx, row.top() + 2.0), vec2(56.0, h));
+        lx += 60.0;
+        let plus = Rect::from_min_size(pos2(lx, row.top() + 2.0), vec2(20.0, h));
+        for (r, t) in [(minus, "\u{2212}"), (plus, "+")] {
+            painter.rect_filled(r, 3.0, tk.button);
+            painter.text(
+                r.center(),
+                Align2::CENTER_CENTER,
+                t,
+                FontId::proportional(13.0),
+                TEXT,
+            );
+        }
+        painter.text(
+            label.center(),
+            Align2::CENTER_CENTER,
+            format!("{bars} bar{}", if bars == 1 { "" } else { "s" }),
+            FontId::proportional(10.5),
+            TEXT,
+        );
+        if ui
+            .interact(minus, ui.id().with("pat-len-minus"), Sense::click())
+            .on_hover_text("Shorter pattern (notes past the end are dropped)")
+            .clicked()
+            && bars > 1
+        {
+            actions.push((
+                "set_pattern_length",
+                json!({"pattern": name, "bars": bars - 1}),
+            ));
+        }
+        if ui
+            .interact(plus, ui.id().with("pat-len-plus"), Sense::click())
+            .on_hover_text("Longer pattern: more steps to fill, and a longer loop")
+            .clicked()
+            && bars < 64
+        {
+            actions.push((
+                "set_pattern_length",
+                json!({"pattern": name, "bars": bars + 1}),
+            ));
+        }
+    }
     geo.send = send;
     if let Some(pat) = p
         .patterns
