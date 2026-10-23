@@ -583,6 +583,8 @@ impl Studio {
                     self.workspace.request_view(v);
                 }
             }
+            Action::Piano => self.workspace.request_pane(workspace::Pane::Notes),
+            Action::ResetLayout => self.workspace.request_reset(),
             Action::PrevPattern => self.pattern = self.pattern.saturating_sub(1),
             Action::NextPattern => {
                 self.pattern = (self.pattern + 1).min(p.patterns.len().saturating_sub(1))
