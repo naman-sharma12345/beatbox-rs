@@ -73,6 +73,8 @@ pub struct Studio {
     inspector: Option<InspectorCache>,
     dragging: bool,
     toast: Option<(String, f64, bool)>,
+    /// Last mix-helper result, shown under the mixer helper row.
+    mix_readout: Option<String>,
     // screenshot mode
     screenshot: Option<PathBuf>,
     frames: u64,
@@ -148,6 +150,7 @@ pub fn run(
                 inspector: None,
                 dragging: false,
                 toast: None,
+                mix_readout: None,
                 screenshot,
                 frames: 0,
                 shot_requested: false,

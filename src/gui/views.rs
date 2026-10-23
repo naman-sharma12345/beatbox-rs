@@ -8,6 +8,49 @@ use super::console::{
 use super::theme::Tokens;
 use super::widgets::*;
 use super::Studio;
+/// Render a mix-helper answer as plain indented lines, no markup.
+fn plain_report(v: &serde_json::Value, depth: usize, out: &mut String) {
+    let pad = "  ".repeat(depth);
+    match v {
+        serde_json::Value::Object(map) => {
+            for (k, val) in map {
+                let label = k.replace('_', " ");
+                match val {
+                    serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
+                        out.push_str(&format!("{pad}{label}\n"));
+                        plain_report(val, depth + 1, out);
+                    }
+                    _ => {
+                        out.push_str(&format!("{pad}{label}: "));
+                        push_scalar(val, out);
+                        out.push('\n');
+                    }
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for it in items {
+                plain_report(it, depth, out);
+            }
+        }
+        _ => {
+            out.push_str(&pad);
+            push_scalar(v, out);
+            out.push('\n');
+        }
+    }
+}
+
+fn push_scalar(v: &serde_json::Value, out: &mut String) {
+    match v {
+        serde_json::Value::String(s) => out.push_str(s),
+        serde_json::Value::Number(n) => out.push_str(&n.to_string()),
+        serde_json::Value::Bool(b) => out.push_str(if *b { "yes" } else { "no" }),
+        serde_json::Value::Null => out.push('-'),
+        _ => out.push_str("..."),
+    }
+}
+
 use crate::automation::{self, AutomationLane};
 use crate::console_law::{db_text, fader_db_to_pos, pan_text};
 use crate::dsp::gain_to_db;
@@ -183,6 +226,70 @@ impl Studio {
                     .collect(),
             }
         }));
+        // one-click mix helpers, each the engine call it names; answers show
+        // under the row
+        let tk = Tokens::DARK;
+        let mut op: Option<(&str, &str)> = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            for (label, tool, hover) in [
+                (
+                    "MIX REPORT",
+                    "mix_report",
+                    "levels, peaks and balance for every track",
+                ),
+                (
+                    "MASTER CHECK",
+                    "check_master",
+                    "loudness and true peak against the target",
+                ),
+                (
+                    "MASKING",
+                    "masking_matrix",
+                    "which tracks fight for the same frequencies",
+                ),
+                ("LEVELS", "level_hints", "suggested level moves"),
+                ("BALANCE", "balance_mix", "even out the track levels"),
+                (
+                    "MASTER",
+                    "master_assistant",
+                    "master the song to streaming loudness",
+                ),
+                (
+                    "CARVE",
+                    "carve_mix",
+                    "give each track its own frequency space",
+                ),
+            ] {
+                if ui.small_button(label).on_hover_text(hover).clicked() {
+                    op = Some((label, tool));
+                }
+            }
+        });
+        if let Some((label, tool)) = op {
+            let r = self
+                .engine
+                .lock()
+                .unwrap()
+                .call_from(tool, &json!({}), "you");
+            match r {
+                Ok(v) => {
+                    let mut text = String::new();
+                    plain_report(&v, 0, &mut text);
+                    if text.len() > 4000 {
+                        text.truncate(4000);
+                        text.push_str(" ...");
+                    }
+                    self.mix_readout = Some(format!("{label}\n{text}"));
+                }
+                Err(e) => {
+                    self.toast = Some((format!("{e:#}"), 0.0, false));
+                }
+            }
+        }
+        if let Some(readout) = self.mix_readout.clone() {
+            ui.label(RichText::new(readout).size(9.0).color(tk.text_dim));
+        }
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let scroll_w = ui.available_width() - MASTER_W - 8.0;
