@@ -1028,6 +1028,18 @@ pub(crate) fn core_tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "rename_track",
+            description: "Rename a channel. Notes, automation, playlist clips, macros and sidechain sources that point at it follow the new name. {track, name}.",
+            mutates: true,
+            schema: || obj(json!({"track": {"type": "string"}, "name": {"type": "string"}}), &["track", "name"]),
+            run: |e, a| {
+                let i = e.project.track_index(&s_req(a, "track")?)?;
+                let new = s_req(a, "name")?;
+                let old = e.project.rename_track(i, &new)?;
+                Ok(json!({"renamed": old, "name": e.project.tracks[i].name}))
+            },
+        },
+        Tool {
             name: "set_instrument",
             description: "Replace a track's instrument with a preset or instrument object.",
             mutates: true,
