@@ -68,6 +68,7 @@ pub struct Studio {
     /// "unsaved changes" prompt before File > New project
     confirm_new: bool,
     confirm_quit: bool,
+    mixer_routing: bool,
     open_list: bool,
     pending_open: Option<PathBuf>,
     export: export_view::ExportState,
@@ -164,6 +165,7 @@ pub fn run(
                 saved_rev,
                 confirm_new: false,
                 confirm_quit: false,
+                mixer_routing: false,
                 open_list: false,
                 pending_open: None,
                 engine,
