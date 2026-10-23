@@ -59,6 +59,9 @@ pub struct PianoState {
     /// After a move: the moved notes to select again once the engine has
     /// stored (and possibly re-sorted) them.
     pub reselect: Option<Vec<NoteKey>>,
+    /// Pitch rows shown for this track+pattern. It only grows while editing,
+    /// so drawing a note never makes the view jump.
+    pub span: Option<(u8, u8)>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +106,7 @@ impl Studio {
         if self.piano.owner != (self.pattern, self.selected) {
             self.piano.selected.clear();
             self.piano.drag = None;
+            self.piano.span = None;
             self.piano.owner = (self.pattern, self.selected);
         }
         let tname = t.name.clone();
@@ -128,6 +132,21 @@ impl Studio {
                 (l, h)
             }
         };
+        let (lo, hi) = match self.piano.span {
+            Some((l, h)) => {
+                // already framed: only grow to include notes, with no new padding
+                let (nl, nh) = notes
+                    .iter()
+                    .fold((127u8, 0u8), |(a, b), n| (a.min(n.pitch), b.max(n.pitch)));
+                if notes.is_empty() {
+                    (l, h)
+                } else {
+                    (l.min(nl), h.max(nh))
+                }
+            }
+            None => (lo, hi),
+        };
+        self.piano.span = Some((lo, hi));
         let (full, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
         // never draw past the visible panel (the velocity lane sat under its edge)
         let vis = full.intersect(ui.clip_rect());
