@@ -62,6 +62,8 @@ pub struct PianoState {
     /// Pitch rows shown for this track+pattern. It only grows while editing,
     /// so drawing a note never makes the view jump.
     pub span: Option<(u8, u8)>,
+    /// The user scrolled the pitch rows; keep exactly that window.
+    pub manual: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +109,7 @@ impl Studio {
             self.piano.selected.clear();
             self.piano.drag = None;
             self.piano.span = None;
+            self.piano.manual = false;
             self.piano.owner = (self.pattern, self.selected);
         }
         let tname = t.name.clone();
@@ -133,6 +136,7 @@ impl Studio {
             }
         };
         let (lo, hi) = match self.piano.span {
+            Some((l, h)) if self.piano.manual => (l, h),
             Some((l, h)) => {
                 // already framed: only grow to include notes, with no new padding
                 let (nl, nh) = notes
@@ -148,6 +152,22 @@ impl Studio {
         };
         self.piano.span = Some((lo, hi));
         let (full, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+        // mouse wheel over the roll moves the visible pitch rows (3 semitones a notch)
+        let (lo, hi) = if ui.rect_contains_pointer(full) {
+            let dy = ui.input(|i| i.raw_scroll_delta.y);
+            if dy.abs() > 0.5 {
+                let step = 3i16 * if dy > 0.0 { 1 } else { -1 };
+                let width = (hi - lo) as i16;
+                let nl = (lo as i16 + step).clamp(0, 127 - width);
+                self.piano.span = Some((nl as u8, (nl + width) as u8));
+                self.piano.manual = true;
+                (nl as u8, (nl + width) as u8)
+            } else {
+                (lo, hi)
+            }
+        } else {
+            (lo, hi)
+        };
         // never draw past the visible panel (the velocity lane sat under its edge)
         let vis = full.intersect(ui.clip_rect());
         let full = if vis.width() > 120.0 && vis.height() > HEADER_H + VEL_H + 40.0 {
