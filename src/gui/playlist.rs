@@ -750,4 +750,4 @@ mod menu_tests {
             assert!(r["clips"].is_array(), "{label}");
         }
     }
-            }
+}
