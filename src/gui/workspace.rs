@@ -39,20 +39,31 @@ impl Pane {
     ];
     fn title(self) -> &'static str {
         match self {
-            Self::Sequencer => "Sequencer",
+            Self::Sequencer => "Channel rack",
             Self::Mixer => "Mixer",
             Self::Automation => "Automation",
             Self::Playlist => "Playlist",
             Self::Vocal => "Vocal",
-            Self::Browser => "Sounds",
-            Self::Rack => "Rack",
+            Self::Browser => "Browser",
+            Self::Rack => "FX rack",
             Self::Library => "Library",
             Self::Inspector => "Channel",
-            Self::Notes => "Note editor",
+            Self::Notes => "Piano roll",
             Self::Console => "Console",
             Self::Transport => "Transport",
             Self::Analysis => "Analysis",
             Self::History => "History",
+        }
+    }
+    /// The FL Studio style key that opens this panel, if it has one.
+    fn key_hint(self) -> Option<&'static str> {
+        match self {
+            Self::Playlist => Some("F5"),
+            Self::Sequencer => Some("F6"),
+            Self::Notes => Some("F7"),
+            Self::Browser => Some("F8"),
+            Self::Mixer => Some("F9"),
+            _ => None,
         }
     }
     fn view(self) -> Option<usize> {
@@ -74,6 +85,8 @@ pub struct Workspace {
     fresh: bool,
     /// Last workflow tab picked in the header: 0 none, 1 Beat, 2 Arrange, 3 Mix.
     mode: u8,
+    /// Ctrl+Shift+H: put the windows back to the default arrangement.
+    reset: bool,
 }
 impl Workspace {
     fn default_dock(view: usize, screen_h: f32) -> DockState<Pane> {
@@ -119,6 +132,7 @@ impl Workspace {
             requested: None,
             fresh,
             mode: if fresh && view == 3 { 2 } else { 0 },
+            reset: false,
         }
     }
     fn restore(text: Option<&str>, view: usize, bounds: Rect) -> DockState<Pane> {
@@ -162,6 +176,12 @@ impl Workspace {
     }
     pub(super) fn request_view(&mut self, v: usize) {
         self.requested = Some(Pane::ALL[v.min(6)]);
+    }
+    pub fn request_pane(&mut self, p: Pane) {
+        self.requested = Some(p);
+    }
+    pub fn request_reset(&mut self) {
+        self.reset = true;
     }
     fn open(&mut self, p: Pane) {
         if let Some((s, n, t)) = self.dock.find_tab(&p) {
@@ -390,10 +410,15 @@ impl Studio {
                 requested: None,
                 fresh: false,
                 mode: 0,
+                reset: false,
             },
         );
         let bounds = ctx.screen_rect().shrink(12.0);
         if std::mem::take(&mut ws.fresh) {
+            ws.dock = Workspace::default_dock(self.view, ctx.screen_rect().height());
+        }
+        if std::mem::take(&mut ws.reset) {
+            ws.mode = 0;
             ws.dock = Workspace::default_dock(self.view, ctx.screen_rect().height());
         }
         if let Some(p) = ws.requested.take() {
@@ -469,7 +494,16 @@ impl Studio {
                         let mut toggle = |ui: &mut egui::Ui, pane: Pane| {
                             let open = ws.dock.find_tab(&pane).is_some();
                             let mut visible = open;
-                            if ui.checkbox(&mut visible, pane.title()).changed() {
+                            if ui
+                                .checkbox(
+                                    &mut visible,
+                                    match pane.key_hint() {
+                                        Some(k) => format!("{}   ({k})", pane.title()),
+                                        None => pane.title().to_string(),
+                                    },
+                                )
+                                .changed()
+                            {
                                 if open {
                                     if let Some(loc) = ws.dock.find_tab(&pane) {
                                         ws.dock.remove_tab(loc);
@@ -481,9 +515,9 @@ impl Studio {
                             }
                         };
                         let main = [
-                            Pane::Playlist,
                             Pane::Sequencer,
                             Pane::Notes,
+                            Pane::Playlist,
                             Pane::Mixer,
                             Pane::Browser,
                         ];
@@ -599,6 +633,7 @@ mod tests {
             requested: None,
             fresh: false,
             mode: 0,
+            reset: false,
         }
     }
     #[test]
