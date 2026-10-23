@@ -1062,7 +1062,7 @@ impl Studio {
                 painter.text(
                     r.left_center() + Vec2::new(8.0, 0.0),
                     Align2::LEFT_CENTER,
-                    &pat.name,
+                    fl_playlist::friendly_name(&pat.name),
                     FontId::proportional(12.0),
                     TEXT,
                 );
