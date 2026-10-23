@@ -182,7 +182,6 @@ impl Studio {
 
     // ---------------- mixer ----------------
     pub(super) fn mixer(&mut self, ui: &mut egui::Ui, p: &Project) {
-        let h = ui.available_height().max(300.0);
         let pos = self.live_pos();
         let bus_names: Vec<String> = p.buses.iter().map(|b| b.name.clone()).collect();
         let mut strips: Vec<StripData> = p
@@ -305,9 +304,24 @@ impl Studio {
                 }
             }
         }
-        if let Some(readout) = self.mix_readout.clone() {
-            ui.label(RichText::new(readout).size(9.0).color(tk.text_dim));
+        if self.mix_readout.is_some()
+            && ui
+                .small_button("CLEAR ANSWER")
+                .on_hover_text("hide the helper answer")
+                .clicked()
+        {
+            self.mix_readout = None;
         }
+        if let Some(readout) = self.mix_readout.clone() {
+            egui::ScrollArea::vertical()
+                .id_salt("mix_readout")
+                .max_height((ui.available_height() * 0.35).clamp(48.0, 180.0))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.label(RichText::new(readout).size(9.0).color(tk.text_dim));
+                });
+        }
+        let h = ui.available_height().max(200.0);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let scroll_w = ui.available_width() - MASTER_W - 8.0;
@@ -1249,4 +1263,4 @@ fn denorm(t: f32, lo: f32, hi: f32, log: bool) -> f32 {
     } else {
         lo + (hi - lo) * t
     }
-}
+        }
