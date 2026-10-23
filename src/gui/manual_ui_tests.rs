@@ -478,5 +478,11 @@ fn save_success_feedback_is_guarded_by_tool_result() {
     let success = success.split("Err(e) =>").next().unwrap();
     assert!(success.contains("self.project_path = Some(path.clone())"));
     assert!(success.contains("format!(\"Saved {}\""));
-    assert!(save.contains("format!(\"{e:#}\"), 0.0, false"));
+    // the failure toast names the file and shows the real error, and never
+    // reports success (the last argument, `true`, only appears under Ok)
+    let failure = save.split("Err(e) =>").nth(1).unwrap();
+    assert!(failure.contains("Could not save"));
+    assert!(failure.contains("{e:#}"));
+    assert!(failure.contains("false"));
+    assert!(!failure.contains("Saved {}"));
 }
