@@ -290,12 +290,15 @@ pub fn channel_rack(
                 // across steps paints (or erases, if the press began on a lit
                 // step); right-click erases a lit step.
                 let paint_id = ui.id().with("rack-paint");
+                // a fast drag can skip cells between two frames, so a cell counts
+                // when the pointer's path since the last frame crossed it
                 let (down, pressed, over) = ui.input(|i| {
-                    (
-                        i.pointer.primary_down(),
-                        i.pointer.primary_pressed(),
-                        i.pointer.hover_pos().is_some_and(|p| r.contains(p)),
-                    )
+                    let over = i.pointer.hover_pos().is_some_and(|p| {
+                        let q = p - i.pointer.delta();
+                        let (x0, x1) = (p.x.min(q.x), p.x.max(q.x));
+                        p.y >= r.top() && p.y <= r.bottom() && x1 >= r.left() && x0 <= r.right()
+                    });
+                    (i.pointer.primary_down(), i.pointer.primary_pressed(), over)
                 });
                 let _ = pressed;
                 let mut toggle = false;
