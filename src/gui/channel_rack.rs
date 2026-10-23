@@ -226,13 +226,39 @@ pub fn channel_rack(
             1.0,
             color,
         );
-        painter.text(
-            g.name.left_center() + vec2(8.0, if drum { 0.0 } else { -6.0 }),
-            Align2::LEFT_CENTER,
-            &t.name,
-            FontId::proportional(12.0),
-            if t.mute { DIM } else { TEXT },
-        );
+        let rid = ui.id().with("rack-rename");
+        let editing: Option<(String, String, bool)> = ui.data(|d| d.get_temp(rid));
+        let renaming = editing.as_ref().is_some_and(|e| e.0 == t.name);
+        if renaming {
+            let (_, mut buf, first) = editing.unwrap_or_default();
+            let te = ui.put(
+                g.name.shrink2(vec2(3.0, 2.0)),
+                egui::TextEdit::singleline(&mut buf).font(FontId::proportional(12.0)),
+            );
+            if first {
+                te.request_focus();
+            }
+            let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if esc {
+                ui.data_mut(|d| d.remove::<(String, String, bool)>(rid));
+            } else if te.lost_focus() && !first {
+                if enter && buf.trim() != t.name {
+                    actions.push(("rename_track", json!({"track": t.name, "name": buf})));
+                }
+                ui.data_mut(|d| d.remove::<(String, String, bool)>(rid));
+            } else {
+                ui.data_mut(|d| d.insert_temp(rid, (t.name.clone(), buf, false)));
+            }
+        } else {
+            painter.text(
+                g.name.left_center() + vec2(8.0, if drum { 0.0 } else { -6.0 }),
+                Align2::LEFT_CENTER,
+                &t.name,
+                FontId::proportional(12.0),
+                if t.mute { DIM } else { TEXT },
+            );
+        }
         if !drum {
             painter.text(
                 g.name.left_center() + vec2(8.0, 8.0),
@@ -242,11 +268,22 @@ pub fn channel_rack(
                 DIM,
             );
         }
-        if nr
-            .on_hover_text(format!("{} ({kind}): click to select", t.name))
-            .clicked()
-        {
+        let nr = nr.on_hover_text(format!(
+            "{} ({kind}): click to select, double-click or right-click to rename",
+            t.name
+        ));
+        if nr.clicked() {
             sel.selected = ti;
+        }
+        let mut start_rename = nr.double_clicked();
+        nr.context_menu(|ui| {
+            if ui.button("Rename").clicked() {
+                start_rename = true;
+                ui.close_menu();
+            }
+        });
+        if start_rename {
+            ui.data_mut(|d| d.insert_temp(rid, (t.name.clone(), t.name.clone(), true)));
         }
         if keys_button(ui, g.keys, keys_id, selected, color).clicked() {
             sel.selected = ti;
