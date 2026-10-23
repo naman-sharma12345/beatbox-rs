@@ -18,6 +18,8 @@ use serde_json::{json, Value};
 pub struct BrowserState {
     pub search: String,
     pub section: usize,
+    /// first open starts on the friendly Sounds list
+    pub opened: bool,
     pub track: String,
     /// list_presets + list_palettes, fetched once
     pub catalog: Option<(Value, Value)>,
@@ -65,6 +67,10 @@ fn matches(q: &str, a: &str, b: &str) -> bool {
 impl Studio {
     pub(super) fn browser_view(&mut self, ui: &mut egui::Ui, p: &Project) {
         let tk = Tokens::DARK;
+        if !self.browser.opened {
+            self.browser.opened = true;
+            self.browser.section = 1;
+        }
         if self.browser.catalog.is_none() {
             let mut e = self.engine.lock().unwrap();
             let pr = e
@@ -103,7 +109,11 @@ impl Studio {
                     .hint_text("808, bell, reverb, dark..."),
             );
             ui.add_space(12.0);
-            ui.label(RichText::new("TARGET TRACK").size(11.0).color(tk.text_dim));
+            ui.label(
+                RichText::new("USE ON CHANNEL")
+                    .size(11.0)
+                    .color(tk.text_dim),
+            );
             egui::ComboBox::from_id_salt("browser_track")
                 .selected_text(self.browser.track.clone())
                 .show_ui(ui, |ui| {
@@ -115,16 +125,13 @@ impl Studio {
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
             for (i, label) in [
-                "Sound library",
-                "Instruments",
-                "Effects & MIDI",
-                "Palettes",
-                "Analyze recording",
-            ]
-            .iter()
-            .enumerate()
-            {
-                ui.selectable_value(&mut self.browser.section, i, *label);
+                (1usize, "Sounds"),
+                (0, "Sample packs"),
+                (2, "Effects & MIDI"),
+                (3, "Palettes"),
+                (4, "Analyze recording"),
+            ] {
+                ui.selectable_value(&mut self.browser.section, i, label);
             }
         });
         ui.separator();
@@ -152,11 +159,8 @@ impl Studio {
                 }
                 ui.horizontal(|ui| {
                     if ui
-                        .small_button("+TRACK")
-                        .on_hover_text(format!(
-                            "add_sample_track {{name: {0}, sample: {0}}}",
-                            s.name
-                        ))
+                        .small_button("+ New channel")
+                        .on_hover_text("Add this sample as its own channel")
                         .clicked()
                     {
                         call = Some((
@@ -225,31 +229,73 @@ impl Studio {
         if section == 1 {
             // ---------- instrument presets
             ui.label(
-                RichText::new("INSTRUMENTS")
+                RichText::new("SOUNDS  \u{00B7}  hear one, then use it on the channel above or add it as a new channel")
                     .size(11.0)
                     .strong()
                     .color(tk.header_text),
             );
-            egui::ScrollArea::vertical().id_salt("br_inst").max_height(h).show(ui, |ui| {
-                for it in presets["instrument_presets"].as_array().cloned().unwrap_or_default() {
-                    let (n, d) = (it["name"].as_str().unwrap_or(""), it["description"].as_str().unwrap_or(""));
-                    if !matches(&q, n, d) {
-                        continue;
+            egui::ScrollArea::vertical()
+                .id_salt("br_inst")
+                .max_height(h)
+                .show(ui, |ui| {
+                    for it in presets["instrument_presets"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                    {
+                        let (n, d) = (
+                            it["name"].as_str().unwrap_or(""),
+                            it["description"].as_str().unwrap_or(""),
+                        );
+                        if !matches(&q, n, d) {
+                            continue;
+                        }
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    hear_busy.is_none(),
+                                    egui::Button::new("\u{25B6} Hear"),
+                                )
+                                .on_hover_text("Play a short phrase with this sound")
+                                .clicked()
+                            {
+                                hear = Some(n.to_string());
+                            }
+                            let use_label = if track.is_empty() {
+                                "Use".to_string()
+                            } else {
+                                format!("Use on {track}")
+                            };
+                            if ui
+                                .button(use_label)
+                                .on_hover_text("Replace the sound of the selected channel")
+                                .clicked()
+                                && !track.is_empty()
+                            {
+                                call = Some((
+                                    "set_instrument".into(),
+                                    json!({"track": track, "preset": n}),
+                                ));
+                            }
+                            if ui
+                                .button("+ New channel")
+                                .on_hover_text(
+                                    "Add this sound as its own channel in the Channel rack",
+                                )
+                                .clicked()
+                            {
+                                call = Some(("add_track".into(), json!({"name": n, "preset": n})));
+                            }
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(n).size(13.0).strong().color(tk.text));
+                                if !d.is_empty() {
+                                    ui.label(RichText::new(d).size(10.5).color(tk.text_dim));
+                                }
+                            });
+                        });
+                        ui.add_space(3.0);
                     }
-                    ui.horizontal(|ui| {
-                        if ui.add_enabled(hear_busy.is_none(), egui::Button::new("HEAR").small()).on_hover_text(format!("preview_instrument {{preset: {n}, play: true}}: plays a short phrase")).clicked() {
-                            hear = Some(n.to_string());
-                        }
-                        if ui.small_button("LOAD").on_hover_text(format!("set_instrument {{track: {track}, preset: {n}}}")).clicked() && !track.is_empty() {
-                            call = Some(("set_instrument".into(), json!({"track": track, "preset": n})));
-                        }
-                        if ui.small_button("+TRACK").on_hover_text(format!("add_track {{name: {n}, preset: {n}}}")).clicked() {
-                            call = Some(("add_track".into(), json!({"name": n, "preset": n})));
-                        }
-                        ui.label(RichText::new(n).size(12.0).color(tk.text)).on_hover_text(d);
-                    });
-                }
-            });
+                });
         }
         if section == 2 {
             // ---------- fx chains and MIDI
@@ -674,86 +720,252 @@ impl Studio {
         let imports = self.browser.imports.clone().unwrap_or(Value::Null);
         let busy = self.browser.job.as_ref().map(|j| j.0.clone());
         let mut job: Option<(String, &'static str, Value)> = None;
-        egui::CollapsingHeader::new(RichText::new(format!("SOUND LIBRARY  \u{00B7}  {} recorded instruments", hits["catalog_size"].as_u64().unwrap_or(0))).size(11.0).strong().color(tk.header_text))
-            .id_salt("br_library")
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("IMPORT FROM URL").size(11.0).color(tk.text_dim));
-                    ui.add(egui::TextEdit::singleline(&mut self.browser.url).desired_width(360.0).hint_text("https://... .wav / .sf2 / .zip of samples"));
-                    ui.add(egui::TextEdit::singleline(&mut self.browser.url_name).desired_width(120.0).hint_text("name (optional)"));
-                    let ready = self.browser.url.trim().starts_with("https://") && busy.is_none();
-                    let mut args = json!({"url": self.browser.url.trim()});
-                    if !self.browser.url_name.trim().is_empty() {
-                        args["name"] = json!(self.browser.url_name.trim());
-                    }
-                    if ui.add_enabled(ready, egui::Button::new("IMPORT").small()).on_hover_text("Import the audio at this link").clicked() {
-                        job = Some((String::from("import"), "import_from_url", args.clone()));
-                    }
-                    let mut a2 = args.clone();
-                    a2["track"] = json!(track);
-                    if ui.add_enabled(ready && !track.is_empty(), egui::Button::new("IMPORT TO TARGET TRACK").small()).on_hover_text(format!("import_from_url {a2}")).clicked() {
-                        job = Some((String::from("import"), "import_from_url", a2));
-                    }
-                    if let Some(b) = &busy {
-                        ui.spinner();
-                        ui.label(RichText::new(format!("{b}...")).size(11.0).color(tk.text_dim));
-                    } else if !self.browser.job_result.is_empty() {
-                        ui.add(egui::Label::new(RichText::new(&self.browser.job_result).size(11.0).color(tk.text)).truncate());
-                    }
-                });
-                ui.add_space(4.0);
-                ui.columns(2, |cols| {
-                    let ui = &mut cols[0];
-                    ui.label(RichText::new(format!("CATALOG ({} match the search box)", hits["matches"].as_u64().unwrap_or(0))).size(11.0).color(tk.text_dim));
-                    egui::ScrollArea::vertical().id_salt("br_cat").max_height(250.0).show(ui, |ui| {
+        egui::CollapsingHeader::new(
+            RichText::new(format!(
+                "SAMPLE PACKS  \u{00B7}  {} recorded instruments",
+                hits["catalog_size"].as_u64().unwrap_or(0)
+            ))
+            .size(11.0)
+            .strong()
+            .color(tk.header_text),
+        )
+        .id_salt("br_library")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.collapsing(
+                RichText::new("Import your own sound from a link")
+                    .size(11.0)
+                    .color(tk.text_dim),
+                |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new("IMPORT FROM URL")
+                                .size(11.0)
+                                .color(tk.text_dim),
+                        );
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.browser.url)
+                                .desired_width(360.0)
+                                .hint_text("https://... .wav / .sf2 / .zip of samples"),
+                        );
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.browser.url_name)
+                                .desired_width(120.0)
+                                .hint_text("name (optional)"),
+                        );
+                        let ready =
+                            self.browser.url.trim().starts_with("https://") && busy.is_none();
+                        let mut args = json!({"url": self.browser.url.trim()});
+                        if !self.browser.url_name.trim().is_empty() {
+                            args["name"] = json!(self.browser.url_name.trim());
+                        }
+                        if ui
+                            .add_enabled(ready, egui::Button::new("IMPORT").small())
+                            .on_hover_text("Import the audio at this link")
+                            .clicked()
+                        {
+                            job = Some((String::from("import"), "import_from_url", args.clone()));
+                        }
+                        let mut a2 = args.clone();
+                        a2["track"] = json!(track);
+                        if ui
+                            .add_enabled(
+                                ready && !track.is_empty(),
+                                egui::Button::new("IMPORT TO TARGET TRACK").small(),
+                            )
+                            .on_hover_text(format!("import_from_url {a2}"))
+                            .clicked()
+                        {
+                            job = Some((String::from("import"), "import_from_url", a2));
+                        }
+                        if let Some(b) = &busy {
+                            ui.spinner();
+                            ui.label(
+                                RichText::new(format!("{b}..."))
+                                    .size(11.0)
+                                    .color(tk.text_dim),
+                            );
+                        } else if !self.browser.job_result.is_empty() {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&self.browser.job_result)
+                                        .size(11.0)
+                                        .color(tk.text),
+                                )
+                                .truncate(),
+                            );
+                        }
+                    });
+                },
+            );
+            if busy.is_none() && !self.browser.job_result.is_empty() {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&self.browser.job_result)
+                            .size(11.0)
+                            .color(tk.text),
+                    )
+                    .truncate(),
+                );
+            }
+            ui.add_space(4.0);
+            ui.columns(2, |cols| {
+                let ui = &mut cols[0];
+                ui.label(
+                    RichText::new(format!(
+                        "CATALOG ({} match the search box)",
+                        hits["matches"].as_u64().unwrap_or(0)
+                    ))
+                    .size(11.0)
+                    .color(tk.text_dim),
+                );
+                egui::ScrollArea::vertical()
+                    .id_salt("br_cat")
+                    .max_height(250.0)
+                    .show(ui, |ui| {
                         for it in hits["results"].as_array().cloned().unwrap_or_default() {
                             let id = it["id"].as_str().unwrap_or("").to_string();
                             let name = it["name"].as_str().unwrap_or("");
-                            let mb = it["mb"].as_f64().map(|m| format!("{m:.0} MB")).unwrap_or_default();
+                            let mb = it["mb"]
+                                .as_f64()
+                                .map(|m| format!("{m:.0} MB"))
+                                .unwrap_or_default();
                             let lic = it["license"].as_str().unwrap_or("");
                             let fmt = it["format"].as_str().unwrap_or("");
                             ui.add_space(6.0);
-                            let installed = if it["installed"]==true { " (installed)" } else { "" };
-                            ui.label(RichText::new(format!("{name}{installed}")).size(13.0).strong().color(tk.text));
-                            ui.label(RichText::new(format!("{} / {fmt} / {mb} / {lic}",it["family"].as_str().unwrap_or(""))).monospace().size(10.5).color(tk.text_dim));
+                            let installed = if it["installed"] == true {
+                                " (installed)"
+                            } else {
+                                ""
+                            };
+                            ui.label(
+                                RichText::new(format!("{name}{installed}"))
+                                    .size(13.0)
+                                    .strong()
+                                    .color(tk.text),
+                            );
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} \u{00B7} {mb}",
+                                    it["family"].as_str().unwrap_or("")
+                                ))
+                                .size(10.5)
+                                .color(tk.text_dim),
+                            )
+                            .on_hover_text(format!("License: {lic} ({fmt})"));
                             ui.horizontal_wrapped(|ui| {
-                                let can = busy.is_none() && !track.is_empty() && (fmt == "sfz_git" || fmt == "vsco_pack");
-                                if ui.add_enabled(can, egui::Button::new("LOAD TO TRACK").small()).on_hover_text(format!("load_instrument {{track: {track}, catalog_id: {id}}}")).clicked() {
-                                    job = Some((format!("loading {id}"), "load_instrument", json!({"track": track, "catalog_id": id})));
+                                let can = busy.is_none()
+                                    && !track.is_empty()
+                                    && (fmt == "sfz_git" || fmt == "vsco_pack");
+                                if ui
+                                    .add_enabled(can, egui::Button::new("Use on channel"))
+                                    .on_hover_text("Load this instrument onto the selected channel")
+                                    .clicked()
+                                {
+                                    job = Some((
+                                        format!("loading {id}"),
+                                        "load_instrument",
+                                        json!({"track": track, "catalog_id": id}),
+                                    ));
                                 }
-                                if ui.add_enabled(busy.is_none() && (fmt == "sfz_git" || fmt == "vsco_pack"), egui::Button::new("+TRACK").small()).on_hover_text(format!("load_instrument {{track: {id}, catalog_id: {id}}}")).clicked() {
-                                    job = Some((format!("loading {id}"), "load_instrument", json!({"track": id, "catalog_id": id})));
+                                if ui
+                                    .add_enabled(
+                                        busy.is_none() && (fmt == "sfz_git" || fmt == "vsco_pack"),
+                                        egui::Button::new("+ New channel"),
+                                    )
+                                    .on_hover_text("Add this instrument as its own channel")
+                                    .clicked()
+                                {
+                                    job = Some((
+                                        format!("loading {id}"),
+                                        "load_instrument",
+                                        json!({"track": id, "catalog_id": id}),
+                                    ));
                                 }
-                                if ui.add_enabled(busy.is_none() && fmt == "sfz_git", egui::Button::new("AUDITION").small()).on_hover_text(format!("audition_instrument {{catalog_id: {id}, play: true}}: plays a 4 s preview")).clicked() {
-                                    job = Some((format!("audition {id}"), "audition_instrument", json!({"catalog_id": id, "play": true})));
+                                if ui
+                                    .add_enabled(
+                                        busy.is_none() && fmt == "sfz_git",
+                                        egui::Button::new("\u{25B6} Hear"),
+                                    )
+                                    .on_hover_text("Plays a 4 second preview")
+                                    .clicked()
+                                {
+                                    job = Some((
+                                        format!("audition {id}"),
+                                        "audition_instrument",
+                                        json!({"catalog_id": id, "play": true}),
+                                    ));
                                 }
-
                             });
                         }
                     });
-                    let ui = &mut cols[1];
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("IMPORTED ({})", imports["count"].as_u64().unwrap_or(0))).size(11.0).color(tk.text_dim));
-                        if ui.small_button("CREDITS").on_hover_text("export_credits {}").clicked() {
-                            let r = self.engine.lock().unwrap().call_from("export_credits", &json!({}), "you").unwrap_or(Value::Null);
-                            self.browser.credits = r["credits"].as_str().unwrap_or("").to_string();
-                        }
-                    });
-                    egui::ScrollArea::vertical().id_salt("br_imp").max_height(150.0).show(ui, |ui| {
-                        for it in imports["imports"].as_array().cloned().unwrap_or_default().iter().rev() {
+                let ui = &mut cols[1];
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "IMPORTED ({})",
+                            imports["count"].as_u64().unwrap_or(0)
+                        ))
+                        .size(11.0)
+                        .color(tk.text_dim),
+                    );
+                    if ui
+                        .small_button("CREDITS")
+                        .on_hover_text("export_credits {}")
+                        .clicked()
+                    {
+                        let r = self
+                            .engine
+                            .lock()
+                            .unwrap()
+                            .call_from("export_credits", &json!({}), "you")
+                            .unwrap_or(Value::Null);
+                        self.browser.credits = r["credits"].as_str().unwrap_or("").to_string();
+                    }
+                });
+                egui::ScrollArea::vertical()
+                    .id_salt("br_imp")
+                    .max_height(150.0)
+                    .show(ui, |ui| {
+                        for it in imports["imports"]
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_default()
+                            .iter()
+                            .rev()
+                        {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(it["slug"].as_str().unwrap_or("")).size(12.0).color(tk.text));
-                                ui.add(egui::Label::new(RichText::new(format!("{} \u{00B7} {}", it["loaded"].as_str().unwrap_or(""), it["license"].as_str().unwrap_or(""))).size(10.0).color(tk.text_dim)).truncate()).on_hover_text(it["url"].as_str().unwrap_or(""));
+                                ui.label(
+                                    RichText::new(it["slug"].as_str().unwrap_or(""))
+                                        .size(12.0)
+                                        .color(tk.text),
+                                );
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(format!(
+                                            "{} \u{00B7} {}",
+                                            it["loaded"].as_str().unwrap_or(""),
+                                            it["license"].as_str().unwrap_or("")
+                                        ))
+                                        .size(10.0)
+                                        .color(tk.text_dim),
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(it["url"].as_str().unwrap_or(""));
                             });
                         }
                         if !self.browser.credits.is_empty() {
                             ui.separator();
-                            ui.label(RichText::new(&self.browser.credits).size(10.0).color(tk.text_dim));
+                            ui.label(
+                                RichText::new(&self.browser.credits)
+                                    .size(10.0)
+                                    .color(tk.text_dim),
+                            );
                         }
                     });
-                });
             });
+        });
         if let Some((label, tool, args)) = job {
             self.library_job(label, ui.ctx().clone(), tool, args);
         }
