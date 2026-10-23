@@ -490,10 +490,18 @@ impl Studio {
     }
 
     fn save(&mut self) {
-        let path = self
-            .project_path
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("beat.beatbox.json"));
+        // A project without a file gets a name nobody is using yet, so the first
+        // Save can never overwrite another beat in the folder.
+        let eng = self.engine.clone();
+        let path = self.project_path.clone().unwrap_or_else(|| {
+            let mut p = PathBuf::from("beat.beatbox.json");
+            let mut n = 2;
+            while eng.lock().unwrap().resolve(&p.to_string_lossy()).exists() {
+                p = PathBuf::from(format!("beat-{n}.beatbox.json"));
+                n += 1;
+            }
+            p
+        });
         let result =
             self.engine
                 .lock()
