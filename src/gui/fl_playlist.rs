@@ -16,6 +16,16 @@ const LANE_H: f32 = 28.0;
 const RULER_H: f32 = 16.0;
 const EDGE_PX: f32 = 7.0;
 
+/// Playlist copies are stored as "pl:<bar>:<name>"; people only see the name.
+pub fn friendly_name(name: &str) -> &str {
+    if let Some(rest) = name.strip_prefix(crate::tools_fl::PL) {
+        if let Some((_, n)) = rest.split_once(':') {
+            return n;
+        }
+    }
+    name
+}
+
 /// A pattern's clip colour, stable per name (FL tints each pattern).
 pub fn pattern_color(name: &str) -> Color32 {
     let h = name
