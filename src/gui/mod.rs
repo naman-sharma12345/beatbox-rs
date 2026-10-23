@@ -761,6 +761,22 @@ impl Studio {
                 macro_rules! file_menu {
                     ($ui:expr) => {{
                         $ui.menu_button("File", |ui| {
+                            if ui
+                                .button("New project")
+                                .on_hover_text("Start an empty beat. Undo brings the previous one back.")
+                                .clicked()
+                            {
+                                self.call("new_project", json!({"name": "my beat", "bpm": 120}));
+                                // never let Save overwrite the file of the project we just left
+                                self.project_path = None;
+                                self.toast = Some((
+                                    "New empty project. Add sounds from the Browser (Alt+F8), then click steps in the Channel rack".into(),
+                                    0.0,
+                                    true,
+                                ));
+                                ui.close_menu();
+                            }
+                            ui.separator();
                             if ui.button("Export...").clicked() {
                                 self.export.open = true;
                                 ui.close_menu();
