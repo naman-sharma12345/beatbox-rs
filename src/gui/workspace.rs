@@ -338,7 +338,9 @@ impl TabViewer for Viewer<'_> {
                     });
             }
             _ => {
-                if p.tracks.is_empty() {
+                if p.tracks.is_empty()
+                    && !matches!(pane, Pane::Browser | Pane::Automation | Pane::Vocal)
+                {
                     ui.add_space(28.0);
                     ui.label(
                         RichText::new("Make room for your next idea.")
