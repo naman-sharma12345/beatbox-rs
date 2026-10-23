@@ -608,7 +608,10 @@ impl Studio {
     // ---------------- top bar ----------------
     fn top_bar(&mut self, ui: &mut egui::Ui, p: &Project, undo: (usize, usize)) {
         ui.horizontal(|ui| {
-            ui.spacing_mut().slider_width = 66.0;
+            // Narrow windows: shrink the swing slider and key/scale boxes so
+            // the whole row fits without scrolling.
+            let narrow = ui.ctx().screen_rect().width() < 900.0;
+            ui.spacing_mut().slider_width = if narrow { 30.0 } else { 66.0 };
             let playing = self.player.is_playing();
             if transport_button(ui, playing)
                 .on_hover_text(format!(
@@ -715,7 +718,7 @@ impl Studio {
             let mut root = p.key_root.clone();
             let mut scale = p.scale.clone();
             egui::ComboBox::from_id_salt("key")
-                .width(56.0)
+                .width(if narrow { 44.0 } else { 56.0 })
                 .selected_text(RichText::new(&root).strong())
                 .show_ui(ui, |ui| {
                     for n in theory::NOTE_NAMES {
@@ -723,7 +726,7 @@ impl Studio {
                     }
                 });
             egui::ComboBox::from_id_salt("scale")
-                .width(120.0)
+                .width(if narrow { 84.0 } else { 120.0 })
                 .selected_text(&scale)
                 .show_ui(ui, |ui| {
                     for (n, _) in theory::SCALES {
