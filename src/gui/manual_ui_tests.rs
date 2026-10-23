@@ -455,3 +455,15 @@ fn every_tool_is_reachable_from_the_gui() {
         "tools with no GUI entry and not on the NO_GUI list: {missing:?}"
     );
 }
+
+#[test]
+fn piano_drag_uses_press_origin_before_hit_testing() {
+    // A note edge is only five pixels wide. The drag threshold may carry
+    // the current pointer beyond it, so drag setup must use the press point.
+    let piano = include_str!("piano.rs");
+    let drag = piano.split("if resp.drag_started() {").nth(1).unwrap();
+    let setup = drag.split("if resp.dragged() {").next().unwrap();
+    assert!(setup.contains("i.pointer.press_origin()"));
+    assert!(setup.contains("match hit(start)"));
+    assert!(setup.contains("self.piano.band = Some(start)"));
+}
