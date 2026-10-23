@@ -88,6 +88,13 @@ fn reserve_target(e: &crate::engine::Engine, kind: usize, args: &mut Value) -> s
         format!("renders/{name}.{extension}")
     };
     let base = e.resolve(args[key].as_str().unwrap_or(&default));
+    // A name typed without a file type gets the chosen format's extension,
+    // so the export opens in any player.
+    let base = if kind != 1 && base.extension().is_none() {
+        base.with_extension(extension)
+    } else {
+        base
+    };
     if let Some(parent) = base.parent() {
         std::fs::create_dir_all(parent)?;
     }
