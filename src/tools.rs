@@ -2153,4 +2153,86 @@ mod tests {
             .unwrap();
         assert_eq!(e.project, before);
     }
+
+    #[test]
+    fn rename_track_moves_every_reference_and_undoes() {
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "kick", "preset": "kick"}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "bass", "preset": "acid_bass"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track": "bass", "notes": [{"start": 0, "len": 1, "pitch": 40}]}),
+        )
+        .unwrap();
+        e.call(
+            "add_automation",
+            &json!({"track": "bass", "param": "volume", "points": [{"beat": 0, "value": -6}, {"beat": 4, "value": 0}]}),
+        )
+        .unwrap();
+        e.call(
+            "create_macro",
+            &json!({"name": "m", "targets": [{"track": "bass", "param": "volume", "min": -12, "max": 0}]}),
+        )
+        .unwrap();
+        e.call(
+            "add_effect",
+            &json!({"track": "bass", "type": "sidechain", "params": {"source": "kick", "amount": 0.5}}),
+        )
+        .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern": "A", "start_bar": 0, "tracks": ["bass"]}),
+        )
+        .unwrap();
+        let before = e.project.clone();
+        e.call(
+            "rename_track",
+            &json!({"track": "bass", "name": "Sub Bass"}),
+        )
+        .unwrap();
+        e.call("rename_track", &json!({"track": "kick", "name": "drumz"}))
+            .unwrap();
+        let p = &e.project;
+        assert_eq!(p.tracks[0].name, "drumz");
+        assert_eq!(p.tracks[1].name, "Sub Bass");
+        assert!(!p.tracks[1].id.is_empty());
+        for pat in &p.patterns {
+            assert!(!pat.clips.contains_key("bass"), "{}", pat.name);
+        }
+        assert_eq!(p.patterns[0].notes("Sub Bass").len(), 1);
+        assert!(p.automation.iter().all(|l| l.target == "Sub Bass"));
+        assert!(p.macros[0].targets.iter().all(|t| t.track == "Sub Bass"));
+        assert!(!p.playlist.is_empty());
+        assert!(p
+            .playlist
+            .iter()
+            .all(|c| c.tracks.len() == 1 && c.tracks[0] == "Sub Bass"));
+        let fx = serde_json::to_value(&p.tracks[1].effects).unwrap();
+        assert_eq!(fx[0]["source"], "drumz");
+        assert!(e
+            .call(
+                "rename_track",
+                &json!({"track": "Sub Bass", "name": "DRUMZ"})
+            )
+            .is_err());
+        assert!(e
+            .call("rename_track", &json!({"track": "Sub Bass", "name": " "}))
+            .is_err());
+        assert!(e
+            .call(
+                "rename_track",
+                &json!({"track": "Sub Bass", "name": "master"})
+            )
+            .is_err());
+        e.call("undo", &json!({"steps": 2})).unwrap();
+        assert_eq!(e.project.tracks[1].name, "bass");
+        assert_eq!(
+            e.project.patterns[0].notes("bass").len(),
+            before.patterns[0].notes("bass").len()
+        );
+        e.call("redo", &json!({"steps": 2})).unwrap();
+        assert_eq!(e.project.tracks[1].name, "Sub Bass");
+    }
 }
