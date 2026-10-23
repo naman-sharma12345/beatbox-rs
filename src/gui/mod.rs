@@ -1420,7 +1420,7 @@ impl eframe::App for Studio {
                     .inner_margin(egui::Margin::symmetric(14.0, 10.0)),
             )
             .show(ctx, |ui| {
-                if self.view == 0 {
+                if self.view == 0 && !self.note_editor {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("SONG").size(10.5).color(DIM).strong());
                         let names: Vec<String> = p
