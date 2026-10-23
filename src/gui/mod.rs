@@ -806,6 +806,9 @@ impl Studio {
             if r.drag_stopped() {
                 self.call("set_tempo", json!({"swing": swing}));
             }
+            if self.rendering.is_some() && self.player.is_playing() {
+                ui.label(RichText::new("Preparing sound...").size(11.0).color(GOOD));
+            }
             ui.add_space(8.0);
             let mut root = p.key_root.clone();
             let mut scale = p.scale.clone();
