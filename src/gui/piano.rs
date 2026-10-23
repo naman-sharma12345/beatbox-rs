@@ -67,6 +67,74 @@ pub struct NoteDrag {
     pub shift: NoteShift,
 }
 
+/// Bind a manual helper to its documented scope, preserving operation arguments.
+fn prepare_helper_args(id: &str, args: &mut Value, track: &str, pattern: &str, ids: &[&str]) {
+    if let (Some(obj), Some(tool)) = (args.as_object_mut(), crate::tools::find(id)) {
+        let schema = (tool.schema)();
+        if let Some(props) = schema.get("properties").and_then(Value::as_object) {
+            if !ids.is_empty() && props.contains_key("ids") {
+                obj.insert("ids".into(), json!(ids));
+            }
+            if props.contains_key("track") {
+                obj.insert("track".into(), json!(track));
+            }
+            if props.contains_key("pattern") && !obj.contains_key("pattern") {
+                obj.insert("pattern".into(), json!(pattern));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+
+    #[test]
+    fn helper_scope_matches_live_tool_schema() {
+        for id in [
+            "edit_notes",
+            "quantize",
+            "legato",
+            "articulate",
+            "lfo_tool",
+            "flip_notes",
+            "generate_melody",
+            "generate_fill",
+            "generate_ghost_notes",
+            "generate_variation",
+            "counter_melody",
+            "harmonize",
+            "humanize",
+            "add_slides",
+            "roll_notes",
+            "split_notes",
+            "merge_notes",
+            "scale_snap",
+            "chord_voicing",
+            "velocity_curve",
+        ] {
+            let mut a = json!({});
+            prepare_helper_args(id, &mut a, "hat", "verse", &["n1"]);
+            let schema = (crate::tools::find(id).unwrap().schema)();
+            let props = schema["properties"].as_object().unwrap();
+            assert!(
+                a.as_object().unwrap().keys().all(|k| props.contains_key(k)),
+                "{id}: {a}"
+            );
+            assert_eq!(a.get("ids").is_some(), props.contains_key("ids"), "{id}");
+        }
+        let mut fill = json!({"style":"auto"});
+        prepare_helper_args("generate_fill", &mut fill, "hat", "verse", &["n1"]);
+        assert_eq!(fill, json!({"style":"auto","pattern":"verse"}));
+        let mut edit = json!({"transpose":12});
+        prepare_helper_args("edit_notes", &mut edit, "hat", "verse", &["n1"]);
+        assert_eq!(
+            edit,
+            json!({"transpose":12,"track":"hat","pattern":"verse","ids":["n1"]})
+        );
+    }
+}
+
 impl Studio {
     /// Replace the track's notes in the pattern with `notes` in one undoable call.
     fn write_notes(&mut self, track: &str, pattern: &str, notes: &[Note]) {
@@ -141,18 +209,6 @@ impl Studio {
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         tb.set_clip_rect(bar);
-        let sel_or_all = |sel: &[usize]| -> Value {
-            if sel.is_empty() {
-                json!({})
-            } else {
-                // select the chosen notes' pitches over their step range
-                let ns: Vec<&Note> = sel.iter().filter_map(|i| notes.get(*i)).collect();
-                let from = ns.iter().map(|n| n.start).fold(f32::MAX, f32::min);
-                let to = ns.iter().map(|n| n.start).fold(0.0f32, f32::max) + 0.001;
-                let pitches: Vec<u8> = ns.iter().map(|n| n.pitch).collect();
-                json!({"from": from, "to": to, "pitches": pitches})
-            }
-        };
         let mut op: Option<(&str, Value)> = None;
         let g = snap_steps(self.piano.snap);
         egui::ComboBox::from_id_salt(("snap", self.selected))
@@ -206,7 +262,7 @@ impl Studio {
                 "a fresh melody on this track",
             ),
             (
-                "Fill",
+                "Fill pattern",
                 "generate_fill",
                 json!({"style": "auto"}),
                 "a fill into the next section",
@@ -218,7 +274,7 @@ impl Studio {
                 "quiet in-between hits",
             ),
             (
-                "Variation",
+                "Variation track",
                 "generate_variation",
                 json!({"kind": "both"}),
                 "a twist on this pattern",
@@ -238,12 +294,17 @@ impl Studio {
         ];
         let edit_a: [(&str, &str, Value, &str); 5] = [
             (
-                "Humanize",
+                "Humanize track",
                 "humanize",
                 json!({}),
                 "loosen timing and velocity",
             ),
-            ("Slides", "add_slides", json!({}), "glides between notes"),
+            (
+                "Slides track",
+                "add_slides",
+                json!({}),
+                "glides between notes",
+            ),
             (
                 "Roll",
                 "roll_notes",
@@ -265,16 +326,21 @@ impl Studio {
         ];
         let edit_b: [(&str, &str, Value, &str); 5] = [
             (
-                "Snap",
+                "Snap track",
                 "scale_snap",
                 json!({}),
                 "pull notes into the song scale",
             ),
-            ("+12", "transpose", json!({"semitones": 12}), "up an octave"),
+            (
+                "+12",
+                "edit_notes",
+                json!({"transpose": 12}),
+                "up an octave",
+            ),
             (
                 "-12",
-                "transpose",
-                json!({"semitones": -12}),
+                "edit_notes",
+                json!({"transpose": -12}),
                 "down an octave",
             ),
             (
@@ -314,13 +380,14 @@ impl Studio {
             });
         }
         if let Some((id, mut a)) = op {
-            if let (Some(obj), Value::Object(sel)) =
-                (a.as_object_mut(), sel_or_all(&self.piano.selected))
-            {
-                obj.extend(sel);
-                obj.insert("track".into(), json!(tname));
-                obj.insert("pattern".into(), json!(pname));
-            }
+            let ids: Vec<&str> = self
+                .piano
+                .selected
+                .iter()
+                .filter_map(|i| notes.get(*i))
+                .map(|n| n.id.as_str())
+                .collect();
+            prepare_helper_args(id, &mut a, &tname, &pname, &ids);
             self.call(id, a);
         }
         // ---- geometry ----
