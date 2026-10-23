@@ -54,58 +54,54 @@ pub struct Tokens {
 
 impl Tokens {
     pub const DARK: Tokens = Tokens {
-        panel_bg: Color32::from_rgb(37, 37, 38),
-        panel_bg2: Color32::from_rgb(44, 44, 45),
-        toolbar_bg: Color32::from_rgb(30, 30, 31),
-        border: Color32::from_rgb(14, 14, 14),
-        border_light: Color32::from_rgb(64, 64, 66),
-        text: Color32::from_rgb(214, 214, 214),
-        text_dim: Color32::from_rgb(150, 150, 152),
-        text_dark: Color32::from_rgb(16, 16, 16),
-        header_text: Color32::from_rgb(196, 196, 198),
-        counter_bg: Color32::from_rgb(4, 4, 4),
-        counter_text: Color32::from_rgb(104, 220, 120),
-        accent: Color32::from_rgb(64, 132, 196),
-        accent_dark: Color32::from_rgb(40, 92, 146),
-        button: Color32::from_rgb(58, 58, 60),
-        button_hi: Color32::from_rgb(78, 78, 80),
-        button_border: Color32::from_rgb(20, 20, 20),
-        name_field: Color32::from_rgb(208, 208, 208),
-        name_field_sel: Color32::from_rgb(232, 232, 232),
-        ruler_bg: Color32::from_rgb(40, 40, 41),
-        ruler_text: Color32::from_rgb(178, 178, 180),
-        ruler_tick: Color32::from_rgb(96, 96, 98),
-        tempo_ruler: Color32::from_rgb(52, 128, 88),
-        playlist_bg: Color32::from_rgb(36, 36, 37),
-        playlist_alt: Color32::from_rgb(40, 40, 41),
-        grid_line: Color32::from_rgb(52, 52, 54),
-        bar_line: Color32::from_rgb(66, 66, 70),
-        playhead: Color32::from_rgb(232, 60, 50),
-        solo: Color32::from_rgb(222, 196, 52),
-        mute: Color32::from_rgb(232, 148, 40),
-        rec: Color32::from_rgb(214, 52, 46),
-        auto_read: Color32::from_rgb(96, 200, 110),
-        meter_green: Color32::from_rgb(60, 200, 80),
-        meter_yellow: Color32::from_rgb(230, 210, 60),
-        meter_red: Color32::from_rgb(230, 50, 40),
-        fader_track: Color32::from_rgb(12, 12, 12),
-        strip_bg: Color32::from_rgb(46, 46, 48),
-        strip_section: Color32::from_rgb(36, 36, 38),
-        slot_bg: Color32::from_rgb(28, 28, 29),
+        panel_bg: Color32::from_rgb(29, 25, 20),
+        panel_bg2: Color32::from_rgb(36, 31, 25),
+        toolbar_bg: Color32::from_rgb(24, 21, 17),
+        border: Color32::from_rgb(48, 41, 32),
+        border_light: Color32::from_rgb(89, 77, 58),
+        text: Color32::from_rgb(241, 234, 217),
+        text_dim: Color32::from_rgb(185, 174, 152),
+        text_dark: Color32::from_rgb(24, 20, 16),
+        header_text: Color32::from_rgb(216, 204, 181),
+        counter_bg: Color32::from_rgb(19, 16, 12),
+        counter_text: Color32::from_rgb(241, 234, 217),
+        accent: Color32::from_rgb(232, 68, 46),
+        accent_dark: Color32::from_rgb(126, 42, 29),
+        button: Color32::from_rgb(43, 36, 27),
+        button_hi: Color32::from_rgb(62, 51, 37),
+        button_border: Color32::from_rgb(67, 55, 40),
+        name_field: Color32::from_rgb(42, 35, 26),
+        name_field_sel: Color32::from_rgb(83, 58, 33),
+        ruler_bg: Color32::from_rgb(31, 26, 20),
+        ruler_text: Color32::from_rgb(185, 174, 152),
+        ruler_tick: Color32::from_rgb(97, 81, 59),
+        tempo_ruler: Color32::from_rgb(179, 132, 57),
+        playlist_bg: Color32::from_rgb(21, 18, 14),
+        playlist_alt: Color32::from_rgb(26, 22, 17),
+        grid_line: Color32::from_rgb(44, 37, 28),
+        bar_line: Color32::from_rgb(66, 54, 39),
+        playhead: Color32::from_rgb(232, 68, 46),
+        solo: Color32::from_rgb(232, 163, 61),
+        mute: Color32::from_rgb(232, 163, 61),
+        rec: Color32::from_rgb(232, 68, 46),
+        auto_read: Color32::from_rgb(79, 162, 150),
+        meter_green: Color32::from_rgb(207, 194, 156),
+        meter_yellow: Color32::from_rgb(232, 163, 61),
+        meter_red: Color32::from_rgb(232, 68, 46),
+        fader_track: Color32::from_rgb(16, 14, 11),
+        strip_bg: Color32::from_rgb(28, 24, 19),
+        strip_section: Color32::from_rgb(23, 20, 16),
+        slot_bg: Color32::from_rgb(20, 17, 13),
     };
 }
 
 /// Track colours tinted for clip bodies: (body, title bar, content ink).
 pub fn clip_colors(c: Color32, selected: bool) -> (Color32, Color32, Color32) {
-    let k = if selected { 0.95 } else { 0.62 };
+    let k = if selected { 0.32 } else { 0.18 };
     let scale = |v: u8, f: f32| (f32::from(v) * f) as u8;
     let body = Color32::from_rgb(scale(c.r(), k), scale(c.g(), k), scale(c.b(), k));
-    let bar = Color32::from_rgb(scale(c.r(), 0.9), scale(c.g(), 0.9), scale(c.b(), 0.9));
-    let ink = if selected {
-        Color32::from_rgb(20, 20, 24)
-    } else {
-        Color32::from_rgb(12, 12, 14)
-    };
+    let bar = Color32::from_rgb(scale(c.r(), 0.46), scale(c.g(), 0.46), scale(c.b(), 0.46));
+    let ink = Tokens::DARK.text;
     (body, bar, ink)
 }
 
@@ -123,6 +119,34 @@ pub fn mono(size: f32) -> FontId {
 
 /// Apply the studio visuals and spacing to the context.
 pub fn apply(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    for (name, bytes, family) in [
+        (
+            "space",
+            include_bytes!("../../assets/reel/fonts/SpaceGrotesk.ttf").as_slice(),
+            FontFamily::Proportional,
+        ),
+        (
+            "mono",
+            include_bytes!("../../assets/reel/fonts/JetBrainsMono.ttf").as_slice(),
+            FontFamily::Monospace,
+        ),
+        (
+            "brand",
+            include_bytes!("../../assets/reel/fonts/ArchivoExpanded.ttf").as_slice(),
+            FontFamily::Name("brand".into()),
+        ),
+    ] {
+        fonts
+            .font_data
+            .insert(name.into(), egui::FontData::from_static(bytes));
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .insert(0, name.into());
+    }
+    ctx.set_fonts(fonts);
     let t = Tokens::DARK;
     let mut v = egui::Visuals::dark();
     v.panel_fill = t.panel_bg;
@@ -132,7 +156,7 @@ pub fn apply(ctx: &egui::Context) {
     v.override_text_color = Some(t.text);
     v.selection.bg_fill = t.accent;
     v.selection.stroke = Stroke::new(1.0_f32, t.accent);
-    v.window_rounding = egui::Rounding::same(6.0);
+    v.window_rounding = egui::Rounding::same(8.0);
     v.menu_rounding = egui::Rounding::same(4.0);
     v.widgets.noninteractive.bg_fill = t.panel_bg2;
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, t.border);
@@ -143,7 +167,7 @@ pub fn apply(ctx: &egui::Context) {
         &mut v.widgets.active,
         &mut v.widgets.open,
     ] {
-        w.rounding = egui::Rounding::same(3.0);
+        w.rounding = egui::Rounding::same(5.0);
         w.bg_stroke = Stroke::new(1.0_f32, t.button_border);
     }
     v.widgets.inactive.bg_fill = t.button;
@@ -163,7 +187,7 @@ pub fn apply(ctx: &egui::Context) {
     for (ts, size) in [
         (egui::TextStyle::Body, 13.0),
         (egui::TextStyle::Button, 12.5),
-        (egui::TextStyle::Small, 10.5),
+        (egui::TextStyle::Small, 11.5),
         (egui::TextStyle::Heading, 17.0),
     ] {
         style.text_styles.insert(ts, regular(size));
