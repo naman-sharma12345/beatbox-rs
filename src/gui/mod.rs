@@ -534,7 +534,10 @@ impl Studio {
     }
 
     fn start_new_project(&mut self) {
-        self.call("new_project", json!({"name": "my beat", "bpm": 120}));
+        self.call(
+            "new_project",
+            json!({"name": "my beat", "bpm": 120, "patterns": [{"name": "A", "bars": 1}]}),
+        );
         // never let Save overwrite the file of the project we just left
         self.project_path = None;
         self.saved_rev = self.engine.lock().unwrap().revision;
