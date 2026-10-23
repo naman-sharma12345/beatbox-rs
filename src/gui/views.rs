@@ -338,148 +338,154 @@ impl Studio {
         let width = ((ui.available_width() - (n - 1.0) * 6.0) / n).clamp(88.0, 156.0);
         let pos = self.live_pos();
         let h = ui.available_height().max(145.0);
-        egui::ScrollArea::horizontal()
-            .id_salt("console_dock_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.horizontal_top(|ui| {
-                    for (name, volume, pan, mute, solo, color, track) in &channels {
-                        let master = name == "master";
-                        let (r, _) = ui.allocate_exact_size(Vec2::new(width, h), Sense::hover());
-                        let pt = ui.painter().clone();
-                        pt.rect(
-                            r,
-                            6.0,
-                            Tokens::DARK.strip_bg,
-                            Stroke::new(1.0_f32, if master { ACCENT } else { LINE }),
-                        );
-                        let nr = Rect::from_min_size(
-                            r.min + Vec2::new(6.0, 4.0),
-                            Vec2::new(width - 12.0, 18.0),
-                        );
-                        pt.with_clip_rect(nr).text(
-                            nr.center(),
-                            Align2::CENTER_CENTER,
-                            name.to_uppercase(),
-                            FontId::monospace(11.0),
-                            *color,
-                        );
-                        pt.line_segment(
-                            [nr.left_bottom(), nr.right_bottom()],
-                            Stroke::new(1.0_f32, *color),
-                        );
-                        if ui
-                            .interact(nr, ui.id().with(("dock_select", name)), Sense::click())
-                            .clicked()
-                        {
-                            if let Some(i) = track {
-                                self.selected = *i;
-                            }
-                        }
-                        let pid = ui.id().with(("dock_pan", name));
-                        let mut pv = ui.ctx().data(|d| d.get_temp::<f32>(pid)).unwrap_or(*pan);
-                        if !master {
-                            let kr = Rect::from_center_size(
-                                Pos2::new(r.center().x, r.top() + 37.0),
-                                Vec2::splat(22.0),
-                            );
-                            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(kr));
-                            let (resp, changed) =
-                                pan_knob(&mut child, 22.0, &mut pv, "Pan; double-click to centre");
-                            if changed {
-                                ui.ctx().data_mut(|d| d.insert_temp(pid, pv));
-                            }
-                            if resp.drag_stopped() || resp.double_clicked() {
-                                ui.ctx().data_mut(|d| d.remove::<f32>(pid));
-                                self.call("set_mixer", json!({"track":name,"pan":pv}));
-                            }
-                        } else if let Some(rendered) = self
-                            .rendered
-                            .as_ref()
-                            .filter(|r| r.rev == self.engine.lock().unwrap().revision)
-                        {
-                            pt.text(
-                                Pos2::new(r.center().x, r.top() + 37.0),
-                                Align2::CENTER_CENTER,
-                                if p.tracks.is_empty() || rendered.report.master.peak_dbfs < -69.0 {
-                                    "SILENCE".into()
-                                } else {
-                                    format!("{:.1} LUFS", rendered.report.loudness.integrated_lufs)
-                                },
-                                FontId::monospace(10.0),
-                                TEXT,
-                            );
-                        }
-                        let fr = Rect::from_min_max(
-                            Pos2::new(r.left() + 9.0, r.top() + 53.0),
-                            Pos2::new(r.center().x + 8.0, r.bottom() - 30.0),
-                        );
-                        let id = ui.id().with(("dock_fader", name));
-                        let mut v = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(*volume);
-                        let (resp, done) = console_fader(ui, fr, id, &mut v);
-                        if resp.dragged() {
-                            ui.ctx().data_mut(|d| d.insert_temp(id, v));
-                        }
-                        if done {
-                            ui.ctx().data_mut(|d| d.remove::<f32>(id));
-                            self.call("set_mixer", json!({"track":name,"volume_db":v}));
-                        }
-                        let ((left, right), peak) = self.strip_meter_levels(name, pos);
-                        let mr = Rect::from_min_max(
-                            Pos2::new(fr.right() + 4.0, fr.top() + 3.0),
-                            Pos2::new(r.right() - 8.0, fr.bottom() - 3.0),
-                        );
-                        let mw = ((mr.width() - 2.0) / 2.0).max(2.0);
-                        for (k, db) in [left, right].iter().enumerate() {
-                            zoned_meter(
-                                &pt,
-                                Rect::from_min_size(
-                                    mr.min + Vec2::new(k as f32 * (mw + 2.0), 0.0),
-                                    Vec2::new(mw, mr.height()),
-                                ),
-                                *db,
-                                peak,
-                                peak > -0.1,
-                            );
-                        }
-                        let mut row = ui.new_child(
-                            egui::UiBuilder::new()
-                                .max_rect(Rect::from_min_size(
-                                    Pos2::new(r.left() + 6.0, r.bottom() - 25.0),
-                                    Vec2::new(width - 12.0, 20.0),
-                                ))
-                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                        );
-                        if track.is_some()
-                            && text_toggle(
-                                &mut row,
-                                Vec2::new(18.0, 17.0),
-                                "S",
-                                *solo,
-                                SOLO,
-                                "Solo",
-                            )
-                            .clicked()
-                        {
-                            self.call("set_mixer", json!({"track":name,"solo":!solo}));
-                        }
-                        if !master
-                            && text_toggle(
-                                &mut row,
-                                Vec2::new(18.0, 17.0),
-                                "M",
-                                *mute,
-                                WARN,
-                                "Mute",
-                            )
-                            .clicked()
-                        {
-                            self.call("set_mixer", json!({"track":name,"mute":!mute}));
-                        }
-                        row.label(RichText::new(fmt_db(v)).monospace().size(10.0).color(TEXT));
+        let master = channels.pop().unwrap();
+        let scroll_w = (ui.available_width() - width - 6.0).max(88.0);
+        let overflowing = channels.len() as f32 * (width + 6.0) - 6.0 > scroll_w;
+        let strip_h = if overflowing { h - 18.0 } else { h };
+        let h = strip_h.max(120.0);
+        let mut draw =
+            |ui: &mut egui::Ui,
+             channel: &(String, f32, f32, bool, bool, Color32, Option<usize>)| {
+                let (name, volume, pan, mute, solo, color, track) = channel;
+                let master = name == "master";
+                let (r, _) = ui.allocate_exact_size(Vec2::new(width, h), Sense::hover());
+                let pt = ui.painter().clone();
+                pt.rect(
+                    r,
+                    6.0,
+                    Tokens::DARK.strip_bg,
+                    Stroke::new(1.0_f32, if master { ACCENT } else { LINE }),
+                );
+                let nr =
+                    Rect::from_min_size(r.min + Vec2::new(6.0, 4.0), Vec2::new(width - 12.0, 18.0));
+                pt.with_clip_rect(nr).text(
+                    nr.center(),
+                    Align2::CENTER_CENTER,
+                    name.to_uppercase(),
+                    FontId::monospace(11.0),
+                    *color,
+                );
+                pt.line_segment(
+                    [nr.left_bottom(), nr.right_bottom()],
+                    Stroke::new(1.0_f32, *color),
+                );
+                if ui
+                    .interact(nr, ui.id().with(("dock_select", name)), Sense::click())
+                    .clicked()
+                {
+                    if let Some(i) = track {
+                        self.selected = *i;
                     }
-                });
-            });
+                }
+                let pid = ui.id().with(("dock_pan", name));
+                let mut pv = ui.ctx().data(|d| d.get_temp::<f32>(pid)).unwrap_or(*pan);
+                if !master {
+                    let kr = Rect::from_center_size(
+                        Pos2::new(r.center().x, r.top() + 37.0),
+                        Vec2::splat(22.0),
+                    );
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(kr));
+                    let (resp, changed) =
+                        pan_knob(&mut child, 22.0, &mut pv, "Pan; double-click to centre");
+                    if changed {
+                        ui.ctx().data_mut(|d| d.insert_temp(pid, pv));
+                    }
+                    if resp.drag_stopped() || resp.double_clicked() {
+                        ui.ctx().data_mut(|d| d.remove::<f32>(pid));
+                        self.call("set_mixer", json!({"track":name,"pan":pv}));
+                    }
+                } else if let Some(rendered) = self
+                    .rendered
+                    .as_ref()
+                    .filter(|r| r.rev == self.engine.lock().unwrap().revision)
+                {
+                    pt.text(
+                        Pos2::new(r.center().x, r.top() + 37.0),
+                        Align2::CENTER_CENTER,
+                        if p.tracks.is_empty() || rendered.report.master.peak_dbfs < -69.0 {
+                            "SILENCE".into()
+                        } else {
+                            format!("{:.1} LUFS", rendered.report.loudness.integrated_lufs)
+                        },
+                        FontId::monospace(10.0),
+                        TEXT,
+                    );
+                }
+                let fr = Rect::from_min_max(
+                    Pos2::new(r.left() + 9.0, r.top() + 53.0),
+                    Pos2::new(r.center().x + 8.0, r.bottom() - 30.0),
+                );
+                let id = ui.id().with(("dock_fader", name));
+                let mut v = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(*volume);
+                let (resp, done) = console_fader(ui, fr, id, &mut v);
+                if resp.dragged() {
+                    ui.ctx().data_mut(|d| d.insert_temp(id, v));
+                }
+                if done {
+                    ui.ctx().data_mut(|d| d.remove::<f32>(id));
+                    self.call("set_mixer", json!({"track":name,"volume_db":v}));
+                }
+                let ((left, right), peak) = self.strip_meter_levels(name, pos);
+                let mr = Rect::from_min_max(
+                    Pos2::new(fr.right() + 4.0, fr.top() + 3.0),
+                    Pos2::new(r.right() - 8.0, fr.bottom() - 3.0),
+                );
+                let mw = ((mr.width() - 2.0) / 2.0).max(2.0);
+                for (k, db) in [left, right].iter().enumerate() {
+                    zoned_meter(
+                        &pt,
+                        Rect::from_min_size(
+                            mr.min + Vec2::new(k as f32 * (mw + 2.0), 0.0),
+                            Vec2::new(mw, mr.height()),
+                        ),
+                        *db,
+                        peak,
+                        peak > -0.1,
+                    );
+                }
+                let mut row = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(
+                            Pos2::new(r.left() + 6.0, r.bottom() - 25.0),
+                            Vec2::new(width - 12.0, 20.0),
+                        ))
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                if track.is_some()
+                    && text_toggle(&mut row, Vec2::new(18.0, 17.0), "S", *solo, SOLO, "Solo")
+                        .clicked()
+                {
+                    self.call("set_mixer", json!({"track":name,"solo":!solo}));
+                }
+                if !master
+                    && text_toggle(&mut row, Vec2::new(18.0, 17.0), "M", *mute, WARN, "Mute")
+                        .clicked()
+                {
+                    self.call("set_mixer", json!({"track":name,"mute":!mute}));
+                }
+                row.label(RichText::new(fmt_db(v)).monospace().size(10.0).color(TEXT));
+            };
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.allocate_ui(
+                Vec2::new(scroll_w, h + if overflowing { 18.0 } else { 0.0 }),
+                |ui| {
+                    ui.style_mut().spacing.scroll.floating = false;
+                    egui::ScrollArea::horizontal()
+                        .id_salt("console_dock_scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.horizontal_top(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                for channel in &channels {
+                                    draw(ui, channel);
+                                }
+                            });
+                        });
+                },
+            );
+            draw(ui, &master);
+        });
     }
 
     fn live_pos(&self) -> Option<f32> {
@@ -1709,4 +1715,4 @@ fn denorm(t: f32, lo: f32, hi: f32, log: bool) -> f32 {
     } else {
         lo + (hi - lo) * t
     }
-}
+    }
