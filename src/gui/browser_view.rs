@@ -599,7 +599,13 @@ impl Studio {
             }
         }
         if let Some((tool, args)) = call {
+            // A channel added from the browser becomes the selected one, so
+            // the piano roll edits it right away.
+            let added = (tool == "add_track" || tool == "add_sample_track").then(|| p.tracks.len());
             self.call(&tool, args);
+            if let Some(i) = added {
+                self.selected = i;
+            }
             self.browser.chains = None;
         }
         if let Some(n) = hear {
