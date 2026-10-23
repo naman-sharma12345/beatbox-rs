@@ -980,4 +980,4 @@ mod tests {
         assert_eq!(drop_spot(&p, 1, Some((0, 0))), (2, 0));
         assert_eq!(drop_spot(&p, 3, None), (0, 5));
     }
-            }
+}
