@@ -912,7 +912,7 @@ impl Studio {
             .map(|(_, s)| s);
         let seq_top = ui.next_widget_position().y;
         egui::ScrollArea::vertical().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).auto_shrink([false, false]).id_salt("seq").show(ui, |ui| {
-            let mut clip = ui.clip_rect(); clip.min.y = clip.min.y.max(seq_top); ui.set_clip_rect(clip);
+            let mut clip = ui.clip_rect(); clip.min.y = clip.min.y.max(seq_top + 2.0); ui.set_clip_rect(clip);
             // the FL-style channel rack (channel_rack.rs): every gesture
             // comes back as one tool call
             let mut sel = channel_rack::RackSel { selected: self.selected, rows: Vec::new(), open_editor: false };
@@ -1514,13 +1514,12 @@ impl eframe::App for Studio {
                     egui::ScrollArea::vertical().id_salt("browser_full").auto_shrink([false,false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show(ui, |ui| self.browser_view(ui,&p));
                 } else {
                     let available = ui.available_height();
-                    let editor_h = if !self.note_editor { available } else if available < 480.0 { (available-274.0).max(100.0) } else if self.view==3 { (available*0.62).max(130.0) } else { (available*0.50).max(130.0) };
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(ui.available_width(), editor_h),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            ui.set_clip_rect(ui.max_rect());
-                            ui.set_max_height(editor_h);
+                    let editor_h = if !self.note_editor { available } else if available < 480.0 { (available-300.0).max(100.0) } else if self.view==3 { (available*0.62).max(130.0) } else { (available*0.50).max(130.0) };
+                    let (editor_rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), editor_h), egui::Sense::hover());
+                    {
+                        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(editor_rect).layout(egui::Layout::top_down(egui::Align::Min)));
+                        child.set_clip_rect(editor_rect.intersect(ui.clip_rect()));
+                        let ui = &mut child;
                             match self.view {
                                 1 => self.mixer(ui, &p),
                                 3 => self.playlist_view(ui, &p),
@@ -1535,8 +1534,7 @@ impl eframe::App for Studio {
                                 6 => self.rack_view(ui, &p, rev),
                                 _ => self.sequencer(ui, &p),
                             }
-                        },
-                    );
+                    }
                     if self.note_editor { ui.add_space(8.0); self.piano_roll(ui, &p); }
                 }
             });
