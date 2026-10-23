@@ -9,7 +9,7 @@ use super::theme::Tokens;
 use super::widgets::*;
 use super::Studio;
 /// Render a mix-helper answer as plain indented lines, no markup.
-fn plain_report(v: &serde_json::Value, depth: usize, out: &mut String) {
+pub(super) fn plain_report(v: &serde_json::Value, depth: usize, out: &mut String) {
     let pad = "  ".repeat(depth);
     match v {
         serde_json::Value::Object(map) => {

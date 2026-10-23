@@ -8,6 +8,7 @@ mod analyze_view;
 mod browser_view;
 mod channel_rack;
 mod console;
+mod export_view;
 mod fl_automation;
 mod fl_playlist;
 mod piano;
@@ -61,6 +62,7 @@ pub struct Studio {
     listen: String,
     server_ok: bool,
     show_about: bool,
+    export: export_view::ExportState,
     // view state
     pattern: usize,
     selected: usize,
@@ -142,6 +144,7 @@ pub fn run(
                 listen,
                 server_ok,
                 show_about: false,
+                export: Default::default(),
                 pattern: 0,
                 selected: 0,
                 rendered: None,
@@ -685,6 +688,7 @@ impl Studio {
                 if ui.button("About").clicked() {
                     self.show_about = !self.show_about;
                 }
+                if ui.button("Export").clicked() { self.export.open = true; }
                 ui.add_space(6.0);
                 if ui.button("Render WAV").on_hover_text("Cmd+R").clicked() {
                     self.render_wav();
@@ -1399,6 +1403,8 @@ impl eframe::App for Studio {
                     _ => self.sequencer(ui, &p),
                 }
             });
+
+        self.export_window(ctx);
 
         // toast
         if let Some((msg, t0, ok)) = &mut self.toast {

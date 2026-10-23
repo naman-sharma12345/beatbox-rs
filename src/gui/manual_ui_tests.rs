@@ -2,10 +2,11 @@
 //! beatbox-rs is fully manual ... The whole beatbox-rs should be
 //! controllable through mcp." These checks keep it that way.
 
-const SOURCES: [(&str, &str); 13] = [
+const SOURCES: [(&str, &str); 14] = [
     ("analyze_view.rs", include_str!("analyze_view.rs")),
     ("browser_view.rs", include_str!("browser_view.rs")),
     ("console.rs", include_str!("console.rs")),
+    ("export_view.rs", include_str!("export_view.rs")),
     ("mod.rs", include_str!("mod.rs")),
     ("piano.rs", include_str!("piano.rs")),
     ("player.rs", include_str!("player.rs")),
@@ -306,10 +307,6 @@ fn every_tool_is_reachable_from_the_gui() {
         "download_sample",
         "ears_report",
         "edit_vocal",
-        "export_audio",
-        "export_click",
-        "export_midi",
-        "export_stems",
         "extract_groove",
         "fetch_instrument",
         "fetch_reference",
