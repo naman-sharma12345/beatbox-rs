@@ -61,7 +61,7 @@ impl Pane {
             Self::Playlist => Some("F5"),
             Self::Sequencer => Some("F6"),
             Self::Notes => Some("F7"),
-            Self::Browser => Some("F8"),
+            Self::Browser => Some("Alt+F8"),
             Self::Mixer => Some("F9"),
             _ => None,
         }
