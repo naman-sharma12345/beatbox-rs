@@ -34,7 +34,7 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "project",
         description: "Song file and global settings: new/load/save, tempo, key, time signature, tracks, project summary, ids, validation.",
-        actions: &["new_project", "get_project", "save_project", "load_project", "get_project_summary", "set_tempo", "set_key", "add_track", "remove_track", "clear", "lookup_id", "list_ids", "validate_project", "diff_project", "compare_variants"],
+        actions: &["new_project", "get_project", "save_project", "load_project", "get_project_summary", "set_tempo", "set_key", "add_track", "remove_track", "rename_track", "clear", "lookup_id", "list_ids", "validate_project", "diff_project", "compare_variants"],
     },
     Category {
         name: "history",
