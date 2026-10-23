@@ -321,12 +321,12 @@ pub fn playlist_grid(
         pos2(full.min.x, grid.min.y),
         pos2(grid.min.x, grid.max.y),
     ));
-    pt.rect_filled(full, 4.0, Color32::from_rgb(30, 32, 36));
+    pt.rect_filled(full, 4.0, super::theme::Tokens::DARK.playlist_bg);
     // ruler + bar grid (only the bars in view)
     pt.rect_filled(
         Rect::from_min_max(pos2(full.min.x, full.min.y), pos2(full.max.x, grid.min.y)),
         0.0,
-        Color32::from_rgb(38, 40, 45),
+        super::theme::Tokens::DARK.ruler_bg,
     );
     pt.text(
         pos2(full.min.x + 8.0, full.min.y + RULER_H * 0.5),
@@ -352,9 +352,9 @@ pub fn playlist_grid(
             Stroke::new(
                 1.0_f32,
                 if major {
-                    Color32::from_rgb(58, 61, 68)
+                    super::theme::Tokens::DARK.bar_line
                 } else {
-                    Color32::from_rgb(43, 45, 50)
+                    super::theme::Tokens::DARK.grid_line
                 },
             ),
         );
@@ -378,9 +378,9 @@ pub fn playlist_grid(
             head,
             0.0,
             if l % 2 == 0 {
-                Color32::from_rgb(40, 42, 47)
+                super::theme::Tokens::DARK.playlist_alt
             } else {
-                Color32::from_rgb(36, 38, 43)
+                super::theme::Tokens::DARK.playlist_bg
             },
         );
         heads.text(
@@ -392,11 +392,11 @@ pub fn playlist_grid(
         );
         gp.line_segment(
             [pos2(grid.min.x, y + LANE_H), pos2(grid.max.x, y + LANE_H)],
-            Stroke::new(1.0_f32, Color32::from_rgb(24, 25, 28)),
+            Stroke::new(1.0_f32, super::theme::Tokens::DARK.border),
         );
         heads.line_segment(
             [pos2(full.min.x, y + LANE_H), pos2(grid.min.x, y + LANE_H)],
-            Stroke::new(1.0_f32, Color32::from_rgb(24, 25, 28)),
+            Stroke::new(1.0_f32, super::theme::Tokens::DARK.border),
         );
         // paint: a click on an empty cell drops the selected pattern
         let lane_r =
@@ -1121,4 +1121,4 @@ mod tests {
             );
         }
     }
-}
+                                        }
