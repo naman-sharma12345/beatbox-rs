@@ -82,12 +82,13 @@ fn gui_text_has_no_ai_wording() {
             if is_ident(&lit) {
                 continue;
             }
-            // default file names (a saved project, a part file) are names, not wording
+            // default file names (a saved project, a part file, a numbered
+            // "beat-{n}.beatbox.json") are names on disk, not wording on screen
             let is_file = lit.contains('.')
                 && !lit.contains(' ')
                 && lit
                     .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c));
+                    .all(|c| c.is_ascii_alphanumeric() || "._-/{}".contains(c));
             if is_file {
                 continue;
             }
@@ -473,6 +474,8 @@ fn save_success_feedback_is_guarded_by_tool_result() {
     let studio = include_str!("mod.rs");
     let save = studio.split("fn save(&mut self) {").nth(1).unwrap();
     let save = save.split("fn render_wav").next().unwrap();
+    // only this function: the next one (open) has its own Ok/Err arms
+    let save = save.split("\n    fn ").next().unwrap();
     assert!(save.contains("match result"));
     let success = save.split("Ok(_) => {").nth(1).unwrap();
     let success = success.split("Err(e) =>").next().unwrap();
@@ -485,4 +488,9 @@ fn save_success_feedback_is_guarded_by_tool_result() {
     assert!(failure.contains("{e:#}"));
     assert!(failure.contains("false"));
     assert!(!failure.contains("Saved {}"));
+    // a failed save must not mark the project as saved or point it at the file
+    assert!(!failure.contains("project_path"));
+    assert!(!failure.contains("saved_rev"));
+    // and success is only reported from the Ok arm, with the success flag
+    assert!(success.contains("0.0, true"));
 }
