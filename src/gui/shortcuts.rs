@@ -26,6 +26,10 @@ pub enum Action {
     MuteSelected,
     SoloSelected,
     SeekStart,
+    /// Open the piano roll (F7).
+    Piano,
+    /// Put every window back to the default arrangement (Ctrl+Shift+H).
+    ResetLayout,
 }
 
 /// The shortcut table: (keys, action, help text).
@@ -37,10 +41,11 @@ pub const SHORTCUTS: &[(&str, Action, &str)] = &[
     ("Cmd+S", Action::Save, "Save project"),
     ("Cmd+R", Action::Render, "Render WAV"),
     ("F5", Action::View(3), "Playlist"),
-    ("F6", Action::View(0), "Sequencer"),
+    ("F6", Action::View(0), "Channel rack"),
     ("F9", Action::View(1), "Mixer"),
-    ("F7", Action::View(2), "Automation"),
-    ("Cmd+1", Action::View(0), "Sequencer"),
+    ("F7", Action::Piano, "Piano roll"),
+    ("Cmd+Shift+H", Action::ResetLayout, "Reset window layout"),
+    ("Cmd+1", Action::View(0), "Channel rack"),
     ("Cmd+2", Action::View(1), "Mixer"),
     ("Cmd+3", Action::View(2), "Automation"),
     ("Cmd+4", Action::View(3), "Playlist"),
