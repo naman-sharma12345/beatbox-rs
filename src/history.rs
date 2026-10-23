@@ -117,6 +117,7 @@ pub fn label(tool: &str, args: &Value) -> String {
         "rack_apply" => "Rack edit".into(),
         "remove_effect" => "Removed effect".into(),
         "set_instrument" => "Changed sound".into(),
+        "rename_track" => "Renamed channel".into(),
         "set_mixer" => "Mixer".into(),
         "load_project" | "open_project" => "Opened project".into(),
         "new_project" => "New project".into(),
