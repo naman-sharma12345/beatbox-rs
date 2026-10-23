@@ -135,6 +135,16 @@ fn reserve_target(e: &crate::engine::Engine, kind: usize, args: &mut Value) -> s
     ))
 }
 
+fn file_size(bytes: u64) -> String {
+    if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
 /// A short plain summary of a finished export: where it went, what it is, and
 /// the measured loudness. Measurements describe level only, not quality.
 fn export_summary(v: &Value) -> String {
@@ -153,7 +163,7 @@ fn export_summary(v: &Value) -> String {
         facts.push(format!("{r} Hz"));
     }
     if let Some(b) = v["bytes"].as_u64() {
-        facts.push(format!("{:.1} MB", b as f64 / 1_048_576.0));
+        facts.push(file_size(b));
     }
     if let Some(s) = v["seconds"].as_f64() {
         facts.push(format!("{s:.1} s"));
@@ -305,6 +315,8 @@ mod tests {
         assert!(t.contains("Loudness -10.6 LUFS, true peak -1.4 dBTP"));
         assert!(t.contains("Warning: clipped"));
         assert!(!t.contains("integrated lufs"));
+        assert!(export_summary(&json!({"path":"/o/a.mid","bytes":7618})).contains("7.4 KB"));
+        assert!(export_summary(&json!({"path":"/o/a.mid","bytes":300})).contains("300 bytes"));
         assert!(export_summary(&json!({"dir":"/o/stems"})).starts_with("Exported to /o/stems"));
     }
     #[test]
