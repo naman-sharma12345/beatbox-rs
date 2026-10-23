@@ -255,6 +255,9 @@ pub fn channel_rack(
         // steps
         painter.rect_filled(g.steps, 4.0, BG);
         let notes = pat.notes(&t.name);
+        if !ui.input(|i| i.pointer.primary_down()) {
+            ui.data_mut(|d| d.remove_temp::<(bool, usize, usize)>(ui.id().with("rack-paint")));
+        }
         if drum {
             for s in 0..steps {
                 let r = g.step_rect(s);
@@ -278,8 +281,41 @@ pub fn channel_rack(
                 if playing_step.map(|ps| ps as usize == s).unwrap_or(false) {
                     painter.rect_stroke(r, 2.5, Stroke::new(1.5_f32, Color32::WHITE));
                 }
-                let resp = ui.interact(r, ui.id().with(("rack-step", ti, s)), Sense::click());
+                let resp = ui.interact(
+                    r,
+                    ui.id().with(("rack-step", ti, s)),
+                    Sense::click_and_drag(),
+                );
+                // FL Studio behaviour: a press toggles a step and dragging
+                // across steps paints (or erases, if the press began on a lit
+                // step); right-click erases a lit step.
+                let paint_id = ui.id().with("rack-paint");
+                let (down, pressed, over) = ui.input(|i| {
+                    (
+                        i.pointer.primary_down(),
+                        i.pointer.primary_pressed(),
+                        i.pointer.hover_pos().is_some_and(|p| r.contains(p)),
+                    )
+                });
+                let _ = pressed;
+                let mut toggle = false;
                 if resp.clicked() {
+                    toggle = true;
+                } else if resp.drag_started() {
+                    ui.data_mut(|d| d.insert_temp(paint_id, (hit.is_none(), ti, s)));
+                    toggle = true;
+                } else if over && down {
+                    let st: Option<(bool, usize, usize)> = ui.data(|d| d.get_temp(paint_id));
+                    if let Some((add, lt, ls)) = st {
+                        if (lt, ls) != (ti, s) && hit.is_none() == add {
+                            ui.data_mut(|d| d.insert_temp(paint_id, (add, ti, s)));
+                            toggle = true;
+                        }
+                    }
+                } else if resp.secondary_clicked() && hit.is_some() {
+                    toggle = true;
+                }
+                if toggle {
                     sel.selected = ti;
                     actions.push((
                         "toggle_step",
