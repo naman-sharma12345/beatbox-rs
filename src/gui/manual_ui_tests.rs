@@ -2,9 +2,10 @@
 //! beatbox-rs is fully manual ... The whole beatbox-rs should be
 //! controllable through mcp." These checks keep it that way.
 
-const SOURCES: [(&str, &str); 15] = [
+const SOURCES: [(&str, &str); 16] = [
     ("analyze_view.rs", include_str!("analyze_view.rs")),
     ("browser_view.rs", include_str!("browser_view.rs")),
+    ("channel_rack.rs", include_str!("channel_rack.rs")),
     ("console.rs", include_str!("console.rs")),
     ("export_view.rs", include_str!("export_view.rs")),
     ("mod.rs", include_str!("mod.rs")),
