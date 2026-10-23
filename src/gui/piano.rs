@@ -121,10 +121,11 @@ impl Studio {
         let painter = ui.painter_at(full);
         painter.rect_filled(full, 0.0, tk.panel_bg);
         // ---- header: title, hint, snap selector, ops ----
-        let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER_H * 2.0));
+        // title row plus three rows of helper buttons
+        let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER_H * 4.0));
         painter.rect_filled(header, 0.0, tk.panel_bg2);
         painter.text(
-            pos2(header.min.x + 8.0, header.center().y),
+            pos2(header.min.x + 8.0, header.min.y + HEADER_H / 2.0),
             Align2::LEFT_CENTER,
             "PIANO ROLL",
             FontId::proportional(10.5),
@@ -237,7 +238,7 @@ impl Studio {
                     pos2(title_end, header.max.y),
                 ))
                 .text(
-                    pos2(header.min.x + 84.0, header.center().y),
+                    pos2(header.min.x + 84.0, header.min.y + HEADER_H / 2.0),
                     Align2::LEFT_CENTER,
                     format!(
                         "{} · {} · {} notes · {} sel",
@@ -250,19 +251,10 @@ impl Studio {
                     tk.text_dim,
                 );
         }
-        // ---- second toolbar row: generate + edit helpers, each the MCP call it names ----
-        let bar2 = Rect::from_min_max(
-            pos2(header.min.x + 4.0, header.min.y + HEADER_H),
-            pos2(header.max.x - 4.0, header.max.y - 1.0),
-        );
-        let mut tb2 = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(bar2)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        );
-        tb2.spacing_mut().item_spacing.x = 3.0;
-        tb2.label(RichText::new("GEN").size(9.0).color(tk.text_dim));
-        for (label, tool, args, hover) in [
+        // ---- helper rows under the title row: gen helpers, then edit helpers
+        // split across two rows. Fixed rows, each clipped to its own strip, so
+        // every button stays inside the panel at any window size ----
+        let gen_items: [(&str, &str, Value, &str); 6] = [
             (
                 "Melody",
                 "generate_melody",
@@ -299,14 +291,8 @@ impl Studio {
                 json!({"interval": "3rd"}),
                 "a harmony line above this track",
             ),
-        ] {
-            if tb2.small_button(label).on_hover_text(hover).clicked() {
-                op = Some((tool, args));
-            }
-        }
-        tb2.separator();
-        tb2.label(RichText::new("EDIT").size(9.0).color(tk.text_dim));
-        for (label, tool, args, hover) in [
+        ];
+        let edit_a: [(&str, &str, Value, &str); 5] = [
             (
                 "Humanize",
                 "humanize",
@@ -332,6 +318,8 @@ impl Studio {
                 json!({}),
                 "glue touching notes together",
             ),
+        ];
+        let edit_b: [(&str, &str, Value, &str); 5] = [
             (
                 "Snap",
                 "scale_snap",
@@ -357,9 +345,39 @@ impl Studio {
                 json!({"shape": "ramp_up"}),
                 "velocity rising across the pattern",
             ),
-        ] {
-            if tb2.small_button(label).on_hover_text(hover).clicked() {
-                op = Some((tool, args));
+        ];
+        for (row, (tag, items)) in [
+            ("GEN", &gen_items[..]),
+            ("EDIT", &edit_a[..]),
+            ("", &edit_b[..]),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let bar = Rect::from_min_max(
+                pos2(
+                    header.min.x + 4.0,
+                    header.min.y + HEADER_H * (1.0 + row as f32),
+                ),
+                pos2(
+                    header.max.x - 4.0,
+                    header.min.y + HEADER_H * (2.0 + row as f32) - 1.0,
+                ),
+            );
+            let mut tr = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(bar)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            tr.set_clip_rect(bar);
+            tr.spacing_mut().item_spacing.x = 3.0;
+            if !tag.is_empty() {
+                tr.label(RichText::new(*tag).size(9.0).color(tk.text_dim));
+            }
+            for (label, tool, args, hover) in items.iter() {
+                if tr.small_button(*label).on_hover_text(*hover).clicked() {
+                    op = Some((*tool, args.clone()));
+                }
             }
         }
         if let Some((id, mut a)) = op {
