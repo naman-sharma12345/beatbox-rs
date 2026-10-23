@@ -169,7 +169,7 @@ impl Studio {
         if tb.small_button("Quantize").clicked() {
             op = Some(("quantize", json!({"grid":g,"strength":1.0})));
         }
-        tb.menu_button("Note tools", |ui| {
+        tb.menu_button("Edit notes", |ui| {
             for (label, tool, args) in [
                 ("Legato", "legato", json!({})),
                 ("Staccato", "articulate", json!({"style":"staccato"})),
