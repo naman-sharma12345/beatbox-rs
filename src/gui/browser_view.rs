@@ -706,7 +706,27 @@ impl Studio {
             // the piano roll edits it right away.
             let added =
                 (tool == "add_track" || tool == "add_sample_track").then_some(p.tracks.len());
-            self.call(&tool, args);
+            // silent swaps read as dead buttons; confirm what happened
+            let feedback = match tool.as_str() {
+                "set_instrument" => Some(format!(
+                    "{} now plays {}",
+                    args["track"].as_str().unwrap_or("the channel"),
+                    args["preset"].as_str().unwrap_or("the new sound")
+                )),
+                "add_track" | "add_sample_track" => Some(format!(
+                    "Added {} as a new channel",
+                    args["name"].as_str().unwrap_or("the sound")
+                )),
+                _ => None,
+            };
+            match self.engine.lock().unwrap().call_from(&tool, &args, "you") {
+                Ok(_) => {
+                    if let Some(msg) = feedback {
+                        self.toast = Some((msg, 0.0, true));
+                    }
+                }
+                Err(e) => self.toast = Some((format!("{e:#}"), 0.0, false)),
+            }
             if let Some(i) = added {
                 self.selected = i;
             }
