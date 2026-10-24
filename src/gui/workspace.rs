@@ -294,7 +294,7 @@ impl TabViewer for Viewer<'_> {
         ui.set_min_size(match pane {
             Pane::Transport => Vec2::new(800.0, 48.0),
             Pane::Console => Vec2::new(420.0, 230.0),
-            Pane::Inspector | Pane::Library | Pane::Analysis | Pane::History => {
+            Pane::Inspector | Pane::Library | Pane::Browser | Pane::Analysis | Pane::History => {
                 Vec2::new(250.0, 220.0)
             }
             _ => Vec2::new(420.0, 320.0),
