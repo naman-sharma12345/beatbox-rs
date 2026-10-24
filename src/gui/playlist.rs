@@ -402,7 +402,7 @@ impl Studio {
                         let resp = ui
                             .interact(r, ui.id().with(("pl_clip", ti, ci)), Sense::click())
                             .on_hover_text(format!(
-                                "{} · {} · bar {} ({} ticks) · click selects this track and pattern; move or arrange clips in the pattern grid above",
+                                "{} · {} · bar {} ({} ticks) · click selects this track and pattern; open PATTERN GRID - paint clips above to move or arrange clips",
                                 t.name,
                                 pat.name,
                                 map.bar_beat_at_tick(c.start).bar,
