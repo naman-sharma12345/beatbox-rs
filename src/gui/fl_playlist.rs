@@ -299,7 +299,7 @@ pub fn playlist_grid(
         .map(|c| c.start_bar + c.bars.max(1))
         .max()
         .unwrap_or(0);
-    let total_bars = (end_bar + 8).max(32);
+    let total_bars = (end_bar + 8).max(16);
     let h = RULER_H + LANE_H * visible as f32 + 2.0;
     let (full, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
     let grid = Rect::from_min_max(
