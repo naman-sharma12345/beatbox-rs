@@ -160,11 +160,11 @@ impl Studio {
             .clone()
             .unwrap_or((Value::Null, Value::Null));
         let mut call: Option<(String, Value)> = None;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("SEARCH").size(11.0).color(tk.text_dim));
             ui.add(
                 egui::TextEdit::singleline(&mut self.browser.search)
-                    .desired_width(220.0)
+                    .desired_width((ui.available_width() - 80.0).clamp(110.0, 220.0))
                     .hint_text("808, bell, reverb, dark..."),
             );
             ui.add_space(12.0);
@@ -318,9 +318,9 @@ impl Studio {
                         if !matches(&q, n, d) {
                             continue;
                         }
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             // the name column gives way so the three buttons never clip
-                            let name_w = (ui.available_width() - 360.0).clamp(110.0, 340.0);
+                            let name_w = (ui.available_width() - 345.0).clamp(70.0, 340.0);
                             ui.allocate_ui_with_layout(
                                 egui::vec2(name_w, 34.0),
                                 egui::Layout::top_down(egui::Align::Min),
