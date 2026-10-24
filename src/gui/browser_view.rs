@@ -319,11 +319,13 @@ impl Studio {
                             continue;
                         }
                         ui.horizontal(|ui| {
+                            // the name column gives way so the three buttons never clip
+                            let name_w = (ui.available_width() - 360.0).clamp(110.0, 340.0);
                             ui.allocate_ui_with_layout(
-                                egui::vec2(340.0, 34.0),
+                                egui::vec2(name_w, 34.0),
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
-                                    ui.set_min_size(egui::vec2(340.0, 34.0));
+                                    ui.set_min_size(egui::vec2(name_w, 34.0));
                                     ui.label(RichText::new(n).size(14.0).strong().color(tk.text));
                                     if !d.is_empty() {
                                         ui.add(
