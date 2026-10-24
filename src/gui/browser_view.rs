@@ -315,6 +315,9 @@ impl Studio {
                     self.toast = match (added.first(), failed.first()) {
                         (Some(a), _) => {
                             self.browser.file_path.clear();
+                            // like any channel added here, it is the selected one right away
+                            self.selected = p.tracks.len();
+                            self.browser.track = format!("{a}_s");
                             Some((format!("Added {a} as a new channel"), 0.0, true))
                         }
                         (None, Some(f)) => Some((f.clone(), 0.0, false)),
