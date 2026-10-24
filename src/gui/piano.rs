@@ -718,6 +718,34 @@ impl Studio {
             );
             painter.circle_filled(pos2(x, vel.max.y - 2.0 - h), 2.5, col);
         }
+        // value readout so an edit shows its number, like FL's hint bar: the
+        // live value while editing, the hovered hit's value otherwise
+        let readout = match live {
+            Some((li, lv)) => notes.get(li).map(|n| (n.start, lv, tk.text)),
+            None if vresp.hovered() => ui
+                .input(|i| i.pointer.hover_pos())
+                .and_then(|pt| {
+                    notes
+                        .iter()
+                        .map(|n| (n.start, (x_of(n.start) - pt.x).abs()))
+                        .filter(|(_, dx)| *dx < 8.0)
+                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                        .map(|(st, _)| {
+                            let v = notes.iter().find(|n| n.start == st).map(|n| n.vel).unwrap_or(0.0);
+                            (st, v, tk.text_dim)
+                        })
+                }),
+            None => None,
+        };
+        if let Some((st, v, col)) = readout {
+            painter.text(
+                pos2(x_of(st) + 6.0, vel.max.y - 6.0 - (vel.height() - 4.0) * v),
+                Align2::LEFT_BOTTOM,
+                format!("{}%", (v * 100.0).round()),
+                FontId::proportional(10.0),
+                col,
+            );
+        }
         if vresp.drag_stopped() || (vresp.clicked() && !vresp.dragged()) {
             if let Some((i, v)) = live {
                 let mut out = notes.clone();
