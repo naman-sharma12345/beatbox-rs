@@ -194,6 +194,13 @@ impl Workspace {
                 .iter_all_tabs()
                 .find(|(_, tab)| tab.view().is_some())
                 .map(|((s, n), _)| (s, n));
+            if let (Pane::Browser, Some((s, n))) = (p, target) {
+                // FL keeps its browser in a column beside the rack: you pick a sound
+                // while still looking at the channels it will land in
+                let [_, fresh] = self.dock[s].split_left(n, 0.62, vec![p]);
+                self.dock.set_focused_node_and_surface((s, fresh));
+                return;
+            }
             if let Some(t) = target {
                 self.dock.set_focused_node_and_surface(t);
             }
@@ -637,6 +644,29 @@ mod tests {
             mode: 0,
             reset: false,
         }
+    }
+    #[test]
+    fn the_browser_opens_beside_the_editor_not_on_top_of_it() {
+        let mut w = workspace();
+        let editor = w.dock.find_tab(&Pane::Playlist).unwrap();
+        w.open(Pane::Browser);
+        let browser = w.dock.find_tab(&Pane::Browser).unwrap();
+        // same window, its own column: the editor is still visible and still where it was
+        assert_eq!(browser.0, editor.0);
+        assert_ne!(browser.1, editor.1);
+        let editor_after = w.dock.find_tab(&Pane::Playlist).unwrap();
+        assert_ne!(browser.1, editor_after.1);
+        let transport = w.dock.find_tab(&Pane::Transport).unwrap();
+        assert_ne!(browser.1, transport.1);
+        // opening it again only focuses it
+        w.open(Pane::Browser);
+        assert_eq!(
+            w.dock
+                .iter_all_tabs()
+                .filter(|(_, x)| **x == Pane::Browser)
+                .count(),
+            1
+        );
     }
     #[test]
     fn every_panel_can_hide_reopen_and_focus_without_duplicates() {
