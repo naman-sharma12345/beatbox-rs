@@ -1081,12 +1081,13 @@ mod tests {
                 assert!(tr.len() == 1 && tr[0]["end_bar"] == 5, "{tag}: {c:?}");
                 // paint: an empty cell in view maps through scroll and zoom
                 let (c, _) = drive_view(&p, ppp, v, &|at| {
-                    let a = at(8.5, 4.0);
+                    // bar 7.5 is in view for every view above (the song shows 16 bars at least, so the most zoomed one shows bars 2.5 to 7.8)
+                    let a = at(7.5, 4.0);
                     drag(a, a)
                 });
                 assert!(
                     c.iter().any(|(t, a)| *t == "place_pattern"
-                        && a["start_bar"] == 8
+                        && a["start_bar"] == 7
                         && a["lane"] == 4),
                     "{tag}: {c:?}"
                 );
