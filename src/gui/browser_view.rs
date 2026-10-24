@@ -28,6 +28,8 @@ pub struct BrowserState {
     /// sound library: import field, catalog search, background job
     pub url: String,
     pub url_name: String,
+    /// a sound file on this computer, typed or pasted (drag and drop is not available everywhere)
+    pub file_path: String,
     pub lib_hits: Option<(String, Value)>,
     pub imports: Option<Value>,
     pub credits: String,
@@ -285,6 +287,43 @@ impl Studio {
         let h = ui.available_height() - 8.0;
         let hear_busy = self.browser.job.as_ref().map(|j| j.0.clone());
         let mut hear: Option<String> = None;
+        if section <= 1 {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("YOUR OWN FILE").size(11.0).color(tk.text_dim));
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut self.browser.file_path)
+                        .desired_width((ui.available_width() - 150.0).clamp(110.0, 300.0))
+                        .hint_text("paste the path of a wav, mp3, flac or ogg"),
+                );
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let ready = !self.browser.file_path.trim().is_empty();
+                let go = ui
+                    .add_enabled(ready, egui::Button::new("+ Add as channel"))
+                    .on_hover_text("Bring this file into the project on its own channel. You can also drop a file on the window.")
+                    .clicked();
+                if (go || enter) && ready {
+                    let raw = self.browser.file_path.trim().trim_matches(|c| c == '"' || c == '\'');
+                    let raw = raw.strip_prefix("file://").unwrap_or(raw);
+                    let path = match (raw.strip_prefix("~/"), std::env::var_os("HOME")) {
+                        (Some(rest), Some(home)) => std::path::PathBuf::from(home).join(rest),
+                        _ => std::path::PathBuf::from(raw),
+                    };
+                    let (added, failed) = {
+                        let mut e = self.engine.lock().unwrap();
+                        import_dropped(&mut e, &[path])
+                    };
+                    self.toast = match (added.first(), failed.first()) {
+                        (Some(a), _) => {
+                            self.browser.file_path.clear();
+                            Some((format!("Added {a} as a new channel"), 0.0, true))
+                        }
+                        (None, Some(f)) => Some((f.clone(), 0.0, false)),
+                        _ => None,
+                    };
+                }
+            });
+            ui.add_space(4.0);
+        }
         if section == 1 {
             // ---------- instrument presets
             ui.label(
