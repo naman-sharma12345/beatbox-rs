@@ -64,6 +64,56 @@ fn matches(q: &str, a: &str, b: &str) -> bool {
     q.is_empty() || a.to_lowercase().contains(&q) || b.to_lowercase().contains(&q)
 }
 
+/// Audio files dropped on the window become sounds in the project, each on its own
+/// channel (FL users drag samples in from their file manager). Returns the names
+/// added and a message for every file that could not be used.
+pub(super) fn import_dropped(
+    engine: &mut crate::engine::Engine,
+    paths: &[std::path::PathBuf],
+) -> (Vec<String>, Vec<String>) {
+    let (mut added, mut failed) = (Vec::new(), Vec::new());
+    for path in paths {
+        let file = path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("that file")
+            .to_string();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !["wav", "mp3", "flac", "ogg"].contains(&ext.as_str()) {
+            failed.push(format!("{file}: use a wav, mp3, flac or ogg file"));
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|f| f.to_str())
+            .unwrap_or("sample");
+        let name = crate::samples::sample_name(stem);
+        let imported = engine.call_from(
+            "import_sample",
+            &json!({"path": path.to_string_lossy(), "name": name}),
+            "you",
+        );
+        if let Err(e) = imported {
+            failed.push(format!("{file}: {e:#}"));
+            continue;
+        }
+        let track = format!("{name}_s");
+        match engine.call_from(
+            "add_sample_track",
+            &json!({"name": track, "sample": name}),
+            "you",
+        ) {
+            Ok(_) => added.push(name),
+            Err(e) => failed.push(format!("{file}: {e:#}")),
+        }
+    }
+    (added, failed)
+}
+
 impl Studio {
     pub(super) fn browser_view(&mut self, ui: &mut egui::Ui, p: &Project) {
         let tk = Tokens::DARK;
@@ -1343,4 +1393,32 @@ fn spectrogram_view(ui: &mut egui::Ui, tk: &Tokens, ed: &mut SampleEdit, sp: &Va
     );
     painter.rect_stroke(sel, 0.0, egui::Stroke::new(1.5_f32, tk.text));
     resp.on_hover_text("drag a box to choose the region and the band");
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+
+    #[test]
+    fn dropped_audio_files_become_channels_and_other_files_are_refused() {
+        let d = std::env::temp_dir().join(format!("drop_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let tone: Vec<f32> = (0..4410).map(|i| (i as f32 * 0.05).sin() * 0.3).collect();
+        let wav = d.join("My Snare.wav");
+        crate::render::write_wav(&wav, &tone, &tone).unwrap();
+        let note = d.join("notes.txt");
+        std::fs::write(&note, "hello").unwrap();
+        let mut e = crate::engine::Engine::new(d.clone());
+        let (added, failed) = import_dropped(&mut e, &[wav, note]);
+        assert_eq!(added.len(), 1, "added {added:?}, failed {failed:?}");
+        assert_eq!(failed.len(), 1, "added {added:?}, failed {failed:?}");
+        assert!(failed[0].starts_with("notes.txt"), "{failed:?}");
+        let track = format!("{}_s", added[0]);
+        assert!(
+            e.project.tracks.iter().any(|t| t.name == track),
+            "no channel {track}: {:?}",
+            e.project.tracks.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
 }
