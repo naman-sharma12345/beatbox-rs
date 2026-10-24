@@ -368,16 +368,22 @@ pub fn channel_rack(
                     painter.rect_filled(
                         Rect::from_min_size(
                             pos2(r.left() + 2.0, r.bottom() - 2.0 - h),
-                            vec2(2.0, h),
+                            vec2(4.0, h),
                         ),
                         1.0,
-                        Color32::from_white_alpha(150),
+                        Color32::from_white_alpha(210),
                     );
                     if resp.hovered() {
                         let dy = ui.input(|i| i.raw_scroll_delta.y);
                         if dy.abs() > 0.5 {
                             let add = if dy > 0.0 { 0.05 } else { -0.05 };
                             actions.push(("edit_notes", json!({"track": t.name, "pattern": pat.name, "from": s, "to": s + 1, "vel_add": add})));
+                            // the wheel belongs to this step now: without this the page scrolls too
+                            // and the next notch lands on a different row
+                            ui.input_mut(|i| {
+                                i.smooth_scroll_delta = egui::Vec2::ZERO;
+                                i.raw_scroll_delta = egui::Vec2::ZERO;
+                            });
                         }
                         resp.on_hover_text(format!(
                             "velocity {:.0}% (scroll to change)",
