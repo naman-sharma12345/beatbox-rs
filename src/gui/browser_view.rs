@@ -170,15 +170,11 @@ impl Studio {
             ui.label(RichText::new("SEARCH").size(11.0).color(tk.text_dim));
             ui.add(
                 egui::TextEdit::singleline(&mut self.browser.search)
-                    .desired_width((ui.available_width() - 80.0).clamp(110.0, 220.0))
+                    .desired_width((ui.available_width() - 80.0).clamp(110.0, 170.0))
                     .hint_text("808, bell, reverb, dark..."),
             );
             ui.add_space(12.0);
-            ui.label(
-                RichText::new("USE ON CHANNEL")
-                    .size(11.0)
-                    .color(tk.text_dim),
-            );
+            ui.label(RichText::new("CHANNEL").size(11.0).color(tk.text_dim));
             egui::ComboBox::from_id_salt("browser_track")
                 .selected_text(self.browser.track.clone())
                 .show_ui(ui, |ui| {
