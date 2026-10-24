@@ -1115,41 +1115,62 @@ impl Studio {
             .filter(|(pi, _)| *pi == self.pattern)
             .map(|(_, s)| s);
         let seq_top = ui.next_widget_position().y;
-        egui::ScrollArea::vertical()
+        // a channel added to the rack scrolls into view: the scroll area
+        // clamps to last frame's content, so the jump to the end comes one
+        // frame after the channel count grows
+        let seen_key = ui.id().with("rack-channel-count");
+        let pend_key = ui.id().with("rack-scroll-pending");
+        let seen = ui.data(|d| d.get_temp::<usize>(seen_key));
+        ui.data_mut(|d| d.insert_temp(seen_key, p.tracks.len()));
+        let grew = seen.is_some_and(|n| p.tracks.len() > n);
+        let pending = ui.data(|d| d.get_temp::<bool>(pend_key)).unwrap_or(false);
+        ui.data_mut(|d| d.insert_temp(pend_key, grew));
+        let mut seq_scroll = egui::ScrollArea::vertical()
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .auto_shrink([false, false])
-            .id_salt("seq")
-            .show(ui, |ui| {
-                let mut clip = ui.clip_rect();
-                clip.min.y = clip.min.y.max(seq_top + 2.0);
-                ui.set_clip_rect(clip);
-                // the FL-style channel rack (channel_rack.rs): every gesture
-                // comes back as one tool call
-                let mut sel = channel_rack::RackSel {
-                    selected: self.selected,
-                    rows: Vec::new(),
-                    open_editor: false,
-                };
-                let actions =
-                    channel_rack::channel_rack(ui, p, self.pattern, &mut sel, playing_here);
-                self.selected = sel.selected;
-                if sel.open_editor {
-                    self.note_editor = true;
-                }
-                for (tool, args) in actions {
-                    self.call(tool, args);
-                }
-                if p.tracks.is_empty() {
-                    ui.add_space(40.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            RichText::new("Add a track from Panels > Library, or browse Sounds.")
-                                .size(16.0)
-                                .color(DIM),
-                        );
-                    });
-                }
-            });
+            .id_salt("seq");
+        // never taller than what the pane shows, or rows past its bottom edge
+        // could not be scrolled to
+        let shown = ui.clip_rect().bottom() - ui.next_widget_position().y;
+        if shown.is_finite() && shown > 40.0 {
+            seq_scroll = seq_scroll.max_height(shown);
+        }
+        if grew {
+            ui.ctx().request_repaint();
+        }
+        if pending {
+            seq_scroll = seq_scroll.vertical_scroll_offset(1.0e6);
+        }
+        seq_scroll.show(ui, |ui| {
+            let mut clip = ui.clip_rect();
+            clip.min.y = clip.min.y.max(seq_top + 2.0);
+            ui.set_clip_rect(clip);
+            // the FL-style channel rack (channel_rack.rs): every gesture
+            // comes back as one tool call
+            let mut sel = channel_rack::RackSel {
+                selected: self.selected,
+                rows: Vec::new(),
+                open_editor: false,
+            };
+            let actions = channel_rack::channel_rack(ui, p, self.pattern, &mut sel, playing_here);
+            self.selected = sel.selected;
+            if sel.open_editor {
+                self.note_editor = true;
+            }
+            for (tool, args) in actions {
+                self.call(tool, args);
+            }
+            if p.tracks.is_empty() {
+                ui.add_space(40.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new("Add a track from Panels > Library, or browse Sounds.")
+                            .size(16.0)
+                            .color(DIM),
+                    );
+                });
+            }
+        });
     }
 
     // ---------------- master section ----------------
