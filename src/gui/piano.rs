@@ -722,19 +722,21 @@ impl Studio {
         // live value while editing, the hovered hit's value otherwise
         let readout = match live {
             Some((li, lv)) => notes.get(li).map(|n| (n.start, lv, tk.text)),
-            None if vresp.hovered() => ui
-                .input(|i| i.pointer.hover_pos())
-                .and_then(|pt| {
-                    notes
-                        .iter()
-                        .map(|n| (n.start, (x_of(n.start) - pt.x).abs()))
-                        .filter(|(_, dx)| *dx < 8.0)
-                        .min_by(|a, b| a.1.total_cmp(&b.1))
-                        .map(|(st, _)| {
-                            let v = notes.iter().find(|n| n.start == st).map(|n| n.vel).unwrap_or(0.0);
-                            (st, v, tk.text_dim)
-                        })
-                }),
+            None if vresp.hovered() => ui.input(|i| i.pointer.hover_pos()).and_then(|pt| {
+                notes
+                    .iter()
+                    .map(|n| (n.start, (x_of(n.start) - pt.x).abs()))
+                    .filter(|(_, dx)| *dx < 8.0)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(st, _)| {
+                        let v = notes
+                            .iter()
+                            .find(|n| n.start == st)
+                            .map(|n| n.vel)
+                            .unwrap_or(0.0);
+                        (st, v, tk.text_dim)
+                    })
+            }),
             None => None,
         };
         if let Some((st, v, col)) = readout {
