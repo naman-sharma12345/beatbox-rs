@@ -293,8 +293,9 @@ impl Studio {
                 let field = ui.add(
                     egui::TextEdit::singleline(&mut self.browser.file_path)
                         .desired_width((ui.available_width() - 150.0).clamp(110.0, 300.0))
-                        .hint_text("paste the path of a wav, mp3, flac or ogg"),
-                );
+                        .hint_text("path to a sound file"),
+                )
+                .on_hover_text("Paste the path of a wav, mp3, flac or ogg file");
                 let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let ready = !self.browser.file_path.trim().is_empty();
                 let go = ui
