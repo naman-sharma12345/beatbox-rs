@@ -727,7 +727,7 @@ impl Studio {
             let scroll_w = ui.available_width() - MASTER_W - 8.0;
             let strip_w = ((scroll_w - strips.len().saturating_sub(1) as f32)
                 / strips.len().max(1) as f32)
-                .max(STRIP_W);
+                .clamp(STRIP_W, STRIP_W * 1.5);
             ui.allocate_ui(Vec2::new(scroll_w, h + 18.0), |ui| {
                 ui.style_mut().spacing.scroll.floating = false;
                 egui::ScrollArea::horizontal()
