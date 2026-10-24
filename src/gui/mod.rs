@@ -1426,6 +1426,27 @@ impl eframe::App for Studio {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frames += 1;
+        // audio files dropped on the window become channels
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            let (added, failed) = {
+                let mut e = self.engine.lock().unwrap();
+                browser_view::import_dropped(&mut e, &dropped)
+            };
+            let (text, good) = match (added.is_empty(), failed.first()) {
+                (false, None) => (format!("Added {} as a new channel", added.join(", ")), true),
+                (false, Some(f)) => (format!("Added {}. Skipped {f}", added.join(", ")), true),
+                (true, Some(f)) => (f.clone(), false),
+                (true, None) => (String::new(), false),
+            };
+            self.toast = Some((text, 0.0, good));
+        }
         let midi_live;
         // live link: apply transport commands from MCP and publish the state
         {
