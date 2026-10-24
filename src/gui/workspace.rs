@@ -195,9 +195,14 @@ impl Workspace {
                 .find(|(_, tab)| tab.view().is_some())
                 .map(|((s, n), _)| (s, n));
             if let (Pane::Browser, Some((s, n))) = (p, target) {
-                // FL keeps its browser in a column beside the rack: you pick a sound
-                // while still looking at the channels it will land in
-                let [_, fresh] = self.dock[s].split_left(n, 0.62, vec![p]);
+                // FL keeps its browser in a full-height column on the left: you pick a
+                // sound while still looking at the channels it will land in
+                // below the transport row, so Undo, Redo and Save keep their room
+                let mut region = n;
+                while let Some(up) = region.parent().filter(|u| *u != NodeIndex::root()) {
+                    region = up;
+                }
+                let [_, fresh] = self.dock[s].split_left(region, 0.42, vec![p]);
                 self.dock.set_focused_node_and_surface((s, fresh));
                 return;
             }
