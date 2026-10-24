@@ -85,6 +85,10 @@ pub(super) fn import_dropped(
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
+        if !path.exists() {
+            failed.push(format!("{file}: there is no file at that path"));
+            continue;
+        }
         if !["wav", "mp3", "flac", "ogg"].contains(&ext.as_str()) {
             failed.push(format!("{file}: use a wav, mp3, flac or ogg file"));
             continue;
@@ -1474,6 +1478,12 @@ mod drop_tests {
             "the second file must not reuse the first sound"
         );
         assert_eq!(e.project.samples.len(), 2);
+        let (none, gone) = import_dropped(&mut e, &[d.join("nowhere.wav")]);
+        assert!(none.is_empty(), "{none:?}");
+        assert_eq!(
+            gone,
+            vec!["nowhere.wav: there is no file at that path".to_string()]
+        );
         let track = format!("{}_s", added[0]);
         assert!(
             e.project.tracks.iter().any(|t| t.name == track),
