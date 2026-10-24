@@ -378,13 +378,15 @@ pub fn channel_rack(
                         if dy.abs() > 0.5 {
                             let add = if dy > 0.0 { 0.05 } else { -0.05 };
                             actions.push(("edit_notes", json!({"track": t.name, "pattern": pat.name, "from": s, "to": s + 1, "vel_add": add})));
-                            // the wheel belongs to this step now: without this the page scrolls too
-                            // and the next notch lands on a different row
-                            ui.input_mut(|i| {
-                                i.smooth_scroll_delta = egui::Vec2::ZERO;
-                                i.raw_scroll_delta = egui::Vec2::ZERO;
-                            });
                         }
+                        // the wheel belongs to this step while the pointer is on it: egui
+                        // spreads one notch over several frames, so the page's share has to be
+                        // taken every frame, or it keeps scrolling and the next notch lands
+                        // on a different row
+                        ui.input_mut(|i| {
+                            i.smooth_scroll_delta = egui::Vec2::ZERO;
+                            i.raw_scroll_delta = egui::Vec2::ZERO;
+                        });
                         resp.on_hover_text(format!(
                             "velocity {:.0}% (scroll to change)",
                             n.vel * 100.0
@@ -1184,7 +1186,10 @@ mod tests {
                 &mut sel,
             );
         }
-        run(vec![], 10, &mut sel);
+        // egui spreads a notch over several frames: let them all pass
+        for k in 10..20 {
+            run(vec![], k, &mut sel);
+        }
         let edits: Vec<_> = calls.iter().filter(|(t, _)| *t == "edit_notes").collect();
         assert_eq!(edits.len(), 3, "three notches, three edits: {calls:?}");
         assert!(edits
