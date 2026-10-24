@@ -103,6 +103,16 @@ impl Studio {
         let tk = Tokens::DARK;
         let (Some(t), Some(pat)) = (p.tracks.get(self.selected), p.patterns.get(self.pattern))
         else {
+            ui.add_space(28.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new(
+                        "No channel yet. Add one in the Channel rack and write its notes here.",
+                    )
+                    .size(13.0)
+                    .color(tk.text_dim),
+                );
+            });
             return;
         };
         if self.piano.owner != (self.pattern, self.selected) {
