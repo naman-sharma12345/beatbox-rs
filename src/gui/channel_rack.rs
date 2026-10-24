@@ -1133,4 +1133,63 @@ mod tests {
         assert_eq!(drop_spot(&p, 1, Some((0, 0))), (2, 0));
         assert_eq!(drop_spot(&p, 3, None), (0, 5));
     }
+
+    /// The wheel over a lit step changes that step's velocity and nothing else:
+    /// the page behind it must not scroll, or the next notch lands on another row.
+    #[test]
+    fn the_wheel_over_a_step_edits_velocity_and_does_not_scroll_the_page() {
+        let mut e = engine();
+        e.call(
+            "toggle_step",
+            &json!({"track": "kick", "step": 5, "pattern": "verse"}),
+        )
+        .unwrap();
+        let p = e.project.clone();
+        let pi = pattern_index(&p);
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 300.0));
+        let mut sel = RackSel::default();
+        let mut calls: Vec<(&'static str, Value)> = Vec::new();
+        let mut offset = 0.0_f32;
+        let mut run = |events: Vec<Event>, k: usize, sel: &mut RackSel| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                time: Some(k as f64 * 0.05),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let out = egui::ScrollArea::vertical().show(ui, |ui| {
+                        calls.extend(channel_rack(ui, &p, pi, sel, None));
+                        ui.allocate_space(vec2(10.0, 2000.0));
+                    });
+                    offset = out.state.offset.y;
+                });
+            });
+        };
+        run(vec![], 0, &mut sel);
+        run(vec![], 1, &mut sel);
+        let kick = p.track_index("kick").unwrap();
+        let at = sel.rows[kick].step_rect(5).center();
+        run(vec![Event::PointerMoved(at)], 2, &mut sel);
+        for k in 0..3 {
+            run(
+                vec![Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: vec2(0.0, -1.0),
+                    modifiers: Modifiers::default(),
+                }],
+                3 + k,
+                &mut sel,
+            );
+        }
+        run(vec![], 10, &mut sel);
+        let edits: Vec<_> = calls.iter().filter(|(t, _)| *t == "edit_notes").collect();
+        assert_eq!(edits.len(), 3, "three notches, three edits: {calls:?}");
+        assert!(edits
+            .iter()
+            .all(|(_, a)| a["vel_add"].as_f64().unwrap() < 0.0));
+        assert_eq!(offset, 0.0, "the page scrolled under the wheel");
+    }
 }
