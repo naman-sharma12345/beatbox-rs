@@ -92,15 +92,23 @@ pub(super) fn import_dropped(
             .and_then(|f| f.to_str())
             .unwrap_or("sample");
         let name = crate::samples::sample_name(stem);
-        let imported = engine.call_from(
+        let imported = match engine.call_from(
             "import_sample",
             &json!({"path": path.to_string_lossy(), "name": name}),
             "you",
-        );
-        if let Err(e) = imported {
-            failed.push(format!("{file}: {e:#}"));
-            continue;
-        }
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                failed.push(format!("{file}: {e:#}"));
+                continue;
+            }
+        };
+        // a taken sound name is kept as it is: the new file arrives under a numbered name
+        let name = imported
+            .get("sample")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&name)
+            .to_string();
         let track = format!("{name}_s");
         match engine.call_from(
             "add_sample_track",
@@ -1414,6 +1422,14 @@ mod drop_tests {
         assert_eq!(added.len(), 1, "added {added:?}, failed {failed:?}");
         assert_eq!(failed.len(), 1, "added {added:?}, failed {failed:?}");
         assert!(failed[0].starts_with("notes.txt"), "{failed:?}");
+        let again = d.join("My Snare.wav");
+        let (added2, failed2) = import_dropped(&mut e, &[again]);
+        assert_eq!(added2.len(), 1, "second drop: {added2:?} {failed2:?}");
+        assert_ne!(
+            added2[0], added[0],
+            "the second file must not reuse the first sound"
+        );
+        assert_eq!(e.project.samples.len(), 2);
         let track = format!("{}_s", added[0]);
         assert!(
             e.project.tracks.iter().any(|t| t.name == track),
