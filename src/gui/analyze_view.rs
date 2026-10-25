@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 
 #[derive(Default)]
 pub struct AnalyzeState {
+    pub open_on_arrival: bool,
     pub path: String,
     pub grid_from: String,
     pub bpm: String,
@@ -414,7 +415,7 @@ impl Studio {
         }
         let bpm = self.analyze.bpm.trim().parse::<f64>().ok();
         let b = &mut self.analyze.build;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.small_button("ADD PART").clicked() {
                 b.parts.push(PartRow::default());
             }
@@ -465,15 +466,15 @@ impl Studio {
         let busy = self.analyze.job.as_ref().map(|j| j.0.clone());
         let mut job: Option<(&'static str, Value)> = None;
         let mut build: Option<Value> = None;
-        egui::CollapsingHeader::new(RichText::new("ANALYZE A RECORDING").size(11.0).strong().color(tk.header_text))
+        egui::CollapsingHeader::new(RichText::new("ANALYZE A RECORDING").size(11.0).strong().color(tk.header_text)).open(if std::mem::take(&mut self.analyze.open_on_arrival) { Some(true) } else { None })
             .id_salt("br_analyze")
             .default_open(false)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("FILE").size(11.0).color(tk.text_dim));
-                    ui.add(egui::TextEdit::singleline(&mut self.analyze.path).desired_width(320.0).hint_text("song.wav, or a stem such as drums.wav"));
+                    ui.add(egui::TextEdit::singleline(&mut self.analyze.path).desired_width(240.0).hint_text("song.wav, or a stem such as drums.wav"));
                     ui.label(RichText::new("BARS FROM").size(11.0).color(tk.text_dim));
-                    ui.add(egui::TextEdit::singleline(&mut self.analyze.grid_from).desired_width(200.0).hint_text("full mix (optional)"));
+                    ui.add(egui::TextEdit::singleline(&mut self.analyze.grid_from).desired_width(180.0).hint_text("full mix (optional)"));
                     ui.label(RichText::new("BPM").size(11.0).color(tk.text_dim));
                     ui.add(egui::TextEdit::singleline(&mut self.analyze.bpm).desired_width(50.0).hint_text("auto"));
                     ui.checkbox(&mut self.analyze.add_to_project, "add to project");
@@ -530,7 +531,7 @@ impl Studio {
                         job = Some(("detect_fx", args.clone()));
                     }
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("STEMS FOLDER").size(11.0).color(tk.text_dim));
                     ui.add(egui::TextEdit::singleline(&mut self.analyze.stems_dir).desired_width(220.0).hint_text("from SPLIT INTO STEMS (optional)"));
                     let mut sa = json!({"path": path});
@@ -564,7 +565,7 @@ impl Studio {
                         }
                     });
                 if let Some(b) = &busy {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.spinner();
                         ui.label(RichText::new(format!("{b}...")).size(11.0).color(tk.text_dim));
                     });

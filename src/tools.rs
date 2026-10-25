@@ -1028,6 +1028,18 @@ pub(crate) fn core_tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "rename_track",
+            description: "Rename a channel. Notes, automation, playlist clips, macros and sidechain sources that point at it follow the new name. {track, name}.",
+            mutates: true,
+            schema: || obj(json!({"track": {"type": "string"}, "name": {"type": "string"}}), &["track", "name"]),
+            run: |e, a| {
+                let i = e.project.track_index(&s_req(a, "track")?)?;
+                let new = s_req(a, "name")?;
+                let old = e.project.rename_track(i, &new)?;
+                Ok(json!({"renamed": old, "name": e.project.tracks[i].name}))
+            },
+        },
+        Tool {
             name: "set_instrument",
             description: "Replace a track's instrument with a preset or instrument object.",
             mutates: true,
@@ -1907,12 +1919,18 @@ pub(crate) fn register_sample(e: &mut Engine, mut info: SampleInfo) -> Result<Va
     info.duration = (data.len() as f32 / crate::dsp::SR * 100.0).round() / 100.0;
     let mut name = info.name.clone();
     let mut k = 2;
-    while e.project.samples.iter().any(|s| s.name == name) {
+    while e
+        .project
+        .samples
+        .iter()
+        .any(|s| s.name.eq_ignore_ascii_case(&name))
+    {
         name = format!("{}_{k}", info.name);
         k += 1;
     }
     info.name = name.clone();
-    e.bank.insert(&name, data);
+    e.bank
+        .insert_for_source(&name, std::path::Path::new(&info.path), data);
     e.project.samples.push(info.clone());
     Ok(
         json!({"sample": name, "duration": info.duration, "license": info.license, "source": info.source, "next": "add_sample_track {name, sample}"}),
@@ -2140,5 +2158,124 @@ mod tests {
         e.call("load_project", &json!({"path": "rt.beatbox.json"}))
             .unwrap();
         assert_eq!(e.project, before);
+    }
+
+    #[test]
+    fn rename_track_moves_every_reference_and_undoes() {
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "kick", "preset": "kick"}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "bass", "preset": "acid_bass"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track": "bass", "notes": [{"start": 0, "len": 1, "pitch": 40}]}),
+        )
+        .unwrap();
+        e.call(
+            "add_automation",
+            &json!({"track": "bass", "param": "volume", "points": [{"beat": 0, "value": -6}, {"beat": 4, "value": 0}]}),
+        )
+        .unwrap();
+        e.call(
+            "create_macro",
+            &json!({"name": "m", "targets": [{"track": "bass", "param": "volume", "min": -12, "max": 0}]}),
+        )
+        .unwrap();
+        e.call(
+            "add_effect",
+            &json!({"track": "bass", "type": "sidechain", "params": {"source": "kick", "amount": 0.5}}),
+        )
+        .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern": "A", "start_bar": 0, "tracks": ["bass"]}),
+        )
+        .unwrap();
+        let before = e.project.clone();
+        e.call(
+            "rename_track",
+            &json!({"track": "bass", "name": "Sub Bass"}),
+        )
+        .unwrap();
+        e.call("rename_track", &json!({"track": "kick", "name": "drumz"}))
+            .unwrap();
+        let p = &e.project;
+        assert_eq!(p.tracks[0].name, "drumz");
+        assert_eq!(p.tracks[1].name, "Sub Bass");
+        assert!(!p.tracks[1].id.is_empty());
+        for pat in &p.patterns {
+            assert!(!pat.clips.contains_key("bass"), "{}", pat.name);
+        }
+        assert_eq!(p.patterns[0].notes("Sub Bass").len(), 1);
+        assert!(p.automation.iter().all(|l| l.target == "Sub Bass"));
+        assert!(p.macros[0].targets.iter().all(|t| t.track == "Sub Bass"));
+        assert!(!p.playlist.is_empty());
+        assert!(p
+            .playlist
+            .iter()
+            .all(|c| c.tracks.len() == 1 && c.tracks[0] == "Sub Bass"));
+        let fx = serde_json::to_value(&p.tracks[1].effects).unwrap();
+        assert_eq!(fx[0]["source"], "drumz");
+        assert!(e
+            .call(
+                "rename_track",
+                &json!({"track": "Sub Bass", "name": "DRUMZ"})
+            )
+            .is_err());
+        assert!(e
+            .call("rename_track", &json!({"track": "Sub Bass", "name": " "}))
+            .is_err());
+        assert!(e
+            .call(
+                "rename_track",
+                &json!({"track": "Sub Bass", "name": "master"})
+            )
+            .is_err());
+        e.call("undo", &json!({"steps": 2})).unwrap();
+        assert_eq!(e.project.tracks[1].name, "bass");
+        assert_eq!(
+            e.project.patterns[0].notes("bass").len(),
+            before.patterns[0].notes("bass").len()
+        );
+        e.call("redo", &json!({"steps": 2})).unwrap();
+        assert_eq!(e.project.tracks[1].name, "Sub Bass");
+    }
+}
+
+#[cfg(test)]
+mod legacy_sample_name_tests {
+    use serde_json::json;
+    #[test]
+    fn importing_against_mixed_case_legacy_name_keeps_both_buffers() {
+        let dir = std::env::temp_dir().join(format!("beatbox-legacy-case-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.wav");
+        let b = dir.join("b.wav");
+        for (p, n) in [(&a, 1000), (&b, 2000)] {
+            crate::render::write_wav(p, &vec![0.1; n], &vec![0.1; n]).unwrap();
+        }
+        let mut e = crate::Engine::new(dir.clone());
+        e.call("import_sample", &json!({"path":a,"name":"voice"}))
+            .unwrap();
+        e.project.samples[0].name = "Voice".into();
+        let result = e
+            .call("import_sample", &json!({"path":b,"name":"voice"}))
+            .unwrap();
+        assert_eq!(result["sample"], "voice_2");
+        assert_eq!(e.bank.get("Voice").unwrap().len(), 1000);
+        assert_eq!(e.bank.get("voice_2").unwrap().len(), 2000);
+        assert!(e.bank.sync(&e.project.samples).is_empty());
+        assert_eq!(e.bank.get("Voice").unwrap().len(), 1000);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(e.project.samples.len(), 1);
+        e.call("redo", &json!({})).unwrap();
+        e.call("save_project", &json!({"path":"case.json"}))
+            .unwrap();
+        e.call("load_project", &json!({"path":"case.json"}))
+            .unwrap();
+        assert_eq!(e.project.samples[0].name, "Voice");
+        assert_eq!(e.project.samples[1].name, "voice_2");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

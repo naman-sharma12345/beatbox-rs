@@ -19,6 +19,11 @@ pub const RACK_RULER_H: f32 = 18.0;
 pub const DRUM_ROW_H: f32 = 30.0;
 pub const SYNTH_ROW_H: f32 = 46.0;
 
+/// Keep each step clickable; long patterns scroll instead of shrinking to slivers.
+pub fn rack_content_width(available: f32, steps: usize) -> f32 {
+    available.max(RACK_HEAD_W + steps as f32 * 12.0 + 6.0)
+}
+
 /// Where one channel row's controls sit (screen points). Every hit test
 /// goes through it, and tests read it to aim the pointer.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -83,6 +88,7 @@ impl RackRow {
 #[derive(Clone, Debug, Default)]
 pub struct RackSel {
     pub selected: usize,
+    pub open_editor: bool,
     pub rows: Vec<RackRow>,
 }
 
@@ -139,7 +145,7 @@ pub fn channel_rack(
             head,
             5.0,
             if selected {
-                Color32::from_rgb(54, 58, 64)
+                super::theme::Tokens::DARK.button_hi
             } else {
                 PANEL2
             },
@@ -173,7 +179,7 @@ pub fn channel_rack(
             if t.solo {
                 SOLO
             } else {
-                Color32::from_rgb(40, 40, 44)
+                super::theme::Tokens::DARK.button
             },
         );
         painter.text(
@@ -217,7 +223,7 @@ pub fn channel_rack(
             if selected {
                 lerp_color(PANEL2, color, 0.35)
             } else {
-                Color32::from_rgb(52, 54, 60)
+                super::theme::Tokens::DARK.button
             },
         );
         painter.rect_filled(
@@ -225,13 +231,44 @@ pub fn channel_rack(
             1.0,
             color,
         );
-        painter.text(
-            g.name.left_center() + vec2(8.0, if drum { 0.0 } else { -6.0 }),
-            Align2::LEFT_CENTER,
-            &t.name,
-            FontId::proportional(12.0),
-            if t.mute { DIM } else { TEXT },
-        );
+        let rid = ui.id().with("rack-rename");
+        let editing: Option<(String, String, bool)> = ui.data(|d| d.get_temp(rid));
+        let renaming = editing.as_ref().is_some_and(|e| e.0 == t.name);
+        if renaming {
+            let (_, mut buf, first) = editing.unwrap_or_default();
+            let te = ui.put(
+                g.name.shrink2(vec2(3.0, 2.0)),
+                egui::TextEdit::singleline(&mut buf).font(FontId::proportional(12.0)),
+            );
+            if first {
+                te.request_focus();
+            }
+            let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if esc {
+                ui.data_mut(|d| d.remove::<(String, String, bool)>(rid));
+            } else if te.lost_focus() && !first {
+                if enter && buf.trim() != t.name {
+                    actions.push(("rename_track", json!({"track": t.name, "name": buf})));
+                }
+                ui.data_mut(|d| d.remove::<(String, String, bool)>(rid));
+            } else {
+                ui.data_mut(|d| d.insert_temp(rid, (t.name.clone(), buf, false)));
+            }
+        } else {
+            let name_rect = Rect::from_min_max(
+                g.name.min + vec2(8.0, 0.0),
+                g.name.max - vec2(5.0, if drum { 0.0 } else { 12.0 }),
+            );
+            bounded_label(
+                &painter,
+                name_rect,
+                Align2::LEFT_CENTER,
+                &t.name,
+                FontId::proportional(12.0),
+                if t.mute { DIM } else { TEXT },
+            );
+        }
         if !drum {
             painter.text(
                 g.name.left_center() + vec2(8.0, 8.0),
@@ -241,18 +278,33 @@ pub fn channel_rack(
                 DIM,
             );
         }
-        if nr
-            .on_hover_text(format!("{} ({kind}): click to select", t.name))
-            .clicked()
-        {
+        let nr = nr.on_hover_text(format!(
+            "{} ({kind}): click to select, double-click or right-click to rename",
+            t.name
+        ));
+        if nr.clicked() {
             sel.selected = ti;
+        }
+        let mut start_rename = nr.double_clicked();
+        nr.context_menu(|ui| {
+            if ui.button("Rename").clicked() {
+                start_rename = true;
+                ui.close_menu();
+            }
+        });
+        if start_rename {
+            ui.data_mut(|d| d.insert_temp(rid, (t.name.clone(), t.name.clone(), true)));
         }
         if keys_button(ui, g.keys, keys_id, selected, color).clicked() {
             sel.selected = ti;
+            sel.open_editor = true;
         }
         // steps
         painter.rect_filled(g.steps, 4.0, BG);
         let notes = pat.notes(&t.name);
+        if !ui.input(|i| i.pointer.primary_down()) {
+            ui.data_mut(|d| d.remove_temp::<(bool, usize, usize)>(ui.id().with("rack-paint")));
+        }
         if drum {
             for s in 0..steps {
                 let r = g.step_rect(s);
@@ -261,9 +313,10 @@ pub fn channel_rack(
                     .find(|n| n.start >= s as f32 && n.start < s as f32 + 1.0);
                 // FL shades every other beat (group of 4 steps)
                 let base = if (s / 4) % 2 == 0 {
-                    Color32::from_rgb(58, 56, 60)
+                    super::theme::Tokens::DARK.button
                 } else {
-                    Color32::from_rgb(74, 52, 56)
+                    // a plain warm grey, so an unlit step never looks like a dim lit one
+                    Color32::from_rgb(58, 52, 44)
                 };
                 painter.rect_filled(
                     r,
@@ -276,8 +329,44 @@ pub fn channel_rack(
                 if playing_step.map(|ps| ps as usize == s).unwrap_or(false) {
                     painter.rect_stroke(r, 2.5, Stroke::new(1.5_f32, Color32::WHITE));
                 }
-                let resp = ui.interact(r, ui.id().with(("rack-step", ti, s)), Sense::click());
+                let resp = ui.interact(
+                    r,
+                    ui.id().with(("rack-step", ti, s)),
+                    Sense::click_and_drag(),
+                );
+                // FL Studio behaviour: a press toggles a step and dragging
+                // across steps paints (or erases, if the press began on a lit
+                // step); right-click erases a lit step.
+                let paint_id = ui.id().with("rack-paint");
+                // a fast drag can skip cells between two frames, so a cell counts
+                // when the pointer's path since the last frame crossed it
+                let (down, pressed, over) = ui.input(|i| {
+                    let over = i.pointer.hover_pos().is_some_and(|p| {
+                        let q = p - i.pointer.delta();
+                        let (x0, x1) = (p.x.min(q.x), p.x.max(q.x));
+                        p.y >= r.top() && p.y <= r.bottom() && x1 >= r.left() && x0 <= r.right()
+                    });
+                    (i.pointer.primary_down(), i.pointer.primary_pressed(), over)
+                });
+                let _ = pressed;
+                let mut toggle = false;
                 if resp.clicked() {
+                    toggle = true;
+                } else if resp.drag_started() {
+                    ui.data_mut(|d| d.insert_temp(paint_id, (hit.is_none(), ti, s)));
+                    toggle = true;
+                } else if over && down {
+                    let st: Option<(bool, usize, usize)> = ui.data(|d| d.get_temp(paint_id));
+                    if let Some((add, lt, ls)) = st {
+                        if (lt, ls) != (ti, s) && hit.is_none() == add {
+                            ui.data_mut(|d| d.insert_temp(paint_id, (add, ti, s)));
+                            toggle = true;
+                        }
+                    }
+                } else if resp.secondary_clicked() && hit.is_some() {
+                    toggle = true;
+                }
+                if toggle {
                     sel.selected = ti;
                     actions.push((
                         "toggle_step",
@@ -289,10 +378,10 @@ pub fn channel_rack(
                     painter.rect_filled(
                         Rect::from_min_size(
                             pos2(r.left() + 2.0, r.bottom() - 2.0 - h),
-                            vec2(2.0, h),
+                            vec2(4.0, h),
                         ),
                         1.0,
-                        Color32::from_white_alpha(150),
+                        Color32::from_white_alpha(210),
                     );
                     if resp.hovered() {
                         let dy = ui.input(|i| i.raw_scroll_delta.y);
@@ -300,6 +389,14 @@ pub fn channel_rack(
                             let add = if dy > 0.0 { 0.05 } else { -0.05 };
                             actions.push(("edit_notes", json!({"track": t.name, "pattern": pat.name, "from": s, "to": s + 1, "vel_add": add})));
                         }
+                        // the wheel belongs to this step while the pointer is on it: egui
+                        // spreads one notch over several frames, so the page's share has to be
+                        // taken every frame, or it keeps scrolling and the next notch lands
+                        // on a different row
+                        ui.input_mut(|i| {
+                            i.smooth_scroll_delta = egui::Vec2::ZERO;
+                            i.raw_scroll_delta = egui::Vec2::ZERO;
+                        });
                         resp.on_hover_text(format!(
                             "velocity {:.0}% (scroll to change)",
                             n.vel * 100.0
@@ -353,6 +450,11 @@ pub fn channel_rack(
 pub const PATTERN_BAR_H: f32 = 22.0;
 const PATTERN_BTN_W: f32 = 84.0;
 const SEND_BTN_W: f32 = 104.0;
+
+/// Leave room for New, length controls and Send, not just the pattern buttons.
+fn visible_pattern_slots(width: f32) -> usize {
+    ((width - SEND_BTN_W - 172.0).max(0.0) / PATTERN_BTN_W) as usize
+}
 
 /// The bar after the last clip on any lane (where the song ends).
 pub fn song_end_bar(p: &Project) -> u32 {
@@ -438,6 +540,29 @@ pub fn pattern_bar(
     geo: &mut PatternBarGeo,
 ) -> Vec<(&'static str, Value)> {
     let mut actions: Vec<(&'static str, Value)> = Vec::new();
+    let user: Vec<usize> = (0..p.patterns.len())
+        .filter(|&i| !p.patterns[i].name.starts_with(crate::tools_fl::PL))
+        .collect();
+    let fit = visible_pattern_slots(ui.available_width()).max(1);
+    if user.len() > fit {
+        ui.horizontal(|ui| {
+            ui.label("All patterns");
+            egui::ComboBox::from_id_salt("all-rack-patterns")
+                .selected_text(
+                    p.patterns
+                        .get(*current)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("Choose pattern"),
+                )
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    for &i in &user {
+                        ui.selectable_value(current, i, &p.patterns[i].name);
+                    }
+                });
+            ui.label(format!("{} patterns", user.len()));
+        });
+    }
     let (row, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), PATTERN_BAR_H), Sense::hover());
     let painter = ui.painter_at(row);
@@ -446,11 +571,7 @@ pub fn pattern_bar(
         pos2(row.right() - SEND_BTN_W, row.top() + 2.0),
         vec2(SEND_BTN_W - 2.0, h),
     );
-    let room = (send.left() - row.left() - 30.0).max(0.0);
-    let fit = ((room / PATTERN_BTN_W) as usize).max(1);
-    let user: Vec<usize> = (0..p.patterns.len())
-        .filter(|&i| !p.patterns[i].name.starts_with(crate::tools_fl::PL))
-        .collect();
+
     // keep the current pattern in view when there are more than fit
     let pos = user.iter().position(|&i| i == *current).unwrap_or(0);
     let first = pos
@@ -471,11 +592,12 @@ pub fn pattern_bar(
             if on {
                 color.gamma_multiply(0.8)
             } else {
-                Color32::from_rgb(48, 50, 56)
+                super::theme::Tokens::DARK.button
             },
         );
-        painter.text(
-            r.center(),
+        bounded_label(
+            &painter,
+            r.shrink2(vec2(4.0, 1.0)),
             Align2::CENTER_CENTER,
             &pat.name,
             FontId::proportional(10.5),
@@ -494,7 +616,7 @@ pub fn pattern_bar(
     }
     let add = Rect::from_min_size(pos2(x, row.top() + 2.0), vec2(22.0, h));
     geo.add = add;
-    painter.rect_filled(add, 3.0, Color32::from_rgb(48, 50, 56));
+    painter.rect_filled(add, 3.0, super::theme::Tokens::DARK.button);
     painter.text(
         add.center(),
         Align2::CENTER_CENTER,
@@ -513,6 +635,76 @@ pub fn pattern_bar(
             json!({"name": new_pattern_name(p), "bars": bars}),
         ));
         *current = p.patterns.len();
+    }
+    // pattern length: how many bars this pattern loops (what Play and Render use)
+    if let Some(cur) = p.patterns.get(*current) {
+        let bars = cur.bars;
+        let name = cur.name.clone();
+        let tk = super::theme::Tokens::DARK;
+        let mut lx = add.right() + 16.0;
+        let minus = Rect::from_min_size(pos2(lx, row.top() + 2.0), vec2(20.0, h));
+        lx += 24.0;
+        let label = Rect::from_min_size(pos2(lx, row.top() + 2.0), vec2(56.0, h));
+        lx += 60.0;
+        let plus = Rect::from_min_size(pos2(lx, row.top() + 2.0), vec2(20.0, h));
+        let new_end = (bars.saturating_sub(1) * cur.steps_per_bar()) as f32;
+        let shrink_blocked = cur
+            .clips
+            .values()
+            .any(|v| v.iter().any(|n| n.start >= new_end));
+        for (r, t) in [(minus, "\u{2212}"), (plus, "+")] {
+            let dim = r == minus && (bars <= 1 || shrink_blocked);
+            painter.rect_filled(
+                r,
+                3.0,
+                if dim {
+                    tk.button.gamma_multiply(0.45)
+                } else {
+                    tk.button
+                },
+            );
+            painter.text(
+                r.center(),
+                Align2::CENTER_CENTER,
+                t,
+                FontId::proportional(13.0),
+                TEXT,
+            );
+        }
+        painter.text(
+            label.center(),
+            Align2::CENTER_CENTER,
+            format!("{bars} bar{}", if bars == 1 { "" } else { "s" }),
+            FontId::proportional(10.5),
+            TEXT,
+        );
+        if ui
+            .interact(minus, ui.id().with("pat-len-minus"), Sense::click())
+            .on_hover_text(if shrink_blocked {
+                "The last bar has notes. Clear them first (nothing is deleted for you)."
+            } else {
+                "Shorter pattern"
+            })
+            .clicked()
+            && bars > 1
+            && !shrink_blocked
+        {
+            actions.push((
+                "set_pattern_length",
+                json!({"pattern": name, "bars": bars - 1}),
+            ));
+        }
+        if ui
+            .interact(plus, ui.id().with("pat-len-plus"), Sense::click())
+            .on_hover_text("Longer pattern: more steps to fill, and a longer loop")
+            .clicked()
+            && bars < 64
+        {
+            actions.push((
+                "set_pattern_length",
+                json!({"pattern": name, "bars": bars + 1}),
+            ));
+        }
     }
     geo.send = send;
     if let Some(pat) = p
@@ -550,6 +742,36 @@ pub fn pattern_bar(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn long_labels_elide_inside_their_own_hit_rect() {
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(72.0, 20.0));
+        let out = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                bounded_label(
+                    ui.painter(),
+                    rect,
+                    Align2::CENTER_CENTER,
+                    "Extended chorus groove with bass fills",
+                    FontId::proportional(10.5),
+                    Color32::WHITE,
+                );
+            });
+        });
+        let shape = out
+            .shapes
+            .iter()
+            .find(|s| matches!(s.shape, egui::epaint::Shape::Text(_)))
+            .unwrap();
+        let egui::epaint::Shape::Text(text) = &shape.shape else {
+            unreachable!()
+        };
+        assert!(text.galley.elided);
+        assert!(text.galley.size().x <= rect.width());
+        assert!(rect.contains_rect(shape.clip_rect));
+        assert!(rect.contains_rect(Rect::from_min_size(text.pos, text.galley.size())));
+    }
+
     use super::*;
     use crate::engine::Engine;
     use egui::{Event, Modifiers, PointerButton};
@@ -642,6 +864,28 @@ mod tests {
     /// End to end: steps clicked in the rack are what the engine renders.
     /// The pattern sits on the playlist; a kick step toggled on beat 2
     /// puts a hit there, and the rack's mute silences it again.
+    #[test]
+    fn pattern_slots_leave_space_for_all_actions() {
+        for width in [420.0_f32, 700.0, 1000.0, 1440.0] {
+            let used = visible_pattern_slots(width) as f32 * PATTERN_BTN_W + SEND_BTN_W + 172.0;
+            assert!(used <= width);
+            assert!(width - used < PATTERN_BTN_W);
+        }
+        assert_eq!(visible_pattern_slots(700.0), 5);
+    }
+
+    #[test]
+    fn narrow_and_long_patterns_keep_twelve_point_steps() {
+        for available in [420.0_f32, 700.0, 1440.0] {
+            for steps in [16_usize, 64, 1024] {
+                let width = rack_content_width(available, steps);
+                assert!(width >= available);
+                assert!((width - RACK_HEAD_W - 6.0) / steps as f32 >= 12.0);
+            }
+        }
+        assert_eq!(rack_content_width(1440.0, 16), 1440.0);
+    }
+
     #[test]
     fn steps_toggled_in_the_rack_are_heard_in_the_render() {
         let mut e = engine();
@@ -977,5 +1221,67 @@ mod tests {
         assert_eq!(drop_spot(&p, 4, Some((0, 1))), (1, 1));
         assert_eq!(drop_spot(&p, 1, Some((0, 0))), (2, 0));
         assert_eq!(drop_spot(&p, 3, None), (0, 5));
+    }
+
+    /// The wheel over a lit step changes that step's velocity and nothing else:
+    /// the page behind it must not scroll, or the next notch lands on another row.
+    #[test]
+    fn the_wheel_over_a_step_edits_velocity_and_does_not_scroll_the_page() {
+        let mut e = engine();
+        e.call(
+            "toggle_step",
+            &json!({"track": "kick", "step": 5, "pattern": "verse"}),
+        )
+        .unwrap();
+        let p = e.project.clone();
+        let pi = pattern_index(&p);
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 300.0));
+        let mut sel = RackSel::default();
+        let mut calls: Vec<(&'static str, Value)> = Vec::new();
+        let mut offset = 0.0_f32;
+        let mut run = |events: Vec<Event>, k: usize, sel: &mut RackSel| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                time: Some(k as f64 * 0.05),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let out = egui::ScrollArea::vertical().show(ui, |ui| {
+                        calls.extend(channel_rack(ui, &p, pi, sel, None));
+                        ui.allocate_space(vec2(10.0, 2000.0));
+                    });
+                    offset = out.state.offset.y;
+                });
+            });
+        };
+        run(vec![], 0, &mut sel);
+        run(vec![], 1, &mut sel);
+        let kick = p.track_index("kick").unwrap();
+        let at = sel.rows[kick].step_rect(5).center();
+        run(vec![Event::PointerMoved(at)], 2, &mut sel);
+        for k in 0..3 {
+            run(
+                vec![Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: vec2(0.0, -1.0),
+                    modifiers: Modifiers::default(),
+                }],
+                3 + k,
+                &mut sel,
+            );
+        }
+        // egui spreads a notch over several frames: let them all pass
+        for k in 10..20 {
+            run(vec![], k, &mut sel);
+        }
+        let edits: Vec<_> = calls.iter().filter(|(t, _)| *t == "edit_notes").collect();
+        assert_eq!(edits.len(), 3, "three notches, three edits: {calls:?}");
+        assert!(edits
+            .iter()
+            .all(|(_, a)| a["vel_add"].as_f64().unwrap() < 0.0));
+        assert_eq!(offset, 0.0, "the page scrolled under the wheel");
     }
 }

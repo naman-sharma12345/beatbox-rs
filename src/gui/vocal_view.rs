@@ -31,6 +31,8 @@ impl Studio {
                         .size(12.0)
                         .color(tk.text_dim),
                 );
+                ui.add_space(12.0);
+                if ui.button("Open recording and analysis").clicked() { self.view=5; self.browser.section=4; self.analyze.open_on_arrival=true; }
             });
             return;
         };

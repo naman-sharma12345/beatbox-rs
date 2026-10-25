@@ -15,10 +15,10 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 /// A strip column's widest and narrowest width.
-const COL_W: f32 = 236.0;
-const MIN_COL_W: f32 = 176.0;
-const DIM: Color32 = Color32::from_rgb(150, 156, 166);
-const ACCENT: Color32 = Color32::from_rgb(255, 152, 48);
+const COL_W: f32 = 280.0;
+const MIN_COL_W: f32 = 180.0;
+const DIM: Color32 = super::theme::Tokens::DARK.text_dim;
+const ACCENT: Color32 = super::theme::Tokens::DARK.accent;
 const OFF: Color32 = Color32::from_rgb(120, 80, 80);
 
 /// Where the controls landed this frame ("bypass:<device>", "param:<id>",
@@ -46,7 +46,8 @@ fn set(p: &Param, v: Value) -> Value {
 fn param_control(ui: &mut egui::Ui, p: &Param, geo: &mut RackGeo, w: f32) -> Option<Value> {
     let label = short(p);
     let mut out = None;
-    ui.horizontal(|ui| {
+    ui.vertical(|ui| {
+        ui.add(egui::Label::new(RichText::new(&label).color(DIM).size(11.0)).wrap());
         match p.kind.as_str() {
             "number" => {
                 let cur = p.value.as_f64().unwrap_or(0.0);
@@ -59,9 +60,18 @@ fn param_control(ui: &mut egui::Ui, p: &Param, geo: &mut RackGeo, w: f32) -> Opt
                 if integer {
                     s = s.integer();
                 }
-                ui.spacing_mut().slider_width = w - 120.0;
+                ui.spacing_mut().slider_width = (w - 104.0).max(76.0);
                 let r = ui.add(s);
                 geo.insert(format!("param:{}", p.id), r.rect);
+                // Track the usable rail separately from the combined rail/value response.
+                let rail = Rect::from_min_size(
+                    r.rect.min,
+                    egui::vec2(ui.spacing().slider_width, r.rect.height()),
+                );
+                geo.insert(
+                    format!("rail:{}", p.id),
+                    rail.shrink2(egui::vec2(rail.height() / 2.5, 0.0)),
+                );
                 if r.dragged() {
                     ui.data_mut(|d| d.insert_temp(id, v));
                 }
@@ -119,11 +129,6 @@ fn param_control(ui: &mut egui::Ui, p: &Param, geo: &mut RackGeo, w: f32) -> Opt
             ui.label(RichText::new("auto").color(ACCENT).size(10.0))
                 .on_hover_text("an automation lane drives this");
         }
-        // the name last, cut to the column so every strip keeps one width
-        if matches!(p.kind.as_str(), "number" | "bool" | "enum") {
-            ui.add(egui::Label::new(RichText::new(&label).color(DIM).size(11.0)).truncate())
-                .on_hover_text(&label);
-        }
     });
     out
 }
@@ -145,9 +150,9 @@ fn device_card(
     w: f32,
 ) {
     let fill = if d.bypassed {
-        Color32::from_rgb(36, 32, 34)
+        super::theme::Tokens::DARK.strip_section
     } else {
-        Color32::from_rgb(40, 44, 52)
+        super::theme::Tokens::DARK.panel_bg2
     };
     egui::Frame::none()
         .fill(fill)
@@ -163,9 +168,9 @@ fn device_card(
                 RichText::new(title)
                     .strong()
                     .color(if d.bypassed { DIM } else { Color32::WHITE });
+            ui.add(egui::Label::new(title.clone()).wrap());
             ui.horizontal(|ui| {
                 if d.kind != DeviceKind::Effect {
-                    ui.add(egui::Label::new(title).truncate());
                     return;
                 }
                 // buttons from the right edge, then the name in what is left
@@ -215,9 +220,6 @@ fn device_card(
                     if r.clicked() {
                         out.push(json!({"op": "bypass", "device": d.id, "on": !d.bypassed}));
                     }
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.add(egui::Label::new(title).truncate());
-                    });
                 });
             });
             // short inserts open, long ones (and instruments) folded, so a
@@ -249,12 +251,12 @@ fn strip_column(
     w: f32,
 ) {
     let head = match s.kind {
-        StripKind::Track => Color32::from_rgb(70, 110, 170),
-        StripKind::Bus => Color32::from_rgb(120, 90, 160),
-        StripKind::Master => Color32::from_rgb(170, 120, 60),
+        StripKind::Track => super::theme::Tokens::DARK.text,
+        StripKind::Bus => super::theme::Tokens::DARK.solo,
+        StripKind::Master => super::theme::Tokens::DARK.accent,
     };
     let col = egui::Frame::none()
-        .fill(Color32::from_rgb(28, 30, 35))
+        .fill(super::theme::Tokens::DARK.strip_bg)
         .rounding(8.0)
         .inner_margin(8.0)
         .show(ui, |ui| {
@@ -315,9 +317,9 @@ fn strip_column(
 
 /// Height of the patch bay above the strips, where the cables run.
 const BAY_H: f32 = 58.0;
-const CABLE_OUT: Color32 = Color32::from_rgb(255, 152, 48);
+const CABLE_OUT: Color32 = super::theme::Tokens::DARK.accent;
 const CABLE_SEND: Color32 = Color32::from_rgb(80, 200, 190);
-const CABLE_KEY: Color32 = Color32::from_rgb(190, 120, 230);
+const CABLE_KEY: Color32 = super::theme::Tokens::DARK.header_text;
 
 /// How a kind of cable is drawn: outputs solid and thick, aux sends dashed,
 /// sidechain keys dotted, each in its own colour, so the three read apart
@@ -429,6 +431,7 @@ fn patch_cables(painter: &egui::Painter, bay: Rect, rack: &RackState, geo: &mut 
 pub fn rack_panel(ui: &mut egui::Ui, rack: &RackState, geo: &mut RackGeo) -> Vec<Value> {
     let mut out = Vec::new();
     egui::ScrollArea::both()
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.vertical(|ui| {
@@ -657,8 +660,8 @@ mod tests {
         // (their product is 632^2; a linear slider mirrors their sum)
         let at = |frac: f32| {
             let cmds = drive(&e.project, &|g| {
-                let r = g[&format!("param:{pid}")];
-                click(pos2(r.left() + (COL_W - 120.0) * frac, r.center().y))
+                let r = g[&format!("rail:{pid}")];
+                click(pos2(r.left() + r.width() * frac, r.center().y))
             });
             assert_eq!(cmds.len(), 1, "{cmds:?}");
             cmds[0]["value"].as_f64().unwrap()
@@ -676,8 +679,8 @@ mod tests {
         // a dB fader is linear in dB (dB is already logarithmic): its middle is the middle of the range
         let vid = format!("{}:volume", bass.id);
         let cmds = drive(&e.project, &|g| {
-            let r = g[&format!("param:{vid}")];
-            click(pos2(r.left() + (COL_W - 120.0) * 0.5, r.center().y))
+            let r = g[&format!("rail:{vid}")];
+            click(r.center())
         });
         let v = cmds[0]["value"].as_f64().unwrap();
         assert!(
@@ -789,11 +792,13 @@ mod tests {
                         .collect::<Vec<_>>()
                 );
             }
-            // the columns kept their full width here (the frame adds 8 px a side)
+            // Responsive columns stay readable and all five fit the available panel.
             assert!(
                 g.iter()
                     .filter(|(k, _)| k.starts_with("strip:"))
-                    .all(|(_, r)| (r.width() - (COL_W + 16.0)).abs() < 1.0),
+                    .all(|(_, r)| r.width() >= MIN_COL_W
+                        && r.width() <= COL_W + 16.0
+                        && r.right() <= 1400.0),
                 "{:?}",
                 g.iter()
                     .filter(|(k, _)| k.starts_with("strip:"))

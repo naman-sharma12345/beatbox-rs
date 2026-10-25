@@ -102,12 +102,8 @@ pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> (Response
     }
     let c = r.center();
     let rad = size * 0.40;
-    ui.painter().circle(
-        c,
-        rad,
-        Color32::from_rgb(26, 26, 28),
-        Stroke::new(1.0_f32, Color32::from_rgb(90, 90, 94)),
-    );
+    ui.painter()
+        .circle(c, rad, t.button, Stroke::new(1.0_f32, t.border_light));
     let n = 24;
     let start = std::f32::consts::PI * 0.75;
     let sweep = std::f32::consts::PI * 1.5;
@@ -127,10 +123,8 @@ pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> (Response
         Stroke::new(2.0_f32, t.counter_text),
     ));
     let tip_pos = c + vec2(at.cos(), at.sin()) * rad * 0.85;
-    ui.painter().line_segment(
-        [c, tip_pos],
-        Stroke::new(2.0_f32, Color32::from_rgb(230, 230, 230)),
-    );
+    ui.painter()
+        .line_segment([c, tip_pos], Stroke::new(2.0_f32, t.accent));
     let changed = (*value - before).abs() > f32::EPSILON;
     (resp.on_hover_text(tip), changed)
 }
@@ -139,31 +133,35 @@ pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> (Response
 /// Levels are in dBFS.
 pub fn zoned_meter(p: &egui::Painter, r: Rect, level_db: f32, hold_db: f32, clip: bool) {
     let t = Tokens::DARK;
-    p.rect_filled(r, 0.0, Color32::from_rgb(8, 8, 8));
+    p.rect_filled(r, 2.0, t.counter_bg);
     let inner = Rect::from_min_max(
         pos2(r.min.x + 1.0, r.min.y + 4.0),
         pos2(r.max.x - 1.0, r.max.y - 1.0),
     );
     let h = inner.height();
     let lv = hw_meter_pos(level_db);
-    if lv > 0.0 {
-        let top = inner.max.y - h * lv;
-        let zones = [
-            (0.0, hw_meter_pos(-12.0), t.meter_green),
-            (hw_meter_pos(-12.0), hw_meter_pos(-3.0), t.meter_yellow),
-            (hw_meter_pos(-3.0), 1.0, t.meter_red),
-        ];
-        for (a, b, col) in zones {
-            let y0 = inner.max.y - h * a;
-            let y1 = (inner.max.y - h * b).max(top);
-            if y1 < y0 {
-                p.rect_filled(
-                    Rect::from_min_max(pos2(inner.min.x, y1), pos2(inner.max.x, y0)),
-                    0.0,
-                    col,
-                );
-            }
-        }
+    let count = (h / 7.0).floor().max(8.0) as usize;
+    let step = h / count as f32;
+    for i in 0..count {
+        let level = (i + 1) as f32 / count as f32;
+        let color = if level > lv {
+            t.border
+        } else if level > hw_meter_pos(-3.0) {
+            t.meter_red
+        } else if level > hw_meter_pos(-12.0) {
+            t.meter_yellow
+        } else {
+            t.meter_green
+        };
+        let bottom = inner.bottom() - i as f32 * step;
+        p.rect_filled(
+            Rect::from_min_max(
+                pos2(inner.left(), bottom - step + 1.0),
+                pos2(inner.right(), bottom - 1.0),
+            ),
+            1.0,
+            color,
+        );
     }
     let hv = hw_meter_pos(hold_db);
     if hv > 0.01 {
@@ -220,20 +218,34 @@ pub fn console_fader(ui: &mut Ui, r: Rect, id: egui::Id, db: &mut f32) -> (Respo
     );
     let p = ui.painter();
     p.rect_filled(slot, 2.0, t.fader_track);
-    for mark in [
-        12.0f32, 6.0, 0.0, -5.0, -10.0, -15.0, -20.0, -30.0, -40.0, -60.0,
-    ] {
+    let marks: &[f32] = if r.height() < 110.0 {
+        &[0.0, -12.0, -48.0]
+    } else if r.height() < 220.0 {
+        &[12.0, 0.0, -12.0, -24.0, -48.0]
+    } else {
+        &[12.0, 6.0, 0.0, -6.0, -12.0, -24.0, -48.0]
+    };
+    let mut last_y: Option<f32> = None;
+    for &mark in marks {
         let y = slot.max.y - slot.height() * fader_db_to_pos(mark);
+        if last_y.is_some_and(|prev| (y - prev).abs() < 12.0) {
+            continue;
+        }
+        last_y = Some(y);
         p.line_segment(
             [pos2(r.min.x + 12.0, y), pos2(slot.min.x - 3.0, y)],
-            Stroke::new(1.0_f32, Color32::from_rgb(90, 90, 92)),
+            Stroke::new(1.0_f32, t.border_light),
         );
         p.text(
             pos2(r.min.x, y),
             Align2::LEFT_CENTER,
-            format!("{}", mark.abs()),
+            if mark > 0.0 {
+                format!("+{mark:.0}")
+            } else {
+                format!("{mark:.0}")
+            },
             regular(7.5),
-            Color32::from_rgb(150, 150, 150),
+            t.text_dim,
         );
     }
     let mut committed = false;
@@ -251,34 +263,21 @@ pub fn console_fader(ui: &mut Ui, r: Rect, id: egui::Id, db: &mut f32) -> (Respo
     }
     let y = slot.max.y - slot.height() * fader_db_to_pos(*db);
     let cap_w = (r.width() * 0.62).min(30.0);
-    let cap = Rect::from_center_size(pos2(slot.center().x, y), vec2(cap_w, 22.0));
+    let cap = Rect::from_center_size(pos2(slot.center().x, y), vec2(cap_w, 10.0));
     let hot = resp.hovered() || resp.dragged();
     p.rect(
         cap,
         2.0,
-        if hot {
-            Color32::from_rgb(88, 88, 90)
-        } else {
-            Color32::from_rgb(70, 70, 72)
-        },
-        Stroke::new(1.0_f32, Color32::from_rgb(20, 20, 20)),
+        if hot { t.text } else { t.header_text },
+        Stroke::new(1.0_f32, t.border),
     );
     p.line_segment(
         [
             pos2(cap.min.x + 2.0, cap.center().y),
             pos2(cap.max.x - 2.0, cap.center().y),
         ],
-        Stroke::new(2.0_f32, Color32::from_rgb(230, 230, 230)),
+        Stroke::new(2.0_f32, t.accent),
     );
-    for dy in [-6.0, -3.0, 3.0, 6.0] {
-        p.line_segment(
-            [
-                pos2(cap.min.x + 3.0, cap.center().y + dy),
-                pos2(cap.max.x - 3.0, cap.center().y + dy),
-            ],
-            Stroke::new(1.0_f32, Color32::from_rgb(40, 40, 40)),
-        );
-    }
     (resp, committed)
 }
 
@@ -313,11 +312,6 @@ pub fn name_plate(p: &egui::Painter, r: Rect, name: &str, selected: bool) {
         },
         Stroke::new(1.0_f32, Color32::BLACK),
     );
-    p.with_clip_rect(r).text(
-        r.center(),
-        Align2::CENTER_CENTER,
-        name,
-        bold(11.5),
-        t.text_dark,
-    );
+    p.with_clip_rect(r)
+        .text(r.center(), Align2::CENTER_CENTER, name, bold(11.5), t.text);
 }

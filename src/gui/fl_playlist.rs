@@ -16,6 +16,16 @@ const LANE_H: f32 = 28.0;
 const RULER_H: f32 = 16.0;
 const EDGE_PX: f32 = 7.0;
 
+/// Playlist copies are stored as "pl:<bar>:<name>"; people only see the name.
+pub fn friendly_name(name: &str) -> &str {
+    if let Some(rest) = name.strip_prefix(crate::tools_fl::PL) {
+        if let Some((_, n)) = rest.split_once(':') {
+            return n;
+        }
+    }
+    name
+}
+
 /// A pattern's clip colour, stable per name (FL tints each pattern).
 pub fn pattern_color(name: &str) -> Color32 {
     let h = name
@@ -37,15 +47,20 @@ pub fn snap_drag(dx: f32, dy: f32, bar_px: f32) -> (i64, i64) {
 /// The calls that paint `pattern` at (bar, lane): the section arrangement is
 /// converted to playlist clips first when the playlist is still empty.
 pub fn paint_calls(p: &Project, pattern: &str, bar: u32, lane: u32) -> Vec<(&'static str, Value)> {
-    let mut v = Vec::new();
+    let place = json!({"pattern": pattern, "start_bar": bar, "lane": lane});
     if p.playlist.is_empty() && !p.arrangement.is_empty() {
-        v.push(("arrangement_to_playlist", json!({})));
+        // The implicit conversion belongs to this same paint gesture. A
+        // failed placement must roll it back; Undo must undo both together.
+        vec![(
+            "batch",
+            json!({"calls": [
+                {"tool": "arrangement_to_playlist", "args": {}},
+                {"tool": "place_pattern", "args": place}
+            ]}),
+        )]
+    } else {
+        vec![("place_pattern", place)]
     }
-    v.push((
-        "place_pattern",
-        json!({"pattern": pattern, "start_bar": bar, "lane": lane}),
-    ));
-    v
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -233,7 +248,28 @@ impl Studio {
             self.toast = Some((t, 0.0, false));
         }
         for (tool, args) in actions {
+            // "Make unique" appends a new pattern; edit that copy next, so
+            // the piano roll and step grid change what the block now plays.
+            let unique =
+                (args.get("action").and_then(|a| a.as_str()) == Some("make_unique")).then(|| {
+                    args.get("id")
+                        .and_then(|i| i.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                });
             self.call(tool, args);
+            if let Some(id) = unique {
+                let e = self.engine.lock().unwrap();
+                let now = &e.project;
+                if let Some(pi) = now
+                    .playlist
+                    .iter()
+                    .find(|c| c.id == id)
+                    .and_then(|c| now.pattern_index(&c.pattern).ok())
+                {
+                    self.pattern = pi;
+                }
+            }
         }
     }
 }
@@ -263,7 +299,7 @@ pub fn playlist_grid(
         .map(|c| c.start_bar + c.bars.max(1))
         .max()
         .unwrap_or(0);
-    let total_bars = (end_bar + 8).max(32);
+    let total_bars = (end_bar + 8).max(16);
     let h = RULER_H + LANE_H * visible as f32 + 2.0;
     let (full, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
     let grid = Rect::from_min_max(
@@ -321,12 +357,12 @@ pub fn playlist_grid(
         pos2(full.min.x, grid.min.y),
         pos2(grid.min.x, grid.max.y),
     ));
-    pt.rect_filled(full, 4.0, Color32::from_rgb(30, 32, 36));
+    pt.rect_filled(full, 4.0, super::theme::Tokens::DARK.playlist_bg);
     // ruler + bar grid (only the bars in view)
     pt.rect_filled(
         Rect::from_min_max(pos2(full.min.x, full.min.y), pos2(full.max.x, grid.min.y)),
         0.0,
-        Color32::from_rgb(38, 40, 45),
+        super::theme::Tokens::DARK.ruler_bg,
     );
     pt.text(
         pos2(full.min.x + 8.0, full.min.y + RULER_H * 0.5),
@@ -352,9 +388,9 @@ pub fn playlist_grid(
             Stroke::new(
                 1.0_f32,
                 if major {
-                    Color32::from_rgb(58, 61, 68)
+                    super::theme::Tokens::DARK.bar_line
                 } else {
-                    Color32::from_rgb(43, 45, 50)
+                    super::theme::Tokens::DARK.grid_line
                 },
             ),
         );
@@ -378,9 +414,9 @@ pub fn playlist_grid(
             head,
             0.0,
             if l % 2 == 0 {
-                Color32::from_rgb(40, 42, 47)
+                super::theme::Tokens::DARK.playlist_alt
             } else {
-                Color32::from_rgb(36, 38, 43)
+                super::theme::Tokens::DARK.playlist_bg
             },
         );
         heads.text(
@@ -392,11 +428,11 @@ pub fn playlist_grid(
         );
         gp.line_segment(
             [pos2(grid.min.x, y + LANE_H), pos2(grid.max.x, y + LANE_H)],
-            Stroke::new(1.0_f32, Color32::from_rgb(24, 25, 28)),
+            Stroke::new(1.0_f32, super::theme::Tokens::DARK.border),
         );
         heads.line_segment(
             [pos2(full.min.x, y + LANE_H), pos2(grid.min.x, y + LANE_H)],
-            Stroke::new(1.0_f32, Color32::from_rgb(24, 25, 28)),
+            Stroke::new(1.0_f32, super::theme::Tokens::DARK.border),
         );
         // paint: a click on an empty cell drops the selected pattern
         let lane_r =
@@ -594,6 +630,20 @@ pub fn playlist_grid(
             Stroke::new(1.5_f32, Color32::from_rgb(120, 220, 140)),
         );
     }
+    let overlaps = p.playlist.iter().enumerate().any(|(i, a)| {
+        p.playlist[i + 1..].iter().any(|b| {
+            a.start_bar < b.start_bar + b.bars.max(1) && b.start_bar < a.start_bar + a.bars.max(1)
+        })
+    });
+    if overlaps {
+        pt.text(
+            grid.left_bottom() + vec2(6.0, -4.0),
+            Align2::LEFT_BOTTOM,
+            "Blocks that share the same bars play together, on any track.",
+            FontId::proportional(11.0),
+            DIM,
+        );
+    }
     if p.playlist.is_empty() {
         pt.text(
             grid.center(),
@@ -637,9 +687,11 @@ mod tests {
             &json!({"sections": [{"pattern": first, "repeats": 2}]}),
         )
         .unwrap();
+        let before = serde_json::to_value(&e.project).unwrap();
         let calls = paint_calls(&e.project, &first, 6, 1);
         if !e.project.arrangement.is_empty() {
-            assert_eq!(calls[0].0, "arrangement_to_playlist");
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].0, "batch");
         }
         for (t, a) in calls {
             e.call(t, &a).unwrap();
@@ -656,6 +708,8 @@ mod tests {
                 .map(|c| (c.start_bar, c.lane))
                 .collect::<Vec<_>>()
         );
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
     }
 
     #[test]
@@ -1027,12 +1081,13 @@ mod tests {
                 assert!(tr.len() == 1 && tr[0]["end_bar"] == 5, "{tag}: {c:?}");
                 // paint: an empty cell in view maps through scroll and zoom
                 let (c, _) = drive_view(&p, ppp, v, &|at| {
-                    let a = at(8.5, 4.0);
+                    // bar 7.5 is in view for every view above (the song shows 16 bars at least, so the most zoomed one shows bars 2.5 to 7.8)
+                    let a = at(7.5, 4.0);
                     drag(a, a)
                 });
                 assert!(
                     c.iter().any(|(t, a)| *t == "place_pattern"
-                        && a["start_bar"] == 8
+                        && a["start_bar"] == 7
                         && a["lane"] == 4),
                     "{tag}: {c:?}"
                 );

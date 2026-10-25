@@ -16,6 +16,9 @@ pub(super) struct ExportState {
     ceiling: f32,
     pattern_only: bool,
     count_in: u32,
+    marked_range: bool,
+    start_marker: String,
+    end_marker: String,
     job: Option<Receiver<Result<Value, String>>>,
     result: String,
 }
@@ -33,6 +36,9 @@ impl Default for ExportState {
             ceiling: -1.0,
             pattern_only: false,
             count_in: 1,
+            marked_range: false,
+            start_marker: String::new(),
+            end_marker: String::new(),
             job: None,
             result: String::new(),
         }
@@ -70,6 +76,38 @@ impl ExportState {
         (tool, args)
     }
 }
+/// Resolve a saved-marker excerpt against the export snapshot, before reserving
+/// any file. Seconds share the renderer's tempo curve, including ramps.
+fn apply_marker_range(
+    p: &crate::project::Project,
+    start: &str,
+    end: &str,
+    args: &mut Value,
+) -> Result<(), String> {
+    let find = |name: &str| {
+        p.markers
+            .iter()
+            .find(|m| m.name == name)
+            .ok_or_else(|| format!("Choose a saved marker: {name}"))
+    };
+    let first = find(start)?;
+    let last = find(end)?;
+    if !first.beat.is_finite()
+        || !last.beat.is_finite()
+        || first.beat < 0.0
+        || last.beat <= first.beat
+    {
+        return Err("End marker must be after the start marker".into());
+    }
+    if last.beat > p.song_beats() {
+        return Err("End marker is past the end of the song".into());
+    }
+    let curve = crate::tempo_curve::TempoCurve::new(p);
+    args["start_s"] = json!(curve.secs_at_beat(first.beat as f64));
+    args["end_s"] = json!(curve.secs_at_beat(last.beat as f64));
+    Ok(())
+}
+
 /// Reserve a new target atomically. Neither repeated exports nor existing stems
 /// are replaced: a numeric suffix is added when the requested name is taken.
 fn reserve_target(e: &crate::engine::Engine, kind: usize, args: &mut Value) -> std::io::Result<()> {
@@ -88,6 +126,13 @@ fn reserve_target(e: &crate::engine::Engine, kind: usize, args: &mut Value) -> s
         format!("renders/{name}.{extension}")
     };
     let base = e.resolve(args[key].as_str().unwrap_or(&default));
+    // A name typed without a file type gets the chosen format's extension,
+    // so the export opens in any player.
+    let base = if kind != 1 && base.extension().is_none() {
+        base.with_extension(extension)
+    } else {
+        base
+    };
     if let Some(parent) = base.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -135,17 +180,70 @@ fn reserve_target(e: &crate::engine::Engine, kind: usize, args: &mut Value) -> s
     ))
 }
 
+fn file_size(bytes: u64) -> String {
+    if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// A short plain summary of a finished export: where it went, what it is, and
+/// the measured loudness. Measurements describe level only, not quality.
+fn export_summary(v: &Value) -> String {
+    let mut t = match v["path"].as_str().or(v["dir"].as_str()) {
+        Some(p) => format!("Exported to {p}\n"),
+        None => "Export finished\n".to_string(),
+    };
+    let mut facts = Vec::new();
+    if let Some(n) = v["stems"].as_array().map(|a| a.len()) {
+        facts.push(format!("{n} files"));
+    }
+    if let Some(f) = v["format"].as_str() {
+        facts.push(f.to_uppercase());
+    }
+    if let Some(b) = v["bits"].as_u64() {
+        facts.push(format!("{b}-bit"));
+    }
+    if let Some(r) = v["sample_rate"].as_u64() {
+        facts.push(format!("{r} Hz"));
+    }
+    if let Some(b) = v["bytes"].as_u64() {
+        facts.push(file_size(b));
+    }
+    if let Some(s) = v["seconds"].as_f64() {
+        facts.push(format!("{s:.1} s"));
+    }
+    if !facts.is_empty() {
+        t.push_str(&facts.join(", "));
+        t.push('\n');
+    }
+    if let (Some(l), Some(tp)) = (
+        v["after"]["integrated_lufs"].as_f64(),
+        v["after"]["true_peak_dbtp"].as_f64(),
+    ) {
+        t.push_str(&format!("Loudness {l:.1} LUFS, true peak {tp:.1} dBTP\n"));
+    }
+    if let Some(window) = v["marker_range"].as_str() {
+        t.push_str(&format!("Markers: {window}\n"));
+    }
+    if let Some(w) = v["warnings"].as_array() {
+        for w in w.iter().filter_map(|w| w.as_str()) {
+            t.push_str(&format!("Warning: {w}\n"));
+        }
+    }
+    t
+}
+
 impl Studio {
     pub(super) fn export_window(&mut self, ctx: &egui::Context) {
         if let Some(rx) = &self.export.job {
             match rx.try_recv() {
                 Ok(r) => {
                     self.export.result = match r {
-                        Ok(v) => {
-                            let mut text = String::new();
-                            super::views::plain_report(&v, 0, &mut text);
-                            text
-                        }
+                        Ok(v) => export_summary(&v),
                         Err(e) => format!("Export failed: {e}"),
                     };
                     self.export.job = None;
@@ -198,6 +296,22 @@ impl Studio {
                             ui.add(egui::DragValue::new(&mut self.export.ceiling).range(-12.0..=0.0).speed(0.1).suffix(" dBTP"));
                         });
                         ui.label("Encoded audio is decoded and checked for loudness and true peak.");
+                        ui.checkbox(&mut self.export.marked_range,"Between saved markers");
+                        if self.export.marked_range {
+                            let markers={self.engine.lock().unwrap().project.markers.clone()};
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("Start");
+                                egui::ComboBox::from_id_salt("export_start_marker").selected_text(if self.export.start_marker.is_empty() {"Choose marker"} else {&self.export.start_marker}).show_ui(ui,|ui| {
+                                    for m in &markers {ui.selectable_value(&mut self.export.start_marker,m.name.clone(),&m.name);}
+                                });
+                                ui.label("End");
+                                egui::ComboBox::from_id_salt("export_end_marker").selected_text(if self.export.end_marker.is_empty() {"Choose marker"} else {&self.export.end_marker}).show_ui(ui,|ui| {
+                                    for m in &markers {ui.selectable_value(&mut self.export.end_marker,m.name.clone(),&m.name);}
+                                });
+                            });
+                            ui.label("Exports only this interval, with tempo changes. No extra ring-out after the end marker.");
+                        }
+
                     } else {
                         ui.label("All tracks and buses, aligned at zero, before the master chain. One common trim keeps their relative levels.");
                     }
@@ -229,6 +343,21 @@ impl Studio {
                 .unwrap_or("");
             let (tool, mut args) = self.export.request(pattern);
             let kind = self.export.kind;
+            let marker_range = if kind == 0 && self.export.marked_range {
+                Some((
+                    self.export.start_marker.clone(),
+                    self.export.end_marker.clone(),
+                ))
+            } else {
+                None
+            };
+            if let Some((start, end)) = &marker_range {
+                if let Err(err) = apply_marker_range(&project, start, end, &mut args) {
+                    self.export.result = format!("Export failed: {err}");
+                    return;
+                }
+            }
+
             let (tx, rx) = std::sync::mpsc::channel();
             let ctx = ctx.clone();
             self.export.result.clear();
@@ -243,6 +372,12 @@ impl Studio {
                         own.call_from(tool, &args, "you")
                             .map_err(|e| format!("{e:#}"))
                     });
+                let r = r.map(|mut v| {
+                    if let Some((start, end)) = marker_range {
+                        v["marker_range"] = json!(format!("{start} to {end}"));
+                    }
+                    v
+                });
                 let _ = tx.send(r);
                 ctx.request_repaint();
             });
@@ -256,6 +391,23 @@ impl Studio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn export_summary_is_plain_and_keeps_path_and_levels() {
+        let t = export_summary(
+            &json!({"path":"/o/a.wav","format":"wav","bits":24,"sample_rate":44100,
+            "bytes":2097152,"seconds":3.5,"after":{"integrated_lufs":-10.64,"true_peak_dbtp":-1.43},
+            "warnings":["clipped"]}),
+        );
+        assert!(t.starts_with("Exported to /o/a.wav\n"));
+        assert!(t.contains("WAV, 24-bit, 44100 Hz, 2.0 MB, 3.5 s"));
+        assert!(t.contains("Loudness -10.6 LUFS, true peak -1.4 dBTP"));
+        assert!(t.contains("Warning: clipped"));
+        assert!(!t.contains("integrated lufs"));
+        assert!(export_summary(&json!({"path":"/o/a.mid","bytes":7618})).contains("7.4 KB"));
+        assert!(export_summary(&json!({"path":"/o/a.mid","bytes":300})).contains("300 bytes"));
+        assert!(export_summary(&json!({"dir":"/o/s","stems":[{},{}]})).contains("2 files"));
+        assert!(export_summary(&json!({"dir":"/o/stems"})).starts_with("Exported to /o/stems"));
+    }
     #[test]
     fn export_requests_match_output_kind_and_scope() {
         let mut s = ExportState {
@@ -365,6 +517,147 @@ mod collision_tests {
                 b"keep"
             );
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod extension_tests {
+    use super::*;
+
+    fn reserved(e: &crate::engine::Engine, kind: usize, args: Value) -> std::path::PathBuf {
+        let key = if kind == 1 { "dir" } else { "path" };
+        let mut a = args;
+        reserve_target(e, kind, &mut a).unwrap();
+        std::path::PathBuf::from(a[key].as_str().unwrap())
+    }
+
+    #[test]
+    fn typed_names_without_a_type_get_the_selected_formats_extension() {
+        let dir = std::env::temp_dir().join(format!("gui_export_ext_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let e = crate::engine::Engine::new(dir.clone());
+        let ext = |p: &std::path::Path| p.extension().map(|x| x.to_string_lossy().to_string());
+
+        // audio: the chosen format decides the extension
+        let wav = reserved(&e, 0, json!({"path": dir.join("a_song"), "format": "wav"}));
+        assert_eq!(ext(&wav).as_deref(), Some("wav"));
+        let flac = reserved(&e, 0, json!({"path": dir.join("b_song"), "format": "flac"}));
+        assert_eq!(ext(&flac).as_deref(), Some("flac"));
+        // MIDI and click track ignore the audio format
+        let mid = reserved(&e, 2, json!({"path": dir.join("c_song"), "format": "flac"}));
+        assert_eq!(ext(&mid).as_deref(), Some("mid"));
+        let click = reserved(&e, 3, json!({"path": dir.join("d_song"), "format": "flac"}));
+        assert_eq!(ext(&click).as_deref(), Some("wav"));
+        // a name that already has a type keeps it
+        let kept = reserved(
+            &e,
+            0,
+            json!({"path": dir.join("e_song.mp3"), "format": "wav"}),
+        );
+        assert_eq!(ext(&kept).as_deref(), Some("mp3"));
+        // a stems folder is a folder: no extension is added
+        let folder = reserved(&e, 1, json!({"dir": dir.join("f_stems")}));
+        assert_eq!(ext(&folder), None);
+        // a taken name is never replaced: the typed name still gets a number
+        std::fs::write(dir.join("g_song.wav"), b"keep").unwrap();
+        let next = reserved(&e, 0, json!({"path": dir.join("g_song"), "format": "wav"}));
+        assert_ne!(next, dir.join("g_song.wav"));
+        assert_eq!(ext(&next).as_deref(), Some("wav"));
+        assert_eq!(std::fs::read(dir.join("g_song.wav")).unwrap(), b"keep");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod marker_export_tests {
+    use super::*;
+    #[test]
+    fn marker_ranges_use_tempo_curve_and_reject_bad_boundaries() {
+        let mut p = crate::project::Project::default();
+        p.bpm = 120.0;
+        p.tempo_points = vec![crate::project::TempoPoint {
+            beat: 4.0,
+            bpm: 60.0,
+            ramp: false,
+        }];
+        p.markers = vec![
+            crate::project::Marker {
+                name: "in".into(),
+                beat: 2.0,
+                time_signature: None,
+            },
+            crate::project::Marker {
+                name: "out".into(),
+                beat: 5.0,
+                time_signature: None,
+            },
+        ];
+        let mut a = json!({"format":"wav"});
+        apply_marker_range(&p, "in", "out", &mut a).unwrap();
+        assert_eq!(a["start_s"], 1.0);
+        assert_eq!(a["end_s"], 3.0);
+        assert_eq!(a["format"], "wav");
+        for (start, end) in [("out", "in"), ("in", "in"), ("missing", "out")] {
+            let mut a = json!({});
+            assert!(apply_marker_range(&p, start, end, &mut a).is_err());
+            assert_eq!(a, json!({}));
+        }
+        p.markers[1].beat = 100000.0;
+        assert!(apply_marker_range(&p, "in", "out", &mut json!({})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod marker_output_tests {
+    use super::*;
+    #[test]
+    fn saved_renamed_markers_and_ramps_export_real_unchanged_snapshot() {
+        let dir = std::env::temp_dir().join(format!("marker-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = crate::engine::Engine::new(dir.clone());
+        e.call("add_track", &json!({"name":"keys","preset":"epiano"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track":"keys","notes":[{"start":8,"len":4,"pitch":60,"vel":0.8}]}),
+        )
+        .unwrap();
+        e.call("add_tempo_point", &json!({"beat":4,"bpm":60,"ramp":false}))
+            .unwrap();
+        e.call("add_tempo_point", &json!({"beat":8,"bpm":100,"ramp":true}))
+            .unwrap();
+        for (name, beat) in [("In", 2.0), ("Out", 6.0)] {
+            e.call("add_marker", &json!({"name":name,"beat":beat}))
+                .unwrap();
+        }
+        e.call("rename_marker", &json!({"name":"In","new_name":"Intro"}))
+            .unwrap();
+        e.call("save_project", &json!({"path":"roundtrip.json"}))
+            .unwrap();
+        e.call("load_project", &json!({"path":"roundtrip.json"}))
+            .unwrap();
+        let before = serde_json::to_value(&e.project).unwrap();
+        let curve = crate::tempo_curve::TempoCurve::new(&e.project);
+        let expected = curve.secs_at_beat(6.) - curve.secs_at_beat(2.);
+        for format in ["wav", "flac"] {
+            let mut a = json!({"path":format!("excerpt.{format}"),"format":format,"bits":24,"sample_rate":48000,"limit":true});
+            apply_marker_range(&e.project, "Intro", "Out", &mut a).unwrap();
+            reserve_target(&e, 0, &mut a).unwrap();
+            let v = e.call("export_audio", &a).unwrap();
+            assert!((v["seconds"].as_f64().unwrap() - expected).abs() < 0.0051);
+            let decoded = crate::samples::decode_stereo_native(std::path::Path::new(
+                a["path"].as_str().unwrap(),
+            ))
+            .unwrap();
+            assert_eq!(decoded.2, 48000);
+            assert!((decoded.0.len() as f64 / 48000. - expected).abs() < 0.001);
+            assert!(decoded.0.iter().any(|s| s.abs() > 0.001));
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        }
+        let mut a = json!({});
+        assert!(apply_marker_range(&e.project, "In", "Out", &mut a).is_err());
+        assert_eq!(a, json!({}));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

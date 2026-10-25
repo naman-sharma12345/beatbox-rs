@@ -579,7 +579,7 @@ impl Instrument {
             Instrument::Granular(_) => 0.6,
             Instrument::Ensemble(p) => p.stereo_spread,
             Instrument::Piano(_) => 0.35,
-            Instrument::Multisample(_) => 0.0,
+
             // the font's own stereo: left = set A, right = set B (see render)
             Instrument::SoundFont(_) => 1.0,
             Instrument::Layer(l) => l
@@ -587,6 +587,9 @@ impl Instrument {
                 .iter()
                 .map(|x| x.instrument.stereo_spread())
                 .fold(0.0, f32::max),
+            Instrument::Multisample(p) if p.key_pan.values().any(|x| x.is_finite() && *x != 0.) => {
+                1.0
+            }
             _ => 0.0,
         }
     }

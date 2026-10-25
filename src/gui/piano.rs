@@ -14,7 +14,7 @@
 use super::theme::Tokens;
 use super::widgets::*;
 use super::Studio;
-use crate::note_edit::{apply_shift, keys_of, notes_json, reselect, snap_to, NoteKey, NoteShift};
+use crate::note_edit::{apply_shift, snap_to, NoteShift};
 use crate::project::{Note, Project};
 use crate::theory;
 use crate::timebase::{tick_to_step, NoteValue};
@@ -23,9 +23,430 @@ use eframe::egui::{
 };
 use serde_json::{json, Value};
 
-const KEY_W: f32 = 40.0;
+fn matching_pitch_selection(notes: &[Note], selected: &[usize]) -> Vec<usize> {
+    let pitches: std::collections::HashSet<u8> = selected
+        .iter()
+        .filter_map(|i| notes.get(*i))
+        .map(|n| n.pitch)
+        .collect();
+    notes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| pitches.contains(&n.pitch).then_some(i))
+        .collect()
+}
+
+fn matching_onset_selection(notes: &[Note], selected: &[usize]) -> Vec<usize> {
+    let mut starts: Vec<f32> = selected
+        .iter()
+        .filter_map(|i| notes.get(*i))
+        .map(|n| n.start)
+        .filter(|t| t.is_finite())
+        .collect();
+    starts.sort_by(f32::total_cmp);
+    starts.dedup();
+    notes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| {
+            if !n.start.is_finite() {
+                return None;
+            }
+            let at = starts.partition_point(|t| *t < n.start);
+            let hit = starts
+                .get(at)
+                .is_some_and(|t| (n.start - t).abs() <= 0.0001)
+                || at
+                    .checked_sub(1)
+                    .and_then(|j| starts.get(j))
+                    .is_some_and(|t| (n.start - t).abs() <= 0.0001);
+            hit.then_some(i)
+        })
+        .collect()
+}
+
+fn matching_length_selection(notes: &[Note], selected: &[usize]) -> Vec<usize> {
+    let mut lengths: Vec<f32> = selected
+        .iter()
+        .filter_map(|i| notes.get(*i))
+        .map(|n| n.len)
+        .filter(|len| len.is_finite() && *len > 0.)
+        .collect();
+    lengths.sort_by(f32::total_cmp);
+    lengths.dedup();
+    notes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| {
+            if !n.len.is_finite() || n.len <= 0. {
+                return None;
+            }
+            let at = lengths.partition_point(|len| *len < n.len);
+            let matches = lengths
+                .get(at)
+                .is_some_and(|len| (n.len - len).abs() <= 0.0001)
+                || at
+                    .checked_sub(1)
+                    .and_then(|j| lengths.get(j))
+                    .is_some_and(|len| (n.len - len).abs() <= 0.0001);
+            matches.then_some(i)
+        })
+        .collect()
+}
+
+fn inverted_note_selection(count: usize, selected: &[usize]) -> Vec<usize> {
+    let selected: std::collections::HashSet<usize> = selected.iter().copied().collect();
+    (0..count).filter(|i| !selected.contains(i)).collect()
+}
+
+fn overlapping_pitch_selection(notes: &[Note]) -> Vec<usize> {
+    let mut by_pitch = std::collections::BTreeMap::<u8, Vec<usize>>::new();
+    for (i, n) in notes.iter().enumerate() {
+        if n.start.is_finite() && n.len.is_finite() && n.len > 0.0 && (n.start + n.len).is_finite()
+        {
+            by_pitch.entry(n.pitch).or_default().push(i);
+        }
+    }
+    let mut found = std::collections::BTreeSet::new();
+    for indices in by_pitch.values_mut() {
+        indices.sort_by(|a, b| notes[*a].start.total_cmp(&notes[*b].start));
+        let mut furthest: Option<usize> = None;
+        for &i in indices.iter() {
+            if let Some(j) = furthest {
+                if notes[i].start < notes[j].start + notes[j].len {
+                    found.insert(i);
+                    found.insert(j);
+                }
+                if notes[i].start + notes[i].len > notes[j].start + notes[j].len {
+                    furthest = Some(i);
+                }
+            } else {
+                furthest = Some(i);
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
+fn duplicate_copy_selection(notes: &[Note]) -> Vec<usize> {
+    let mut seen = std::collections::HashSet::new();
+    let bits = |v: f32| if v == 0.0 { 0 } else { v.to_bits() };
+    notes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| {
+            if [n.start, n.len, n.vel, n.prob, n.offset]
+                .iter()
+                .any(|v| v.is_nan())
+            {
+                return None;
+            }
+            (!seen.insert((
+                bits(n.start),
+                bits(n.len),
+                n.pitch,
+                bits(n.vel),
+                bits(n.prob),
+                bits(n.offset),
+                n.slide_to,
+            )))
+            .then_some(i)
+        })
+        .collect()
+}
+
+fn beyond_pattern_selection(notes: &[Note], steps: f32) -> Vec<usize> {
+    notes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| {
+            (n.start.is_finite()
+                && n.len.is_finite()
+                && n.len > 0.0
+                && (n.start >= steps || n.start + n.len > steps))
+                .then_some(i)
+        })
+        .collect()
+}
+
+fn silent_note_selection(notes: &[Note]) -> Vec<usize> {
+    notes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| (n.vel == 0.0 || n.prob == 0.0).then_some(i))
+        .collect()
+}
+
+fn slide_note_selection(notes: &[Note]) -> Vec<usize> {
+    notes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| n.slide_to.is_some().then_some(i))
+        .collect()
+}
+
+fn expression_note_selection(notes: &[Note], timing: bool) -> Vec<usize> {
+    notes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| {
+            let matches = if timing {
+                n.offset.is_finite() && n.offset != 0.0
+            } else {
+                n.prob.is_finite() && (0.0..1.0).contains(&n.prob)
+            };
+            matches.then_some(i)
+        })
+        .collect()
+}
+
+fn outside_scale_selection(notes: &[Note], root: &str, scale: &str) -> Option<Vec<usize>> {
+    let root = theory::pitch_class(root).ok()?;
+    let intervals = theory::scale_intervals(scale).ok()?;
+    Some(
+        notes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                (!intervals.contains(&((n.pitch % 12 + 12 - root) % 12))).then_some(i)
+            })
+            .collect(),
+    )
+}
+
+/// Resolve shared-onset stems to a selected chord voice before storage-order ties.
+fn nearest_velocity_note(notes: &[Note], selected: &[usize], at: f32, cell: f32) -> Option<usize> {
+    let distance = |n: &Note| ((n.start - at) * cell).abs();
+    let (nearest, best) = notes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (i, distance(n)))
+        .filter(|(_, d)| d.is_finite() && *d < 8.0)
+        .min_by(|(a, ad), (b, bd)| ad.total_cmp(bd).then_with(|| a.cmp(b)))?;
+    // Selection order and duplicates must not change storage-order tie breaking.
+    selected
+        .iter()
+        .copied()
+        .filter(|i| {
+            notes
+                .get(*i)
+                .is_some_and(|n| distance(n).total_cmp(&best).is_eq())
+        })
+        .min()
+        .or(Some(nearest))
+}
+
+fn velocity_readout_label(pitch: u8, velocity: f32) -> String {
+    format!(
+        "{}: {}%",
+        theory::note_name(pitch),
+        (velocity * 100.0).round()
+    )
+}
+
+fn velocity_label_origin(lane: Rect, desired: Pos2, size: egui::Vec2) -> Pos2 {
+    let left = lane.left() + 2.0;
+    let top = lane.top() + 2.0;
+    pos2(
+        desired
+            .x
+            .clamp(left, (lane.right() - 2.0 - size.x).max(left)),
+        desired
+            .y
+            .clamp(top, (lane.bottom() - 2.0 - size.y).max(top)),
+    )
+}
+
+fn velocity_lane_value(bottom: f32, height: f32, pointer_y: f32) -> Option<f32> {
+    if !bottom.is_finite() || !height.is_finite() || height <= 4.0 || !pointer_y.is_finite() {
+        return None;
+    }
+    let value = (bottom - 2.0 - pointer_y) / (height - 4.0);
+    value.is_finite().then(|| value.clamp(0.0, 1.0))
+}
+
+fn unique_note_index(notes: &[Note], id: &str) -> Option<usize> {
+    let mut matches = notes.iter().enumerate().filter(|(_, n)| n.id == id);
+    let first = matches.next()?.0;
+    (matches.next().is_none() && !id.is_empty()).then_some(first)
+}
+
+fn note_identity_matches(notes: &[Note], ids: &[String]) -> bool {
+    notes.len() == ids.len() && notes.iter().zip(ids).all(|(n, id)| n.id == *id)
+}
+
+fn remap_note_selection(notes: &[Note], previous_ids: &[String], selected: &[usize]) -> Vec<usize> {
+    let ids: std::collections::HashSet<&str> = selected
+        .iter()
+        .filter_map(|i| previous_ids.get(*i))
+        .map(String::as_str)
+        .collect();
+    notes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| ids.contains(n.id.as_str()).then_some(i))
+        .collect()
+}
+
+fn selected_index_mask(count: usize, selected: &[usize]) -> Vec<bool> {
+    let mut mask = vec![false; count];
+    for &i in selected {
+        if let Some(value) = mask.get_mut(i) {
+            *value = true;
+        }
+    }
+    mask
+}
+
+fn selection_from_ids(notes: &[Note], ids: &[String]) -> Vec<usize> {
+    let ids: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+    notes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| ids.contains(n.id.as_str()).then_some(i))
+        .collect()
+}
+
+fn note_expression_hint(note: &Note) -> String {
+    let mut lines = Vec::new();
+    if note.prob.is_finite() {
+        lines.push(format!("Trigger chance: {:.1}%", note.prob * 100.0));
+    }
+    if note.offset.is_finite() {
+        lines.push(format!("Timing offset: {:+.3} steps", note.offset));
+    }
+    if let Some(pitch) = note.slide_to {
+        lines.push(format!(
+            "Slide to: {} (MIDI {})",
+            theory::note_name(pitch),
+            pitch
+        ));
+    }
+    lines.join("\n")
+}
+
+fn selection_summary(notes: &[Note], selected: &[usize]) -> Option<String> {
+    let mut chances: Option<(f32, f32)> = None;
+    let mut offsets: Option<(f32, f32)> = None;
+    let mut span: Option<(f32, f32)> = None;
+    let mut pitches: Option<(u8, u8)> = None;
+    let mut lengths: Option<(f32, f32)> = None;
+    let mut velocities: Option<(f32, f32)> = None;
+    for n in selected.iter().filter_map(|i| notes.get(*i)) {
+        if n.prob.is_finite() {
+            chances = Some(chances.map_or((n.prob, n.prob), |(lo, hi)| {
+                (lo.min(n.prob), hi.max(n.prob))
+            }));
+        }
+        if n.offset.is_finite() {
+            offsets = Some(offsets.map_or((n.offset, n.offset), |(lo, hi)| {
+                (lo.min(n.offset), hi.max(n.offset))
+            }));
+        }
+        let end = n.start + n.len;
+        if n.start.is_finite() && n.len.is_finite() && n.len >= 0. && end.is_finite() {
+            span = Some(span.map_or((n.start, end), |(lo, hi)| (lo.min(n.start), hi.max(end))));
+        }
+        pitches = Some(pitches.map_or((n.pitch, n.pitch), |(lo, hi)| {
+            (lo.min(n.pitch), hi.max(n.pitch))
+        }));
+        if n.len.is_finite() {
+            lengths =
+                Some(lengths.map_or((n.len, n.len), |(lo, hi)| (lo.min(n.len), hi.max(n.len))));
+        }
+        if n.vel.is_finite() {
+            velocities =
+                Some(velocities.map_or((n.vel, n.vel), |(lo, hi)| (lo.min(n.vel), hi.max(n.vel))));
+        }
+    }
+    let (lo, hi) = pitches?;
+    let mut lines = vec![format!(
+        "Selected pitch: {} to {}",
+        theory::note_name(lo),
+        theory::note_name(hi)
+    )];
+    if let Some((lo, hi)) = span {
+        lines.push(format!("Nominal span: {lo:.3} to {hi:.3} steps"));
+    }
+    if let Some((lo, hi)) = lengths {
+        lines.push(format!("Selected lengths: {lo:.3} to {hi:.3} steps"));
+    }
+    if let Some((lo, hi)) = velocities {
+        lines.push(format!(
+            "Selected velocity: {:.1}% to {:.1}%",
+            lo * 100.,
+            hi * 100.
+        ));
+    }
+    if let Some((lo, hi)) = chances {
+        lines.push(format!(
+            "Trigger chance: {:.1}% to {:.1}%",
+            lo * 100.,
+            hi * 100.
+        ));
+    }
+    if let Some((lo, hi)) = offsets {
+        lines.push(format!("Timing offsets: {lo:+.3} to {hi:+.3} steps"));
+    }
+    Some(lines.join("\n"))
+}
+
+fn selection_shortcut(events: &[egui::Event]) -> Option<bool> {
+    events.iter().rev().find_map(|event| match event {
+        egui::Event::Key {
+            key: egui::Key::A,
+            pressed: true,
+            modifiers,
+            ..
+        } if modifiers.command && !modifiers.alt => Some(modifiers.shift),
+        _ => None,
+    })
+}
+
+fn note_arrow_shortcut(events: &[egui::Event], grid: f32, bar: f32) -> (i32, f32) {
+    let mut semi = 0;
+    let mut steps = 0.;
+    for event in events {
+        if let egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } = event
+        {
+            if modifiers.command || modifiers.ctrl || modifiers.alt || modifiers.mac_cmd {
+                continue;
+            }
+            match key {
+                egui::Key::ArrowUp => semi += if modifiers.shift { 12 } else { 1 },
+                egui::Key::ArrowDown => semi -= if modifiers.shift { 12 } else { 1 },
+                egui::Key::ArrowLeft => {
+                    steps += horizontal_nudge(true, false, modifiers.shift, grid, bar)
+                }
+                egui::Key::ArrowRight => {
+                    steps += horizontal_nudge(false, true, modifiers.shift, grid, bar)
+                }
+                _ => {}
+            }
+        }
+    }
+    (semi, steps)
+}
+
+const KEY_W: f32 = 52.0;
 const HEADER_H: f32 = 22.0;
+const PIANO_RULER_H: f32 = 16.0;
+
+fn ruler_label_stride(bar_width: f32) -> u32 {
+    (32.0 / bar_width.max(0.01)).ceil().max(1.0) as u32
+}
+fn horizontal_nudge(left: bool, right: bool, shift: bool, grid: f32, bar_steps: f32) -> f32 {
+    (f32::from(u8::from(right)) - f32::from(u8::from(left))) * if shift { bar_steps } else { grid }
+}
 const VEL_H: f32 = 48.0;
+fn velocity_lane_height(panel_height: f32) -> f32 {
+    (panel_height - HEADER_H * 2.0 - PIANO_RULER_H - 48.0).clamp(16.0, VEL_H)
+}
 
 /// Snap choices: label and grid in steps (None = off).
 pub const SNAPS: [(&str, Option<NoteValue>); 5] = [
@@ -45,54 +466,286 @@ pub fn snap_steps(i: usize) -> f32 {
     tick_to_step(v.ticks())
 }
 
+#[derive(Debug, Clone)]
+pub struct EuclideanControls {
+    pub pulses: u32,
+    pub slots: u32,
+    pub rotation: i32,
+    pub replace: bool,
+}
+impl Default for EuclideanControls {
+    fn default() -> Self {
+        Self {
+            pulses: 5,
+            slots: 16,
+            rotation: 0,
+            replace: true,
+        }
+    }
+}
+impl EuclideanControls {
+    fn args(&self) -> Value {
+        let slots = self.slots.clamp(1, 128);
+        json!({"pulses":self.pulses.min(slots),"slots":slots,"rotation":self.rotation,"replace":self.replace})
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EchoControls {
+    pub delay: f32,
+    pub repeats: u32,
+    pub decay: f32,
+    pub transpose: i32,
+}
+impl Default for EchoControls {
+    fn default() -> Self {
+        Self {
+            delay: 2.0,
+            repeats: 3,
+            decay: 0.6,
+            transpose: 0,
+        }
+    }
+}
+impl EchoControls {
+    fn args(&self) -> Value {
+        json!({"delay":self.delay.clamp(0.0625,64.0),"repeats":self.repeats.clamp(1,64),"decay":self.decay.clamp(0.0,1.0),"transpose":self.transpose.clamp(-127,127)})
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StretchControls {
+    pub factor: f32,
+    pub pattern_anchor: bool,
+}
+impl Default for StretchControls {
+    fn default() -> Self {
+        Self {
+            factor: 1.5,
+            pattern_anchor: false,
+        }
+    }
+}
+impl StretchControls {
+    fn args(&self) -> Value {
+        let mut a = json!({"factor":self.factor.clamp(0.0625,16.0)});
+        if self.pattern_anchor {
+            a["anchor"] = json!(0.0);
+        }
+        a
+    }
+    fn preview(&self, notes: &[Note], selected: &[usize], steps: f32) -> Result<usize, String> {
+        let mut copy = notes.to_vec();
+        let mut sel = crate::midi_ops::Selection::default();
+        if !selected.is_empty() {
+            sel.ids = selected
+                .iter()
+                .filter_map(|i| notes.get(*i))
+                .map(|n| n.id.clone())
+                .collect();
+        }
+        crate::midi_ops::stretch_phrase(
+            &mut copy,
+            &sel,
+            self.factor.clamp(0.0625, 16.0),
+            self.pattern_anchor.then_some(0.0),
+            steps,
+        )
+        .map_err(|e| e.to_string())
+    }
+}
+
+fn repeat_capacity(notes: &[Note], selected: &[usize], period: f32, steps: f32) -> (usize, u32) {
+    if !period.is_finite() || period <= 0.0 || !steps.is_finite() || steps < 0.0 {
+        return (0, 0);
+    }
+    let membership = selected_index_mask(notes.len(), selected);
+    let mut count = 0usize;
+    let mut fit = None;
+    for (i, n) in notes.iter().enumerate() {
+        if !selected.is_empty() && !membership[i] {
+            continue;
+        }
+        count += 1;
+        let valid = n.start.is_finite()
+            && n.start >= 0.0
+            && n.len.is_finite()
+            && n.len >= 0.05
+            && (n.start + n.len).is_finite();
+        let copies = if valid {
+            ((steps - n.start - n.len + 1e-4) / period)
+                .floor()
+                .clamp(0.0, 64.0) as u32
+        } else {
+            0
+        };
+        fit = Some(fit.map_or(copies, |previous: u32| previous.min(copies)));
+    }
+    let fit = fit.unwrap_or(0);
+    (count, fit.min((100_000 / count.max(1)).min(64) as u32))
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PianoState {
-    /// Indices into the (sorted) note list of the current track+pattern.
+    pub euclidean: EuclideanControls,
+    pub echo: EchoControls,
+    pub stretch: StretchControls,
+    pub rotation_steps: f32,
+    pub register_range: Option<(u8, u8)>,
+    pub reduce_lowest: bool,
+    pub ends_grid: f32,
+    pub ends_strength: f32,
+    pub chance_ramp: Option<(f32, f32)>,
+    pub velocity_fit: Option<(f32, f32)>,
+    pub chance_percent: Option<f32>,
+    pub note_offset: f32,
+    pub fixed_velocity: f32,
+    pub velocity_ramp: Option<(f32, f32)>,
+    pub fixed_length: f32,
+    pub length_factor: f32,
+    pub phrase_shift: f32,
+    pub phrase_semitones: i32,
+    pub normalize_peak: f32,
+    pub thin_every: u32,
+    pub thin_phase: u32,
+    pub repeat_initialized: bool,
+    pub repeat_bars: u32,
+    pub repeat_copies: u32,
+    /// Indices into the note list of the current track+pattern.
     pub selected: Vec<usize>,
+    /// Previous frame identity map so external reorder/deletion cannot move a selection.
+    pub note_ids: Vec<String>,
     pub drag: Option<NoteDrag>,
+    /// Ignore the remainder of an Escape-cancelled pointer hold.
+    pub gesture_cancelled: bool,
     /// Rubber-band selection start (screen position).
     pub band: Option<Pos2>,
     /// Index into [`SNAPS`].
     pub snap: usize,
     /// (pattern, track) the selection belongs to.
     pub owner: (usize, usize),
-    /// After a move: the moved notes to select again once the engine has
-    /// stored (and possibly re-sorted) them.
-    pub reselect: Option<Vec<NoteKey>>,
+    /// Helper edits can reorder notes; recover selection by stable ID next frame.
+    pub reselect_ids: Option<Vec<String>>,
+    /// Pitch rows shown for this track+pattern. It only grows while editing,
+    /// so drawing a note never makes the view jump.
+    pub span: Option<(u8, u8)>,
+    /// The user scrolled the pitch rows; keep exactly that window.
+    pub manual: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct NoteDrag {
+    pub id: String,
     pub start: Pos2,
     pub shift: NoteShift,
 }
 
+/// Bind a manual helper to its documented scope, preserving operation arguments.
+fn prepare_helper_args(id: &str, args: &mut Value, track: &str, pattern: &str, ids: &[&str]) {
+    if let (Some(obj), Some(tool)) = (args.as_object_mut(), crate::tools::find(id)) {
+        let schema = (tool.schema)();
+        if let Some(props) = schema.get("properties").and_then(Value::as_object) {
+            if !ids.is_empty() && props.contains_key("ids") {
+                obj.insert("ids".into(), json!(ids));
+            }
+            if props.contains_key("track") {
+                obj.insert("track".into(), json!(track));
+            }
+            if props.contains_key("target_pattern") {
+                obj.insert("target_pattern".into(), json!(pattern));
+            }
+            if props.contains_key("pattern") && !obj.contains_key("pattern") {
+                obj.insert("pattern".into(), json!(pattern));
+            }
+        }
+    }
+}
+
 impl Studio {
-    /// Replace the track's notes in the pattern with `notes` in one undoable call.
-    fn write_notes(&mut self, track: &str, pattern: &str, notes: &[Note]) {
-        self.call(
-            "add_notes",
-            json!({"track": track, "pattern": pattern, "replace": true, "notes": notes_json(notes)}),
-        );
+    /// Commit only changed geometry by stable ID, preserving every other field.
+    fn write_notes(&mut self, track: &str, pattern: &str, notes: &[Note], before: &[Note]) {
+        let updates: Vec<Value> = notes
+            .iter()
+            .zip(before)
+            .filter(|(a, b)| (a.start, a.len, a.pitch) != (b.start, b.len, b.pitch))
+            .map(|(n, _)| json!({"id":n.id,"start":n.start,"len":n.len,"pitch":n.pitch}))
+            .collect();
+        if !updates.is_empty() {
+            self.call(
+                "update_note_geometry",
+                json!({"track":track,"pattern":pattern,"updates":updates}),
+            );
+        }
+    }
+
+    fn delete_piano_notes(
+        &mut self,
+        track: &str,
+        pattern: &str,
+        notes: &[Note],
+        indices: &[usize],
+    ) {
+        let ids: Vec<&str> = indices
+            .iter()
+            .filter_map(|i| notes.get(*i))
+            .map(|n| n.id.as_str())
+            .collect();
+        // Empty selection must never become the engine's default "all notes".
+        if !ids.is_empty() {
+            self.call(
+                "delete_notes",
+                json!({"track": track, "pattern": pattern, "ids": ids}),
+            );
+        }
     }
 
     pub(super) fn piano_roll(&mut self, ui: &mut egui::Ui, p: &Project) {
         let tk = Tokens::DARK;
         let (Some(t), Some(pat)) = (p.tracks.get(self.selected), p.patterns.get(self.pattern))
         else {
+            ui.add_space(28.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new(
+                        "No channel yet. Add one in the Channel rack and write its notes here.",
+                    )
+                    .size(13.0)
+                    .color(tk.text_dim),
+                );
+            });
             return;
         };
         if self.piano.owner != (self.pattern, self.selected) {
             self.piano.selected.clear();
+            self.piano.note_ids.clear();
             self.piano.drag = None;
+            self.piano.reselect_ids = None;
+            self.piano.span = None;
+            self.piano.manual = false;
             self.piano.owner = (self.pattern, self.selected);
         }
         let tname = t.name.clone();
         let pname = pat.name.clone();
         let color = track_color(&t.name, t.instrument.kind_name());
         let notes: Vec<Note> = pat.notes(&t.name).to_vec();
-        if let Some(keys) = self.piano.reselect.take() {
-            self.piano.selected = reselect(&notes, &keys);
+        if !note_identity_matches(&notes, &self.piano.note_ids) {
+            if !self.piano.note_ids.is_empty() {
+                self.piano.selected =
+                    remap_note_selection(&notes, &self.piano.note_ids, &self.piano.selected);
+            }
+            self.piano.note_ids = notes.iter().map(|n| n.id.clone()).collect();
+        }
+        if let Some(drag) = &mut self.piano.drag {
+            match unique_note_index(&notes, &drag.id) {
+                Some(index) => drag.shift.index = index,
+                None => {
+                    self.piano.drag = None;
+                    self.dragging = false;
+                }
+            }
+        }
+        if let Some(ids) = self.piano.reselect_ids.take() {
+            self.piano.selected = selection_from_ids(&notes, &ids);
         }
         self.piano.selected.retain(|i| *i < notes.len());
         let steps = pat.steps() as f32;
@@ -110,7 +763,39 @@ impl Studio {
                 (l, h)
             }
         };
+        let (lo, hi) = match self.piano.span {
+            Some((l, h)) if self.piano.manual => (l, h),
+            Some((l, h)) => {
+                // already framed: only grow to include notes, with no new padding
+                let (nl, nh) = notes
+                    .iter()
+                    .fold((127u8, 0u8), |(a, b), n| (a.min(n.pitch), b.max(n.pitch)));
+                if notes.is_empty() {
+                    (l, h)
+                } else {
+                    (l.min(nl), h.max(nh))
+                }
+            }
+            None => (lo, hi),
+        };
+        self.piano.span = Some((lo, hi));
         let (full, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+        // mouse wheel over the roll moves the visible pitch rows (3 semitones a notch)
+        let (lo, hi) = if ui.rect_contains_pointer(full) {
+            let dy = ui.input(|i| i.raw_scroll_delta.y);
+            if dy.abs() > 0.5 {
+                let step = 3i16 * if dy > 0.0 { 1 } else { -1 };
+                let width = (hi - lo) as i16;
+                let nl = (lo as i16 + step).clamp(0, 127 - width);
+                self.piano.span = Some((nl as u8, (nl + width) as u8));
+                self.piano.manual = true;
+                (nl as u8, (nl + width) as u8)
+            } else {
+                (lo, hi)
+            }
+        } else {
+            (lo, hi)
+        };
         // never draw past the visible panel (the velocity lane sat under its edge)
         let vis = full.intersect(ui.clip_rect());
         let full = if vis.width() > 120.0 && vis.height() > HEADER_H + VEL_H + 40.0 {
@@ -122,7 +807,7 @@ impl Studio {
         painter.rect_filled(full, 0.0, tk.panel_bg);
         // ---- header: title, hint, snap selector, ops ----
         // title row plus three rows of helper buttons
-        let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER_H * 4.0));
+        let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER_H * 2.0));
         painter.rect_filled(header, 0.0, tk.panel_bg2);
         painter.text(
             pos2(header.min.x + 8.0, header.min.y + HEADER_H / 2.0),
@@ -132,96 +817,596 @@ impl Studio {
             tk.header_text,
         );
         let bar = Rect::from_min_max(
-            pos2(header.min.x + 84.0, header.min.y + 1.0),
+            pos2(header.min.x + 100.0, header.min.y + 1.0),
             pos2(header.max.x - 4.0, header.min.y + HEADER_H - 1.0),
         );
         let mut tb = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(bar)
-                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        tb.spacing_mut().item_spacing.x = 3.0;
-        let sel_or_all = |sel: &[usize]| -> Value {
-            if sel.is_empty() {
-                json!({})
-            } else {
-                // select the chosen notes' pitches over their step range
-                let ns: Vec<&Note> = sel.iter().filter_map(|i| notes.get(*i)).collect();
-                let from = ns.iter().map(|n| n.start).fold(f32::MAX, f32::min);
-                let to = ns.iter().map(|n| n.start).fold(0.0f32, f32::max) + 0.001;
-                let pitches: Vec<u8> = ns.iter().map(|n| n.pitch).collect();
-                json!({"from": from, "to": to, "pitches": pitches})
-            }
-        };
+        tb.set_clip_rect(bar);
         let mut op: Option<(&str, Value)> = None;
-        if tb.small_button("Legato").on_hover_text("legato").clicked() {
-            op = Some(("legato", json!({})));
-        }
-        // FL piano-roll tools, each the MCP call it names
-        if tb
-            .small_button("Stacc")
-            .on_hover_text("articulate {style: staccato}")
-            .clicked()
-        {
-            op = Some(("articulate", json!({"style": "staccato"})));
-        }
-        if tb
-            .small_button("Chop")
-            .on_hover_text("chop_notes {pattern: 'x.x.x.x.'}: held notes into 8ths")
-            .clicked()
-        {
-            op = Some(("chop_notes", json!({"pattern": "x.x.x.x."})));
-        }
-        if tb
-            .small_button("LFO")
-            .on_hover_text("A velocity wave across the notes (sine, one bar)")
-            .clicked()
-        {
-            op = Some((
-                "lfo_tool",
-                json!({"property": "velocity", "shape": "sine", "rate": "1 bar"}),
-            ));
-        }
-        if tb
-            .small_button("Rev")
-            .on_hover_text("flip_notes {mode: time}: play backwards")
-            .clicked()
-        {
-            op = Some(("flip_notes", json!({"mode": "time"})));
-        }
-        if tb
-            .small_button("Flip")
-            .on_hover_text("flip_notes {mode: pitch}: mirror the pitches")
-            .clicked()
-        {
-            op = Some(("flip_notes", json!({"mode": "pitch"})));
-        }
-        if tb
-            .small_button("Vel-")
-            .on_hover_text("velocity -10%")
-            .clicked()
-        {
-            op = Some(("edit_notes", json!({"vel_add": -0.1})));
-        }
-        if tb
-            .small_button("Vel+")
-            .on_hover_text("velocity +10%")
-            .clicked()
-        {
-            op = Some(("edit_notes", json!({"vel_add": 0.1})));
-        }
+        let mut delete_selection = false;
         let g = snap_steps(self.piano.snap);
-        if tb
-            .small_button("Quantize")
-            .on_hover_text("Quantize starts to the snap grid")
-            .clicked()
-        {
-            op = Some(("quantize", json!({"grid": g, "strength": 1.0})));
-        }
+        tb.menu_button("Edit notes", |ui| {
+            ui.menu_button("Select notes", |ui| {
+            if ui
+                .add_enabled(!notes.is_empty(), egui::Button::new("Select all notes"))
+                .on_hover_text("Select all notes here: Ctrl+A (Cmd+A on Mac) while hovering the piano roll.")
+                .clicked()
+            {
+                self.piano.selected = (0..notes.len()).collect();
+                ui.close_menu();
+            }
+            if ui.add_enabled(!self.piano.selected.is_empty(), egui::Button::new("Select same pitches"))
+                .on_hover_text("Select every note at the pitches of the selected notes, in this channel and pattern. Changes selection only.").clicked() {
+                self.piano.selected = matching_pitch_selection(&notes, &self.piano.selected);
+                ui.close_menu();
+            }
+            if ui.add_enabled(!self.piano.selected.is_empty(), egui::Button::new("Select whole chords"))
+                .on_hover_text("Select all notes starting with any selected note (within0.0001 steps), in this channel and pattern. Nominal starts only, not overlapping sustains. Changes selection only.").clicked() {
+                self.piano.selected = matching_onset_selection(&notes, &self.piano.selected);
+                ui.close_menu();
+            }
+            if ui.add_enabled(!self.piano.selected.is_empty(), egui::Button::new("Select same lengths"))
+                .on_hover_text("Select notes with any selected duration (within 0.0001 steps), across all pitches in this channel/pattern. Selection only; timing and lengths stay unchanged.").clicked() {
+                self.piano.selected = matching_length_selection(&notes, &self.piano.selected);
+                ui.close_menu();
+            }
+            let overlaps = overlapping_pitch_selection(&notes);
+            if ui.add_enabled(!overlaps.is_empty(), egui::Button::new(format!("Select same-pitch overlaps ({})", overlaps.len())))
+                .on_hover_text("Select notes overlapping another note at the same pitch in this channel/pattern. Nominal starts and lengths only; touching boundaries and different chord tones don't count. Selection only.").clicked() {
+                self.piano.selected = overlaps;
+                ui.close_menu();
+            }
+            let copies = duplicate_copy_selection(&notes);
+            if ui.add_enabled(!copies.is_empty(), egui::Button::new(format!("Select duplicate copies ({})", copies.len())))
+                .on_hover_text("Select extra exact copies, keeping the first copy unselected. Starts, lengths, pitch, velocity, chance, timing offset and slide destination must all match. Review only; does not delete notes.").clicked() {
+                self.piano.selected = copies;
+                ui.close_menu();
+            }
+            let beyond = beyond_pattern_selection(&notes, pat.steps() as f32);
+            if ui.add_enabled(!beyond.is_empty(), egui::Button::new(format!("Select past pattern end ({})", beyond.len())))
+                .on_hover_text("Select notes starting at/after the pattern end or sustaining past it. Exact end boundaries are allowed. Review only: no trim or deletion. This channel/pattern only.").clicked() {
+                self.piano.selected = beyond;
+                ui.close_menu();
+            }
+            let silent = silent_note_selection(&notes);
+            if ui.add_enabled(!silent.is_empty(), egui::Button::new(format!("Select silent notes ({})", silent.len())))
+                .on_hover_text("Select notes with exactly0 velocity or0 trigger chance in this channel/pattern. Review only; does not delete notes. Very quiet notes and low nonzero chances are not selected.").clicked() {
+                self.piano.selected = silent;
+                ui.close_menu();
+            }
+            for (timing, label, hint) in [
+                (true, "Select timing offsets", "Select finite nonzero saved timing offsets in this channel/pattern, including tiny offsets. Nominal note starts stay unchanged. Selection only."),
+                (false, "Select chance below 100%", "Select saved trigger chances from 0% up to but not including 100%, in this channel/pattern. Includes silent 0% notes. Selection only; playback is unchanged.")
+            ] {
+                let found = expression_note_selection(&notes, timing);
+                if ui.add_enabled(!found.is_empty(), egui::Button::new(format!("{} ({})",label,found.len())))
+                    .on_hover_text(hint).clicked() {
+                    self.piano.selected = found;
+                    ui.close_menu();
+                }
+            }
+            let slides = slide_note_selection(&notes);
+            if ui.add_enabled(!slides.is_empty(),egui::Button::new(format!("Select slide notes ({})",slides.len())))
+                .on_hover_text("Select notes with a saved slide destination in this channel/pattern, including same-pitch slide destinations. Selection only; no changes to pitch, timing or slides.").clicked() {
+                self.piano.selected=slides;
+                ui.close_menu();
+            }
+            let outside = outside_scale_selection(&notes, &p.key_root, &p.scale);
+            if ui.add_enabled(outside.as_ref().is_some_and(|v|!v.is_empty()), egui::Button::new(format!("Select outside song scale ({})", outside.as_ref().map_or(0,Vec::len))))
+                .on_hover_text(format!("Select notes outside {} {} in this channel/pattern. Review only: no pitch snapping. Passing tones may be intentional. Not meaningful for unpitched drums.",p.key_root,p.scale)).clicked() {
+                if let Some(outside) = outside {self.piano.selected = outside;}
+                ui.close_menu();
+            }
+            let inverse = inverted_note_selection(notes.len(), &self.piano.selected);
+            if ui.add_enabled(!inverse.is_empty(), egui::Button::new("Invert selection"))
+                .on_hover_text("Select currently unselected notes. Disabled if every note is selected, because empty selection means all notes for editing. Use Clear selection explicitly instead.").clicked() {
+                self.piano.selected = inverse;
+                ui.close_menu();
+            }
+            });
+            if ui
+                .add_enabled(
+                    !self.piano.selected.is_empty(),
+                    egui::Button::new("Clear selection"),
+                )
+                .on_hover_text("Clear selection: Ctrl+Shift+A (Cmd+Shift+A on Mac) while hovering the piano roll. Selection only; Delete does nothing with no notes selected.")
+                .clicked()
+            {
+                self.piano.selected.clear();
+                ui.close_menu();
+            }
+            if ui
+                .add_enabled(
+                    !self.piano.selected.is_empty(),
+                    egui::Button::new("Delete selected notes"),
+                )
+                .on_hover_text("Remove only the selected notes. Undo restores them.")
+                .clicked()
+            {
+                delete_selection = true;
+                ui.close_menu();
+            }
+            ui.separator();
+            let scope = if self.piano.selected.is_empty() {
+                format!("Scope: all {} notes", notes.len())
+            } else {
+                format!("Scope: {} selected", self.piano.selected.len())
+            };
+            ui.label(RichText::new(scope).small().color(tk.text_dim));
+            ui.label(RichText::new("Open a group to find an edit").small().color(tk.text_dim));
+            let group_id=egui::Id::new("piano_edit_group");
+            let active_group=ui.ctx().data_mut(|d|d.get_temp::<String>(group_id)).unwrap_or_default();
+            let mut clicked_group=None;
+            let group=egui::CollapsingHeader::new("Pitch & melody").open(Some(active_group=="Pitch & melody")).show(ui, |ui| {
+            ui.menu_button("Reverse melody pitches", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Reverse pitch order through selected notes. The rhythm stays fixed.");
+                ui.label(RichText::new("Only pitches change. Timing, lengths, expression and slide targets stay unchanged. Select one note per onset.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::reverse_pitches(&mut preview,&sel);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} pitches change",n)).small());},Err(_)=>{ui.label(RichText::new("Select only one note at each onset. Nothing will change.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Reverse MIDI pitch sequence")).clicked(){op=Some(("reverse_melody_pitches",json!({})));ui.close_menu();}
+            });
+            ui.menu_button("Rotate melody pitches", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Cycle pitches through selected notes in time order, wrapping at the ends.");
+                ui.label(RichText::new("Only pitches change. Timing, expression and slide targets stay unchanged. Select one note per onset.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                for (shift,label) in [(1,"Move pitches one note later"),(-1,"Move pitches one note earlier")] {
+                    let mut preview=notes.clone();let result=crate::midi_ops::rotate_pitches(&mut preview,&sel,shift);
+                    match &result {Ok(n)=>{ui.label(RichText::new(format!("{} pitches change",n)).small());},Err(_)=>{ui.label(RichText::new("Select only one note at each onset. Nothing will change.").small());}}
+                    if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new(label)).clicked(){op=Some(("rotate_melody_pitches",json!({"shift":shift})));ui.close_menu();}
+                }
+            });
+            ui.menu_button("Transpose safely", |ui| {
+                ui.set_width(280.0);
+                ui.set_max_width(280.0);
+                ui.horizontal(|ui| {ui.label("Semitones");ui.add(egui::DragValue::new(&mut self.piano.phrase_semitones).range(-127..=127));});
+                ui.label("Keeps intervals intact. Rejects out-of-range pitches instead of clipping them.");
+                ui.label(RichText::new("Only pitches change; slide targets stay unchanged.").small());
+                let sel=crate::midi_ops::Selection {ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();
+                let result=crate::midi_ops::transpose_phrase(&mut preview,&sel,self.piano.phrase_semitones);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} notes transpose; unselected notes stay intact",n)).small());},Err(_)=>{ui.label(RichText::new("Does not fit MIDI pitch range. Reduce semitones.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0) && self.piano.phrase_semitones!=0,egui::Button::new("Transpose MIDI phrase")).clicked() {
+                    op=Some(("transpose_phrase",json!({"semitones":self.piano.phrase_semitones})));ui.close_menu();
+                }
+            });
+            ui.menu_button("Fold into register", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                let (low,high)=self.piano.register_range.get_or_insert((48,72));
+                ui.horizontal(|ui|{ui.label("Lowest MIDI pitch");ui.add(egui::DragValue::new(low).range(0..=127));});
+                ui.horizontal(|ui|{ui.label("Highest MIDI pitch");ui.add(egui::DragValue::new(high).range(0..=127));});
+                ui.label("Moves out-of-range pitches by whole octaves. Pitch classes stay unchanged.");
+                ui.label(RichText::new("Only pitches change; slide targets stay unchanged.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::fold_register(&mut preview,&sel,*low,*high);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} pitches move by octaves",n)).small());},Err(_)=>{ui.label(RichText::new("Cannot fit every pitch class. Widen the register.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Fold MIDI register")).clicked(){op=Some(("fold_note_register",json!({"low":*low,"high":*high})));ui.close_menu();}
+            });
+            ui.menu_button("Reduce chord voices", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.checkbox(&mut self.piano.reduce_lowest,"Keep lowest pitch (off = highest)");
+                ui.label("Each simultaneous onset keeps its top or bottom pitch. Same-pitch layers stay.");
+                ui.label(RichText::new("Selected notes only; not a sustained-voice detector.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::reduce_chords(&mut preview,&sel,!self.piano.reduce_lowest);
+                let removed=result.unwrap_or(0);ui.label(RichText::new(format!("{} notes remain; {} removed",preview.len(),removed)).small());
+                if ui.add_enabled(removed>0,egui::Button::new("Reduce MIDI chord voices")).clicked(){op=Some(("reduce_chord_voices",json!({"voice":if self.piano.reduce_lowest {"lowest"}else{"highest"}})));ui.close_menu();}
+            });
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Flip pitch")).clicked() {op=Some(("flip_notes",json!({"mode":"pitch"})));ui.close_menu();}
+            });
+            if group.header_response.clicked() {clicked_group=Some("Pitch & melody");}
+            let group=egui::CollapsingHeader::new("Rhythm & placement").open(Some(active_group=="Rhythm & placement")).show(ui, |ui| {
+            ui.menu_button("Reverse rhythm gaps", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Reverse the gaps between selected onset groups, keeping note order and endpoints fixed.");
+                ui.label(RichText::new("Chords move together. Pitches, lengths and expression stay unchanged. Needs at least three onset groups.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::reverse_rhythm_gaps(&mut preview,&sel,steps);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} note starts change",n)).small());},Err(_)=>{ui.label(RichText::new("Does not fit. Shorten notes or extend the pattern.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Reverse MIDI rhythm gaps")).clicked(){op=Some(("reverse_rhythm_gaps",json!({})));ui.close_menu();}
+            });
+            ui.menu_button("Distribute rhythm", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Evenly spaces selected onset groups between their first and last positions.");
+                ui.label(RichText::new("Chords stay together. Lengths and expression stay unchanged.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::distribute_rhythm(&mut preview,&sel,steps);
+                let groups=crate::midi_ops::chord_groups(&notes,&crate::midi_ops::selected(&notes,&sel),1e-4).len();
+                if groups<3 {ui.label(RichText::new("Select at least three different onset groups.").small());}
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} note starts change; endpoints stay fixed",n)).small());},Err(_)=>{ui.label(RichText::new("Does not fit. Shorten notes or extend the pattern.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Distribute MIDI rhythm")).clicked(){op=Some(("distribute_note_rhythm",json!({})));ui.close_menu();}
+            });
+            ui.menu_button("Move phrase safely", |ui| {
+                ui.set_width(280.0);
+                ui.set_max_width(280.0);
+                ui.horizontal(|ui| {ui.label("Shift (sixteenth steps)");ui.add(egui::DragValue::new(&mut self.piano.phrase_shift).speed(0.25).range(-4096.0..=4096.0));});
+                ui.label("Moves the phrase together without changing spacing or note lengths");
+                let sel=crate::midi_ops::Selection {ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();
+                let result=crate::midi_ops::shift_phrase(&mut preview,&sel,self.piano.phrase_shift,steps);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} notes move; unselected notes stay intact",n)).small());},Err(_)=>{ui.label(RichText::new("Does not fit. Reduce the shift or extend the pattern.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0) && self.piano.phrase_shift.abs()>1e-5,egui::Button::new("Move MIDI phrase")).clicked() {
+                    op=Some(("shift_phrase",json!({"shift":self.piano.phrase_shift})));ui.close_menu();
+                }
+            });
+            ui.menu_button("Custom rhythm rotation", |ui| {
+                ui.set_width(280.0);
+                ui.set_max_width(280.0);
+                ui.label("Wraps starts within each note's own bar");
+                ui.horizontal(|ui| {ui.label("Shift (sixteenth steps)");ui.add(egui::DragValue::new(&mut self.piano.rotation_steps).speed(0.25).range(-1024.0..=1024.0));});
+                let bar=pat.steps_per_bar() as f32;
+                let shift=self.piano.rotation_steps;
+                ui.label(RichText::new(format!("Bar: {} steps; wrapped shift: {:.2}",bar,shift.rem_euclid(bar))).small());
+                ui.label(RichText::new("Positive = later; negative = earlier. Lengths and expression stay unchanged.").small());
+                if ui.add_enabled(!notes.is_empty() && shift.rem_euclid(bar).abs()>1e-4,egui::Button::new("Rotate MIDI rhythm")).clicked() {
+                    op=Some(("rotate_notes",json!({"shift":shift})));ui.close_menu();
+                }
+            });
+            ui.menu_button("Thin rhythm", |ui| {
+                ui.set_width(280.0);
+                ui.set_max_width(280.0);
+                self.piano.thin_every=self.piano.thin_every.clamp(2,64);
+                ui.label("Keep one selected onset group out of N");
+                ui.horizontal(|ui| {ui.label("Every N groups");ui.add(egui::DragValue::new(&mut self.piano.thin_every).range(2..=64));});
+                self.piano.thin_phase=self.piano.thin_phase.min(self.piano.thin_every-1);
+                ui.horizontal(|ui| {ui.label("Keep group (zero-based)");ui.add(egui::DragValue::new(&mut self.piano.thin_phase).range(0..=self.piano.thin_every-1));});
+                ui.label(RichText::new("Selected chords stay together. Unselected notes stay intact.").small());
+                let mut preview=notes.clone();
+                let sel=crate::midi_ops::Selection {ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let removed=crate::midi_ops::thin_rhythm(&mut preview,&sel,self.piano.thin_every,self.piano.thin_phase).unwrap_or(0);
+                ui.label(RichText::new(format!("{} notes remain; {} removed",preview.len(),removed)).small());
+                if ui.add_enabled(removed>0,egui::Button::new("Thin MIDI rhythm")).clicked() {
+                    op=Some(("thin_notes",json!({"every":self.piano.thin_every,"phase":self.piano.thin_phase})));ui.close_menu();
+                }
+            });
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Reverse time")).clicked() {op=Some(("flip_notes",json!({"mode":"time"})));ui.close_menu();}
+            });
+            if group.header_response.clicked() {clicked_group=Some("Rhythm & placement");}
+            let group=egui::CollapsingHeader::new("Lengths & articulation").open(Some(active_group=="Lengths & articulation")).show(ui, |ui| {
+            ui.menu_button("Set note lengths", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                if self.piano.fixed_length<0.05 {self.piano.fixed_length=1.0;}
+                ui.label("Set one duration for selected notes, in sixteenth steps.1 = one sixteenth note.");
+                ui.label(RichText::new("Starts, pitches and expression stay unchanged. Rejects the whole edit if any new note end exceeds this pattern.").small());
+                ui.add(egui::DragValue::new(&mut self.piano.fixed_length).speed(0.25).range(0.05..=steps.max(0.05)).prefix("Length: "));
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::set_lengths(&mut preview,&sel,self.piano.fixed_length,steps);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} note lengths change",n)).small());},Err(_)=>{ui.label(RichText::new("Does not fit selected notes. Nothing will change.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Set selected lengths")).clicked(){op=Some(("set_note_lengths",json!({"length":self.piano.fixed_length})));ui.close_menu();}
+            });
+            ui.menu_button("Scale note lengths", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                if self.piano.length_factor<0.0625 {self.piano.length_factor=0.5;}
+                ui.label("Multiply durations only. Starts, pitches, velocity and expression stay unchanged.");
+                ui.add(egui::DragValue::new(&mut self.piano.length_factor).speed(0.05).range(0.0625..=16.0).prefix("Length multiplier: "));
+                ui.label(RichText::new("Chords supported. The whole edit is rejected if a note becomes shorter than0.05 steps or cannot fit the pattern.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::scale_lengths(&mut preview,&sel,self.piano.length_factor,steps);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} note lengths change",n)).small());},Err(_)=>{ui.label(RichText::new("Does not fit or becomes too short. Nothing will change.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Scale selected lengths")).clicked(){op=Some(("scale_note_lengths",json!({"factor":self.piano.length_factor})));ui.close_menu();}
+            });
+            ui.menu_button("Average chord lengths", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Give selected notes at each shared onset that chord's average duration.");
+                ui.label(RichText::new("Only lengths change. Solo notes stay unchanged. Partial selections average selected voices only. Invalid bounds reject the whole edit.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::balance_chord_lengths(&mut preview,&sel,steps);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} note lengths change",n)).small());},Err(_)=>{ui.label(RichText::new("Invalid bounds or does not fit. Nothing will change.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Average selected chord lengths")).clicked(){op=Some(("balance_chord_lengths",json!({})));ui.close_menu();}
+            });
+            ui.menu_button("Invert note lengths", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Short notes become long and long notes become short within the selected duration range.");
+                ui.label(RichText::new("Only lengths change. Chords supported. Every result must fit the pattern; the whole edit is rejected otherwise.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::invert_lengths(&mut preview,&sel,steps);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} note lengths change",n)).small());},Err(_)=>{ui.label(RichText::new("Invalid bounds or does not fit. Nothing will change.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Invert selected lengths")).clicked(){op=Some(("invert_note_lengths",json!({})));ui.close_menu();}
+            });
+            ui.menu_button("Rotate note lengths", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Move existing durations through selected notes, wrapping at the ends.");
+                ui.label(RichText::new("Only lengths change. Select one note per onset. Every result must fit the pattern; no clipping.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                for (shift,label) in [(1,"Move lengths one note later"),(-1,"Move lengths one note earlier")] {
+                    let mut preview=notes.clone();let result=crate::midi_ops::rotate_lengths(&mut preview,&sel,shift,steps);
+                    match &result {Ok(n)=>{ui.label(RichText::new(format!("{}: {} lengths change",label,n)).small());},Err(_)=>{ui.label(RichText::new("Does not fit or has shared onsets. Select one voice or extend the pattern.").small());}}
+                    if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new(label)).clicked(){op=Some(("rotate_note_lengths",json!({"shift":shift})));ui.close_menu();}
+                }
+            });
+            ui.menu_button("Reverse note lengths", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Reverse durations in onset order. Starts, pitches and expression stay unchanged.");
+                ui.label(RichText::new("Select one note per onset. Every new length must fit the pattern; no clipping.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::reverse_lengths(&mut preview,&sel,steps);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} note lengths change",n)).small());},Err(_)=>{ui.label(RichText::new("Does not fit or has shared onsets. Select one voice or extend the pattern.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Reverse selected lengths")).clicked(){op=Some(("reverse_note_lengths",json!({})));ui.close_menu();}
+            });
+            ui.menu_button("Align chord releases", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Give selected notes in each chord a shared release. Starts and expression stay unchanged.");
+                ui.label(RichText::new("Only selected same-onset notes form a chord. Single notes stay unchanged.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                for (longest,mode,label) in [(true,"longest","Match longest release"),(false,"shortest","Match shortest release")] {
+                    let mut preview=notes.clone();let result=crate::midi_ops::align_chord_ends(&mut preview,&sel,longest,steps);
+                    match &result {Ok(n)=>{ui.label(RichText::new(format!("{}: {} note lengths change",label,n)).small());},Err(_)=>{ui.label(RichText::new("Invalid note bounds. Nothing will change.").small());}}
+                    if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new(label)).clicked(){op=Some(("align_chord_ends",json!({"mode":mode})));ui.close_menu();}
+                }
+            });
+            ui.menu_button("Quantize releases", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                if self.piano.ends_grid<0.0625 {self.piano.ends_grid=1.0;self.piano.ends_strength=1.0;}
+                ui.horizontal(|ui|{ui.label("Grid (sixteenth steps)");ui.add(egui::DragValue::new(&mut self.piano.ends_grid).speed(0.25).range(0.0625..=64.0));});
+                ui.horizontal(|ui|{ui.label("Strength");ui.add(egui::DragValue::new(&mut self.piano.ends_strength).speed(0.05).range(0.0..=1.0));});
+                ui.label("Snaps note ends only. Starts and microtiming stay unchanged.");
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::quantize_ends(&mut preview,&sel,self.piano.ends_grid,self.piano.ends_strength,steps);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} release positions change",n)).small());},Err(_)=>{ui.label(RichText::new("Does not fit. Reduce strength or choose a finer grid.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Quantize MIDI releases")).clicked(){op=Some(("quantize_note_ends",json!({"grid":self.piano.ends_grid,"strength":self.piano.ends_strength})));ui.close_menu();}
+            });
+            ui.menu_button("Custom phrase stretch", |ui| {
+                ui.set_width(280.0);
+                ui.set_max_width(280.0);
+                ui.label("Changes note timing and lengths, not tempo");
+                ui.horizontal(|ui| {ui.label("Length multiplier");ui.add(egui::DragValue::new(&mut self.piano.stretch.factor).speed(0.05).range(0.0625..=16.0));});
+                ui.checkbox(&mut self.piano.stretch.pattern_anchor,"Anchor at pattern start (off = first selected note)");
+                let preview=self.piano.stretch.preview(&notes,&self.piano.selected,steps);
+                match &preview {Ok(n)=>{ui.label(RichText::new(format!("{} notes; pitch and expression unchanged",n)).small());},Err(_)=>{ui.label(RichText::new("Does not fit or makes notes too short. Reduce the multiplier or extend the pattern.").small());}}
+                if ui.add_enabled(matches!(preview,Ok(n) if n>0),egui::Button::new("Stretch MIDI phrase")).clicked() {
+                    op=Some(("stretch_notes",self.piano.stretch.args()));ui.close_menu();
+                }
+            });
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Twice as fast")).clicked() {op=Some(("stretch_notes",json!({"factor":0.5})));ui.close_menu();}
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Twice as slow")).clicked() {op=Some(("stretch_notes",json!({"factor":2.0})));ui.close_menu();}
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Legato")).clicked() {op=Some(("legato",json!({})));ui.close_menu();}
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Staccato")).clicked() {op=Some(("articulate",json!({"style":"staccato"})));ui.close_menu();}
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Chop")).clicked() {op=Some(("chop_notes",json!({"pattern":"x.x.x.x."})));ui.close_menu();}
+            });
+            if group.header_response.clicked() {clicked_group=Some("Lengths & articulation");}
+            let group=egui::CollapsingHeader::new("Repeats & echoes").open(Some(active_group=="Repeats & echoes")).show(ui, |ui| {
+            ui.menu_button("Repeat phrase", |ui| {
+                ui.set_width(280.0);
+                ui.set_max_width(280.0);
+                if !self.piano.repeat_initialized {
+                    self.piano.repeat_bars = 1;
+                    self.piano.repeat_copies = 1;
+                    self.piano.repeat_initialized = true;
+                }
+                ui.label("Adds exact copies; originals stay intact");
+                ui.label(RichText::new("Source notes need valid bounds and length at least 0.05 steps.").small());
+                ui.horizontal(|ui| { ui.label("Spacing (bars)"); ui.add(egui::DragValue::new(&mut self.piano.repeat_bars).range(1..=64)); });
+                ui.horizontal(|ui| { ui.label("Extra copies"); ui.add(egui::DragValue::new(&mut self.piano.repeat_copies).range(1..=64)); });
+                let period=self.piano.repeat_bars.max(1) as f32*pat.steps_per_bar() as f32;
+                let (source,capacity)=repeat_capacity(&notes,&self.piano.selected,period,steps);
+                let repeats=self.piano.repeat_copies.clamp(1,64);
+                ui.label(RichText::new(format!("{} source notes; {} extra copies fit",source,capacity)).small());
+                let fits=source>0 && repeats<=capacity;
+                if !fits { ui.label(RichText::new("Reduce copies/spacing, select earlier notes, or extend the pattern.").small()); }
+                if ui.add_enabled(fits,egui::Button::new(format!("Repeat MIDI phrase (+{} notes)",source*repeats as usize))).clicked() {
+                    op=Some(("repeat_notes",json!({"period":self.piano.repeat_bars.max(1) as f32*pat.steps_per_bar() as f32,"repeats":self.piano.repeat_copies.clamp(1,64)})));
+                    ui.close_menu();
+                }
+            });
+            ui.menu_button("Custom MIDI echoes", |ui| {
+                ui.set_width(280.0);
+                ui.set_max_width(280.0);
+                ui.label("Adds editable copies; originals stay intact");
+                ui.horizontal(|ui| {
+                    ui.label("Delay (sixteenth steps)");
+                    ui.add(
+                        egui::DragValue::new(&mut self.piano.echo.delay)
+                            .speed(0.25)
+                            .range(0.0625..=64.0),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Repeats");
+                    ui.add(egui::DragValue::new(&mut self.piano.echo.repeats).range(1..=64));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Velocity multiplier / repeat");
+                    ui.add(
+                        egui::DragValue::new(&mut self.piano.echo.decay)
+                            .speed(0.05)
+                            .range(0.0..=1.0),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Semitones / repeat");
+                    ui.add(egui::DragValue::new(&mut self.piano.echo.transpose).range(-127..=127));
+                });
+                ui.label(
+                    RichText::new(
+                        "Copies outside pattern/pitch range or below2% velocity are skipped",
+                    )
+                    .small(),
+                );
+                if ui
+                    .add_enabled(!notes.is_empty(), egui::Button::new("Add MIDI echoes"))
+                    .clicked()
+                {
+                    op = Some(("echo_notes", self.piano.echo.args()));
+                    ui.close_menu();
+                }
+            });
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Echo 3x (1/8)")).clicked() {op=Some(("echo_notes",json!({"delay":"1/8","repeats":3,"decay":0.6})));ui.close_menu();}
+            });
+            if group.header_response.clicked() {clicked_group=Some("Repeats & echoes");}
+            let group=egui::CollapsingHeader::new("Velocity & dynamics").open(Some(active_group=="Velocity & dynamics")).show(ui, |ui| {
+            ui.menu_button("Velocity ramp", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Linear velocity ramp over selected note starts. Notes at the same onset get the same velocity.");
+                ui.label(RichText::new("Velocity only;0 means silence. One onset uses Start. Lengths, note order and other expression stay unchanged.").small());
+                let (start,end)=self.piano.velocity_ramp.get_or_insert((0.25,0.75));
+                ui.add(egui::Slider::new(start,0.0..=1.0).step_by(0.01).text("Start"));ui.add(egui::Slider::new(end,0.0..=1.0).step_by(0.01).text("End"));
+                let (start,end)=(*start,*end);
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::ramp_velocities(&mut preview,&sel,start,end);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} velocities change",n)).small());},Err(_)=>{ui.label(RichText::new("Invalid selected starts. Nothing will change.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Apply selected velocity ramp")).clicked(){op=Some(("ramp_note_velocities",json!({"start_velocity":start,"end_velocity":end})));ui.close_menu();}
+            });
+            ui.menu_button("Set note velocity", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Set one MIDI velocity for the selected notes.0% means silence, not deletion.");
+                ui.label(RichText::new("Only velocity changes. Lengths, starts, pitches, chance and timing offsets stay unchanged.").small());
+                ui.add(egui::Slider::new(&mut self.piano.fixed_velocity,0.0..=1.0).step_by(0.01).text("Velocity"));
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::set_velocity(&mut preview,&sel,self.piano.fixed_velocity);
+                if let Ok(n)=&result {ui.label(RichText::new(format!("{} note velocities change",n)).small());}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Set selected velocity")).clicked(){op=Some(("set_note_velocity",json!({"velocity":self.piano.fixed_velocity})));ui.close_menu();}
+            });
+            ui.menu_button("Fit velocity range", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Map selected softest/loudest notes to a new velocity range.");
+                ui.label(RichText::new("Preserves relative dynamics. Chords supported. Flat selections use Low; 0 means silence. Only velocity changes.").small());
+                let (low,high)=self.piano.velocity_fit.get_or_insert((0.3,0.9));
+                ui.add(egui::Slider::new(low,0.0..=1.0).step_by(0.01).text("Low"));
+                ui.add(egui::Slider::new(high,0.0..=1.0).step_by(0.01).text("High"));
+                let (low,high)=(*low,*high);
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::fit_velocity_range(&mut preview,&sel,low,high);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} velocities change",n)).small());},Err(_)=>{ui.label(RichText::new("Low must not exceed High. Nothing will change.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Fit selected dynamics")).clicked(){op=Some(("fit_note_velocity_range",json!({"low":low,"high":high})));ui.close_menu();}
+            });
+            ui.menu_button("Balance chord velocities", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Give the selected notes of each chord the same MIDI velocity, using that chord's average.");
+                ui.label(RichText::new("Solo notes stay unchanged. Only velocities change; partial selections balance only selected notes.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::balance_chord_velocities(&mut preview,&sel);
+                if let Ok(n)=result {ui.label(RichText::new(format!("{} velocities change",n)).small());}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Balance selected chords")).clicked(){op=Some(("balance_chord_velocities",json!({})));ui.close_menu();}
+            });
+            ui.menu_button("Invert dynamics", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Loud notes become soft and soft become loud within the current selected range.");
+                ui.label(RichText::new("Only velocities change. Chords are supported; rhythm, pitches and other expression stay fixed.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::invert_velocities(&mut preview,&sel);
+                if let Ok(n)=result {ui.label(RichText::new(format!("{} velocities change",n)).small());}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Invert MIDI dynamics")).clicked(){op=Some(("invert_note_velocities",json!({})));ui.close_menu();}
+            });
+            ui.menu_button("Reverse velocities", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Reverse the existing loud/soft sequence through selected notes.");
+                ui.label(RichText::new("Only velocities change. Rhythm, pitches and other expression stay fixed. Select one note per onset.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::reverse_velocities(&mut preview,&sel);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} velocities change",n)).small());},Err(_)=>{ui.label(RichText::new("Select one valid note per onset. Nothing will change.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Reverse MIDI velocity sequence")).clicked(){op=Some(("reverse_note_velocities",json!({})));ui.close_menu();}
+            });
+            ui.menu_button("Rotate velocities", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Move existing accents through selected notes, wrapping at the ends.");
+                ui.label(RichText::new("Only velocities change. Rhythm, pitches and other expression stay fixed. Select one note per onset.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                for (shift,label) in [(1,"Move accents one note later"),(-1,"Move accents one note earlier")] {
+                    let mut preview=notes.clone();let result=crate::midi_ops::rotate_velocities(&mut preview,&sel,shift);
+                    match &result {Ok(n)=>{ui.label(RichText::new(format!("{} velocities change",n)).small());},Err(_)=>{ui.label(RichText::new("Select one valid note per onset. Nothing will change.").small());}}
+                    if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new(label)).clicked(){op=Some(("rotate_note_velocities",json!({"shift":shift})));ui.close_menu();}
+                }
+            });
+            ui.menu_button("Normalize velocity", |ui| {
+                ui.set_width(280.0);
+                ui.set_max_width(280.0);
+                if self.piano.normalize_peak<0.02 { self.piano.normalize_peak=0.9; }
+                ui.horizontal(|ui| {ui.label("Target peak velocity");ui.add(egui::DragValue::new(&mut self.piano.normalize_peak).speed(0.01).range(0.02..=1.0));});
+                ui.label("Preserves relative dynamics, not an audio loudness control");
+                let sel=crate::midi_ops::Selection {ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let max=notes.iter().filter(|n|sel.matches(n)).map(|n|n.vel).fold(0.0,f32::max);
+                ui.label(RichText::new(format!("Current selected peak: {:.2}",max)).small());
+                if ui.add_enabled(max>0.0 && (max-self.piano.normalize_peak).abs()>1e-5,egui::Button::new("Normalize MIDI velocity")).clicked() {
+                    op=Some(("normalize_velocity",json!({"peak":self.piano.normalize_peak})));ui.close_menu();
+                }
+            });
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Velocity LFO")).clicked() {op=Some(("lfo_tool",json!({"property":"velocity","shape":"sine","rate":"1 bar"})));ui.close_menu();}
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Velocity +10 points")).clicked() {op=Some(("offset_note_velocities",json!({"delta":0.1})));ui.close_menu();}
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Velocity -10 points")).clicked() {op=Some(("offset_note_velocities",json!({"delta":-0.1})));ui.close_menu();}
+            });
+            if group.header_response.clicked() {clicked_group=Some("Velocity & dynamics");}
+            let group=egui::CollapsingHeader::new("Cleanup").open(Some(active_group=="Cleanup")).show(ui, |ui| {
+            ui.menu_button("Note microtiming", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Set note timing offsets in sixteenth steps. Negative = early; positive = late.");
+                ui.label(RichText::new("Nominal starts, velocity, lengths and chance stay unchanged. Global swing stays; playback/export clamp before song start.").small());
+                ui.add(egui::Slider::new(&mut self.piano.note_offset,-0.5..=0.5).step_by(0.01).text("Offset"));
+                let offset=self.piano.note_offset;
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::set_note_offset(&mut preview,&sel,offset);
+                if let Ok(n)=&result{ui.label(RichText::new(format!("{} note offsets change",n)).small());}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Set selected microtiming")).clicked(){op=Some(("set_note_offset",json!({"offset":offset})));ui.close_menu();}
+            });
+            ui.menu_button("Note chance ramp", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Ramp trigger chance across selected note starts. Chord notes share one chance; one onset uses Start.");
+                ui.label(RichText::new("Chance only. 0% never plays; 100% always plays. Seeded probability, not a guaranteed hit count. Other expression stays unchanged.").small());
+                let (start,end)=self.piano.chance_ramp.get_or_insert((0.25,1.0));
+                ui.add(egui::Slider::new(start,0.0..=1.0).step_by(0.01).text("Start"));ui.add(egui::Slider::new(end,0.0..=1.0).step_by(0.01).text("End"));
+                let (start,end)=(*start,*end);
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::ramp_note_chance(&mut preview,&sel,start,end);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} note chances change",n)).small());},Err(_)=>{ui.label(RichText::new("Invalid selected onsets. Nothing will change.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Apply selected chance ramp")).clicked(){op=Some(("ramp_note_chance",json!({"start_chance":start,"end_chance":end})));ui.close_menu();}
+            });
+            ui.menu_button("Note chance", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Set per-note trigger chance. 0% = never; 100% = always. Notes are not deleted.");
+                ui.label(RichText::new("Velocity, lengths, pitch, offsets and slide targets stay unchanged. Playback uses seeded chance, not a guaranteed hit count.").small());
+                let percent=self.piano.chance_percent.get_or_insert(100.0);
+                ui.add(egui::Slider::new(percent,0.0..=100.0).text("Chance %"));
+                let chance=(*percent/100.0).clamp(0.0,1.0);
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::set_note_chance(&mut preview,&sel,chance);
+                if let Ok(n)=&result{ui.label(RichText::new(format!("{} note probabilities change",n)).small());}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Set selected note chance")).clicked(){op=Some(("set_note_chance",json!({"chance":chance})));ui.close_menu();}
+            });
+            ui.menu_button("Reset humanization", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Clear note timing offsets or restore 100% chance. Velocity, lengths, pitches and slide targets stay unchanged.");
+                ui.label(RichText::new("Global swing and other groove settings are not reset.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                for(mode,timing,chance,label)in[("timing",true,false,"Clear timing offsets"),("chance",false,true,"Restore 100% chance"),("both",true,true,"Reset timing and chance")]{
+                    let mut preview=notes.clone();let result=crate::midi_ops::reset_humanization(&mut preview,&sel,timing,chance);
+                    if let Ok(n)=&result{ui.label(RichText::new(format!("{}: {} notes change",label,n)).small());}
+                    if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new(label)).clicked(){op=Some(("reset_note_humanization",json!({"mode":mode})));ui.close_menu();}
+                }
+            });
+            ui.menu_button("Trim at pattern end", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Shorten selected notes that sustain beyond this pattern's end.");
+                ui.label(RichText::new("Never lengthens or removes notes. Starts, pitches and expression stay unchanged; uses nominal MIDI timing.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let result=crate::midi_ops::trim_pattern_ends(&mut preview,&sel,steps);
+                match &result {Ok(n)=>{ui.label(RichText::new(format!("{} note lengths change",n)).small());},Err(_)=>{ui.label(RichText::new("A selected note has invalid bounds or less than0.05 steps before the end. Nothing will change.").small());}}
+                if ui.add_enabled(matches!(result,Ok(n) if n>0),egui::Button::new("Trim selected note tails")).clicked(){op=Some(("trim_notes_to_pattern",json!({})));ui.close_menu();}
+            });
+
+            ui.menu_button("Remove zero-level notes", |ui| {
+                ui.set_width(280.0);ui.set_max_width(280.0);
+                ui.label("Delete selected notes with exactly zero velocity or zero trigger chance. Very quiet or low-chance notes remain.");
+                ui.label(RichText::new("Deletion can change seeded chance outcomes on surviving notes. Their saved fields and order stay unchanged. Undo restores all removed notes.").small());
+                let sel=crate::midi_ops::Selection{ids:self.piano.selected.iter().filter_map(|i|notes.get(*i)).map(|n|n.id.clone()).collect(),..Default::default()};
+                let mut preview=notes.clone();let count=crate::midi_ops::remove_zero_notes(&mut preview,&sel);
+                ui.label(RichText::new(format!("{} notes removed",count)).small());
+                if ui.add_enabled(count>0,egui::Button::new("Remove selected zero-level notes")).clicked(){op=Some(("remove_zero_notes",json!({})));ui.close_menu();}
+            });
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Trim same-pitch overlaps")).clicked() {op=Some(("trim_note_overlaps",json!({})));ui.close_menu();}
+                if ui.add_enabled(!notes.is_empty(), egui::Button::new("Remove exact duplicates")).clicked() {op=Some(("remove_duplicate_notes",json!({})));ui.close_menu();}
+            });
+            if group.header_response.clicked() {clicked_group=Some("Cleanup");}
+            if let Some(group)=clicked_group {ui.ctx().data_mut(|d|d.insert_temp(group_id,if active_group==group {String::new()} else {group.to_string()}));}
+        });
         egui::ComboBox::from_id_salt(("snap", self.selected))
-            .width(52.0)
+            .width(64.0)
             .selected_text(format!(
-                "snap {}",
+                "Snap {}",
                 SNAPS[self.piano.snap.min(SNAPS.len() - 1)].0
             ))
             .show_ui(&mut tb, |ui| {
@@ -229,32 +1414,92 @@ impl Studio {
                     ui.selectable_value(&mut self.piano.snap, i, *label);
                 }
             });
-        // the title takes what the toolbar leaves (the toolbar grows right to left)
-        let title_end = tb.min_rect().min.x - 6.0;
-        if title_end > header.min.x + 90.0 {
-            painter
-                .with_clip_rect(Rect::from_min_max(
-                    header.min,
-                    pos2(title_end, header.max.y),
-                ))
-                .text(
-                    pos2(header.min.x + 84.0, header.min.y + HEADER_H / 2.0),
-                    Align2::LEFT_CENTER,
-                    format!(
-                        "{} · {} · {} notes · {} sel",
-                        t.name,
-                        pat.name,
-                        notes.len(),
-                        self.piano.selected.len()
-                    ),
-                    FontId::proportional(10.0),
-                    tk.text_dim,
-                );
+        let quantize_enabled = !notes.is_empty()
+            && SNAPS
+                .get(self.piano.snap)
+                .is_some_and(|(_, grid)| grid.is_some());
+        let quantize_hint = if notes.is_empty() {
+            "No notes to quantize in this channel and pattern."
+        } else if !quantize_enabled {
+            "Choose a Snap value first. Snap off has no quantize grid."
+        } else if self.piano.selected.is_empty() {
+            "Quantize all notes in this channel and pattern to the chosen Snap grid."
+        } else {
+            "Quantize only the selected notes to the chosen Snap grid."
+        };
+        if tb
+            .add_enabled(quantize_enabled, egui::Button::new("Quantize").small())
+            .on_hover_text(quantize_hint)
+            .on_disabled_hover_text(quantize_hint)
+            .clicked()
+        {
+            op = Some(("quantize", json!({"grid":g,"strength":1.0})));
         }
+        tb.menu_button("View", |ui| {
+            if ui
+                .button("Fit note pitches")
+                .on_hover_text("Bring this pattern's notes back into view after scrolling")
+                .clicked()
+            {
+                self.piano.span = None;
+                self.piano.manual = false;
+                ui.close_menu();
+            }
+            ui.separator();
+            ui.label(RichText::new("Mouse").strong());
+            ui.label("Wheel: scroll pitch rows");
+            ui.label("Click empty space: add note. Right-click note: delete.");
+            ui.label("Drag note: move. Drag right edge: resize.");
+            ui.label("Drag a velocity stem: change that note's volume (bottom = 0%, silent).");
+            ui.label("Shift-click or drag empty space: select notes.");
+            ui.separator();
+            ui.label(RichText::new("Keyboard while hovering the roll").strong());
+            let command = if cfg!(target_os = "macos") {
+                "Cmd"
+            } else {
+                "Ctrl"
+            };
+            ui.label(format!(
+                "{command}+A: select all. {command}+Shift+A: clear selection."
+            ));
+            ui.label("Arrows: move selected notes. Shift: octave / bar.");
+            ui.label("Delete / Backspace: remove selected notes only.");
+            ui.separator();
+            ui.label("Esc: cancel a mouse preview before releasing.");
+            ui.label("Switching away from the app also cancels the preview.");
+            ui.label("Note shortcuts wait until the mouse hold is over.");
+        });
+        let selection_count = self.piano.selected.len();
+        let note_context = if selection_count == 0 {
+            format!("{} / {} / {} notes", t.name, pat.name, notes.len())
+        } else {
+            format!("{} selected / {} / {}", selection_count, t.name, pat.name)
+        };
+        tb.label(RichText::new(note_context).size(11.0).color(tk.text_dim))
+            .on_hover_ui(|ui| {
+                ui.set_width(280.0);
+                ui.label(format!(
+                    "Channel: {}\nPattern: {}\n{} notes; {} selected",
+                    t.name,
+                    pat.name,
+                    notes.len(),
+                    selection_count
+                ));
+                // Dense selections are scanned only while this tooltip is open.
+                if let Some(summary) = selection_summary(&notes, &self.piano.selected) {
+                    ui.label(summary);
+                }
+            });
         // ---- helper rows under the title row: gen helpers, then edit helpers
         // split across two rows. Fixed rows, each clipped to its own strip, so
         // every button stays inside the panel at any window size ----
-        let gen_items: [(&str, &str, Value, &str); 6] = [
+        let gen_items: [(&str, &str, Value, &str); 7] = [
+            (
+                "Euclidean 5/16",
+                "generate_euclidean",
+                json!({"pulses":5,"slots":16}),
+                "Replace this track's notes in this pattern with5 evenly spaced hits per bar, on16 subdivisions",
+            ),
             (
                 "Melody",
                 "generate_melody",
@@ -262,7 +1507,7 @@ impl Studio {
                 "a fresh melody on this track",
             ),
             (
-                "Fill",
+                "Fill pattern",
                 "generate_fill",
                 json!({"style": "auto"}),
                 "a fill into the next section",
@@ -274,7 +1519,7 @@ impl Studio {
                 "quiet in-between hits",
             ),
             (
-                "Variation",
+                "Variation track",
                 "generate_variation",
                 json!({"kind": "both"}),
                 "a twist on this pattern",
@@ -292,14 +1537,21 @@ impl Studio {
                 "a harmony line above this track",
             ),
         ];
-        let edit_a: [(&str, &str, Value, &str); 5] = [
+        let edit_a: [(&str, &str, Value, &str); 7] = [
+            ("Rotate +1 step", "rotate_notes", json!({"shift":1}), "Move selected notes (or all notes) a sixteenth later, wrapping inside each bar; lengths unchanged"),
+            ("Rotate -1 step", "rotate_notes", json!({"shift":-1}), "Move selected notes (or all notes) a sixteenth earlier, wrapping inside each bar; lengths unchanged"),
             (
-                "Humanize",
+                "Humanize track",
                 "humanize",
                 json!({}),
                 "loosen timing and velocity",
             ),
-            ("Slides", "add_slides", json!({}), "glides between notes"),
+            (
+                "Slides track",
+                "add_slides",
+                json!({}),
+                "glides between notes",
+            ),
             (
                 "Roll",
                 "roll_notes",
@@ -321,17 +1573,22 @@ impl Studio {
         ];
         let edit_b: [(&str, &str, Value, &str); 5] = [
             (
-                "Snap",
+                "Snap track",
                 "scale_snap",
                 json!({}),
                 "pull notes into the song scale",
             ),
-            ("+12", "transpose", json!({"semitones": 12}), "up an octave"),
+            (
+                "+12",
+                "transpose_phrase",
+                json!({"semitones": 12}),
+                "up an octave; pitches only, rejects out-of-range notes",
+            ),
             (
                 "-12",
-                "transpose",
+                "transpose_phrase",
                 json!({"semitones": -12}),
-                "down an octave",
+                "down an octave; pitches only, rejects out-of-range notes",
             ),
             (
                 "Drop2",
@@ -341,59 +1598,96 @@ impl Studio {
             ),
             (
                 "VelRamp",
-                "velocity_curve",
-                json!({"shape": "ramp_up"}),
-                "velocity rising across the pattern",
+                "ramp_note_velocities",
+                json!({"start_velocity":0.35,"end_velocity":1.0}),
+                "velocity rising from35% to100%; only velocities change",
             ),
         ];
-        for (row, (tag, items)) in [
-            ("GEN", &gen_items[..]),
-            ("EDIT", &edit_a[..]),
-            ("", &edit_b[..]),
-        ]
-        .iter()
-        .enumerate()
-        {
-            let bar = Rect::from_min_max(
-                pos2(
-                    header.min.x + 4.0,
-                    header.min.y + HEADER_H * (1.0 + row as f32),
-                ),
-                pos2(
-                    header.max.x - 4.0,
-                    header.min.y + HEADER_H * (2.0 + row as f32) - 1.0,
-                ),
-            );
-            let mut tr = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(bar)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            );
-            tr.set_clip_rect(bar);
-            tr.spacing_mut().item_spacing.x = 3.0;
-            if !tag.is_empty() {
-                tr.label(RichText::new(*tag).size(9.0).color(tk.text_dim));
-            }
-            for (label, tool, args, hover) in items.iter() {
-                if tr.small_button(*label).on_hover_text(*hover).clicked() {
-                    op = Some((*tool, args.clone()));
+        let helpers = Rect::from_min_max(
+            pos2(header.left() + 6.0, header.top() + HEADER_H),
+            pos2(header.right() - 4.0, header.bottom()),
+        );
+        let mut tr = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(helpers)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        for (label, items) in [
+            ("Compose", &gen_items[..]),
+            ("Timing & expression", &edit_a[..]),
+            ("Pitch & velocity", &edit_b[..]),
+        ] {
+            tr.menu_button(label, |ui| {
+                if label == "Compose" {
+                    ui.label("Euclidean rhythm");
+                    ui.label(RichText::new("Scope: this track, whole current pattern").small());
+                    ui.horizontal(|ui| {
+                        ui.label("Subdivisions / bar");
+                        ui.add(
+                            egui::DragValue::new(&mut self.piano.euclidean.slots).range(1..=128),
+                        );
+                    });
+                    self.piano.euclidean.pulses =
+                        self.piano.euclidean.pulses.min(self.piano.euclidean.slots);
+                    ui.horizontal(|ui| {
+                        ui.label("Hits / bar");
+                        ui.add(
+                            egui::DragValue::new(&mut self.piano.euclidean.pulses)
+                                .range(0..=self.piano.euclidean.slots),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Rotation (slots)");
+                        ui.add(
+                            egui::DragValue::new(&mut self.piano.euclidean.rotation)
+                                .range(-128..=128),
+                        );
+                    });
+                    ui.checkbox(
+                        &mut self.piano.euclidean.replace,
+                        "Replace track notes (off = layer)",
+                    );
+                    let action = if self.piano.euclidean.replace {
+                        "Generate (replace)"
+                    } else {
+                        "Generate (layer)"
+                    };
+                    if ui.button(action).clicked() {
+                        op = Some(("generate_euclidean", self.piano.euclidean.args()));
+                        ui.close_menu();
+                    }
+                    ui.separator();
                 }
-            }
+                for (label, tool, args, hover) in items {
+                    if ui.button(*label).on_hover_text(*hover).clicked() {
+                        op = Some((*tool, args.clone()));
+                        ui.close_menu();
+                    }
+                }
+            });
         }
         if let Some((id, mut a)) = op {
-            if let (Some(obj), Value::Object(sel)) =
-                (a.as_object_mut(), sel_or_all(&self.piano.selected))
-            {
-                obj.extend(sel);
-                obj.insert("track".into(), json!(tname));
-                obj.insert("pattern".into(), json!(pname));
-            }
+            let ids: Vec<&str> = self
+                .piano
+                .selected
+                .iter()
+                .filter_map(|i| notes.get(*i))
+                .map(|n| n.id.as_str())
+                .collect();
+            prepare_helper_args(id, &mut a, &tname, &pname, &ids);
+            let selected_ids = ids.iter().map(|id| (*id).to_owned()).collect();
             self.call(id, a);
+            self.piano.reselect_ids = Some(selected_ids);
+        }
+        if delete_selection {
+            self.delete_piano_notes(&tname, &pname, &notes, &self.piano.selected.clone());
+            self.piano.selected.clear();
         }
         // ---- geometry ----
+        let velocity_height = velocity_lane_height(full.height());
         let roll = Rect::from_min_max(
-            pos2(full.min.x + KEY_W, header.max.y + 2.0),
-            pos2(full.max.x - 4.0, full.max.y - VEL_H - 4.0),
+            pos2(full.min.x + KEY_W, header.max.y + PIANO_RULER_H + 2.0),
+            pos2(full.max.x - 4.0, full.max.y - velocity_height - 4.0),
         );
         let keys = Rect::from_min_max(pos2(full.min.x, roll.min.y), pos2(roll.min.x, roll.max.y));
         let vel = Rect::from_min_max(
@@ -405,6 +1699,47 @@ impl Studio {
         let cell = roll.width() / steps.max(1.0);
         let x_of = |s: f32| roll.min.x + s * cell;
         let y_of = |pitch: i32| roll.min.y + (i32::from(hi) - pitch) as f32 * row_h;
+        let ruler = Rect::from_min_max(
+            pos2(roll.left(), header.bottom() + 2.0),
+            pos2(roll.right(), roll.top()),
+        );
+        painter.rect_filled(ruler, 0.0, tk.panel_bg2);
+        let rp = painter.with_clip_rect(ruler);
+        let bar_steps = pat.steps_per_bar().max(1) as f32;
+        let meter = pat.meter.unwrap_or((4, 4));
+        let meter_rect = Rect::from_min_max(
+            pos2(full.left(), ruler.top()),
+            pos2(roll.left(), ruler.bottom()),
+        );
+        painter.text(
+            meter_rect.center(),
+            Align2::CENTER_CENTER,
+            format!("{}/{}", meter.0, meter.1),
+            FontId::monospace(10.0),
+            tk.text_dim,
+        );
+        ui.interact(meter_rect, ui.id().with("piano_meter"), Sense::hover())
+            .on_hover_text(format!(
+                "Pattern meter: {}/{}\n{} sixteenth-note steps per bar\nBar lines follow this meter; Snap sets the edit grid.",
+                meter.0, meter.1, pat.steps_per_bar()
+            ));
+        let stride = ruler_label_stride(bar_steps * cell);
+        for b in 0..pat.bars {
+            let x = x_of(b as f32 * bar_steps);
+            rp.line_segment(
+                [pos2(x, ruler.bottom() - 4.0), pos2(x, ruler.bottom())],
+                Stroke::new(1.0_f32, tk.text_dim),
+            );
+            if b % stride == 0 {
+                rp.text(
+                    pos2(x + 3.0, ruler.center().y),
+                    Align2::LEFT_CENTER,
+                    (b + 1).to_string(),
+                    FontId::monospace(10.0),
+                    tk.text_dim,
+                );
+            }
+        }
         let pp = painter.with_clip_rect(roll.union(keys));
         for i in 0..=(hi - lo) {
             let pitch = hi - i;
@@ -414,9 +1749,9 @@ impl Studio {
                 Rect::from_min_size(pos2(roll.min.x, y), vec2(roll.width(), row_h)),
                 0.0,
                 if black {
-                    Color32::from_rgb(30, 30, 32)
+                    super::theme::Tokens::DARK.playlist_bg
                 } else {
-                    Color32::from_rgb(40, 40, 42)
+                    super::theme::Tokens::DARK.playlist_alt
                 },
             );
             let key =
@@ -433,7 +1768,7 @@ impl Studio {
             if pitch % 12 == 0 {
                 pp.line_segment(
                     [pos2(roll.min.x, y + row_h), pos2(roll.max.x, y + row_h)],
-                    Stroke::new(1.0_f32, Color32::from_rgb(64, 64, 68)),
+                    Stroke::new(1.0_f32, super::theme::Tokens::DARK.bar_line),
                 );
                 if row_h > 6.0 {
                     pp.text(
@@ -450,29 +1785,73 @@ impl Studio {
         let gs = g.max(0.25);
         let mut s = 0.0;
         while s <= steps + 0.001 {
-            let bar_line = (s % 16.0).abs() < 1e-3;
+            let bar_line = (s % bar_steps).abs() < 1e-3;
             let beat = (s % 4.0).abs() < 1e-3;
-            if gs * cell > 4.0 || beat {
+            if !bar_line && (gs * cell > 4.0 || beat) {
                 pp.line_segment(
                     [pos2(x_of(s), roll.min.y), pos2(x_of(s), roll.max.y)],
                     Stroke::new(
                         1.0_f32,
-                        if bar_line {
-                            Color32::from_rgb(90, 90, 96)
-                        } else if beat {
-                            Color32::from_rgb(64, 64, 68)
+                        if beat {
+                            super::theme::Tokens::DARK.bar_line
                         } else {
-                            Color32::from_rgb(48, 48, 52)
+                            super::theme::Tokens::DARK.grid_line
                         },
                     ),
                 );
             }
             s += gs;
         }
+        // Bar boundaries must not depend on snap spacing: in 7/8, for example,
+        // a 14-step bar is not divisible by a quarter-note (4-step) grid.
+        for b in 0..=pat.bars {
+            let x = x_of(b as f32 * bar_steps);
+            pp.line_segment(
+                [pos2(x, roll.top()), pos2(x, roll.bottom())],
+                Stroke::new(1.0_f32, tk.border_light),
+            );
+        }
+        if !ui.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
+            self.piano.gesture_cancelled = false;
+        }
+        if ui.input(|i| !i.focused || i.key_pressed(egui::Key::Escape)) {
+            self.piano.drag = None;
+            self.piano.band = None;
+            self.piano.gesture_cancelled = true;
+            let vid = ui.id().with(("vel", self.selected, self.pattern));
+            ui.ctx().data_mut(|d| d.remove::<(String, f32)>(vid));
+            self.dragging = false;
+        }
+        if let Some(d) = &self.piano.drag {
+            if !d.shift.resize
+                && d.shift.d_steps != 0.0
+                && crate::note_edit::group_move_delta(
+                    &notes,
+                    &self.piano.selected,
+                    d.shift.index,
+                    d.shift.d_steps,
+                    steps,
+                ) != d.shift.d_steps
+            {
+                pp.text(
+                    pos2(roll.left() + 8.0, roll.top() + 8.0),
+                    Align2::LEFT_TOP,
+                    "Group move limited: preserves spacing; check pattern bounds",
+                    FontId::proportional(11.0),
+                    Color32::YELLOW,
+                );
+            }
+        }
         // notes (drawn with the in-progress drag applied)
-        let shown = match &self.piano.drag {
-            Some(d) => apply_shift(&notes, &self.piano.selected, &d.shift, steps, g),
-            None => notes.clone(),
+        let shown: std::borrow::Cow<'_, [Note]> = match &self.piano.drag {
+            Some(d) => std::borrow::Cow::Owned(apply_shift(
+                &notes,
+                &self.piano.selected,
+                &d.shift,
+                steps,
+                g,
+            )),
+            None => std::borrow::Cow::Borrowed(&notes),
         };
         let note_rect = |n: &Note| {
             Rect::from_min_max(
@@ -483,12 +1862,13 @@ impl Studio {
                 ),
             )
         };
+        let draw_selected = selected_index_mask(shown.len(), &self.piano.selected);
         for (i, n) in shown.iter().enumerate() {
             if n.pitch < lo || n.pitch > hi {
                 continue;
             }
             let r = note_rect(n);
-            let sel = self.piano.selected.contains(&i);
+            let sel = draw_selected[i];
             let k = 0.45 + 0.55 * n.vel.clamp(0.0, 1.0);
             let fill = if sel {
                 Color32::WHITE
@@ -523,15 +1903,57 @@ impl Studio {
                 r.contains(pos).then_some((i, pos.x > r.max.x - 5.0))
             })
         };
-        if resp.drag_started() {
+        if let Some((i, edge)) = resp.hover_pos().and_then(hit) {
+            let note = &notes[i];
+            let hint = if edge {
+                "Drag right edge: resize note (Esc cancels)"
+            } else {
+                "Drag note: move (Esc cancels)"
+            };
+            ui.ctx().set_cursor_icon(if edge {
+                egui::CursorIcon::ResizeHorizontal
+            } else {
+                egui::CursorIcon::Grab
+            });
+            if edge && self.piano.drag.is_none() {
+                let r = note_rect(note);
+                pp.line_segment(
+                    [
+                        pos2(r.right() - 1.0, r.top()),
+                        pos2(r.right() - 1.0, r.bottom()),
+                    ],
+                    Stroke::new(2.0_f32, Color32::WHITE),
+                );
+            }
+            let start = note.start.max(0.0);
+            let bar = (start / bar_steps).floor() as u32 + 1;
+            let step_in_bar = start % bar_steps + 1.0;
+            resp.clone().on_hover_text(format!(
+                "{} (MIDI {})\nBar {}, step {:.2}\nLength {:.2} steps\nVelocity {:.0}%\n{}\n{}\nRight-click: delete note",
+                theory::note_name(note.pitch),
+                note.pitch,
+                bar,
+                step_in_bar,
+                note.len,
+                note.vel * 100.0,
+                note_expression_hint(note),
+                hint,
+            ));
+        }
+        if !self.piano.gesture_cancelled && resp.drag_started() {
             if let Some(pt) = resp.interact_pointer_pos() {
-                match hit(pt) {
+                // egui starts a drag only after the pointer crosses its threshold.
+                // Hit-test and measure from the original press, not that later point,
+                // so a narrow resize edge and short snapped move are not lost.
+                let start = ui.input(|i| i.pointer.press_origin()).unwrap_or(pt);
+                match hit(start) {
                     Some((i, edge)) => {
                         if !self.piano.selected.contains(&i) {
                             self.piano.selected = vec![i];
                         }
                         self.piano.drag = Some(NoteDrag {
-                            start: pt,
+                            id: notes[i].id.clone(),
+                            start,
                             shift: NoteShift {
                                 index: i,
                                 resize: edge,
@@ -540,12 +1962,12 @@ impl Studio {
                             },
                         });
                     }
-                    None => self.piano.band = Some(pt),
+                    None => self.piano.band = Some(start),
                 }
                 self.dragging = true;
             }
         }
-        if resp.dragged() {
+        if !self.piano.gesture_cancelled && resp.dragged() {
             if let (Some(d), Some(pt)) = (&mut self.piano.drag, resp.interact_pointer_pos()) {
                 d.shift.d_steps = snap_to((pt.x - d.start.x) / cell, g);
                 d.shift.d_semi = if d.shift.resize {
@@ -563,7 +1985,7 @@ impl Studio {
                 Color32::from_rgba_unmultiplied(120, 170, 255, 40),
                 Stroke::new(1.0_f32, Color32::from_rgb(120, 170, 255)),
             );
-            if resp.drag_stopped() {
+            if !self.piano.gesture_cancelled && resp.drag_stopped() {
                 self.piano.selected = notes
                     .iter()
                     .enumerate()
@@ -574,22 +1996,27 @@ impl Studio {
                 self.dragging = false;
             }
         }
-        if resp.drag_stopped() {
+        if !self.piano.gesture_cancelled && resp.drag_stopped() {
             if let Some(d) = self.piano.drag.take() {
                 if d.shift.d_steps.abs() > 1e-4 || d.shift.d_semi != 0 {
                     let moved = apply_shift(&notes, &self.piano.selected, &d.shift, steps, g);
-                    self.write_notes(&tname, &pname, &moved);
+                    self.write_notes(&tname, &pname, &moved, &notes);
                     // keep the moved notes selected
                     let mut sel = self.piano.selected.clone();
                     if !sel.contains(&d.shift.index) {
                         sel.push(d.shift.index);
                     }
-                    self.piano.reselect = Some(keys_of(&moved, &sel));
+                    self.piano.reselect_ids = Some(
+                        sel.iter()
+                            .filter_map(|i| moved.get(*i))
+                            .map(|n| n.id.clone())
+                            .collect(),
+                    );
                 }
             }
             self.dragging = false;
         }
-        if resp.clicked() {
+        if !self.piano.gesture_cancelled && resp.clicked() {
             if let Some(pt) = resp.interact_pointer_pos() {
                 match hit(pt) {
                     Some((i, _)) => {
@@ -617,33 +2044,28 @@ impl Studio {
                 }
             }
         }
-        if resp.secondary_clicked() {
+        if !self.piano.gesture_cancelled && resp.secondary_clicked() {
             if let Some((i, _)) = resp.interact_pointer_pos().and_then(hit) {
-                let mut rest = notes.clone();
-                rest.remove(i);
-                self.write_notes(&tname, &pname, &rest);
+                self.delete_piano_notes(&tname, &pname, &notes, &[i]);
                 self.piano.selected.clear();
             }
         }
-        // keyboard while hovering: Cmd+A, arrows (Shift = octave / bar), Delete
-        if ui.rect_contains_pointer(full) && !ui.ctx().wants_keyboard_input() {
-            let (all, up, down, left, right, shift, del) = ui.input(|i| {
-                (
-                    i.modifiers.command && i.key_pressed(egui::Key::A),
-                    i.key_pressed(egui::Key::ArrowUp) && !i.modifiers.alt,
-                    i.key_pressed(egui::Key::ArrowDown) && !i.modifiers.alt,
-                    i.key_pressed(egui::Key::ArrowLeft),
-                    i.key_pressed(egui::Key::ArrowRight),
-                    i.modifiers.shift,
-                    i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
-                )
-            });
-            if all {
-                self.piano.selected = (0..notes.len()).collect();
+        // keyboard while hovering: Cmd+A / Cmd+Shift+A, arrows (Shift = octave / bar), Delete
+        // A held mouse gesture owns the edit until release/cancellation. Do not
+        // let note shortcuts mutate its source notes beneath the live preview.
+        if ui.rect_contains_pointer(full)
+            && !ui.ctx().wants_keyboard_input()
+            && !ui.input(|i| i.pointer.any_down() || i.pointer.any_released())
+        {
+            let selection_key = ui.input(|i| selection_shortcut(&i.events));
+            let del = ui
+                .input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
+            let (semi, dx) = ui.input(|i| note_arrow_shortcut(&i.events, g, bar_steps));
+            match selection_key {
+                Some(false) => self.piano.selected = (0..notes.len()).collect(),
+                Some(true) => self.piano.selected.clear(),
+                None => {}
             }
-            let semi = (i32::from(up) - i32::from(down)) * if shift { 12 } else { 1 };
-            let dx = (f32::from(u8::from(right)) - f32::from(u8::from(left)))
-                * if shift { 16.0 } else { g };
             if (semi != 0 || dx != 0.0) && !self.piano.selected.is_empty() {
                 let d = NoteShift {
                     index: self.piano.selected[0],
@@ -652,23 +2074,24 @@ impl Studio {
                     d_semi: semi,
                 };
                 let moved = apply_shift(&notes, &self.piano.selected, &d, steps, g);
-                self.write_notes(&tname, &pname, &moved);
-                // keep the selection, re-found by value once the engine re-sorts
-                self.piano.reselect = Some(keys_of(&moved, &self.piano.selected));
+                self.write_notes(&tname, &pname, &moved, &notes);
+                // Keep identity even when a moved note overlaps an identical note.
+                self.piano.reselect_ids = Some(
+                    self.piano
+                        .selected
+                        .iter()
+                        .filter_map(|i| moved.get(*i))
+                        .map(|n| n.id.clone())
+                        .collect(),
+                );
             }
             if del && !self.piano.selected.is_empty() {
-                let rest: Vec<Note> = notes
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| !self.piano.selected.contains(i))
-                    .map(|(_, n)| n.clone())
-                    .collect();
-                self.write_notes(&tname, &pname, &rest);
+                self.delete_piano_notes(&tname, &pname, &notes, &self.piano.selected.clone());
                 self.piano.selected.clear();
             }
         }
         // ---- velocity lane ----
-        painter.rect_filled(vel, 0.0, Color32::from_rgb(28, 28, 30));
+        painter.rect_filled(vel, 0.0, super::theme::Tokens::DARK.slot_bg);
         painter.text(
             pos2(full.min.x + 4.0, vel.center().y),
             Align2::LEFT_CENTER,
@@ -679,32 +2102,63 @@ impl Studio {
         let vid = ui.id().with(("vel", self.selected, self.pattern));
         let vresp = ui.interact(vel, vid, Sense::click_and_drag());
         // live velocity edit kept in egui memory until the drag ends (one undo step)
-        let mut live: Option<(usize, f32)> = ui.ctx().data(|d| d.get_temp(vid));
-        if vresp.clicked() || vresp.dragged() {
+        let mut live: Option<(String, f32)> = ui.ctx().data(|d| d.get_temp(vid));
+        if live
+            .as_ref()
+            .is_some_and(|(id, _)| unique_note_index(&notes, id).is_none())
+        {
+            // Do not retarget a held gesture after its note disappears or its
+            // identity becomes ambiguous, even if another stem is now nearby.
+            live = None;
+            ui.ctx().data_mut(|d| d.remove::<(String, f32)>(vid));
+            self.piano.gesture_cancelled = true;
+            self.dragging = false;
+        }
+        if !self.piano.gesture_cancelled && (vresp.clicked() || vresp.dragged()) {
             if let Some(pt) = vresp.interact_pointer_pos() {
-                let near = notes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, n)| (i, (x_of(n.start) - pt.x).abs()))
-                    .filter(|(_, dx)| *dx < 8.0)
-                    .min_by(|a, b| a.1.total_cmp(&b.1));
-                let target = live.map(|l| l.0).or(near.map(|n| n.0));
+                // Lock onto the stem pressed, not the pointer position after
+                // crossing egui's drag threshold (which may be another stem).
+                let origin = if live.is_none() && vresp.dragged() {
+                    ui.input(|i| i.pointer.press_origin()).unwrap_or(pt)
+                } else {
+                    pt
+                };
+                let near = nearest_velocity_note(
+                    &notes,
+                    &self.piano.selected,
+                    (origin.x - roll.min.x) / cell,
+                    cell,
+                );
+                let target = live
+                    .as_ref()
+                    .and_then(|(id, _)| unique_note_index(&notes, id))
+                    .or_else(|| {
+                        if live.is_none() {
+                            near.filter(|i| unique_note_index(&notes, &notes[*i].id) == Some(*i))
+                        } else {
+                            None
+                        }
+                    });
                 if let Some(i) = target {
-                    let v = ((vel.max.y - 2.0 - pt.y) / (vel.height() - 4.0)).clamp(0.02, 1.0);
-                    live = Some((i, v));
-                    ui.ctx().data_mut(|d| d.insert_temp(vid, (i, v)));
-                    self.dragging = true;
+                    if let Some(v) = velocity_lane_value(vel.max.y, vel.height(), pt.y) {
+                        live = Some((notes[i].id.clone(), v));
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(vid, (notes[i].id.clone(), v)));
+                        self.dragging = true;
+                    }
                 }
             }
         }
+        // Interaction above may change selection; take a fresh drawing snapshot.
+        let draw_selected = selected_index_mask(notes.len(), &self.piano.selected);
         for (i, n) in notes.iter().enumerate() {
-            let v = match live {
-                Some((li, lv)) if li == i => lv,
+            let v = match &live {
+                Some((id, lv)) if *id == n.id => *lv,
                 _ => n.vel,
             };
             let x = x_of(n.start) + 1.0;
             let h = (vel.height() - 4.0) * v.clamp(0.0, 1.0);
-            let col = if self.piano.selected.contains(&i) {
+            let col = if draw_selected[i] {
                 Color32::WHITE
             } else {
                 color
@@ -715,16 +2169,1859 @@ impl Studio {
             );
             painter.circle_filled(pos2(x, vel.max.y - 2.0 - h), 2.5, col);
         }
-        if vresp.drag_stopped() || (vresp.clicked() && !vresp.dragged()) {
-            if let Some((i, v)) = live {
-                let mut out = notes.clone();
-                if let Some(n) = out.get_mut(i) {
-                    n.vel = v;
+        // value readout so an edit shows its number, like FL's hint bar: the
+        // live value while editing, the hovered hit's value otherwise
+        let readout = match &live {
+            Some((id, lv)) => notes
+                .iter()
+                .find(|n| &n.id == id)
+                .map(|n| (n.start, n.pitch, *lv, tk.text)),
+            None if vresp.hovered() => ui.input(|i| i.pointer.hover_pos()).and_then(|pt| {
+                nearest_velocity_note(
+                    &notes,
+                    &self.piano.selected,
+                    (pt.x - roll.min.x) / cell,
+                    cell,
+                )
+                .and_then(|i| notes.get(i))
+                .map(|n| (n.start, n.pitch, n.vel, tk.text_dim))
+            }),
+            None => None,
+        };
+        if let Some((st, pitch, v, col)) = readout {
+            let label = painter.layout_no_wrap(
+                velocity_readout_label(pitch, v),
+                FontId::proportional(10.0),
+                col,
+            );
+            let desired = pos2(
+                x_of(st) + 6.0,
+                vel.max.y - 6.0 - (vel.height() - 4.0) * v - label.size().y,
+            );
+            let origin = velocity_label_origin(vel, desired, label.size());
+            painter.with_clip_rect(vel).galley(origin, label, col);
+        }
+
+        if !self.piano.gesture_cancelled
+            && (vresp.drag_stopped() || (vresp.clicked() && !vresp.dragged()))
+        {
+            if let Some((id, v)) = live {
+                if let Some(i) = unique_note_index(&notes, &id) {
+                    let n = &notes[i];
+                    self.call(
+                        "set_note_velocity",
+                        json!({"track":tname,"pattern":pname,"ids":[n.id],"velocity":v}),
+                    );
                 }
-                self.write_notes(&tname, &pname, &out);
             }
-            ui.ctx().data_mut(|d| d.remove::<(usize, f32)>(vid));
+            ui.ctx().data_mut(|d| d.remove::<(String, f32)>(vid));
             self.dragging = false;
+        }
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+    #[test]
+    fn custom_stretch_preview_and_anchor() {
+        let mut n = Note::new(4.0, 2.0, 60, 0.8);
+        n.id = "a".into();
+        let mut late = Note::new(60.0, 4.0, 64, 0.8);
+        late.id = "b".into();
+        let notes = vec![n, late];
+        let mut c = StretchControls::default();
+        assert_eq!(c.preview(&notes, &[0], 64.0).unwrap(), 1);
+        assert!(c.preview(&notes, &[], 64.0).is_err());
+        assert_eq!(c.args(), json!({"factor":1.5}));
+        c.pattern_anchor = true;
+        assert_eq!(c.args(), json!({"factor":1.5,"anchor":0.0}));
+        c.factor = 16.0;
+        assert!(c.preview(&notes, &[0], 64.0).is_err());
+        c.pattern_anchor = false;
+        assert!(c.preview(&notes, &[0], 64.0).is_ok());
+    }
+    #[test]
+    fn repeat_preview_tracks_selection_bounds_and_meter() {
+        let notes = vec![Note::new(0.0, 1.0, 60, 0.8), Note::new(60.0, 1.0, 64, 0.8)];
+        assert_eq!(repeat_capacity(&notes, &[], 16.0, 64.0), (2, 0));
+        assert_eq!(repeat_capacity(&notes, &[0], 16.0, 64.0), (1, 3));
+        assert_eq!(repeat_capacity(&notes, &[0], 14.0, 56.0), (1, 3));
+        assert_eq!(repeat_capacity(&notes, &[0], 0.0, 64.0), (0, 0));
+        assert_eq!(repeat_capacity(&[], &[], 16.0, 64.0), (0, 0));
+        assert_eq!(
+            repeat_capacity(&[Note::new(0.0, 16.0, 60, 1.0)], &[], 16.0, 64.0),
+            (1, 3)
+        );
+    }
+    #[test]
+    fn compact_velocity_lane_preserves_note_space() {
+        assert_eq!(velocity_lane_height(104.0), 16.0);
+        assert_eq!(velocity_lane_height(136.0), 28.0);
+        assert_eq!(velocity_lane_height(240.0), 48.0);
+        for h in [120.0, 136.0, 160.0, 240.0] {
+            assert!(h - HEADER_H * 2.0 - PIANO_RULER_H - velocity_lane_height(h) - 6.0 >= 38.0);
+        }
+    }
+
+    #[test]
+    fn echo_controls_default_and_clamp() {
+        assert_eq!(
+            EchoControls::default().args(),
+            json!({"delay":2.0,"repeats":3,"decay":0.6_f32,"transpose":0})
+        );
+        let c = EchoControls {
+            delay: 0.0,
+            repeats: 0,
+            decay: 2.0,
+            transpose: 200,
+        };
+        assert_eq!(
+            c.args(),
+            json!({"delay":0.0625,"repeats":1,"decay":1.0,"transpose":127})
+        );
+    }
+
+    #[test]
+    fn euclidean_controls_clamp_and_keep_layer_intent() {
+        assert_eq!(
+            EuclideanControls::default().args(),
+            json!({"pulses":5,"slots":16,"rotation":0,"replace":true})
+        );
+        let c = EuclideanControls {
+            pulses: 5,
+            slots: 0,
+            rotation: -1,
+            replace: false,
+        };
+        assert_eq!(
+            c.args(),
+            json!({"pulses":1,"slots":1,"rotation":-1,"replace":false})
+        );
+        let c = EuclideanControls {
+            pulses: 500,
+            slots: 500,
+            rotation: 12,
+            replace: true,
+        };
+        assert_eq!(c.args()["slots"], 128);
+        assert_eq!(c.args()["pulses"], 128);
+    }
+
+    #[test]
+    fn bar_nudge_follows_pattern_meter_not_four_four() {
+        for bar in [12.0, 14.0, 16.0, 20.0] {
+            assert_eq!(horizontal_nudge(false, true, true, 0.5, bar), bar);
+            assert_eq!(horizontal_nudge(true, false, true, 0.5, bar), -bar);
+            assert_eq!(horizontal_nudge(false, true, false, 0.5, bar), 0.5);
+            assert_eq!(horizontal_nudge(true, true, true, 0.5, bar), 0.0);
+        }
+    }
+    #[test]
+    fn ruler_labels_keep_readable_spacing() {
+        assert_eq!(ruler_label_stride(120.0), 1);
+        assert_eq!(ruler_label_stride(20.0), 2);
+        for width in [0.5_f32, 2.0, 10.0, 20.0, 40.0, 160.0] {
+            assert!(ruler_label_stride(width) as f32 * width >= 32.0);
+        }
+    }
+    #[test]
+    fn helper_scope_matches_live_tool_schema() {
+        for id in [
+            "generate_euclidean",
+            "echo_notes",
+            "balance_chord_velocities",
+            "fit_note_velocity_range",
+            "invert_note_velocities",
+            "reverse_note_velocities",
+            "rotate_note_velocities",
+            "reverse_melody_pitches",
+            "reverse_rhythm_gaps",
+            "rotate_melody_pitches",
+            "align_chord_ends",
+            "distribute_note_rhythm",
+            "fold_note_register",
+            "reduce_chord_voices",
+            "quantize_note_ends",
+            "transpose_phrase",
+            "shift_phrase",
+            "normalize_velocity",
+            "thin_notes",
+            "repeat_notes",
+            "stretch_notes",
+            "rotate_notes",
+            "set_note_offset",
+            "set_note_velocity",
+            "ramp_note_velocities",
+            "set_note_chance",
+            "ramp_note_chance",
+            "reset_note_humanization",
+            "rotate_note_lengths",
+            "invert_note_lengths",
+            "balance_chord_lengths",
+            "scale_note_lengths",
+            "set_note_lengths",
+            "reverse_note_lengths",
+            "trim_notes_to_pattern",
+            "trim_note_overlaps",
+            "remove_duplicate_notes",
+            "remove_zero_notes",
+            "edit_notes",
+            "quantize",
+            "legato",
+            "articulate",
+            "lfo_tool",
+            "flip_notes",
+            "generate_melody",
+            "generate_fill",
+            "generate_ghost_notes",
+            "generate_variation",
+            "counter_melody",
+            "harmonize",
+            "humanize",
+            "add_slides",
+            "roll_notes",
+            "split_notes",
+            "merge_notes",
+            "scale_snap",
+            "chord_voicing",
+            "velocity_curve",
+        ] {
+            let mut a = json!({});
+            prepare_helper_args(id, &mut a, "hat", "verse", &["n1"]);
+            let schema = (crate::tools::find(id).unwrap().schema)();
+            let props = schema["properties"].as_object().unwrap();
+            assert!(
+                a.as_object().unwrap().keys().all(|k| props.contains_key(k)),
+                "{id}: {a}"
+            );
+            assert_eq!(a.get("ids").is_some(), props.contains_key("ids"), "{id}");
+        }
+        let mut chop = json!({"pattern":"x.x.x.x."});
+        prepare_helper_args("chop_notes", &mut chop, "hat", "verse", &["n1"]);
+        assert_eq!(
+            chop,
+            json!({"pattern":"x.x.x.x.", "target_pattern":"verse", "track":"hat", "ids":["n1"]})
+        );
+        let mut fill = json!({"style":"auto"});
+        prepare_helper_args("generate_fill", &mut fill, "hat", "verse", &["n1"]);
+        assert_eq!(fill, json!({"style":"auto","pattern":"verse"}));
+        let mut edit = json!({"transpose":12});
+        prepare_helper_args("edit_notes", &mut edit, "hat", "verse", &["n1"]);
+        assert_eq!(
+            edit,
+            json!({"transpose":12,"track":"hat","pattern":"verse","ids":["n1"]})
+        );
+    }
+}
+
+#[cfg(test)]
+mod pitch_selection_tests {
+    use super::*;
+    #[test]
+    fn matching_pitches_expand_without_changing_notes() {
+        let notes: Vec<Note> = [60, 62, 60, 64, 62]
+            .iter()
+            .enumerate()
+            .map(|(i, p)| Note {
+                start: i as f32,
+                len: 1.0,
+                pitch: *p,
+                vel: 0.5,
+                prob: 0.6,
+                offset: 0.2,
+                slide_to: Some(70),
+                id: format!("n{i}"),
+            })
+            .collect();
+        let before = serde_json::to_value(&notes).unwrap();
+        assert_eq!(matching_pitch_selection(&notes, &[0]), vec![0, 2]);
+        assert_eq!(
+            matching_pitch_selection(&notes, &[0, 4, 0, 999]),
+            vec![0, 1, 2, 4]
+        );
+        assert!(matching_pitch_selection(&notes, &[]).is_empty());
+        assert!(matching_pitch_selection(&notes, &[999]).is_empty());
+        assert_eq!(serde_json::to_value(&notes).unwrap(), before);
+    }
+    #[test]
+    fn matching_onsets_expand_chords_not_overlapping_sustains() {
+        let notes: Vec<Note> = [0.0, 0.0, 0.00005, 1.0, 2.0, 2.0]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| Note {
+                start: *t,
+                len: 4.0,
+                pitch: 60 + i as u8,
+                vel: 0.5,
+                prob: 0.7,
+                offset: 0.1,
+                slide_to: None,
+                id: format!("n{i}"),
+            })
+            .collect();
+        let before = serde_json::to_value(&notes).unwrap();
+        assert_eq!(matching_onset_selection(&notes, &[0]), vec![0, 1, 2]);
+        assert_eq!(
+            matching_onset_selection(&notes, &[0, 4, 4, 999]),
+            vec![0, 1, 2, 4, 5]
+        );
+        assert_eq!(matching_onset_selection(&notes, &[3]), vec![3]);
+        assert!(matching_onset_selection(&notes, &[]).is_empty());
+        assert!(matching_onset_selection(&notes, &[999]).is_empty());
+        assert_eq!(serde_json::to_value(&notes).unwrap(), before);
+    }
+    #[test]
+    fn selection_complement_is_sorted_unique_and_handles_stale_indices() {
+        assert_eq!(inverted_note_selection(5, &[0, 2, 2, 99]), vec![1, 3, 4]);
+        assert_eq!(inverted_note_selection(3, &[]), vec![0, 1, 2]);
+        assert!(inverted_note_selection(3, &[0, 1, 2]).is_empty());
+        assert!(inverted_note_selection(0, &[99]).is_empty());
+        let original = vec![0, 2];
+        assert_eq!(
+            inverted_note_selection(5, &inverted_note_selection(5, &original)),
+            original
+        );
+    }
+    #[test]
+    fn overlap_selection_finds_both_sides_and_nested_tails_not_chord_tones() {
+        let make = |start, len, pitch| Note {
+            start,
+            len,
+            pitch,
+            vel: 0.5,
+            prob: 0.7,
+            offset: 0.1,
+            slide_to: None,
+            id: String::new(),
+        };
+        let notes = vec![
+            make(2.0, 1.0, 60),
+            make(0.0, 4.0, 60),
+            make(4.0, 1.0, 60),
+            make(0.0, 4.0, 64),
+            make(0.0, 0.0, 60),
+            make(1.0, 1.0, 60),
+            make(8.0, 1.0, 60),
+        ];
+        let before = serde_json::to_value(&notes).unwrap();
+        assert_eq!(overlapping_pitch_selection(&notes), vec![0, 1, 5]);
+        assert_eq!(
+            overlapping_pitch_selection(&[make(0.0, 1.0, 60), make(0.0, 1.0, 60)]),
+            vec![0, 1]
+        );
+        assert!(overlapping_pitch_selection(&[make(0.0, 1.0, 60), make(1.0, 1.0, 60)]).is_empty());
+        assert!(overlapping_pitch_selection(&[
+            make(f32::NAN, 1.0, 60),
+            make(0.0, f32::INFINITY, 60)
+        ])
+        .is_empty());
+        assert!(overlapping_pitch_selection(&[]).is_empty());
+        assert_eq!(serde_json::to_value(&notes).unwrap(), before);
+    }
+    #[test]
+    fn outside_scale_selection_respects_root_mode_and_leaves_notes_unchanged() {
+        let notes: Vec<Note> = (60..72)
+            .map(|pitch| Note {
+                start: 0.0,
+                len: 1.0,
+                pitch,
+                vel: 0.5,
+                prob: 1.0,
+                offset: 0.0,
+                slide_to: None,
+                id: String::new(),
+            })
+            .collect();
+        let before = serde_json::to_value(&notes).unwrap();
+        assert_eq!(
+            outside_scale_selection(&notes, "C", "major"),
+            Some(vec![1, 3, 6, 8, 10])
+        );
+        assert_eq!(
+            outside_scale_selection(&notes, "C", "minor"),
+            Some(vec![1, 4, 6, 9, 11])
+        );
+        assert_eq!(
+            outside_scale_selection(&notes, "D", "major"),
+            Some(vec![0, 3, 5, 8, 10])
+        );
+        assert_eq!(
+            outside_scale_selection(&notes, "Bb", "pentatonic minor"),
+            outside_scale_selection(&notes, "A#", "pentatonic_minor")
+        );
+        assert!(outside_scale_selection(&notes, "?", "major").is_none());
+        assert!(outside_scale_selection(&notes, "C", "unknown").is_none());
+        assert_eq!(outside_scale_selection(&[], "C", "major"), Some(vec![]));
+        assert_eq!(serde_json::to_value(&notes).unwrap(), before);
+    }
+    #[test]
+    fn sorted_onset_lookup_matches_reference_for_large_unsorted_selection() {
+        let notes: Vec<Note> = (0..20_000)
+            .map(|i| Note {
+                start: ((i * 7919) % 4000) as f32 * 0.25 + if i % 3 == 0 { 0.00005 } else { 0.0 },
+                len: 1.0,
+                pitch: 60,
+                vel: 0.5,
+                prob: 1.0,
+                offset: 0.0,
+                slide_to: None,
+                id: String::new(),
+            })
+            .collect();
+        let selected: Vec<usize> = (0..notes.len()).step_by(127).rev().collect();
+        let expected: Vec<usize> = notes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                selected
+                    .iter()
+                    .any(|j| (n.start - notes[*j].start).abs() <= 0.0001)
+                    .then_some(i)
+            })
+            .collect();
+        assert_eq!(matching_onset_selection(&notes, &selected), expected);
+    }
+    #[test]
+    fn overlap_lookup_matches_pairwise_reference_across_shuffled_nested_notes() {
+        for seed in 0..24u32 {
+            let notes: Vec<Note> = (0..100u32)
+                .map(|i| {
+                    let h = i.wrapping_mul(1664525).wrapping_add(seed * 101390422);
+                    Note {
+                        start: (h % 128) as f32 * 0.25,
+                        len: ((h / 128) % 48) as f32 * 0.25,
+                        pitch: 60 + (h % 5) as u8,
+                        vel: 0.5,
+                        prob: 1.0,
+                        offset: 0.0,
+                        slide_to: None,
+                        id: String::new(),
+                    }
+                })
+                .collect();
+            let expected: Vec<usize> = notes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, a)| {
+                    notes
+                        .iter()
+                        .enumerate()
+                        .any(|(j, b)| {
+                            i != j
+                                && a.pitch == b.pitch
+                                && a.len > 0.0
+                                && b.len > 0.0
+                                && a.start < b.start + b.len
+                                && b.start < a.start + a.len
+                        })
+                        .then_some(i)
+                })
+                .collect();
+            assert_eq!(overlapping_pitch_selection(&notes), expected, "seed {seed}");
+        }
+    }
+    #[test]
+    fn pitch_expansion_matches_pairwise_reference_across_shuffled_selections() {
+        for seed in 0..32usize {
+            let notes: Vec<Note> = (0..257usize)
+                .map(|i| Note {
+                    start: i as f32,
+                    len: 1.0,
+                    pitch: ((i * 53 + seed * 19) % 128) as u8,
+                    vel: 0.5,
+                    prob: 1.0,
+                    offset: 0.0,
+                    slide_to: None,
+                    id: format!("{i}"),
+                })
+                .collect();
+            let mut selected: Vec<usize> =
+                (seed..notes.len()).step_by(7 + seed % 11).rev().collect();
+            selected.extend([999, seed, seed]);
+            let expected: Vec<usize> = notes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, n)| {
+                    selected
+                        .iter()
+                        .filter_map(|j| notes.get(*j))
+                        .any(|s| s.pitch == n.pitch)
+                        .then_some(i)
+                })
+                .collect();
+            assert_eq!(
+                matching_pitch_selection(&notes, &selected),
+                expected,
+                "seed {seed}"
+            );
+        }
+    }
+    #[test]
+    fn outside_scale_matches_absolute_pitch_set_for_every_root_mode_and_midi_pitch() {
+        let notes: Vec<Note> = (0..128u8)
+            .map(|pitch| Note {
+                start: 0.0,
+                len: 1.0,
+                pitch,
+                vel: 0.5,
+                prob: 1.0,
+                offset: 0.0,
+                slide_to: None,
+                id: String::new(),
+            })
+            .collect();
+        for (root, name) in theory::NOTE_NAMES.iter().enumerate() {
+            for (mode, intervals) in theory::SCALES {
+                let allowed: std::collections::HashSet<usize> = intervals
+                    .iter()
+                    .map(|p| (root + *p as usize) % 12)
+                    .collect();
+                let expected: Vec<usize> =
+                    (0..128).filter(|p| !allowed.contains(&(p % 12))).collect();
+                assert_eq!(
+                    outside_scale_selection(&notes, name, mode),
+                    Some(expected),
+                    "{name} {mode}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn complement_matches_boolean_reference_for_duplicate_and_stale_indices() {
+        for count in 0..128usize {
+            for seed in 0..12usize {
+                let selected: Vec<usize> = (0..count + 5)
+                    .filter(|i| (i * 7 + seed) % 5 < 2)
+                    .flat_map(|i| [i, i])
+                    .rev()
+                    .collect();
+                let mut flags = vec![false; count];
+                for i in &selected {
+                    if let Some(flag) = flags.get_mut(*i) {
+                        *flag = true;
+                    }
+                }
+                let expected: Vec<usize> = flags
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, flag)| (!flag).then_some(i))
+                    .collect();
+                assert_eq!(inverted_note_selection(count, &selected), expected);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod velocity_target_tests {
+    use super::*;
+    #[test]
+    fn shared_stems_prefer_selected_voice_but_nearest_onset_wins() {
+        let notes = vec![
+            Note::new(0., 1., 60, 0.2),
+            Note::new(0., 1., 64, 0.8),
+            Note::new(1., 1., 67, 0.5),
+        ];
+        assert_eq!(nearest_velocity_note(&notes, &[], 0., 10.), Some(0));
+        assert_eq!(nearest_velocity_note(&notes, &[1], 0., 10.), Some(1));
+        assert_eq!(nearest_velocity_note(&notes, &[1, 0], 0., 10.), Some(0));
+        assert_eq!(nearest_velocity_note(&notes, &[1], 1., 10.), Some(2));
+        assert_eq!(nearest_velocity_note(&notes, &[999], 0., 10.), Some(0));
+        assert_eq!(nearest_velocity_note(&notes, &[1], 4., 10.), None);
+        assert_eq!(nearest_velocity_note(&[], &[], 0., 10.), None);
+        assert_eq!(nearest_velocity_note(&notes, &[], f32::NAN, 10.), None);
+    }
+}
+
+#[cfg(test)]
+mod stable_selection_tests {
+    use super::*;
+    #[test]
+    fn drag_target_resolves_reorder_and_rejects_missing_or_duplicate_ids() {
+        let mut notes = vec![Note::new(0., 1., 60, 0.5), Note::new(4., 1., 64, 0.6)];
+        notes[0].id = "a".into();
+        notes[1].id = "target".into();
+        assert_eq!(unique_note_index(&notes, "target"), Some(1));
+        notes.reverse();
+        assert_eq!(unique_note_index(&notes, "target"), Some(0));
+        notes[1].id = "target".into();
+        assert_eq!(unique_note_index(&notes, "target"), None);
+        notes.remove(1);
+        notes.remove(0);
+        assert_eq!(unique_note_index(&notes, "target"), None);
+    }
+    #[test]
+    fn velocity_identity_rejects_empty_duplicate_and_missing_stems() {
+        let mut notes = vec![Note::new(4., 1., 64, 0.6), Note::new(8., 1., 67, 0.8)];
+        notes[0].id = "held".into();
+        notes[1].id = "other".into();
+        assert_eq!(unique_note_index(&notes, "held"), Some(0));
+        notes.reverse();
+        assert_eq!(unique_note_index(&notes, "held"), Some(1));
+        notes[0].id = "held".into();
+        assert_eq!(unique_note_index(&notes, "held"), None);
+        notes.retain(|n| n.id != "held");
+        assert_eq!(unique_note_index(&notes, "held"), None);
+        notes.push(Note::new(4., 1., 64, 0.6));
+        notes[0].id.clear();
+        assert_eq!(unique_note_index(&notes, ""), None);
+    }
+    #[test]
+    fn identical_geometry_keeps_selected_identity() {
+        let mut notes = vec![Note::new(6., 2., 64, 0.8), Note::new(6., 2., 64, 0.6)];
+        notes[0].id = "stationary".into();
+        notes[1].id = "moved".into();
+        let ids = notes.iter().map(|n| n.id.clone()).collect::<Vec<_>>();
+        assert_eq!(remap_note_selection(&notes, &ids, &[1]), vec![1]);
+        notes.reverse();
+        assert_eq!(remap_note_selection(&notes, &ids, &[1]), vec![0]);
+    }
+    #[test]
+    fn selection_follows_ids_across_delete_reorder_and_disappears_with_target() {
+        let mut notes = vec![
+            Note::new(0., 1., 60, 0.2),
+            Note::new(0., 1., 64, 0.8),
+            Note::new(8., 1., 67, 0.5),
+        ];
+        for (i, n) in notes.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+        }
+        let ids: Vec<String> = notes.iter().map(|n| n.id.clone()).collect();
+        assert_eq!(remap_note_selection(&notes, &ids, &[1, 1, 999]), vec![1]);
+        notes.remove(0);
+        assert_eq!(remap_note_selection(&notes, &ids, &[1]), vec![0]);
+        notes.reverse();
+        assert_eq!(remap_note_selection(&notes, &ids, &[1]), vec![1]);
+        notes.retain(|n| n.id != "n1");
+        assert!(remap_note_selection(&notes, &ids, &[1]).is_empty());
+        assert!(remap_note_selection(&notes, &ids, &[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod silent_selection_tests {
+    use super::*;
+    #[test]
+    fn selects_exact_silence_without_changing_notes() {
+        let mut notes = vec![
+            Note::new(0., 1., 60, 0.),
+            Note::new(4., 1., 64, 0.5),
+            Note::new(8., 1., 67, 0.00001),
+            Note::new(12., 1., 72, 0.5),
+        ];
+        notes[1].prob = 0.;
+        notes[2].prob = 0.00001;
+        notes[3].prob = 0.5;
+        let before = notes.clone();
+        assert_eq!(silent_note_selection(&notes), vec![0, 1]);
+        assert_eq!(notes, before);
+        assert!(silent_note_selection(&[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod boundary_selection_tests {
+    use super::*;
+    #[test]
+    fn boundary_selection_distinguishes_exact_ends_crossings_and_starts() {
+        let notes = vec![
+            Note::new(63., 1., 60, 0.5),
+            Note::new(63., 2., 64, 0.5),
+            Note::new(64., 1., 67, 0.5),
+            Note::new(80., 0.02, 72, 0.5),
+            Note::new(0., 0.02, 60, 0.5),
+        ];
+        let before = notes.clone();
+        assert_eq!(beyond_pattern_selection(&notes, 64.), vec![1, 2, 3]);
+        assert_eq!(notes, before);
+        assert!(beyond_pattern_selection(&[], 64.).is_empty());
+        let mut invalid = notes.clone();
+        invalid[0].start = f32::NAN;
+        invalid[1].len = -1.;
+        assert_eq!(beyond_pattern_selection(&invalid, 64.), vec![2, 3]);
+    }
+}
+
+#[cfg(test)]
+mod duplicate_selection_tests {
+    use super::*;
+    #[test]
+    fn selects_only_extra_exact_copies_not_expression_variants() {
+        let n = Note::new(0., 1., 60, 0.5);
+        let mut notes = vec![
+            n.clone(),
+            n.clone(),
+            n.clone(),
+            n.clone(),
+            n.clone(),
+            n.clone(),
+            n.clone(),
+        ];
+        for (i, n) in notes.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+        }
+        notes[2].vel = 0.6;
+        notes[3].prob = 0.5;
+        notes[4].offset = 0.1;
+        notes[5].slide_to = Some(64);
+        notes[6].start = -0.;
+        let before = notes.clone();
+        assert_eq!(duplicate_copy_selection(&notes), vec![1, 6]);
+        assert_eq!(notes, before);
+        notes[0].len = f32::NAN;
+        assert_eq!(duplicate_copy_selection(&notes), vec![6]);
+        assert!(duplicate_copy_selection(&[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod review_selection_audit_tests {
+    use super::*;
+    #[test]
+    fn duplicate_review_matches_engine_cleanup_across_expression_and_order() {
+        for seed in 0..128usize {
+            let mut notes: Vec<Note> = Vec::new();
+            for i in 0..48usize {
+                let mut n = if i > 0 && (i + seed) % 3 == 0 {
+                    notes[(i * 7 + seed) % notes.len()].clone()
+                } else {
+                    Note::new(
+                        ((i * 11 + seed) % 83) as f32 * 0.5,
+                        0.02 + (i % 4) as f32,
+                        48 + (i % 24) as u8,
+                        (i % 5) as f32 * 0.25,
+                    )
+                };
+                n.id = format!("n{i}");
+                if (i + seed) % 7 == 0 {
+                    n.prob = 0.5;
+                }
+                if (i + seed) % 11 == 0 {
+                    n.offset = 0.1;
+                }
+                if (i + seed) % 13 == 0 {
+                    n.slide_to = Some(72);
+                }
+                notes.push(n);
+            }
+            if seed % 2 == 0 {
+                notes.reverse();
+            }
+            let copies = duplicate_copy_selection(&notes);
+            let mut cleaned = notes.clone();
+            let count = crate::midi_ops::remove_exact_duplicates(
+                &mut cleaned,
+                &crate::midi_ops::Selection::default(),
+            );
+            let expected: Vec<_> = notes
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !copies.contains(i))
+                .map(|(_, n)| n.clone())
+                .collect();
+            assert_eq!(count, copies.len(), "seed {seed}");
+            assert_eq!(
+                cleaned.iter().map(|n| &n.id).collect::<Vec<_>>(),
+                expected.iter().map(|n| &n.id).collect::<Vec<_>>(),
+                "seed {seed}"
+            );
+            assert_eq!(cleaned, expected);
+        }
+    }
+    #[test]
+    fn silence_and_boundary_review_match_independent_reference() {
+        for steps in [14., 16., 28., 64.] {
+            let mut notes: Vec<Note> = Vec::new();
+            for i in 0..192usize {
+                let mut n = Note::new(
+                    (i % 97) as f32 * 0.5,
+                    (i % 7 + 1) as f32 * 0.25,
+                    60,
+                    (i % 4) as f32 * 0.25,
+                );
+                n.prob = (i % 5) as f32 * 0.25;
+                notes.push(n);
+            }
+            let expected_silent: Vec<_> = notes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| !(n.vel > 0. && n.prob > 0.))
+                .map(|(i, _)| i)
+                .collect();
+            let expected_boundary: Vec<_> = notes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.start >= steps || n.len > steps - n.start)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(silent_note_selection(&notes), expected_silent);
+            assert_eq!(beyond_pattern_selection(&notes, steps), expected_boundary);
+        }
+    }
+}
+
+#[cfg(test)]
+mod length_selection_tests {
+    use super::*;
+    #[test]
+    fn matching_lengths_ignore_pitch_start_expression_and_invalid_lengths() {
+        let mut notes = vec![
+            Note::new(0., 1., 60, 0.5),
+            Note::new(4., 2., 64, 0.6),
+            Note::new(8., 1., 67, 0.8),
+            Note::new(12., 4., 72, 0.2),
+            Note::new(80., 2., 48, 0.),
+        ];
+        notes[4].prob = 0.;
+        let before = notes.clone();
+        assert_eq!(matching_length_selection(&notes, &[0]), vec![0, 2]);
+        assert_eq!(
+            matching_length_selection(&notes, &[0, 1, 1, 999]),
+            vec![0, 1, 2, 4]
+        );
+        assert_eq!(notes, before);
+        assert!(matching_length_selection(&notes, &[]).is_empty());
+        assert!(matching_length_selection(&[], &[0]).is_empty());
+        notes[0].len = f32::NAN;
+        notes[1].len = -1.;
+        notes[2].len = 0.;
+        notes[3].len = f32::INFINITY;
+        assert!(matching_length_selection(&notes, &[0, 1, 2, 3]).is_empty());
+    }
+    #[test]
+    fn matching_lengths_use_small_tolerance_not_snap_grid() {
+        let notes = vec![
+            Note::new(0., 1., 60, 0.5),
+            Note::new(4., 1.00005, 64, 0.6),
+            Note::new(8., 1.0002, 67, 0.8),
+            Note::new(12., 0.99, 72, 0.2),
+        ];
+        assert_eq!(matching_length_selection(&notes, &[0]), vec![0, 1]);
+    }
+}
+
+#[cfg(test)]
+mod selection_shortcut_tests {
+    use super::*;
+    fn key(key: egui::Key, command: bool, shift: bool, alt: bool, pressed: bool) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                command,
+                shift,
+                alt,
+                ..Default::default()
+            },
+        }
+    }
+    #[test]
+    fn quick_chord_uses_press_modifiers_not_release_modifiers() {
+        let events = [
+            key(egui::Key::A, true, true, false, true),
+            key(egui::Key::A, false, false, false, false),
+        ];
+        assert_eq!(selection_shortcut(&events), Some(true));
+        let events = [
+            key(egui::Key::A, true, false, false, true),
+            key(egui::Key::A, false, false, false, false),
+        ];
+        assert_eq!(selection_shortcut(&events), Some(false));
+    }
+    #[test]
+    fn unrelated_keys_and_alt_chords_do_not_change_selection() {
+        assert_eq!(selection_shortcut(&[]), None);
+        for event in [
+            key(egui::Key::A, false, false, false, true),
+            key(egui::Key::A, true, false, true, true),
+            key(egui::Key::B, true, true, false, true),
+            key(egui::Key::A, true, true, false, false),
+        ] {
+            assert_eq!(selection_shortcut(&[event]), None);
+        }
+    }
+    #[test]
+    fn last_selection_press_in_frame_wins() {
+        assert_eq!(
+            selection_shortcut(&[
+                key(egui::Key::A, true, false, false, true),
+                key(egui::Key::A, true, true, false, true)
+            ]),
+            Some(true)
+        );
+        assert_eq!(
+            selection_shortcut(&[
+                key(egui::Key::A, true, true, false, true),
+                key(egui::Key::A, true, false, false, true)
+            ]),
+            Some(false)
+        );
+    }
+}
+
+#[cfg(test)]
+mod arrow_shortcut_tests {
+    use super::*;
+    fn key(key: egui::Key, shift: bool, pressed: bool) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                shift,
+                ..Default::default()
+            },
+        }
+    }
+    #[test]
+    fn quick_shift_release_keeps_octave_and_pattern_bar() {
+        assert_eq!(
+            note_arrow_shortcut(
+                &[
+                    key(egui::Key::ArrowUp, true, true),
+                    key(egui::Key::ArrowUp, false, false)
+                ],
+                1.,
+                14.
+            ),
+            (12, 0.)
+        );
+        assert_eq!(
+            note_arrow_shortcut(
+                &[
+                    key(egui::Key::ArrowRight, true, true),
+                    key(egui::Key::ArrowRight, false, false)
+                ],
+                1.,
+                14.
+            ),
+            (0, 14.)
+        );
+        assert_eq!(
+            note_arrow_shortcut(
+                &[
+                    key(egui::Key::ArrowDown, false, true),
+                    key(egui::Key::ArrowLeft, false, true)
+                ],
+                0.5,
+                16.
+            ),
+            (-1, -0.5)
+        );
+    }
+    #[test]
+    fn other_modifier_arrows_do_not_edit_notes() {
+        for modifiers in [
+            egui::Modifiers {
+                command: true,
+                ..Default::default()
+            },
+            egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            egui::Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+            egui::Modifiers {
+                mac_cmd: true,
+                ..Default::default()
+            },
+        ] {
+            let event = egui::Event::Key {
+                key: egui::Key::ArrowRight,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            };
+            assert_eq!(note_arrow_shortcut(&[event], 1., 16.), (0, 0.));
+        }
+    }
+    #[test]
+    fn repeated_and_mixed_arrow_presses_accumulate_once_each() {
+        assert_eq!(
+            note_arrow_shortcut(
+                &[
+                    key(egui::Key::ArrowRight, true, true),
+                    key(egui::Key::ArrowRight, false, true),
+                    key(egui::Key::ArrowUp, false, true)
+                ],
+                1.,
+                14.
+            ),
+            (1, 15.)
+        );
+        assert_eq!(
+            note_arrow_shortcut(
+                &[
+                    key(egui::Key::ArrowLeft, false, false),
+                    key(egui::Key::B, true, true)
+                ],
+                1.,
+                16.
+            ),
+            (0, 0.)
+        );
+    }
+}
+
+#[cfg(test)]
+mod length_lookup_audit_tests {
+    use super::*;
+    #[test]
+    fn duration_lookup_matches_linear_reference_with_tolerance_boundaries() {
+        for seed in 0..64usize {
+            let mut notes: Vec<Note> = (0..384usize)
+                .map(|i| {
+                    let base = ((i * 13 + seed) % 53 + 1) as f32 * 0.125;
+                    Note::new(
+                        i as f32,
+                        base + [0., 0.00005, -0.00005, 0.0002][i % 4],
+                        60,
+                        0.5,
+                    )
+                })
+                .collect();
+            notes[0].len = f32::NAN;
+            notes[1].len = f32::INFINITY;
+            notes[2].len = 0.;
+            notes[3].len = -1.;
+            let mut selected: Vec<usize> = (seed % 7..notes.len())
+                .step_by(seed % 13 + 1)
+                .rev()
+                .collect();
+            selected.extend([9999, 0, 1, 2, 3]);
+            let expected: Vec<_> = notes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, n)| {
+                    (n.len.is_finite()
+                        && n.len > 0.
+                        && selected.iter().filter_map(|j| notes.get(*j)).any(|m| {
+                            m.len.is_finite() && m.len > 0. && (n.len - m.len).abs() <= 0.0001
+                        }))
+                    .then_some(i)
+                })
+                .collect();
+            assert_eq!(
+                matching_length_selection(&notes, &selected),
+                expected,
+                "seed{seed}"
+            );
+        }
+    }
+    #[test]
+    fn dense_duration_selection_handles_large_reversed_selection() {
+        let notes: Vec<_> = (0..16384usize)
+            .map(|i| Note::new(i as f32, (i % 128 + 1) as f32 * 0.25, 60, 0.5))
+            .collect();
+        let selected: Vec<_> = (0..notes.len()).rev().collect();
+        assert_eq!(
+            matching_length_selection(&notes, &selected),
+            (0..notes.len()).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod selection_summary_tests {
+    use super::*;
+    #[test]
+    fn summary_uses_selected_notes_only_and_keeps_project_unchanged() {
+        let notes = vec![
+            Note::new(0., 0.02, 60, 0.),
+            Note::new(4., 2., 64, 0.6),
+            Note::new(8., 1., 67, 1.),
+        ];
+        let before = notes.clone();
+        assert_eq!(selection_summary(&notes, &[2,0,2,999]), Some("Selected pitch: C4 to G4\nNominal span: 0.000 to 9.000 steps\nSelected lengths: 0.020 to 1.000 steps\nSelected velocity: 0.0% to 100.0%\nTrigger chance: 100.0% to 100.0%\nTiming offsets: +0.000 to +0.000 steps".into()));
+        assert_eq!(notes, before);
+        assert_eq!(selection_summary(&notes, &[]), None);
+        assert_eq!(selection_summary(&notes, &[999]), None);
+    }
+}
+
+#[cfg(test)]
+mod selection_summary_dense_tests {
+    use super::*;
+    #[test]
+    fn dense_summary_accepts_duplicates_and_stale_indices() {
+        let notes: Vec<_> = (0..16384)
+            .map(|i| {
+                Note::new(
+                    i as f32,
+                    0.25 + (i % 8) as f32,
+                    48 + (i % 24) as u8,
+                    (i % 101) as f32 / 100.,
+                )
+            })
+            .collect();
+        let selected: Vec<_> = (0..notes.len() + 1).chain(0..notes.len()).collect();
+        assert_eq!(selection_summary(&notes,&selected),Some("Selected pitch: C3 to B4\nNominal span: 0.000 to 16390.250 steps\nSelected lengths: 0.250 to 7.250 steps\nSelected velocity: 0.0% to 100.0%\nTrigger chance: 100.0% to 100.0%\nTiming offsets: +0.000 to +0.000 steps".into()));
+    }
+    #[test]
+    fn nonfinite_lengths_and_velocity_do_not_pollute_ranges() {
+        let mut notes = vec![Note::new(0., 1., 60, 0.5), Note::new(1., 2., 67, 0.75)];
+        notes[0].len = f32::NAN;
+        notes[0].vel = f32::INFINITY;
+        assert_eq!(selection_summary(&notes,&[0,1]),Some("Selected pitch: C4 to G4\nNominal span: 1.000 to 3.000 steps\nSelected lengths: 2.000 to 2.000 steps\nSelected velocity: 75.0% to 75.0%\nTrigger chance: 100.0% to 100.0%\nTiming offsets: +0.000 to +0.000 steps".into()));
+        assert_eq!(
+            selection_summary(&notes, &[0]),
+            Some("Selected pitch: C4 to C4\nTrigger chance: 100.0% to 100.0%\nTiming offsets: +0.000 to +0.000 steps".into())
+        );
+    }
+}
+
+#[cfg(test)]
+mod selection_span_tests {
+    use super::*;
+    #[test]
+    fn span_uses_selected_nominal_bounds_including_off_pattern_tails() {
+        let mut notes = vec![
+            Note::new(8., 2., 67, 0.8),
+            Note::new(80., 0.02, 72, 0.9),
+            Note::new(0., 1., 60, 0.5),
+        ];
+        notes[0].offset = 0.4;
+        assert!(selection_summary(&notes, &[0, 1])
+            .unwrap()
+            .contains("Nominal span: 8.000 to 80.020 steps"));
+        assert!(selection_summary(&notes, &[0])
+            .unwrap()
+            .contains("Nominal span: 8.000 to 10.000 steps"));
+    }
+    #[test]
+    fn span_skips_overflow_negative_lengths_and_invalid_starts() {
+        let mut notes = vec![
+            Note::new(f32::MAX, f32::MAX, 60, 0.5),
+            Note::new(1., 1., 64, 0.5),
+            Note::new(2., 1., 67, 0.5),
+            Note::new(4., 2., 72, 0.5),
+        ];
+        notes[1].len = -1.;
+        notes[2].start = f32::NAN;
+        assert!(selection_summary(&notes, &[0, 1, 2, 3])
+            .unwrap()
+            .contains("Nominal span: 4.000 to 6.000 steps"));
+        assert!(!selection_summary(&notes, &[0, 1, 2])
+            .unwrap()
+            .contains("Nominal span:"));
+    }
+}
+
+#[cfg(test)]
+mod selection_id_lookup_tests {
+    use super::*;
+    #[test]
+    fn indexed_id_lookup_matches_nested_reference() {
+        for seed in 0..64 {
+            let mut notes: Vec<_> = (0..384).map(|i| Note::new(i as f32, 1., 60, 0.8)).collect();
+            for (i, n) in notes.iter_mut().enumerate() {
+                n.id = format!("n{}", (i * 17 + seed) % 241);
+            }
+            let mut ids: Vec<_> = notes
+                .iter()
+                .skip(seed % 7)
+                .step_by(seed % 11 + 1)
+                .map(|n| n.id.clone())
+                .collect();
+            ids.extend(["missing".into(), ids[0].clone()]);
+            let reference: Vec<_> = notes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, n)| ids.contains(&n.id).then_some(i))
+                .collect();
+            assert_eq!(selection_from_ids(&notes, &ids), reference);
+        }
+        assert!(selection_from_ids(&[], &[]).is_empty());
+    }
+    #[test]
+    fn dense_reselection_keeps_source_order() {
+        let mut notes: Vec<_> = (0..16384)
+            .map(|i| Note::new(i as f32, 1., 60, 0.8))
+            .collect();
+        for (i, n) in notes.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+        }
+        let ids: Vec<_> = notes.iter().rev().map(|n| n.id.clone()).collect();
+        assert_eq!(
+            selection_from_ids(&notes, &ids),
+            (0..notes.len()).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod selected_drawing_lookup_tests {
+    use super::*;
+    #[test]
+    fn drawing_membership_matches_reference_and_filters_stale_indices() {
+        for seed in 0..64 {
+            let selected: Vec<_> = (0..512)
+                .filter(|i| (i + seed) % 7 < 3)
+                .chain([0, 0, 999])
+                .collect();
+            let set = selected_index_mask(384, &selected);
+            for i in 0..384 {
+                assert_eq!(set[i], selected.contains(&i));
+            }
+            assert!(set.get(999).is_none());
+        }
+        assert!(selected_index_mask(0, &[0, 1]).is_empty());
+    }
+    #[test]
+    fn dense_drawing_membership_deduplicates_and_clears() {
+        let selected: Vec<_> = (0..16384).chain(0..16384).collect();
+        let set = selected_index_mask(16384, &selected);
+        assert_eq!(set.iter().filter(|v| **v).count(), 16384);
+        assert!(selected_index_mask(16384, &[]).iter().all(|v| !v));
+    }
+}
+
+#[cfg(test)]
+mod note_identity_cache_tests {
+    use super::*;
+    #[test]
+    fn identity_map_ignores_geometry_but_detects_reorder_replace_delete_and_empty() {
+        let mut notes: Vec<_> = (0..3)
+            .map(|i| {
+                let mut n = Note::new(i as f32, 1., 60, 0.5);
+                n.id = format!("n{i}");
+                n
+            })
+            .collect();
+        let ids: Vec<_> = notes.iter().map(|n| n.id.clone()).collect();
+        assert!(note_identity_matches(&notes, &ids));
+        notes[0].pitch = 72;
+        notes[1].vel = 0.2;
+        assert!(note_identity_matches(&notes, &ids));
+        notes.swap(0, 2);
+        assert!(!note_identity_matches(&notes, &ids));
+        assert_eq!(remap_note_selection(&notes, &ids, &[0]), vec![2]);
+        notes.swap(0, 2);
+        notes[0].id = "replacement".into();
+        assert!(!note_identity_matches(&notes, &ids));
+        assert!(remap_note_selection(&notes, &ids, &[0]).is_empty());
+        notes.pop();
+        assert!(!note_identity_matches(&notes, &ids));
+        assert!(note_identity_matches(&[], &[]));
+        assert!(!note_identity_matches(&notes, &[]));
+    }
+}
+
+#[cfg(test)]
+mod identity_cache_transition_audit_tests {
+    use super::*;
+    #[test]
+    fn cached_identity_path_matches_unconditional_remapping_across_edit_sequences() {
+        for seed in 0..64usize {
+            let mut notes: Vec<_> = (0..128)
+                .map(|i| {
+                    let mut n = Note::new(i as f32, 1., 60, 0.5);
+                    n.id = format!("n{i}");
+                    n
+                })
+                .collect();
+            let mut ids: Vec<_> = notes.iter().map(|n| n.id.clone()).collect();
+            let mut selected: Vec<_> = (seed % 5..notes.len()).step_by(seed % 7 + 1).collect();
+            for step in 0..64 {
+                match (step + seed) % 6 {
+                    0 => {
+                        for n in &mut notes {
+                            n.pitch = 48 + (step % 24) as u8;
+                            n.vel = 0.25;
+                        }
+                    }
+                    1 => notes.reverse(),
+                    2 => {
+                        if !notes.is_empty() {
+                            let at = (seed + step) % notes.len();
+                            notes.remove(at);
+                        }
+                    }
+                    3 => {
+                        let mut n = Note::new(step as f32, 0.25, 67, 0.8);
+                        n.id = format!("added-{seed}-{step}");
+                        notes.insert(0, n);
+                    }
+                    4 => {
+                        if let Some(n) = notes.first_mut() {
+                            n.id = format!("replacement-{seed}-{step}");
+                        }
+                    }
+                    _ => {
+                        let len = notes.len();
+                        if len > 1 {
+                            notes.rotate_left((seed + step) % len);
+                        }
+                    }
+                }
+                let expected = remap_note_selection(&notes, &ids, &selected);
+                let mut cached = selected.clone();
+                if !note_identity_matches(&notes, &ids) {
+                    cached = remap_note_selection(&notes, &ids, &cached);
+                }
+                cached.retain(|i| *i < notes.len());
+                assert_eq!(cached, expected, "seed {seed}, step {step}");
+                if !note_identity_matches(&notes, &ids) {
+                    ids = notes.iter().map(|n| n.id.clone()).collect();
+                }
+                selected = cached;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod repeat_capacity_lookup_audit_tests {
+    use super::*;
+    fn reference(notes: &[Note], selected: &[usize], period: f32, steps: f32) -> (usize, u32) {
+        if !period.is_finite() || period <= 0. {
+            return (0, 0);
+        }
+        let source: Vec<_> = notes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| selected.is_empty() || selected.contains(i))
+            .map(|(_, n)| n)
+            .collect();
+        let count = source.len();
+        let fit = source
+            .iter()
+            .map(|n| {
+                ((steps - n.start - n.len + 1e-4) / period)
+                    .floor()
+                    .clamp(0., 64.) as u32
+            })
+            .min()
+            .unwrap_or(0);
+        (count, fit.min((100_000 / count.max(1)).min(64) as u32))
+    }
+    #[test]
+    fn indexed_repeat_capacity_matches_reference_for_selected_and_all_notes() {
+        for seed in 0..64usize {
+            let notes: Vec<_> = (0..384)
+                .map(|i| {
+                    Note::new(
+                        ((i * 17 + seed) % 97) as f32,
+                        (i % 11 + 1) as f32 * 0.25,
+                        60,
+                        0.5,
+                    )
+                })
+                .collect();
+            let selected: Vec<_> = (seed % 7..notes.len())
+                .step_by(seed % 11 + 1)
+                .chain([999, 0, 0])
+                .collect();
+            for sel in [&selected[..], &[][..]] {
+                for period in [0., f32::NAN, 0.25, 14., 16., 64.] {
+                    for steps in [0., 56., 64., 256.] {
+                        assert_eq!(
+                            repeat_capacity(&notes, sel, period, steps),
+                            reference(&notes, sel, period, steps)
+                        );
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn dense_repeat_capacity_preserves_generated_note_limit() {
+        let notes: Vec<_> = (0..16384).map(|_| Note::new(0., 1., 60, 0.5)).collect();
+        let selected: Vec<_> = (0..notes.len()).rev().collect();
+        assert_eq!(repeat_capacity(&notes, &selected, 1., 64.), (16384, 6));
+        assert_eq!(repeat_capacity(&notes, &[99999], 1., 64.), (0, 0));
+    }
+}
+
+#[cfg(test)]
+mod repeat_capacity_numeric_tests {
+    use super::*;
+    #[test]
+    fn unsupported_bounds_offer_no_copies_but_do_not_hide_source_count() {
+        for (start, len) in [
+            (0., 0.02),
+            (-1., 1.),
+            (0., f32::NAN),
+            (f32::INFINITY, 1.),
+            (f32::MAX, f32::MAX),
+        ] {
+            let notes = [Note::new(start, len, 60, 0.5)];
+            assert_eq!(repeat_capacity(&notes, &[], 16., 64.), (1, 0));
+        }
+        for steps in [f32::NAN, f32::INFINITY, -1.] {
+            assert_eq!(
+                repeat_capacity(&[Note::new(0., 1., 60, 0.5)], &[], 16., steps),
+                (0, 0)
+            );
+        }
+    }
+    #[test]
+    fn unselected_short_note_does_not_block_valid_selected_source() {
+        let notes = [Note::new(0., 0.02, 60, 0.5), Note::new(0., 1., 64, 0.5)];
+        assert_eq!(repeat_capacity(&notes, &[], 16., 64.), (2, 0));
+        assert_eq!(repeat_capacity(&notes, &[1], 16., 64.), (1, 3));
+    }
+}
+#[cfg(test)]
+mod repeat_engine_capacity_audit_tests {
+    use super::*;
+    #[test]
+    fn offered_repeat_capacity_is_accepted_at_fit_boundaries() {
+        for steps in [14.0f32, 16., 56., 64.] {
+            for period in [0.25, 1., 3.5, 14., 16.] {
+                for len in [0.05, 0.25, 1., 2.] {
+                    for end_delta in [-0.0002, 0., 0.0002] {
+                        let start = (steps - period - len + end_delta).max(0.);
+                        let notes = vec![Note::new(start, len, 60, 0.5)];
+                        let (_, capacity) = repeat_capacity(&notes, &[], period, steps);
+                        for copies in 1..=capacity {
+                            let mut edited = notes.clone();
+                            assert!(crate::midi_ops::repeat_phrase(&mut edited,&crate::midi_ops::Selection::default(),period,copies,steps).is_ok(),"steps={steps} period={period} len={len} start={start} copies={copies}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod selection_expression_summary_tests {
+    use super::*;
+    #[test]
+    fn expression_ranges_are_selected_only_and_signed() {
+        let mut notes = vec![
+            Note::new(0., 1., 60, 0.5),
+            Note::new(4., 1., 64, 0.5),
+            Note::new(8., 1., 67, 0.5),
+        ];
+        notes[0].prob = 0.25;
+        notes[0].offset = -0.125;
+        notes[1].prob = 0.75;
+        notes[1].offset = 0.25;
+        notes[2].prob = 0.;
+        notes[2].offset = -0.5;
+        let text = selection_summary(&notes, &[0, 1, 1, 999]).unwrap();
+        assert!(text.contains("Trigger chance: 25.0% to 75.0%"));
+        assert!(text.contains("Timing offsets: -0.125 to +0.250 steps"));
+        notes[0].prob = f32::NAN;
+        notes[0].offset = f32::INFINITY;
+        let text = selection_summary(&notes, &[0]).unwrap();
+        assert!(!text.contains("Trigger chance:"));
+        assert!(!text.contains("Timing offsets:"));
+    }
+}
+
+#[cfg(test)]
+mod expression_selection_tests {
+    use super::*;
+    #[test]
+    fn exact_expression_filters_preserve_order_and_include_zero_chance() {
+        let values = [
+            (1.0, 0.0),
+            (0.75, 0.25),
+            (0.0, -0.125),
+            (0.5, -0.0),
+            (1.0, f32::EPSILON),
+            (f32::NAN, f32::INFINITY),
+            (f32::INFINITY, f32::NAN),
+            (-0.1, 0.0),
+            (1.1, 0.0),
+        ];
+        let notes: Vec<Note> = values
+            .into_iter()
+            .enumerate()
+            .map(|(i, (prob, offset))| Note {
+                id: format!("n{i}"),
+                prob,
+                offset,
+                ..Default::default()
+            })
+            .collect();
+        assert_eq!(expression_note_selection(&notes, true), vec![1, 2, 4]);
+        assert_eq!(expression_note_selection(&notes, false), vec![1, 2, 3]);
+        assert!(expression_note_selection(&[], true).is_empty());
+        assert!(expression_note_selection(&[], false).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod velocity_target_linear_audit_tests {
+    use super::*;
+    fn reference(notes: &[Note], selected: &[usize], at: f32, cell: f32) -> Option<usize> {
+        notes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (i, ((n.start - at) * cell).abs()))
+            .filter(|(_, distance)| distance.is_finite() && *distance < 8.0)
+            .min_by(|(a, ad), (b, bd)| {
+                ad.total_cmp(bd)
+                    .then_with(|| selected.contains(b).cmp(&selected.contains(a)))
+                    .then_with(|| a.cmp(b))
+            })
+            .map(|(i, _)| i)
+    }
+
+    #[test]
+    fn generated_targeting_matches_original_tie_rules() {
+        for seed in 0..64usize {
+            let notes: Vec<_> = (0..192)
+                .map(|i| {
+                    let mut n = Note::new(((i * 7 + seed) % 13) as f32 * 0.25, 1., 60, 0.5);
+                    if i % 31 == 0 {
+                        n.start = f32::NAN;
+                    }
+                    n
+                })
+                .collect();
+            let mut selected: Vec<_> = (seed % 7..notes.len())
+                .step_by(seed % 5 + 1)
+                .rev()
+                .collect();
+            selected.extend([999, seed, seed]);
+            for at in [-1., 0., 0.125, 0.25, 1., 2.75, 4., f32::NAN, f32::INFINITY] {
+                for cell in [0., -10., 1., 10., 100., f32::INFINITY] {
+                    assert_eq!(
+                        nearest_velocity_note(&notes, &selected, at, cell),
+                        reference(&notes, &selected, at, cell)
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn dense_shared_onset_keeps_lowest_selected_index() {
+        let notes: Vec<_> = (0..16384).map(|_| Note::new(0., 1., 60, 0.5)).collect();
+        let selected: Vec<_> = (8192..notes.len()).rev().collect();
+        assert_eq!(
+            nearest_velocity_note(&notes, &selected, 0., 10.),
+            Some(8192)
+        );
+        assert_eq!(nearest_velocity_note(&notes, &[], 0., 10.), Some(0));
+    }
+}
+
+#[cfg(test)]
+mod note_expression_hint_tests {
+    use super::*;
+    #[test]
+    fn exact_saved_expression_and_slide_are_visible() {
+        let note = Note {
+            prob: 0.375,
+            offset: -0.125,
+            slide_to: Some(67),
+            ..Default::default()
+        };
+        assert_eq!(
+            note_expression_hint(&note),
+            "Trigger chance: 37.5%\nTiming offset: -0.125 steps\nSlide to: G4 (MIDI 67)"
+        );
+        let note = Note {
+            prob: 1.0,
+            offset: 0.25,
+            ..Default::default()
+        };
+        assert_eq!(
+            note_expression_hint(&note),
+            "Trigger chance: 100.0%\nTiming offset: +0.250 steps"
+        );
+    }
+    #[test]
+    fn nonfinite_expression_does_not_hide_valid_slide() {
+        let note = Note {
+            prob: f32::NAN,
+            offset: f32::INFINITY,
+            slide_to: Some(60),
+            ..Default::default()
+        };
+        assert_eq!(note_expression_hint(&note), "Slide to: C4 (MIDI 60)");
+    }
+}
+
+#[cfg(test)]
+mod velocity_expression_history_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn id_targeted_chord_velocity_preserves_expression_and_exact_history_roundtrip() {
+        let dir = std::env::temp_dir().join(format!(
+            "beatbox-velocity-expression-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut engine = crate::Engine::new(dir.clone());
+        engine
+            .call("add_track", &json!({"name":"keys","preset":"epiano"}))
+            .unwrap();
+        let notes: Vec<Note> = (0..3)
+            .map(|i| Note {
+                id: format!("voice{i}"),
+                start: 4.,
+                len: 2.,
+                pitch: 60 + i * 4,
+                vel: 0.4 + i as f32 * 0.2,
+                prob: 0.25 + i as f32 * 0.25,
+                offset: -0.125 + i as f32 * 0.125,
+                slide_to: Some(72),
+            })
+            .collect();
+        engine.project.patterns[0]
+            .clips
+            .insert("keys".into(), notes);
+        let before = serde_json::to_value(&engine.project).unwrap();
+        let history = engine.history().0.len();
+        engine
+            .call(
+                "set_note_velocity",
+                &json!({"track":"keys","ids":["voice1"],"velocity":0.25}),
+            )
+            .unwrap();
+        let mut expected = before.clone();
+        expected["patterns"][0]["clips"]["keys"][1]["vel"] = json!(0.25);
+        assert_eq!(serde_json::to_value(&engine.project).unwrap(), expected);
+        assert_eq!(engine.history().0.len(), history + 1);
+        engine.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&engine.project).unwrap(), before);
+        engine.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&engine.project).unwrap(), expected);
+        engine
+            .call("save_project", &json!({"path":"velocity-roundtrip.json"}))
+            .unwrap();
+        engine
+            .call("load_project", &json!({"path":"velocity-roundtrip.json"}))
+            .unwrap();
+        assert_eq!(serde_json::to_value(&engine.project).unwrap(), expected);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod velocity_lane_value_tests {
+    use super::*;
+    #[test]
+    fn full_lane_reaches_true_silence_and_unity() {
+        assert_eq!(velocity_lane_value(100., 24., 98.), Some(0.));
+        assert_eq!(velocity_lane_value(100., 24., 78.), Some(1.));
+        assert_eq!(velocity_lane_value(100., 24., 88.), Some(0.5));
+        assert_eq!(velocity_lane_value(100., 24., 120.), Some(0.));
+        assert_eq!(velocity_lane_value(100., 24., 0.), Some(1.));
+    }
+    #[test]
+    fn invalid_geometry_cannot_write_a_velocity() {
+        for (bottom, height, y) in [
+            (100., 4., 88.),
+            (100., 0., 88.),
+            (100., -1., 88.),
+            (f32::NAN, 24., 88.),
+            (100., f32::INFINITY, 88.),
+            (100., 24., f32::NAN),
+            (f32::MAX, 24., -f32::MAX),
+        ] {
+            assert_eq!(velocity_lane_value(bottom, height, y), None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod velocity_boundary_history_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn zero_and_full_velocity_repeat_without_extra_history_and_undo_exactly() {
+        let dir = std::env::temp_dir().join(format!(
+            "beatbox-velocity-boundaries-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut engine = crate::Engine::new(dir.clone());
+        engine
+            .call("add_track", &json!({"name":"keys","preset":"epiano"}))
+            .unwrap();
+        let note = Note {
+            id: "boundary".into(),
+            start: 4.,
+            len: 2.,
+            pitch: 64,
+            vel: 0.6,
+            prob: 0.5,
+            offset: 0.1,
+            slide_to: Some(67),
+        };
+        engine.project.patterns[0]
+            .clips
+            .insert("keys".into(), vec![note]);
+        let before = serde_json::to_value(&engine.project).unwrap();
+        for velocity in [0., 1.] {
+            let h = engine.history().0.len();
+            let args = json!({"track":"keys","ids":["boundary"],"velocity":velocity});
+            engine.call("set_note_velocity", &args).unwrap();
+            let after = serde_json::to_value(&engine.project).unwrap();
+            let mut expected = before.clone();
+            expected["patterns"][0]["clips"]["keys"][0]["vel"] = json!(velocity);
+            assert_eq!(after, expected);
+            assert_eq!(engine.history().0.len(), h + 1);
+            engine.call("set_note_velocity", &args).unwrap();
+            assert_eq!(engine.history().0.len(), h + 1);
+            assert_eq!(serde_json::to_value(&engine.project).unwrap(), after);
+            engine.call("undo", &json!({})).unwrap();
+            assert_eq!(serde_json::to_value(&engine.project).unwrap(), before);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod velocity_readout_label_tests {
+    use super::*;
+    #[test]
+    fn readout_identifies_pitch_including_silence() {
+        assert_eq!(velocity_readout_label(64, 0.6), "E4: 60%");
+        assert_eq!(velocity_readout_label(60, 0.0), "C4: 0%");
+        assert_eq!(velocity_readout_label(67, 0.8095238), "G4: 81%");
+        assert_eq!(velocity_readout_label(127, 1.0), "G9: 100%");
+    }
+}
+
+#[cfg(test)]
+mod velocity_label_placement_tests {
+    use super::*;
+    #[test]
+    fn edge_and_full_velocity_labels_stay_inside_lane() {
+        let lane = Rect::from_min_max(egui::pos2(80., 720.), egui::pos2(860., 770.));
+        let size = egui::vec2(58., 12.);
+        for desired in [
+            egui::pos2(850., 710.),
+            egui::pos2(20., 780.),
+            egui::pos2(132., 745.),
+        ] {
+            let at = velocity_label_origin(lane, desired, size);
+            assert!(lane.contains_rect(Rect::from_min_size(at, size)));
+        }
+        assert_eq!(
+            velocity_label_origin(lane, egui::pos2(850., 710.), size),
+            egui::pos2(800., 722.)
+        );
+        let narrow = Rect::from_min_max(egui::pos2(0., 0.), egui::pos2(20., 10.));
+        assert_eq!(
+            velocity_label_origin(narrow, egui::pos2(30., 20.), size),
+            egui::pos2(2., 2.)
+        );
+    }
+}
+
+#[cfg(test)]
+mod slide_note_selection_tests {
+    use super::*;
+    #[test]
+    fn saved_slide_presence_selects_in_storage_order() {
+        let notes = vec![
+            Note::new(0., 1., 60, 0.5),
+            Note {
+                pitch: 60,
+                slide_to: Some(60),
+                ..Default::default()
+            },
+            Note {
+                slide_to: Some(127),
+                ..Default::default()
+            },
+            Note::new(4., 1., 64, 0.8),
+        ];
+        assert_eq!(slide_note_selection(&notes), vec![1, 2]);
+        assert!(slide_note_selection(&[]).is_empty());
+        assert!(slide_note_selection(&notes[..1]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod geometry_reindex_history_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn earlier_deletion_keeps_held_move_and_resize_on_original_id() {
+        for resize in [false, true] {
+            let dir = std::env::temp_dir()
+                .join(format!("beatbox-reindex-{resize}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut engine = crate::Engine::new(dir.clone());
+            engine
+                .call("add_track", &json!({"name":"keys","preset":"epiano"}))
+                .unwrap();
+            let notes: Vec<Note> = (0..3)
+                .map(|i| Note {
+                    id: format!("voice{i}"),
+                    start: i as f32 * 4.,
+                    len: 2.,
+                    pitch: 60 + i * 4,
+                    vel: 0.6,
+                    prob: 0.5,
+                    offset: 0.1,
+                    slide_to: Some(72),
+                })
+                .collect();
+            engine.project.patterns[0]
+                .clips
+                .insert("keys".into(), notes.clone());
+            let before = serde_json::to_value(&engine.project).unwrap();
+            let prior_ids: Vec<_> = notes.iter().map(|n| n.id.clone()).collect();
+            engine
+                .call("delete_notes", &json!({"track":"keys","ids":["voice0"]}))
+                .unwrap();
+            let removed = serde_json::to_value(&engine.project).unwrap();
+            let current = engine.project.patterns[0].notes("keys").to_vec();
+            let selected = remap_note_selection(&current, &prior_ids, &[2]);
+            assert_eq!(selected, vec![1]);
+            let index = unique_note_index(&current, "voice2").unwrap();
+            assert_eq!(index, 1);
+            let edited = apply_shift(
+                &current,
+                &selected,
+                &NoteShift {
+                    index,
+                    resize,
+                    d_steps: 2.,
+                    d_semi: if resize { 0 } else { 1 },
+                },
+                64.,
+                1.,
+            );
+            let updates: Vec<_> = edited
+                .iter()
+                .zip(&current)
+                .filter(|(a, b)| (a.start, a.len, a.pitch) != (b.start, b.len, b.pitch))
+                .map(|(n, _)| json!({"id":n.id,"start":n.start,"len":n.len,"pitch":n.pitch}))
+                .collect();
+            engine
+                .call(
+                    "update_note_geometry",
+                    &json!({"track":"keys","updates":updates}),
+                )
+                .unwrap();
+            let mut expected = removed.clone();
+            expected["patterns"][0]["clips"]["keys"] = serde_json::to_value(&edited).unwrap();
+            assert_eq!(serde_json::to_value(&engine.project).unwrap(), expected);
+            assert_eq!(edited[0], current[0]);
+            let mut changed = current[1].clone();
+            if resize {
+                changed.len += 2.;
+            } else {
+                changed.start += 2.;
+                changed.pitch += 1;
+            }
+            assert_eq!(edited[1], changed);
+            engine.call("undo", &json!({})).unwrap();
+            assert_eq!(serde_json::to_value(&engine.project).unwrap(), removed);
+            engine.call("undo", &json!({})).unwrap();
+            assert_eq!(serde_json::to_value(&engine.project).unwrap(), before);
+            std::fs::remove_dir_all(dir).unwrap();
         }
     }
 }

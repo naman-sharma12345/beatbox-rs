@@ -168,8 +168,10 @@ pub fn amp_sim(p: &AmpSimFx, l: &mut [f32], r: &mut [f32]) {
 
 // ------------------------------------------------------------ impulse responses
 
-fn ir_cache() -> &'static Mutex<HashMap<PathBuf, Arc<(Vec<f32>, Vec<f32>)>>> {
-    static C: OnceLock<Mutex<HashMap<PathBuf, Arc<(Vec<f32>, Vec<f32>)>>>> = OnceLock::new();
+type IrCacheKey = (PathBuf, usize, u64, Option<std::time::SystemTime>);
+
+fn ir_cache() -> &'static Mutex<HashMap<IrCacheKey, Arc<(Vec<f32>, Vec<f32>)>>> {
+    static C: OnceLock<Mutex<HashMap<IrCacheKey, Arc<(Vec<f32>, Vec<f32>)>>>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -178,11 +180,19 @@ fn ir_cache() -> &'static Mutex<HashMap<PathBuf, Arc<(Vec<f32>, Vec<f32>)>>> {
 /// normalised so the wet level does not depend on the file.
 pub fn load_ir(path: &str, max_s: f32) -> Option<Arc<(Vec<f32>, Vec<f32>)>> {
     let pb = crate::sound_catalog::resolve_file(path).unwrap_or_else(|| PathBuf::from(path));
-    if let Some(v) = ir_cache().lock().unwrap().get(&pb) {
+    if !max_s.is_finite() {
+        return None;
+    }
+    let n = ((max_s.clamp(0.01, 12.0)) * SR) as usize;
+    let metadata = std::fs::metadata(&pb).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let key = (pb.clone(), n, metadata.len(), metadata.modified().ok());
+    if let Some(v) = ir_cache().lock().unwrap().get(&key) {
         return Some(v.clone());
     }
     let (mut l, mut r) = crate::samples::decode_stereo(&pb).ok()?;
-    let n = ((max_s.clamp(0.01, 12.0)) * SR) as usize;
     l.truncate(n);
     r.truncate(n);
     let e = (l.iter().chain(r.iter()).map(|v| v * v).sum::<f32>() * 0.5)
@@ -195,7 +205,9 @@ pub fn load_ir(path: &str, max_s: f32) -> Option<Arc<(Vec<f32>, Vec<f32>)>> {
     if c.len() > 16 {
         c.clear();
     }
-    c.insert(pb, a.clone());
+    // Discard older revisions while retaining other durations of this revision.
+    c.retain(|k, _| k.0 != pb || (k.2, k.3) == (key.2, key.3));
+    c.insert(key, a.clone());
     Some(a)
 }
 
@@ -283,5 +295,78 @@ mod tests {
             }
         }
         assert!(rms(&hi[4000..]) < rms(&mid[4000..]) * 0.2);
+    }
+}
+
+#[cfg(test)]
+mod ir_duration_cache_tests {
+    use super::*;
+    #[test]
+    fn cached_ir_obeys_requested_duration_in_both_orders() {
+        for (order, limits) in [[0.01, 0.1], [0.1, 0.01]].iter().enumerate() {
+            let path = std::env::temp_dir().join(format!(
+                "beatbox-ir-duration-{order}-{}.wav",
+                std::process::id()
+            ));
+            let samples = vec![0.01; SR as usize];
+            crate::render::write_wav(&path, &samples, &samples).unwrap();
+            for limit in limits {
+                let ir = load_ir(path.to_str().unwrap(), *limit).unwrap();
+                assert_eq!(ir.0.len(), (*limit * SR) as usize);
+                assert_eq!(ir.1.len(), ir.0.len());
+                let cached = load_ir(path.to_str().unwrap(), *limit).unwrap();
+                assert!(Arc::ptr_eq(&ir, &cached));
+                let energy = ir.0.iter().chain(&ir.1).map(|v| v * v).sum::<f32>() * 0.5;
+                assert!((energy - 1.).abs() < 0.001);
+            }
+            for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                assert!(load_ir(path.to_str().unwrap(), invalid).is_none());
+            }
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod ir_file_revision_tests {
+    use super::*;
+    #[test]
+    fn changed_or_deleted_local_ir_does_not_reuse_stale_buffer() {
+        let path =
+            std::env::temp_dir().join(format!("beatbox-ir-revision-{}.wav", std::process::id()));
+        let a = vec![0.01; 2000];
+        crate::render::write_wav(&path, &a, &a).unwrap();
+        let first = load_ir(path.to_str().unwrap(), 0.1).unwrap();
+        assert_eq!(first.0.len(), 2000);
+        let b = vec![0.02; 3000];
+        crate::render::write_wav(&path, &b, &b).unwrap();
+        let second = load_ir(path.to_str().unwrap(), 0.1).unwrap();
+        assert_eq!(second.0.len(), 3000);
+        assert!(!Arc::ptr_eq(&first, &second));
+        let mut changed = b.clone();
+        changed[0] = 0.8;
+        crate::render::write_wav(&path, &changed, &changed).unwrap();
+        // Ensure a distinct timestamp even on coarse-timestamp filesystems.
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+            .unwrap();
+        let third = load_ir(path.to_str().unwrap(), 0.1).unwrap();
+        assert_eq!(third.0.len(), second.0.len());
+        assert!(!Arc::ptr_eq(&second, &third));
+        assert!(third.0[0] > second.0[0] * 10.);
+        std::fs::remove_file(&path).unwrap();
+        assert!(load_ir(path.to_str().unwrap(), 0.1).is_none());
+        assert!(
+            ir_cache()
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|k| k.0 == path)
+                .count()
+                <= 1
+        );
     }
 }

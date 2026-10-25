@@ -10,12 +10,12 @@ use std::path::{Path, PathBuf};
 
 fn transport_state(e: &crate::engine::Engine) -> Value {
     let t = &e.transport;
-    let bs = crate::ears::beat_secs(&e.project);
+    let curve = crate::tempo_curve::TempoCurve::new(&e.project);
     json!({
         "studio_attached": t.attached, "playing": t.playing,
         "position_s": (t.position_s * 100.0).round() / 100.0,
-        "position_beat": (t.position_s / bs * 100.0).round() / 100.0,
-        "song_seconds": (e.project.song_seconds() * 100.0).round() / 100.0,
+        "position_beat": (curve.beat_at_secs(t.position_s as f64) * 100.0).round() / 100.0,
+        "song_seconds": (curve.secs_at_beat(e.project.song_beats() as f64) * 100.0).round() / 100.0,
         "pending": t.pending.len(),
     })
 }
@@ -161,11 +161,11 @@ pub fn tools() -> Vec<Tool> {
             }), &["action"]),
             run: |e, a| {
                 let act = s_opt(a, "action").unwrap_or_default();
-                let bs = crate::ears::beat_secs(&e.project);
+                let curve = crate::tempo_curve::TempoCurve::new(&e.project);
                 let seek_to = if let Some(s) = a.get("section").and_then(|v| v.as_str().map(String::from).or_else(|| v.as_u64().map(|n| n.to_string()))) {
-                    Some(e.project.section_beats(&s)?.0 * bs)
+                    Some(curve.secs_at_beat(e.project.section_beats(&s)?.0 as f64) as f32)
                 } else if let Some(b) = f_opt(a, "beat") {
-                    Some(b * bs)
+                    Some(curve.secs_at_beat(b as f64) as f32)
                 } else {
                     f_opt(a, "position_s")
                 };
@@ -419,5 +419,50 @@ mod tests {
             .effects
             .iter()
             .all(|f| !f.id().is_empty()));
+    }
+}
+
+#[cfg(test)]
+mod marker_transport_timing_tests {
+    use super::*;
+    #[test]
+    fn transport_status_and_seeks_follow_tempo_curve() {
+        let mut e = crate::engine::Engine::new(std::env::temp_dir().join("marker-transport"));
+        e.call("add_pattern", &json!({"name":"next","bars":1}))
+            .unwrap();
+        let first = e.project.patterns[0].name.clone();
+        e.call(
+            "set_arrangement",
+            &json!({"sections":[{"pattern":first,"repeats":1},{"pattern":"next","repeats":1}]}),
+        )
+        .unwrap();
+        e.project.bpm = 120.0;
+        e.project.tempo_points = vec![crate::project::TempoPoint {
+            beat: 4.0,
+            bpm: 60.0,
+            ramp: false,
+        }];
+        e.transport.position_s = 12.0;
+        let v = e.call("transport", &json!({"action":"status"})).unwrap();
+        assert_eq!(v["position_beat"], 14.0);
+        let curve = crate::tempo_curve::TempoCurve::new(&e.project);
+        assert_eq!(
+            v["song_seconds"],
+            json!((curve.secs_at_beat(e.project.song_beats() as f64) * 100.0).round() / 100.0)
+        );
+        let before = serde_json::to_value(&e.project).unwrap();
+        for (args, beat) in [
+            (json!({"action":"seek","beat":14}), 14.0),
+            (json!({"action":"seek","section":"next"}), 16.0),
+        ] {
+            e.call("transport", &args).unwrap();
+            match e.transport.pending.last().unwrap() {
+                TransportCmd::Seek(sec) => {
+                    assert!((*sec - curve.secs_at_beat(beat) as f32).abs() < 0.0001)
+                }
+                _ => panic!("expected seek"),
+            }
+        }
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
     }
 }
