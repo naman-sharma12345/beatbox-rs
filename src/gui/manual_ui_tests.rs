@@ -240,7 +240,6 @@ fn every_gui_action_is_an_mcp_tool() {
 fn every_tool_is_reachable_from_the_gui() {
     const NO_GUI: &[&str] = &[
         "ab_compare",
-        "ab_listen",
         "add_audio_clip",
         "add_marker",
         "add_multisample_track",

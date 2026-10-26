@@ -538,6 +538,28 @@ impl Studio {
                 ui.add(egui::Label::new("Undo restores mixed states; level may change.").wrap());
             });
         }
+        if let Some(job) = self.mix_comparison_job.take() {
+            match job.receiver.try_recv() {
+                Ok(result) => {
+                    let current = super::comparison_is_current(job.revision, job.generation, &self.engine.lock().unwrap());
+                    if !current {
+                        self.toast = Some(("Project changed. Prepare the comparison again.".into(),0.0,false));
+                    } else {
+                        match result {
+                            Ok((value,audio)) => self.mix_comparison = Some(super::MixComparison {
+                                revision:job.revision,generation:job.generation,checkpoint:job.checkpoint,value,audio,
+                            }),
+                            Err(error) => self.toast=Some((format!("Comparison failed: {error}"),0.0,false)),
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.mix_comparison_job=Some(job),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.toast=Some(("Comparison stopped. Prepare again.".into(),0.0,false)),
+            }
+        }
+        if self.mix_comparison.as_ref().is_some_and(|result| !super::comparison_is_current(result.revision,result.generation,&self.engine.lock().unwrap())) {
+            self.mix_comparison=None;
+        }
         let checkpoint_id = egui::Id::new("mixer_checkpoint_selection");
         let mut checkpoint = ui
             .ctx()
@@ -560,6 +582,38 @@ impl Studio {
                 self.call("restore_snapshot",json!({"name":checkpoint}));
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            let busy=self.mix_comparison_job.is_some();
+            if ui.add_enabled(!busy && !checkpoint.is_empty(),egui::Button::new("Prepare matched A/B")).on_hover_text("Compare the first 8 seconds: selected whole-project checkpoint, one-second gap, current project. Attenuation-only loudness matching and shared peak safety. Rendering runs in the background. Does not restore the checkpoint or change your song.").clicked() {
+                let (own,revision,generation)={
+                    let engine=self.engine.lock().unwrap();
+                    (super::checkpoint_comparison_engine(&engine,&checkpoint),engine.revision,engine.project_load_generation)
+                };
+                let (tx,rx)=std::sync::mpsc::channel();
+                self.mix_comparison=None;
+                self.mix_comparison_job=Some(super::MixComparisonJob{revision,generation,checkpoint:checkpoint.clone(),receiver:rx});
+                let name=checkpoint.clone();let ctx=ui.ctx().clone();
+                std::thread::spawn(move || {
+                    let result=own.and_then(|own|super::render_checkpoint_comparison(own,&name)).map_err(|error|format!("{error:#}"));
+                    let _=tx.send(result);ctx.request_repaint();
+                });
+            }
+            if busy {ui.spinner();ui.label("Preparing comparison. You can keep editing.");}
+            if let Some(result)=&self.mix_comparison {
+                if result.checkpoint==checkpoint && ui.button("Play A then B").on_hover_text("Stop song playback and play checkpoint A, one-second gap, then captured current version B. The song is unchanged.").clicked() {
+                    let mut engine=self.engine.lock().unwrap();
+                    super::play_checkpoint_comparison(result,&checkpoint,&mut engine);
+                }
+            }
+        });
+        if (self.mix_comparison.is_some() || self.engine.lock().unwrap().transport.auditioning) && ui.button("Stop preview").on_hover_text("Stop the current audio preview, including a comparison. Does not resume song playback.").clicked() {
+            super::stop_comparison_preview(&mut self.engine.lock().unwrap());
+        }
+        if let Some(result)=&self.mix_comparison {
+            if result.checkpoint==checkpoint {
+                ui.add(egui::Label::new(format!("A: {} at preparation | B: current at preparation | first 8 seconds per side (or shorter song). {}",checkpoint,if result.value["loudness_matched"].as_bool()==Some(true){"Level matched without boosting. Choose by listening, not loudness."}else{"A side is silent or below the loudness gate; not level matched."})).wrap());
+            }
+        }
         ui.add(egui::Label::new("Save writes a checkpoint companion file; keep it with the project. Restore replaces the whole project. Undo restores your edits.").wrap());
         ui.ctx()
             .data_mut(|d| d.insert_temp(checkpoint_id, checkpoint));

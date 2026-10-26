@@ -512,6 +512,35 @@ mod tests {
     }
 
     #[test]
+    fn preview_stop_preserves_song_and_replay_replaces_preview() {
+        let p = Player {
+            shared: Arc::new(Mutex::new(shared(mix(0.5, 100), 100))),
+            _stream: None,
+            device_name: "test silent".into(),
+            abs_offset: 0.,
+            seek_revision: 0,
+            virtual_clock: None,
+            virtual_start: 0.,
+            virtual_queued: None,
+        };
+        let first = Arc::new((vec![0.2; 8], vec![0.2; 8]));
+        let second = Arc::new((vec![0.3; 8], vec![0.3; 8]));
+        p.audition(first);
+        p.audition(second.clone());
+        {
+            let s = p.shared.lock().unwrap();
+            assert!(Arc::ptr_eq(&s.one.as_ref().unwrap().0, &second));
+            assert!(s.playing);
+        }
+        p.stop_audition();
+        let s = p.shared.lock().unwrap();
+        assert!(s.one.is_none());
+        assert!(s.playing);
+        assert_eq!(s.pos, 0.);
+        assert_eq!(s.loop_len, 100);
+    }
+
+    #[test]
     fn cumulative_audio_clock_keeps_actual_landing_after_wraps() {
         let mut s = shared(mix(1.0, 100), 100);
         for _ in 0..1130 {
