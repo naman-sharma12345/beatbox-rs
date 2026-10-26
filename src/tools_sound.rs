@@ -1400,7 +1400,11 @@ mod tests {
     use super::*;
 
     fn eng() -> Engine {
-        Engine::new(std::env::temp_dir().join("beatbox_sound_tests"))
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Engine::new(
+            std::env::temp_dir().join(format!("beatbox_sound_tests-{}-{id}", std::process::id())),
+        )
     }
 
     #[test]
@@ -1561,7 +1565,7 @@ mod tests {
                 x[s + j] = rng.bipolar() * (-(j as f32) / 400.0).exp() * 0.7;
             }
         }
-        let path = std::env::temp_dir().join("beatbox_sound_tests/loop.wav");
+        let path = e.workdir.join("loop.wav");
         crate::render::write_wav(&path, &x, &x).unwrap();
         e.call("import_sample", &json!({"path": path, "name": "loop"}))
             .unwrap();
@@ -1578,11 +1582,11 @@ mod tests {
             (ed["duration"].as_f64().unwrap() - 1.0).abs() < 0.02,
             "{ed}"
         );
-        e.call("add_multisample_track", &json!({"name": "ms", "zones": [{"sample": "loop", "root": 60, "hi_note": 64}, {"sample": "loop_edit", "root": 70, "lo_note": 65}]})).unwrap();
+        e.call("add_multisample_track", &json!({"name": "ms", "zones": [{"sample": "loop", "root": 60, "hi_note": 64}, {"sample": ed["sample"], "root": 70, "lo_note": 65}]})).unwrap();
         e.call("add_notes", &json!({"track": "ms", "notes": [{"start": 0, "pitch": 60}, {"start": 4, "pitch": 72}]})).unwrap();
         assert!(e.analyze().unwrap().master.rms_dbfs > -50.0);
         // sfz
-        let sfz = std::env::temp_dir().join("beatbox_sound_tests/kit.sfz");
+        let sfz = e.workdir.join("kit.sfz");
         std::fs::write(
             &sfz,
             "<region> sample=loop.wav lokey=0 hikey=127 pitch_keycenter=60",
@@ -1605,14 +1609,14 @@ mod tests {
                     + 0.3 * (std::f32::consts::TAU * 5000.0 * t).sin()
             })
             .collect();
-        let path = std::env::temp_dir().join("beatbox_sound_tests/two_tones.wav");
+        let path = e.workdir.join("two_tones.wav");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         crate::render::write_wav(&path, &x, &x).unwrap();
         e.call("import_sample", &json!({"path": path, "name": "tones"}))
             .unwrap();
         let r = e.call("spectral_edit_sample", &json!({"sample": "tones", "start_s": 0.25, "end_s": 0.75, "low_hz": 3000, "high_hz": 8000})).unwrap();
         assert!(r["changed_db"].as_f64().unwrap() < -0.5, "{r}");
-        let (_, y) = sample_data(&mut e, "tones_spectral").unwrap();
+        let (_, y) = sample_data(&mut e, r["sample"].as_str().unwrap()).unwrap();
         // energy of each tone in a 0.1 s window: inside the span the 5 kHz tone is gone, 440 stays
         let band = |d: &[f32], a: f32, f: f32| -> f32 {
             let (s0, s1) = ((a * SR) as usize, ((a + 0.1) * SR) as usize);
@@ -1630,8 +1634,8 @@ mod tests {
         // outside the span nothing changes
         assert!(db(band(&y, 0.05, 5000.0), band(&x, 0.05, 5000.0)).abs() < 0.5);
         // keep only the band: the 440 tone goes, 5 kHz stays
-        e.call("spectral_edit_sample", &json!({"sample": "tones", "low_hz": 3000, "high_hz": 8000, "mode": "outside", "new_name": "hi_only"})).unwrap();
-        let (_, z) = sample_data(&mut e, "hi_only").unwrap();
+        let hi = e.call("spectral_edit_sample", &json!({"sample": "tones", "low_hz": 3000, "high_hz": 8000, "mode": "outside", "new_name": "hi_only"})).unwrap();
+        let (_, z) = sample_data(&mut e, hi["sample"].as_str().unwrap()).unwrap();
         assert!(db(band(&z, 0.45, 440.0), band(&x, 0.45, 440.0)) < -40.0);
         assert!(db(band(&z, 0.45, 5000.0), band(&x, 0.45, 5000.0)).abs() < 0.5);
         assert!(e

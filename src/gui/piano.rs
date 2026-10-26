@@ -1648,9 +1648,9 @@ impl Studio {
                         "Replace track notes (off = layer)",
                     );
                     let action = if self.piano.euclidean.replace {
-                        "Generate (replace)"
+                        "Write notes (replace)"
                     } else {
-                        "Generate (layer)"
+                        "Write notes (layer)"
                     };
                     if ui.button(action).clicked() {
                         op = Some(("generate_euclidean", self.piano.euclidean.args()));

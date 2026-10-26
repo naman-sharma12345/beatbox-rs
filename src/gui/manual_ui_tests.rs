@@ -209,6 +209,7 @@ fn gui_has_only_manual_views() {
 fn every_gui_action_is_an_mcp_tool() {
     let mut missing = Vec::new();
     for (file, src) in SOURCES {
+        let src = src.split("#[cfg(test)]").next().unwrap_or(src);
         // call("tool", ..) / call_from("tool", ..) / op = Some(("tool", ..)) / Some(("tool".into(), ..))
         for pat in ["call(\"", "call_from(\"", "Some((\""] {
             let mut rest = src;
@@ -405,6 +406,8 @@ fn every_tool_is_reachable_from_the_gui() {
         "screenshot",
         "search_samples",
         "search_tools",
+        // Read-only arrangement summary is shown directly in the section-order panel.
+        "get_arrangement",
         "set_arrangement",
         "set_macro",
         "set_parameters",
@@ -463,8 +466,14 @@ fn piano_drag_uses_press_origin_before_hit_testing() {
     // A note edge is only five pixels wide. The drag threshold may carry
     // the current pointer beyond it, so drag setup must use the press point.
     let piano = include_str!("piano.rs");
-    let drag = piano.split("if resp.drag_started() {").nth(1).unwrap();
-    let setup = drag.split("if resp.dragged() {").next().unwrap();
+    let drag = piano
+        .split("if !self.piano.gesture_cancelled && resp.drag_started() {")
+        .nth(1)
+        .unwrap();
+    let setup = drag
+        .split("if !self.piano.gesture_cancelled && resp.dragged() {")
+        .next()
+        .unwrap();
     assert!(setup.contains("i.pointer.press_origin()"));
     assert!(setup.contains("match hit(start)"));
     assert!(setup.contains("self.piano.band = Some(start)"));

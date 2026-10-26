@@ -498,7 +498,7 @@ impl Studio {
     // ---------------- mixer ----------------
     pub(super) fn mixer(&mut self, ui: &mut egui::Ui, p: &Project) {
         let solo_count = p.tracks.iter().filter(|t| t.solo).count();
-        egui::CollapsingHeader::new(format!("Mixer tools | {solo_count} track solos | solo, faders, inserts, checkpoints"))
+        egui::CollapsingHeader::new(format!("Mixer controls | {solo_count} track solos | solo, faders, inserts, checkpoints"))
             .id_salt("mixer_tools")
             .default_open(false)
             .show(ui, |ui| {
@@ -544,7 +544,7 @@ impl Studio {
             .data_mut(|d| d.get_temp::<String>(checkpoint_id))
             .unwrap_or_default();
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Capture checkpoint").on_hover_text("Keep a new whole-project snapshot without changing the song or overwriting earlier captures. Save writes checkpoints to the project.snapshots.json companion; keep it with the project.").clicked() {
+            if ui.button("Capture checkpoint").on_hover_text("Keep a new whole-project snapshot without changing the song or overwriting earlier captures. Save writes checkpoints to a companion file; keep it with the project.").clicked() {
                 let result = super::capture_mix_checkpoint(&mut self.engine.lock().unwrap());
                 match result {
                     Ok(name) => { checkpoint=name; self.toast=Some(("Checkpoint captured. Save writes its snapshots companion.".into(),0.0,true)); }
@@ -560,7 +560,7 @@ impl Studio {
                 self.call("restore_snapshot",json!({"name":checkpoint}));
             }
         });
-        ui.add(egui::Label::new("Save writes a .snapshots.json companion; keep it with the project. Restore replaces the whole project. Undo restores your edits.").wrap());
+        ui.add(egui::Label::new("Save writes a checkpoint companion file; keep it with the project. Restore replaces the whole project. Undo restores your edits.").wrap());
         ui.ctx()
             .data_mut(|d| d.insert_temp(checkpoint_id, checkpoint));
             });
