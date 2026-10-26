@@ -600,18 +600,14 @@ impl Studio {
             }
             if busy {ui.spinner();ui.label("Preparing comparison. You can keep editing.");}
             if let Some(result)=&self.mix_comparison {
-                if result.checkpoint==checkpoint {
-                    if ui.button("Play A then B").on_hover_text("Stop song playback and play checkpoint A, one-second gap, then captured current version B. The song is unchanged.").clicked() {
-                        let mut engine=self.engine.lock().unwrap();
-                        super::play_checkpoint_comparison(result,&checkpoint,&mut engine);
-                    }
+                if result.checkpoint==checkpoint && ui.button("Play A then B").on_hover_text("Stop song playback and play checkpoint A, one-second gap, then captured current version B. The song is unchanged.").clicked() {
+                    let mut engine=self.engine.lock().unwrap();
+                    super::play_checkpoint_comparison(result,&checkpoint,&mut engine);
                 }
             }
         });
-        if self.mix_comparison.is_some() || self.engine.lock().unwrap().transport.auditioning {
-            if ui.button("Stop preview").on_hover_text("Stop the current audio preview, including a comparison. Does not resume song playback.").clicked() {
-                super::stop_comparison_preview(&mut self.engine.lock().unwrap());
-            }
+        if (self.mix_comparison.is_some() || self.engine.lock().unwrap().transport.auditioning) && ui.button("Stop preview").on_hover_text("Stop the current audio preview, including a comparison. Does not resume song playback.").clicked() {
+            super::stop_comparison_preview(&mut self.engine.lock().unwrap());
         }
         if let Some(result)=&self.mix_comparison {
             if result.checkpoint==checkpoint {
