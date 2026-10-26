@@ -126,6 +126,19 @@ impl Workspace {
             .split_right(NodeIndex(2), 0.73, vec![Pane::Inspector, Pane::Analysis]);
         d
     }
+    /// Automated captures never restore or save a person's interactive layout.
+    pub fn capture(ctx: &egui::Context, view: usize) -> Self {
+        Self {
+            dock: Self::default_dock(view, ctx.screen_rect().height()),
+            saved: String::new(),
+            changed_at: 0.0,
+            path: PathBuf::new(),
+            requested: None,
+            fresh: true,
+            mode: 0,
+            reset: false,
+        }
+    }
     pub fn load(ctx: &egui::Context, view: usize) -> Self {
         let base = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
@@ -224,6 +237,9 @@ impl Workspace {
         }
     }
     pub(super) fn flush(&self) -> std::io::Result<()> {
+        if self.path.as_os_str().is_empty() {
+            return Ok(());
+        }
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -676,6 +692,22 @@ impl Studio {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn captures_use_requested_panel_without_layout_persistence() {
+        let ctx = egui::Context::default();
+        for view in 0..7 {
+            let mut capture = Workspace::capture(&ctx, view);
+            assert!(capture.dock.find_tab(&Pane::ALL[view]).is_some());
+            assert!(capture.dock.find_tab(&Pane::Transport).is_some());
+            assert_eq!(capture.dock.iter_all_tabs().count(), 2);
+            assert!(capture.path.as_os_str().is_empty());
+            assert_eq!(capture.mode, 0);
+            capture.flush().unwrap();
+            capture.persist(1.0);
+            capture.persist(2.0);
+            assert_eq!(capture.changed_at, 0.0);
+        }
+    }
     #[test]
     fn standard_transport_keeps_152_points_after_resize() {
         let mut d = Workspace::default_dock(3, 860.0);

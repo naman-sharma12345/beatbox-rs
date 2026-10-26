@@ -259,6 +259,11 @@ pub fn run(
             apply_theme(&cc.egui_ctx);
             let saved_rev = engine.lock().unwrap().revision;
             let seen_project_load = engine.lock().unwrap().project_load_generation;
+            let workspace = if screenshot.is_some() {
+                workspace::Workspace::capture(&cc.egui_ctx, view)
+            } else {
+                workspace::Workspace::load(&cc.egui_ctx, view)
+            };
             Ok(Box::new(Studio {
                 saved_rev,
                 seen_project_load,
@@ -308,7 +313,7 @@ pub fn run(
                 rail_search: String::new(),
                 brand: None,
                 note_editor: false,
-                workspace: workspace::Workspace::load(&cc.egui_ctx, view),
+                workspace,
             }))
         }),
     )
