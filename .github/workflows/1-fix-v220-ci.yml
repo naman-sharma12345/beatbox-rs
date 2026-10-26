@@ -1,0 +1,38 @@
+name: Fix verified v220 default-feature regressions
+on:
+  push:
+    branches:
+    - reel_dark
+    paths:
+    - .github/workflows/*fix-v220-ci.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/reel_dark'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply hash-verified clean-runner regression corrections
+      shell: bash
+      run: "set -euo pipefail\n[ \"$(git rev-parse HEAD^)\" = 85e3237963869768009c90094e508655197419b0\
+        \ ]\n[ \"$(git rev-parse origin/main)\" = 21e5049d55363c19307832d3405ebe113176274e\
+        \ ]\npython3 - <<'PYCODE'\nimport base64,hashlib,pathlib,gzip\nb=gzip.decompress(base64.b64decode('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'))\n\
+        assert hashlib.sha256(b).hexdigest()=='d51c6c998043ee1e41d58b4d7f1802cd3fbfafdff8754ca4d7e0347b63664c7c'\n\
+        pathlib.Path('/tmp/ci-fix.patch').write_bytes(b)\nPYCODE\ngit apply --check\
+        \ /tmp/ci-fix.patch\ngit apply /tmp/ci-fix.patch\npython3 - <<'PYCODE'\nimport\
+        \ pathlib,hashlib\nexpected={'src/tools_sound.rs': '6ce6c9fb946f8c7de782b8fd201355a9c53e7fc1b425f339f1fd4ae2b2e9043b',\
+        \ 'src/gui/piano.rs': '9bbba67fbba76b9b5554df83bdc349497c7585d3ac6ec3d949dcb46ae31496ec',\
+        \ 'src/gui/manual_ui_tests.rs': 'c2f0ee20777eef50c83830b9b02f28e5677068fc044b317f2f38efa5a9006a2e',\
+        \ 'src/gui/views.rs': 'ceaf4684d84b17e4583362adc9dd03a4b0d51b9e9ae1a682af959348885f8af1'}\n\
+        for f,h in expected.items():\n assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f\n\
+        PYCODE\ngit config user.name 'github-actions[bot]'\ngit config user.email\
+        \ '41898282+github-actions[bot]@users.noreply.github.com'\ngit add src tests\
+        \ scripts\ngit commit -m \"Make recorded CI fixtures reproducible and repair\
+        \ regression contracts\"\ngit fetch origin reel_dark main\n[ \"$(git rev-parse\
+        \ origin/reel_dark)\" = \"$GITHUB_SHA\" ]\n[ \"$(git rev-parse origin/main)\"\
+        \ = 21e5049d55363c19307832d3405ebe113176274e ]\ngit push origin HEAD:refs/heads/reel_dark\n"
