@@ -147,6 +147,92 @@ pub fn project_notice_is_stale(seen: u64, current: u64) -> bool {
     seen != current
 }
 
+type PreviewAudio = Arc<(Vec<f32>, Vec<f32>)>;
+type MixComparisonResult = Result<(Value, PreviewAudio), String>;
+struct MixComparison {
+    revision: u64,
+    generation: u64,
+    checkpoint: String,
+    value: Value,
+    audio: PreviewAudio,
+}
+struct MixComparisonJob {
+    revision: u64,
+    generation: u64,
+    checkpoint: String,
+    receiver: Receiver<MixComparisonResult>,
+}
+
+/// Capture both versions without restoring the project or touching transport.
+fn checkpoint_comparison_engine(engine: &Engine, checkpoint: &str) -> anyhow::Result<Engine> {
+    let snapshot = engine
+        .snapshots
+        .iter()
+        .find(|(name, _)| name == checkpoint)
+        .ok_or_else(|| anyhow::anyhow!("Choose an existing checkpoint"))?
+        .clone();
+    let mut own = Engine::new(engine.workdir.clone());
+    own.project = engine.project.clone();
+    own.bank = engine.bank.clone();
+    own.snapshots = vec![snapshot];
+    Ok(own)
+}
+fn render_checkpoint_comparison(
+    mut own: Engine,
+    checkpoint: &str,
+) -> anyhow::Result<(Value, PreviewAudio)> {
+    // ab_listen also accepts files, which take priority over snapshot names.
+    // Use a private non-file alias so an unrelated file cannot replace A.
+    let mut alias = "__mixer_checkpoint_comparison".to_string();
+    while own.resolve(&alias).is_file() {
+        alias.push('_');
+    }
+    let snapshot = own
+        .snapshots
+        .iter_mut()
+        .find(|(name, _)| name == checkpoint)
+        .ok_or_else(|| anyhow::anyhow!("Checkpoint is no longer available"))?;
+    snapshot.0 = alias.clone();
+    let mut value = own.call(
+        "ab_listen",
+        &json!({"a": alias, "b":"current", "length_s":8.0, "play":true}),
+    )?;
+    value["A"] = json!(checkpoint);
+    let audio = own
+        .transport
+        .pending_audition
+        .take()
+        .flatten()
+        .ok_or_else(|| anyhow::anyhow!("Comparison produced no preview"))?;
+    Ok((value, audio))
+}
+fn comparison_is_current(revision: u64, generation: u64, engine: &Engine) -> bool {
+    revision == engine.revision && generation == engine.project_load_generation
+}
+
+fn comparison_ready_for(result: &MixComparison, checkpoint: &str, engine: &Engine) -> bool {
+    result.checkpoint == checkpoint
+        && comparison_is_current(result.revision, result.generation, engine)
+}
+fn play_checkpoint_comparison(
+    result: &MixComparison,
+    checkpoint: &str,
+    engine: &mut Engine,
+) -> bool {
+    if !comparison_ready_for(result, checkpoint, engine) {
+        return false;
+    }
+    engine
+        .transport
+        .pending
+        .push(crate::engine::TransportCmd::Stop);
+    engine.transport.pending_audition = Some(Some(result.audio.clone()));
+    true
+}
+fn stop_comparison_preview(engine: &mut Engine) {
+    engine.transport.pending_audition = Some(None);
+}
+
 pub struct Studio {
     engine: Arc<Mutex<Engine>>,
     player: Player,
@@ -182,6 +268,8 @@ pub struct Studio {
     mix_readout: Option<String>,
     mix_job: Option<(u64, Receiver<Result<String, String>>)>,
     mix_readout_revision: Option<u64>,
+    mix_comparison: Option<MixComparison>,
+    mix_comparison_job: Option<MixComparisonJob>,
     // screenshot mode
     screenshot: Option<PathBuf>,
     frames: u64,
@@ -291,6 +379,8 @@ pub fn run(
                 mix_readout: None,
                 mix_job: None,
                 mix_readout_revision: None,
+                mix_comparison: None,
+                mix_comparison_job: None,
                 screenshot,
                 frames: 0,
                 shot_requested: false,
@@ -2426,5 +2516,145 @@ mod project_notice_tests {
         assert_eq!(e.project_load_generation, 2);
         assert!(!beatbox::gui::project_notice_is_stale(2, 2));
         assert!(beatbox::gui::project_notice_is_stale(u64::MAX, 0));
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_comparison_tests {
+    use super::*;
+    #[test]
+    fn source_unchanged_matching_and_transport() {
+        let dir = std::env::temp_dir().join(format!("bb223_{}", std::process::id()));
+        let mut e = Engine::new(dir);
+        e.call("new_project", &json!({"name":"ab","bpm":120}))
+            .unwrap();
+        e.call("add_track", &json!({"name":"tone","instrument":"sine"}))
+            .unwrap();
+        e.call("add_notes",&json!({"track":"tone","pattern":"A","notes":[{"pitch":"C4","start":0,"len":16,"vel":0.8}]})).unwrap();
+        e.call("snapshot", &json!({"name":"before"})).unwrap();
+        e.call("set_mixer", &json!({"track":"tone","volume_db":-9}))
+            .unwrap();
+        let original = serde_json::to_value(&e.project).unwrap();
+        let rev = e.revision;
+        let history = e.history().0.len();
+        let (v, audio) = render_checkpoint_comparison(
+            checkpoint_comparison_engine(&e, "before").unwrap(),
+            "before",
+        )
+        .unwrap();
+        assert_eq!(v["loudness_matched"], true);
+        assert_eq!(v["A"], "before");
+        assert_eq!(v["B"], "current");
+        assert!(v["judgement"].is_null());
+        assert_eq!(v["level_change_db"]["B"].as_f64().unwrap(), 0.0);
+        assert!(v["level_change_db"]["A"].as_f64().unwrap() < -8.0);
+        assert_eq!(audio.0.len(), audio.1.len());
+        assert!(audio.0.iter().all(|x| x.is_finite() && x.abs() <= 0.951));
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), original);
+        assert_eq!(e.revision, rev);
+        assert_eq!(e.history().0.len(), history);
+        assert!(e.transport.pending.is_empty());
+        assert!(e.transport.pending_audition.is_none());
+        assert_eq!(e.snapshots.len(), 1);
+        assert!(comparison_is_current(rev, e.project_load_generation, &e));
+        assert!(!comparison_is_current(
+            rev + 1,
+            e.project_load_generation,
+            &e
+        ));
+        assert!(!comparison_is_current(
+            rev,
+            e.project_load_generation + 1,
+            &e
+        ));
+        assert!(checkpoint_comparison_engine(&e, "missing").is_err());
+    }
+    #[test]
+    fn silent_side_is_labeled_unmatched_and_keeps_source() {
+        let mut e =
+            Engine::new(std::env::temp_dir().join(format!("bb223_silent_{}", std::process::id())));
+        e.call("new_project", &json!({"name":"silent"})).unwrap();
+        e.call("snapshot", &json!({"name":"silence"})).unwrap();
+        let (value, audio) = render_checkpoint_comparison(
+            checkpoint_comparison_engine(&e, "silence").unwrap(),
+            "silence",
+        )
+        .unwrap();
+        assert_eq!(value["loudness_matched"], false);
+        assert!(value["matched_to_lufs"].is_null());
+        assert!(audio.0.iter().chain(&audio.1).all(|sample| *sample == 0.));
+        assert!(e.transport.pending_audition.is_none());
+    }
+    #[test]
+    fn captured_versions_survive_later_source_edits_without_following_them() {
+        let mut e = Engine::new(std::env::temp_dir().join("bb223_isolation"));
+        e.call("new_project", &json!({"name":"original"})).unwrap();
+        e.call("snapshot", &json!({"name":"before"})).unwrap();
+        let captured = checkpoint_comparison_engine(&e, "before").unwrap();
+        let rev = e.revision;
+        let generation = e.project_load_generation;
+        e.call("set_tempo", &json!({"bpm":99})).unwrap();
+        assert_ne!(captured.project.bpm, e.project.bpm);
+        assert!(!comparison_is_current(rev, generation, &e));
+        assert_eq!(captured.snapshots.len(), 1);
+        assert_eq!(captured.snapshots[0].0, "before");
+    }
+    #[test]
+    fn selection_and_stale_guards_precede_play_stop_only_changes_preview() {
+        let mut e = Engine::new(std::env::temp_dir().join("bb223_play"));
+        let result = MixComparison {
+            revision: e.revision,
+            generation: e.project_load_generation,
+            checkpoint: "first".into(),
+            value: json!({}),
+            audio: Arc::new((vec![0.; 8], vec![0.; 8])),
+        };
+        assert!(!play_checkpoint_comparison(&result, "second", &mut e));
+        assert!(e.transport.pending.is_empty());
+        assert!(e.transport.pending_audition.is_none());
+        assert!(play_checkpoint_comparison(&result, "first", &mut e));
+        assert_eq!(e.transport.pending, vec![crate::engine::TransportCmd::Stop]);
+        let queued = e
+            .transport
+            .pending_audition
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        assert!(Arc::ptr_eq(queued, &result.audio));
+        let rev = e.revision;
+        let project = serde_json::to_value(&e.project).unwrap();
+        stop_comparison_preview(&mut e);
+        assert!(matches!(e.transport.pending_audition, Some(None)));
+        assert_eq!(e.transport.pending, vec![crate::engine::TransportCmd::Stop]);
+        assert_eq!(e.revision, rev);
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), project);
+        e.transport.pending.clear();
+        e.revision += 1;
+        assert!(!play_checkpoint_comparison(&result, "first", &mut e));
+        assert!(e.transport.pending.is_empty());
+    }
+    #[test]
+    fn checkpoint_named_like_file_does_not_audition_the_file() {
+        let dir = std::env::temp_dir().join(format!("bb223_collision_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = Engine::new(dir.clone());
+        e.call("new_project", &json!({"name":"silent"})).unwrap();
+        e.call("snapshot", &json!({"name":"before"})).unwrap();
+        std::fs::write(dir.join("before"), b"not audio").unwrap();
+        std::fs::write(
+            dir.join("__mixer_checkpoint_comparison"),
+            b"not audio either",
+        )
+        .unwrap();
+        let (value, audio) = render_checkpoint_comparison(
+            checkpoint_comparison_engine(&e, "before").unwrap(),
+            "before",
+        )
+        .unwrap();
+        assert_eq!(value["A"], "before");
+        assert!(audio.0.iter().chain(&audio.1).all(|sample| *sample == 0.));
+        assert_eq!(std::fs::read(dir.join("before")).unwrap(), b"not audio");
+        assert_eq!(e.snapshots[0].0, "before");
     }
 }
