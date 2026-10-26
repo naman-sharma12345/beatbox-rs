@@ -677,8 +677,10 @@ mod marker_export_tests {
     use super::*;
     #[test]
     fn marker_ranges_use_tempo_curve_and_reject_bad_boundaries() {
-        let mut p = crate::project::Project::default();
-        p.bpm = 120.0;
+        let mut p = crate::project::Project {
+            bpm: 120.0,
+            ..Default::default()
+        };
         p.tempo_points = vec![crate::project::TempoPoint {
             beat: 4.0,
             bpm: 60.0,

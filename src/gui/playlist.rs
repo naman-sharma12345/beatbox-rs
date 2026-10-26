@@ -1065,8 +1065,10 @@ mod marker_navigation_tests {
     use super::*;
     #[test]
     fn marker_navigation_roundtrips_tempo_jumps_and_ramps() {
-        let mut p = Project::default();
-        p.bpm = 120.0;
+        let mut p = Project {
+            bpm: 120.0,
+            ..Default::default()
+        };
         p.tempo_points = vec![
             crate::project::TempoPoint {
                 beat: 4.0,
@@ -1105,7 +1107,7 @@ mod marker_navigation_tests {
         assert_eq!(map.bar_start_tick(2), 3360);
         assert_eq!(map.bar_start_tick(3), 6720);
         assert_eq!(
-            marker_position(&e.project, marker_seconds(&e.project, 3.4999999)),
+            marker_position(&e.project, marker_seconds(&e.project, 3.5)),
             "2|1|000"
         );
 
