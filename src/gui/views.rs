@@ -497,6 +497,73 @@ impl Studio {
 
     // ---------------- mixer ----------------
     pub(super) fn mixer(&mut self, ui: &mut egui::Ui, p: &Project) {
+        let solo_count = p.tracks.iter().filter(|t| t.solo).count();
+        egui::CollapsingHeader::new(format!("Mixer tools | {solo_count} track solos | solo, faders, inserts, checkpoints"))
+            .id_salt("mixer_tools")
+            .default_open(false)
+            .show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("Track solos: {solo_count}"));
+            if ui.add_enabled(solo_count>0,egui::Button::new("Clear track solos")).on_hover_text("Clear all track solo flags in one Undo step. Track/bus mutes, faders, pan, routing and effects stay unchanged; muted sources stay silent.").clicked() {
+                self.call("clear_track_solos",json!({}));
+            }
+            if let Some(track) = p.tracks.get(self.selected) {
+                let already = track.solo && solo_count == 1;
+                if ui.add_enabled(!already,egui::Button::new("Solo selected only")).on_hover_text(format!("Solo {} and clear other track solos in one Undo step. Mutes stay unchanged, including this track's mute. This does not solo buses.",track.name)).clicked() {
+                    self.call("solo_track_exclusive",json!({"track":track.id}));
+                }
+                ui.label(format!("Selected: {}{}",track.name,if track.mute {" (muted)"} else {""}));
+            }
+            ui.add(egui::Label::new("Mutes and mix settings stay unchanged.").wrap());
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("All track faders:");
+            for (label,delta) in [("-1 dB",-1.0),("+1 dB",1.0)] {
+                if ui.add_enabled(!p.tracks.is_empty(),egui::Button::new(label)).on_hover_text("Shift every track fader together, including muted tracks. Preserves relative fader balance. Rejects all if any active volume lane or fader limit prevents it. Bus/master and everything else stay unchanged. One Undo restores.").clicked() {
+                    self.call("offset_track_faders",json!({"delta_db":delta}));
+                }
+            }
+            ui.add(egui::Label::new("Same dB offset; bus/master unchanged. Not an output loudness guarantee.").wrap());
+        });
+        if let Some(track) = p.tracks.get(self.selected) {
+            let bypassed = track.effects.iter().filter(|fx| fx.bypassed()).count();
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!("{} inserts: {} active, {} bypassed",track.name,track.effects.len()-bypassed,bypassed));
+                if ui.add_enabled(bypassed<track.effects.len(),egui::Button::new("Bypass all inserts")).on_hover_text("Bypass every insert on this selected track. Settings and other channels stay unchanged. Can change loudness. One Undo restores the exact previous bypass state.").clicked() {
+                    self.call("set_track_insert_bypass",json!({"track":track.id,"bypass":true}));
+                }
+                if ui.add_enabled(bypassed>0,egui::Button::new("Enable all inserts")).on_hover_text("Enables EVERY insert, including previously bypassed ones. This is NOT a restore of a mixed state. Undo restores the exact prior state. Can change loudness.").clicked() {
+                    self.call("set_track_insert_bypass",json!({"track":track.id,"bypass":false}));
+                }
+                ui.add(egui::Label::new("Undo restores mixed states; level may change.").wrap());
+            });
+        }
+        let checkpoint_id = egui::Id::new("mixer_checkpoint_selection");
+        let mut checkpoint = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<String>(checkpoint_id))
+            .unwrap_or_default();
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Capture checkpoint").on_hover_text("Keep a new whole-project snapshot without changing the song or overwriting earlier captures. Save writes checkpoints to the project.snapshots.json companion; keep it with the project.").clicked() {
+                let result = super::capture_mix_checkpoint(&mut self.engine.lock().unwrap());
+                match result {
+                    Ok(name) => { checkpoint=name; self.toast=Some(("Checkpoint captured. Save writes its snapshots companion.".into(),0.0,true)); }
+                    Err(err) => { self.toast=Some((format!("Checkpoint failed: {err:#}"),0.0,false)); }
+                }
+            }
+            let names: Vec<String> = self.engine.lock().unwrap().snapshots.iter().map(|(name,_)| name.clone()).collect();
+            if !names.contains(&checkpoint) { checkpoint.clear(); }
+            egui::ComboBox::from_id_salt("mixer_checkpoints").selected_text(if checkpoint.is_empty() {"Choose checkpoint"} else {&checkpoint}).show_ui(ui,|ui| {
+                for name in &names {ui.selectable_value(&mut checkpoint,name.clone(),name);}
+            });
+            if ui.add_enabled(names.contains(&checkpoint),egui::Button::new("Restore whole project")).on_hover_text("Replace the ENTIRE current project with this checkpoint, including notes and arrangement, not only the mix. One Undo restores the current project. The checkpoint itself stays available.").clicked() {
+                self.call("restore_snapshot",json!({"name":checkpoint}));
+            }
+        });
+        ui.add(egui::Label::new("Save writes a .snapshots.json companion; keep it with the project. Restore replaces the whole project. Undo restores your edits.").wrap());
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(checkpoint_id, checkpoint));
+            });
         let pos = self.live_pos();
         let bus_names: Vec<String> = p.buses.iter().map(|b| b.name.clone()).collect();
         let mut strips: Vec<StripData> = p
@@ -1634,7 +1701,7 @@ impl Studio {
         }
         // playhead
         let ppos = self.player.position_secs();
-        let pb = ppos / (4.0 * p.step_secs());
+        let pb = automation_playhead_beat(p, ppos);
         if pb <= song {
             let x = bx(pb);
             pt.line_segment(
@@ -1720,5 +1787,53 @@ fn denorm(t: f32, lo: f32, hi: f32, log: bool) -> f32 {
         (lo.ln() + (hi.ln() - lo.ln()) * t).exp()
     } else {
         lo + (hi - lo) * t
+    }
+}
+
+/// Automation lanes use quarter-note song beats, not elapsed base-BPM beats.
+fn automation_playhead_beat(p: &Project, seconds: f32) -> f32 {
+    if p.tempo_points.is_empty() {
+        seconds / (4.0 * p.step_secs())
+    } else {
+        super::playlist::marker_beat(p, seconds)
+    }
+}
+
+#[cfg(test)]
+mod automation_cursor_tests {
+    use super::*;
+    #[test]
+    fn cursor_value_follows_tempo_jumps_ramps_and_constant_compatibility() {
+        let mut e = crate::engine::Engine::new(std::env::temp_dir().join("automation-cursor-test"));
+        e.call("add_track", &json!({"name":"keys","preset":"epiano"}))
+            .unwrap();
+        e.call(
+            "add_automation",
+            &json!({"track":"keys","param":"volume","points":[[0,-12],[16,0]]}),
+        )
+        .unwrap();
+        for bpm in [60., 90., 120., 172.] {
+            e.project.bpm = bpm;
+            for i in 0..100 {
+                let secs = i as f32 * 0.123;
+                assert_eq!(
+                    automation_playhead_beat(&e.project, secs),
+                    secs / (4.0 * e.project.step_secs())
+                );
+            }
+        }
+        e.project.bpm = 120.;
+        e.call("add_tempo_point", &json!({"beat":4,"bpm":60}))
+            .unwrap();
+        let b = automation_playhead_beat(&e.project, 6.);
+        assert!((b - 8.).abs() < 1e-5);
+        assert!((e.project.automation[0].value_at(b).unwrap() + 6.).abs() < 1e-5);
+        e.call("add_tempo_point", &json!({"beat":12,"bpm":100,"ramp":true}))
+            .unwrap();
+        let curve = crate::tempo_curve::TempoCurve::new(&e.project);
+        for beat in [0., 2., 4., 7., 12., 16.] {
+            let seconds = curve.secs_at_beat(beat) as f32;
+            assert!((automation_playhead_beat(&e.project, seconds) - beat as f32).abs() < 1e-4);
+        }
     }
 }

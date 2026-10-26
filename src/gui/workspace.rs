@@ -90,12 +90,23 @@ pub struct Workspace {
 }
 impl Workspace {
     fn default_dock(view: usize, screen_h: f32) -> DockState<Pane> {
-        // The transport strip needs about 108 px; keep that on short windows.
-        let top = (108.0 / screen_h.max(1.0)).clamp(0.155, 0.4);
+        // Leave room for wrapped transport controls as well as the tab header.
+        let top = (152.0 / screen_h.max(1.0)).clamp(0.155, 0.4);
         let mut d = DockState::new(vec![Pane::ALL[view.min(6)]]);
         d.main_surface_mut()
             .split_above(NodeIndex::root(), top, vec![Pane::Transport]);
         d
+    }
+    /// Guard only the standard top strip. Floating and custom dock arrangements stay alone.
+    fn keep_transport_visible(dock: &mut DockState<Pane>, height: f32) {
+        let main = dock.main_surface_mut();
+        if main.len() < 3 || main[NodeIndex(1)].tabs() != Some(&[Pane::Transport][..]) {
+            return;
+        }
+        if let egui_dock::Node::Vertical { fraction, .. } = &mut main[NodeIndex::root()] {
+            let min_fraction = (152.0 / height.max(1.0)).min(0.4);
+            *fraction = fraction.max(min_fraction);
+        }
     }
     /// Beat: transport, step sequencer and piano roll.
     fn beat_dock(h: f32) -> DockState<Pane> {
@@ -292,7 +303,7 @@ impl TabViewer for Viewer<'_> {
     }
     fn ui(&mut self, ui: &mut egui::Ui, pane: &mut Pane) {
         ui.set_min_size(match pane {
-            Pane::Transport => Vec2::new(800.0, 48.0),
+            Pane::Transport => Vec2::new(420.0, 78.0),
             Pane::Console => Vec2::new(420.0, 230.0),
             Pane::Inspector | Pane::Library | Pane::Browser | Pane::Analysis | Pane::History => {
                 Vec2::new(250.0, 220.0)
@@ -308,7 +319,7 @@ impl TabViewer for Viewer<'_> {
         }
         ui.push_id(*pane, |ui| match pane {
             Pane::Transport => {
-                egui::ScrollArea::horizontal()
+                egui::ScrollArea::both()
                     .id_salt("transport")
                     .auto_shrink([false, false])
                     .show(ui, |ui| s.top_bar(ui, p, self.undo));
@@ -566,9 +577,42 @@ impl Studio {
                                 .size(11.0),
                         );
                     });
+                    ui.menu_button("Help", |ui| {
+                        ui.set_max_width(420.0);
+                        ui.heading("Studio guide");
+                        ui.label("Beat: write drums in the channel rack and melodies in the piano roll.");
+                        ui.label("Arrange: place patterns and edit clips on the song timeline.");
+                        ui.label("Mix: balance tracks, add effects and check the master.");
+                        ui.separator();
+                        ui.menu_button("Patterns, song and recording", |ui| {
+                            ui.set_max_width(380.0);
+                            ui.label("The channel rack and piano roll edit the selected pattern. Selecting a pattern does not place it in the song.");
+                            ui.label("Arrange > PATTERN GRID places patterns on the timeline. Right-click a clip for edit commands.");
+                            ui.label("PERFORM launches a pattern on the next bar. SONG returns to the arrangement.");
+                            ui.label("PERFORM Rec records those launches, not microphone audio. Press Play, Rec, then launch patterns. Place take layers the result over the song; one Undo removes it.");
+                            ui.label("Do not edit the project during a launch take. If anything changes, discard it and record again.");
+                            ui.label("The round record button in Transport records audio from your input instead.");
+                        });
+                        ui.menu_button("Keyboard shortcuts", |ui| {
+                            for (keys, description) in shortcuts::help_rows(cfg!(target_os = "macos")) {
+                                ui.horizontal(|ui| {
+                                    ui.monospace(keys);
+                                    ui.label(description);
+                                });
+                            }
+                            ui.separator();
+                            ui.label("Shortcuts pause while you type in a text field.");
+                        });
+                        ui.separator();
+                        ui.label("Missing a panel? Open Panels. Drag tabs to split or float them. Layout > Reset workspace restores the default.");
+                    });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(&p.name).color(DIM).size(12.0));
-                        if self.rendering.is_some() {
+                        let state = save_state(self.project_path.is_some(), rev, self.saved_rev);
+                        ui.label(RichText::new(state).color(if state == "Saved" { DIM } else { ACCENT }).size(11.0))
+                            .on_hover_text(self.save_tooltip());
+                        ui.add(egui::Label::new(RichText::new(&p.name).color(DIM).size(12.0)).truncate())
+                            .on_hover_text(&p.name);
+                        if self.rendering.is_some() && ui.ctx().screen_rect().width() >= 900.0 {
                             ui.spinner();
                         }
                     });
@@ -582,6 +626,7 @@ impl Studio {
                     .inner_margin(egui::Margin::symmetric(14.0, 8.0)),
             )
             .show(ctx, |ui| {
+                Workspace::keep_transport_visible(&mut ws.dock, ui.available_height());
                 let mut style = Style::from_egui(ui.style());
                 style.tab_bar.height = 30.0;
                 style.separator.extra = 48.0;
@@ -631,6 +676,35 @@ impl Studio {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn standard_transport_keeps_152_points_after_resize() {
+        let mut d = Workspace::default_dock(3, 860.0);
+        Workspace::keep_transport_visible(&mut d, 600.0);
+        let egui_dock::Node::Vertical { fraction, .. } = d.main_surface()[NodeIndex::root()] else {
+            panic!()
+        };
+        assert!((fraction * 600.0 - 152.0).abs() < 0.01);
+        Workspace::keep_transport_visible(&mut d, 800.0);
+        let egui_dock::Node::Vertical {
+            fraction: larger, ..
+        } = d.main_surface()[NodeIndex::root()]
+        else {
+            panic!()
+        };
+        assert_eq!(fraction, larger); // never shrink an existing strip
+    }
+    #[test]
+    fn custom_and_tabbed_top_docks_are_untouched() {
+        let mut d = Workspace::default_dock(3, 860.0);
+        d.main_surface_mut()[NodeIndex(1)].append_tab(Pane::Mixer);
+        let before = format!("{d:?}");
+        Workspace::keep_transport_visible(&mut d, 400.0);
+        assert_eq!(format!("{d:?}"), before);
+        let mut d = DockState::new(vec![Pane::Transport]);
+        Workspace::keep_transport_visible(&mut d, 400.0);
+        assert_eq!(d.main_surface().len(), 1);
+    }
+
     use super::*;
     fn workspace() -> Workspace {
         Workspace {

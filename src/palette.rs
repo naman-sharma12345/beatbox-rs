@@ -453,7 +453,7 @@ fn sample_instrument(e: &mut Engine, id: &str) -> Result<Instrument> {
         )?;
     } else if !e.bank.contains(&name) {
         let data = crate::samples::decode_file(&path)?;
-        e.bank.insert(&name, data);
+        e.bank.insert_for_source(&name, &path, data);
     }
     Ok(Instrument::Sampler(SamplerParams {
         sample: name,

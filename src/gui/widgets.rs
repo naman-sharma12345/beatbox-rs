@@ -21,6 +21,26 @@ pub const WARN: Color32 = Tokens::DARK.mute;
 pub const HOT: Color32 = Tokens::DARK.rec;
 pub const SOLO: Color32 = Tokens::DARK.solo;
 
+/// Single-line labels must not cover neighboring controls. Full names stay in tooltips.
+pub fn bounded_label(
+    painter: &egui::Painter,
+    rect: Rect,
+    align: Align2,
+    text: &str,
+    font: FontId,
+    color: Color32,
+) {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap.max_width = rect.width().max(0.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = painter.layout_job(job);
+    let pos = align.align_size_within_rect(galley.size(), rect).min;
+    painter
+        .with_clip_rect(painter.clip_rect().intersect(rect))
+        .galley(pos, galley, color);
+}
+
 pub fn apply_theme(ctx: &egui::Context) {
     super::theme::apply(ctx);
 }

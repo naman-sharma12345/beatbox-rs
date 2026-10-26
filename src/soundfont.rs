@@ -112,7 +112,7 @@ pub fn fetch_font(id: &str) -> Result<(PathBuf, bool)> {
         )
     })?;
     let p = installed_path(e);
-    if p.is_file() && std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) == e.bytes {
+    if crate::sound_catalog::cached_file_valid(&p, e.sha256, e.bytes) {
         return Ok((p, false));
     }
     let resp = ureq::get(e.url)
@@ -137,11 +137,11 @@ pub fn fetch_font(id: &str) -> Result<(PathBuf, bool)> {
 pub fn resolve_font(font: &str) -> Result<PathBuf> {
     if let Some(e) = font_entry(font) {
         let p = installed_path(e);
-        if p.is_file() {
+        if crate::sound_catalog::cached_file_valid(&p, e.sha256, e.bytes) {
             return Ok(p);
         }
         if std::env::var("BEATBOX_NO_FETCH").is_ok() {
-            bail!("library font '{font}' is not installed (fetch_instrument {font})");
+            bail!("library font '{font}' is missing or fails checksum verification (fetch_instrument {font})");
         }
         return fetch_font(font).map(|r| r.0);
     }

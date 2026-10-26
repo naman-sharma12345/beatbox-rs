@@ -9,6 +9,10 @@ mod browser_view;
 mod channel_rack;
 mod console;
 mod export_view;
+/// Resolve a whole-section export interval without changing the project.
+pub use export_view::apply_section_range as section_export_range;
+/// Describe and validate an export range without creating files.
+pub use export_view::range_preview as export_range_preview;
 mod fl_automation;
 mod fl_playlist;
 mod piano;
@@ -56,6 +60,93 @@ struct InspectorCache {
     effects: Vec<Value>,
 }
 
+/// A live-launch recording in progress. Transition timestamps come from the
+/// audio callback (or virtual-player poll), not GUI observation time.
+pub(crate) struct PerfRec {
+    /// (bar, pattern) segments; an empty pattern marks a return to the song,
+    /// which only closes the previous segment.
+    segs: Vec<(u32, String)>,
+    /// Take length in player seconds up to the last landing.
+    take_last: f32,
+    /// Player absolute time at the last event.
+    abs_last: f64,
+    /// Absolute landing time of the queued launch, consumed when it lands.
+    pending: Option<f64>,
+    /// Song-loop position when Rec was pressed; anchors the take to song bars.
+    start_pos: f32,
+    /// Set when the transport stopped mid-take: the take length at that
+    /// moment. Timing is no longer guaranteed, so nothing further records.
+    frozen: Option<f32>,
+    bpm: f32,
+    invalid: bool,
+    seek_revision: u64,
+    project_revision: u64,
+}
+
+impl PerfRec {
+    /// Current take position in song bars.
+    fn bar_now(&self, bpm: f32, abs_now: f64) -> f32 {
+        let end = self
+            .frozen
+            .unwrap_or(self.take_last + (abs_now - self.abs_last).max(0.0) as f32);
+        (self.start_pos + end) * bpm / 240.0
+    }
+}
+
+/// Follow the revision guard already used by New/Open/Quit prompts.
+fn save_state(has_file: bool, revision: u64, saved_revision: u64) -> &'static str {
+    if !has_file {
+        "Not saved"
+    } else if revision != saved_revision {
+        "Unsaved changes"
+    } else {
+        "Saved"
+    }
+}
+
+#[cfg(test)]
+mod save_state_tests {
+    use super::save_state;
+    #[test]
+    fn file_required_before_claiming_saved() {
+        assert_eq!(save_state(false, 0, 0), "Not saved");
+        assert_eq!(save_state(false, 9, 2), "Not saved");
+    }
+    #[test]
+    fn edits_follow_existing_revision_guard() {
+        assert_eq!(save_state(true, 2, 2), "Saved");
+        assert_eq!(save_state(true, 3, 2), "Unsaved changes");
+        assert_eq!(save_state(true, 3, 3), "Saved");
+        // Undo can also advance revisions: do not promise content equality.
+        assert_eq!(save_state(true, 4, 3), "Unsaved changes");
+    }
+}
+
+/// Capture a fresh checkpoint without overwriting any snapshot.
+/// Existing snapshot/restore_snapshot MCP actions remain the source of truth.
+pub fn capture_mix_checkpoint(engine: &mut Engine) -> anyhow::Result<String> {
+    let mut i = 1u64;
+    loop {
+        let name = format!("mix_checkpoint_{i}");
+        if !engine
+            .snapshots
+            .iter()
+            .any(|(n, _)| n.eq_ignore_ascii_case(&name))
+        {
+            engine.call_from("snapshot", &json!({"name":name,"note":"Mixer checkpoint; Save writes the snapshots companion file"}), "you")?;
+            return Ok(name);
+        }
+        i = i
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("No checkpoint names available"))?;
+    }
+}
+
+/// A notice from an earlier loaded project must not label the new song.
+pub fn project_notice_is_stale(seen: u64, current: u64) -> bool {
+    seen != current
+}
+
 pub struct Studio {
     engine: Arc<Mutex<Engine>>,
     player: Player,
@@ -65,6 +156,7 @@ pub struct Studio {
     show_about: bool,
     /// engine revision at the last Save (or when the app opened)
     saved_rev: u64,
+    seen_project_load: u64,
     /// "unsaved changes" prompt before File > New project
     confirm_new: bool,
     confirm_quit: bool,
@@ -98,6 +190,8 @@ pub struct Studio {
     /// its boundary (Some(None) = back to the song).
     perf: Option<String>,
     perf_next: Option<Option<String>>,
+    /// PERFORM recording in progress.
+    perf_rec: Option<PerfRec>,
     // central view: 0 sequencer, 1 mixer, 2 automation, 3 playlist
     view: usize,
     auto_sel: Option<(String, String)>,
@@ -110,6 +204,9 @@ pub struct Studio {
     analyze: analyze_view::AnalyzeState,
     /// playlist view: the selected audio clip's stable id
     clip_sel: Option<String>,
+    marker_name: String,
+    tempo_edit_bpm: f32,
+    tempo_edit_ramp: bool,
     rail_search: String,
     brand: Option<egui::TextureHandle>,
     note_editor: bool,
@@ -161,8 +258,10 @@ pub fn run(
         Box::new(move |cc| {
             apply_theme(&cc.egui_ctx);
             let saved_rev = engine.lock().unwrap().revision;
+            let seen_project_load = engine.lock().unwrap().project_load_generation;
             Ok(Box::new(Studio {
                 saved_rev,
+                seen_project_load,
                 confirm_new: false,
                 confirm_quit: false,
                 mixer_routing: false,
@@ -192,6 +291,7 @@ pub fn run(
                 shot_requested: false,
                 perf: None,
                 perf_next: None,
+                perf_rec: None,
                 view,
                 auto_sel: None,
                 piano: piano::PianoState {
@@ -202,6 +302,9 @@ pub fn run(
                 browser: Default::default(),
                 analyze: Default::default(),
                 clip_sel: None,
+                marker_name: String::new(),
+                tempo_edit_bpm: 120.0,
+                tempo_edit_ramp: false,
                 rail_search: String::new(),
                 brand: None,
                 note_editor: false,
@@ -214,7 +317,11 @@ pub fn run(
 
 /// Compute (pattern index, local step) for a song position in seconds.
 fn locate(p: &Project, secs: f32) -> Option<(usize, f32)> {
-    let mut step = secs / p.step_secs();
+    let mut step = if p.tempo_points.is_empty() {
+        secs / p.step_secs()
+    } else {
+        crate::tempo_curve::TempoCurve::new(p).beat_at_secs(secs as f64) as f32 * 4.0
+    };
     for s in p.song_sections() {
         let pi = p.pattern_index(&s.pattern).ok()?;
         let len = p.patterns[pi].steps() as f32;
@@ -226,6 +333,15 @@ fn locate(p: &Project, secs: f32) -> Option<(usize, f32)> {
         }
     }
     None
+}
+
+/// Song body only, not render ring-out. Automated songs loop at their real end.
+fn song_loop_seconds(p: &Project) -> f32 {
+    if p.tempo_points.is_empty() {
+        p.song_seconds()
+    } else {
+        crate::tempo_curve::TempoCurve::new(p).secs_at_beat(p.song_beats() as f64) as f32
+    }
 }
 
 fn param_range(kind: &str, name: &str, v: f32) -> (f32, f32, bool) {
@@ -384,6 +500,81 @@ fn param_editor(
 }
 
 impl Studio {
+    /// Stop a PERFORM recording and write the launches as playlist clips on a
+    /// fresh lane, in one atomic batch so a single GUI Undo removes the take.
+    /// Nothing is written on an empty run.
+    fn place_perf_recording(&mut self) {
+        let Some(rec) = self.perf_rec.take() else {
+            return;
+        };
+        if rec.invalid || self.engine.lock().unwrap().revision != rec.project_revision {
+            self.toast = Some((
+                "Project or timing changed - discard and record again".into(),
+                0.0,
+                false,
+            ));
+            self.perf_rec = Some(rec);
+            return;
+        }
+        let end_bar = {
+            let e = self.engine.lock().unwrap();
+            rec.bar_now(e.project.bpm, self.player.abs_position_secs())
+                .round()
+                .max(0.0) as u32
+        };
+        let segs = &rec.segs;
+        if !segs.iter().any(|(_, n)| !n.is_empty()) {
+            self.toast = Some((
+                "Nothing recorded - launch patterns while REC is on".into(),
+                0.0,
+                false,
+            ));
+            return;
+        }
+        let (lane, calls) = {
+            let e = self.engine.lock().unwrap();
+            let lane = e.project.playlist.iter().map(|c| c.lane).max().unwrap_or(0) + 1;
+            let mut calls = Vec::new();
+            if e.project.playlist.is_empty() && !e.project.arrangement.is_empty() {
+                calls.push(json!({"tool": "arrangement_to_playlist", "args": {}}));
+            }
+            for (i, (bar, name)) in segs.iter().enumerate() {
+                if name.is_empty() {
+                    continue; // song-exit marker: only ends the previous segment
+                }
+                let next = segs.get(i + 1).map(|(b, _)| *b).unwrap_or(end_bar);
+                let bars = next.saturating_sub(*bar).max(1);
+                calls.push(json!({
+                    "tool": "place_pattern",
+                    "args": {"pattern": name, "start_bar": bar, "bars": bars, "lane": lane},
+                }));
+            }
+            (lane, calls)
+        };
+        let n = segs.iter().filter(|(_, name)| !name.is_empty()).count();
+        let track = lane + 1;
+        let r = self.engine.lock().unwrap().call_from(
+            "batch",
+            &json!({"calls": calls, "atomic": true}),
+            "you",
+        );
+        self.toast = Some(match r {
+            Ok(_) => (
+                format!("Recorded {n} launches to Track {track} - one Undo removes the take"),
+                0.0,
+                true,
+            ),
+            Err(err) => {
+                self.perf_rec = Some(rec);
+                (
+                    format!("Recording not placed; take kept: {err:#}"),
+                    0.0,
+                    false,
+                )
+            }
+        });
+    }
+
     fn call(&mut self, tool: &str, args: Value) {
         let r = self.engine.lock().unwrap().call_from(tool, &args, "you");
         if let Err(e) = r {
@@ -479,7 +670,7 @@ impl Studio {
                     let peaks = analysis::waveform_peaks(&mono, 1400);
                     let spectrum = analysis::log_spectrum_db(&mono, 72);
                     let report = analysis::analyze(&mix);
-                    let loop_secs = p.song_seconds();
+                    let loop_secs = song_loop_seconds(&p);
                     let mut strips: Vec<views::StripMeter> = mix
                         .stems
                         .iter()
@@ -501,6 +692,18 @@ impl Studio {
                 }
             });
             self.rendering = Some((rev, rx));
+        }
+    }
+
+    fn save_tooltip(&self) -> String {
+        let key = if cfg!(target_os = "macos") {
+            "Cmd+S"
+        } else {
+            "Ctrl+S"
+        };
+        match &self.project_path {
+            Some(path) => format!("Save project ({key})\n{}", self.engine.lock().unwrap().resolve(&path.to_string_lossy()).display()),
+            None => format!("Save project ({key})\nNo project file yet. First Save creates a new .beatbox.json file without overwriting another beat."),
         }
     }
 
@@ -549,6 +752,7 @@ impl Studio {
                 .call_from("load_project", &json!({"path": path}), "you");
         match r {
             Ok(_) => {
+                self.seen_project_load = self.engine.lock().unwrap().project_load_generation;
                 self.project_path = Some(path.clone());
                 self.saved_rev = self.engine.lock().unwrap().revision;
                 self.toast = Some((format!("Opened {}", path.display()), 0.0, true));
@@ -701,10 +905,11 @@ impl Studio {
 
     // ---------------- top bar ----------------
     fn top_bar(&mut self, ui: &mut egui::Ui, p: &Project, undo: (usize, usize)) {
-        ui.horizontal(|ui| {
-            // Narrow windows: shrink the swing slider and key/scale boxes so
-            // the whole row fits without scrolling.
-            let narrow = ui.ctx().screen_rect().width() < 900.0;
+        ui.horizontal_wrapped(|ui| {
+            // Use the dock panel width, not the screen: the transport can float
+            // or share a window with another panel. Controls wrap when needed.
+            let panel_width = ui.available_width();
+            let narrow = panel_width < 1000.0;
             ui.spacing_mut().slider_width = if narrow { 30.0 } else { 66.0 };
             let playing = self.player.is_playing();
             if transport_button(ui, playing)
@@ -755,7 +960,7 @@ impl Studio {
                 let sr = SampleRate::default();
                 let map = TempoMap::for_project(p);
                 let at = sr.samples(f64::from(pos));
-                let bb = format_position(at, TimeFormat::BarsBeats, sr, &map, FrameRate::Fps30, 0);
+                let bb = playlist::marker_position(p, pos);
                 let ms = format_position(at, TimeFormat::MinSecs, sr, &map, FrameRate::Fps30, 0);
                 let _len = format_position(
                     sr.samples(f64::from(total)),
@@ -814,6 +1019,8 @@ impl Studio {
             ui.add_space(8.0);
             let mut root = p.key_root.clone();
             let mut scale = p.scale.clone();
+            let key_label=format!("Key: {root} {scale}");
+            let mut key_controls=|ui:&mut egui::Ui| {
             egui::ComboBox::from_id_salt("key")
                 .width(if narrow { 44.0 } else { 56.0 })
                 .selected_text(RichText::new(&root).strong())
@@ -830,6 +1037,12 @@ impl Studio {
                         ui.selectable_value(&mut scale, n.to_string(), *n);
                     }
                 });
+            };
+            if panel_width<700.0 {
+                ui.menu_button(key_label,key_controls);
+            } else {
+                key_controls(ui);
+            }
             if root != p.key_root || scale != p.scale {
                 self.call("set_key", json!({"root": root, "scale": scale}));
             }
@@ -895,7 +1108,7 @@ impl Studio {
                 }
                 if right_to_left {
                     file_menu!(ui);
-                    if ui.button("Save").on_hover_text("Cmd+S").clicked() {
+                    if ui.button("Save").on_hover_text(self.save_tooltip()).clicked() {
                         self.save();
                     }
 
@@ -916,13 +1129,13 @@ impl Studio {
                     }
                 } else {
                     undo_redo!(ui);
-                    if ui.button("Save").on_hover_text("Cmd+S").clicked() {
+                    if ui.button("Save").on_hover_text(self.save_tooltip()).clicked() {
                         self.save();
                     }
                     file_menu!(ui);
                 }
             };
-            if ui.ctx().screen_rect().width() < 1300.0 {
+            if panel_width < 1300.0 {
                 tail(ui, false);
             } else {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1074,8 +1287,9 @@ impl Studio {
                 x += w;
             }
         }
-        let pos = self.player.position_secs();
-        let px = rect.left() + 4.0 + w_avail * (pos / p.song_seconds().max(0.01)).min(1.0);
+        let curve = crate::tempo_curve::TempoCurve::new(p);
+        let pos_step = curve.beat_at_secs(self.player.position_secs() as f64) as f32 * 4.0;
+        let px = rect.left() + 4.0 + w_avail * (pos_step / total).clamp(0.0, 1.0);
         painter.line_segment(
             [Pos2::new(px, rect.top()), Pos2::new(px, rect.bottom())],
             Stroke::new(2.0_f32, Color32::WHITE),
@@ -1083,8 +1297,9 @@ impl Studio {
         if resp.clicked() {
             if let Some(m) = resp.interact_pointer_pos() {
                 let t = ((m.x - rect.left() - 4.0) / w_avail).clamp(0.0, 1.0);
-                self.player.seek(t * p.song_seconds());
-                if let Some((pi, _)) = locate(p, t * p.song_seconds()) {
+                let target_s = curve.secs_at_beat((t * total / 4.0) as f64) as f32;
+                self.player.seek(target_s);
+                if let Some((pi, _)) = locate(p, target_s) {
                     self.pattern = pi;
                 }
             }
@@ -1111,9 +1326,58 @@ impl Studio {
         if p.patterns.get(self.pattern).is_none() {
             return;
         }
+        if let Some(selected) = p
+            .patterns
+            .get(self.pattern)
+            .filter(|q| !q.name.starts_with(crate::tools_fl::PL))
+        {
+            let identity = format!("{}:{}", selected.id, selected.name);
+            if self
+                .browser
+                .pattern_rename
+                .as_ref()
+                .is_none_or(|v| v.0 != identity)
+            {
+                self.browser.pattern_rename = Some((identity, selected.name.clone()));
+            }
+            let mut rename = None;
+            let mut duplicate = false;
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Pattern name");
+                let draft=&mut self.browser.pattern_rename.as_mut().unwrap().1;
+                ui.add(egui::TextEdit::singleline(draft).desired_width(180.0));
+                if ui.add_enabled(!draft.trim().is_empty() && draft.trim()!=selected.name,egui::Button::new("Rename")).on_hover_text("Rename this pattern and its song/playlist references. Notes, stable IDs and timing stay unchanged. Undo restores.").clicked() {
+                    rename=Some(draft.trim().to_string());
+                }
+                duplicate = ui.button("Duplicate pattern").on_hover_text("Make an independent copy with the same notes and meter. Selects the copy for editing, without placing it in the song. Undo removes it.").clicked();
+            });
+            if let Some(name) = rename {
+                self.call(
+                    "rename_pattern",
+                    json!({"pattern":selected.id,"new_name":name}),
+                );
+            }
+            if duplicate {
+                self.call("duplicate_pattern", json!({"pattern":selected.id}));
+                let count = self.engine.lock().unwrap().project.patterns.len();
+                if count > p.patterns.len() {
+                    self.pattern = count - 1;
+                }
+                return; // The project snapshot above predates the new pattern.
+            }
+        }
         let playing_here = locate(p, self.player.position_secs())
             .filter(|(pi, _)| *pi == self.pattern)
             .map(|(_, s)| s);
+        let rack_steps = p.patterns[self.pattern].steps() as usize;
+        if channel_rack::rack_content_width(ui.available_width(), rack_steps) > ui.available_width()
+        {
+            ui.label(
+                RichText::new("More steps to the right: scroll horizontally or Shift+wheel.")
+                    .size(11.0)
+                    .color(DIM),
+            );
+        }
         let seq_top = ui.next_widget_position().y;
         // a channel added to the rack scrolls into view: the scroll area
         // clamps to last frame's content, so the jump to the end comes one
@@ -1125,7 +1389,7 @@ impl Studio {
         let grew = seen.is_some_and(|n| p.tracks.len() > n);
         let pending = ui.data(|d| d.get_temp::<bool>(pend_key)).unwrap_or(false);
         ui.data_mut(|d| d.insert_temp(pend_key, grew));
-        let mut seq_scroll = egui::ScrollArea::vertical()
+        let mut seq_scroll = egui::ScrollArea::both()
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .auto_shrink([false, false])
             .id_salt("seq");
@@ -1141,7 +1405,10 @@ impl Studio {
         if pending {
             seq_scroll = seq_scroll.vertical_scroll_offset(1.0e6);
         }
+        let steps = p.patterns[self.pattern].steps() as usize;
+        let content_width = channel_rack::rack_content_width(ui.available_width(), steps);
         seq_scroll.show(ui, |ui| {
+            ui.set_min_width(content_width);
             let mut clip = ui.clip_rect();
             clip.min.y = clip.min.y.max(seq_top + 2.0);
             ui.set_clip_rect(clip);
@@ -1490,11 +1757,17 @@ impl eframe::App for Studio {
                 let song = self.rendered.as_ref().map(|r| (r.mix.clone(), r.loop_secs));
                 match (l.mix, song) {
                     (Some(m), _) => {
-                        self.player.launch(m, l.loop_secs, l.quantum_secs);
+                        let land = self.player.launch(m, l.loop_secs, l.quantum_secs);
+                        if let Some(rec) = &mut self.perf_rec {
+                            rec.pending = Some(land);
+                        }
                         self.perf_next = Some(l.pattern);
                     }
                     (None, Some((m, secs))) => {
-                        self.player.launch(m, secs, l.quantum_secs);
+                        let land = self.player.launch(m, secs, l.quantum_secs);
+                        if let Some(rec) = &mut self.perf_rec {
+                            rec.pending = Some(land);
+                        }
                         self.perf_next = Some(None);
                     }
                     (None, None) => {
@@ -1506,11 +1779,71 @@ impl eframe::App for Studio {
             self.player.poll();
             if self.perf_next.is_some() && !self.player.launch_pending() {
                 self.perf = self.perf_next.take().unwrap();
+                if let Some(rec) = &mut self.perf_rec {
+                    let bpm = e.project.bpm;
+                    let bar = match rec.pending.take() {
+                        Some(_) if rec.frozen.is_none() => {
+                            let land = self.player.last_landing_secs();
+                            if std::env::var_os("BEATBOX_PERF_TRACE").is_some() {
+                                eprintln!("PERF_LANDING pattern={:?} abs={land:.9} start_pos={:.9} take_before={:.9} abs_last={:.9} bpm={bpm}", self.perf, rec.start_pos, rec.take_last, rec.abs_last);
+                            }
+                            // Read the actual callback/poll transition timestamp,
+                            // not the launch request or repaint observation.
+                            rec.take_last += (land - rec.abs_last).max(0.0) as f32;
+                            rec.abs_last = land;
+                            ((rec.start_pos + rec.take_last) * bpm / 240.0)
+                                .round()
+                                .max(0.0) as u32
+                        }
+                        _ => {
+                            rec.pending = None;
+                            rec.bar_now(bpm, self.player.abs_position_secs())
+                                .round()
+                                .max(0.0) as u32
+                        }
+                    };
+                    if rec.frozen.is_none() {
+                        match &self.perf {
+                            Some(name) => {
+                                // a re-launch in the same bar supersedes the first take
+                                if rec.segs.last().map(|(b, _)| *b) == Some(bar) {
+                                    rec.segs.pop();
+                                }
+                                rec.segs.push((bar, name.clone()));
+                            }
+                            // back to the song: close the open segment but keep
+                            // the take open - only Place take writes clips
+                            None => rec.segs.push((bar, String::new())),
+                        }
+                    }
+                }
                 if self.perf.is_none() {
                     // the song render may be newer than the one queued on exit
                     if let Some(r) = &self.rendered {
                         self.player.set_mix(r.mix.clone(), r.loop_secs);
                     }
+                }
+            }
+            if let Some(rec) = &mut self.perf_rec {
+                if (rec.bpm - e.project.bpm).abs() > 0.001
+                    || rec.seek_revision != self.player.seek_revision
+                    || rec.project_revision != e.revision
+                {
+                    rec.invalid = true;
+                }
+                // stopping mid-take makes further timing unsafe: freeze the
+                // take at the stop point instead of recording on guesswork
+                if rec.frozen.is_none() && !self.player.is_playing() {
+                    rec.frozen = Some(
+                        rec.take_last
+                            + (self.player.abs_position_secs() - rec.abs_last).max(0.0) as f32,
+                    );
+                    rec.pending = None;
+                    self.toast = Some((
+                        "Transport stopped - take frozen; Place take or Discard".into(),
+                        0.0,
+                        false,
+                    ));
                 }
             }
             e.transport.perf_playing = self.perf.clone();
@@ -1534,6 +1867,11 @@ impl eframe::App for Studio {
         } else {
             250
         }));
+        let generation = self.engine.lock().unwrap().project_load_generation;
+        if project_notice_is_stale(self.seen_project_load, generation) {
+            self.toast = None;
+            self.seen_project_load = generation;
+        }
         let (p, rev, log, undo) = self.snapshot();
         // closing the window with unsaved edits asks first
         if ctx.input(|i| i.viewport().close_requested())
@@ -1827,4 +2165,261 @@ fn project_has_nothing_to_render(p: &crate::project::Project) -> bool {
         && p.playlist.is_empty()
         && p.audio_clips.is_empty()
         && p.vocal_map.is_none()
+}
+
+#[cfg(test)]
+mod playback_cursor_tests {
+    use super::*;
+    #[test]
+    fn rack_cursor_follows_repeats_meters_and_tempo_curve() {
+        let mut e = crate::engine::Engine::new(std::env::temp_dir().join("cursor-map-test"));
+        for (name, meter) in [("first", "3/4"), ("odd", "7/8")] {
+            e.call("add_pattern", &json!({"name":name,"bars":1}))
+                .unwrap();
+            e.call(
+                "set_time_signature",
+                &json!({"pattern":name,"time_signature":meter}),
+            )
+            .unwrap();
+        }
+        e.call(
+            "set_arrangement",
+            &json!({"sections":[{"pattern":"first","repeats":2},{"pattern":"odd","repeats":1}]}),
+        )
+        .unwrap();
+        e.call("add_tempo_point", &json!({"beat":2,"bpm":60}))
+            .unwrap();
+        e.call("add_tempo_point", &json!({"beat":8,"bpm":100,"ramp":true}))
+            .unwrap();
+        let p = &e.project;
+        let c = crate::tempo_curve::TempoCurve::new(p);
+        let first = p.pattern_index("first").unwrap();
+        let odd = p.pattern_index("odd").unwrap();
+        for (beat, pi, step) in [
+            (1., first, 4.),
+            (4., first, 4.),
+            (6.25, odd, 1.),
+            (9., odd, 12.),
+        ] {
+            let r = locate(p, c.secs_at_beat(beat) as f32).unwrap();
+            assert_eq!(r.0, pi);
+            assert!((r.1 - step).abs() < 0.0001);
+        }
+        assert!(locate(p, c.secs_at_beat(10.) as f32).is_none());
+        let total = p.song_steps() as f32;
+        let t = 6.25 * 4. / total;
+        let target = c.secs_at_beat((t * total / 4.) as f64) as f32;
+        assert_eq!(locate(p, target).unwrap().0, odd);
+        let mut flat = p.clone();
+        flat.tempo_points.clear();
+        for secs in [0., 0.5, 1., 2., 3., 4.] {
+            let expected = secs / flat.step_secs();
+            if let Some((_, local)) = locate(&flat, secs) {
+                assert!(local <= expected);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod song_loop_tests {
+    use super::*;
+    #[test]
+    fn song_loop_end_follows_tempo_without_render_tail() {
+        let mut p = Project::default();
+        for bpm in [20., 61., 120., 137., 400.] {
+            p.bpm = bpm;
+            assert_eq!(song_loop_seconds(&p), p.song_seconds());
+        }
+        p.bpm = 120.;
+        p.tempo_points = vec![crate::project::TempoPoint {
+            beat: 4.,
+            bpm: 60.,
+            ramp: false,
+        }];
+        assert_eq!(song_loop_seconds(&p), 14.);
+        p.tempo_points.push(crate::project::TempoPoint {
+            beat: 8.,
+            bpm: 100.,
+            ramp: true,
+        });
+        let c = crate::tempo_curve::TempoCurve::new(&p);
+        assert_eq!(song_loop_seconds(&p), c.secs_at_beat(16.) as f32);
+    }
+}
+
+#[cfg(test)]
+mod mix_checkpoint_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    fn fixture() -> beatbox::Engine {
+        let mut e = beatbox::Engine::new("/tmp/mix-checkpoint-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+        )
+        .unwrap();
+        e
+    }
+    #[test]
+    fn checkpoint_unique_readonly_no_overwrite() {
+        let mut e = fixture();
+        e.call(
+            "snapshot",
+            &json!({"name":"MIX_CHECKPOINT_1","note":"keep me"}),
+        )
+        .unwrap();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let rev = e.revision;
+        let h = e.history().0.len();
+        assert_eq!(
+            beatbox::gui::capture_mix_checkpoint(&mut e).unwrap(),
+            "mix_checkpoint_2"
+        );
+        assert_eq!(
+            beatbox::gui::capture_mix_checkpoint(&mut e).unwrap(),
+            "mix_checkpoint_3"
+        );
+        assert_eq!(e.snapshots.len(), 3);
+        assert_eq!(e.snapshots[0].1.note, "keep me");
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        assert_eq!(rev, e.revision);
+        assert_eq!(h, e.history().0.len());
+    }
+    #[test]
+    fn checkpoint_restore_all_undo_exact() {
+        let mut e = fixture();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let name = beatbox::gui::capture_mix_checkpoint(&mut e).unwrap();
+        e.call("set_mixer", &json!({"track":"drums","volume_db":-11}))
+            .unwrap();
+        e.call(
+            "rename_pattern",
+            &json!({"pattern":"groove","new_name":"Changed phrase"}),
+        )
+        .unwrap();
+        let edited = serde_json::to_value(&e.project).unwrap();
+        let h = e.history().0.len();
+        e.call("restore_snapshot", &json!({"name":name})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        assert_eq!(e.history().0.len(), h + 1);
+        assert_eq!(e.snapshots.len(), 1);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), edited);
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        let h = e.history().0.len();
+        let rev = e.revision;
+        e.call("restore_snapshot", &json!({"name":name})).unwrap();
+        assert_eq!(h, e.history().0.len());
+        assert_eq!(rev, e.revision);
+    }
+    #[test]
+    fn checkpoint_save_companion_reload_and_missing_atomic() {
+        let mut e = fixture();
+        let name = beatbox::gui::capture_mix_checkpoint(&mut e).unwrap();
+        let original = serde_json::to_value(&e.project).unwrap();
+        e.call("set_mixer", &json!({"track":"drums","volume_db":-14}))
+            .unwrap();
+        e.call(
+            "save_project",
+            &json!({"path":"/tmp/checkpoint-project.json"}),
+        )
+        .unwrap();
+        assert!(std::path::Path::new("/tmp/checkpoint-project.json.snapshots.json").exists());
+        let mut f = beatbox::Engine::new("/tmp/checkpoint-reload".into());
+        f.call(
+            "load_project",
+            &json!({"path":"/tmp/checkpoint-project.json"}),
+        )
+        .unwrap();
+        assert_eq!(f.snapshots.len(), e.snapshots.len());
+        f.call("restore_snapshot", &json!({"name":name})).unwrap();
+        assert_eq!(serde_json::to_value(&f.project).unwrap(), original);
+        let b = serde_json::to_value(&f.project).unwrap();
+        let rev = f.revision;
+        assert!(f
+            .call("restore_snapshot", &json!({"name":"missing-checkpoint"}))
+            .is_err());
+        assert_eq!(rev, f.revision);
+        assert_eq!(serde_json::to_value(&f.project).unwrap(), b);
+    }
+}
+
+#[cfg(test)]
+mod project_notice_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn generation_only_successful_loads() {
+        let mut e = beatbox::Engine::new("/tmp/project-notice-test".into());
+        assert_eq!(e.project_load_generation, 0);
+        e.call(
+            "load_project",
+            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+        )
+        .unwrap();
+        assert_eq!(e.project_load_generation, 1);
+        let seen = e.project_load_generation;
+        e.call("set_mixer", &json!({"track":"drums","volume_db":-7}))
+            .unwrap();
+        assert!(!beatbox::gui::project_notice_is_stale(
+            seen,
+            e.project_load_generation
+        ));
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(seen, e.project_load_generation);
+        e.call(
+            "load_project",
+            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+        )
+        .unwrap();
+        assert!(beatbox::gui::project_notice_is_stale(
+            seen,
+            e.project_load_generation
+        ));
+        assert_eq!(e.project_load_generation, 2);
+    }
+    #[test]
+    fn failed_load_does_not_invalidate() {
+        let mut e = beatbox::Engine::new("/tmp/project-notice-test".into());
+        let seen = e.project_load_generation;
+        std::fs::write("/tmp/project-notice-invalid.json", "bad json").unwrap();
+        assert!(e
+            .call(
+                "load_project",
+                &json!({"path":"/tmp/project-notice-invalid.json"})
+            )
+            .is_err());
+        assert!(!beatbox::gui::project_notice_is_stale(
+            seen,
+            e.project_load_generation
+        ));
+        assert!(e
+            .call(
+                "load_project",
+                &json!({"path":"/tmp/project-notice-missing215.json"})
+            )
+            .is_err());
+        assert_eq!(seen, e.project_load_generation);
+    }
+    #[test]
+    fn generation_not_project_data_or_undo() {
+        let mut e = beatbox::Engine::new("/tmp/project-notice-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+        )
+        .unwrap();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let mut expected = e.project.clone();
+        expected.name = "Other song".into();
+        e.replace_project(expected);
+        assert_eq!(e.project_load_generation, 2);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        assert_eq!(e.project_load_generation, 2);
+        assert!(!beatbox::gui::project_notice_is_stale(2, 2));
+        assert!(beatbox::gui::project_notice_is_stale(u64::MAX, 0));
+    }
 }

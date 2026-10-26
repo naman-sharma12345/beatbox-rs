@@ -531,9 +531,29 @@ fn save_new_sample(
     data: &[f32],
     note: &str,
 ) -> Result<Value> {
-    let name = samples::sample_name(new_name);
-    let path = e.samples_dir().join(format!("{name}.wav"));
-    crate::render::write_wav(&path, data, data)?;
+    let base_name = samples::sample_name(new_name);
+    let mut name = base_name.clone();
+    let mut suffix = 2;
+    let path = loop {
+        let candidate = e.samples_dir().join(format!("{name}.wav"));
+        if !e
+            .project
+            .samples
+            .iter()
+            .any(|s| s.name.eq_ignore_ascii_case(&name))
+        {
+            match crate::render::write_wav_new(&candidate, data, data) {
+                Ok(()) => break candidate,
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        name = format!("{base_name}_{suffix}");
+        suffix += 1;
+    };
     let info = SampleInfo {
         name,
         path: path.to_string_lossy().to_string(),
@@ -663,7 +683,8 @@ fn install_pack(
             let mut data = samples::decode_file(std::path::Path::new(&info.path))?;
             // trim leading silence so notes speak on time
             audio_edit::trim(&mut data, -60.0);
-            e.bank.insert(&sname, data);
+            e.bank
+                .insert_for_source(&sname, std::path::Path::new(&info.path), data);
             e.project.samples.push(info);
         }
         named.push((sname, *root, *d, *rr));
@@ -1754,5 +1775,117 @@ mod tests {
             yn.iter().all(|v| v.is_finite()),
             "noise produced non-finite"
         );
+    }
+}
+
+#[cfg(test)]
+mod repeated_sample_edit_tests {
+    use serde_json::json;
+    #[test]
+    fn repeated_edits_never_overwrite_prior_or_unregistered_files() {
+        let dir =
+            std::env::temp_dir().join(format!("beatbox-repeat-edit-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("original.wav");
+        let x = vec![0.4; 4410];
+        crate::render::write_wav(&p, &x, &x).unwrap();
+        let mut e = crate::Engine::new(dir.clone());
+        e.call("import_sample", &json!({"path":p,"name":"original"}))
+            .unwrap();
+        let a = e
+            .call("edit_sample", &json!({"sample":"original","gain_db":-6}))
+            .unwrap();
+        let first = e
+            .project
+            .samples
+            .iter()
+            .find(|s| s.name == a["sample"].as_str().unwrap())
+            .unwrap()
+            .clone();
+        let first_bytes = std::fs::read(&first.path).unwrap();
+        let orphan = e.samples_dir().join("original_edit_2.wav");
+        std::fs::write(&orphan, b"unregistered file must survive").unwrap();
+        let b = e
+            .call("edit_sample", &json!({"sample":"original","gain_db":-12}))
+            .unwrap();
+        assert_eq!(b["sample"], "original_edit_3");
+        let second = e
+            .project
+            .samples
+            .iter()
+            .find(|s| s.name == b["sample"].as_str().unwrap())
+            .unwrap()
+            .clone();
+        assert_ne!(first.path, second.path);
+        assert_eq!(std::fs::read(&first.path).unwrap(), first_bytes);
+        assert_eq!(
+            std::fs::read(&orphan).unwrap(),
+            b"unregistered file must survive"
+        );
+        let a = crate::samples::decode_file(std::path::Path::new(&first.path)).unwrap();
+        let b = crate::samples::decode_file(std::path::Path::new(&second.path)).unwrap();
+        assert!(a[2000] > b[2000] * 1.9);
+        e.call("undo", &json!({})).unwrap();
+        assert!(e.project.samples.iter().any(|s| s.path == first.path));
+        assert_eq!(std::fs::read(&first.path).unwrap(), first_bytes);
+        e.call("redo", &json!({})).unwrap();
+        e.call("save_project", &json!({"path":"edits.json"}))
+            .unwrap();
+        e.call("load_project", &json!({"path":"edits.json"}))
+            .unwrap();
+        assert_ne!(e.project.samples[1].path, e.project.samples[2].path);
+        assert_eq!(std::fs::read(&first.path).unwrap(), first_bytes);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod concurrent_sample_edit_tests {
+    use serde_json::json;
+    #[test]
+    fn independent_edit_writers_choose_distinct_complete_files() {
+        let dir = std::env::temp_dir().join(format!("beatbox-edit-writers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("original.wav");
+        let x = vec![0.4; 4410];
+        crate::render::write_wav(&original, &x, &x).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = [-6., -12.]
+            .into_iter()
+            .map(|gain| {
+                let dir = dir.clone();
+                let original = original.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let mut e = crate::Engine::new(dir);
+                    e.call("import_sample", &json!({"path":original,"name":"original"}))
+                        .unwrap();
+                    barrier.wait();
+                    let result = e
+                        .call("edit_sample", &json!({"sample":"original","gain_db":gain}))
+                        .unwrap();
+                    let info = e
+                        .project
+                        .samples
+                        .iter()
+                        .find(|s| s.name == result["sample"].as_str().unwrap())
+                        .unwrap()
+                        .clone();
+                    (info.path, gain)
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_ne!(results[0].0, results[1].0);
+        for (path, gain) in results {
+            let audio = crate::samples::decode_file(std::path::Path::new(&path)).unwrap();
+            assert_eq!(audio.len(), 4410);
+            assert!((audio[2000] - 0.4 * crate::dsp::db_to_gain(gain)).abs() < 0.001);
+        }
+        let protected = dir.join("protected.wav");
+        std::fs::write(&protected, b"do not truncate").unwrap();
+        assert!(crate::render::write_wav_new(&protected, &x, &x).is_err());
+        assert_eq!(std::fs::read(&protected).unwrap(), b"do not truncate");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

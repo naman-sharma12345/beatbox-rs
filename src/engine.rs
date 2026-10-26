@@ -102,6 +102,8 @@ pub struct Engine {
     pub workdir: PathBuf,
     /// Bumped on every successful mutation (the GUI watches this).
     pub revision: u64,
+    /// Successful whole-project loads, including reloads of the same file.
+    pub project_load_generation: u64,
     pub log: Vec<LogEntry>,
     /// Full renders keyed by project hash (the same project renders to the
     /// same audio), so a tool that renders a candidate and then applies it
@@ -132,6 +134,7 @@ impl Engine {
             redo: Vec::new(),
             workdir,
             revision: 0,
+            project_load_generation: 0,
             log: Vec::new(),
             render_cache: Vec::new(),
             perf_cache: Vec::new(),
@@ -497,6 +500,7 @@ impl Engine {
 
     /// Replace the project wholesale (load), keeping undo.
     pub fn replace_project(&mut self, mut p: Project) {
+        self.project_load_generation = self.project_load_generation.wrapping_add(1);
         // migrate legacy projects: positional effects get stable ids
         p.ensure_fx_ids();
         let old = std::mem::replace(&mut self.project, p);

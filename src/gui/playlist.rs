@@ -20,6 +20,18 @@ use crate::timebase::{step_to_tick, TempoMap, TICKS_PER_QUARTER};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke};
 use serde_json::{json, Value};
 
+fn section_navigation(ui: &mut egui::Ui, row: Option<&Value>) -> Option<f32> {
+    let row = row?;
+    let start = row["start_seconds"].as_f64()?;
+    let end = row["end_seconds"].as_f64()?;
+    let bar = row["start_bar"].as_f64()?;
+    ui.label(format!(
+        "bar {bar:.1} | {start:.2}s | {:.2}s long",
+        end - start
+    ));
+    ui.small_button("Jump").on_hover_text("Seek to this section's exact start using the current tempo map. Does not edit the project or start playback.").clicked().then_some(start as f32)
+}
+
 const HEAD_W: f32 = 150.0;
 const RULER_H: f32 = 18.0;
 const LANE_H: f32 = 40.0;
@@ -55,10 +67,64 @@ pub fn placed_clips(p: &Project) -> Vec<PlacedClip> {
     out
 }
 
+/// Marker navigation shares the renderer's tempo curve, including ramps.
+fn marker_seconds(p: &Project, beat: f32) -> f32 {
+    crate::tempo_curve::TempoCurve::new(p).secs_at_beat(f64::from(beat)) as f32
+}
+pub(super) fn marker_beat(p: &Project, seconds: f32) -> f32 {
+    crate::tempo_curve::TempoCurve::new(p).beat_at_secs(f64::from(seconds)) as f32
+}
+
+/// Bars and notated beats at the song position, honoring each pattern's meter.
+pub(super) fn marker_position(p: &Project, seconds: f32) -> String {
+    let beat = marker_beat(p, seconds).max(0.0);
+    let bar = p.bar_at_beat(beat);
+    let mut at = 0.0;
+    let mut meter = (4, 4);
+    for section in p.song_sections() {
+        if let Ok(i) = p.pattern_index(&section.pattern) {
+            let pattern = &p.patterns[i];
+            let span = pattern.steps() as f32 * section.repeats.max(1) as f32 / 4.0;
+            if beat < at + span {
+                meter = pattern.meter.unwrap_or((4, 4));
+                break;
+            }
+            at += span;
+        }
+    }
+    let ticks_per_bar = u64::from(meter.0) * 960;
+    let ticks = (bar.fract() * ticks_per_bar as f32).round() as u64;
+    let (whole, ticks) = if ticks >= ticks_per_bar {
+        (bar.floor() as u64 + 1, 0)
+    } else {
+        (bar.floor() as u64, ticks)
+    };
+    format!("{}|{}|{:03}", whole, ticks / 960 + 1, ticks % 960)
+}
+
+/// Ruler bar grid follows the arrangement's pattern meters. Timing navigation
+/// uses TempoCurve; this map is only used for musical grid geometry.
+fn playlist_meter_map(p: &Project) -> TempoMap {
+    let mut map = TempoMap::for_project(p);
+    let mut tick = 0i64;
+    for section in p.song_sections() {
+        if let Ok(i) = p.pattern_index(&section.pattern) {
+            let pattern = &p.patterns[i];
+            let (n, d) = pattern.meter.unwrap_or((4, 4));
+            let _ = map.set_meter(tick, n, d);
+            tick = tick.saturating_add(step_to_tick(
+                pattern.steps() as f32 * section.repeats.max(1) as f32,
+            ));
+        }
+    }
+    let _ = map.set_meter(tick, 4, 4);
+    map
+}
+
 impl Studio {
     pub(super) fn playlist_view(&mut self, ui: &mut egui::Ui, p: &Project) {
         let tk = Tokens::DARK;
-        let map = TempoMap::for_project(p);
+        let map = playlist_meter_map(p);
         let clips = placed_clips(p);
         // audio clip lengths need the decoded takes
         let take_secs: Vec<f32> = {
@@ -80,7 +146,7 @@ impl Studio {
             .audio_clips
             .iter()
             .zip(&take_secs)
-            .map(|(c, s)| tick_of_beat(c.start_beat + s * p.bpm / 60.0))
+            .map(|(c, s)| tick_of_beat(audio_clip_beat_at(p, c, *s)))
             .max()
             .unwrap_or(0);
         let total = clips
@@ -88,11 +154,14 @@ impl Studio {
             .map_or(TICKS_PER_QUARTER * 16, |c| c.end)
             .max(audio_end)
             .max(1);
-        let playhead_beat = self.player.position_secs() * p.bpm / 60.0;
+        let playhead_beat = marker_beat(p, self.player.position_secs());
         let mut actions: Vec<(&'static str, Value)> = Vec::new();
         let lanes = p.tracks.len().max(1);
         let want_h = RULER_H * 2.0 + LANE_H * lanes as f32 + 4.0;
         // performance strip: launch any pattern live, on the next bar
+        let mut rec_start = false;
+        let mut rec_place = false;
+        let mut rec_cancel = false;
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 egui::RichText::new("PERFORM")
@@ -135,7 +204,91 @@ impl Studio {
                     actions.push(("perform", json!({"action": "exit"})));
                 }
             }
+            match &self.perf_rec {
+                Some(rec) => {
+                    let n = rec.segs.iter().filter(|(_, name)| !name.is_empty()).count();
+                    if rec.invalid {
+                        ui.colored_label(egui::Color32::LIGHT_RED, "Project or timing changed - discard take");
+                    } else if rec.frozen.is_some() {
+                        ui.label("Take frozen");
+                    }
+                    if ui
+                        .button(format!("Place take ({n})"))
+                        .on_hover_text(
+                            "Add launches on a new track, layered over the existing song. Sections become equivalent playlist clips. One Undo removes the take.",
+                        )
+                        .clicked()
+                    {
+                        rec_place = true;
+                    }
+                    if ui
+                        .button("Discard take")
+                        .on_hover_text("Throw this recording away without placing it")
+                        .clicked()
+                    {
+                        rec_cancel = true;
+                    }
+                }
+                None => {
+                    if ui
+                        .button("Rec")
+                        .on_hover_text(
+                            "Record pattern launches into playlist clips: press Play, launch patterns, then Place take",
+                        )
+                        .clicked()
+                    {
+                        rec_start = true;
+                    }
+                }
+            }
         });
+        if rec_start {
+            if self.perf.is_some() || self.perf_next.is_some() {
+                self.toast = Some((
+                    "Return to SONG before starting a new take".into(),
+                    0.0,
+                    false,
+                ));
+            } else if self.rendering.is_some() || self.rendered.is_none() {
+                self.toast = Some((
+                    "Wait for Preparing sound to finish before Rec".into(),
+                    0.0,
+                    false,
+                ));
+            } else if self.player.is_playing() {
+                let (abs, pos) = self.player.recording_anchor();
+                self.perf_rec = Some(crate::gui::PerfRec {
+                    segs: Vec::new(),
+                    take_last: 0.0,
+                    abs_last: abs,
+                    pending: None,
+                    start_pos: pos,
+                    frozen: None,
+                    bpm: p.bpm,
+                    invalid: false,
+                    seek_revision: self.player.seek_revision,
+                    project_revision: self.engine.lock().unwrap().revision,
+                });
+                self.toast = Some((
+                    "Recording launches - switch patterns live, then Place take".into(),
+                    0.0,
+                    true,
+                ));
+            } else {
+                self.toast = Some((
+                    "Press Play first - recording follows the playhead".into(),
+                    0.0,
+                    false,
+                ));
+            }
+        }
+        if rec_place {
+            self.place_perf_recording();
+        }
+        if rec_cancel {
+            self.perf_rec = None;
+            self.toast = Some(("Take discarded".into(), 0.0, true));
+        }
         if p.playlist.is_empty() && p.arrangement.is_empty() {
             if let Some(first) = p.patterns.first() {
                 ui.label(
@@ -201,6 +354,112 @@ impl Studio {
                 }
             });
         }
+        egui::CollapsingHeader::new("SECTION ORDER - move and repeat song parts")
+            .id_salt("arrangement_section_order")
+            .default_open(true)
+            .show(ui, |ui| {
+                if !p.playlist.is_empty() {
+                    ui.label("Playlist clips control this song. Move clips in the pattern grid instead.");
+                } else if p.arrangement.is_empty() {
+                    ui.label("No explicit sections yet. Start arrangement below chooses its first section (replaces the default first-pattern song).");
+                } else {
+                    ui.label("Move whole sections or change repeats (1-64). Repeats change song length and shift following sections. Saved markers, tempo, automation and audio clips stay at fixed song positions.");
+                    let positions = crate::tools_markers::arrangement_positions(p).ok();
+                    for (i, section) in p.arrangement.iter().enumerate() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(format!("{}: {} x{}", i+1, section.pattern, section.repeats));
+                            if let Some(seconds) = section_navigation(ui, positions.as_ref().and_then(|r| r.get(i))) {
+                                self.player.seek(seconds);
+                            }
+                            if ui.small_button("Mark start").on_hover_text("Save a marker at this section's current start. It stays at that fixed song position after section edits. Existing markers are not moved; Undo removes the new marker.").clicked() {
+                                actions.push(("mark_arrangement_section",json!({"section":i})));
+                            }
+                            if ui.add_enabled(section.repeats>1, egui::Button::new("Repeat -").small()).on_hover_text("One fewer repeat of this section. Following sections move earlier; fixed song positions stay unchanged. Undo restores.").clicked() {
+                                actions.push(("set_section_repeats",json!({"section":i,"repeats":section.repeats-1})));
+                            }
+                            if ui.add_enabled(section.repeats<64, egui::Button::new("Repeat +").small()).on_hover_text("One more repeat of this section. Following sections move later; fixed song positions stay unchanged. Undo restores.").clicked() {
+                                actions.push(("set_section_repeats",json!({"section":i,"repeats":section.repeats+1})));
+                            }
+                            if ui.small_button("Duplicate").on_hover_text("Insert a copy of this section after itself, including all repeats. Shares the SAME pattern, not a new note variation. Following sections move later; markers, tempo, automation and audio clips stay fixed. One Undo restores.").clicked() {
+                                actions.push(("duplicate_arrangement_section",json!({"section":i})));
+                            }
+                            if ui.add_enabled(i>0, egui::Button::new("Up").small()).clicked() {
+                                actions.push(("move_arrangement_section",json!({"from":i,"to":i-1})));
+                            }
+                            if ui.add_enabled(i+1<p.arrangement.len(), egui::Button::new("Down").small()).clicked() {
+                                actions.push(("move_arrangement_section",json!({"from":i,"to":i+1})));
+                            }
+                        });
+                    }
+                }
+                if p.playlist.is_empty() {
+                    ui.label(if p.arrangement.is_empty() { "Start arrangement with:" } else { "Append section (shares existing pattern):" });
+                    ui.horizontal_wrapped(|ui| {
+                        for pattern in p.patterns.iter().filter(|q| !q.name.to_lowercase().starts_with(crate::tools_fl::PL)) {
+                            if ui.button(&pattern.name).on_hover_text("Adds this existing pattern once, without copying or editing its notes. Following song length changes; markers, tempo, automation and audio clips stay fixed. Undo restores.").clicked() {
+                                actions.push(("append_arrangement_section",json!({"pattern":pattern.id})));
+                            }
+                        }
+                    });
+                }
+            });
+        egui::CollapsingHeader::new(format!("Song tempo ({} points)", p.tempo_points.len()))
+            .id_salt("song_tempo_edit")
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Target");
+                    ui.add(egui::DragValue::new(&mut self.tempo_edit_bpm).range(20.0..=400.0).speed(0.5).suffix(" BPM"));
+                    ui.checkbox(&mut self.tempo_edit_ramp, "Ramp to here");
+                    if ui.button("Set at playhead").clicked() {
+                        actions.push(("add_tempo_point", json!({"beat":playhead_beat,"bpm":self.tempo_edit_bpm,"ramp":self.tempo_edit_ramp})));
+                    }
+                    ui.label(format!("Bar {:.2}", p.bar_at_beat(playhead_beat)));
+                });
+                ui.label("Unchecked: jump to target here. Ramp: glide from the previous point (or song start), reaching target here.");
+                ui.label(format!("Base tempo: {:.1} BPM. A jump at song start changes the base. Undo restores an edit.",p.bpm));
+                egui::ScrollArea::vertical().id_salt("song_tempo_list").max_height(100.0).show(ui,|ui| {
+                    for (i,t) in p.tempo_points.iter().enumerate() {
+                        ui.push_id(i,|ui| {ui.horizontal_wrapped(|ui| {
+                            if ui.small_button("Jump").clicked(){self.player.seek(marker_seconds(p,t.beat));}
+                            ui.label(format!("Bar {:.2} - {:.1} BPM, {}",p.bar_at_beat(t.beat),t.bpm,if t.ramp {"ramp end"} else {"jump"}));
+                            if ui.small_button("Use values").on_hover_text("Copy this point's BPM and ramp choice into the form. Does not change the song.").clicked(){self.tempo_edit_bpm=t.bpm;self.tempo_edit_ramp=t.ramp;}
+                            if ui.small_button("Remove").clicked(){actions.push(("remove_tempo_point",json!({"beat":t.beat})));}
+                        });});
+                    }
+                });
+            });
+        egui::CollapsingHeader::new(format!("Song markers ({})", p.markers.len()))
+            .id_salt("song_markers")
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.marker_name)
+                        .hint_text("Name, e.g. Drop").desired_width(140.0));
+                    let name = self.marker_name.trim();
+                    let exists = p.markers.iter().any(|m| m.name == name);
+                    if ui.add_enabled(!name.is_empty(), egui::Button::new(if exists { "Move to playhead" } else { "Add at playhead" }))
+                        .on_hover_text("Named song position. An existing name moves to the current playhead; one Undo restores it.").clicked() {
+                        actions.push((if exists {"move_marker"} else {"add_marker"}, json!({"name": name, "beat": playhead_beat})));
+                    }
+                    ui.label(format!("Playhead: bar {:.2}", p.bar_at_beat(playhead_beat)));
+                });
+                ui.label("Jump changes playback position only. Type a new name above, then Rename on a marker row to keep its position.");
+                egui::ScrollArea::vertical().id_salt("song_marker_list").max_height(100.0).show(ui, |ui| {
+                    for (i, m) in p.markers.iter().enumerate() {
+                        ui.push_id(i, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.button("Jump").clicked() { self.player.seek(marker_seconds(p, m.beat)); }
+                                ui.label(format!("{} - bar {:.2}, {:.2} s", m.name, p.bar_at_beat(m.beat), marker_seconds(p, m.beat)));
+                                if ui.add_enabled(!self.marker_name.trim().is_empty() && self.marker_name.trim()!=m.name && !p.markers.iter().any(|other|other.name==self.marker_name.trim()),egui::Button::new("Rename").small()).on_hover_text("Use the name in the form above. Position and time-signature label stay unchanged; Undo restores the old name.").clicked() {
+                                    actions.push(("rename_marker",json!({"name":m.name,"new_name":self.marker_name.trim()})));
+                                }
+                                if ui.small_button("Remove").on_hover_text("Remove this marker. Undo restores it.").clicked() {
+                                    actions.push(("remove_marker", json!({"name": m.name})));
+                                }
+                            });
+                        });
+                    }
+                });
+            });
         ui.label(
             egui::RichText::new("TRACK TIMELINE - scroll vertically for all tracks")
                 .monospace()
@@ -279,25 +538,26 @@ impl Studio {
                     );
                     bar += 1;
                 }
-                for ev in map.tempos() {
-                    let x = x_of(ev.tick);
+                let tempo_labels = std::iter::once((0.0,p.bpm,false))
+                    .chain(p.tempo_points.iter().map(|t|(t.beat,t.bpm,t.ramp)));
+                let mut last_label_right = f32::NEG_INFINITY;
+                for (beat,bpm,ramp) in tempo_labels {
+                    let tick = tick_of_beat(beat);
+                    if tick > total { continue; }
+                    let x = x_of(tick);
                     pt.rect_filled(
                         Rect::from_min_size(pos2(x, tempo_r.min.y + 3.0), vec2(3.0, RULER_H - 6.0)),
-                        0.0,
-                        tk.tempo_ruler,
+                        0.0, tk.tempo_ruler,
                     );
-                    pt.text(
-                        pos2(x + 6.0, tempo_r.center().y),
-                        Align2::LEFT_CENTER,
-                        format!(
-                            "{:.0} BPM · {}/{}",
-                            ev.bpm,
-                            map.meter_at_tick(ev.tick).numerator,
-                            map.meter_at_tick(ev.tick).denominator
-                        ),
-                        FontId::proportional(9.5),
-                        tk.ruler_text,
-                    );
+                    let meter = map.meter_at_tick(tick);
+                    let label = format!("{:.0} BPM{} - {}/{}",bpm,if ramp { " ramp" } else { "" },meter.numerator,meter.denominator);
+                    let hit = Rect::from_min_size(pos2(x,tempo_r.min.y),vec2(8.0,RULER_H));
+                    ui.interact(hit,ui.id().with(("tempo_point",beat.to_bits())),Sense::hover()).on_hover_text(&label);
+                    if x >= last_label_right {
+                        let galley = pt.layout_no_wrap(label,FontId::proportional(9.5),tk.ruler_text);
+                        last_label_right = x + galley.size().x + 12.0;
+                        pt.galley(pos2(x + 6.0,tempo_r.center().y - galley.size().y / 2.0),galley,tk.ruler_text);
+                    }
                 }
                 // lanes
                 let lanes_top = tempo_r.max.y;
@@ -327,8 +587,9 @@ impl Studio {
                         0.0,
                         color,
                     );
-                    pt.text(
-                        pos2(head.min.x + 10.0, head.center().y - 6.0),
+                    bounded_label(
+                        &pt,
+                        Rect::from_min_max(head.min + vec2(10.0, 0.0), head.max - vec2(5.0, 15.0)),
                         Align2::LEFT_CENTER,
                         &t.name,
                         FontId::proportional(12.0),
@@ -343,6 +604,7 @@ impl Studio {
                     );
                     if ui
                         .interact(head, ui.id().with(("pl_head", ti)), Sense::click())
+                        .on_hover_text(format!("{} ({}): click to select", t.name, t.instrument.kind_name()))
                         .clicked()
                     {
                         self.selected = ti;
@@ -368,8 +630,9 @@ impl Studio {
                         pt.rect_filled(r, 2.0, body);
                         let title = Rect::from_min_size(r.min, vec2(r.width(), 11.0));
                         pt.rect_filled(title, 2.0, bar_c);
-                        pt.with_clip_rect(title).text(
-                            pos2(title.min.x + 3.0, title.center().y),
+                        bounded_label(
+                            &pt,
+                            title.shrink2(vec2(3.0, 0.0)),
                             Align2::LEFT_CENTER,
                             super::fl_playlist::friendly_name(&pat.name),
                             FontId::proportional(8.5),
@@ -421,7 +684,7 @@ impl Studio {
                         let secs = take_secs[ai];
                         let (s0, s1) = (
                             tick_of_beat(c.start_beat),
-                            tick_of_beat(c.start_beat + secs * p.bpm / 60.0),
+                            tick_of_beat(audio_clip_beat_at(p, c, secs)),
                         );
                         let r = Rect::from_min_max(
                             pos2(x_of(s0.max(0)) + 1.0, y + 2.0),
@@ -434,22 +697,25 @@ impl Studio {
                         pt.rect_filled(r, 2.0, body);
                         let title = Rect::from_min_size(r.min, vec2(r.width(), 11.0));
                         pt.rect_filled(title, 2.0, bar_c);
-                        pt.with_clip_rect(title).text(
-                            pos2(title.min.x + 3.0, title.center().y),
+                        bounded_label(
+                            &pt,
+                            title.shrink2(vec2(3.0, 0.0)),
                             Align2::LEFT_CENTER,
                             &c.sample,
                             FontId::proportional(8.5),
                             tk.text_dark,
                         );
                         // fade ramps
-                        let px_s = r.width() / secs.max(1e-3);
+
                         for (ms, left) in [(c.fade_in_ms, true), (c.fade_out_ms, false)] {
                             if let Some(ms) = ms.filter(|m| *m > 6.0) {
-                                let w = (ms / 1000.0 * px_s).min(r.width());
+                                let fade_s = (ms / 1000.0).min(secs);
+                                let edge_s = if left { fade_s } else { secs - fade_s };
+                                let edge_x = x_of(tick_of_beat(audio_clip_beat_at(p,c,edge_s))).clamp(r.min.x,r.max.x);
                                 let (a, b) = if left {
-                                    (pos2(r.min.x, r.max.y), pos2(r.min.x + w, title.max.y))
+                                    (pos2(r.min.x, r.max.y), pos2(edge_x, title.max.y))
                                 } else {
-                                    (pos2(r.max.x - w, title.max.y), pos2(r.max.x, r.max.y))
+                                    (pos2(edge_x, title.max.y), pos2(r.max.x, r.max.y))
                                 };
                                 pt.line_segment([a, b], Stroke::new(1.0_f32, ink));
                             }
@@ -491,7 +757,7 @@ impl Studio {
                     }
                 }
                 // playhead
-                let tick = step_to_tick(self.player.position_secs() / p.step_secs().max(1e-4));
+                let tick = step_to_tick(playhead_beat * 4.0);
                 if tick <= total {
                     let x = x_of(tick);
                     pt.line_segment(
@@ -515,14 +781,34 @@ impl Studio {
     }
 }
 
-/// Seconds an audio clip plays, given its take's length when known.
+/// Beat reached after fixed elapsed audio seconds from the clip's start.
+/// Audio does not change speed with song tempo automation. Constant projects
+/// retain the former arithmetic exactly.
+fn audio_clip_beat_at(p: &Project, c: &AudioClip, elapsed_s: f32) -> f32 {
+    if p.tempo_points.is_empty() {
+        c.start_beat + elapsed_s * p.bpm / 60.0
+    } else {
+        let curve = crate::tempo_curve::TempoCurve::new(p);
+        curve.beat_at_secs(curve.secs_at_beat(c.start_beat as f64) + elapsed_s as f64) as f32
+    }
+}
+
+/// Seconds an audio clip plays after trimming and time stretch.
+/// Pitch shifting/reversal do not change this span.
 pub fn audio_clip_secs(c: &AudioClip, take_secs: Option<f32>) -> f32 {
     let avail = take_secs.map(|t| (t - c.offset_s.max(0.0)).max(0.0));
-    match (c.length_s, avail) {
+    let source = match (c.length_s, avail) {
         (Some(l), Some(a)) => l.min(a),
         (Some(l), None) => l,
         (None, Some(a)) => a,
         (None, None) => 1.0,
+    };
+    let source = source.max(0.0);
+    let factor = c.stretch.clamp(0.25, 4.0);
+    if source * crate::dsp::SR >= 4096.0 && (factor - 1.0).abs() < 1e-3 {
+        source
+    } else {
+        source * factor
     }
 }
 
@@ -745,7 +1031,7 @@ mod menu_tests {
     fn pattern_clip_menu_items_are_valid_calls() {
         let d = std::env::temp_dir().join("beatbox_pl_menu_tests");
         std::fs::create_dir_all(&d).unwrap();
-        let mut e = Engine::new(d.clone());
+        let mut e = crate::engine::Engine::new(d.clone());
         e.call("new_project", &json!({"name": "m", "bpm": 120}))
             .unwrap();
         e.call("add_track", &json!({"name": "kick", "preset": "kick"}))
@@ -771,5 +1057,221 @@ mod menu_tests {
                 .unwrap_or_else(|err| panic!("{label}: {err:#}"));
             assert!(r["clips"].is_array(), "{label}");
         }
+    }
+}
+
+#[cfg(test)]
+mod marker_navigation_tests {
+    use super::*;
+    #[test]
+    fn marker_navigation_roundtrips_tempo_jumps_and_ramps() {
+        let mut p = Project::default();
+        p.bpm = 120.0;
+        p.tempo_points = vec![
+            crate::project::TempoPoint {
+                beat: 4.0,
+                bpm: 60.0,
+                ramp: false,
+            },
+            crate::project::TempoPoint {
+                beat: 12.0,
+                bpm: 180.0,
+                ramp: true,
+            },
+        ];
+        for beat in [0.0, 1.25, 4.0, 5.5, 12.0, 20.0] {
+            let sec = marker_seconds(&p, beat);
+            assert!((marker_beat(&p, sec) - beat).abs() < 0.0001);
+        }
+        let mut e = crate::engine::Engine::new(std::env::temp_dir().join("marker-counter-meter"));
+        e.call("add_pattern", &json!({"name":"odd","bars":2}))
+            .unwrap();
+        e.call(
+            "set_time_signature",
+            &json!({"pattern":"odd","time_signature":"7/8"}),
+        )
+        .unwrap();
+        e.call(
+            "set_arrangement",
+            &json!({"sections":[{"pattern":"odd","repeats":1}]}),
+        )
+        .unwrap();
+        assert_eq!(
+            marker_position(&e.project, marker_seconds(&e.project, 4.0)),
+            "2|2|000"
+        );
+        assert_eq!(marker_position(&p, marker_seconds(&p, 14.0)), "4|3|000");
+        let map = playlist_meter_map(&e.project);
+        assert_eq!(map.bar_start_tick(2), 3360);
+        assert_eq!(map.bar_start_tick(3), 6720);
+        assert_eq!(
+            marker_position(&e.project, marker_seconds(&e.project, 3.4999999)),
+            "2|1|000"
+        );
+
+        assert!((marker_seconds(&p, 4.0) - 2.0).abs() < 0.001);
+        assert!((marker_seconds(&p, 12.0) - 6.0).abs() > 0.1);
+    }
+}
+
+#[cfg(test)]
+mod tempo_editor_tests {
+    use super::*;
+    #[test]
+    fn tempo_form_actions_are_undoable_and_do_not_edit_notes() {
+        let mut e = crate::engine::Engine::new(std::env::temp_dir().join("tempo-form-test"));
+        let before = serde_json::to_value(&e.project).unwrap();
+        e.call(
+            "add_tempo_point",
+            &json!({"beat":4.0,"bpm":80.0,"ramp":false}),
+        )
+        .unwrap();
+        e.call(
+            "add_tempo_point",
+            &json!({"beat":8.0,"bpm":100.0,"ramp":true}),
+        )
+        .unwrap();
+        let after = serde_json::to_value(&e.project).unwrap();
+        let mut without_points = after.clone();
+        without_points
+            .as_object_mut()
+            .unwrap()
+            .remove("tempo_points");
+        assert_eq!(without_points, before);
+        assert_eq!(e.project.tempo_points.len(), 2);
+        let jump = marker_seconds(&e.project, 8.0);
+        assert!((marker_beat(&e.project, jump) - 8.0).abs() < 0.0001);
+        assert_eq!(marker_position(&e.project, jump), "3|1|000");
+        e.call("remove_tempo_point", &json!({"beat":8.0})).unwrap();
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), after);
+        e.call("undo", &json!({})).unwrap();
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        e.call(
+            "add_tempo_point",
+            &json!({"beat":0.0,"bpm":90.0,"ramp":false}),
+        )
+        .unwrap();
+        assert_eq!(e.project.bpm, 90.0);
+        assert!(e.project.tempo_points.is_empty());
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        assert!(e
+            .call("add_tempo_point", &json!({"beat":4.0,"bpm":401.0}))
+            .is_err());
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod audio_geometry_tests {
+    use super::*;
+    #[test]
+    fn clip_geometry_tracks_audio_duration_stretch_and_tempo() {
+        let mut e = crate::engine::Engine::new(std::env::temp_dir().join("clip-geometry-tests"));
+        e.call("add_track", &json!({"name":"audio","preset":"epiano"}))
+            .unwrap();
+        let mut c:AudioClip=serde_json::from_value(json!({"track":"audio","sample":"take","start_beat":2,"offset_s":1,"length_s":2,"stretch":2})).unwrap();
+        assert_eq!(audio_clip_secs(&c, Some(4.)), 4.);
+        assert_eq!(audio_clip_secs(&c, Some(2.)), 2.);
+        assert_eq!(audio_clip_secs(&c, None), 4.);
+        c.offset_s = 8.;
+        assert_eq!(audio_clip_secs(&c, Some(4.)), 0.);
+        c.offset_s = 1.;
+        for bpm in [60., 90., 120., 172.] {
+            e.project.bpm = bpm;
+            for s in [0., 0.2, 1., 4.] {
+                assert_eq!(
+                    audio_clip_beat_at(&e.project, &c, s),
+                    c.start_beat + s * bpm / 60.
+                );
+            }
+        }
+        e.project.bpm = 120.;
+        e.call("add_tempo_point", &json!({"beat":4,"bpm":60}))
+            .unwrap();
+        assert!((audio_clip_beat_at(&e.project, &c, 4.) - 7.).abs() < 1e-5);
+        assert!((audio_clip_beat_at(&e.project, &c, 0.5) - 3.).abs() < 1e-5);
+        assert!((audio_clip_beat_at(&e.project, &c, 3.5) - 6.5).abs() < 1e-5);
+        e.call("add_tempo_point", &json!({"beat":8,"bpm":100,"ramp":true}))
+            .unwrap();
+        let curve = crate::tempo_curve::TempoCurve::new(&e.project);
+        for seconds in [0., 0.25, 2., 4.] {
+            let end = audio_clip_beat_at(&e.project, &c, seconds);
+            assert!(
+                (curve.secs_at_beat(end as f64) - curve.secs_at_beat(2.) - seconds as f64).abs()
+                    < 1e-5
+            );
+        }
+        let audio = vec![0.2; 88200];
+        for factor in [0.5, 0.9995, 1., 1.0005, 2.] {
+            c.stretch = factor;
+            let dur = audio_clip_secs(&c, None);
+            let actual =
+                crate::audio_edit::time_stretch(&audio, factor).len() as f32 / crate::dsp::SR;
+            assert!((actual - dur).abs() < 1. / crate::dsp::SR);
+        }
+    }
+}
+
+#[cfg(test)]
+mod audio_geometry_render_tests {
+    use super::*;
+    #[test]
+    fn actual_rendered_clip_span_matches_display() {
+        let dir = std::path::PathBuf::from("/tmp/clip-geometry-render");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = crate::engine::Engine::new(dir);
+        e.call("add_track", &json!({"name":"audio","preset":"epiano"}))
+            .unwrap();
+        e.call("add_tempo_point", &json!({"beat":4,"bpm":60}))
+            .unwrap();
+        e.project.samples.push(
+            serde_json::from_value(json!({"name":"tone","path":"","source":"test","duration":2}))
+                .unwrap(),
+        );
+        e.bank.insert(
+            "tone",
+            (0..88200)
+                .map(|i| ((i as f32) * 0.04).sin() * 0.2)
+                .collect(),
+        );
+        e.call(
+            "add_audio_clip",
+            &json!({"track":"audio","sample":"tone","start_beat":2,"length_s":2}),
+        )
+        .unwrap();
+        let id = e.project.audio_clips[0].id.clone();
+        e.call("stretch_clip", &json!({"id":id,"factor":2}))
+            .unwrap();
+        let c = &e.project.audio_clips[0];
+        let curve = crate::tempo_curve::TempoCurve::new(&e.project);
+        let start = curve.secs_at_beat(2.);
+        let expected_end =
+            curve.secs_at_beat(
+                audio_clip_beat_at(&e.project, c, audio_clip_secs(c, Some(2.))) as f64,
+            );
+        let mix = crate::render::render(
+            &e.project,
+            &e.bank,
+            &crate::render::RenderOptions {
+                tail: 0.,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let first =
+            mix.left.iter().position(|s| s.abs() > 0.00001).unwrap() as f64 / crate::dsp::SR as f64;
+        let last = mix.left.iter().rposition(|s| s.abs() > 0.00001).unwrap() as f64
+            / crate::dsp::SR as f64;
+        println!("actual render first{first} last{last} displayend{expected_end}");
+        assert!((first - start).abs() < 0.01);
+        assert!(last <= expected_end && last > expected_end - 0.05);
+        assert!(
+            mix.left[((expected_end * crate::dsp::SR as f64).round() as usize)..]
+                .iter()
+                .all(|s| s.abs() < 1e-5)
+        );
     }
 }

@@ -30,6 +30,12 @@ pub fn beat_secs(p: &Project) -> f32 {
 
 pub fn spans(p: &Project) -> Vec<Span> {
     let bs = beat_secs(p);
+    let curve = (!p.tempo_points.is_empty()).then(|| crate::tempo_curve::TempoCurve::new(p));
+    let seconds = |beat: f32| {
+        curve
+            .as_ref()
+            .map_or(beat * bs, |c| c.secs_at_beat(beat as f64) as f32)
+    };
     let mut start = 0.0f32;
     p.song_sections()
         .iter()
@@ -44,8 +50,8 @@ pub fn spans(p: &Project) -> Vec<Span> {
                 pattern: s.pattern.clone(),
                 start_beat: start,
                 end_beat: start + len,
-                start_s: start * bs,
-                end_s: (start + len) * bs,
+                start_s: seconds(start),
+                end_s: seconds(start + len),
             };
             start += len;
             sp

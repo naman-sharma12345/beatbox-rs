@@ -140,23 +140,65 @@ pub fn pressed(ctx: &egui::Context) -> Vec<Action> {
     out
 }
 
-/// One-line help for tooltips: "Space play / stop · Cmd+Z undo · …".
-pub fn help_line() -> String {
-    let mut seen = Vec::new();
-    let mut parts = Vec::new();
-    for (k, a, h) in SHORTCUTS {
-        if seen.contains(a) {
-            continue;
+/// Group aliases by action, keeping every working binding visible.
+/// `command_is_cmd` follows the platform rather than displaying Cmd on Windows/Linux.
+pub fn help_rows(command_is_cmd: bool) -> Vec<(String, &'static str)> {
+    let mut rows: Vec<(Action, Vec<String>, &'static str)> = Vec::new();
+    for (key, action, description) in SHORTCUTS {
+        let key = if command_is_cmd {
+            key.to_string()
+        } else {
+            key.replace("Cmd", "Ctrl")
+        };
+        if let Some((_, keys, _)) = rows.iter_mut().find(|(a, _, _)| a == action) {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        } else {
+            rows.push((*action, vec![key], description));
         }
-        seen.push(*a);
-        parts.push(format!("{k}  {h}"));
     }
-    parts.join("\n")
+    rows.into_iter()
+        .map(|(_, keys, text)| (keys.join(" / "), text))
+        .collect()
+}
+
+/// Tooltip help and the Help menu share one platform-aware list.
+pub fn help_line() -> String {
+    help_rows(cfg!(target_os = "macos"))
+        .into_iter()
+        .map(|(keys, text)| format!("{keys}  {text}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_keeps_aliases_and_uses_platform_modifier() {
+        let ctrl = help_rows(false);
+        let keys = |label| {
+            ctrl.iter()
+                .find(|(_, text)| *text == label)
+                .unwrap()
+                .0
+                .clone()
+        };
+        assert_eq!(keys("Playlist"), "F5 / Ctrl+4");
+        assert_eq!(keys("Channel rack"), "F6 / Ctrl+1");
+        assert_eq!(keys("Redo"), "Ctrl+Shift+Z / Ctrl+Y");
+        assert_eq!(keys("Return to start"), "Home / Enter");
+        assert!(!ctrl.iter().any(|(key, _)| key.contains("Cmd")));
+        assert!(help_rows(true).iter().any(|(key, _)| key == "Cmd+S"));
+        for (key, action, _) in SHORTCUTS {
+            let description = SHORTCUTS.iter().find(|(_, a, _)| a == action).unwrap().2;
+            assert!(keys(description)
+                .split(" / ")
+                .any(|k| k == key.replace("Cmd", "Ctrl")));
+        }
+    }
 
     #[test]
     fn every_shortcut_parses() {

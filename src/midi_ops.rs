@@ -1288,3 +1288,1981 @@ mod tests {
         }
     }
 }
+
+/// Write editable delayed copies, never recursively echoing the new copies.
+/// Originals and their stable IDs are unchanged. Copies get fresh IDs in Engine.
+pub fn note_echoes(
+    notes: &mut Vec<Note>,
+    sel: &Selection,
+    delay: f32,
+    repeats: u32,
+    decay: f32,
+    transpose: i32,
+    steps: f32,
+) -> Result<usize> {
+    if !delay.is_finite()
+        || delay <= 0.0
+        || !(1..=64).contains(&repeats)
+        || !decay.is_finite()
+        || !(0.0..=1.0).contains(&decay)
+        || !(-127..=127).contains(&transpose)
+    {
+        bail!("delay must be positive, repeats1..64, decay0..1, transpose-127..127");
+    }
+    let source: Vec<Note> = notes.iter().filter(|n| sel.matches(n)).cloned().collect();
+    if source.len().saturating_mul(repeats as usize) > 100_000 {
+        bail!("echo would create more than100000 candidate notes; narrow the selection");
+    }
+    let mut echoes = Vec::new();
+    for n in &source {
+        for k in 1..=repeats {
+            let start = n.start + delay * k as f32;
+            let pitch = i32::from(n.pitch) + transpose * k as i32;
+            let vel = n.vel * decay.powi(k as i32);
+            if start >= steps || vel < 0.02 || !(0..=127).contains(&pitch) {
+                continue;
+            }
+            let mut echo = n.clone();
+            echo.id.clear();
+            echo.start = start;
+            echo.pitch = pitch as u8;
+            echo.vel = vel;
+            echo.len = echo.len.min(steps - start);
+            echo.slide_to = echo.slide_to.and_then(|p| {
+                let p = i32::from(p) + transpose * k as i32;
+                (0..=127).contains(&p).then_some(p as u8)
+            });
+            echoes.push(echo);
+        }
+    }
+    let count = echoes.len();
+    notes.extend(echoes);
+    sort(notes);
+    Ok(count)
+}
+
+/// Add copies of a selected phrase without moving originals. All copies must fit.
+/// Period is the distance between phrase starts, in sixteenth steps.
+pub fn repeat_phrase(
+    notes: &mut Vec<Note>,
+    sel: &Selection,
+    period: f32,
+    repeats: u32,
+    steps: f32,
+) -> Result<usize> {
+    if !period.is_finite() || period <= 0.0 || !(1..=64).contains(&repeats) {
+        bail!("period must be positive and repeats must be1..64");
+    }
+    let source: Vec<_> = notes.iter().filter(|n| sel.matches(n)).cloned().collect();
+    if source.len().saturating_mul(repeats as usize) > 100_000 {
+        bail!("repeat would create more than100000 notes; narrow the selection");
+    }
+    if source.iter().any(|n| {
+        !n.start.is_finite()
+            || !n.len.is_finite()
+            || n.len < 0.05
+            || n.start + period * repeats as f32 + n.len > steps + 1e-4
+    }) {
+        bail!("repeated phrase does not fit the pattern; lengthen it or reduce repeats/period");
+    }
+    let mut added = Vec::new();
+    for n in source {
+        for k in 1..=repeats {
+            let mut copy = n.clone();
+            copy.id.clear();
+            copy.start += period * k as f32;
+            added.push(copy);
+        }
+    }
+    let count = added.len();
+    notes.extend(added);
+    sort(notes);
+    Ok(count)
+}
+
+/// Scale a phrase around an anchor without changing tempo, pitch or IDs.
+/// Validate every selected note before changing any note.
+pub fn stretch_phrase(
+    notes: &mut [Note],
+    sel: &Selection,
+    factor: f32,
+    anchor: Option<f32>,
+    steps: f32,
+) -> Result<usize> {
+    if !factor.is_finite()
+        || !(0.0625..=16.0).contains(&factor)
+        || anchor.is_some_and(|a| !a.is_finite() || a < 0.0)
+    {
+        bail!("factor must be0.0625..16 and anchor must be nonnegative");
+    }
+    let idx = selected(notes, sel);
+    if idx.is_empty() {
+        return Ok(0);
+    }
+    let origin =
+        anchor.unwrap_or_else(|| idx.iter().map(|i| notes[*i].start).fold(f32::MAX, f32::min));
+    let edits: Vec<_> = idx
+        .iter()
+        .map(|i| {
+            let n = &notes[*i];
+            (*i, origin + (n.start - origin) * factor, n.len * factor)
+        })
+        .collect();
+    if edits.iter().any(|(_, start, len)| {
+        !start.is_finite()
+            || !len.is_finite()
+            || *start < 0.0
+            || *start >= steps
+            || *len < 0.05
+            || *start + *len > steps + 1e-4
+    }) {
+        bail!("stretched phrase does not fit the pattern or makes a note shorter than0.05 steps; lengthen the pattern or choose a smaller stretch");
+    }
+    for (i, start, len) in edits {
+        notes[i].start = start;
+        notes[i].len = len;
+    }
+    sort(notes);
+    Ok(idx.len())
+}
+
+/// Rotate note starts within their own bar. Lengths and note expression stay intact.
+pub fn rotate_rhythm(
+    notes: &mut [Note],
+    sel: &Selection,
+    shift: f32,
+    bar_steps: f32,
+) -> Result<usize> {
+    if !shift.is_finite() || !bar_steps.is_finite() || bar_steps <= 0.0 {
+        bail!("shift must be finite and bar length positive");
+    }
+    let idx = selected(notes, sel);
+    for i in &idx {
+        let n = &mut notes[*i];
+        let bar = (n.start / bar_steps).floor();
+        n.start = bar * bar_steps
+            + (n.start.rem_euclid(bar_steps) + shift.rem_euclid(bar_steps)).rem_euclid(bar_steps);
+    }
+    sort(notes);
+    Ok(idx.len())
+}
+
+/// Shorten selected same-pitch overlaps, never lengthen or delete a note.
+/// Equal starts and gaps smaller than the minimum note length are skipped.
+pub fn trim_overlaps(notes: &mut [Note], sel: &Selection) -> (usize, usize) {
+    let mut starts: Vec<Vec<f32>> = vec![Vec::new(); 128];
+    for n in notes.iter() {
+        starts[n.pitch as usize].push(n.start);
+    }
+    for times in &mut starts {
+        times.sort_by(f32::total_cmp);
+    }
+    let mut changed = 0;
+    let mut skipped = 0;
+    for n in notes.iter_mut().filter(|n| sel.matches(n)) {
+        let times = &starts[n.pitch as usize];
+        let first = times.partition_point(|t| *t < n.start);
+        let after = times.partition_point(|t| *t <= n.start);
+        if after - first > 1 {
+            skipped += 1;
+            continue;
+        }
+        if let Some(next) = times.get(after) {
+            let gap = next - n.start;
+            if n.len > gap {
+                if gap < 0.05 {
+                    skipped += 1;
+                } else {
+                    n.len = gap;
+                    changed += 1;
+                }
+            }
+        }
+    }
+    (changed, skipped)
+}
+
+/// Remove exact musical duplicates within the selection. First selected copy wins.
+/// Unselected notes neither suppress selected copies nor get removed.
+pub fn remove_exact_duplicates(notes: &mut Vec<Note>, sel: &Selection) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    let before = notes.len();
+    // Canonicalize signed zero, since Note equality considers -0 and +0 equal.
+    let bits = |v: f32| if v == 0.0 { 0 } else { v.to_bits() };
+    notes.retain(|n| {
+        if !sel.matches(n) {
+            return true;
+        }
+        // NaNs are never equal under Note's exact musical equality.
+        if [n.start, n.len, n.vel, n.prob, n.offset]
+            .iter()
+            .any(|v| v.is_nan())
+        {
+            return true;
+        }
+        seen.insert((
+            bits(n.start),
+            bits(n.len),
+            n.pitch,
+            bits(n.vel),
+            bits(n.prob),
+            bits(n.offset),
+            n.slide_to,
+        ))
+    });
+    before - notes.len()
+}
+
+/// Keep one onset group out of every N selected groups, with a zero-based phase.
+/// Notes starting together remain together, including chords. Unselected notes stay intact.
+pub fn thin_rhythm(
+    notes: &mut Vec<Note>,
+    sel: &Selection,
+    every: u32,
+    phase: u32,
+) -> Result<usize> {
+    if !(2..=64).contains(&every) || phase >= every {
+        bail!("every must be2..64 and phase must be less than every");
+    }
+    let mut idx = selected(notes, sel);
+    if idx.iter().any(|i| !notes[*i].start.is_finite()) {
+        bail!("selected note starts must be finite");
+    }
+    idx.sort_by(|a, b| notes[*a].start.total_cmp(&notes[*b].start));
+    let mut remove = vec![false; notes.len()];
+    let mut group = 0u32;
+    let mut origin: Option<f32> = None;
+    for i in idx {
+        let start = notes[i].start;
+        match origin {
+            None => origin = Some(start),
+            Some(t) if start - t > 1e-4 => {
+                group += 1;
+                origin = Some(start);
+            }
+            _ => {}
+        }
+        remove[i] = group % every != phase;
+    }
+    let count = remove.iter().filter(|x| **x).count();
+    let mut i = 0;
+    notes.retain(|_| {
+        let keep = !remove[i];
+        i += 1;
+        keep
+    });
+    Ok(count)
+}
+
+/// Scale selected velocities to a target peak, keeping their relative dynamics.
+/// All selected velocities must be positive and finite; validate before editing.
+pub fn normalize_velocity(notes: &mut [Note], sel: &Selection, peak: f32) -> Result<usize> {
+    if !peak.is_finite() || !(0.02..=1.0).contains(&peak) {
+        bail!("target peak must be0.02..1");
+    }
+    let idx = selected(notes, sel);
+    if idx
+        .iter()
+        .any(|i| !notes[*i].vel.is_finite() || notes[*i].vel <= 0.0)
+    {
+        bail!("selected velocities must be positive and finite");
+    }
+    let max = idx.iter().map(|i| notes[*i].vel).fold(0.0, f32::max);
+    if max == 0.0 {
+        return Ok(0);
+    }
+    for i in &idx {
+        notes[*i].vel = (notes[*i].vel / max) * peak;
+    }
+    Ok(idx.len())
+}
+
+/// Move selected notes as a rigid phrase, rejecting any out-of-pattern result.
+pub fn shift_phrase(notes: &mut [Note], sel: &Selection, shift: f32, steps: f32) -> Result<usize> {
+    if !shift.is_finite() || !steps.is_finite() || steps <= 0.0 {
+        bail!("shift must be finite and pattern length positive");
+    }
+    let idx = selected(notes, sel);
+    if idx.iter().any(|i| {
+        let n = &notes[*i];
+        let start = n.start + shift;
+        !start.is_finite()
+            || !n.len.is_finite()
+            || n.len < 0.05
+            || start < 0.0
+            || start >= steps
+            || start + n.len > steps + 1e-4
+    }) {
+        bail!("shifted phrase does not fit the pattern; reduce the shift or extend the pattern");
+    }
+    for i in &idx {
+        notes[*i].start += shift;
+    }
+    sort(notes);
+    Ok(idx.len())
+}
+
+/// Transpose as a rigid phrase without clipping notes onto MIDI pitch limits.
+pub fn transpose_phrase(notes: &mut [Note], sel: &Selection, semitones: i32) -> Result<usize> {
+    if !(-127..=127).contains(&semitones) {
+        bail!("semitones must be an integer from -127 to 127");
+    }
+    let idx = selected(notes, sel);
+    if idx
+        .iter()
+        .any(|i| !(0..=127).contains(&(notes[*i].pitch as i32 + semitones)))
+    {
+        bail!("transposed phrase exceeds MIDI pitch range; reduce the shift");
+    }
+    for i in &idx {
+        notes[*i].pitch = (notes[*i].pitch as i32 + semitones) as u8;
+    }
+    Ok(idx.len())
+}
+
+/// Quantize release positions only. Validate all proposed lengths before editing.
+pub fn quantize_ends(
+    notes: &mut [Note],
+    sel: &Selection,
+    grid: f32,
+    strength: f32,
+    steps: f32,
+) -> Result<usize> {
+    if !grid.is_finite()
+        || grid < 0.0625
+        || !strength.is_finite()
+        || !(0.0..=1.0).contains(&strength)
+        || !steps.is_finite()
+        || steps <= 0.0
+    {
+        bail!("grid must be at least 0.0625, strength 0..1, pattern length positive");
+    }
+    let idx = selected(notes, sel);
+    let mut edits = Vec::new();
+    for i in idx {
+        let n = &notes[i];
+        let end = n.start + n.len;
+        let target = (end / grid).round() * grid;
+        let len = (end + (target - end) * strength) - n.start;
+        if !n.start.is_finite()
+            || n.start < 0.0
+            || !len.is_finite()
+            || len < 0.05
+            || n.start + len > steps + 1e-4
+        {
+            bail!("quantized release does not fit; reduce strength or choose a finer grid");
+        }
+        if (len - n.len).abs() > 1e-5 {
+            edits.push((i, len));
+        }
+    }
+    for (i, len) in &edits {
+        notes[*i].len = *len;
+    }
+    Ok(edits.len())
+}
+
+/// Keep the highest/lowest selected pitch in each onset group; retain tied layers.
+pub fn reduce_chords(notes: &mut Vec<Note>, sel: &Selection, highest: bool) -> Result<usize> {
+    let mut idx = selected(notes, sel);
+    if idx.iter().any(|i| !notes[*i].start.is_finite()) {
+        bail!("selected starts must be finite");
+    }
+    idx.sort_by(|a, b| notes[*a].start.total_cmp(&notes[*b].start));
+    let mut remove = vec![false; notes.len()];
+    let mut at = 0;
+    while at < idx.len() {
+        let origin = notes[idx[at]].start;
+        let mut end = at + 1;
+        while end < idx.len() && notes[idx[end]].start - origin <= 1e-4 {
+            end += 1;
+        }
+        let pitch = idx[at..end]
+            .iter()
+            .map(|i| notes[*i].pitch)
+            .reduce(|a, b| if highest { a.max(b) } else { a.min(b) })
+            .unwrap();
+        for i in &idx[at..end] {
+            remove[*i] = notes[*i].pitch != pitch;
+        }
+        at = end;
+    }
+    let count = remove.iter().filter(|x| **x).count();
+    let mut i = 0;
+    notes.retain(|_| {
+        let keep = !remove[i];
+        i += 1;
+        keep
+    });
+    Ok(count)
+}
+
+/// Fold selected pitches into a register by the smallest whole-octave move.
+/// Rejects atomically when the range has no representative of a pitch class.
+/// Only pitch changes. Slide targets and other expression stay unchanged.
+pub fn fold_register(notes: &mut [Note], sel: &Selection, low: u8, high: u8) -> Result<usize> {
+    if low > high || high > 127 {
+        bail!("register must satisfy 0 <= low <= high <= 127");
+    }
+    let mut changes = Vec::new();
+    for (i, n) in notes.iter().enumerate().filter(|(_, n)| sel.matches(n)) {
+        if n.pitch >= low && n.pitch <= high {
+            continue;
+        }
+        let target = (low..=high)
+            .filter(|p| p % 12 == n.pitch % 12)
+            .min_by_key(|p| (*p as i16 - n.pitch as i16).abs())
+            .ok_or_else(|| {
+                anyhow::anyhow!("pitch {} has no octave within the chosen register", n.pitch)
+            })?;
+        changes.push((i, target));
+    }
+    let count = changes.len();
+    for (i, pitch) in changes {
+        notes[i].pitch = pitch;
+    }
+    Ok(count)
+}
+
+/// Equalize selected onset-group spacing between the first and last groups.
+/// Chord-relative microspacing and all fields except start stay unchanged.
+/// Validate every result before applying any changes.
+pub fn distribute_rhythm(notes: &mut [Note], sel: &Selection, steps: f32) -> Result<usize> {
+    let idx = selected(notes, sel);
+    if !steps.is_finite()
+        || steps <= 0.0
+        || idx.iter().any(|&i| {
+            !notes[i].start.is_finite() || !notes[i].len.is_finite() || notes[i].len < 0.05
+        })
+    {
+        bail!("invalid pattern or selected note bounds");
+    }
+    let groups = chord_groups(notes, &idx, 1e-4);
+    if groups.len() < 3 {
+        return Ok(0);
+    }
+    let first = notes[groups[0][0]].start;
+    let last = notes[groups.last().unwrap()[0]].start;
+    let mut changes = Vec::new();
+    for (k, g) in groups.iter().enumerate() {
+        let anchor = notes[g[0]].start;
+        let target = if k == 0 || k + 1 == groups.len() {
+            anchor
+        } else {
+            first + (last - first) * (k as f32 / (groups.len() - 1) as f32)
+        };
+        let delta = target - anchor;
+        for &i in g {
+            let n = &notes[i];
+            let start = n.start + delta;
+            if !start.is_finite() || start < 0.0 || start + n.len > steps + 1e-4 {
+                bail!("distributed note would leave the pattern");
+            }
+            if (start - n.start).abs() > 1e-5 {
+                changes.push((i, start));
+            }
+        }
+    }
+    let count = changes.len();
+    for (i, start) in changes {
+        notes[i].start = start;
+    }
+    Ok(count)
+}
+
+/// Align selected onset-group releases to an existing shortest/longest release.
+/// Only lengths change. Validate every candidate before writing any note.
+pub fn align_chord_ends(
+    notes: &mut [Note],
+    sel: &Selection,
+    longest: bool,
+    steps: f32,
+) -> Result<usize> {
+    let idx = selected(notes, sel);
+    if !steps.is_finite()
+        || steps <= 0.0
+        || idx.iter().any(|&i| {
+            !notes[i].start.is_finite()
+                || notes[i].start < 0.0
+                || !notes[i].len.is_finite()
+                || notes[i].len < 0.05
+                || notes[i].start + notes[i].len > steps + 1e-4
+        })
+    {
+        bail!("invalid pattern or selected note bounds");
+    }
+    let mut changes = Vec::new();
+    for g in chord_groups(notes, &idx, 1e-4) {
+        if g.len() < 2 {
+            continue;
+        }
+        let end = g
+            .iter()
+            .map(|&i| notes[i].start + notes[i].len)
+            .reduce(|a, b| if longest { a.max(b) } else { a.min(b) })
+            .unwrap();
+        for i in g {
+            let len = end - notes[i].start;
+            if !len.is_finite() || len < 0.05 || end > steps + 1e-4 {
+                bail!("aligned release would leave valid note bounds");
+            }
+            if (len - notes[i].len).abs() > 1e-5 {
+                changes.push((i, len));
+            }
+        }
+    }
+    let count = changes.len();
+    for (i, len) in changes {
+        notes[i].len = len;
+    }
+    Ok(count)
+}
+
+/// Cycle a monophonic selected pitch sequence in chronological order.
+/// Positive rotation moves each pitch later, wrapping to the first note.
+/// Simultaneous selected notes are ambiguous and rejected before any write.
+pub fn rotate_pitches(notes: &mut [Note], sel: &Selection, shift: i32) -> Result<usize> {
+    let idx = selected(notes, sel);
+    if idx.iter().any(|&i| !notes[i].start.is_finite()) {
+        bail!("selected note starts must be finite");
+    }
+    let groups = chord_groups(notes, &idx, 1e-4);
+    if groups.iter().any(|g| g.len() > 1) {
+        bail!("select one note per onset to rotate melody pitches");
+    }
+    if groups.len() < 2 {
+        return Ok(0);
+    }
+    let n = groups.len();
+    let shift = (shift as i64).rem_euclid(n as i64) as usize;
+    let pitches: Vec<u8> = groups.iter().map(|g| notes[g[0]].pitch).collect();
+    let mut count = 0;
+    for (k, g) in groups.iter().enumerate() {
+        let pitch = pitches[(k + n - shift) % n];
+        if notes[g[0]].pitch != pitch {
+            notes[g[0]].pitch = pitch;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// Reverse the gaps between selected onset groups, not the notes or pitches.
+/// Keep first/last anchors fixed and retain chord-relative microspacing.
+pub fn reverse_rhythm_gaps(notes: &mut [Note], sel: &Selection, steps: f32) -> Result<usize> {
+    let idx = selected(notes, sel);
+    if !steps.is_finite()
+        || steps <= 0.0
+        || idx.iter().any(|&i| {
+            !notes[i].start.is_finite() || !notes[i].len.is_finite() || notes[i].len < 0.05
+        })
+    {
+        bail!("invalid pattern or selected note bounds");
+    }
+    let groups = chord_groups(notes, &idx, 1e-4);
+    if groups.len() < 3 {
+        return Ok(0);
+    }
+    let first = notes[groups[0][0]].start;
+    let last = notes[groups.last().unwrap()[0]].start;
+    let mut changes = Vec::new();
+    for (k, g) in groups.iter().enumerate() {
+        let anchor = notes[g[0]].start;
+        let target = if k == 0 || k + 1 == groups.len() {
+            anchor
+        } else {
+            first + (last - notes[groups[groups.len() - 1 - k][0]].start)
+        };
+        let delta = target - anchor;
+        for &i in g {
+            let n = &notes[i];
+            let start = n.start + delta;
+            if !start.is_finite() || start < 0.0 || start + n.len > steps + 1e-4 {
+                bail!("reversed rhythm would leave the pattern");
+            }
+            if (start - n.start).abs() > 1e-5 {
+                changes.push((i, start));
+            }
+        }
+    }
+    let count = changes.len();
+    for (i, start) in changes {
+        notes[i].start = start;
+    }
+    Ok(count)
+}
+
+/// Reverse selected pitches in time order without moving notes or expression.
+pub fn reverse_pitches(notes: &mut [Note], sel: &Selection) -> Result<usize> {
+    let idx = selected(notes, sel);
+    if idx.iter().any(|&i| !notes[i].start.is_finite()) {
+        bail!("selected note starts must be finite");
+    }
+    let groups = chord_groups(notes, &idx, 1e-4);
+    if groups.iter().any(|g| g.len() > 1) {
+        bail!("select one note per onset to reverse melody pitches");
+    }
+    let pitches: Vec<u8> = groups.iter().rev().map(|g| notes[g[0]].pitch).collect();
+    let mut count = 0;
+    for (g, pitch) in groups.iter().zip(pitches) {
+        if notes[g[0]].pitch != pitch {
+            notes[g[0]].pitch = pitch;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// Cycle existing selected velocities through chronological single-note onsets.
+/// No values are generated or flattened; all non-velocity fields stay unchanged.
+/// Simultaneous selected notes are rejected rather than choosing a chord order.
+pub fn rotate_velocities(notes: &mut [Note], sel: &Selection, shift: i32) -> Result<usize> {
+    let idx = selected(notes, sel);
+    if idx.iter().any(|&i| {
+        !notes[i].start.is_finite()
+            || !notes[i].vel.is_finite()
+            || !(0.0..=1.0).contains(&notes[i].vel)
+    }) {
+        bail!("selected note starts and velocities must be valid");
+    }
+    let groups = chord_groups(notes, &idx, 1e-4);
+    if groups.iter().any(|g| g.len() > 1) {
+        bail!("select one note per onset to rotate velocity accents");
+    }
+    if groups.len() < 2 {
+        return Ok(0);
+    }
+    let n = groups.len();
+    let shift = (shift as i64).rem_euclid(n as i64) as usize;
+    let values: Vec<f32> = groups.iter().map(|g| notes[g[0]].vel).collect();
+    let mut count = 0;
+    for (k, g) in groups.iter().enumerate() {
+        let vel = values[(k + n - shift) % n];
+        if notes[g[0]].vel != vel {
+            notes[g[0]].vel = vel;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// Reverse existing selected velocities without moving rhythm or pitch.
+/// Selected simultaneous notes are ambiguous and rejected before any write.
+pub fn reverse_velocities(notes: &mut [Note], sel: &Selection) -> Result<usize> {
+    let idx = selected(notes, sel);
+    if idx.iter().any(|&i| {
+        !notes[i].start.is_finite()
+            || !notes[i].vel.is_finite()
+            || !(0.0..=1.0).contains(&notes[i].vel)
+    }) {
+        bail!("selected note starts and velocities must be valid");
+    }
+    let groups = chord_groups(notes, &idx, 1e-4);
+    if groups.iter().any(|g| g.len() > 1) {
+        bail!("select one note per onset to reverse velocity accents");
+    }
+    let values: Vec<f32> = groups.iter().rev().map(|g| notes[g[0]].vel).collect();
+    let mut count = 0;
+    for (g, vel) in groups.iter().zip(values) {
+        if notes[g[0]].vel != vel {
+            notes[g[0]].vel = vel;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// Mirror selected MIDI dynamics inside their existing [softest, loudest]
+/// range. Chords are unambiguous: each velocity is mirrored independently.
+pub fn invert_velocities(notes: &mut [Note], sel: &Selection) -> Result<usize> {
+    let idx = selected(notes, sel);
+    if idx
+        .iter()
+        .any(|&i| !notes[i].vel.is_finite() || !(0.0..=1.0).contains(&notes[i].vel))
+    {
+        bail!("selected velocities must be finite and between 0 and 1");
+    }
+    let low = idx
+        .iter()
+        .map(|&i| notes[i].vel)
+        .fold(f32::INFINITY, f32::min);
+    let high = idx
+        .iter()
+        .map(|&i| notes[i].vel)
+        .fold(f32::NEG_INFINITY, f32::max);
+    if idx.len() < 2 || high - low < 1e-6 {
+        return Ok(0);
+    }
+    let mut changed = 0;
+    for i in idx {
+        let v =
+            (low as f64 + high as f64 - notes[i].vel as f64).clamp(low as f64, high as f64) as f32;
+        if v != notes[i].vel {
+            notes[i].vel = v;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+#[cfg(test)]
+mod invert_velocity_tests {
+    use super::*;
+    #[test]
+    fn selected_chords_mirror_only_velocity_and_roundtrip() {
+        let mut notes = vec![
+            Note::new(0., 1., 60, 0.2),
+            Note::new(0., 2., 64, 0.4),
+            Note::new(4., 1., 67, 0.8),
+            Note::new(8., 1., 72, 0.9),
+        ];
+        for (i, n) in notes.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+            n.prob = 0.7;
+            n.offset = 0.1;
+            n.slide_to = Some(70);
+        }
+        let before = notes.clone();
+        let sel = Selection {
+            ids: vec!["n0".into(), "n1".into(), "n2".into()],
+            ..Default::default()
+        };
+        assert_eq!(invert_velocities(&mut notes, &sel).unwrap(), 3);
+        for (i, expected) in [0.8, 0.6, 0.2, 0.9].iter().enumerate() {
+            assert!((notes[i].vel - expected).abs() < 1e-6);
+            let mut copy = notes[i].clone();
+            copy.vel = before[i].vel;
+            assert_eq!(copy, before[i]);
+        }
+        invert_velocities(&mut notes, &sel).unwrap();
+        for (i, n) in notes.iter().enumerate() {
+            assert!((n.vel - before[i].vel).abs() < 1e-6);
+        }
+        let mut equal = vec![Note::new(0., 1., 60, 0.5), Note::new(2., 1., 62, 0.5)];
+        assert_eq!(
+            invert_velocities(&mut equal, &Selection::default()).unwrap(),
+            0
+        );
+        assert_eq!(
+            invert_velocities(&mut [], &Selection::default()).unwrap(),
+            0
+        );
+        let mut bad = before;
+        bad[1].vel = 1.1;
+        let copy = bad.clone();
+        let sel = Selection {
+            ids: vec!["n0".into(), "n1".into()],
+            vel_max: 2.,
+            ..Default::default()
+        };
+        assert!(invert_velocities(&mut bad, &sel).is_err());
+        assert_eq!(bad, copy);
+    }
+}
+
+/// Set selected notes at each shared nominal onset to their mean velocity.
+/// Solo onsets and other note fields are unchanged; validate before writing.
+pub fn balance_chord_velocities(notes: &mut [Note], sel: &Selection) -> Result<usize> {
+    let idx = selected(notes, sel);
+    if idx.iter().any(|&i| {
+        !notes[i].start.is_finite()
+            || !notes[i].vel.is_finite()
+            || !(0.0..=1.0).contains(&notes[i].vel)
+    }) {
+        bail!("selected starts and velocities must be valid");
+    }
+    let groups = chord_groups(notes, &idx, 1e-4);
+    let mut changed = 0;
+    for g in groups.iter().filter(|g| g.len() > 1) {
+        let mean = (g.iter().map(|&i| notes[i].vel as f64).sum::<f64>() / g.len() as f64) as f32;
+        for &i in g {
+            if notes[i].vel != mean {
+                notes[i].vel = mean;
+                changed += 1;
+            }
+        }
+    }
+    Ok(changed)
+}
+
+#[cfg(test)]
+mod balance_chord_velocity_tests {
+    use super::*;
+    #[test]
+    fn chords_balance_individually_selection_and_fields_preserved() {
+        let mut n = vec![
+            Note::new(0., 1., 60, 0.2),
+            Note::new(0., 2., 64, 0.8),
+            Note::new(4., 1., 60, 0.4),
+            Note::new(4., 2., 67, 0.8),
+            Note::new(8., 1., 72, 0.9),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+            n.prob = 0.7;
+            n.offset = 0.1;
+            n.slide_to = Some(74);
+        }
+        let before = n.clone();
+        assert_eq!(
+            balance_chord_velocities(&mut n, &Selection::default()).unwrap(),
+            4
+        );
+        for (i, v) in [0.5, 0.5, 0.6, 0.6, 0.9].iter().enumerate() {
+            assert!((n[i].vel - v).abs() < 1e-6);
+            let mut c = n[i].clone();
+            c.vel = before[i].vel;
+            assert_eq!(c, before[i]);
+        }
+        assert_eq!(
+            balance_chord_velocities(&mut n, &Selection::default()).unwrap(),
+            0
+        );
+        n = before.clone();
+        let sel = Selection {
+            ids: vec!["n0".into(), "n1".into(), "n2".into()],
+            ..Default::default()
+        };
+        balance_chord_velocities(&mut n, &sel).unwrap();
+        assert_eq!(n[2..], before[2..]);
+        n = before;
+        n[1].vel = 1.1;
+        let before = n.clone();
+        assert!(balance_chord_velocities(
+            &mut n,
+            &Selection {
+                vel_max: 2.,
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert_eq!(n, before);
+    }
+}
+
+/// Shorten selected sustains at the pattern edge, never lengthen or delete.
+/// Unrepresentable tiny remainders reject atomically rather than changing starts.
+pub fn trim_pattern_ends(notes: &mut [Note], sel: &Selection, steps: f32) -> Result<usize> {
+    if !steps.is_finite() || steps <= 0. {
+        bail!("invalid pattern length");
+    }
+    let mut changes = Vec::new();
+    for (i, n) in notes.iter().enumerate().filter(|(_, n)| sel.matches(n)) {
+        if !n.start.is_finite() || !n.len.is_finite() || n.start < 0. || n.len < 0.05 {
+            bail!("selected note has invalid bounds");
+        }
+        if n.start + n.len > steps {
+            let len = steps - n.start;
+            if len < 0.05 {
+                bail!("selected note has less than0.05 steps before pattern end; move or remove it first");
+            }
+            changes.push((i, len));
+        }
+    }
+    let count = changes.len();
+    for (i, len) in changes {
+        notes[i].len = len;
+    }
+    Ok(count)
+}
+
+#[cfg(test)]
+mod trim_pattern_end_tests {
+    use super::*;
+    #[test]
+    fn tails_only_selection_and_atomic_bounds() {
+        let mut n = vec![
+            Note::new(12., 8., 60, 0.4),
+            Note::new(4., 2., 64, 0.6),
+            Note::new(14., 8., 67, 0.8),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+            n.prob = 0.7;
+            n.offset = 0.1;
+            n.slide_to = Some(72);
+        }
+        let before = n.clone();
+        let sel = Selection {
+            ids: vec!["n0".into()],
+            ..Default::default()
+        };
+        assert_eq!(trim_pattern_ends(&mut n, &sel, 16.).unwrap(), 1);
+        assert_eq!(n[0].len, 4.);
+        let mut expected = before.clone();
+        expected[0].len = 4.;
+        assert_eq!(n, expected);
+        assert_eq!(trim_pattern_ends(&mut n, &sel, 16.).unwrap(), 0);
+        n = before;
+        n.push(Note::new(15.98, 1., 72, 0.9));
+        let before = n.clone();
+        assert!(trim_pattern_ends(&mut n, &Selection::default(), 16.).is_err());
+        assert_eq!(n, before);
+        assert!(trim_pattern_ends(&mut n, &sel, 0.).is_err());
+    }
+}
+
+/// Reverse selected durations in nominal onset order, without moving notes.
+/// Chords are ambiguous. Validate every destination before writing any value.
+pub fn reverse_lengths(notes: &mut [Note], sel: &Selection, steps: f32) -> Result<usize> {
+    if !steps.is_finite() || steps <= 0. {
+        bail!("pattern length must be positive and finite");
+    }
+    let idx = selected(notes, sel);
+    if idx.iter().any(|&i| {
+        !notes[i].start.is_finite()
+            || notes[i].start < 0.
+            || !notes[i].len.is_finite()
+            || notes[i].len < 0.05
+    }) {
+        bail!("selected starts and lengths must be valid");
+    }
+    let groups = chord_groups(notes, &idx, 1e-4);
+    if groups.iter().any(|g| g.len() > 1) {
+        bail!("select one note per onset to reverse lengths");
+    }
+    let lengths: Vec<f32> = groups.iter().rev().map(|g| notes[g[0]].len).collect();
+    if groups
+        .iter()
+        .zip(&lengths)
+        .any(|(g, len)| notes[g[0]].start + len > steps)
+    {
+        bail!("reversed lengths must fit within the pattern");
+    }
+    let mut count = 0;
+    for (g, len) in groups.iter().zip(lengths) {
+        if notes[g[0]].len != len {
+            notes[g[0]].len = len;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+#[cfg(test)]
+mod reverse_length_tests {
+    use super::*;
+    #[test]
+    fn selection_fields_chords_and_atomic_fit() {
+        let mut n = vec![
+            Note::new(8., 1., 67, 0.8),
+            Note::new(0., 4., 60, 0.3),
+            Note::new(4., 2., 64, 0.5),
+            Note::new(12., 2., 72, 0.9),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+            n.prob = 0.6;
+            n.offset = 0.1;
+            n.slide_to = Some(73);
+        }
+        let before = n.clone();
+        let sel = Selection {
+            ids: vec!["n0".into(), "n1".into(), "n2".into()],
+            ..Default::default()
+        };
+        assert_eq!(reverse_lengths(&mut n, &sel, 16.).unwrap(), 2);
+        let mut expected = before.clone();
+        expected[0].len = 4.;
+        expected[1].len = 1.;
+        assert_eq!(n, expected);
+        reverse_lengths(&mut n, &sel, 16.).unwrap();
+        assert_eq!(n, before);
+        assert_eq!(reverse_lengths(&mut [], &sel, 16.).unwrap(), 0);
+        n[0].start = 15.;
+        let before = n.clone();
+        assert!(reverse_lengths(&mut n, &sel, 16.).is_err());
+        assert_eq!(n, before);
+        n[0].start = 0.;
+        let before = n.clone();
+        assert!(reverse_lengths(&mut n, &sel, 16.).is_err());
+        assert_eq!(n, before);
+        assert!(reverse_lengths(&mut n, &sel, f32::NAN).is_err());
+    }
+}
+
+/// Clear per-note timing offsets and/or restore guaranteed chance. This does
+/// not reset global swing, groove routing, velocity, gates or slide targets.
+pub fn reset_humanization(
+    notes: &mut [Note],
+    sel: &Selection,
+    timing: bool,
+    chance: bool,
+) -> Result<usize> {
+    if !timing && !chance {
+        bail!("choose timing, chance or both");
+    }
+    let mut changed = 0;
+    for i in selected(notes, sel) {
+        let n = &mut notes[i];
+        let diff = (timing && n.offset != 0.) || (chance && n.prob != 1.);
+        if timing {
+            n.offset = 0.;
+        }
+        if chance {
+            n.prob = 1.;
+        }
+        if diff {
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+#[cfg(test)]
+mod reset_humanization_tests {
+    use super::*;
+    #[test]
+    fn scope_modes_and_no_collateral_normalization() {
+        let mut n = vec![
+            Note::new(0., 0.02, 60, 0.),
+            Note::new(4., 2., 64, 0.4),
+            Note::new(8., 3., 67, 0.8),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+            n.prob = 0.5;
+            n.offset = 0.2;
+            n.slide_to = Some(72);
+        }
+        let before = n.clone();
+        let sel = Selection {
+            ids: vec!["n0".into(), "n1".into()],
+            ..Default::default()
+        };
+        assert_eq!(reset_humanization(&mut n, &sel, true, false).unwrap(), 2);
+        let mut expected = before.clone();
+        for n in &mut expected[..2] {
+            n.offset = 0.;
+        }
+        assert_eq!(n, expected);
+        assert_eq!(reset_humanization(&mut n, &sel, true, false).unwrap(), 0);
+        assert_eq!(reset_humanization(&mut n, &sel, false, true).unwrap(), 2);
+        for n in &mut expected[..2] {
+            n.prob = 1.;
+        }
+        assert_eq!(n, expected);
+        n = before.clone();
+        reset_humanization(&mut n, &sel, true, true).unwrap();
+        assert_eq!(n, expected);
+        let unchanged = n.clone();
+        assert!(reset_humanization(&mut n, &sel, false, false).is_err());
+        assert_eq!(n, unchanged);
+    }
+}
+
+/// Set per-note trigger chance only, with exact preservation of other fields.
+pub fn set_note_chance(notes: &mut [Note], sel: &Selection, chance: f32) -> Result<usize> {
+    if !chance.is_finite() || !(0.0..=1.0).contains(&chance) {
+        bail!("chance must be finite and between0 and1");
+    }
+    let mut count = 0;
+    for i in selected(notes, sel) {
+        if notes[i].prob != chance {
+            notes[i].prob = chance;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+#[cfg(test)]
+mod set_note_chance_tests {
+    use super::*;
+    #[test]
+    fn only_chance_changes_with_strict_bounds() {
+        let mut n = vec![
+            Note::new(0., 0.02, 60, 0.),
+            Note::new(4., 2., 64, 0.4),
+            Note::new(8., 3., 67, 0.8),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+            n.offset = 0.2;
+            n.slide_to = Some(72);
+        }
+        let before = n.clone();
+        let sel = Selection {
+            ids: vec!["n0".into(), "n1".into()],
+            ..Default::default()
+        };
+        assert_eq!(set_note_chance(&mut n, &sel, 0.5).unwrap(), 2);
+        let mut expected = before.clone();
+        expected[0].prob = 0.5;
+        expected[1].prob = 0.5;
+        assert_eq!(n, expected);
+        assert_eq!(set_note_chance(&mut n, &sel, 0.5).unwrap(), 0);
+        for chance in [-0.1, 1.1, f32::NAN, f32::INFINITY] {
+            assert!(set_note_chance(&mut n, &sel, chance).is_err());
+            assert_eq!(n, expected);
+        }
+        assert_eq!(set_note_chance(&mut n, &sel, 0.).unwrap(), 2);
+        assert_eq!(set_note_chance(&mut n, &sel, 1.).unwrap(), 2);
+        assert_eq!(n, before);
+    }
+}
+
+/// Set signed per-note microtiming only. Nominal starts and global swing stay.
+pub fn set_note_offset(notes: &mut [Note], sel: &Selection, offset: f32) -> Result<usize> {
+    if !offset.is_finite() || !(-0.5..=0.5).contains(&offset) {
+        bail!("offset must be finite and between-0.5 and0.5 steps");
+    }
+    let mut count = 0;
+    for i in selected(notes, sel) {
+        if notes[i].offset != offset {
+            notes[i].offset = offset;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+#[cfg(test)]
+mod set_note_offset_tests {
+    use super::*;
+    #[test]
+    fn only_offset_changes_with_strict_bounds() {
+        let mut n = vec![
+            Note::new(0., 0.02, 60, 0.),
+            Note::new(4., 2., 64, 0.4),
+            Note::new(8., 3., 67, 0.8),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+            n.prob = 0.5;
+            n.slide_to = Some(72);
+        }
+        let before = n.clone();
+        let sel = Selection {
+            ids: vec!["n0".into(), "n1".into()],
+            ..Default::default()
+        };
+        assert_eq!(set_note_offset(&mut n, &sel, -0.25).unwrap(), 2);
+        let mut expected = before.clone();
+        expected[0].offset = -0.25;
+        expected[1].offset = -0.25;
+        assert_eq!(n, expected);
+        assert_eq!(set_note_offset(&mut n, &sel, -0.25).unwrap(), 0);
+        for offset in [-0.51, 0.51, f32::NAN, f32::INFINITY] {
+            assert!(set_note_offset(&mut n, &sel, offset).is_err());
+            assert_eq!(n, expected);
+        }
+        for value in [-0.5, 0.5, 0.] {
+            assert_eq!(set_note_offset(&mut n, &sel, value).unwrap(), 2);
+        }
+        assert_eq!(n, before);
+    }
+}
+
+/// Rotate selected durations through onset order, with atomic fit validation.
+pub fn rotate_lengths(
+    notes: &mut [Note],
+    sel: &Selection,
+    shift: i32,
+    steps: f32,
+) -> Result<usize> {
+    if !steps.is_finite() || steps <= 0. {
+        bail!("pattern length must be positive and finite");
+    }
+    let idx = selected(notes, sel);
+    if idx.iter().any(|&i| {
+        !notes[i].start.is_finite()
+            || notes[i].start < 0.
+            || !notes[i].len.is_finite()
+            || notes[i].len < 0.05
+    }) {
+        bail!("selected starts and lengths must be valid");
+    }
+    let groups = chord_groups(notes, &idx, 1e-4);
+    if groups.iter().any(|g| g.len() > 1) {
+        bail!("select one note per onset to rotate lengths");
+    }
+    let mut lengths: Vec<f32> = groups.iter().map(|g| notes[g[0]].len).collect();
+    if !lengths.is_empty() {
+        let shift = (i64::from(shift)).rem_euclid(lengths.len() as i64) as usize;
+        lengths.rotate_right(shift);
+    }
+    if groups
+        .iter()
+        .zip(&lengths)
+        .any(|(g, len)| notes[g[0]].start + len > steps)
+    {
+        bail!("rotated lengths must fit within the pattern");
+    }
+    let mut count = 0;
+    for (g, len) in groups.iter().zip(lengths) {
+        if notes[g[0]].len != len {
+            notes[g[0]].len = len;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[cfg(test)]
+mod rotate_length_tests {
+    use super::*;
+    #[test]
+    fn fields_order_wrap_noop_and_rejection() {
+        let mut n = vec![
+            Note::new(8., 1., 67, 0.8),
+            Note::new(0., 4., 60, 0.),
+            Note::new(4., 2., 64, 0.5),
+            Note::new(12., 2., 72, 0.9),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+            n.prob = 0.6;
+            n.offset = 0.1;
+            n.slide_to = Some(73);
+        }
+        let before = n.clone();
+        let sel = Selection {
+            ids: vec!["n0".into(), "n1".into(), "n2".into()],
+            ..Default::default()
+        };
+        assert_eq!(rotate_lengths(&mut n, &sel, 1, 16.).unwrap(), 3);
+        let mut expected = before.clone();
+        expected[0].len = 2.;
+        expected[1].len = 1.;
+        expected[2].len = 4.;
+        assert_eq!(n, expected);
+        rotate_lengths(&mut n, &sel, -1, 16.).unwrap();
+        assert_eq!(n, before);
+        assert_eq!(rotate_lengths(&mut n, &sel, 3, 16.).unwrap(), 0);
+        rotate_lengths(&mut n, &sel, i32::MIN, 16.).unwrap();
+        rotate_lengths(&mut n, &sel, 2, 16.).unwrap();
+        assert_eq!(n, before);
+        assert_eq!(rotate_lengths(&mut [], &sel, 1, 16.).unwrap(), 0);
+        n[0].start = 15.;
+        let b = n.clone();
+        assert!(rotate_lengths(&mut n, &sel, 1, 16.).is_err());
+        assert_eq!(n, b);
+        n = before;
+        n.push(Note::new(0., 2., 50, 0.5));
+        let b = n.clone();
+        assert!(rotate_lengths(&mut n, &Selection::default(), 1, 16.).is_err());
+        assert_eq!(n, b);
+        assert!(rotate_lengths(&mut n, &sel, 1, f32::NAN).is_err());
+    }
+}
+
+/// Mirror selected durations within their min/max range. Validate before writing.
+pub fn invert_lengths(notes: &mut [Note], sel: &Selection, steps: f32) -> Result<usize> {
+    if !steps.is_finite() || steps <= 0. {
+        bail!("pattern length must be positive and finite");
+    }
+    let idx = selected(notes, sel);
+    if idx.is_empty() {
+        return Ok(0);
+    }
+    if idx.iter().any(|&i| {
+        !notes[i].start.is_finite()
+            || notes[i].start < 0.
+            || !notes[i].len.is_finite()
+            || notes[i].len < 0.05
+    }) {
+        bail!("selected starts and lengths must be valid");
+    }
+    let lo = idx
+        .iter()
+        .map(|&i| notes[i].len)
+        .fold(f32::INFINITY, f32::min);
+    let hi = idx.iter().map(|&i| notes[i].len).fold(0., f32::max);
+    let values: Vec<f32> = idx
+        .iter()
+        .map(|&i| (f64::from(lo) + f64::from(hi) - f64::from(notes[i].len)) as f32)
+        .collect();
+    if idx
+        .iter()
+        .zip(&values)
+        .any(|(&i, &len)| !len.is_finite() || len < 0.05 || notes[i].start + len > steps)
+    {
+        bail!("inverted lengths must fit within the pattern");
+    }
+    let mut count = 0;
+    for (i, len) in idx.into_iter().zip(values) {
+        if notes[i].len != len {
+            notes[i].len = len;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+#[cfg(test)]
+mod invert_length_tests {
+    use super::*;
+    #[test]
+    fn fields_chords_partial_noop_and_atomic_fit() {
+        let mut n = vec![
+            Note::new(0., 4., 60, 0.),
+            Note::new(0., 2., 64, 0.5),
+            Note::new(8., 1., 67, 0.8),
+            Note::new(12., 2., 72, 0.9),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+            n.prob = 0.6;
+            n.offset = 0.1;
+            n.slide_to = Some(73);
+        }
+        let before = n.clone();
+        let sel = Selection {
+            ids: vec!["n0".into(), "n1".into(), "n2".into()],
+            ..Default::default()
+        };
+        assert_eq!(invert_lengths(&mut n, &sel, 16.).unwrap(), 3);
+        let mut expected = before.clone();
+        expected[0].len = 1.;
+        expected[1].len = 3.;
+        expected[2].len = 4.;
+        assert_eq!(n, expected);
+        invert_lengths(&mut n, &sel, 16.).unwrap();
+        assert_eq!(n, before);
+        assert_eq!(invert_lengths(&mut [], &sel, 16.).unwrap(), 0);
+        let single = Selection {
+            ids: vec!["n0".into()],
+            ..Default::default()
+        };
+        assert_eq!(invert_lengths(&mut n, &single, 16.).unwrap(), 0);
+        n[2].start = 15.;
+        let b = n.clone();
+        assert!(invert_lengths(&mut n, &sel, 16.).is_err());
+        assert_eq!(n, b);
+        assert!(invert_lengths(&mut n, &sel, f32::NAN).is_err());
+        n[0].len = f32::INFINITY;
+        assert!(invert_lengths(&mut n, &sel, 16.).is_err());
+    }
+}
+
+/// Give selected notes at each shared onset their mean duration.
+pub fn balance_chord_lengths(notes: &mut [Note], sel: &Selection, steps: f32) -> Result<usize> {
+    if !steps.is_finite() || steps <= 0. {
+        bail!("pattern length must be positive and finite");
+    }
+    let idx = selected(notes, sel);
+    if idx.iter().any(|&i| {
+        !notes[i].start.is_finite()
+            || notes[i].start < 0.
+            || !notes[i].len.is_finite()
+            || notes[i].len < 0.05
+            || notes[i].start + notes[i].len > steps
+    }) {
+        bail!("selected starts and lengths must be valid and fit the pattern");
+    }
+    let mut changes = Vec::new();
+    for g in chord_groups(notes, &idx, 1e-4)
+        .iter()
+        .filter(|g| g.len() > 1)
+    {
+        let mean =
+            (g.iter().map(|&i| f64::from(notes[i].len)).sum::<f64>() / g.len() as f64) as f32;
+        for &i in g {
+            if !mean.is_finite() || notes[i].start + mean > steps {
+                bail!("averaged lengths must fit within the pattern");
+            }
+            if notes[i].len != mean {
+                changes.push((i, mean));
+            }
+        }
+    }
+    let count = changes.len();
+    for (i, len) in changes {
+        notes[i].len = len;
+    }
+    Ok(count)
+}
+#[cfg(test)]
+mod balance_chord_length_tests {
+    use super::*;
+    #[test]
+    fn partial_chords_fields_solo_noop_and_atomic_validation() {
+        let mut n = vec![
+            Note::new(0., 4., 60, 0.),
+            Note::new(0., 2., 64, 0.5),
+            Note::new(0., 1., 67, 0.8),
+            Note::new(8., 2., 72, 0.9),
+            Note::new(8., 4., 76, 0.7),
+            Note::new(12., 2., 80, 0.5),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+            n.prob = 0.6;
+            n.offset = 0.1;
+            n.slide_to = Some(73);
+        }
+        let before = n.clone();
+        let sel = Selection {
+            ids: vec![
+                "n0".into(),
+                "n1".into(),
+                "n3".into(),
+                "n4".into(),
+                "n5".into(),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(balance_chord_lengths(&mut n, &sel, 16.).unwrap(), 4);
+        let mut expected = before.clone();
+        for i in [0, 1, 3, 4] {
+            expected[i].len = 3.;
+        }
+        assert_eq!(n, expected);
+        assert_eq!(balance_chord_lengths(&mut n, &sel, 16.).unwrap(), 0);
+        assert_eq!(balance_chord_lengths(&mut [], &sel, 16.).unwrap(), 0);
+        n = before;
+        n[4].len = 9.;
+        let b = n.clone();
+        assert!(balance_chord_lengths(&mut n, &sel, 16.).is_err());
+        assert_eq!(n, b);
+        assert!(balance_chord_lengths(&mut n, &sel, f32::NAN).is_err());
+        n[4].len = f32::INFINITY;
+        assert!(balance_chord_lengths(&mut n, &sel, 16.).is_err());
+    }
+}
+
+/// Scale selected durations only, with atomic minimum-length and fit validation.
+pub fn scale_lengths(
+    notes: &mut [Note],
+    sel: &Selection,
+    factor: f32,
+    steps: f32,
+) -> Result<usize> {
+    if !factor.is_finite() || !(0.0625..=16.).contains(&factor) {
+        bail!("factor must be between0.0625 and16");
+    }
+    if !steps.is_finite() || steps <= 0. {
+        bail!("pattern length must be positive and finite");
+    }
+    let idx = selected(notes, sel);
+    let mut changes = Vec::new();
+    for i in idx {
+        let n = &notes[i];
+        let len = n.len * factor;
+        if !n.start.is_finite()
+            || n.start < 0.
+            || !n.len.is_finite()
+            || n.len < 0.05
+            || !len.is_finite()
+            || len < 0.05
+            || n.start + len > steps
+        {
+            bail!("scaled lengths must be valid and fit within the pattern");
+        }
+        if n.len != len {
+            changes.push((i, len));
+        }
+    }
+    let count = changes.len();
+    for (i, len) in changes {
+        notes[i].len = len;
+    }
+    Ok(count)
+}
+#[cfg(test)]
+mod scale_length_tests {
+    use super::*;
+    #[test]
+    fn fields_chords_selection_bounds_and_atomic_fit() {
+        let mut n = vec![
+            Note::new(0., 4., 60, 0.),
+            Note::new(0., 2., 64, 0.5),
+            Note::new(8., 1., 67, 0.8),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+            n.prob = 0.6;
+            n.offset = 0.1;
+            n.slide_to = Some(73);
+        }
+        let before = n.clone();
+        let sel = Selection {
+            ids: vec!["n0".into(), "n1".into()],
+            ..Default::default()
+        };
+        assert_eq!(scale_lengths(&mut n, &sel, 0.5, 16.).unwrap(), 2);
+        let mut expected = before.clone();
+        expected[0].len = 2.;
+        expected[1].len = 1.;
+        assert_eq!(n, expected);
+        scale_lengths(&mut n, &sel, 2., 16.).unwrap();
+        assert_eq!(n, before);
+        assert_eq!(scale_lengths(&mut n, &sel, 1., 16.).unwrap(), 0);
+        assert_eq!(scale_lengths(&mut [], &sel, 2., 16.).unwrap(), 0);
+        for factor in [0., 0.01, 16.1, f32::NAN, f32::INFINITY] {
+            assert!(scale_lengths(&mut n, &sel, factor, 16.).is_err());
+            assert_eq!(n, before);
+        }
+        assert!(scale_lengths(&mut n, &sel, 16., 16.).is_err());
+        assert_eq!(n, before);
+        n[1].len = 0.05;
+        let b = n.clone();
+        assert!(scale_lengths(&mut n, &sel, 0.5, 16.).is_err());
+        assert_eq!(n, b);
+    }
+}
+
+/// Set selected velocities only, including silence, without normalizing lengths.
+pub fn set_velocity(notes: &mut [Note], sel: &Selection, velocity: f32) -> Result<usize> {
+    if !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
+        bail!("velocity must be finite and between0 and1");
+    }
+    let mut count = 0;
+    for i in selected(notes, sel) {
+        if notes[i].vel != velocity {
+            notes[i].vel = velocity;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[cfg(test)]
+mod fixed_velocity_tests {
+    use super::*;
+    #[test]
+    fn only_velocity_changes_with_strict_bounds() {
+        let mut n = vec![
+            Note::new(0., 0.02, 60, 0.),
+            Note::new(4., 2., 64, 0.4),
+            Note::new(8., 3., 67, 0.8),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("n{i}");
+            n.prob = 0.6;
+            n.offset = 0.1;
+            n.slide_to = Some(73);
+        }
+        let before = n.clone();
+        let sel = Selection {
+            ids: vec!["n0".into(), "n1".into()],
+            ..Default::default()
+        };
+        assert_eq!(set_velocity(&mut n, &sel, 0.5).unwrap(), 2);
+        let mut expected = before.clone();
+        expected[0].vel = 0.5;
+        expected[1].vel = 0.5;
+        assert_eq!(n, expected);
+        assert_eq!(set_velocity(&mut n, &sel, 0.5).unwrap(), 0);
+        for value in [0., 1.] {
+            assert_eq!(set_velocity(&mut n, &sel, value).unwrap(), 2);
+        }
+        let b = n.clone();
+        for value in [-0.1, 1.1, f32::NAN, f32::INFINITY] {
+            assert!(set_velocity(&mut n, &sel, value).is_err());
+            assert_eq!(n, b);
+        }
+        assert_eq!(set_velocity(&mut [], &sel, 0.).unwrap(), 0);
+    }
+}
+
+/// Remove selected notes explicitly set to zero velocity or zero probability.
+/// Surviving note fields/order are unchanged. Deletion can reseed index-based chance.
+pub fn remove_zero_notes(notes: &mut Vec<Note>, sel: &Selection) -> usize {
+    let before = notes.len();
+    notes.retain(|n| !(sel.matches(n) && (n.vel == 0.0 || n.prob == 0.0)));
+    before - notes.len()
+}
+
+#[cfg(test)]
+mod zero_note_cleanup_tests {
+    use super::*;
+    #[test]
+    fn exact_zero_only_selection_and_survivor_identity() {
+        let mut n = vec![
+            Note::new(0., 0.02, 60, 0.),
+            Note::new(2., 2., 62, 0.6),
+            Note::new(4., 3., 64, 0.00001),
+            Note::new(6., 4., 67, 0.),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("z{i}");
+            n.offset = 0.1;
+            n.slide_to = Some(73);
+            n.prob = 0.00001;
+        }
+        n[1].prob = 0.;
+        let b = n.clone();
+        let sel = Selection {
+            ids: vec!["z0".into(), "z1".into(), "z2".into()],
+            ..Default::default()
+        };
+        assert_eq!(remove_zero_notes(&mut n, &sel), 2);
+        assert_eq!(n, vec![b[2].clone(), b[3].clone()]);
+        assert_eq!(remove_zero_notes(&mut n, &sel), 0);
+        assert_eq!(remove_zero_notes(&mut n, &Default::default()), 1);
+        assert_eq!(n, vec![b[2].clone()]);
+        let mut invalid = vec![
+            Note::new(0., 1., 60, -0.01),
+            Note::new(2., 1., 62, f32::NAN),
+        ];
+        assert_eq!(remove_zero_notes(&mut invalid, &Default::default()), 0);
+        assert_eq!(remove_zero_notes(&mut vec![], &sel), 0);
+    }
+}
+
+/// Set one fixed duration, validating every selected note before any change.
+pub fn set_lengths(notes: &mut [Note], sel: &Selection, length: f32, steps: f32) -> Result<usize> {
+    if !length.is_finite() || length < 0.05 || !steps.is_finite() || steps <= 0.0 {
+        bail!("length must be finite and at least0.05 steps, with valid pattern bounds");
+    }
+    for n in notes.iter().filter(|n| sel.matches(n)) {
+        if !n.start.is_finite()
+            || n.start < 0.0
+            || n.start >= steps
+            || !n.len.is_finite()
+            || n.len <= 0.0
+            || n.start + length > steps
+        {
+            bail!("fixed duration does not fit selected notes");
+        }
+    }
+    let mut count = 0;
+    for n in notes.iter_mut().filter(|n| sel.matches(n)) {
+        if n.len != length {
+            n.len = length;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[cfg(test)]
+mod fixed_length_tests {
+    use super::*;
+    #[test]
+    fn selection_chords_expression_and_atomic_fit() {
+        let mut n = vec![
+            Note::new(0., 4., 60, 0.),
+            Note::new(0., 0.02, 64, 0.3),
+            Note::new(8., 1., 67, 0.8),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("s{i}");
+            n.prob = 0.2;
+            n.offset = -0.2;
+            n.slide_to = Some(72);
+        }
+        let b = n.clone();
+        let sel = Selection {
+            ids: vec!["s0".into(), "s1".into()],
+            ..Default::default()
+        };
+        assert_eq!(set_lengths(&mut n, &sel, 2., 16.).unwrap(), 2);
+        let mut expected = b.clone();
+        expected[0].len = 2.;
+        expected[1].len = 2.;
+        assert_eq!(n, expected);
+        assert_eq!(set_lengths(&mut n, &sel, 2., 16.).unwrap(), 0);
+        assert_eq!(set_lengths(&mut [], &sel, 2., 16.).unwrap(), 0);
+        let b = n.clone();
+        for length in [0., 0.04, -1., f32::NAN, f32::INFINITY, 17.] {
+            assert!(set_lengths(&mut n, &sel, length, 16.).is_err());
+            assert_eq!(n, b);
+        }
+        assert!(set_lengths(&mut n, &sel, 2., 0.).is_err());
+        assert_eq!(n, b);
+        let mut late = b.clone();
+        late[2].start = 15.;
+        let b = late.clone();
+        assert!(set_lengths(&mut late, &Default::default(), 2., 16.).is_err());
+        assert_eq!(late, b);
+        set_lengths(&mut late, &Default::default(), 1., 16.).unwrap();
+        assert!(late.iter().all(|n| n.len == 1.));
+    }
+}
+
+/// Linear velocity envelope over selected nominal onset time; one onset uses start.
+pub fn ramp_velocities(notes: &mut [Note], sel: &Selection, start: f32, end: f32) -> Result<usize> {
+    if [start, end]
+        .iter()
+        .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+    {
+        bail!("velocity endpoints must be finite between0 and1");
+    }
+    let idx = selected(notes, sel);
+    if idx.is_empty() {
+        return Ok(0);
+    }
+    if idx
+        .iter()
+        .any(|i| !notes[*i].start.is_finite() || notes[*i].start < 0.0)
+    {
+        bail!("invalid selected onset");
+    }
+    let first = idx
+        .iter()
+        .map(|i| notes[*i].start)
+        .fold(f32::INFINITY, f32::min);
+    let last = idx
+        .iter()
+        .map(|i| notes[*i].start)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut count = 0;
+    for i in idx {
+        let n = &mut notes[i];
+        let t = if last > first {
+            (n.start - first) / (last - first)
+        } else {
+            0.0
+        };
+        let v = if t == 0.0 {
+            start
+        } else if t == 1.0 {
+            end
+        } else {
+            (start + (end - start) * t).clamp(0.0, 1.0)
+        };
+        if n.vel != v {
+            n.vel = v;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[cfg(test)]
+mod velocity_ramp_tests {
+    use super::*;
+    #[test]
+    fn time_based_chords_selection_fields_endpoints() {
+        let mut n = vec![
+            Note::new(8., 0.02, 67, 0.),
+            Note::new(0., 4., 60, 0.6),
+            Note::new(2., 2., 62, 0.8),
+            Note::new(2., 3., 64, 0.7),
+            Note::new(12., 1., 72, 0.9),
+        ];
+        for (i, n) in n.iter_mut().enumerate() {
+            n.id = format!("r{i}");
+            n.prob = 0.3;
+            n.offset = -0.1;
+            n.slide_to = Some(74);
+        }
+        let b = n.clone();
+        let sel = Selection {
+            ids: vec!["r0".into(), "r1".into(), "r2".into(), "r3".into()],
+            ..Default::default()
+        };
+        assert_eq!(ramp_velocities(&mut n, &sel, 0., 1.).unwrap(), 4);
+        let mut expected = b.clone();
+        for (i, v) in [1., 0., 0.25, 0.25].iter().enumerate() {
+            expected[i].vel = *v;
+        }
+        assert_eq!(n, expected);
+        assert_eq!(ramp_velocities(&mut n, &sel, 0., 1.).unwrap(), 0);
+        ramp_velocities(&mut n, &sel, 1., 0.).unwrap();
+        assert_eq!(n[0].vel, 0.);
+        assert_eq!(n[1].vel, 1.);
+        assert_eq!(n[2].vel, 0.75);
+        let one = Selection {
+            ids: vec!["r2".into(), "r3".into()],
+            ..Default::default()
+        };
+        ramp_velocities(&mut n, &one, 0.4, 0.8).unwrap();
+        assert_eq!(n[2].vel, 0.4);
+        assert_eq!(n[3].vel, 0.4);
+        let b = n.clone();
+        for x in [-0.1, 1.1, f32::NAN, f32::INFINITY] {
+            assert!(ramp_velocities(&mut n, &sel, x, 0.5).is_err());
+            assert!(ramp_velocities(&mut n, &sel, 0.5, x).is_err());
+            assert_eq!(n, b);
+        }
+        n[0].start = -1.;
+        let sel = Selection { from: -2., ..sel };
+        let b = n.clone();
+        assert!(ramp_velocities(&mut n, &sel, 0., 1.).is_err());
+        assert_eq!(n, b);
+        assert_eq!(ramp_velocities(&mut [], &sel, 0., 1.).unwrap(), 0);
+    }
+}
+
+/// Fit selected dynamics into an explicit range without changing other note data.
+pub fn fit_velocity_range(
+    notes: &mut [Note],
+    sel: &Selection,
+    low: f32,
+    high: f32,
+) -> Result<usize> {
+    if !low.is_finite()
+        || !high.is_finite()
+        || !(0.0..=1.0).contains(&low)
+        || !(low..=1.0).contains(&high)
+    {
+        bail!("velocity range must satisfy0 <= low <= high <=1");
+    }
+    let ids = selected(notes, sel);
+    if ids
+        .iter()
+        .any(|i| !notes[*i].vel.is_finite() || !(0.0..=1.0).contains(&notes[*i].vel))
+    {
+        bail!("selected velocities must be finite between0 and1");
+    }
+    let min = ids
+        .iter()
+        .map(|i| notes[*i].vel)
+        .fold(f32::INFINITY, f32::min);
+    let max = ids
+        .iter()
+        .map(|i| notes[*i].vel)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut count = 0;
+    for i in ids {
+        let value = if max > min {
+            low + (notes[i].vel - min) / (max - min) * (high - low)
+        } else {
+            low
+        };
+        let value = value.clamp(low, high);
+        if notes[i].vel != value {
+            notes[i].vel = value;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[cfg(test)]
+mod fit_velocity_range_tests {
+    use super::*;
+    #[test]
+    fn range_mapping_preserves_other_fields_and_validates_atomically() {
+        let mut n: Vec<_> = [0., 0.2, 0.6, 1.]
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let mut n = Note::new(i as f32, 0.02, 60, *v);
+                n.id = format!("fit{i}");
+                n.prob = 0.5;
+                n.offset = 0.1;
+                n.slide_to = Some(72);
+                n
+            })
+            .collect();
+        let before = n.clone();
+        let sel = Selection {
+            ids: vec!["fit0".into(), "fit1".into(), "fit2".into()],
+            ..Default::default()
+        };
+        assert_eq!(fit_velocity_range(&mut n, &sel, 0.3, 0.9).unwrap(), 3);
+        for (i, v) in [0.3, 0.5, 0.9, 1.].iter().enumerate() {
+            assert!((n[i].vel - v).abs() < 0.00001);
+            let mut expected = before[i].clone();
+            expected.vel = n[i].vel;
+            assert_eq!(n[i], expected);
+        }
+        let saved = n.clone();
+        for (low, high) in [(0.9, 0.2), (-0.1, 1.), (0., 1.1), (f32::NAN, 1.)] {
+            assert!(fit_velocity_range(&mut n, &sel, low, high).is_err());
+            assert_eq!(n, saved);
+        }
+        let mut flat = vec![Note::new(0., 1., 60, 0.5); 2];
+        assert_eq!(
+            fit_velocity_range(&mut flat, &Selection::default(), 0., 1.).unwrap(),
+            2
+        );
+        assert!(flat.iter().all(|n| n.vel == 0.));
+        assert_eq!(
+            fit_velocity_range(&mut flat, &Selection::default(), 0., 1.).unwrap(),
+            0
+        );
+        assert_eq!(
+            fit_velocity_range(&mut [], &Selection::default(), 0., 1.).unwrap(),
+            0
+        );
+    }
+}
+
+/// Linear trigger-chance envelope over selected nominal onsets.
+pub fn ramp_note_chance(
+    notes: &mut [Note],
+    sel: &Selection,
+    start: f32,
+    end: f32,
+) -> Result<usize> {
+    if [start, end]
+        .iter()
+        .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+    {
+        bail!("chance endpoints must be finite between0 and1");
+    }
+    let ids = selected(notes, sel);
+    if ids
+        .iter()
+        .any(|i| !notes[*i].start.is_finite() || notes[*i].start < 0.)
+    {
+        bail!("invalid selected onset");
+    }
+    let first = ids
+        .iter()
+        .map(|i| notes[*i].start)
+        .fold(f32::INFINITY, f32::min);
+    let last = ids
+        .iter()
+        .map(|i| notes[*i].start)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut count = 0;
+    for i in ids {
+        let t = if last > first {
+            (notes[i].start - first) / (last - first)
+        } else {
+            0.
+        };
+        let chance = if t == 0. {
+            start
+        } else if t == 1. {
+            end
+        } else {
+            (start + (end - start) * t).clamp(0., 1.)
+        };
+        if notes[i].prob != chance {
+            notes[i].prob = chance;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[cfg(test)]
+mod note_chance_ramp_tests {
+    use super::*;
+    #[test]
+    fn chord_onsets_endpoints_partial_selection_and_fields() {
+        let mut notes: Vec<_> = [8., 0., 2., 2., 10.]
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let mut n = Note::new(*s, 0.02, 60 + i as u8, 0.7);
+                n.id = format!("ramp{i}");
+                n.prob = 0.6;
+                n.offset = 0.1;
+                n.slide_to = Some(72);
+                n
+            })
+            .collect();
+        let before = notes.clone();
+        let sel = Selection {
+            ids: (0..4).map(|i| format!("ramp{i}")).collect(),
+            ..Default::default()
+        };
+        assert_eq!(ramp_note_chance(&mut notes, &sel, 0., 1.).unwrap(), 4);
+        for (i, v) in [1., 0., 0.25, 0.25, 0.6].iter().enumerate() {
+            assert_eq!(notes[i].prob, *v);
+            let mut expected = before[i].clone();
+            expected.prob = *v;
+            assert_eq!(notes[i], expected);
+        }
+        assert_eq!(ramp_note_chance(&mut notes, &sel, 0., 1.).unwrap(), 0);
+        let saved = notes.clone();
+        for (a, b) in [(-0.1, 1.), (0., 1.1), (f32::NAN, 1.)] {
+            assert!(ramp_note_chance(&mut notes, &sel, a, b).is_err());
+            assert_eq!(notes, saved);
+        }
+        let mut chord = vec![Note::new(4., 1., 60, 0.5); 2];
+        assert_eq!(
+            ramp_note_chance(&mut chord, &Selection::default(), 0.3, 0.9).unwrap(),
+            2
+        );
+        assert!(chord.iter().all(|n| n.prob == 0.3));
+        assert_eq!(
+            ramp_note_chance(&mut [], &Selection::default(), 0., 1.).unwrap(),
+            0
+        );
+    }
+}

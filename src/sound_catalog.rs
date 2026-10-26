@@ -173,11 +173,24 @@ pub fn resolve_file(id: &str) -> Option<PathBuf> {
         return None;
     }
     let p = path_of(&e);
-    if p.is_file() {
+    if cached_file_valid(&p, &e.sha256, e.bytes) {
         touch(&p);
         return Some(p);
     }
     fetch(&e).ok()
+}
+
+/// A pinned file must match content, not only its advertised length.
+pub(crate) fn cached_file_valid(path: &std::path::Path, sha256: &str, bytes: u64) -> bool {
+    if sha256.len() != 64 || !path.is_file() {
+        return false;
+    }
+    if bytes != 0 && std::fs::metadata(path).map(|m| m.len()).ok() != Some(bytes) {
+        return false;
+    }
+    std::fs::read(path)
+        .map(|data| crate::voice_ai::sha256_hex(&data) == sha256)
+        .unwrap_or(false)
 }
 
 fn touch(p: &std::path::Path) {
@@ -311,9 +324,7 @@ pub fn fetch(e: &Entry) -> Result<PathBuf> {
         bail!("'{}' is listed but its download is not pinned to a checksum yet, so it is not fetched (licence: {}; source: {})", e.id, e.license, e.source);
     }
     let p = path_of(e);
-    if p.is_file()
-        && (e.bytes == 0 || std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) == e.bytes)
-    {
+    if cached_file_valid(&p, &e.sha256, e.bytes) {
         touch(&p);
         return Ok(p);
     }
@@ -522,6 +533,16 @@ fn url_path(p: &str) -> String {
 /// its includes and only the samples its playable regions use, each checked
 /// against the tree's blob id. Returns the flattened local .sfz (next to the
 /// original, so sample paths resolve) and the bytes downloaded now.
+fn cached_blob_valid(data: &[u8], sha: &str, direct: bool, verified: bool) -> bool {
+    if direct {
+        crate::voice_ai::sha256_hex(data) == sha
+    } else if verified && sha.len() == 40 {
+        git_blob_sha1(data) == sha
+    } else {
+        true
+    }
+}
+
 pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64)> {
     let (repo, tree, branch, sfz) = (
         e.repo.as_str(),
@@ -616,7 +637,16 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
                     .unwrap_or(u64::MAX)
                     == size)
         {
-            return Ok(local);
+            let cached = std::fs::read(&local)?;
+            let valid = cached_blob_valid(
+                &cached,
+                &sha,
+                direct.contains_key(&rp.to_lowercase()),
+                verified,
+            );
+            if valid {
+                return Ok(local);
+            }
         }
         let data = match direct.get(&rp.to_lowercase()) {
             Some(u) => {
@@ -1073,5 +1103,162 @@ mod tests {
         let d = r.iter().find(|x| x.sample.ends_with("d.wav")).unwrap().seq;
         assert_ne!(c, d);
         assert_eq!(norm_path("Programs/../Samples/x.wav"), "Samples/x.wav");
+    }
+}
+
+#[cfg(test)]
+mod recorded_cache_tests {
+    use super::*;
+    #[test]
+    fn same_size_corruption_is_not_a_valid_cached_sample() {
+        let real = b"recorded-audio";
+        let corrupt = b"corruptd-audio";
+        assert_eq!(real.len(), corrupt.len());
+        for direct in [false, true] {
+            let sha = if direct {
+                crate::voice_ai::sha256_hex(real)
+            } else {
+                git_blob_sha1(real)
+            };
+            assert!(cached_blob_valid(real, &sha, direct, true));
+            assert!(!cached_blob_valid(corrupt, &sha, direct, true));
+        }
+    }
+    #[test]
+    fn starter_samples_are_cc0_small_pinned_and_mapped() {
+        for id in [
+            "vcsl_acoustic_drum_kit",
+            "vcsl_upright_piano_yamaha_lite",
+            "vcsl_balafon",
+        ] {
+            let e = entry(id).unwrap();
+            assert!(e.license.starts_with("CC0"));
+            assert!(e.bytes < 100_000_000);
+            assert!(!e.files.is_empty());
+            assert!(!e.sfz_text.is_empty());
+            assert!(e.source.starts_with("https://"));
+            let (regions, _) = crate::multisample::parse_sfz(&e.sfz_text).unwrap();
+            assert!(!regions.is_empty());
+        }
+    }
+    #[test]
+    fn starter_manifests_cover_regions_and_default_download_sizes() {
+        for id in [
+            "vcsl_acoustic_drum_kit",
+            "vcsl_upright_piano_yamaha_lite",
+            "vcsl_balafon",
+        ] {
+            let e = entry(id).unwrap();
+            let (regions, _) = crate::multisample::parse_sfz(&e.sfz_text).unwrap();
+            let regions = crate::multisample::playable_regions(regions);
+            let mut files = std::collections::HashMap::new();
+            for f in &e.files {
+                let path = f[0].as_str().unwrap();
+                assert!(
+                    files.insert(path, f[2].as_u64().unwrap()).is_none(),
+                    "duplicate {path}"
+                );
+                assert_eq!(f[1].as_str().unwrap().len(), 40);
+                assert!(regions.iter().any(|r| r.sample == path), "unused {path}");
+            }
+            let mut default_paths = std::collections::HashSet::new();
+            for r in &regions {
+                assert!(
+                    files.contains_key(r.sample.as_str()),
+                    "unlisted {}",
+                    r.sample
+                );
+                assert!(r.lo <= r.hi && r.vel_lo <= r.vel_hi);
+                if r.seq <= 2 {
+                    default_paths.insert(r.sample.as_str());
+                }
+            }
+            assert_eq!(
+                default_paths.iter().map(|p| files[p]).sum::<u64>(),
+                e.bytes,
+                "{id}"
+            );
+        }
+    }
+    #[test]
+    fn starter_mappings_have_no_promised_key_or_velocity_gaps() {
+        for id in [
+            "vcsl_acoustic_drum_kit",
+            "vcsl_upright_piano_yamaha_lite",
+            "vcsl_balafon",
+        ] {
+            let e = entry(id).unwrap();
+            let (regions, _) = crate::multisample::parse_sfz(&e.sfz_text).unwrap();
+            let regions = crate::multisample::playable_regions(regions);
+            let keys: Vec<u8> = if e.family == "drums" {
+                vec![36, 37, 38, 39, 40, 42, 44, 45, 46, 48, 49, 51, 53]
+            } else {
+                (0..=127).collect()
+            };
+            for k in keys {
+                for v in 1..=127 {
+                    assert!(
+                        regions.iter().any(|r| r.lo <= k
+                            && k <= r.hi
+                            && r.vel_lo <= v
+                            && v <= r.vel_hi
+                            && r.seq == 1),
+                        "{id}: key {k} velocity {v}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod pinned_file_cache_tests {
+    use super::*;
+    #[test]
+    fn fetch_reuses_verified_cache_but_rejects_same_size_damage_without_replacing_it() {
+        let dir = std::env::temp_dir().join(format!("beatbox-fetch-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("recording.bin");
+        let data = b"recorded-audio";
+        let mut e = entries().into_iter().find(|e| !e.file.is_empty()).unwrap();
+        // Absolute scratch id avoids global library environment changes.
+        e.id = dir.to_string_lossy().into_owned();
+        e.file = "recording.bin".into();
+        e.bytes = data.len() as u64;
+        e.sha256 = crate::voice_ai::sha256_hex(data);
+        e.url = "offline-invalid://no-download".into();
+        std::fs::write(&file, data).unwrap();
+        assert_eq!(fetch(&e).unwrap(), file);
+        assert_eq!(std::fs::read(&file).unwrap(), data);
+        let corrupt = b"corruptd-audio";
+        assert_eq!(corrupt.len(), data.len());
+        std::fs::write(&file, corrupt).unwrap();
+        assert!(fetch(&e).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), corrupt);
+        assert!(!file.with_extension("part").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cached_file_requires_correct_pinned_content_and_known_size() {
+        let dir = std::env::temp_dir().join(format!("beatbox-pinned-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("recording.bin");
+        let data = b"recorded-audio";
+        let sha = crate::voice_ai::sha256_hex(data);
+        assert!(!cached_file_valid(&file, &sha, data.len() as u64));
+        std::fs::write(&file, data).unwrap();
+        assert!(cached_file_valid(&file, &sha, data.len() as u64));
+        assert!(cached_file_valid(&file, &sha, 0));
+        assert!(!cached_file_valid(&file, &sha, data.len() as u64 + 1));
+        assert!(!cached_file_valid(&file, "", data.len() as u64));
+        assert!(!cached_file_valid(&dir, &sha, 0));
+        let corrupt = b"corruptd-audio";
+        assert_eq!(data.len(), corrupt.len());
+        std::fs::write(&file, corrupt).unwrap();
+        assert!(!cached_file_valid(&file, &sha, data.len() as u64));
+        assert!(!cached_file_valid(&file, &sha, 0));
+        assert_eq!(std::fs::read(&file).unwrap(), corrupt);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

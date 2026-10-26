@@ -19,6 +19,11 @@ pub const RACK_RULER_H: f32 = 18.0;
 pub const DRUM_ROW_H: f32 = 30.0;
 pub const SYNTH_ROW_H: f32 = 46.0;
 
+/// Keep each step clickable; long patterns scroll instead of shrinking to slivers.
+pub fn rack_content_width(available: f32, steps: usize) -> f32 {
+    available.max(RACK_HEAD_W + steps as f32 * 12.0 + 6.0)
+}
+
 /// Where one channel row's controls sit (screen points). Every hit test
 /// goes through it, and tests read it to aim the pointer.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -251,8 +256,13 @@ pub fn channel_rack(
                 ui.data_mut(|d| d.insert_temp(rid, (t.name.clone(), buf, false)));
             }
         } else {
-            painter.text(
-                g.name.left_center() + vec2(8.0, if drum { 0.0 } else { -6.0 }),
+            let name_rect = Rect::from_min_max(
+                g.name.min + vec2(8.0, 0.0),
+                g.name.max - vec2(5.0, if drum { 0.0 } else { 12.0 }),
+            );
+            bounded_label(
+                &painter,
+                name_rect,
                 Align2::LEFT_CENTER,
                 &t.name,
                 FontId::proportional(12.0),
@@ -441,6 +451,11 @@ pub const PATTERN_BAR_H: f32 = 22.0;
 const PATTERN_BTN_W: f32 = 84.0;
 const SEND_BTN_W: f32 = 104.0;
 
+/// Leave room for New, length controls and Send, not just the pattern buttons.
+fn visible_pattern_slots(width: f32) -> usize {
+    ((width - SEND_BTN_W - 172.0).max(0.0) / PATTERN_BTN_W) as usize
+}
+
 /// The bar after the last clip on any lane (where the song ends).
 pub fn song_end_bar(p: &Project) -> u32 {
     p.playlist
@@ -525,6 +540,29 @@ pub fn pattern_bar(
     geo: &mut PatternBarGeo,
 ) -> Vec<(&'static str, Value)> {
     let mut actions: Vec<(&'static str, Value)> = Vec::new();
+    let user: Vec<usize> = (0..p.patterns.len())
+        .filter(|&i| !p.patterns[i].name.starts_with(crate::tools_fl::PL))
+        .collect();
+    let fit = visible_pattern_slots(ui.available_width()).max(1);
+    if user.len() > fit {
+        ui.horizontal(|ui| {
+            ui.label("All patterns");
+            egui::ComboBox::from_id_salt("all-rack-patterns")
+                .selected_text(
+                    p.patterns
+                        .get(*current)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("Choose pattern"),
+                )
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    for &i in &user {
+                        ui.selectable_value(current, i, &p.patterns[i].name);
+                    }
+                });
+            ui.label(format!("{} patterns", user.len()));
+        });
+    }
     let (row, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), PATTERN_BAR_H), Sense::hover());
     let painter = ui.painter_at(row);
@@ -533,11 +571,7 @@ pub fn pattern_bar(
         pos2(row.right() - SEND_BTN_W, row.top() + 2.0),
         vec2(SEND_BTN_W - 2.0, h),
     );
-    let room = (send.left() - row.left() - 30.0).max(0.0);
-    let fit = ((room / PATTERN_BTN_W) as usize).max(1);
-    let user: Vec<usize> = (0..p.patterns.len())
-        .filter(|&i| !p.patterns[i].name.starts_with(crate::tools_fl::PL))
-        .collect();
+
     // keep the current pattern in view when there are more than fit
     let pos = user.iter().position(|&i| i == *current).unwrap_or(0);
     let first = pos
@@ -561,8 +595,9 @@ pub fn pattern_bar(
                 super::theme::Tokens::DARK.button
             },
         );
-        painter.text(
-            r.center(),
+        bounded_label(
+            &painter,
+            r.shrink2(vec2(4.0, 1.0)),
             Align2::CENTER_CENTER,
             &pat.name,
             FontId::proportional(10.5),
@@ -707,6 +742,36 @@ pub fn pattern_bar(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn long_labels_elide_inside_their_own_hit_rect() {
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(72.0, 20.0));
+        let out = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                bounded_label(
+                    ui.painter(),
+                    rect,
+                    Align2::CENTER_CENTER,
+                    "Extended chorus groove with bass fills",
+                    FontId::proportional(10.5),
+                    Color32::WHITE,
+                );
+            });
+        });
+        let shape = out
+            .shapes
+            .iter()
+            .find(|s| matches!(s.shape, egui::epaint::Shape::Text(_)))
+            .unwrap();
+        let egui::epaint::Shape::Text(text) = &shape.shape else {
+            unreachable!()
+        };
+        assert!(text.galley.elided);
+        assert!(text.galley.size().x <= rect.width());
+        assert!(rect.contains_rect(shape.clip_rect));
+        assert!(rect.contains_rect(Rect::from_min_size(text.pos, text.galley.size())));
+    }
+
     use super::*;
     use crate::engine::Engine;
     use egui::{Event, Modifiers, PointerButton};
@@ -799,6 +864,28 @@ mod tests {
     /// End to end: steps clicked in the rack are what the engine renders.
     /// The pattern sits on the playlist; a kick step toggled on beat 2
     /// puts a hit there, and the rack's mute silences it again.
+    #[test]
+    fn pattern_slots_leave_space_for_all_actions() {
+        for width in [420.0_f32, 700.0, 1000.0, 1440.0] {
+            let used = visible_pattern_slots(width) as f32 * PATTERN_BTN_W + SEND_BTN_W + 172.0;
+            assert!(used <= width);
+            assert!(width - used < PATTERN_BTN_W);
+        }
+        assert_eq!(visible_pattern_slots(700.0), 5);
+    }
+
+    #[test]
+    fn narrow_and_long_patterns_keep_twelve_point_steps() {
+        for available in [420.0_f32, 700.0, 1440.0] {
+            for steps in [16_usize, 64, 1024] {
+                let width = rack_content_width(available, steps);
+                assert!(width >= available);
+                assert!((width - RACK_HEAD_W - 6.0) / steps as f32 >= 12.0);
+            }
+        }
+        assert_eq!(rack_content_width(1440.0, 16), 1440.0);
+    }
+
     #[test]
     fn steps_toggled_in_the_rack_are_heard_in_the_render() {
         let mut e = engine();

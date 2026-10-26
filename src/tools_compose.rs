@@ -64,8 +64,70 @@ fn rhythm_len(r: &str) -> usize {
         .max(1)
 }
 
+/// Evenly distribute pulses across slots; positive rotation moves hits later.
+fn euclidean_slots(pulses: u32, slots: u32, rotation: i64) -> Vec<u32> {
+    (0..slots)
+        .filter(|i| (i * pulses) % slots < pulses)
+        .map(|i| ((i as i64 + rotation).rem_euclid(slots as i64)) as u32)
+        .collect()
+}
+
 pub fn tools() -> Vec<Tool> {
     vec![
+        Tool {
+            name: "generate_euclidean",
+            description: "Write an evenly spaced Euclidean rhythm into one existing track and pattern. pulses hits per bar across slots subdivisions (default: one slot per sixteenth-note step in the pattern's meter). Positive rotation moves hits later by that many slots, wrapping inside each bar. Repeats every bar, including odd meters. replace=true clears this track's notes in this pattern; false layers hits. One undo step.",
+            mutates: true,
+            schema: || obj(json!({
+                "track": {"type":"string"}, "pattern": {"type":"string"},
+                "pulses": {"type":"integer", "minimum":0, "maximum":128},
+                "slots": {"type":"integer", "minimum":1, "maximum":128},
+                "rotation": {"type":"integer"}, "pitch": {},
+                "velocity": {"type":"number", "minimum":0.02, "maximum":1},
+                "note_len": {"type":"number", "exclusiveMinimum":0},
+                "replace": {"type":"boolean", "default":true}
+            }), &["track", "pulses"]),
+            run: |e, a| {
+                let ti = e.project.track_index(&s_req(a, "track")?)?;
+                let name = e.project.tracks[ti].name.clone();
+                let pi = tools::pattern_idx(&e.project, a)?;
+                let bar_steps = e.project.patterns[pi].steps_per_bar();
+                let slots = match a.get("slots") {
+                    Some(v) => v.as_u64().filter(|n| (1..=128).contains(n))
+                        .ok_or_else(|| anyhow!("slots must be an integer from1 to128"))? as u32,
+                    None => bar_steps,
+                };
+                let pulses = a.get("pulses").and_then(Value::as_u64)
+                    .filter(|n| *n <= slots as u64)
+                    .ok_or_else(|| anyhow!("pulses must be an integer from0 to slots"))? as u32;
+                let rotation = match a.get("rotation") {
+                    Some(v) => v.as_i64().ok_or_else(|| anyhow!("rotation must be an integer"))?.rem_euclid(slots as i64),
+                    None => 0,
+                };
+                let pitch = a.get("pitch").map(pitch_of).transpose()?.unwrap_or(60);
+                let velocity = f_or(a,"velocity",0.8);
+                let note_len = f_or(a,"note_len",1.0);
+                if !velocity.is_finite() || !(0.02..=1.0).contains(&velocity) || !note_len.is_finite() || note_len <= 0.0 {
+                    bail!("velocity must be0.02..1 and note_len must be positive");
+                }
+                let mut positions = euclidean_slots(pulses, slots, rotation);
+                positions.sort_unstable();
+                let spacing = bar_steps as f32 / slots as f32;
+                let pat = &mut e.project.patterns[pi];
+                let bars = pat.bars;
+                let notes = pat.notes_mut(&name);
+                if b_or(a,"replace",true) { notes.clear(); }
+                for bar in 0..bars {
+                    for slot in &positions {
+                        notes.push(Note::new(bar as f32 * bar_steps as f32 + *slot as f32 * spacing,
+                            note_len.min(spacing), pitch, velocity));
+                    }
+                }
+                mo::sort(notes);
+                Ok(json!({"track":name,"pattern":pat.name,"pulses":pulses,"slots":slots,
+                    "rotation":rotation,"slot_positions":positions,"hits_written":bars*pulses,"steps_per_bar":bar_steps}))
+            },
+        },
         Tool {
             name: "write_riff",
             description: "Write a chord-relative riff / ostinato over a progression in one call: rhythm (step string, X accent x hit o soft - hold . rest; repeats over each chord, e.g. 3-3-2 'x..x..x.') and degrees (chord-relative scale degrees cycled across the hits: 1 = chord root, 3 = third, 5 = fifth, 8 = octave, 2/4/6 passing tones, 0/-1 below). Follows each chord of the progression (bars_per_chord), in the project key. patterns=['verse','hook'] writes every section at once; replace=false layers onto existing notes. Use for arps, guitar counter-lines, piano ostinatos, stabs.",
@@ -426,6 +488,66 @@ pub fn tools() -> Vec<Tool> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn euclidean_generator_roundtrip() {
+        let mut e = Engine::new("/tmp/euclid-engine-test".into());
+        e.call("add_track", &json!({"name":"kick","preset":"kick"}))
+            .unwrap();
+        e.call("add_pattern", &json!({"name":"odd","bars":2}))
+            .unwrap();
+        e.call(
+            "set_time_signature",
+            &json!({"pattern":"odd","time_signature":"7/8"}),
+        )
+        .unwrap();
+        let before = serde_json::to_value(&e.project).unwrap();
+        for args in [
+            json!({"track":"kick","pulses":17,"slots":16}),
+            json!({"track":"kick","pulses":3,"slots":0}),
+            json!({"track":"kick","pulses":-1}),
+            json!({"track":"kick","pulses":3,"rotation":1.5}),
+            json!({"track":"kick","pulses":3,"velocity":2.0}),
+        ] {
+            assert!(e.call("generate_euclidean", &args).is_err());
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        }
+        let r = e
+            .call(
+                "generate_euclidean",
+                &json!({"track":"kick","pattern":"odd","pulses":5,"rotation":-1}),
+            )
+            .unwrap();
+        assert_eq!(r["slots"], 14);
+        assert_eq!(r["slot_positions"], json!([2, 5, 8, 11, 13]));
+        assert_eq!(e.project.patterns[1].notes("kick").len(), 10);
+        assert_eq!(
+            serde_json::to_value(&e.project.patterns[0]).unwrap(),
+            before["patterns"][0]
+        );
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        let r = e
+            .call(
+                "generate_euclidean",
+                &json!({"track":"kick","pulses":5,"slots":16}),
+            )
+            .unwrap();
+        assert_eq!(r["slot_positions"], json!([0, 4, 7, 10, 13]));
+        let n = e.project.patterns[0].notes("kick").len();
+        e.call(
+            "generate_euclidean",
+            &json!({"track":"kick","pulses":3,"replace":false}),
+        )
+        .unwrap();
+        assert_eq!(
+            e.project.patterns[0].notes("kick").len(),
+            n + 3 * e.project.patterns[0].bars as usize
+        );
+        e.call("generate_euclidean", &json!({"track":"kick","pulses":0}))
+            .unwrap();
+        assert!(e.project.patterns[0].notes("kick").is_empty());
+    }
+
     use super::*;
     use crate::engine::Engine;
 

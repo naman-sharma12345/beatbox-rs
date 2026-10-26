@@ -16,6 +16,11 @@ pub(super) struct ExportState {
     ceiling: f32,
     pattern_only: bool,
     count_in: u32,
+    marked_range: bool,
+    section_range: bool,
+    section_index: usize,
+    start_marker: String,
+    end_marker: String,
     job: Option<Receiver<Result<Value, String>>>,
     result: String,
 }
@@ -33,6 +38,11 @@ impl Default for ExportState {
             ceiling: -1.0,
             pattern_only: false,
             count_in: 1,
+            marked_range: false,
+            section_range: false,
+            section_index: 0,
+            start_marker: String::new(),
+            end_marker: String::new(),
             job: None,
             result: String::new(),
         }
@@ -70,6 +80,92 @@ impl ExportState {
         (tool, args)
     }
 }
+/// Resolve a saved-marker excerpt against the export snapshot, before reserving
+/// any file. Seconds share the renderer's tempo curve, including ramps.
+fn apply_marker_range(
+    p: &crate::project::Project,
+    start: &str,
+    end: &str,
+    args: &mut Value,
+) -> Result<(), String> {
+    let find = |name: &str| {
+        p.markers
+            .iter()
+            .find(|m| m.name == name)
+            .ok_or_else(|| format!("Choose a saved marker: {name}"))
+    };
+    let first = find(start)?;
+    let last = find(end)?;
+    if !first.beat.is_finite()
+        || !last.beat.is_finite()
+        || first.beat < 0.0
+        || last.beat <= first.beat
+    {
+        return Err("End marker must be after the start marker".into());
+    }
+    if last.beat > p.song_beats() {
+        return Err("End marker is past the end of the song".into());
+    }
+    let curve = crate::tempo_curve::TempoCurve::new(p);
+    args["start_s"] = json!(curve.secs_at_beat(first.beat as f64));
+    args["end_s"] = json!(curve.secs_at_beat(last.beat as f64));
+    Ok(())
+}
+
+/// Resolve a whole section against the immutable export snapshot before
+/// reserving a target. Uses unrounded internal boundary seconds.
+pub fn apply_section_range(
+    p: &crate::project::Project,
+    index: usize,
+    args: &mut Value,
+) -> Result<String, String> {
+    let rows = crate::tools_markers::arrangement_positions(p).map_err(|e| e.to_string())?;
+    let row = rows
+        .get(index)
+        .ok_or_else(|| "Choose an existing song section".to_string())?;
+    let start = row["start_seconds"]
+        .as_f64()
+        .ok_or("Invalid section start")?;
+    let end = row["end_seconds"].as_f64().ok_or("Invalid section end")?;
+    if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start {
+        return Err("Section must have a finite positive duration".into());
+    }
+    args["start_s"] = json!(start);
+    args["end_s"] = json!(end);
+    Ok(format!(
+        "{}: {} x{}",
+        index + 1,
+        row["pattern"].as_str().unwrap_or("pattern"),
+        row["repeats"]
+    ))
+}
+
+/// Validate and describe an excerpt before reserving any output file.
+pub fn range_preview(
+    p: &crate::project::Project,
+    section: Option<usize>,
+    markers: Option<(&str, &str)>,
+) -> Result<String, String> {
+    if section.is_some() && markers.is_some() {
+        return Err("Choose a section OR a marker range, not both".into());
+    }
+    let mut args = json!({});
+    let label = if let Some(index) = section {
+        apply_section_range(p, index, &mut args)?
+    } else if let Some((first, last)) = markers {
+        apply_marker_range(p, first, last, &mut args)?;
+        format!("{first} to {last}")
+    } else {
+        return Ok("Full song, including the exporter's normal effect tail".into());
+    };
+    let start = args["start_s"].as_f64().ok_or("Invalid range start")?;
+    let end = args["end_s"].as_f64().ok_or("Invalid range end")?;
+    Ok(format!(
+        "{label}: {start:.3}s to {end:.3}s | {:.3}s | no extra end tail",
+        end - start
+    ))
+}
+
 /// Reserve a new target atomically. Neither repeated exports nor existing stems
 /// are replaced: a numeric suffix is added when the requested name is taken.
 fn reserve_target(e: &crate::engine::Engine, kind: usize, args: &mut Value) -> std::io::Result<()> {
@@ -188,6 +284,12 @@ fn export_summary(v: &Value) -> String {
     ) {
         t.push_str(&format!("Loudness {l:.1} LUFS, true peak {tp:.1} dBTP\n"));
     }
+    if let Some(window) = v["marker_range"].as_str() {
+        t.push_str(&format!("Markers: {window}\n"));
+    }
+    if let Some(section) = v["section_range"].as_str() {
+        t.push_str(&format!("Section: {section}\n"));
+    }
     if let Some(w) = v["warnings"].as_array() {
         for w in w.iter().filter_map(|w| w.as_str()) {
             t.push_str(&format!("Warning: {w}\n"));
@@ -255,6 +357,38 @@ impl Studio {
                             ui.add(egui::DragValue::new(&mut self.export.ceiling).range(-12.0..=0.0).speed(0.1).suffix(" dBTP"));
                         });
                         ui.label("Encoded audio is decoded and checked for loudness and true peak.");
+                        if ui.checkbox(&mut self.export.section_range,"One song section").changed() && self.export.section_range { self.export.marked_range=false; }
+                        if self.export.section_range {
+                            let project=self.engine.lock().unwrap().project.clone();
+                            match crate::tools_markers::arrangement_positions(&project) {
+                                Ok(rows) => {
+                                    let selected=rows.get(self.export.section_index).map(|r| format!("{}: {} x{}", self.export.section_index+1,r["pattern"].as_str().unwrap_or("pattern"),r["repeats"])).unwrap_or_else(|| "Choose section".into());
+                                    egui::ComboBox::from_id_salt("export_song_section").selected_text(selected).show_ui(ui,|ui| {
+                                        for (i,row) in rows.iter().enumerate() {
+                                            ui.selectable_value(&mut self.export.section_index,i,format!("{}: {} x{}",i+1,row["pattern"].as_str().unwrap_or("pattern"),row["repeats"]));
+                                        }
+                                    });
+                                    ui.label("Includes every repeat of this section, with tempo and meter changes. No extra ring-out after its end. Uses the section list at the moment you export.");
+                                }
+                                Err(err) => {ui.label(format!("Section export unavailable: {err}"));}
+                            }
+                        }
+                        if ui.checkbox(&mut self.export.marked_range,"Between saved markers").changed() && self.export.marked_range { self.export.section_range=false; }
+                        if self.export.marked_range {
+                            let markers={self.engine.lock().unwrap().project.markers.clone()};
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("Start");
+                                egui::ComboBox::from_id_salt("export_start_marker").selected_text(if self.export.start_marker.is_empty() {"Choose marker"} else {&self.export.start_marker}).show_ui(ui,|ui| {
+                                    for m in &markers {ui.selectable_value(&mut self.export.start_marker,m.name.clone(),&m.name);}
+                                });
+                                ui.label("End");
+                                egui::ComboBox::from_id_salt("export_end_marker").selected_text(if self.export.end_marker.is_empty() {"Choose marker"} else {&self.export.end_marker}).show_ui(ui,|ui| {
+                                    for m in &markers {ui.selectable_value(&mut self.export.end_marker,m.name.clone(),&m.name);}
+                                });
+                            });
+                            ui.label("Exports only this interval, with tempo changes. No extra ring-out after the end marker.");
+                        }
+
                     } else {
                         ui.label("All tracks and buses, aligned at zero, before the master chain. One common trim keeps their relative levels.");
                     }
@@ -265,7 +399,18 @@ impl Studio {
                     ui.horizontal(|ui| { ui.label("Count-in bars"); ui.add(egui::DragValue::new(&mut self.export.count_in).range(0..=8)); });
                     ui.label("Follows the song tempo and meter; accents each downbeat.");
                 }
-                if ui.button("Export file(s)").clicked() { start = true; }
+                let preview = if self.export.kind==0 {
+                    let project=self.engine.lock().unwrap().project.clone();
+                    range_preview(&project,
+                        self.export.section_range.then_some(self.export.section_index),
+                        self.export.marked_range.then_some((self.export.start_marker.as_str(),self.export.end_marker.as_str())))
+                } else { Ok(String::new()) };
+                match &preview {
+                    Ok(text) if !text.is_empty() => {ui.label(text);}
+                    Err(err) => {ui.colored_label(egui::Color32::from_rgb(240,150,110),format!("Choose a valid range: {err}"));}
+                    _ => {}
+                }
+                if ui.add_enabled(preview.is_ok(),egui::Button::new("Export file(s)")).clicked() { start = true; }
             });
             if busy { ui.horizontal(|ui| { ui.spinner(); ui.label("Exporting a snapshot of the project..."); }); }
             if !self.export.result.is_empty() {
@@ -286,6 +431,33 @@ impl Studio {
                 .unwrap_or("");
             let (tool, mut args) = self.export.request(pattern);
             let kind = self.export.kind;
+            let marker_range = if kind == 0 && self.export.marked_range {
+                Some((
+                    self.export.start_marker.clone(),
+                    self.export.end_marker.clone(),
+                ))
+            } else {
+                None
+            };
+            if let Some((start, end)) = &marker_range {
+                if let Err(err) = apply_marker_range(&project, start, end, &mut args) {
+                    self.export.result = format!("Export failed: {err}");
+                    return;
+                }
+            }
+
+            let section_range = if kind == 0 && self.export.section_range {
+                match apply_section_range(&project, self.export.section_index, &mut args) {
+                    Ok(label) => Some(label),
+                    Err(err) => {
+                        self.export.result = format!("Export failed: {err}");
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+
             let (tx, rx) = std::sync::mpsc::channel();
             let ctx = ctx.clone();
             self.export.result.clear();
@@ -300,6 +472,15 @@ impl Studio {
                         own.call_from(tool, &args, "you")
                             .map_err(|e| format!("{e:#}"))
                     });
+                let r = r.map(|mut v| {
+                    if let Some(label) = section_range {
+                        v["section_range"] = json!(label);
+                    }
+                    if let Some((start, end)) = marker_range {
+                        v["marker_range"] = json!(format!("{start} to {end}"));
+                    }
+                    v
+                });
                 let _ = tx.send(r);
                 ctx.request_repaint();
             });
@@ -488,5 +669,271 @@ mod extension_tests {
         assert_eq!(ext(&next).as_deref(), Some("wav"));
         assert_eq!(std::fs::read(dir.join("g_song.wav")).unwrap(), b"keep");
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod marker_export_tests {
+    use super::*;
+    #[test]
+    fn marker_ranges_use_tempo_curve_and_reject_bad_boundaries() {
+        let mut p = crate::project::Project::default();
+        p.bpm = 120.0;
+        p.tempo_points = vec![crate::project::TempoPoint {
+            beat: 4.0,
+            bpm: 60.0,
+            ramp: false,
+        }];
+        p.markers = vec![
+            crate::project::Marker {
+                name: "in".into(),
+                beat: 2.0,
+                time_signature: None,
+            },
+            crate::project::Marker {
+                name: "out".into(),
+                beat: 5.0,
+                time_signature: None,
+            },
+        ];
+        let mut a = json!({"format":"wav"});
+        apply_marker_range(&p, "in", "out", &mut a).unwrap();
+        assert_eq!(a["start_s"], 1.0);
+        assert_eq!(a["end_s"], 3.0);
+        assert_eq!(a["format"], "wav");
+        for (start, end) in [("out", "in"), ("in", "in"), ("missing", "out")] {
+            let mut a = json!({});
+            assert!(apply_marker_range(&p, start, end, &mut a).is_err());
+            assert_eq!(a, json!({}));
+        }
+        p.markers[1].beat = 100000.0;
+        assert!(apply_marker_range(&p, "in", "out", &mut json!({})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod marker_output_tests {
+    use super::*;
+    #[test]
+    fn saved_renamed_markers_and_ramps_export_real_unchanged_snapshot() {
+        let dir = std::env::temp_dir().join(format!("marker-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = crate::engine::Engine::new(dir.clone());
+        e.call("add_track", &json!({"name":"keys","preset":"epiano"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track":"keys","notes":[{"start":8,"len":4,"pitch":60,"vel":0.8}]}),
+        )
+        .unwrap();
+        e.call("add_tempo_point", &json!({"beat":4,"bpm":60,"ramp":false}))
+            .unwrap();
+        e.call("add_tempo_point", &json!({"beat":8,"bpm":100,"ramp":true}))
+            .unwrap();
+        for (name, beat) in [("In", 2.0), ("Out", 6.0)] {
+            e.call("add_marker", &json!({"name":name,"beat":beat}))
+                .unwrap();
+        }
+        e.call("rename_marker", &json!({"name":"In","new_name":"Intro"}))
+            .unwrap();
+        e.call("save_project", &json!({"path":"roundtrip.json"}))
+            .unwrap();
+        e.call("load_project", &json!({"path":"roundtrip.json"}))
+            .unwrap();
+        let before = serde_json::to_value(&e.project).unwrap();
+        let curve = crate::tempo_curve::TempoCurve::new(&e.project);
+        let expected = curve.secs_at_beat(6.) - curve.secs_at_beat(2.);
+        for format in ["wav", "flac"] {
+            let mut a = json!({"path":format!("excerpt.{format}"),"format":format,"bits":24,"sample_rate":48000,"limit":true});
+            apply_marker_range(&e.project, "Intro", "Out", &mut a).unwrap();
+            reserve_target(&e, 0, &mut a).unwrap();
+            let v = e.call("export_audio", &a).unwrap();
+            assert!((v["seconds"].as_f64().unwrap() - expected).abs() < 0.0051);
+            let decoded = crate::samples::decode_stereo_native(std::path::Path::new(
+                a["path"].as_str().unwrap(),
+            ))
+            .unwrap();
+            assert_eq!(decoded.2, 48000);
+            assert!((decoded.0.len() as f64 / 48000. - expected).abs() < 0.001);
+            assert!(decoded.0.iter().any(|s| s.abs() > 0.001));
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        }
+        let mut a = json!({});
+        assert!(apply_marker_range(&e.project, "In", "Out", &mut a).is_err());
+        assert_eq!(a, json!({}));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod section_export_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    fn fixture() -> beatbox::Engine {
+        let mut e = beatbox::Engine::new("/tmp/section-export-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+        )
+        .unwrap();
+        e.project.patterns[0].bars = 2;
+        e.project.patterns[0].meter = Some((7, 8));
+        e.call(
+            "duplicate_pattern",
+            &json!({"pattern":"groove","new_name":"Break"}),
+        )
+        .unwrap();
+        e.project.patterns[1].bars = 1;
+        e.project.patterns[1].meter = Some((3, 4));
+        let id = e.project.patterns[0].id.clone();
+        e.call(
+            "set_arrangement",
+            &json!({"sections":[{"pattern":id,"repeats":2},{"pattern":"BREAK","repeats":3}]}),
+        )
+        .unwrap();
+        e.call("add_tempo_point", &json!({"beat":7,"bpm":120,"ramp":true}))
+            .unwrap();
+        e.call("add_tempo_point", &json!({"beat":16,"bpm":75}))
+            .unwrap();
+        e
+    }
+    #[test]
+    fn section_export_exact_boundary_scope() {
+        let e = fixture();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let mut args = json!({"format":"wav","bits":24});
+        let label = beatbox::gui::section_export_range(&e.project, 1, &mut args).unwrap();
+        assert_eq!(label, "2: Break x3");
+        let c = beatbox::tempo_curve::TempoCurve::new(&e.project);
+        assert_eq!(args["start_s"].as_f64().unwrap(), c.secs_at_beat(14.));
+        assert_eq!(args["end_s"].as_f64().unwrap(), c.secs_at_beat(23.));
+        assert_eq!(args["bits"], 24);
+        assert_eq!(b, serde_json::to_value(&e.project).unwrap());
+    }
+    #[test]
+    fn section_export_snapshot_and_rejects() {
+        let mut e = fixture();
+        let p = e.project.clone();
+        e.call("set_section_repeats", &json!({"section":0,"repeats":3}))
+            .unwrap();
+        let mut a = json!({});
+        beatbox::gui::section_export_range(&p, 1, &mut a).unwrap();
+        let mut b = json!({});
+        beatbox::gui::section_export_range(&e.project, 1, &mut b).unwrap();
+        assert_ne!(a, b);
+        let original = json!({"keep":true});
+        let mut a = original.clone();
+        assert!(beatbox::gui::section_export_range(&p, 2, &mut a).is_err());
+        assert_eq!(a, original);
+        e.project.arrangement[0].pattern = "missing".into();
+        assert!(beatbox::gui::section_export_range(&e.project, 1, &mut a).is_err());
+        assert_eq!(a, original);
+        e.project.arrangement.clear();
+        e.call("place_pattern", &json!({"pattern":"groove","start_bar":0}))
+            .unwrap();
+        assert!(beatbox::gui::section_export_range(&e.project, 0, &mut a).is_err());
+        assert_eq!(a, original);
+    }
+    #[test]
+    fn section_export_implicit_and_render_excerpt() {
+        let mut e = fixture();
+        e.project.arrangement.clear();
+        let mut a = json!({});
+        beatbox::gui::section_export_range(&e.project, 0, &mut a).unwrap();
+        assert_eq!(a["start_s"], 0.0);
+        let c = beatbox::tempo_curve::TempoCurve::new(&e.project);
+        assert_eq!(a["end_s"].as_f64().unwrap(), c.secs_at_beat(7.));
+    }
+}
+
+#[cfg(test)]
+mod export_preview_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    fn fixture() -> beatbox::Engine {
+        let mut e = beatbox::Engine::new("/tmp/export-preview-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+        )
+        .unwrap();
+        e.call(
+            "duplicate_pattern",
+            &json!({"pattern":"groove","new_name":"Break"}),
+        )
+        .unwrap();
+        e.call(
+            "set_arrangement",
+            &json!({"sections":[{"pattern":"groove","repeats":1},{"pattern":"Break","repeats":1}]}),
+        )
+        .unwrap();
+        e
+    }
+    #[test]
+    fn preview_ranges_exact_and_readonly() {
+        let mut e = fixture();
+        e.call("add_marker", &json!({"name":"Start","beat":0}))
+            .unwrap();
+        e.call("add_marker", &json!({"name":"Hook","beat":16}))
+            .unwrap();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let rev = e.revision;
+        assert_eq!(
+            beatbox::gui::export_range_preview(&e.project, Some(1), None).unwrap(),
+            "2: Break x1: 10.667s to 21.333s | 10.667s | no extra end tail"
+        );
+        assert_eq!(
+            beatbox::gui::export_range_preview(&e.project, None, Some(("Start", "Hook"))).unwrap(),
+            "Start to Hook: 0.000s to 10.667s | 10.667s | no extra end tail"
+        );
+        assert!(beatbox::gui::export_range_preview(&e.project, None, None)
+            .unwrap()
+            .starts_with("Full song"));
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        assert_eq!(rev, e.revision);
+    }
+    #[test]
+    fn preview_invalid_choices_and_outdated_refs() {
+        let mut e = fixture();
+        for (section, markers) in [
+            (Some(2), None),
+            (Some(0), Some(("a", "b"))),
+            (None, Some(("missing", "missing"))),
+        ] {
+            assert!(beatbox::gui::export_range_preview(&e.project, section, markers).is_err());
+        }
+        for (n, b) in [("a", 8.), ("b", 4.), ("far", 100.)] {
+            e.call("add_marker", &json!({"name":n,"beat":b})).unwrap();
+        }
+        for pair in [("a", "b"), ("a", "a"), ("a", "far")] {
+            assert!(beatbox::gui::export_range_preview(&e.project, None, Some(pair)).is_err());
+        }
+        e.project.arrangement.pop();
+        assert!(beatbox::gui::export_range_preview(&e.project, Some(1), None).is_err());
+        e.project.arrangement[0].pattern = "missing".into();
+        assert!(beatbox::gui::export_range_preview(&e.project, Some(0), None).is_err());
+    }
+    #[test]
+    fn preview_uses_changed_tempo_meter_and_mode() {
+        let mut e = fixture();
+        e.project.patterns[0].bars = 1;
+        e.project.patterns[0].meter = Some((7, 8));
+        e.call(
+            "add_tempo_point",
+            &json!({"beat":3.5,"bpm":180,"ramp":true}),
+        )
+        .unwrap();
+        let rows = beatbox::tools_markers::arrangement_positions(&e.project).unwrap();
+        let start = rows[1]["start_seconds"].as_f64().unwrap();
+        assert!(
+            beatbox::gui::export_range_preview(&e.project, Some(1), None)
+                .unwrap()
+                .contains(&format!("{start:.3}s to"))
+        );
+        e.project.arrangement.clear();
+        e.call("place_pattern", &json!({"pattern":"groove","start_bar":0}))
+            .unwrap();
+        assert!(beatbox::gui::export_range_preview(&e.project, Some(0), None).is_err());
+        assert!(beatbox::gui::export_range_preview(&e.project, None, None).is_ok());
     }
 }
