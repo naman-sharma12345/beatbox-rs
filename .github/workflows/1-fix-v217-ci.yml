@@ -1,0 +1,36 @@
+name: Fix verified v217 test fixtures
+on:
+  push:
+    branches:
+    - reel_dark
+    paths:
+    - .github/workflows/*fix-v217-ci.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/reel_dark'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply hash-verified test-only lint fix
+      shell: bash
+      run: "set -euo pipefail\n[ \"$(git rev-parse HEAD^)\" = 6f24a75eb3b9a35820068135c96d5223a4e72f9b\
+        \ ]\n[ \"$(git rev-parse origin/main)\" = 21e5049d55363c19307832d3405ebe113176274e\
+        \ ]\npython3 - <<'PY'\nimport base64,hashlib,pathlib\nb=base64.b64decode('ZGlmZiAtLWdpdCBhL3NyYy9tdWx0aXNhbXBsZS5ycyBiL3NyYy9tdWx0aXNhbXBsZS5ycwppbmRleCBlM2ViMjlmLi4wZThmYmQ4IDEwMDY0NAotLS0gYS9zcmMvbXVsdGlzYW1wbGUucnMKKysrIGIvc3JjL211bHRpc2FtcGxlLnJzCkBAIC0xNjAwLDMyICsxNjAwLDMzIEBAIG1vZCBraXRfcGVyc2lzdGVuY2VfdGVzdHMgewogbW9kIHZlbG9jaXR5X2dhcF90ZXN0cyB7CiAgICAgdXNlIHN1cGVyOjoqOwogICAgIGZuIGZpeHR1cmUoKSAtPiBNdWx0aXNhbXBsZVBhcmFtcyB7Ci0gICAgICAgIGxldCBtdXQgcCA9IE11bHRpc2FtcGxlUGFyYW1zOjpkZWZhdWx0KCk7Ci0gICAgICAgIHAuem9uZXMgPSB2ZWMhWwotICAgICAgICAgICAgWm9uZSB7Ci0gICAgICAgICAgICAgICAgc2FtcGxlOiAibG93Ii5pbnRvKCksCi0gICAgICAgICAgICAgICAgcm9vdDogNjAsCi0gICAgICAgICAgICAgICAgbG9fbm90ZTogNjAsCi0gICAgICAgICAgICAgICAgaGlfbm90ZTogNjAsCi0gICAgICAgICAgICAgICAgdmVsX2xvOiAwLjAsCi0gICAgICAgICAgICAgICAgdmVsX2hpOiAwLjQsCi0gICAgICAgICAgICAgICAgdHVuZV9jZW50czogMC4wLAotICAgICAgICAgICAgICAgIGdhaW5fZGI6IDAuMCwKLSAgICAgICAgICAgICAgICBycjogMCwKLSAgICAgICAgICAgIH0sCi0gICAgICAgICAgICBab25lIHsKLSAgICAgICAgICAgICAgICBzYW1wbGU6ICJoaWdoIi5pbnRvKCksCi0gICAgICAgICAgICAgICAgcm9vdDogNjAsCi0gICAgICAgICAgICAgICAgbG9fbm90ZTogNjAsCi0gICAgICAgICAgICAgICAgaGlfbm90ZTogNjAsCi0gICAgICAgICAgICAgICAgdmVsX2xvOiAwLjQxOSwKLSAgICAgICAgICAgICAgICB2ZWxfaGk6IDEuMCwKLSAgICAgICAgICAgICAgICB0dW5lX2NlbnRzOiAwLjAsCi0gICAgICAgICAgICAgICAgZ2Fpbl9kYjogMC4wLAotICAgICAgICAgICAgICAgIHJyOiAwLAotICAgICAgICAgICAgfSwKLSAgICAgICAgXTsKLSAgICAgICAgcAorICAgICAgICBNdWx0aXNhbXBsZVBhcmFtcyB7CisgICAgICAgICAgICB6b25lczogdmVjIVsKKyAgICAgICAgICAgICAgICBab25lIHsKKyAgICAgICAgICAgICAgICAgICAgc2FtcGxlOiAibG93Ii5pbnRvKCksCisgICAgICAgICAgICAgICAgICAgIHJvb3Q6IDYwLAorICAgICAgICAgICAgICAgICAgICBsb19ub3RlOiA2MCwKKyAgICAgICAgICAgICAgICAgICAgaGlfbm90ZTogNjAsCisgICAgICAgICAgICAgICAgICAgIHZlbF9sbzogMC4wLAorICAgICAgICAgICAgICAgICAgICB2ZWxfaGk6IDAuNCwKKyAgICAgICAgICAgICAgICAgICAgdHVuZV9jZW50czogMC4wLAorICAgICAgICAgICAgICAgICAgICBnYWluX2RiOiAwLjAsCisgICAgICAgICAgICAgICAgICAgIHJyOiAwLAorICAgICAgICAgICAgICAgIH0sCisgICAgICAgICAgICAgICAgWm9uZSB7CisgICAgICAgICAgICAgICAgICAgIHNhbXBsZTogImhpZ2giLmludG8oKSwKKyAgICAgICAgICAgICAgICAgICAgcm9vdDogNjAsCisgICAgICAgICAgICAgICAgICAgIGxvX25vdGU6IDYwLAorICAgICAgICAgICAgICAgICAgICBoaV9ub3RlOiA2MCwKKyAgICAgICAgICAgICAgICAgICAgdmVsX2xvOiAwLjQxOSwKKyAgICAgICAgICAgICAgICAgICAgdmVsX2hpOiAxLjAsCisgICAgICAgICAgICAgICAgICAgIHR1bmVfY2VudHM6IDAuMCwKKyAgICAgICAgICAgICAgICAgICAgZ2Fpbl9kYjogMC4wLAorICAgICAgICAgICAgICAgICAgICBycjogMCwKKyAgICAgICAgICAgICAgICB9LAorICAgICAgICAgICAgXSwKKyAgICAgICAgICAgIC4uRGVmYXVsdDo6ZGVmYXVsdCgpCisgICAgICAgIH0KICAgICB9CiAgICAgI1t0ZXN0XQogICAgIGZuIGdhcF9ibGVuZHNfYXJlX2NvbnZleF9hbmRfbmVhcmVzdF9sYXllcl9rZWVwc19oYWxmKCkgewpkaWZmIC0tZ2l0IGEvc3JjL3JlbmRlci5ycyBiL3NyYy9yZW5kZXIucnMKaW5kZXggZDE2ZmIxZC4uMzI5Yjc4MyAxMDA2NDQKLS0tIGEvc3JjL3JlbmRlci5ycworKysgYi9zcmMvcmVuZGVyLnJzCkBAIC0zOTc0LDcgKzM5NzQsOCBAQCBtb2QgcmVjb3JkZWRfdGFrZV9yZWdyZXNzaW9uIHsKICAgICAgICAgICAgIC5pdGVyKCkKICAgICAgICAgICAgIC56aXAoJnN0ZW0ubGVmdFthdC4uYXQgKyA1MDAwXSkKICAgICAgICAgICAgIC5hbGwofChhLCBiKXwgKGEgLSBiKS5hYnMoKSA8IDFlLTYpKTsKLSAgICAgICAgZm9yIGJsb2NrIGluIFs1MTJdIHsKKyAgICAgICAgeworICAgICAgICAgICAgbGV0IGJsb2NrID0gNTEyOwogICAgICAgICAgICAgbGV0IG11dCBzdHJlYW0gPSBiZWF0Ym94OjpydDo6Vm9pY2VTdHJlYW1lcjo6bmV3KCZlLnByb2plY3QsICZlLmJhbmssICZvcHRzLCBibG9jaywgMCk7CiAgICAgICAgICAgICBsZXQgKGIsIF8pID0gc3RyZWFtLnJlbmRlcl9hbGwoKTsKICAgICAgICAgICAgIGFzc2VydF9lcSEobCwgYik7CmRpZmYgLS1naXQgYS9zcmMvdG9vbHNfZWFycy5ycyBiL3NyYy90b29sc19lYXJzLnJzCmluZGV4IDk3YWY0MzUuLmI2NjlmNmUgMTAwNjQ0Ci0tLSBhL3NyYy90b29sc19lYXJzLnJzCisrKyBiL3NyYy90b29sc19lYXJzLnJzCkBAIC03MzYsOCArNzM2LDEwIEBAIG1vZCByZWdpb25fdGVtcG9fdGVzdHMgewogICAgIHVzZSBzdXBlcjo6KjsKICAgICAjW3Rlc3RdCiAgICAgZm4gcmVnaW9uX3dpbmRvd3NfZm9sbG93X2N1cnZlX2FuZF9rZWVwX3NlY29uZHNfYW5kX29wZW5fZW5kKCkgewotICAgICAgICBsZXQgbXV0IHAgPSBQcm9qZWN0OjpkZWZhdWx0KCk7Ci0gICAgICAgIHAuYnBtID0gMTIwLjsKKyAgICAgICAgbGV0IG11dCBwID0gUHJvamVjdCB7CisgICAgICAgICAgICBicG06IDEyMC4sCisgICAgICAgICAgICAuLkRlZmF1bHQ6OmRlZmF1bHQoKQorICAgICAgICB9OwogICAgICAgICBsZXQgdG90YWwgPSAoMjAuICogU1IpIGFzIHVzaXplOwogICAgICAgICBhc3NlcnRfZXEhKAogICAgICAgICAgICAgcmVnaW9uKCZwLCAmanNvbiEoeyJzdGFydF9iZWF0IjoyLCJlbmRfYmVhdCI6Nn0pLCB0b3RhbCkudW53cmFwKCksCg==')\n\
+        assert hashlib.sha256(b).hexdigest()=='32319307e48c2617566d79dc9807d0c21b5d272aafc5dde0b4d0b86a430c78ce'\n\
+        pathlib.Path('/tmp/ci-fix.patch').write_bytes(b)\nPY\ngit apply --check /tmp/ci-fix.patch\n\
+        git apply /tmp/ci-fix.patch\npython3 - <<'PY'\nimport pathlib,hashlib\nexpected={'src/multisample.rs':\
+        \ 'ae99cb782f965e1209f58474c2643e7ff8db53b548615b4bbb8a569f80c875b0', 'src/render.rs':\
+        \ '26c3f48af3e0289ccafeecf4d9630c196013c429c4b65935fa1d1760fb60b262', 'src/tools_ears.rs':\
+        \ '36b5e7b06ea8e1eabb2b3b03e2bedc2fe75e41629bd50be77bd73d22e3fe42dc'}\nfor\
+        \ f,h in expected.items():\n assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f\n\
+        PY\ngit config user.name 'github-actions[bot]'\ngit config user.email '41898282+github-actions[bot]@users.noreply.github.com'\n\
+        git add src\ngit commit -m \"Fix test fixture clippy diagnostics without runtime\
+        \ changes\"\ngit fetch origin reel_dark main\n[ \"$(git rev-parse origin/reel_dark)\"\
+        \ = \"$GITHUB_SHA\" ]\n[ \"$(git rev-parse origin/main)\" = 21e5049d55363c19307832d3405ebe113176274e\
+        \ ]\ngit push origin HEAD:refs/heads/reel_dark\n"
