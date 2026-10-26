@@ -7928,7 +7928,7 @@ mod recorded_chain_region_tests {
         let mut e = beatbox::Engine::new("/tmp/recorded-chain-stream".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call(

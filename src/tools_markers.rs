@@ -570,7 +570,7 @@ mod section_order_tests {
         let mut e = beatbox::Engine::new("/tmp/section-order-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let name = e.project.patterns[0].name.clone();
@@ -777,7 +777,7 @@ mod section_repeat_tests {
         let mut e = beatbox::Engine::new("/tmp/section-repeat-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let n = e.project.patterns[0].name.clone();
@@ -911,7 +911,7 @@ mod section_append_tests {
         let mut e = beatbox::Engine::new("/tmp/section-append-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call(
@@ -1070,7 +1070,7 @@ mod arrangement_position_tests {
         let mut e = beatbox::Engine::new("/tmp/arrangement-position-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e
@@ -1192,7 +1192,7 @@ mod section_marker_tests {
         let mut e = beatbox::Engine::new("/tmp/section-marker-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.project.patterns[0].bars = 2;
@@ -1330,8 +1330,11 @@ mod duplicate_section_tests {
     use serde_json::json;
     fn fixture() -> beatbox::Engine {
         let mut e = beatbox::Engine::new("/tmp/duplicate-section-test".into());
-        e.call("load_project", &json!({"path":"/tmp/v202-gui-after.json"}))
-            .unwrap();
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("v202-gui-after.json")}),
+        )
+        .unwrap();
         e.call("set_section_repeats", &json!({"section":0,"repeats":3}))
             .unwrap();
         e.call("add_marker", &json!({"name":"fixed","beat":2}))

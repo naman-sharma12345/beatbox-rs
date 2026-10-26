@@ -4047,7 +4047,7 @@ mod exact_velocity_cache_tests {
         let mut e = beatbox::Engine::new("/tmp/cache-velocity-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.bank.sync(&e.project.samples);
@@ -4121,8 +4121,11 @@ mod exact_gate_automation_cache_tests {
     use serde_json::json;
     fn setup() -> beatbox::Engine {
         let mut e = beatbox::Engine::new("/tmp/cache-input-test".into());
-        e.call("load_project", &json!({"path":"/tmp/keys-demo.json"}))
-            .unwrap();
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("keys-demo.json")}),
+        )
+        .unwrap();
         e.bank.sync(&e.project.samples);
         e.project.tracks[0].effects.clear();
         e.project.master_effects.clear();

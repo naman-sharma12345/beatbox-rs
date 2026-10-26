@@ -1515,7 +1515,7 @@ pub fn tools() -> Vec<Tool> {
             description: "Add editable copies of a selected MIDI phrase without fading, changing expression, or moving originals. period is the distance between phrase starts in steps or a note value; repeats1..64. All copies must fit the pattern or the whole edit is rejected. Same selection/target as edit_notes; one undo step.",
             mutates: true,
             schema: || obj(props(props(target_props(), selection_props()), json!({
-                "period": {"description":"positive sixteenth steps or note value"},
+                "period": {"type":["number","string"],"description":"positive sixteenth steps or note value"},
                 "repeats": {"type":"integer","minimum":1,"maximum":64,"default":1}
             })), &["track","period"]),
             run: |e,a| {
@@ -1544,7 +1544,7 @@ pub fn tools() -> Vec<Tool> {
             description: "Add editable MIDI echoes of selected notes, keeping originals unchanged. delay is steps or a note value such as1/8; repeats1..64; decay0..1 multiplies velocity per repeat; transpose is semitones per repeat. Uses the same selection/target as edit_notes. Copies beyond the pattern, MIDI pitch range or below2% velocity are omitted; lengths stop at the pattern boundary. One undo step. Not an audio effect.",
             mutates: true,
             schema: || obj(props(props(target_props(), selection_props()), json!({
-                "delay": {"description":"positive steps or note value, default1/8"},
+                "delay": {"type":["number","string"],"description":"positive steps or note value, default1/8"},
                 "repeats": {"type":"integer","minimum":1,"maximum":64,"default":3},
                 "decay": {"type":"number","minimum":0,"maximum":1,"default":0.6},
                 "transpose": {"type":"integer","minimum":-127,"maximum":127,"default":0}
@@ -2244,7 +2244,7 @@ mod tests {
                 &json!({"track":"keys","period":16,"repeats":3,"ids":[id]}),
             )
             .unwrap();
-        assert_eq!(r["affected"], 2);
+        assert_eq!(r["affected"], 3);
         let ns = e.project.patterns[0].notes("keys");
         assert_eq!(ns.len(), 5);
         let orig = &ns[0];

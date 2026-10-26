@@ -2521,7 +2521,7 @@ mod pattern_rename_tests {
         let mut e = beatbox::Engine::new("/tmp/pattern-rename-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e
@@ -2640,7 +2640,7 @@ mod pattern_duplicate_tests {
         let mut e = beatbox::Engine::new("/tmp/duplicate-pattern-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e
@@ -2767,7 +2767,7 @@ mod clear_solo_tests {
         let mut e = beatbox::Engine::new("/tmp/clear-solo-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call(
@@ -2863,7 +2863,7 @@ mod exclusive_solo_tests {
         let mut e = beatbox::Engine::new("/tmp/exclusive-solo-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call(
@@ -2970,7 +2970,7 @@ mod offset_faders_tests {
         let mut e = beatbox::Engine::new("/tmp/offset-faders-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call(
@@ -3115,7 +3115,7 @@ mod insert_bypass_tests {
         let mut e = beatbox::Engine::new("/tmp/insert-bypass-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call(
@@ -3270,7 +3270,7 @@ mod checkpoint_load_tests {
         let mut e = beatbox::Engine::new("/tmp/checkpoint-load-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call("snapshot", &json!({"name":"previous-song"}))

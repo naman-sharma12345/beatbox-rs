@@ -139,14 +139,14 @@ pub fn category_of(action: &str) -> Option<&'static Category> {
     CATEGORIES.iter().find(|c| c.actions.contains(&action))
 }
 
-/// First sentence of a description, at most ~64 chars.
+/// First sentence of a description, at most 40 chars. Full help stays unchanged.
 fn gist(desc: &str) -> String {
     let end = desc.find(". ").map(|i| i + 1).unwrap_or(desc.len());
     let s = desc[..end].trim_end_matches('.');
-    if s.chars().count() <= 64 {
+    if s.chars().count() <= 40 {
         return s.to_string();
     }
-    let cut: String = s.chars().take(61).collect();
+    let cut: String = s.chars().take(37).collect();
     let cut = cut.rsplit_once(' ').map(|(a, _)| a).unwrap_or(&cut);
     format!("{}…", cut.trim_end_matches([',', ';', ':', '(']))
 }

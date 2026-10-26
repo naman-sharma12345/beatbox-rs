@@ -775,7 +775,7 @@ mod section_export_tests {
         let mut e = beatbox::Engine::new("/tmp/section-export-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.project.patterns[0].bars = 2;
@@ -856,7 +856,7 @@ mod export_preview_tests {
         let mut e = beatbox::Engine::new("/tmp/export-preview-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call(

@@ -2256,7 +2256,7 @@ mod mix_checkpoint_tests {
         let mut e = beatbox::Engine::new("/tmp/mix-checkpoint-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e
@@ -2356,7 +2356,7 @@ mod project_notice_tests {
         assert_eq!(e.project_load_generation, 0);
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         assert_eq!(e.project_load_generation, 1);
@@ -2371,7 +2371,7 @@ mod project_notice_tests {
         assert_eq!(seen, e.project_load_generation);
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         assert!(beatbox::gui::project_notice_is_stale(
@@ -2408,7 +2408,7 @@ mod project_notice_tests {
         let mut e = beatbox::Engine::new("/tmp/project-notice-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();

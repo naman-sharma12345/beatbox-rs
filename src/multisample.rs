@@ -1676,7 +1676,7 @@ mod recorded_velocity_gap_tests {
         let mut e = crate::Engine::new("/tmp/recorded-gap-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.bank.sync(&e.project.samples);

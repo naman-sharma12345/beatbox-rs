@@ -1833,7 +1833,7 @@ mod recorded_velocity_curve_tests {
         let mut e = crate::Engine::new("/tmp/curve-test-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
@@ -1971,8 +1971,11 @@ mod recorded_kit_curve_tests {
     #[test]
     fn actual_layer_curve_preview_and_region_export() {
         let mut e = crate::Engine::new("/tmp/curve-kit-work".into());
-        e.call("load_project", &json!({"path":"/tmp/room-demo.json"}))
-            .unwrap();
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("room-demo.json")}),
+        )
+        .unwrap();
         e.call(
             "set_sample_performance",
             &json!({"track":"drums","velocity_blend":false,"round_robin":false,"velocity_curve":1}),
@@ -2070,7 +2073,7 @@ mod global_sample_tuning_tests {
         let mut e = crate::Engine::new("/tmp/global-tune-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.bank.sync(&e.project.samples);
@@ -2172,7 +2175,7 @@ mod extract_kit_tests {
         let mut e = beatbox::Engine::new("/tmp/extract-test-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.bank.sync(&e.project.samples);
@@ -2250,7 +2253,7 @@ mod extract_kit_tests {
         let mut e = beatbox::Engine::new("/tmp/extract-reject-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
@@ -2297,7 +2300,7 @@ mod shared_room_send_tests {
         let mut e = beatbox::Engine::new("/tmp/room-send-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.bank.sync(&e.project.samples);
@@ -2369,7 +2372,7 @@ mod shared_room_send_tests {
         let mut e = beatbox::Engine::new("/tmp/room-send-reject".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
@@ -2405,7 +2408,7 @@ mod echo_send_tests {
         let mut e = beatbox::Engine::new("/tmp/echo-send-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.bank.sync(&e.project.samples);
@@ -2478,7 +2481,7 @@ mod echo_send_tests {
         let mut e = beatbox::Engine::new("/tmp/echo-send-reject".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
@@ -2514,7 +2517,7 @@ mod echo_timing_tests {
         let mut e = beatbox::Engine::new("/tmp/echo-timing-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         for (i, division, steps) in [
@@ -2625,7 +2628,7 @@ mod return_duck_workflow_tests {
         let mut e = beatbox::Engine::new("/tmp/return-duck-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.bank.sync(&e.project.samples);
@@ -2710,7 +2713,7 @@ mod parallel_return_tests {
         let mut e = beatbox::Engine::new("/tmp/parallel-test-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.bank.sync(&e.project.samples);
@@ -2780,7 +2783,7 @@ mod parallel_return_tests {
         let mut e = beatbox::Engine::new("/tmp/parallel-reject".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let before = serde_json::to_value(&e.project).unwrap();
@@ -2851,7 +2854,7 @@ mod kit_pocket_tests {
         let mut e = beatbox::Engine::new("/tmp/pocket-test-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.bank.sync(&e.project.samples);
@@ -2930,7 +2933,7 @@ mod kit_pocket_tests {
         let mut e = beatbox::Engine::new("/tmp/pocket-reject".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
@@ -2975,7 +2978,7 @@ mod kit_accent_tests {
         let mut e = beatbox::Engine::new("/tmp/accent-test-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.bank.sync(&e.project.samples);
@@ -3058,7 +3061,7 @@ mod kit_accent_tests {
         let mut e = beatbox::Engine::new("/tmp/accent-order".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
@@ -3108,7 +3111,7 @@ mod return_filter_tests {
         let mut e = beatbox::Engine::new("/tmp/return-filter-test-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call("create_echo_send", &json!({"track":"piano"}))
@@ -3189,7 +3192,7 @@ mod return_filter_tests {
         let mut e = beatbox::Engine::new("/tmp/return-filter-reject".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call("create_echo_send", &json!({"track":"piano"}))
@@ -3226,7 +3229,7 @@ mod piece_swing_tests {
         let mut e = beatbox::Engine::new("/tmp/piece-swing-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.bank.sync(&e.project.samples);
@@ -3305,7 +3308,7 @@ mod piece_swing_tests {
         let mut e = beatbox::Engine::new("/tmp/piece-swing-reject".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
@@ -3331,7 +3334,7 @@ mod kit_flam_tests {
         let mut e = beatbox::Engine::new("/tmp/flam-test-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.bank.sync(&e.project.samples);
@@ -3393,7 +3396,7 @@ mod kit_flam_tests {
         let mut e = beatbox::Engine::new("/tmp/flam-reject".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
@@ -3444,7 +3447,7 @@ mod return_audition_tests {
         let mut e = beatbox::Engine::new("/tmp/preview-return-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call("create_echo_send", &json!({"track":"piano","send_db":-6}))
@@ -3505,7 +3508,7 @@ mod return_audition_tests {
         let mut e = beatbox::Engine::new("/tmp/preview-return-limits".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call("create_echo_send", &json!({"track":"piano"}))
@@ -3549,7 +3552,7 @@ mod return_mix_ab_tests {
         let mut e = beatbox::Engine::new("/tmp/return-ab-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call("create_echo_send", &json!({"track":"piano","send_db":-3}))
@@ -3623,7 +3626,7 @@ mod return_mix_ab_tests {
         let mut e = beatbox::Engine::new("/tmp/return-ab-reject".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.call("create_echo_send", &json!({"track":"piano"}))
@@ -3648,7 +3651,7 @@ mod kit_ramp_tests {
         let mut e = beatbox::Engine::new("/tmp/ramp-tests".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let p = e.project.patterns[0].clone();
@@ -3734,7 +3737,7 @@ mod kit_ramp_tests {
         let mut e = beatbox::Engine::new("/tmp/ramp-bad".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
@@ -3769,7 +3772,7 @@ mod kit_ramp_range_tests {
         let mut e = beatbox::Engine::new("/tmp/ramp-range-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let src = e.project.patterns[0]
@@ -3825,7 +3828,7 @@ mod kit_ramp_range_tests {
         let mut e = beatbox::Engine::new("/tmp/ramp-range-bad".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
@@ -3858,7 +3861,7 @@ mod kit_roll_tests {
         let mut e = beatbox::Engine::new("/tmp/roll-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.project.patterns[0]
@@ -3917,7 +3920,7 @@ mod kit_roll_tests {
         let mut e = beatbox::Engine::new("/tmp/roll-bad".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
@@ -3965,7 +3968,7 @@ mod triplet_roll_tests {
             let mut e = beatbox::Engine::new("/tmp/triplet-tests".into());
             e.call(
                 "load_project",
-                &json!({"path":"/tmp/roll-empty-fixture.json"}),
+                &json!({"path":crate::test_fixtures::path("roll-empty-fixture.json")}),
             )
             .unwrap();
             let b = serde_json::to_value(&e.project).unwrap();
@@ -4003,7 +4006,7 @@ mod triplet_roll_tests {
         let mut e = beatbox::Engine::new("/tmp/triplet-bad".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/roll-empty-fixture.json"}),
+            &json!({"path":crate::test_fixtures::path("roll-empty-fixture.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
@@ -4025,7 +4028,7 @@ mod triplet_roll_tests {
         let mut f = beatbox::Engine::new("/tmp/triplet-straight".into());
         f.call(
             "load_project",
-            &json!({"path":"/tmp/roll-empty-fixture.json"}),
+            &json!({"path":crate::test_fixtures::path("roll-empty-fixture.json")}),
         )
         .unwrap();
         e.call("add_kit_piece_roll",&json!({"track":"drums","pattern":"groove","key":38,"from_step":48,"to_step":64,"interval_steps":1})).unwrap();
@@ -4045,7 +4048,7 @@ mod piece_balance_tests {
         let mut e = beatbox::Engine::new("/tmp/piece-pan-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.project.master_effects.clear();
@@ -4187,7 +4190,7 @@ mod piece_attack_tests {
         let mut e = beatbox::Engine::new("/tmp/piece-attack-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.project.master_effects.clear();
@@ -4308,7 +4311,7 @@ mod piece_reverse_tests {
         let mut e = beatbox::Engine::new("/tmp/reverse-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.project.master_effects.clear();
@@ -4446,7 +4449,7 @@ mod piece_decay_tests {
         let mut e = crate::Engine::new("/tmp/decay-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.project.master_effects.clear();
@@ -4562,7 +4565,7 @@ mod piece_lowpass_tests {
         let mut e = crate::Engine::new("/tmp/piece_lowpass-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.project.master_effects.clear();
@@ -4718,7 +4721,7 @@ mod piece_highpass_tests {
         let mut e = crate::Engine::new("/tmp/piece_highpass-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.project.master_effects.clear();
@@ -4879,7 +4882,7 @@ mod piece_response_tests {
         let mut e = crate::Engine::new("/tmp/piece_response-test".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         e.project.master_effects.clear();

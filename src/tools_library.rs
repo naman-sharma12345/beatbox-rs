@@ -791,7 +791,7 @@ mod current_phrase_tests {
         let mut e = beatbox::Engine::new("/tmp/phrase-test-work".into());
         e.call(
             "load_project",
-            &json!({"path":"/tmp/recorded-beat-project/recorded-groove.json"}),
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
         )
         .unwrap();
         let b = serde_json::to_value(&e.project).unwrap();
