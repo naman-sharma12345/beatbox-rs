@@ -736,8 +736,10 @@ mod region_tempo_tests {
     use super::*;
     #[test]
     fn region_windows_follow_curve_and_keep_seconds_and_open_end() {
-        let mut p = Project::default();
-        p.bpm = 120.;
+        let mut p = Project {
+            bpm: 120.,
+            ..Default::default()
+        };
         let total = (20. * SR) as usize;
         assert_eq!(
             region(&p, &json!({"start_beat":2,"end_beat":6}), total).unwrap(),

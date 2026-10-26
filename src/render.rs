@@ -3974,7 +3974,8 @@ mod recorded_take_regression {
             .iter()
             .zip(&stem.left[at..at + 5000])
             .all(|(a, b)| (a - b).abs() < 1e-6));
-        for block in [512] {
+        {
+            let block = 512;
             let mut stream = beatbox::rt::VoiceStreamer::new(&e.project, &e.bank, &opts, block, 0);
             let (b, _) = stream.render_all();
             assert_eq!(l, b);

@@ -1600,32 +1600,33 @@ mod kit_persistence_tests {
 mod velocity_gap_tests {
     use super::*;
     fn fixture() -> MultisampleParams {
-        let mut p = MultisampleParams::default();
-        p.zones = vec![
-            Zone {
-                sample: "low".into(),
-                root: 60,
-                lo_note: 60,
-                hi_note: 60,
-                vel_lo: 0.0,
-                vel_hi: 0.4,
-                tune_cents: 0.0,
-                gain_db: 0.0,
-                rr: 0,
-            },
-            Zone {
-                sample: "high".into(),
-                root: 60,
-                lo_note: 60,
-                hi_note: 60,
-                vel_lo: 0.419,
-                vel_hi: 1.0,
-                tune_cents: 0.0,
-                gain_db: 0.0,
-                rr: 0,
-            },
-        ];
-        p
+        MultisampleParams {
+            zones: vec![
+                Zone {
+                    sample: "low".into(),
+                    root: 60,
+                    lo_note: 60,
+                    hi_note: 60,
+                    vel_lo: 0.0,
+                    vel_hi: 0.4,
+                    tune_cents: 0.0,
+                    gain_db: 0.0,
+                    rr: 0,
+                },
+                Zone {
+                    sample: "high".into(),
+                    root: 60,
+                    lo_note: 60,
+                    hi_note: 60,
+                    vel_lo: 0.419,
+                    vel_hi: 1.0,
+                    tune_cents: 0.0,
+                    gain_db: 0.0,
+                    rr: 0,
+                },
+            ],
+            ..Default::default()
+        }
     }
     #[test]
     fn gap_blends_are_convex_and_nearest_layer_keeps_half() {
