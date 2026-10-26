@@ -1,0 +1,35 @@
+name: Fix verified v218 test fixtures
+on:
+  push:
+    branches:
+    - reel_dark
+    paths:
+    - .github/workflows/*fix-v218-ci.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/reel_dark'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply hash-verified test-only lint fix
+      shell: bash
+      run: "set -euo pipefail\n[ \"$(git rev-parse HEAD^)\" = e1e298f66272519d59001278448f97202a29a215\
+        \ ]\n[ \"$(git rev-parse origin/main)\" = 21e5049d55363c19307832d3405ebe113176274e\
+        \ ]\npython3 - <<'PY'\nimport base64,hashlib,pathlib\nb=base64.b64decode('ZGlmZiAtLWdpdCBhL3NyYy9ndWkvZXhwb3J0X3ZpZXcucnMgYi9zcmMvZ3VpL2V4cG9ydF92aWV3LnJzCmluZGV4IDFkMDI0NTguLmIyYzc1YWIgMTAwNjQ0Ci0tLSBhL3NyYy9ndWkvZXhwb3J0X3ZpZXcucnMKKysrIGIvc3JjL2d1aS9leHBvcnRfdmlldy5ycwpAQCAtNjc3LDggKzY3NywxMCBAQCBtb2QgbWFya2VyX2V4cG9ydF90ZXN0cyB7CiAgICAgdXNlIHN1cGVyOjoqOwogICAgICNbdGVzdF0KICAgICBmbiBtYXJrZXJfcmFuZ2VzX3VzZV90ZW1wb19jdXJ2ZV9hbmRfcmVqZWN0X2JhZF9ib3VuZGFyaWVzKCkgewotICAgICAgICBsZXQgbXV0IHAgPSBjcmF0ZTo6cHJvamVjdDo6UHJvamVjdDo6ZGVmYXVsdCgpOwotICAgICAgICBwLmJwbSA9IDEyMC4wOworICAgICAgICBsZXQgbXV0IHAgPSBjcmF0ZTo6cHJvamVjdDo6UHJvamVjdCB7CisgICAgICAgICAgICBicG06IDEyMC4wLAorICAgICAgICAgICAgLi5EZWZhdWx0OjpkZWZhdWx0KCkKKyAgICAgICAgfTsKICAgICAgICAgcC50ZW1wb19wb2ludHMgPSB2ZWMhW2NyYXRlOjpwcm9qZWN0OjpUZW1wb1BvaW50IHsKICAgICAgICAgICAgIGJlYXQ6IDQuMCwKICAgICAgICAgICAgIGJwbTogNjAuMCwKZGlmZiAtLWdpdCBhL3NyYy9ndWkvcGxheWxpc3QucnMgYi9zcmMvZ3VpL3BsYXlsaXN0LnJzCmluZGV4IDhmN2FkMDMuLjMxYmZhZWYgMTAwNjQ0Ci0tLSBhL3NyYy9ndWkvcGxheWxpc3QucnMKKysrIGIvc3JjL2d1aS9wbGF5bGlzdC5ycwpAQCAtMTA2NSw4ICsxMDY1LDEwIEBAIG1vZCBtYXJrZXJfbmF2aWdhdGlvbl90ZXN0cyB7CiAgICAgdXNlIHN1cGVyOjoqOwogICAgICNbdGVzdF0KICAgICBmbiBtYXJrZXJfbmF2aWdhdGlvbl9yb3VuZHRyaXBzX3RlbXBvX2p1bXBzX2FuZF9yYW1wcygpIHsKLSAgICAgICAgbGV0IG11dCBwID0gUHJvamVjdDo6ZGVmYXVsdCgpOwotICAgICAgICBwLmJwbSA9IDEyMC4wOworICAgICAgICBsZXQgbXV0IHAgPSBQcm9qZWN0IHsKKyAgICAgICAgICAgIGJwbTogMTIwLjAsCisgICAgICAgICAgICAuLkRlZmF1bHQ6OmRlZmF1bHQoKQorICAgICAgICB9OwogICAgICAgICBwLnRlbXBvX3BvaW50cyA9IHZlYyFbCiAgICAgICAgICAgICBjcmF0ZTo6cHJvamVjdDo6VGVtcG9Qb2ludCB7CiAgICAgICAgICAgICAgICAgYmVhdDogNC4wLApAQCAtMTEwNSw3ICsxMTA3LDcgQEAgbW9kIG1hcmtlcl9uYXZpZ2F0aW9uX3Rlc3RzIHsKICAgICAgICAgYXNzZXJ0X2VxIShtYXAuYmFyX3N0YXJ0X3RpY2soMiksIDMzNjApOwogICAgICAgICBhc3NlcnRfZXEhKG1hcC5iYXJfc3RhcnRfdGljaygzKSwgNjcyMCk7CiAgICAgICAgIGFzc2VydF9lcSEoCi0gICAgICAgICAgICBtYXJrZXJfcG9zaXRpb24oJmUucHJvamVjdCwgbWFya2VyX3NlY29uZHMoJmUucHJvamVjdCwgMy40OTk5OTk5KSksCisgICAgICAgICAgICBtYXJrZXJfcG9zaXRpb24oJmUucHJvamVjdCwgbWFya2VyX3NlY29uZHMoJmUucHJvamVjdCwgMy41KSksCiAgICAgICAgICAgICAiMnwxfDAwMCIKICAgICAgICAgKTsKIAo=')\n\
+        assert hashlib.sha256(b).hexdigest()=='3716d064e0e6292a3d7491bc26ac46b313f7be8ae645ee73332ca6b04b109cb1'\n\
+        pathlib.Path('/tmp/ci-fix.patch').write_bytes(b)\nPY\ngit apply --check /tmp/ci-fix.patch\n\
+        git apply /tmp/ci-fix.patch\npython3 - <<'PY'\nimport pathlib,hashlib\nexpected={'src/gui/export_view.rs':\
+        \ '4f286a219e12c86109f49b2063b4c5b2d52d362cf39fc3a90e550eccaa9a3367', 'src/gui/playlist.rs':\
+        \ 'dad6db1abc5c59d2d6563124953507d6384207faec2ffc15038b5ef3c3241946'}\nfor\
+        \ f,h in expected.items():\n assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f\n\
+        PY\ngit config user.name 'github-actions[bot]'\ngit config user.email '41898282+github-actions[bot]@users.noreply.github.com'\n\
+        git add src\ngit commit -m \"Fix test fixture clippy diagnostics without runtime\
+        \ changes\"\ngit fetch origin reel_dark main\n[ \"$(git rev-parse origin/reel_dark)\"\
+        \ = \"$GITHUB_SHA\" ]\n[ \"$(git rev-parse origin/main)\" = 21e5049d55363c19307832d3405ebe113176274e\
+        \ ]\ngit push origin HEAD:refs/heads/reel_dark\n"
