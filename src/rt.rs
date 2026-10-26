@@ -1181,6 +1181,7 @@ pub enum StreamFx {
         held_r: f32,
     },
     Delay {
+        wet_only: bool,
         bl: Vec<f32>,
         br: Vec<f32>,
         tl: Svf,
@@ -1613,6 +1614,7 @@ impl StreamFx {
                 }
             }
             StreamFx::Delay {
+                wet_only,
                 bl,
                 br,
                 tl,
@@ -1637,8 +1639,16 @@ impl StreamFx {
                         bl[kk] = tl.process(inl + dl * fb, *tone, 0.0, FilterMode::Lowpass);
                         br[kk] = tr.process(inr + dr * fb, *tone, 0.0, FilterMode::Lowpass);
                     }
-                    l[i] = inl + dl * *mix;
-                    r[i] = inr + dr * *mix;
+                    l[i] = if *wet_only {
+                        dl * *mix
+                    } else {
+                        inl + dl * *mix
+                    };
+                    r[i] = if *wet_only {
+                        dr * *mix
+                    } else {
+                        inr + dr * *mix
+                    };
                     *k = (kk + 1) % d;
                 }
             }
@@ -2836,6 +2846,7 @@ impl ChainStreamer {
                 Effect::Delay(p) => {
                     let d = ((p.steps * step_secs * SR) as usize).max(1);
                     StreamFx::Delay {
+                        wet_only: p.wet_only,
                         bl: vec![0.0f32; d],
                         br: vec![0.0f32; d],
                         tl: Svf::default(),
@@ -3368,9 +3379,9 @@ impl ChainStreamer {
                 }
                 Effect::Reverb(p) if p.mode != crate::fx::ReverbMode::Freeverb => {
                     // FDN modes: the same sc_dsp::Fdn the offline pass
-                    // runs, from sample 0 (offset 0).
+                    // runs, with the song offset for modulation phase in region renders.
                     let (cfg, fp) = crate::fx::fdn_params(p);
-                    StreamFx::ReverbFdn(Box::new(crate::sc_dsp::Fdn::new(cfg, &fp, 0)))
+                    StreamFx::ReverbFdn(Box::new(crate::sc_dsp::Fdn::new(cfg, &fp, offset)))
                 }
                 Effect::Reverb(p) => {
                     const COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
@@ -7905,5 +7916,59 @@ mod tests {
             }
         }
         crate::dsp::set_flush_denormals(true);
+    }
+}
+
+#[cfg(test)]
+mod recorded_chain_region_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn recorded_room_keys_streamed_mix_matches_export() {
+        let mut e = beatbox::Engine::new("/tmp/recorded-chain-stream".into());
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
+        )
+        .unwrap();
+        e.call(
+            "apply_fx_chain",
+            &json!({"track":"drums","chain":"short_drum_room"}),
+        )
+        .unwrap();
+        e.call(
+            "apply_fx_chain",
+            &json!({"track":"piano","chain":"warm_recorded_keys"}),
+        )
+        .unwrap();
+        e.bank.sync(&e.project.samples);
+        for range in [None, Some((16, 32))] {
+            let opts = beatbox::render::RenderOptions {
+                tail: 0.5,
+                step_range: range,
+                ..Default::default()
+            };
+            let want = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+            for block in [63, 512, 4096] {
+                let mut n = beatbox::rt::MixNode::new(&e.project, &e.bank, &opts, block);
+                let (l, r) = n.render();
+                assert_eq!(l.len(), want.left.len());
+                assert_eq!(r.len(), want.right.len());
+                let max = l
+                    .iter()
+                    .zip(&want.left)
+                    .chain(r.iter().zip(&want.right))
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0f32, f32::max);
+                let bitdiff = l
+                    .iter()
+                    .zip(&want.left)
+                    .chain(r.iter().zip(&want.right))
+                    .filter(|(a, b)| a.to_bits() != b.to_bits())
+                    .count();
+                println!("range{range:?} block{block}: maxdiff{max} bitdiff{bitdiff}");
+                assert_eq!(bitdiff, 0);
+            }
+        }
     }
 }

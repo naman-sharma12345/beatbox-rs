@@ -1372,8 +1372,9 @@ mod tests {
             .iter()
             .map(|s| {
                 let (a, b) = (
-                    (s.start_s * SR) as usize,
-                    ((s.end_s * SR) as usize).min(m.left.len()),
+                    (s.start_beat * crate::ears::beat_secs(&e.project) * SR) as usize,
+                    ((s.end_beat * crate::ears::beat_secs(&e.project) * SR) as usize)
+                        .min(m.left.len()),
                 );
                 analysis::loudness(&m.left[a..b], &m.right[a..b]).integrated_lufs
             })

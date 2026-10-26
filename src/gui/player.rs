@@ -11,6 +11,11 @@ struct Shared {
     mix: Option<Arc<Mix>>,
     /// Position in source (44.1 kHz) samples.
     pos: f64,
+    /// Cumulative source samples played; never wraps or resets, so absolute
+    /// musical time survives loop wraps and performance launches.
+    abs: f64,
+    /// Actual transition time on the cumulative player clock.
+    last_landing: f64,
     /// Loop length in samples (song body without the tail).
     loop_len: usize,
     playing: bool,
@@ -102,6 +107,7 @@ impl Shared {
         }
         let old = self.pos;
         self.pos += self.step;
+        self.abs += self.step;
         let wrapped = self.pos as usize >= self.loop_len;
         if wrapped {
             self.pos = 0.0;
@@ -111,6 +117,7 @@ impl Shared {
             let crossed = q <= 0.0 || wrapped || (old / q).floor() != (self.pos / q).floor();
             if crossed {
                 let (mix, len) = self.queued.take().unwrap();
+                self.last_landing = self.abs / crate::dsp::SR as f64;
                 self.pos = if wrapped || q <= 0.0 {
                     0.0
                 } else {
@@ -128,15 +135,21 @@ pub struct Player {
     shared: Arc<Mutex<Shared>>,
     _stream: Option<cpal::Stream>,
     pub device_name: String,
+    /// Absolute-time base for the virtual clock: rebased by the musical
+    /// position at each launch landing so abs_position_secs stays continuous.
+    abs_offset: f64,
+    pub seek_revision: u64,
     virtual_clock: Option<Instant>,
     virtual_start: f64,
     /// Silent transport: a queued loop and when it takes over.
-    virtual_queued: Option<(Arc<Mix>, usize, Instant)>,
+    virtual_queued: Option<(Arc<Mix>, usize, Instant, f64)>,
 }
 
 impl Player {
     pub fn new() -> Self {
         let shared = Arc::new(Mutex::new(Shared {
+            abs: 0.0,
+            last_landing: 0.0,
             mix: None,
             pos: 0.0,
             loop_len: 0,
@@ -159,19 +172,25 @@ impl Player {
             virtual_clock: None,
             virtual_start: 0.0,
             virtual_queued: None,
+            abs_offset: 0.0,
+            seek_revision: 0,
         }
     }
 
     /// Performance mode: loop `mix` (one pass is `loop_secs`). When nothing
     /// plays it starts at once; while playing it takes over on the next
     /// `quantum_secs` boundary of the current play head (or when the current
-    /// loop wraps); 0 switches now.
-    pub fn launch(&mut self, mix: Arc<Mix>, loop_secs: f32, quantum_secs: f32) {
+    /// loop wraps); 0 switches now. Returns the scheduled absolute landing
+    /// time. last_landing_secs() reports the actual transition afterwards.
+    pub fn launch(&mut self, mix: Arc<Mix>, loop_secs: f32, quantum_secs: f32) -> f64 {
         let len = ((loop_secs * crate::dsp::SR) as usize).max(1);
         if !self.is_playing() || quantum_secs <= 0.0 {
             let was = self.is_playing();
+            let land_abs = self.abs_position_secs();
+            self.abs_offset = land_abs;
             {
                 let mut s = self.shared.lock().unwrap();
+                s.last_landing = land_abs;
                 s.queued = None;
                 s.pending = None;
                 s.fade.clear();
@@ -186,24 +205,27 @@ impl Player {
             } else if !was {
                 self.play();
             }
-            return;
+            return land_abs;
         }
+        let now = self.position_secs();
+        let loop_now = self.shared.lock().unwrap().loop_len as f32 / crate::dsp::SR;
+        let next = (((now / quantum_secs).floor() + 1.0) * quantum_secs).min(loop_now.max(now));
+        let wait = (next - now).max(0.0);
+        let land_abs = self.abs_position_secs() + wait as f64;
         if self.has_audio() {
             let mut s = self.shared.lock().unwrap();
             s.pending = None;
             s.queued = Some((mix, len));
             s.quantum = ((quantum_secs * crate::dsp::SR) as usize).max(1);
         } else {
-            let now = self.position_secs();
-            let loop_now = self.shared.lock().unwrap().loop_len as f32 / crate::dsp::SR;
-            let next = (((now / quantum_secs).floor() + 1.0) * quantum_secs).min(loop_now.max(now));
-            let wait = (next - now).max(0.0);
             self.virtual_queued = Some((
                 mix,
                 len,
                 Instant::now() + std::time::Duration::from_secs_f32(wait),
+                land_abs,
             ));
         }
+        land_abs
     }
 
     /// True while a launched loop waits for its boundary.
@@ -221,10 +243,12 @@ impl Player {
     /// Silent transport: apply a queued loop whose time has come (the audio
     /// callback does this itself on a real device). Call once per frame.
     pub fn poll(&mut self) {
-        let due = matches!(&self.virtual_queued, Some((_, _, t)) if Instant::now() >= *t);
+        let due = matches!(&self.virtual_queued, Some((_, _, t, _)) if Instant::now() >= *t);
         if due {
-            let (mix, len, t) = self.virtual_queued.take().unwrap();
+            let (mix, len, t, land) = self.virtual_queued.take().unwrap();
+            self.abs_offset = land;
             let mut s = self.shared.lock().unwrap();
+            s.last_landing = land;
             s.mix = Some(mix);
             s.loop_len = len;
             s.pos = 0.0;
@@ -258,6 +282,9 @@ impl Player {
 
     pub fn stop(&mut self) {
         self.virtual_queued = None;
+        if !self.has_audio() {
+            self.abs_offset = self.abs_position_secs();
+        }
         let mut s = self.shared.lock().unwrap();
         s.playing = false;
         s.pos = 0.0;
@@ -276,6 +303,10 @@ impl Player {
     }
 
     pub fn seek(&mut self, secs: f32) {
+        self.seek_revision = self.seek_revision.wrapping_add(1);
+        if !self.has_audio() {
+            self.abs_offset = self.abs_position_secs() - secs.max(0.0) as f64;
+        }
         let mut s = self.shared.lock().unwrap();
         s.pos = (secs.max(0.0) * crate::dsp::SR) as f64;
         if self.virtual_clock.is_some() {
@@ -325,6 +356,46 @@ impl Player {
     /// True while a preview is sounding on a real output device.
     pub fn auditioning(&self) -> bool {
         self.has_audio() && self.shared.lock().unwrap().one.is_some()
+    }
+
+    /// Cumulative musical seconds played: never wraps at loop boundaries and
+    /// stays continuous across performance launches. This is the player clock
+    /// itself, so it neither drifts against wall time nor can be confused by
+    /// a stalled observer.
+    /// Timestamp stored when the queued loop actually took over.
+    pub fn last_landing_secs(&self) -> f64 {
+        self.shared.lock().unwrap().last_landing
+    }
+
+    /// Read both clocks from one locked snapshot when arming a take.
+    pub fn recording_anchor(&self) -> (f64, f32) {
+        let s = self.shared.lock().unwrap();
+        if self.has_audio() {
+            (
+                s.abs / crate::dsp::SR as f64,
+                (s.pos / crate::dsp::SR as f64) as f32,
+            )
+        } else {
+            let elapsed = match self.virtual_clock {
+                Some(t) => self.virtual_start + t.elapsed().as_secs_f64(),
+                None => s.pos / crate::dsp::SR as f64,
+            };
+            let len = s.loop_len.max(1) as f64 / crate::dsp::SR as f64;
+            (self.abs_offset + elapsed, (elapsed % len) as f32)
+        }
+    }
+
+    pub fn abs_position_secs(&self) -> f64 {
+        let s = self.shared.lock().unwrap();
+        if self.has_audio() {
+            s.abs / crate::dsp::SR as f64
+        } else {
+            self.abs_offset
+                + match self.virtual_clock {
+                    Some(t0) => self.virtual_start + t0.elapsed().as_secs_f64(),
+                    None => s.pos / crate::dsp::SR as f64,
+                }
+        }
     }
 
     pub fn position_secs(&self) -> f32 {
@@ -425,6 +496,8 @@ mod tests {
 
     fn shared(m: Arc<Mix>, len: usize) -> Shared {
         Shared {
+            abs: 0.0,
+            last_landing: 0.0,
             mix: Some(m),
             pos: 0.0,
             loop_len: len,
@@ -436,6 +509,49 @@ mod tests {
             pending: None,
             fade: Vec::new(),
         }
+    }
+
+    #[test]
+    fn cumulative_audio_clock_keeps_actual_landing_after_wraps() {
+        let mut s = shared(mix(1.0, 100), 100);
+        for _ in 0..1130 {
+            s.song_frame();
+        }
+        s.queued = Some((mix(2.0, 80), 80));
+        s.quantum = 50;
+        for _ in 0..25 {
+            s.song_frame();
+        }
+        assert_eq!(s.abs, 1155.0);
+        assert!((s.last_landing - 1150.0 / crate::dsp::SR as f64).abs() < 1e-9);
+        assert!(s.queued.is_none());
+    }
+
+    #[test]
+    fn virtual_launch_keeps_absolute_time_after_wraps_and_stalled_poll() {
+        let mut p = Player {
+            shared: Arc::new(Mutex::new(shared(mix(1.0, 44100), 44100))),
+            _stream: None,
+            device_name: "test silent".into(),
+            abs_offset: 0.0,
+            seek_revision: 0,
+            virtual_clock: Some(Instant::now() - std::time::Duration::from_secs(10)),
+            virtual_start: 0.0,
+            virtual_queued: None,
+        };
+        let scheduled = p.launch(mix(2.0, 44100), 1.0, 0.25);
+        assert!(scheduled >= 10.0);
+        let (_, _, due, abs) = p.virtual_queued.as_mut().unwrap();
+        *due = Instant::now() - std::time::Duration::from_secs(3);
+        let actual = *abs;
+        p.poll();
+        assert_eq!(p.last_landing_secs(), actual);
+        assert!((p.abs_position_secs() - actual - 3.0).abs() < 0.05);
+        let before = p.abs_position_secs();
+        p.stop();
+        assert!((p.abs_position_secs() - before).abs() < 0.05);
+        let frozen = p.abs_position_secs();
+        assert!((p.abs_position_secs() - frozen).abs() < 0.001);
     }
 
     #[test]

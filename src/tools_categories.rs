@@ -34,7 +34,7 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "project",
         description: "Song file and global settings: new/load/save, tempo, key, time signature, tracks, project summary, ids, validation.",
-        actions: &["new_project", "get_project", "save_project", "load_project", "get_project_summary", "set_tempo", "set_key", "add_track", "remove_track", "clear", "lookup_id", "list_ids", "validate_project", "diff_project", "compare_variants"],
+        actions: &["new_project", "get_project", "save_project", "load_project", "get_project_summary", "set_tempo", "set_key", "add_track", "remove_track", "rename_track", "clear", "lookup_id", "list_ids", "validate_project", "diff_project", "compare_variants"],
     },
     Category {
         name: "history",
@@ -49,12 +49,12 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "pattern",
         description: "Patterns and drums: step sequencer, drum generators, rolls, fills, ghost notes, groove, swing, humanize.",
-        actions: &["add_pattern", "remove_pattern", "set_pattern_length", "set_steps", "toggle_step", "get_pattern", "generate_drums", "add_roll", "generate_fill", "generate_ghost_notes", "humanize", "apply_groove", "extract_groove", "steal_groove", "tune_drums_to_key"],
+        actions: &["add_pattern", "duplicate_pattern", "rename_pattern", "remove_pattern", "set_pattern_length", "set_steps", "toggle_step", "get_pattern", "generate_drums", "generate_euclidean", "add_roll", "generate_fill", "generate_ghost_notes", "humanize", "apply_groove", "extract_groove", "steal_groove", "tune_drums_to_key", "map_drum_notes"],
     },
     Category {
         name: "notes",
         description: "Piano roll: add/edit/delete notes, quantize, transpose, chords, arpeggios, strum, slides, riffs, scales and theory.",
-        actions: &["add_notes", "edit_notes", "delete_notes", "copy_notes", "transpose", "quantize", "split_notes", "merge_notes", "legato", "articulate", "arpeggiate", "strum", "flip_notes", "chop_notes", "limit_notes", "roll_notes", "chord_voicing", "harmonize", "velocity_curve", "add_slides", "write_riff", "write_phrase", "scale_snap", "theory_scale", "theory_chords", "detect_key", "lfo_tool", "author_midi"],
+        actions: &["add_notes", "update_note_geometry", "edit_notes", "delete_notes", "copy_notes", "transpose", "quantize", "split_notes", "merge_notes", "legato", "articulate", "arpeggiate", "strum", "flip_notes", "chop_notes", "repeat_notes", "balance_chord_velocities", "fit_note_velocity_range", "invert_note_velocities", "reverse_note_velocities", "rotate_note_velocities", "reverse_melody_pitches", "reverse_rhythm_gaps", "rotate_melody_pitches", "align_chord_ends", "distribute_note_rhythm", "fold_note_register", "reduce_chord_voices", "quantize_note_ends", "transpose_phrase", "shift_phrase", "thin_notes", "normalize_velocity", "echo_notes", "stretch_notes", "rotate_notes", "set_note_offset", "set_note_velocity", "offset_note_velocities", "ramp_note_velocities", "set_note_chance", "ramp_note_chance", "reset_note_humanization", "rotate_note_lengths", "invert_note_lengths", "balance_chord_lengths", "scale_note_lengths", "set_note_lengths", "reverse_note_lengths", "trim_notes_to_pattern", "trim_note_overlaps", "remove_duplicate_notes", "remove_zero_notes", "limit_notes", "roll_notes", "chord_voicing", "harmonize", "velocity_curve", "add_slides", "write_riff", "write_phrase", "scale_snap", "theory_scale", "theory_chords", "detect_key", "lfo_tool", "author_midi"],
     },
     Category {
         name: "midi",
@@ -64,7 +64,8 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "instrument",
         description: "Instruments and sound design: set/tweak a synth, recorded instrument library (search, fetch, load, preview), multisample packs, macros, resynthesis.",
-        actions: &["set_instrument", "tweak_instrument", "describe_instrument", "set_parameters", "list_presets", "design_sound", "layer_instrument", "create_macro", "set_macro", "list_instruments", "search_instruments", "pick_instrument_for_role", "fetch_instrument", "load_instrument", "preview_instrument", "audition_instrument", "list_installed", "remove_instrument", "install_instrument_pack", "add_multisample_track", "resynthesize_sample", "analyze_partials", "additive_sample", "match_timbre", "cache_limit_mb"],
+        actions: &["set_kit_piece_velocity_curve", "set_kit_piece_highpass", "set_kit_piece_lowpass", "set_kit_piece_decay", "set_kit_piece_reverse", "set_kit_piece_attack", "set_kit_piece_pan", "add_kit_piece_roll", "set_kit_piece_ramp", "add_kit_piece_flams", "set_kit_piece_swing", "set_kit_piece_accents", "set_kit_piece_pocket", "extract_kit_piece", "set_kit_piece_level",
+            "set_kit_piece_tuning", "set_kit_piece_length", "set_sample_performance", "set_instrument", "tweak_instrument", "describe_instrument", "set_parameters", "list_presets", "design_sound", "layer_instrument", "create_macro", "set_macro", "list_instruments", "search_instruments", "pick_instrument_for_role", "fetch_instrument", "load_instrument", "preview_instrument", "preview_kit_piece", "audition_instrument", "list_installed", "remove_instrument", "install_instrument_pack", "add_multisample_track", "resynthesize_sample", "analyze_partials", "additive_sample", "match_timbre", "cache_limit_mb"],
     },
     Category {
         name: "sample",
@@ -74,7 +75,7 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "arrange",
         description: "Song structure and playlist: arrangement, place patterns, clips (move/split/trim/fade), sections, transitions, markers, tempo changes, performance mode.",
-        actions: &["set_arrangement", "build_structure", "vary_section", "add_transition", "set_section_mix", "place_pattern", "arrangement_to_playlist", "list_playlist", "playlist_clip", "remove_clip", "clear_playlist", "split_clip", "trim_clip", "move_clip", "duplicate_clip", "slip_clip", "fade_clip", "pitch_clip", "stretch_clip", "fit_clip", "reverse_clip", "mute_clip", "group_takes", "comp_take", "crossfade_clips", "consolidate_clips", "ripple_delete", "add_marker", "list_markers", "remove_marker", "add_tempo_point", "tempo_ramp", "list_tempo", "remove_tempo_point", "set_time_signature", "perform"],
+        actions: &["move_arrangement_section", "set_section_repeats", "duplicate_arrangement_section", "append_arrangement_section", "get_arrangement", "mark_arrangement_section", "set_arrangement", "build_structure", "vary_section", "add_transition", "set_section_mix", "place_pattern", "arrangement_to_playlist", "list_playlist", "playlist_clip", "remove_clip", "clear_playlist", "split_clip", "trim_clip", "move_clip", "duplicate_clip", "slip_clip", "fade_clip", "pitch_clip", "stretch_clip", "fit_clip", "reverse_clip", "mute_clip", "group_takes", "comp_take", "crossfade_clips", "consolidate_clips", "ripple_delete", "add_marker", "list_markers", "move_marker", "rename_marker", "remove_marker", "add_tempo_point", "tempo_ramp", "list_tempo", "remove_tempo_point", "set_time_signature", "perform"],
     },
     Category {
         name: "automation",
@@ -84,12 +85,12 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "mixer",
         description: "Mixer and rack: volume, pan, mute, buses, sends, routing, the device rack by id (rack_get / rack_apply), auto-balance, carve space, strip silence, drone notches.",
-        actions: &["rack_get", "rack_apply", "set_mixer", "add_bus", "remove_bus", "set_send", "route_track", "route_bus", "list_routing", "balance_mix", "level_hints", "carve_mix", "critique_mix", "notch_drones", "strip_silence", "carve_frequencies", "gain_stage", "sidechain_compress"],
+        actions: &["rack_get", "rack_apply", "offset_track_faders", "clear_track_solos", "solo_track_exclusive", "set_mixer", "add_bus", "remove_bus", "set_send", "route_track", "route_bus", "list_routing", "balance_mix", "level_hints", "carve_mix", "critique_mix", "notch_drones", "strip_silence", "carve_frequencies", "gain_stage", "sidechain_compress"],
     },
     Category {
         name: "effects",
         description: "Effects: add/tweak/remove/bypass/reorder effects, FX chains, one-knob polish, A/B an effect.",
-        actions: &["add_effect", "tweak_effect", "remove_effect", "get_effects", "bypass_effect", "reorder_effects", "describe_effect", "place_fx", "move_effect", "ab_compare", "list_fx_chains", "apply_fx_chain", "save_fx_chain", "copy_fx_chain", "soundgoodizer", "multiband_dynamics"],
+        actions: &["preview_return", "set_return_filter", "create_parallel_send", "create_echo_send", "create_room_send", "add_effect", "tweak_effect", "remove_effect", "get_effects", "set_track_insert_bypass", "bypass_effect", "reorder_effects", "describe_effect", "place_fx", "move_effect", "ab_compare", "list_fx_chains", "apply_fx_chain", "save_fx_chain", "copy_fx_chain", "soundgoodizer", "set_bus_glue", "set_track_colour", "set_drum_punch", "set_musical_delay", "set_bass_safe_width", "duck_to_track", "preview_mix_translation", "multiband_dynamics"],
     },
     Category {
         name: "vocals",
@@ -138,14 +139,14 @@ pub fn category_of(action: &str) -> Option<&'static Category> {
     CATEGORIES.iter().find(|c| c.actions.contains(&action))
 }
 
-/// First sentence of a description, at most ~64 chars.
+/// First sentence of a description, at most 40 chars. Full help stays unchanged.
 fn gist(desc: &str) -> String {
     let end = desc.find(". ").map(|i| i + 1).unwrap_or(desc.len());
     let s = desc[..end].trim_end_matches('.');
-    if s.chars().count() <= 64 {
+    if s.chars().count() <= 40 {
         return s.to_string();
     }
-    let cut: String = s.chars().take(61).collect();
+    let cut: String = s.chars().take(37).collect();
     let cut = cut.rsplit_once(' ').map(|(a, _)| a).unwrap_or(&cut);
     format!("{}…", cut.trim_end_matches([',', ';', ':', '(']))
 }
@@ -482,6 +483,33 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("set_mixer"), "{err}");
+    }
+
+    #[test]
+    fn latest_note_actions_are_discoverable_and_undoable() {
+        for (tool, args) in [
+            ("repeat_notes", json!({"period":8,"repeats":1})),
+            ("thin_notes", json!({"every":2})),
+            ("normalize_velocity", json!({"peak":0.9})),
+        ] {
+            assert_eq!(category_of(tool).unwrap().name, "notes");
+            let mut e = Engine::new(std::env::temp_dir().join("bb_latest_notes"));
+            e.call("add_track", &json!({"name":"keys","preset":"epiano"}))
+                .unwrap();
+            e.call("add_notes",&json!({"track":"keys","notes":[{"start":0,"pitch":60,"vel":0.2},{"start":2,"pitch":64,"vel":0.4}]})).unwrap();
+            let help = e
+                .call("notes", &json!({"action":"help","params":{"action":tool}}))
+                .unwrap();
+            assert!(help["params_schema"]["properties"]["track"].is_object());
+            let before = serde_json::to_value(&e.project).unwrap();
+            let mut params = args;
+            params["track"] = json!("keys");
+            e.call("notes", &json!({"action":tool,"params":params}))
+                .unwrap();
+            assert_ne!(serde_json::to_value(&e.project).unwrap(), before);
+            e.call("undo", &json!({})).unwrap();
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        }
     }
 
     #[test]

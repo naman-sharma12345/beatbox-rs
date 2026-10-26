@@ -30,6 +30,7 @@ pub struct SampleInfo {
 #[derive(Default, Clone)]
 pub struct SampleBank {
     data: HashMap<String, Arc<Vec<f32>>>,
+    sources: HashMap<String, PathBuf>,
 }
 
 impl SampleBank {
@@ -39,7 +40,13 @@ impl SampleBank {
         self.data.get(&name.to_lowercase()).map(|v| v.as_slice())
     }
     pub fn insert(&mut self, name: &str, data: Vec<f32>) {
+        self.sources.remove(&name.to_lowercase());
         self.data.insert(name.to_lowercase(), Arc::new(data));
+    }
+    /// Keep an intentional decoded/edited buffer tied to its project source.
+    pub fn insert_for_source(&mut self, name: &str, path: &Path, data: Vec<f32>) {
+        self.insert(name, data);
+        self.sources.insert(name.to_lowercase(), path.to_path_buf());
     }
     pub fn contains(&self, name: &str) -> bool {
         self.data.contains_key(&name.to_lowercase())
@@ -48,11 +55,24 @@ impl SampleBank {
     pub fn sync(&mut self, infos: &[SampleInfo]) -> Vec<String> {
         let mut errors = Vec::new();
         for info in infos {
-            if !self.contains(&info.name) {
-                match decode_file(Path::new(&info.path)) {
-                    Ok(d) => self.insert(&info.name, d),
-                    Err(e) => errors.push(format!("{}: {e:#}", info.name)),
+            let name = info.name.to_lowercase();
+            let path = Path::new(&info.path);
+            let source_changed = self.sources.get(&name).is_some_and(|p| p != path);
+            if !self.contains(&info.name) || source_changed {
+                match decode_file(path) {
+                    Ok(d) => self.insert_for_source(&info.name, path, d),
+                    Err(e) => {
+                        // Never play the previous project's same-named audio on failure.
+                        self.data.remove(&name);
+                        self.sources.remove(&name);
+                        errors.push(format!("{}: {e:#}", info.name));
+                    }
                 }
+            } else {
+                // Raw insert() is also used for intentional in-memory fixtures.
+                self.sources
+                    .entry(name)
+                    .or_insert_with(|| path.to_path_buf());
             }
         }
         errors
@@ -396,5 +416,191 @@ mod tests {
     fn resample_halves() {
         let v = vec![0.0; 88200];
         assert_eq!(resample(&v, 88200.0, 44100.0).len(), 44100);
+    }
+}
+
+#[cfg(test)]
+mod bank_source_tests {
+    use super::*;
+    #[test]
+    fn same_name_source_switch_and_return_loads_correct_audio() {
+        let dir = std::env::temp_dir().join(format!("beatbox-bank-source-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.wav");
+        let b = dir.join("b.wav");
+        crate::render::write_wav(&a, &vec![0.1; 1000], &vec![0.1; 1000]).unwrap();
+        crate::render::write_wav(&b, &vec![0.8; 2000], &vec![0.8; 2000]).unwrap();
+        let info = |p: &Path| SampleInfo {
+            name: "Same".into(),
+            path: p.to_string_lossy().into(),
+            ..Default::default()
+        };
+        let mut bank = SampleBank::default();
+        for (p, len) in [(&a, 1000), (&b, 2000), (&a, 1000)] {
+            assert!(bank.sync(&[info(p)]).is_empty());
+            assert_eq!(bank.get("SAME").unwrap().len(), len);
+        }
+        let missing = dir.join("missing.wav");
+        assert_eq!(bank.sync(&[info(&missing)]).len(), 1);
+        assert!(!bank.contains("same"));
+        assert!(bank.sync(&[info(&a)]).is_empty());
+        assert_eq!(bank.get("same").unwrap().len(), 1000);
+        // A trimmed/edited registration must survive sync without raw re-decoding.
+        bank.insert_for_source("same", &a, vec![0.3; 50]);
+        assert!(bank.sync(&[info(&a)]).is_empty());
+        assert_eq!(bank.get("same").unwrap(), &[0.3; 50]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod engine_source_history_tests {
+    #[test]
+    fn project_source_switch_history_and_save_load() {
+        let dir =
+            std::env::temp_dir().join(format!("beatbox-source-history-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.wav");
+        let b = dir.join("b.wav");
+        crate::render::write_wav(&a, &vec![0.1; 1000], &vec![0.1; 1000]).unwrap();
+        crate::render::write_wav(&b, &vec![0.8; 2000], &vec![0.8; 2000]).unwrap();
+        let mut e = crate::Engine::new(dir.clone());
+        let info = |p: &std::path::Path| crate::samples::SampleInfo {
+            name: "same".into(),
+            path: p.to_string_lossy().into(),
+            ..Default::default()
+        };
+        e.project.samples = vec![info(&a)];
+        assert!(e.bank.sync(&e.project.samples).is_empty());
+        let before = serde_json::to_value(&e.project).unwrap();
+        let mut next = e.project.clone();
+        next.samples = vec![info(&b)];
+        e.replace_project(next);
+        assert_eq!(e.bank.get("same").unwrap().len(), 2000);
+        let after = serde_json::to_value(&e.project).unwrap();
+        assert!(e.undo());
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        assert!(e.bank.sync(&e.project.samples).is_empty());
+        assert_eq!(e.bank.get("same").unwrap().len(), 1000);
+        assert!(e.redo());
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), after);
+        assert!(e.bank.sync(&e.project.samples).is_empty());
+        assert_eq!(e.bank.get("same").unwrap().len(), 2000);
+        e.call("save_project", &serde_json::json!({"path":"history.json"}))
+            .unwrap();
+        e.call("load_project", &serde_json::json!({"path":"history.json"}))
+            .unwrap();
+        assert_eq!(e.bank.get("same").unwrap().len(), 2000);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod rendered_source_history_tests {
+    use serde_json::json;
+    #[test]
+    fn rendered_stem_follows_source_after_project_switch_undo_and_redo() {
+        let d = std::env::temp_dir().join(format!("beatbox-render-source-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let a = d.join("a.wav");
+        let b = d.join("b.wav");
+        for (p, f) in [(&a, 220.), (&b, 880.)] {
+            let x: Vec<_> = (0..4410)
+                .map(|i| (std::f32::consts::TAU * f * i as f32 / 44100.).sin() * 0.3)
+                .collect();
+            crate::render::write_wav(p, &x, &x).unwrap();
+        }
+        let mut e = crate::Engine::new(d.clone());
+        e.project.samples = vec![crate::samples::SampleInfo {
+            name: "same".into(),
+            path: a.to_string_lossy().into(),
+            ..Default::default()
+        }];
+        e.call("add_sample_track", &json!({"name":"test","sample":"same"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track":"test","notes":[{"start":0,"pitch":60,"len":1,"vel":0.8}]}),
+        )
+        .unwrap();
+        let before = e.project.clone();
+        let first = e.render_stems_all(&before).unwrap();
+        let first = first
+            .stems
+            .iter()
+            .find(|s| s.name == "test")
+            .unwrap()
+            .left
+            .clone();
+        let mut after = before.clone();
+        after.samples[0].path = b.to_string_lossy().into();
+        e.replace_project(after.clone());
+        let second = e.render_stems_all(&after).unwrap();
+        let second = second
+            .stems
+            .iter()
+            .find(|s| s.name == "test")
+            .unwrap()
+            .left
+            .clone();
+        assert_ne!(first, second);
+        assert!(first.iter().any(|v| v.abs() > 0.01));
+        assert!(second.iter().any(|v| v.abs() > 0.01));
+        assert!(e.undo());
+        let p = e.project.clone();
+        let restored = e.render_stems_all(&p).unwrap();
+        assert_eq!(
+            restored
+                .stems
+                .iter()
+                .find(|s| s.name == "test")
+                .unwrap()
+                .left,
+            first
+        );
+        assert!(e.redo());
+        let p = e.project.clone();
+        let restored = e.render_stems_all(&p).unwrap();
+        assert_eq!(
+            restored
+                .stems
+                .iter()
+                .find(|s| s.name == "test")
+                .unwrap()
+                .left,
+            second
+        );
+        std::fs::remove_dir_all(d).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod stereo_rate_tests {
+    use super::*;
+    #[test]
+    fn native_stereo_resample_and_mono_downmix_keep_channel_identity() {
+        let dir = std::env::temp_dir().join(format!("beatbox-stereo-rate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("stereo48.wav");
+        let left = vec![0.5; 4800];
+        let right = vec![-0.25; 4800];
+        std::fs::write(&path, crate::media::wav_bytes(&left, &right, 48000)).unwrap();
+        let (l, r, rate) = decode_stereo_native(&path).unwrap();
+        assert_eq!(rate, 48000);
+        assert_eq!((l.len(), r.len()), (4800, 4800));
+        assert!((l[2400] - 0.5).abs() < 0.001);
+        assert!((r[2400] + 0.25).abs() < 0.001);
+        let (l, r) = decode_stereo(&path).unwrap();
+        let frames = (0.1 * SR) as usize;
+        assert_eq!((l.len(), r.len()), (frames, frames));
+        assert!((l[frames / 2] - 0.5).abs() < 0.001);
+        assert!((r[frames / 2] + 0.25).abs() < 0.001);
+        let mono = decode_file(&path).unwrap();
+        assert_eq!(mono.len(), frames);
+        for i in 0..frames {
+            assert!((mono[i] - (l[i] + r[i]) * 0.5).abs() < 0.000001);
+        }
+        assert!((mono[frames / 2] - 0.125).abs() < 0.001);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

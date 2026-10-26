@@ -6,12 +6,12 @@ use eframe::egui::{
 use std::f32::consts::PI;
 
 // The studio palette, mapped onto the ported SoundCraft design tokens (see theme.rs):
-// neutral charcoal surfaces, one blue accent, console green for counters.
+// warm charcoal surfaces, signal red and cream counters.
 use super::theme::Tokens;
-pub const BG: Color32 = Color32::from_rgb(24, 24, 25);
+pub const BG: Color32 = Color32::from_rgb(20, 17, 13);
 pub const PANEL: Color32 = Tokens::DARK.panel_bg;
 pub const PANEL2: Color32 = Tokens::DARK.panel_bg2;
-pub const LINE: Color32 = Color32::from_rgb(58, 58, 61);
+pub const LINE: Color32 = Tokens::DARK.border;
 pub const TEXT: Color32 = Tokens::DARK.text;
 pub const DIM: Color32 = Tokens::DARK.text_dim;
 pub const ACCENT: Color32 = Tokens::DARK.accent;
@@ -20,6 +20,26 @@ pub const GOOD: Color32 = Tokens::DARK.meter_green;
 pub const WARN: Color32 = Tokens::DARK.mute;
 pub const HOT: Color32 = Tokens::DARK.rec;
 pub const SOLO: Color32 = Tokens::DARK.solo;
+
+/// Single-line labels must not cover neighboring controls. Full names stay in tooltips.
+pub fn bounded_label(
+    painter: &egui::Painter,
+    rect: Rect,
+    align: Align2,
+    text: &str,
+    font: FontId,
+    color: Color32,
+) {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap.max_width = rect.width().max(0.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = painter.layout_job(job);
+    let pos = align.align_size_within_rect(galley.size(), rect).min;
+    painter
+        .with_clip_rect(painter.clip_rect().intersect(rect))
+        .galley(pos, galley, color);
+}
 
 pub fn apply_theme(ctx: &egui::Context) {
     super::theme::apply(ctx);
@@ -35,26 +55,26 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 pub fn track_color(name: &str, kind: &str) -> Color32 {
     let n = name.to_lowercase();
     if n.contains("kick") {
-        Color32::from_rgb(255, 92, 122)
+        Color32::from_rgb(237, 67, 43)
     } else if n.contains("snare") || n.contains("clap") {
-        Color32::from_rgb(255, 181, 71)
+        Color32::from_rgb(218, 163, 65)
     } else if n.contains("hat") || n.contains("shaker") || n.contains("crash") {
-        Color32::from_rgb(74, 222, 128)
+        Color32::from_rgb(211, 195, 147)
     } else if n.contains("rim") || n.contains("tom") || n.contains("cowbell") || n.contains("perc")
     {
-        Color32::from_rgb(45, 212, 191)
+        Color32::from_rgb(79, 162, 150)
     } else if n.contains("bass") || n.contains("808") || n.contains("sub") {
-        Color32::from_rgb(167, 139, 250)
+        Color32::from_rgb(202, 142, 50)
     } else if n.contains("chord") || n.contains("pad") || n.contains("key") {
-        Color32::from_rgb(96, 165, 250)
+        Color32::from_rgb(214, 201, 166)
     } else if n.contains("lead") || n.contains("melody") || n.contains("bell") {
-        Color32::from_rgb(244, 114, 182)
+        Color32::from_rgb(192, 91, 61)
     } else {
         match kind {
-            "sampler" => Color32::from_rgb(251, 191, 36),
-            "drum" => Color32::from_rgb(45, 212, 191),
-            "fm" => Color32::from_rgb(129, 140, 248),
-            _ => Color32::from_rgb(232, 121, 249),
+            "sampler" => Color32::from_rgb(218, 163, 65),
+            "drum" => Color32::from_rgb(79, 162, 150),
+            "fm" => Color32::from_rgb(79, 162, 150),
+            _ => Color32::from_rgb(214, 201, 166),
         }
     }
 }
@@ -89,7 +109,7 @@ pub fn knob(
     log: bool,
     color: Color32,
 ) -> (Response, bool) {
-    let size = Vec2::new(50.0, 62.0);
+    let size = Vec2::new(64.0, 84.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let to_norm = |v: f32| -> f32 {
         if log && min > 0.0 {
@@ -119,8 +139,8 @@ pub fn knob(
     }
     let committed = resp.drag_stopped();
     let painter = ui.painter_at(rect);
-    let c = Pos2::new(rect.center().x, rect.top() + 22.0);
-    let r = 17.0;
+    let c = Pos2::new(rect.center().x, rect.top() + 28.0);
+    let r = 22.0;
     let a0 = PI * 0.75;
     let a1 = PI * 2.25;
     let arc = |from: f32, to: f32, rad: f32| -> Vec<Pos2> {
@@ -137,14 +157,14 @@ pub fn knob(
         c,
         r - 3.0,
         if hover {
-            Color32::from_rgb(54, 54, 57)
+            Color32::from_rgb(62, 51, 37)
         } else {
-            Color32::from_rgb(42, 42, 44)
+            Color32::from_rgb(36, 30, 23)
         },
     );
     painter.add(Shape::line(
         arc(a0, a1, r),
-        Stroke::new(3.5_f32, Color32::from_rgb(60, 60, 63)),
+        Stroke::new(3.5_f32, Color32::from_rgb(72, 59, 43)),
     ));
     if t > 0.001 {
         painter.add(Shape::line(
@@ -160,17 +180,29 @@ pub fn knob(
         ],
         Stroke::new(2.5_f32, TEXT),
     );
-    let text = if hover {
-        format_value(*value)
-    } else {
-        short(label)
-    };
+    for i in 0..=10 {
+        let a = a0 + (a1 - a0) * i as f32 / 10.0;
+        painter.line_segment(
+            [
+                c + Vec2::angled(a) * (r + 4.0),
+                c + Vec2::angled(a) * (r + 7.0),
+            ],
+            Stroke::new(1.0_f32, if (i as f32 / 10.0) <= t { color } else { LINE }),
+        );
+    }
+    painter.text(
+        Pos2::new(rect.center().x, rect.bottom() - 24.0),
+        Align2::CENTER_CENTER,
+        short(label),
+        FontId::monospace(10.5),
+        DIM,
+    );
     painter.text(
         Pos2::new(rect.center().x, rect.bottom() - 9.0),
         Align2::CENTER_CENTER,
-        text,
-        FontId::proportional(10.5),
-        if hover { TEXT } else { DIM },
+        format_value(*value),
+        FontId::monospace(11.0),
+        TEXT,
     );
     let resp = resp.on_hover_text(format!("{label}: {}", format_value(*value)));
     (resp, committed)
@@ -272,14 +304,15 @@ pub fn vgradient_bar(p: &egui::Painter, rect: Rect, bottom: Color32, top: Color3
 }
 
 /// Segmented tab control. Returns the index clicked this frame, if any.
+#[allow(dead_code)]
 pub fn tabs(ui: &mut Ui, labels: &[&str], current: usize) -> Option<usize> {
     let mut clicked = None;
     let h = 28.0;
-    let widths: Vec<f32> = labels.iter().map(|l| 22.0 + l.len() as f32 * 7.4).collect();
+    let widths: Vec<f32> = labels.iter().map(|l| 20.0 + l.len() as f32 * 7.0).collect();
     let total: f32 = widths.iter().sum::<f32>() + 6.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(total, h), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 3.0, Tokens::DARK.toolbar_bg);
+    p.rect_filled(rect, 3.0, Tokens::DARK.panel_bg);
     p.rect_stroke(rect, 3.0, Stroke::new(1.0_f32, Tokens::DARK.border));
     let mut x = rect.left() + 3.0;
     for (i, (l, w)) in labels.iter().zip(widths.iter()).enumerate() {
@@ -287,7 +320,7 @@ pub fn tabs(ui: &mut Ui, labels: &[&str], current: usize) -> Option<usize> {
         let resp = ui.interact(r, ui.id().with(("tab", i, *l)), Sense::click());
         let on = i == current;
         if on {
-            p.rect_filled(r, 2.0, ACCENT);
+            p.rect_filled(r, 4.0, Tokens::DARK.button_hi);
         } else if resp.hovered() {
             p.rect_filled(r, 2.0, Tokens::DARK.button);
         }
@@ -295,8 +328,8 @@ pub fn tabs(ui: &mut Ui, labels: &[&str], current: usize) -> Option<usize> {
             r.center(),
             Align2::CENTER_CENTER,
             *l,
-            FontId::proportional(11.5),
-            if on { Color32::WHITE } else { DIM },
+            FontId::proportional(12.5),
+            if on { TEXT } else { DIM },
         );
         if resp.clicked() {
             clicked = Some(i);
@@ -370,16 +403,16 @@ pub fn mini_knob(
     let c = rect.center();
     let r = rect.width().min(rect.height()) * 0.5 - 1.5;
     let hot = resp.hovered() || resp.dragged();
-    p.circle_filled(c, r, Color32::from_rgb(28, 29, 33));
+    p.circle_filled(c, r, Color32::from_rgb(27, 23, 18));
     p.circle_stroke(
         c,
         r,
         Stroke::new(
             1.0_f32,
             if hot {
-                Color32::from_rgb(110, 114, 124)
+                Color32::from_rgb(185, 174, 152)
             } else {
-                Color32::from_rgb(64, 67, 74)
+                Color32::from_rgb(89, 77, 58)
             },
         ),
     );
@@ -397,7 +430,7 @@ pub fn mini_knob(
     }
     p.line_segment(
         [at(ang(t), r * 0.25), at(ang(t), r - 2.5)],
-        Stroke::new(1.6_f32, Color32::from_rgb(232, 232, 236)),
+        Stroke::new(1.6_f32, Color32::from_rgb(239, 231, 212)),
     );
     done
 }
@@ -411,9 +444,9 @@ pub fn keys_button(ui: &mut Ui, rect: Rect, id: egui::Id, on: bool, color: Color
     let bg = if on {
         color.gamma_multiply(0.45)
     } else if resp.hovered() {
-        Color32::from_rgb(58, 60, 66)
+        Color32::from_rgb(62, 51, 37)
     } else {
-        Color32::from_rgb(40, 41, 46)
+        Color32::from_rgb(36, 30, 23)
     };
     p.rect_filled(rect, 3.0, bg);
     let inner = rect.shrink2(Vec2::new(3.0, 4.0));
@@ -426,7 +459,7 @@ pub fn keys_button(ui: &mut Ui, rect: Rect, id: egui::Id, on: bool, color: Color
                 Vec2::new(kw - 1.0, inner.height()),
             ),
             1.0,
-            Color32::from_rgb(214, 214, 220),
+            Color32::from_rgb(239, 231, 212),
         );
     }
     for k in [1.0f32, 2.0, 3.0] {
@@ -440,7 +473,7 @@ pub fn keys_button(ui: &mut Ui, rect: Rect, id: egui::Id, on: bool, color: Color
                 Vec2::new(kw * 0.6, inner.height() * 0.58),
             ),
             0.5,
-            Color32::from_rgb(24, 24, 28),
+            Color32::from_rgb(20, 17, 13),
         );
     }
     resp

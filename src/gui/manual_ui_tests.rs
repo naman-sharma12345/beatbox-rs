@@ -2,9 +2,10 @@
 //! beatbox-rs is fully manual ... The whole beatbox-rs should be
 //! controllable through mcp." These checks keep it that way.
 
-const SOURCES: [(&str, &str); 14] = [
+const SOURCES: [(&str, &str); 16] = [
     ("analyze_view.rs", include_str!("analyze_view.rs")),
     ("browser_view.rs", include_str!("browser_view.rs")),
+    ("channel_rack.rs", include_str!("channel_rack.rs")),
     ("console.rs", include_str!("console.rs")),
     ("export_view.rs", include_str!("export_view.rs")),
     ("mod.rs", include_str!("mod.rs")),
@@ -17,6 +18,7 @@ const SOURCES: [(&str, &str); 14] = [
     ("views.rs", include_str!("views.rs")),
     ("vocal_view.rs", include_str!("vocal_view.rs")),
     ("widgets.rs", include_str!("widgets.rs")),
+    ("workspace.rs", include_str!("workspace.rs")),
 ];
 
 /// String literals in Rust source (comments skipped), with their line.
@@ -81,12 +83,13 @@ fn gui_text_has_no_ai_wording() {
             if is_ident(&lit) {
                 continue;
             }
-            // default file names (a saved project, a part file) are names, not wording
+            // default file names (a saved project, a part file, a numbered
+            // "beat-{n}.beatbox.json") are names on disk, not wording on screen
             let is_file = lit.contains('.')
                 && !lit.contains(' ')
                 && lit
                     .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c));
+                    .all(|c| c.is_ascii_alphanumeric() || "._-/{}".contains(c));
             if is_file {
                 continue;
             }
@@ -206,6 +209,7 @@ fn gui_has_only_manual_views() {
 fn every_gui_action_is_an_mcp_tool() {
     let mut missing = Vec::new();
     for (file, src) in SOURCES {
+        let src = src.split("#[cfg(test)]").next().unwrap_or(src);
         // call("tool", ..) / call_from("tool", ..) / op = Some(("tool", ..)) / Some(("tool".into(), ..))
         for pat in ["call(\"", "call_from(\"", "Some((\""] {
             let mut rest = src;
@@ -402,6 +406,8 @@ fn every_tool_is_reachable_from_the_gui() {
         "screenshot",
         "search_samples",
         "search_tools",
+        // Read-only arrangement summary is shown directly in the section-order panel.
+        "get_arrangement",
         "set_arrangement",
         "set_macro",
         "set_parameters",
@@ -453,4 +459,48 @@ fn every_tool_is_reachable_from_the_gui() {
         missing.is_empty(),
         "tools with no GUI entry and not on the NO_GUI list: {missing:?}"
     );
+}
+
+#[test]
+fn piano_drag_uses_press_origin_before_hit_testing() {
+    // A note edge is only five pixels wide. The drag threshold may carry
+    // the current pointer beyond it, so drag setup must use the press point.
+    let piano = include_str!("piano.rs");
+    let drag = piano
+        .split("if !self.piano.gesture_cancelled && resp.drag_started() {")
+        .nth(1)
+        .unwrap();
+    let setup = drag
+        .split("if !self.piano.gesture_cancelled && resp.dragged() {")
+        .next()
+        .unwrap();
+    assert!(setup.contains("i.pointer.press_origin()"));
+    assert!(setup.contains("match hit(start)"));
+    assert!(setup.contains("self.piano.band = Some(start)"));
+}
+
+#[test]
+fn save_success_feedback_is_guarded_by_tool_result() {
+    let studio = include_str!("mod.rs");
+    let save = studio.split("fn save(&mut self) {").nth(1).unwrap();
+    let save = save.split("fn render_wav").next().unwrap();
+    // only this function: the next one (open) has its own Ok/Err arms
+    let save = save.split("\n    fn ").next().unwrap();
+    assert!(save.contains("match result"));
+    let success = save.split("Ok(_) => {").nth(1).unwrap();
+    let success = success.split("Err(e) =>").next().unwrap();
+    assert!(success.contains("self.project_path = Some(path.clone())"));
+    assert!(success.contains("format!(\"Saved {}\""));
+    // the failure toast names the file and shows the real error, and never
+    // reports success (the last argument, `true`, only appears under Ok)
+    let failure = save.split("Err(e) =>").nth(1).unwrap();
+    assert!(failure.contains("Could not save"));
+    assert!(failure.contains("{e:#}"));
+    assert!(failure.contains("false"));
+    assert!(!failure.contains("Saved {}"));
+    // a failed save must not mark the project as saved or point it at the file
+    assert!(!failure.contains("project_path"));
+    assert!(!failure.contains("saved_rev"));
+    // and success is only reported from the Ok arm, with the success flag
+    assert!(success.contains("0.0, true"));
 }

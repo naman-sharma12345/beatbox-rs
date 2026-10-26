@@ -15,6 +15,194 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::sync::OnceLock;
 
+fn rename_pattern(e: &mut Engine, a: &Value) -> Result<Value> {
+    let i = e.project.pattern_index(&s_req(a, "pattern")?)?;
+    let new = a
+        .get("new_name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("new_name must be a string"))?
+        .trim()
+        .to_string();
+    if new.is_empty() || new.to_lowercase().starts_with(crate::tools_fl::PL) {
+        bail!("Pattern name cannot be blank or start with pl:");
+    }
+    let old = e.project.patterns[i].name.clone();
+    let id = e.project.patterns[i].id.clone();
+    if old.starts_with(crate::tools_fl::PL) {
+        bail!("Generated playlist patterns cannot be renamed");
+    }
+    if e.project
+        .patterns
+        .iter()
+        .enumerate()
+        .any(|(j, p)| j != i && p.name.eq_ignore_ascii_case(&new))
+    {
+        bail!("Pattern name already exists");
+    }
+    // A display name must not steal another pattern's stable-ID alias.
+    if e.project
+        .patterns
+        .iter()
+        .enumerate()
+        .any(|(j, p)| j != i && !p.id.is_empty() && p.id.eq_ignore_ascii_case(&new))
+    {
+        bail!("Pattern name conflicts with a stable ID");
+    }
+    let refs = |v: &str| v.trim().eq_ignore_ascii_case(&old) || (!id.is_empty() && v.trim() == id);
+    let mut arrangement = 0;
+    let mut playlist = 0;
+    for section in &mut e.project.arrangement {
+        if refs(&section.pattern) {
+            section.pattern = new.clone();
+            arrangement += 1;
+        }
+    }
+    for clip in &mut e.project.playlist {
+        if refs(&clip.pattern) {
+            clip.pattern = new.clone();
+            playlist += 1;
+        }
+    }
+    e.project.patterns[i].name = new.clone();
+    Ok(
+        json!({"renamed":old,"name":new,"id":id,"arrangement_references":arrangement,"playlist_references":playlist}),
+    )
+}
+
+fn duplicate_pattern(e: &mut Engine, a: &Value) -> Result<Value> {
+    let i = e.project.pattern_index(&s_req(a, "pattern")?)?;
+    let source = &e.project.patterns[i];
+    if source.name.to_lowercase().starts_with(crate::tools_fl::PL) {
+        bail!("Generated playlist patterns cannot be duplicated; choose a user pattern");
+    }
+    let unavailable = |name: &str| {
+        e.project.patterns.iter().any(|p| {
+            p.name.eq_ignore_ascii_case(name)
+                || (!p.id.is_empty() && p.id.eq_ignore_ascii_case(name))
+        })
+    };
+    let name = if let Some(value) = a.get("new_name") {
+        let name = value
+            .as_str()
+            .ok_or_else(|| anyhow!("new_name must be a string"))?
+            .trim()
+            .to_string();
+        if name.is_empty() || name.to_lowercase().starts_with(crate::tools_fl::PL) {
+            bail!("Pattern name cannot be blank or start with pl:");
+        }
+        if unavailable(&name) {
+            bail!("Pattern name conflicts with an existing pattern name or stable ID");
+        }
+        name
+    } else {
+        let base = format!("{} copy", source.name);
+        let mut name = base.clone();
+        let mut suffix = 2u64;
+        while unavailable(&name) {
+            name = format!("{base} {suffix}");
+            suffix += 1;
+        }
+        name
+    };
+    let mut copy = source.clone();
+    let source_name = source.name.clone();
+    copy.name = name.clone();
+    // A duplicate is independent material, never an alias to the source.
+    copy.id.clear();
+    for notes in copy.clips.values_mut() {
+        for note in notes {
+            note.id.clear();
+        }
+    }
+    let bars = copy.bars;
+    e.project.patterns.push(copy);
+    Ok(
+        json!({"pattern":name,"copied_from":source_name,"bars":bars,"index":e.project.patterns.len()-1,"placed_in_song":false}),
+    )
+}
+
+fn set_track_insert_bypass(e: &mut Engine, a: &Value) -> Result<Value> {
+    let i = e.project.track_index(&s_req(a, "track")?)?;
+    let bypass = a
+        .get("bypass")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| anyhow::anyhow!("bypass must be true or false"))?;
+    let track = &mut e.project.tracks[i];
+    let mut changed = 0;
+    for effect in &mut track.effects {
+        if effect.bypassed() != bypass {
+            changed += 1;
+            effect.set_bypass(bypass);
+        }
+    }
+    Ok(
+        json!({"track":track.name,"id":track.id,"bypassed":bypass,"inserts":track.effects.len(),"changed":changed,
+        "restore_previous_mixed_state":"Undo"}),
+    )
+}
+
+fn offset_track_faders(e: &mut Engine, a: &Value) -> Result<Value> {
+    let delta = a
+        .get("delta_db")
+        .and_then(Value::as_f64)
+        .filter(|n| n.is_finite() && (-12.0..=12.0).contains(n))
+        .ok_or_else(|| anyhow::anyhow!("delta_db must be a finite number from -12 to 12"))?
+        as f32;
+    if delta == 0.0 || e.project.tracks.is_empty() {
+        return Ok(json!({"delta_db":delta,"changed_tracks":0}));
+    }
+    for track in &e.project.tracks {
+        if e.project
+            .automation
+            .iter()
+            .any(|l| l.enabled && !l.points.is_empty() && l.is_target(&track.name, "volume"))
+        {
+            bail!("Track '{}' has active volume automation. Edit or disable that lane first; no faders changed",track.name);
+        }
+        let next = track.volume_db + delta;
+        if !next.is_finite() || !(-60.0..=12.0).contains(&next) {
+            bail!(
+                "Track '{}' would exceed the -60 to +12 dB fader range; no faders changed",
+                track.name
+            );
+        }
+    }
+    for track in &mut e.project.tracks {
+        track.volume_db += delta;
+    }
+    Ok(
+        json!({"delta_db":delta,"changed_tracks":e.project.tracks.len(),"relative_fader_balance_preserved":true,
+        "bus_master_unchanged":true}),
+    )
+}
+
+fn clear_track_solos(e: &mut Engine, _: &Value) -> Result<Value> {
+    let mut cleared = Vec::new();
+    for track in &mut e.project.tracks {
+        if track.solo {
+            track.solo = false;
+            cleared.push(track.name.clone());
+        }
+    }
+    Ok(json!({"cleared":cleared,"remaining_solos":0,"mutes_preserved":true}))
+}
+
+fn solo_track_exclusive(e: &mut Engine, a: &Value) -> Result<Value> {
+    let selected = e.project.track_index(&s_req(a, "track")?)?;
+    let mut cleared = Vec::new();
+    for (i, track) in e.project.tracks.iter_mut().enumerate() {
+        if i != selected && track.solo {
+            cleared.push(track.name.clone());
+        }
+        track.solo = i == selected;
+    }
+    let track = &e.project.tracks[selected];
+    Ok(
+        json!({"track":track.name,"id":track.id,"solo":true,"track_muted":track.mute,
+        "cleared":cleared,"mutes_preserved":true}),
+    )
+}
+
 pub struct Tool {
     pub name: &'static str,
     pub description: &'static str,
@@ -862,7 +1050,7 @@ pub(crate) fn core_tools() -> Vec<Tool> {
         },
         Tool {
             name: "load_project",
-            description: "Load a project JSON file (replaces the current project; undo restores it). Its saved MIDI links and keys track come back; a connected controller stays connected.",
+            description: "Load a project JSON file (replaces the current project; undo restores it). Its saved MIDI links and keys track come back; a connected controller stays connected. Replaces session snapshots with this file's valid companion snapshots (none if missing/unreadable/malformed), never retains snapshots from the previous song. A failed main-project read/validation keeps the current project and snapshots intact.",
             mutates: false,
             schema: || obj(json!({"path": {"type": "string"}}), &["path"]),
             run: |e, a| {
@@ -874,6 +1062,9 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 e.replace_project(p);
                 let saved_midi = e.project.midi.clone();
                 let (midi_links, midi_skipped) = crate::midi_in::restore(e, saved_midi.as_ref());
+                // A successfully opened song owns its own checkpoints. Never
+                // leave snapshots from the previous project in the picker.
+                e.snapshots.clear();
                 let mut loaded = 0;
                 let mut snapshots_skipped = 0;
                 if let Ok(t) = std::fs::read_to_string(snapshots_path(&path)) {
@@ -1028,6 +1219,18 @@ pub(crate) fn core_tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "rename_track",
+            description: "Rename a channel. Notes, automation, playlist clips, macros and sidechain sources that point at it follow the new name. {track, name}.",
+            mutates: true,
+            schema: || obj(json!({"track": {"type": "string"}, "name": {"type": "string"}}), &["track", "name"]),
+            run: |e, a| {
+                let i = e.project.track_index(&s_req(a, "track")?)?;
+                let new = s_req(a, "name")?;
+                let old = e.project.rename_track(i, &new)?;
+                Ok(json!({"renamed": old, "name": e.project.tracks[i].name}))
+            },
+        },
+        Tool {
             name: "set_instrument",
             description: "Replace a track's instrument with a preset or instrument object.",
             mutates: true,
@@ -1054,6 +1257,34 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 reject_unknown(patch, &eff, "tweak_instrument")?;
                 Ok(eff)
             },
+        },
+        Tool {
+            name: "solo_track_exclusive",
+            description: "Solo exactly one track (name or stable ID), clearing every other track solo flag in one Undo step. Preserves track/bus mutes and all faders, pan, routing, sends, effects, automation and material/IDs. A muted selected track remains muted; this is not an unmute action or a bus solo. Missing track rejects atomically. Already exclusive is a no-op with no history entry.",
+            mutates: true,
+            schema: || obj(json!({"track":{"type":"string"}}), &["track"]),
+            run: solo_track_exclusive,
+        },
+        Tool {
+            name: "set_track_insert_bypass",
+            description: "Set bypass on EVERY insert of one track, by name or stable ID, in one Undo step. bypass=true bypasses all; false enables ALL, including previously bypassed inserts, and is NOT a restore of a previous mixed state. Use Undo for exact restoration. Keeps insert IDs/order/settings, track fader/pan/mute/solo, sends/routing, automation, other tracks and bus/master chains unchanged. Track-only; rejects buses/master/missing track and invalid bypass atomically. Empty/already-matching chain is a no-op. Bypass can change loudness.",
+            mutates: true,
+            schema: || obj(json!({"track":{"type":"string"},"bypass":{"type":"boolean"}}), &["track","bypass"]),
+            run: set_track_insert_bypass,
+        },
+        Tool {
+            name: "offset_track_faders",
+            description: "Move ALL track faders by the same delta_db (-12 to 12), preserving their relative fader balance in one Undo step. Includes muted/soloed tracks. Bus/master faders, pan, mutes/solos, sends, routing, effects, automation and notes unchanged. Rejects the WHOLE edit if a track has active nonempty volume automation or any fader would exceed -60 to +12 dB; never clamps individual tracks. This is a fader edit, not a guaranteed output-level or quality change with nonlinear effects/routing. Zero delta or no tracks is a no-op.",
+            mutates: true,
+            schema: || obj(json!({"delta_db":{"type":"number","minimum":-12,"maximum":12}}), &["delta_db"]),
+            run: offset_track_faders,
+        },
+        Tool {
+            name: "clear_track_solos",
+            description: "Clear every track's solo flag in one Undo step, so hidden/offscreen solos do not isolate the mix. Preserves track and bus mutes, faders, pan, sends/routing, effects, automation and all note material/IDs. Does not guarantee all tracks will sound: muted tracks/buses stay muted. A no-op creates no history entry.",
+            mutates: true,
+            schema: || obj(json!({}), &[]),
+            run: clear_track_solos,
         },
         Tool {
             name: "set_mixer",
@@ -1222,6 +1453,20 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 e.project.patterns.push(pat);
                 Ok(json!({"pattern": name, "bars": bars}))
             },
+        },
+        Tool {
+            name: "duplicate_pattern",
+            description: "Make an independent copy of a user pattern with identical notes, velocities, timing, length and meter, and fresh pattern/note IDs. Optional new_name is trimmed and must not conflict with another pattern or stable ID; otherwise choose 'name copy', 'name copy 2', etc. Does not place the copy in the song or change arrangement, playlist, markers, automation or audio clips. One Undo removes the copy.",
+            mutates: true,
+            schema: || obj(json!({"pattern":{"type":"string"},"new_name":{"type":"string"}}), &["pattern"]),
+            run: duplicate_pattern,
+        },
+        Tool {
+            name: "rename_pattern",
+            description: "Rename one user pattern by name or stable ID, preserving its identity, notes and audio. Updates arrangement and playlist references, including stable-ID references. Rejects blank, conflicting or reserved pl: names and generated playlist patterns. Does not rename markers or historical generation records. Undo restores the name and references.",
+            mutates: true,
+            schema: || obj(json!({"pattern":{"type":"string"},"new_name":{"type":"string"}}), &["pattern","new_name"]),
+            run: rename_pattern,
         },
         Tool {
             name: "remove_pattern",
@@ -1907,12 +2152,18 @@ pub(crate) fn register_sample(e: &mut Engine, mut info: SampleInfo) -> Result<Va
     info.duration = (data.len() as f32 / crate::dsp::SR * 100.0).round() / 100.0;
     let mut name = info.name.clone();
     let mut k = 2;
-    while e.project.samples.iter().any(|s| s.name == name) {
+    while e
+        .project
+        .samples
+        .iter()
+        .any(|s| s.name.eq_ignore_ascii_case(&name))
+    {
         name = format!("{}_{k}", info.name);
         k += 1;
     }
     info.name = name.clone();
-    e.bank.insert(&name, data);
+    e.bank
+        .insert_for_source(&name, std::path::Path::new(&info.path), data);
     e.project.samples.push(info.clone());
     Ok(
         json!({"sample": name, "duration": info.duration, "license": info.license, "source": info.source, "next": "add_sample_track {name, sample}"}),
@@ -2140,5 +2391,954 @@ mod tests {
         e.call("load_project", &json!({"path": "rt.beatbox.json"}))
             .unwrap();
         assert_eq!(e.project, before);
+    }
+
+    #[test]
+    fn rename_track_moves_every_reference_and_undoes() {
+        let mut e = eng();
+        e.call("add_track", &json!({"name": "kick", "preset": "kick"}))
+            .unwrap();
+        e.call("add_track", &json!({"name": "bass", "preset": "acid_bass"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track": "bass", "notes": [{"start": 0, "len": 1, "pitch": 40}]}),
+        )
+        .unwrap();
+        e.call(
+            "add_automation",
+            &json!({"track": "bass", "param": "volume", "points": [{"beat": 0, "value": -6}, {"beat": 4, "value": 0}]}),
+        )
+        .unwrap();
+        e.call(
+            "create_macro",
+            &json!({"name": "m", "targets": [{"track": "bass", "param": "volume", "min": -12, "max": 0}]}),
+        )
+        .unwrap();
+        e.call(
+            "add_effect",
+            &json!({"track": "bass", "type": "sidechain", "params": {"source": "kick", "amount": 0.5}}),
+        )
+        .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern": "A", "start_bar": 0, "tracks": ["bass"]}),
+        )
+        .unwrap();
+        let before = e.project.clone();
+        e.call(
+            "rename_track",
+            &json!({"track": "bass", "name": "Sub Bass"}),
+        )
+        .unwrap();
+        e.call("rename_track", &json!({"track": "kick", "name": "drumz"}))
+            .unwrap();
+        let p = &e.project;
+        assert_eq!(p.tracks[0].name, "drumz");
+        assert_eq!(p.tracks[1].name, "Sub Bass");
+        assert!(!p.tracks[1].id.is_empty());
+        for pat in &p.patterns {
+            assert!(!pat.clips.contains_key("bass"), "{}", pat.name);
+        }
+        assert_eq!(p.patterns[0].notes("Sub Bass").len(), 1);
+        assert!(p.automation.iter().all(|l| l.target == "Sub Bass"));
+        assert!(p.macros[0].targets.iter().all(|t| t.track == "Sub Bass"));
+        assert!(!p.playlist.is_empty());
+        assert!(p
+            .playlist
+            .iter()
+            .all(|c| c.tracks.len() == 1 && c.tracks[0] == "Sub Bass"));
+        let fx = serde_json::to_value(&p.tracks[1].effects).unwrap();
+        assert_eq!(fx[0]["source"], "drumz");
+        assert!(e
+            .call(
+                "rename_track",
+                &json!({"track": "Sub Bass", "name": "DRUMZ"})
+            )
+            .is_err());
+        assert!(e
+            .call("rename_track", &json!({"track": "Sub Bass", "name": " "}))
+            .is_err());
+        assert!(e
+            .call(
+                "rename_track",
+                &json!({"track": "Sub Bass", "name": "master"})
+            )
+            .is_err());
+        e.call("undo", &json!({"steps": 2})).unwrap();
+        assert_eq!(e.project.tracks[1].name, "bass");
+        assert_eq!(
+            e.project.patterns[0].notes("bass").len(),
+            before.patterns[0].notes("bass").len()
+        );
+        e.call("redo", &json!({"steps": 2})).unwrap();
+        assert_eq!(e.project.tracks[1].name, "Sub Bass");
+    }
+}
+
+#[cfg(test)]
+mod legacy_sample_name_tests {
+    use serde_json::json;
+    #[test]
+    fn importing_against_mixed_case_legacy_name_keeps_both_buffers() {
+        let dir = std::env::temp_dir().join(format!("beatbox-legacy-case-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.wav");
+        let b = dir.join("b.wav");
+        for (p, n) in [(&a, 1000), (&b, 2000)] {
+            crate::render::write_wav(p, &vec![0.1; n], &vec![0.1; n]).unwrap();
+        }
+        let mut e = crate::Engine::new(dir.clone());
+        e.call("import_sample", &json!({"path":a,"name":"voice"}))
+            .unwrap();
+        e.project.samples[0].name = "Voice".into();
+        let result = e
+            .call("import_sample", &json!({"path":b,"name":"voice"}))
+            .unwrap();
+        assert_eq!(result["sample"], "voice_2");
+        assert_eq!(e.bank.get("Voice").unwrap().len(), 1000);
+        assert_eq!(e.bank.get("voice_2").unwrap().len(), 2000);
+        assert!(e.bank.sync(&e.project.samples).is_empty());
+        assert_eq!(e.bank.get("Voice").unwrap().len(), 1000);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(e.project.samples.len(), 1);
+        e.call("redo", &json!({})).unwrap();
+        e.call("save_project", &json!({"path":"case.json"}))
+            .unwrap();
+        e.call("load_project", &json!({"path":"case.json"}))
+            .unwrap();
+        assert_eq!(e.project.samples[0].name, "Voice");
+        assert_eq!(e.project.samples[1].name, "voice_2");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod pattern_rename_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    fn fixture() -> beatbox::Engine {
+        let mut e = beatbox::Engine::new("/tmp/pattern-rename-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
+        )
+        .unwrap();
+        e
+    }
+    #[test]
+    fn pattern_rename_references_ids_history_reopen() {
+        let mut e = fixture();
+        let old = e.project.patterns[0].name.clone();
+        let id = e.project.patterns[0].id.clone();
+        e.call("set_arrangement",&json!({"sections":[{"pattern":old.to_uppercase(),"repeats":2},{"pattern":id,"repeats":1}]})).unwrap();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let opts = beatbox::render::RenderOptions {
+            tail: 0.,
+            ..Default::default()
+        };
+        let before = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        e.call(
+            "pattern",
+            &json!({"action":"rename_pattern","params":{"pattern":id,"new_name":"  Hook A  "}}),
+        )
+        .unwrap();
+        let mut x = b.clone();
+        x["patterns"][0]["name"] = json!("Hook A");
+        for s in x["arrangement"].as_array_mut().unwrap() {
+            s["pattern"] = json!("Hook A");
+        }
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), x);
+        let after = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert_eq!(before.left, after.left);
+        assert_eq!(before.right, after.right);
+        let n = e.history().0.len();
+        e.call("rename_pattern", &json!({"pattern":id,"new_name":"Hook A"}))
+            .unwrap();
+        assert_eq!(n, e.history().0.len());
+        e.call(
+            "save_project",
+            &json!({"path":"/tmp/pattern-rename-reopen.json"}),
+        )
+        .unwrap();
+        let mut f = fixture();
+        f.call(
+            "load_project",
+            &json!({"path":"/tmp/pattern-rename-reopen.json"}),
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&f.project).unwrap(), x);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), x);
+    }
+    #[test]
+    fn pattern_rename_playlist_recompile_audio() {
+        let mut e = fixture();
+        let old = e.project.patterns[0].name.clone();
+        let id = e.project.patterns[0].id.clone();
+        e.call(
+            "place_pattern",
+            &json!({"pattern":old,"start_bar":1,"bars":2,"lane":0}),
+        )
+        .unwrap();
+        let opts = beatbox::render::RenderOptions {
+            tail: 0.,
+            ..Default::default()
+        };
+        let b = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        let notes = e.project.patterns[0].clips.clone();
+        let clips = e.project.playlist.clone();
+        e.call("rename_pattern", &json!({"pattern":id,"new_name":"Verse"}))
+            .unwrap();
+        assert_eq!(e.project.patterns[0].clips, notes);
+        assert_eq!(e.project.playlist[0].pattern, "Verse");
+        assert_eq!(e.project.playlist[0].id, clips[0].id);
+        beatbox::tools_fl::compile_playlist(&mut e.project).unwrap();
+        let a = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert_eq!(b.left, a.left);
+        assert_eq!(b.right, a.right);
+    }
+    #[test]
+    fn pattern_rename_rejects_atomically() {
+        let mut e = fixture();
+        let old = e.project.patterns[0].name.clone();
+        e.call("add_pattern", &json!({"name":"Other"})).unwrap();
+        let other = e.project.patterns[1].id.clone();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let n = e.history().0.len();
+        for a in [
+            json!({"pattern":old,"new_name":" "}),
+            json!({"pattern":old,"new_name":"oThEr"}),
+            json!({"pattern":old,"new_name":other}),
+            json!({"pattern":old,"new_name":"PL:generated"}),
+            json!({"pattern":"missing","new_name":"Verse"}),
+            json!({"pattern":old,"new_name":7}),
+        ] {
+            assert!(e.call("rename_pattern", &a).is_err(), "accepted {a}");
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+            assert_eq!(n, e.history().0.len());
+        }
+        e.project
+            .patterns
+            .push(beatbox::project::Pattern::new("pl:hidden", 1));
+        assert!(e
+            .call(
+                "rename_pattern",
+                &json!({"pattern":"pl:hidden","new_name":"Visible"})
+            )
+            .is_err());
+    }
+}
+
+#[cfg(test)]
+mod pattern_duplicate_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    fn fixture() -> beatbox::Engine {
+        let mut e = beatbox::Engine::new("/tmp/duplicate-pattern-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
+        )
+        .unwrap();
+        e
+    }
+    #[test]
+    fn duplicate_preserves_material_not_identity_or_song() {
+        let mut e = fixture();
+        e.project.patterns[0].meter = Some((7, 8));
+        let b = serde_json::to_value(&e.project).unwrap();
+        let old = e.project.patterns[0].clone();
+        let audio = beatbox::render::render(&e.project, &e.bank, &Default::default()).unwrap();
+        let response=e.call("pattern",&json!({"action":"duplicate_pattern","params":{"pattern":old.id,"new_name":"  Hook variation  "}})).unwrap();
+        assert_eq!(response["pattern"], "Hook variation");
+        assert_eq!(response["placed_in_song"], false);
+        let c = &e.project.patterns[1];
+        assert_ne!(old.id, c.id);
+        assert_eq!(c.name, "Hook variation");
+        assert_eq!(c.bars, old.bars);
+        assert_eq!(c.meter, old.meter);
+        let mut expected = old.clone();
+        expected.name = c.name.clone();
+        expected.id = c.id.clone();
+        for (t, notes) in &mut expected.clips {
+            for (n, cn) in notes.iter_mut().zip(&c.clips[t]) {
+                assert_ne!(n.id, cn.id);
+                assert!(!cn.id.is_empty());
+                n.id = cn.id.clone();
+            }
+        }
+        assert_eq!(&expected, c);
+        let mut after = serde_json::to_value(&e.project).unwrap();
+        after["patterns"].as_array_mut().unwrap().pop();
+        let mut base = b.clone();
+        base.as_object_mut().unwrap().remove("id_seq");
+        after.as_object_mut().unwrap().remove("id_seq");
+        for (k, v) in base.as_object().unwrap() {
+            if after.get(k) != Some(v) {
+                panic!("unexpected changed field: {}", k);
+            }
+        }
+        let a = beatbox::render::render(&e.project, &e.bank, &Default::default()).unwrap();
+        assert_eq!(audio.left, a.left);
+        assert_eq!(audio.right, a.right);
+        e.call(
+            "save_project",
+            &json!({"path":"/tmp/duplicate-pattern-reopen.json"}),
+        )
+        .unwrap();
+        let saved = serde_json::to_value(&e.project).unwrap();
+        let mut f = fixture();
+        f.call(
+            "load_project",
+            &json!({"path":"/tmp/duplicate-pattern-reopen.json"}),
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&f.project).unwrap(), saved);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), saved);
+    }
+    #[test]
+    fn duplicate_names_are_safe_and_copies_independent() {
+        let mut e = fixture();
+        let source = e.project.patterns[0].clone();
+        for n in [
+            format!("{} copy", source.name),
+            format!("{} copy 2", source.name),
+        ] {
+            let a = e
+                .call("duplicate_pattern", &json!({"pattern":source.id}))
+                .unwrap();
+            assert_eq!(a["pattern"], n);
+        }
+        let copy = e.project.patterns[1].clone();
+        let track = copy.clips.keys().next().unwrap().clone();
+        e.project.patterns[1].clips.get_mut(&track).unwrap()[0].vel = 0.123;
+        assert_eq!(e.project.patterns[0], source);
+        let count = e.project.patterns.len();
+        let bads = [
+            json!({"pattern":source.id,"new_name":" "}),
+            json!({"pattern":source.id,"new_name":"PL:generated"}),
+            json!({"pattern":source.id,"new_name":source.name.to_uppercase()}),
+            json!({"pattern":source.id,"new_name":source.id.to_uppercase()}),
+            json!({"pattern":source.id,"new_name":7}),
+            json!({"pattern":"missing"}),
+        ];
+        let b = serde_json::to_value(&e.project).unwrap();
+        let h = e.history().0.len();
+        for a in bads {
+            assert!(e.call("duplicate_pattern", &a).is_err(), "{a}");
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+            assert_eq!(h, e.history().0.len());
+        }
+        assert_eq!(count, e.project.patterns.len());
+        e.project
+            .patterns
+            .push(beatbox::project::Pattern::new("pl:generated", 1));
+        assert!(e
+            .call("duplicate_pattern", &json!({"pattern":"pl:generated"}))
+            .is_err());
+    }
+    #[test]
+    fn duplicate_playlist_does_not_add_or_retarget_clips() {
+        let mut e = fixture();
+        let source = e.project.patterns[0].clone();
+        e.call(
+            "place_pattern",
+            &json!({"pattern":source.name,"start_bar":1,"bars":2,"lane":0}),
+        )
+        .unwrap();
+        let clips = e.project.playlist.clone();
+        e.call("duplicate_pattern", &json!({"pattern":source.id}))
+            .unwrap();
+        assert_eq!(clips, e.project.playlist);
+    }
+}
+
+#[cfg(test)]
+mod clear_solo_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    fn fixture() -> beatbox::Engine {
+        let mut e = beatbox::Engine::new("/tmp/clear-solo-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
+        )
+        .unwrap();
+        e.call(
+            "set_mixer",
+            &json!({"track":"drums","solo":true,"mute":true,"volume_db":-8,"pan":0.25}),
+        )
+        .unwrap();
+        e.call("set_mixer", &json!({"track":"piano","solo":true}))
+            .unwrap();
+        e.call("add_bus", &json!({"name":"Room"})).unwrap();
+        e.call(
+            "set_mixer",
+            &json!({"track":"Room","mute":true,"volume_db":-4}),
+        )
+        .unwrap();
+        e
+    }
+    #[test]
+    fn clear_solo_scope_history_reopen() {
+        let mut e = fixture();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let r = e
+            .call("mixer", &json!({"action":"clear_track_solos","params":{}}))
+            .unwrap();
+        assert_eq!(r["cleared"], json!(["drums", "piano"]));
+        let mut x = b.clone();
+        for t in x["tracks"].as_array_mut().unwrap() {
+            t["solo"] = json!(false);
+        }
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), x);
+        let h = e.history().0.len();
+        e.call("clear_track_solos", &json!({})).unwrap();
+        assert_eq!(h, e.history().0.len());
+        e.call(
+            "save_project",
+            &json!({"path":"/tmp/clear-solo-reopen.json"}),
+        )
+        .unwrap();
+        let mut f = fixture();
+        f.call(
+            "load_project",
+            &json!({"path":"/tmp/clear-solo-reopen.json"}),
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&f.project).unwrap(), x);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), x);
+    }
+    #[test]
+    fn clear_solo_noop_and_mutes_preserved() {
+        let mut e = fixture();
+        e.project.tracks.iter_mut().for_each(|t| t.solo = false);
+        let b = serde_json::to_value(&e.project).unwrap();
+        let h = e.history().0.len();
+        let rev = e.revision;
+        let r = e.call("clear_track_solos", &json!({})).unwrap();
+        assert_eq!(r["cleared"], json!([]));
+        assert_eq!(b, serde_json::to_value(&e.project).unwrap());
+        assert_eq!(h, e.history().0.len());
+        assert_eq!(rev, e.revision);
+        e.project.tracks.clear();
+        let b = e.project.clone();
+        e.call("clear_track_solos", &json!({})).unwrap();
+        assert_eq!(b, e.project);
+    }
+    #[test]
+    fn clear_solo_render_matches_manual_flags() {
+        let mut e = fixture();
+        e.project.tracks[0].solo = false;
+        let opts = beatbox::render::RenderOptions {
+            tail: 0.,
+            ..Default::default()
+        };
+        let mut expected = e.project.clone();
+        expected.tracks.iter_mut().for_each(|t| t.solo = false);
+        let off = beatbox::render::render(&expected, &e.bank, &opts).unwrap();
+        e.call("clear_track_solos", &json!({})).unwrap();
+        assert!(e.project.tracks[0].mute);
+        assert!(e.project.buses[0].mute);
+        let actual = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert_eq!(actual.left, off.left);
+        assert_eq!(actual.right, off.right);
+    }
+}
+
+#[cfg(test)]
+mod exclusive_solo_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    fn fixture() -> beatbox::Engine {
+        let mut e = beatbox::Engine::new("/tmp/exclusive-solo-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
+        )
+        .unwrap();
+        e.call(
+            "set_mixer",
+            &json!({"track":"drums","solo":true,"mute":true,"volume_db":-8,"pan":0.25}),
+        )
+        .unwrap();
+        e.call("set_mixer", &json!({"track":"piano","solo":true}))
+            .unwrap();
+        e.call("add_bus", &json!({"name":"Room"})).unwrap();
+        e.call("set_mixer", &json!({"track":"Room","mute":true}))
+            .unwrap();
+        e
+    }
+    #[test]
+    fn exclusive_scope_reopen_undo_noop() {
+        let mut e = fixture();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let id = e.project.tracks[0].id.clone();
+        let r = e
+            .call(
+                "mixer",
+                &json!({"action":"solo_track_exclusive","params":{"track":id}}),
+            )
+            .unwrap();
+        assert_eq!(r["track_muted"], true);
+        assert_eq!(r["cleared"], json!(["piano"]));
+        let mut x = b.clone();
+        x["tracks"][1]["solo"] = json!(false);
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), x);
+        let h = e.history().0.len();
+        let rev = e.revision;
+        e.call("solo_track_exclusive", &json!({"track":"DRUMS"}))
+            .unwrap();
+        assert_eq!(h, e.history().0.len());
+        assert_eq!(rev, e.revision);
+        e.call(
+            "save_project",
+            &json!({"path":"/tmp/exclusive-solo-reopen.json"}),
+        )
+        .unwrap();
+        let mut f = fixture();
+        f.call(
+            "load_project",
+            &json!({"path":"/tmp/exclusive-solo-reopen.json"}),
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&f.project).unwrap(), x);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), x);
+    }
+    #[test]
+    fn exclusive_rejections_atomic_and_switch() {
+        let mut e = fixture();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let h = e.history().0.len();
+        for a in [
+            json!({"track":"missing"}),
+            json!({"track":"Room"}),
+            json!({}),
+            json!({"track":7}),
+        ] {
+            assert!(e.call("solo_track_exclusive", &a).is_err());
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+            assert_eq!(h, e.history().0.len());
+        }
+        e.call("clear_track_solos", &json!({})).unwrap();
+        e.call("solo_track_exclusive", &json!({"track":"piano"}))
+            .unwrap();
+        assert!(!e.project.tracks[0].solo);
+        assert!(e.project.tracks[1].solo);
+        assert!(e.project.tracks[0].mute);
+        e.project.tracks.clear();
+        assert!(e
+            .call("solo_track_exclusive", &json!({"track":"piano"}))
+            .is_err());
+    }
+    #[test]
+    fn exclusive_render_matches_manual() {
+        let mut e = fixture();
+        let opts = beatbox::render::RenderOptions {
+            tail: 0.,
+            ..Default::default()
+        };
+        let mut expected = e.project.clone();
+        expected.tracks[0].solo = false;
+        expected.tracks[1].solo = true;
+        let off = beatbox::render::render(&expected, &e.bank, &opts).unwrap();
+        e.call("solo_track_exclusive", &json!({"track":"piano"}))
+            .unwrap();
+        let a = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert_eq!(off.left, a.left);
+        assert_eq!(off.right, a.right);
+    }
+}
+
+#[cfg(test)]
+mod offset_faders_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    fn fixture() -> beatbox::Engine {
+        let mut e = beatbox::Engine::new("/tmp/offset-faders-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
+        )
+        .unwrap();
+        e.call(
+            "set_mixer",
+            &json!({"track":"drums","mute":true,"solo":true,"pan":0.3}),
+        )
+        .unwrap();
+        e.call("add_bus", &json!({"name":"Room"})).unwrap();
+        e
+    }
+    #[test]
+    fn fader_scope_undo_reopen() {
+        let mut e = fixture();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let h = e.history().0.len();
+        let r = e
+            .call(
+                "mixer",
+                &json!({"action":"offset_track_faders","params":{"delta_db":-3}}),
+            )
+            .unwrap();
+        assert_eq!(r["changed_tracks"], 2);
+        let mut x = b.clone();
+        for t in x["tracks"].as_array_mut().unwrap() {
+            t["volume_db"] = json!(t["volume_db"].as_f64().unwrap() - 3.0);
+        }
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), x);
+        assert_eq!(e.history().0.len(), h + 1);
+        e.call(
+            "save_project",
+            &json!({"path":"/tmp/offset-faders-reopen.json"}),
+        )
+        .unwrap();
+        let mut f = fixture();
+        f.call(
+            "load_project",
+            &json!({"path":"/tmp/offset-faders-reopen.json"}),
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&f.project).unwrap(), x);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), x);
+    }
+    #[test]
+    fn fader_reject_limits_automation_atomic() {
+        let mut e = fixture();
+        for a in [
+            json!({}),
+            json!({"delta_db":"1"}),
+            json!({"delta_db":13}),
+            json!({"delta_db":-13}),
+        ] {
+            let b = serde_json::to_value(&e.project).unwrap();
+            let rev = e.revision;
+            let h = e.history().0.len();
+            assert!(e.call("offset_track_faders", &a).is_err());
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+            assert_eq!(e.revision, rev);
+            assert_eq!(e.history().0.len(), h);
+        }
+        for v in [-60., 12.] {
+            e.project.tracks[1].volume_db = v;
+            let b = serde_json::to_value(&e.project).unwrap();
+            assert!(e
+                .call(
+                    "offset_track_faders",
+                    &json!({"delta_db":if v<0.{-1.}else{1.}})
+                )
+                .is_err());
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        }
+        e.project.tracks[1].volume_db = -3.;
+        let mut lane = beatbox::automation::AutomationLane::new("DRUMS", "VOLUME");
+        lane.points.push(beatbox::automation::AutoPoint {
+            beat: 0.,
+            value: -4.,
+            curve: Default::default(),
+        });
+        e.project.automation.push(lane);
+        let b = serde_json::to_value(&e.project).unwrap();
+        assert!(e
+            .call("offset_track_faders", &json!({"delta_db":-1}))
+            .is_err());
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        e.project.automation[0].enabled = false;
+        e.call("offset_track_faders", &json!({"delta_db":-1}))
+            .unwrap();
+        e.project.automation[0].enabled = true;
+        e.project.automation[0].points.clear();
+        e.call("offset_track_faders", &json!({"delta_db":1}))
+            .unwrap();
+    }
+    #[test]
+    fn fader_noop_boundaries_render() {
+        let mut e = fixture();
+        for delta in [0., -0.] {
+            let h = e.history().0.len();
+            let rev = e.revision;
+            e.call("offset_track_faders", &json!({"delta_db":delta}))
+                .unwrap();
+            assert_eq!(e.history().0.len(), h);
+            assert_eq!(e.revision, rev);
+        }
+        let mut expected = e.project.clone();
+        for t in &mut expected.tracks {
+            t.volume_db -= 1.;
+        }
+        let opts = beatbox::render::RenderOptions {
+            tail: 0.,
+            ..Default::default()
+        };
+        let a = beatbox::render::render(&expected, &e.bank, &opts).unwrap();
+        e.call("offset_track_faders", &json!({"delta_db":-1}))
+            .unwrap();
+        let b = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert_eq!(a.left, b.left);
+        assert_eq!(a.right, b.right);
+        e.project.tracks[0].volume_db = -59.;
+        e.call("offset_track_faders", &json!({"delta_db":-1}))
+            .unwrap();
+        assert_eq!(e.project.tracks[0].volume_db, -60.);
+        e.project.tracks.clear();
+        let h = e.history().0.len();
+        let rev = e.revision;
+        assert_eq!(
+            e.call("offset_track_faders", &json!({"delta_db":12}))
+                .unwrap()["changed_tracks"],
+            0
+        );
+        assert_eq!(e.history().0.len(), h);
+        assert_eq!(e.revision, rev);
+    }
+}
+
+#[cfg(test)]
+mod insert_bypass_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    fn fixture() -> beatbox::Engine {
+        let mut e = beatbox::Engine::new("/tmp/insert-bypass-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
+        )
+        .unwrap();
+        e.call(
+            "add_effect",
+            &json!({"track":"drums","type":"reverb","params":{"mix":0.12}}),
+        )
+        .unwrap();
+        e.call(
+            "bypass_effect",
+            &json!({"track":"drums","index":1,"on":true}),
+        )
+        .unwrap();
+        e.call("add_bus", &json!({"name":"Room"})).unwrap();
+        e.call("add_effect", &json!({"track":"Room","type":"reverb"}))
+            .unwrap();
+        e
+    }
+    #[test]
+    fn insert_scope_mixed_undo_reopen() {
+        let mut e = fixture();
+        let b = serde_json::to_value(&e.project).unwrap();
+        assert!(!e.project.tracks[0].effects[0].bypassed());
+        assert!(e.project.tracks[0].effects[1].bypassed());
+        let id = e.project.tracks[0].id.clone();
+        let h = e.history().0.len();
+        let r = e
+            .call(
+                "effects",
+                &json!({"action":"set_track_insert_bypass","params":{"track":id,"bypass":true}}),
+            )
+            .unwrap();
+        assert_eq!(r["changed"], 1);
+        let mut expected = e.project.clone();
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        for fx in &mut expected.tracks[0].effects {
+            fx.set_bypass(false);
+        }
+        e.call(
+            "set_track_insert_bypass",
+            &json!({"track":"DRUMS","bypass":false}),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&e.project).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        assert_eq!(e.history().0.len(), h + 1);
+        e.call(
+            "save_project",
+            &json!({"path":"/tmp/insert-bypass-reopen.json"}),
+        )
+        .unwrap();
+        let mut f = fixture();
+        f.call(
+            "load_project",
+            &json!({"path":"/tmp/insert-bypass-reopen.json"}),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&f.project).unwrap(),
+            serde_json::to_value(&e.project).unwrap()
+        );
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+    }
+    #[test]
+    fn insert_atomic_reject_noop_empty() {
+        let mut e = fixture();
+        for a in [
+            json!({"track":"drums"}),
+            json!({"track":"drums","bypass":1}),
+            json!({"track":"Room","bypass":true}),
+            json!({"track":"master","bypass":true}),
+            json!({"track":"missing","bypass":true}),
+        ] {
+            let b = serde_json::to_value(&e.project).unwrap();
+            let h = e.history().0.len();
+            let rev = e.revision;
+            assert!(e.call("set_track_insert_bypass", &a).is_err());
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+            assert_eq!(h, e.history().0.len());
+            assert_eq!(rev, e.revision);
+        }
+        e.call(
+            "set_track_insert_bypass",
+            &json!({"track":"drums","bypass":true}),
+        )
+        .unwrap();
+        let h = e.history().0.len();
+        let rev = e.revision;
+        assert_eq!(
+            e.call(
+                "set_track_insert_bypass",
+                &json!({"track":"drums","bypass":true})
+            )
+            .unwrap()["changed"],
+            0
+        );
+        assert_eq!(h, e.history().0.len());
+        assert_eq!(rev, e.revision);
+        e.project.tracks[0].effects.clear();
+        assert_eq!(
+            e.call(
+                "set_track_insert_bypass",
+                &json!({"track":"drums","bypass":false})
+            )
+            .unwrap()["changed"],
+            0
+        );
+        assert_eq!(rev, e.revision);
+    }
+    #[test]
+    fn insert_render_and_exact_scope() {
+        let mut e = fixture();
+        let mut expected = e.project.clone();
+        for fx in &mut expected.tracks[0].effects {
+            fx.set_bypass(true);
+        }
+        let opts = beatbox::render::RenderOptions {
+            tail: 0.,
+            ..Default::default()
+        };
+        let a = beatbox::render::render(&expected, &e.bank, &opts).unwrap();
+        e.call(
+            "set_track_insert_bypass",
+            &json!({"track":"drums","bypass":true}),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&e.project).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        let b = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert_eq!(a.left, b.left);
+        assert_eq!(a.right, b.right);
+        e.call("undo", &json!({})).unwrap();
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(
+            serde_json::to_value(&e.project).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_load_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    use std::fs;
+    fn fixture() -> beatbox::Engine {
+        let mut e = beatbox::Engine::new("/tmp/checkpoint-load-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
+        )
+        .unwrap();
+        e.call("snapshot", &json!({"name":"previous-song"}))
+            .unwrap();
+        e
+    }
+    #[test]
+    fn missing_and_bad_companion_clear_previous() {
+        for (n, side) in [
+            ("missing", None),
+            ("bad", Some("not json")),
+            ("wrongshape", Some("{}")),
+            ("empty", Some("[]")),
+        ] {
+            let mut e = fixture();
+            let path = format!("/tmp/checkpoint-load-{n}.json");
+            fs::write(&path, serde_json::to_string(&e.project).unwrap()).unwrap();
+            let companion = format!("{path}.snapshots.json");
+            let _ = fs::remove_file(&companion);
+            if let Some(s) = side {
+                fs::write(&companion, s).unwrap();
+            }
+            let original = serde_json::to_value(&e.project).unwrap();
+            e.call("load_project", &json!({"path":path})).unwrap();
+            assert!(e.snapshots.is_empty(), "{n}");
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), original);
+            assert!(e
+                .call("restore_snapshot", &json!({"name":"previous-song"}))
+                .is_err());
+        }
+    }
+    #[test]
+    fn valid_companion_only_new_song() {
+        let mut e = fixture();
+        let mut other = e.project.clone();
+        other.name = "Second song".into();
+        other.tracks[0].volume_db = -15.;
+        let path = "/tmp/checkpoint-load-valid.json";
+        fs::write(path, serde_json::to_string(&other).unwrap()).unwrap();
+        fs::write(format!("{path}.snapshots.json"),serde_json::to_string(&json!([{"name":"second-song-before","note":"new song","revision":7,"project":other}])).unwrap()).unwrap();
+        let r = e.call("load_project", &json!({"path":path})).unwrap();
+        assert_eq!(r["snapshots_loaded"], 1);
+        assert_eq!(e.snapshots.len(), 1);
+        assert_eq!(e.snapshots[0].0, "second-song-before");
+        e.call("set_mixer", &json!({"track":"drums","volume_db":-9}))
+            .unwrap();
+        e.call("restore_snapshot", &json!({"name":"second-song-before"}))
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&e.project).unwrap(),
+            serde_json::to_value(&other).unwrap()
+        );
+    }
+    #[test]
+    fn failed_main_load_keeps_project_and_snapshots() {
+        let mut e = fixture();
+        let before = serde_json::to_value(&e.project).unwrap();
+        let rev = e.revision;
+        let h = e.history().0.len();
+        let path = "/tmp/checkpoint-load-badmain.json";
+        fs::write(path, "not a project").unwrap();
+        for p in [path, "/tmp/checkpoint-load-nonexistent-214.json"] {
+            assert!(e.call("load_project", &json!({"path":p})).is_err());
+            assert_eq!(e.snapshots.len(), 1);
+            assert_eq!(e.snapshots[0].0, "previous-song");
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+            assert_eq!(rev, e.revision);
+            assert_eq!(h, e.history().0.len());
+        }
     }
 }

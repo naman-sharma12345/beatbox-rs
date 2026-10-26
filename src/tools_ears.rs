@@ -39,6 +39,14 @@ fn with_props(mut base: Value, extra: Value) -> Value {
 /// Resolve a time window (samples) from section / beats / seconds args.
 pub(crate) fn region(p: &Project, a: &Value, total: usize) -> Result<(usize, usize, String)> {
     let bs = ears::beat_secs(p);
+    // Keep the constant-tempo arithmetic unchanged. Automated song positions
+    // share the renderer's curve; seconds windows remain literal seconds.
+    let curve = (!p.tempo_points.is_empty()).then(|| crate::tempo_curve::TempoCurve::new(p));
+    let seconds = |beat: f32| {
+        curve
+            .as_ref()
+            .map_or(beat * bs, |c| c.secs_at_beat(beat as f64) as f32)
+    };
     let sec = a.get("section").and_then(|v| {
         v.as_str()
             .map(String::from)
@@ -46,11 +54,22 @@ pub(crate) fn region(p: &Project, a: &Value, total: usize) -> Result<(usize, usi
     });
     let (mut s0, mut s1, label) = if let Some(s) = sec {
         let (b0, b1) = p.section_beats(&s)?;
-        (b0 * bs, b1 * bs, format!("section {s}"))
+        (seconds(b0), seconds(b1), format!("section {s}"))
     } else if f_opt(a, "start_beat").is_some() || f_opt(a, "end_beat").is_some() {
         let b0 = f_opt(a, "start_beat").unwrap_or(0.0);
-        let b1 = f_opt(a, "end_beat").unwrap_or(total as f32 / SR / bs);
-        (b0 * bs, b1 * bs, format!("beats {b0}-{b1}"))
+        let end = f_opt(a, "end_beat");
+        let b1 = end.unwrap_or_else(|| {
+            curve.as_ref().map_or(total as f32 / SR / bs, |c| {
+                c.beat_at_secs(total as f64 / SR as f64) as f32
+            })
+        });
+        // An omitted end includes the entire available render, including tails.
+        let s1 = if curve.is_some() && end.is_none() {
+            total as f32 / SR
+        } else {
+            seconds(b1)
+        };
+        (seconds(b0), s1, format!("beats {b0}-{b1}"))
     } else if f_opt(a, "start_s").is_some() || f_opt(a, "end_s").is_some() {
         let a0 = f_opt(a, "start_s").unwrap_or(0.0);
         let a1 = f_opt(a, "end_s").unwrap_or(total as f32 / SR);
@@ -709,5 +728,167 @@ mod tests {
                 "hiss under the hats must still be found: {bed:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod region_tempo_tests {
+    use super::*;
+    #[test]
+    fn region_windows_follow_curve_and_keep_seconds_and_open_end() {
+        let mut p = Project {
+            bpm: 120.,
+            ..Default::default()
+        };
+        let total = (20. * SR) as usize;
+        assert_eq!(
+            region(&p, &json!({"start_beat":2,"end_beat":6}), total).unwrap(),
+            (SR as usize, (3. * SR) as usize, "beats 2-6".into())
+        );
+        p.tempo_points = vec![
+            crate::project::TempoPoint {
+                beat: 4.,
+                bpm: 60.,
+                ramp: false,
+            },
+            crate::project::TempoPoint {
+                beat: 8.,
+                bpm: 100.,
+                ramp: true,
+            },
+        ];
+        let c = crate::tempo_curve::TempoCurve::new(&p);
+        let at = |b: f64| (c.secs_at_beat(b) as f32 * SR) as usize;
+        let r = region(&p, &json!({"start_beat":2,"end_beat":6}), total).unwrap();
+        assert_eq!((r.0, r.1), (at(2.), at(6.)));
+        let r = region(&p, &json!({"start_beat":6}), total).unwrap();
+        assert_eq!((r.0, r.1), (at(6.), total));
+        let r = region(&p, &json!({"start_s":1,"end_s":3,"tail_s":0.5}), total).unwrap();
+        assert_eq!((r.0, r.1), (SR as usize, (3.5 * SR) as usize));
+        assert!(region(&p, &json!({"start_beat":8,"end_beat":2}), total).is_err());
+        assert!(region(&p, &json!({"start_beat":200}), total).is_err());
+        let r = region(&p, &json!({"section":0}), total).unwrap();
+        assert_eq!((r.0, r.1), (0, at(16.)));
+        let mut e = Engine::new(std::env::temp_dir().join("regions-meter"));
+        e.call("add_pattern", &json!({"name":"odd","bars":2}))
+            .unwrap();
+        e.call(
+            "set_time_signature",
+            &json!({"pattern":"odd","time_signature":"7/8"}),
+        )
+        .unwrap();
+        e.call(
+            "set_arrangement",
+            &json!({"sections":[{"pattern":"odd","repeats":1},{"pattern":"A","repeats":1}]}),
+        )
+        .unwrap();
+        e.project.tempo_points = p.tempo_points;
+        let spans = ears::spans(&e.project);
+        let c = crate::tempo_curve::TempoCurve::new(&e.project);
+        assert_eq!(spans[1].start_beat, 7.);
+        assert_eq!(spans[1].start_s, c.secs_at_beat(7.) as f32);
+        let r = region(&e.project, &json!({"section":1}), total).unwrap();
+        assert_eq!(r.0, (spans[1].start_s * SR) as usize);
+        assert_eq!(r.1, (spans[1].end_s * SR) as usize);
+    }
+}
+
+#[cfg(test)]
+mod region_output_tests {
+    use super::*;
+    #[test]
+    fn automated_beat_export_matches_seconds_export_decoded_samples() {
+        let dir = std::env::temp_dir().join(format!("region-output-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = Engine::new(dir.clone());
+        e.call("add_track", &json!({"name":"keys","preset":"epiano"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track":"keys","notes":[{"start":8,"len":4,"pitch":60,"vel":0.8}]}),
+        )
+        .unwrap();
+        e.call("add_tempo_point", &json!({"beat":4,"bpm":60}))
+            .unwrap();
+        e.call("add_tempo_point", &json!({"beat":8,"bpm":100,"ramp":true}))
+            .unwrap();
+        let before = serde_json::to_value(&e.project).unwrap();
+        let c = crate::tempo_curve::TempoCurve::new(&e.project);
+        let (s0, s1) = (c.secs_at_beat(2.), c.secs_at_beat(6.));
+        e.call(
+            "export_audio",
+            &json!({"path":"beats.wav","start_beat":2,"end_beat":6,"bits":24}),
+        )
+        .unwrap();
+        e.call(
+            "export_audio",
+            &json!({"path":"seconds.wav","start_s":s0,"end_s":s1,"bits":24}),
+        )
+        .unwrap();
+        let a = crate::samples::decode_stereo_native(&dir.join("beats.wav")).unwrap();
+        let b = crate::samples::decode_stereo_native(&dir.join("seconds.wav")).unwrap();
+        assert_eq!(a, b);
+        assert!((a.0.len() as f64 / a.2 as f64 - (s1 - s0)).abs() < 0.001);
+        assert!(a.0.iter().any(|s| s.abs() > 0.001));
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod region_integration_tests {
+    use super::*;
+    #[test]
+    fn sections_preview_and_waveform_share_automated_windows() {
+        let dir = std::path::PathBuf::from("/tmp/region-integration");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = Engine::new(dir.clone());
+        e.call("add_track", &json!({"name":"keys","preset":"epiano"}))
+            .unwrap();
+        for (name, meter) in [("first", "3/4"), ("second", "7/8")] {
+            e.call("add_pattern", &json!({"name":name,"bars":1}))
+                .unwrap();
+            e.call(
+                "set_time_signature",
+                &json!({"pattern":name,"time_signature":meter}),
+            )
+            .unwrap();
+            e.call("add_notes",&json!({"pattern":name,"track":"keys","notes":[{"start":0,"len":4,"pitch":60,"vel":0.8}]})).unwrap();
+        }
+        e.call(
+            "set_arrangement",
+            &json!({"sections":[{"pattern":"first","repeats":1},{"pattern":"second","repeats":1}]}),
+        )
+        .unwrap();
+        e.call("add_tempo_point", &json!({"beat":2,"bpm":60}))
+            .unwrap();
+        e.call("add_tempo_point", &json!({"beat":6,"bpm":100,"ramp":true}))
+            .unwrap();
+        let before = serde_json::to_value(&e.project).unwrap();
+        let c = crate::tempo_curve::TempoCurve::new(&e.project);
+        let (s0, s1) = (c.secs_at_beat(3.), c.secs_at_beat(6.5));
+        let a = e.call("analyze_sections", &json!({})).unwrap();
+        let m = &a["sections"][1]["metrics"];
+        println!("{}", a);
+        assert!((m["start_s"].as_f64().unwrap() - s0).abs() < 0.006);
+        assert!((m["end_s"].as_f64().unwrap() - s1).abs() < 0.006);
+        let a=e.call("render_preview",&json!({"section":"second","out":"section.wav","inline_audio":false,"spectrogram":false})).unwrap();
+        let b=e.call("render_preview",&json!({"start_s":s0,"end_s":s1,"out":"seconds.wav","inline_audio":false,"spectrogram":false})).unwrap();
+        assert_eq!(a["seconds"], b["seconds"]);
+        assert_eq!(
+            std::fs::read(dir.join("section.wav")).unwrap(),
+            std::fs::read(dir.join("seconds.wav")).unwrap()
+        );
+        let a = e
+            .call("waveform_peaks", &json!({"section":"second","columns":20}))
+            .unwrap();
+        let b = e
+            .call(
+                "waveform_peaks",
+                &json!({"start_s":s0,"end_s":s1,"columns":20}),
+            )
+            .unwrap();
+        assert_eq!(a["peaks"], b["peaks"]);
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
     }
 }

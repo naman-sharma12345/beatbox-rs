@@ -1532,9 +1532,32 @@ pub(crate) fn plan_track_voices(
     };
     // round-robin: drum hits cycle through 4 renders (each with
     // its own micro-variation) instead of one cached buffer
-    let round_robin = track.instrument.is_drum();
+    let round_robin = match &track.instrument {
+        Instrument::Multisample(p) => p.round_robin,
+        _ => track.instrument.is_drum(),
+    };
+    // A recorded kit alternates each drum independently. Interleaved kicks
+    // must not consume a snare's take counter. Keep the whole-song prefix
+    // for range/streaming renders so seeking does not reset the alternation.
+    let sample_rr = matches!(&track.instrument,Instrument::Multisample(p) if p.round_robin);
+    let mut key_counts: HashMap<i32, u64> = HashMap::new();
+    if sample_rr && tl.sample0 > 0 {
+        let (whole, _) = schedule(
+            p,
+            &RenderOptions {
+                loops: tl.loops,
+                tail: 0.0,
+                ..Default::default()
+            },
+        );
+        for e in &whole[ti] {
+            if e.start < tl.sample0 {
+                *key_counts.entry(e.pitch.round() as i32).or_default() += 1;
+            }
+        }
+    }
     let mut cache: HashMap<
-        (i32, u8, u32, Vec<i64>, i32, u8),
+        (i32, u32, u32, Vec<u32>, i32, u64),
         std::sync::Arc<(Vec<f32>, Vec<f32>)>,
     > = HashMap::new();
     let mut voices = Vec::new();
@@ -1576,15 +1599,29 @@ pub(crate) fn plan_track_voices(
         // the note's index in the whole song (a window render
         // starts later in the track's notes)
         let kr = k + index_base.and_then(|b| b.get(ti).copied()).unwrap_or(0);
+        let take = if sample_rr {
+            let c = key_counts.entry(e.pitch.round() as i32).or_default();
+            let take = *c;
+            *c += 1;
+            take
+        } else {
+            kr as u64 % 4
+        };
         let key = (
             (e.pitch * 10.0) as i32,
-            (e.vel * 127.0) as u8,
-            (e.gate * 1000.0) as u32,
-            vals.iter().map(|v| (v * 1000.0).round() as i64).collect(),
+            // Velocity is continuous in the project. Quantizing the cache key
+            // to MIDI 7-bit can reuse the wrong recorded layer or gain from
+            // an earlier note even with Alternate takes disabled.
+            // Gate and note-on automation also use exact synthesis inputs.
+            e.vel.to_bits(),
+            e.gate.to_bits(),
+            vals.iter().map(|v| v.to_bits()).collect(),
             e.slide_to.map(|x| (x * 10.0) as i32).unwrap_or(-1),
-            if round_robin { (kr % 4) as u8 } else { 0 },
+            if round_robin { take } else { 0 },
         );
-        let seed = if round_robin {
+        let seed = if sample_rr {
+            take
+        } else if round_robin {
             (ti as u64) << 32 | (kr as u64 % 4)
         } else {
             (ti as u64) << 32 | (kr as u64 % 7)
@@ -1626,6 +1663,31 @@ pub(crate) fn plan_track_voices(
                         let a = render_note_slide(
                             &inst, e.pitch, e.vel, e.gate, bank, seed, e.slide_to,
                         );
+                        if let Instrument::Multisample(mp) = &inst {
+                            if spread > 0. {
+                                let pan = mp
+                                    .key_pan
+                                    .get(&(e.pitch.round().clamp(0., 127.) as u8))
+                                    .copied()
+                                    .filter(|v| v.is_finite())
+                                    .unwrap_or(0.)
+                                    .clamp(-1., 1.);
+                                let mut left = a;
+                                let mut right = left.clone();
+                                // Linear balance, unity at centre, no artificial decorrelation or gain boost.
+                                if pan > 0. {
+                                    for v in &mut left {
+                                        *v *= 1. - pan;
+                                    }
+                                }
+                                if pan < 0. {
+                                    for v in &mut right {
+                                        *v *= 1. + pan;
+                                    }
+                                }
+                                return std::sync::Arc::new((left, right));
+                            }
+                        }
                         let b = if spread > 0.0 {
                             render_note_slide(
                                 &inst,
@@ -1644,7 +1706,16 @@ pub(crate) fn plan_track_voices(
                     .clone()
             };
         // mono voices (808s) choke the previous note at the next onset
-        let choke_at = if mono_voice {
+        let kit_hat = matches!(&track.instrument,Instrument::Multisample(p) if p.gm_hat_choke)
+            && e.pitch.round() == 46.0;
+        let choke_at = if kit_hat {
+            events[ti][k + 1..]
+                .iter()
+                .find(|n| {
+                    n.start > e.start && n.vel > 0.0 && matches!(n.pitch.round() as i32, 42 | 44)
+                })
+                .map(|n| n.start - e.start)
+        } else if mono_voice {
             let own = events[ti][k + 1..]
                 .iter()
                 .map(|x| x.start)
@@ -2316,6 +2387,30 @@ pub fn write_wav(path: &Path, l: &[f32], r: &[f32]) -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
+    let mut f = std::fs::File::create(path)?;
+    write_wav_stream(&mut f, l, r)
+}
+
+/// Write a new WAV without ever truncating an existing file.
+pub fn write_wav_new(path: &Path, l: &[f32], r: &[f32]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    if let Err(error) = write_wav_stream(&mut f, l, r) {
+        drop(f);
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn write_wav_stream(f: &mut impl Write, l: &[f32], r: &[f32]) -> Result<()> {
     let n = l.len().min(r.len());
     let data_len = (n * 4) as u32;
     let mut out = Vec::with_capacity(44 + data_len as usize);
@@ -2337,7 +2432,6 @@ pub fn write_wav(path: &Path, l: &[f32], r: &[f32]) -> Result<()> {
             out.extend_from_slice(&v.to_le_bytes());
         }
     }
-    let mut f = std::fs::File::create(path)?;
     f.write_all(&out)?;
     Ok(())
 }
@@ -3807,5 +3901,325 @@ pub(crate) mod tests {
             "hand-off dip {:.2} dB: {lv:?}",
             before - lo
         );
+    }
+}
+
+#[cfg(test)]
+mod new_wav_writer_tests {
+    #[test]
+    fn new_writer_matches_encoding_and_never_truncates_existing_file() {
+        let dir = std::env::temp_dir().join(format!("beatbox-wav-parity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for n in [0, 1, 2, 511, 512, 4410] {
+            let l: Vec<_> = (0..n)
+                .map(|i| [-2., -1., -0.0001, 0., 0.12345, 0.9, 1., 2.][i % 8])
+                .collect();
+            let r: Vec<_> = l.iter().rev().copied().collect();
+            let a = dir.join(format!("a{n}.wav"));
+            let b = dir.join(format!("b{n}.wav"));
+            crate::render::write_wav(&a, &l, &r).unwrap();
+            crate::render::write_wav_new(&b, &l, &r).unwrap();
+            let bytes = std::fs::read(&a).unwrap();
+            assert_eq!(bytes, std::fs::read(&b).unwrap());
+            assert_eq!(bytes.len(), 44 + n * 4);
+            assert!(crate::render::write_wav_new(&b, &[0.], &[0.]).is_err());
+            assert_eq!(bytes, std::fs::read(&b).unwrap());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod recorded_take_regression {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn recorded_interleaved_rr_and_streaming() {
+        let mut e = beatbox::Engine::new("/tmp/interleaved-work".into());
+        e.project.bpm = 120.;
+        e.project.swing = 0.;
+        e.project.tracks.clear();
+        e.project.master_effects.clear();
+        e.project.patterns[0].bars = 4;
+        e.call("load_instrument",&json!({"track":"kit","catalog_id":"vcsl_acoustic_drum_kit","max_mb":100,"volume_db":0})).unwrap();
+        e.call("add_notes",&json!({"track":"kit","notes":[{"start":0,"pitch":38,"vel":0.8,"len":1},{"start":8,"pitch":36,"vel":0.0,"len":1},{"start":24,"pitch":38,"vel":0.8,"len":1}]})).unwrap();
+        e.bank.sync(&e.project.samples);
+        let opts = beatbox::render::RenderOptions {
+            keep_stems: true,
+            ..Default::default()
+        };
+        let mut stream = beatbox::rt::VoiceStreamer::new(&e.project, &e.bank, &opts, 63, 0);
+        let (l, _) = stream.render_all();
+        let at = 132300;
+        let diff = l[..5000]
+            .iter()
+            .zip(&l[at..at + 5000])
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            diff > 0.001,
+            "interleaved hits reused same take diff={diff}"
+        );
+        let oracle = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        let stem = &oracle.stems[0];
+        assert_eq!(l, stem.left);
+        let winopts = beatbox::render::RenderOptions {
+            step_range: Some((24, 40)),
+            keep_stems: true,
+            tail: 0.0,
+            ..Default::default()
+        };
+        let window = beatbox::render::render_window(&e.project, &e.bank, &winopts, &[2]).unwrap();
+        assert!(window.stems[0].left[..5000]
+            .iter()
+            .zip(&stem.left[at..at + 5000])
+            .all(|(a, b)| (a - b).abs() < 1e-6));
+        {
+            let block = 512;
+            let mut stream = beatbox::rt::VoiceStreamer::new(&e.project, &e.bank, &opts, block, 0);
+            let (b, _) = stream.render_all();
+            assert_eq!(l, b);
+        }
+    }
+}
+
+#[cfg(test)]
+mod gm_hat_choke_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn gm_choke_history_audio_and_stream() {
+        let mut e = beatbox::Engine::new("/tmp/choke-test-work".into());
+        e.project.bpm = 120.;
+        e.project.tracks.clear();
+        e.project.master_effects.clear();
+        e.project.patterns[0].bars = 1;
+        e.call("load_instrument",&json!({"track":"kit","catalog_id":"vcsl_acoustic_drum_kit","max_mb":100,"volume_db":0})).unwrap();
+        e.call("add_notes",&json!({"track":"kit","notes":[{"start":0,"pitch":46,"vel":0.8,"len":1},{"start":2,"pitch":42,"vel":0.8,"len":1}]})).unwrap();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let off = e.mix().unwrap();
+        e.call("instrument",&json!({"action":"set_sample_performance","params":{"track":"kit","gm_hat_choke":true}})).unwrap();
+        let a = serde_json::to_value(&e.project).unwrap();
+        let mut ex = b.clone();
+        ex["tracks"][0]["instrument"]["gm_hat_choke"] = json!(true);
+        assert_eq!(ex, a);
+        let h = e.history().0.len();
+        e.call(
+            "set_sample_performance",
+            &json!({"track":"kit","gm_hat_choke":true}),
+        )
+        .unwrap();
+        assert_eq!(h, e.history().0.len());
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), a);
+        let on = e.mix().unwrap();
+        let energy = |x: &[f32]| x.iter().map(|x| (*x as f64).powi(2)).sum::<f64>();
+        assert!(energy(&on.left[22050..44100]) < energy(&off.left[22050..44100]) * 0.7);
+        let opts = beatbox::render::RenderOptions {
+            keep_stems: true,
+            ..Default::default()
+        };
+        let full = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        for block in [63, 512] {
+            let mut s = beatbox::rt::VoiceStreamer::new(&e.project, &e.bank, &opts, block, 0);
+            let (l, r) = s.render_all();
+            assert_eq!(l, full.stems[0].left);
+            assert_eq!(r, full.stems[0].right);
+        }
+        assert!(e
+            .call(
+                "set_sample_performance",
+                &json!({"track":"kit","gm_hat_choke":1})
+            )
+            .is_err());
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), a);
+    }
+}
+
+#[cfg(test)]
+mod exact_velocity_cache_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn earlier_velocity_cannot_change_later_recorded_hit() {
+        let mut e = beatbox::Engine::new("/tmp/cache-velocity-work".into());
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
+        )
+        .unwrap();
+        e.bank.sync(&e.project.samples);
+        e.project.tracks.truncate(1);
+        e.project.tracks[0].effects.clear();
+        e.project.master_effects.clear();
+        let p = match &mut e.project.tracks[0].instrument {
+            beatbox::instruments::Instrument::Multisample(p) => p,
+            _ => panic!(),
+        };
+        p.round_robin = false;
+        p.vel_crossfade = false;
+        p.key_length_ms.insert(38, 30.);
+        let lo = beatbox::multisample::pick_zones(p, 38, 0.602, 0);
+        let hi = beatbox::multisample::pick_zones(p, 38, 0.605, 0);
+        assert_ne!(lo, hi);
+        assert_eq!((0.602f32 * 127.) as u8, (0.605f32 * 127.) as u8);
+        e.project.patterns[0].clips.clear();
+        e.project.patterns[0].clips.insert(
+            "drums".into(),
+            vec![
+                beatbox::project::Note::new(0., 0.2, 38, 0.602),
+                beatbox::project::Note::new(4., 0.2, 38, 0.605),
+            ],
+        );
+        let opts = beatbox::render::RenderOptions {
+            tail: 0.,
+            ..Default::default()
+        };
+        let (events, _) = beatbox::render::schedule(&e.project, &opts);
+        let at = events[0][1].start;
+        let a = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        e.project.patterns[0].clips.get_mut("drums").unwrap()[0].vel = 0.1;
+        let b = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert!(
+            a.left[at..at + 2000] == b.left[at..at + 2000],
+            "earlier hit changed later sample layer"
+        );
+        // The same bucket must also preserve small gain changes when no
+        // recorded-layer boundary is involved.
+        e.project.patterns[0].clips.get_mut("drums").unwrap()[0].vel = 0.501;
+        e.project.patterns[0].clips.get_mut("drums").unwrap()[1].vel = 0.505;
+        let gain_a = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        e.project.patterns[0].clips.get_mut("drums").unwrap()[0].vel = 0.1;
+        let gain_b = crate::render::render(&e.project, &e.bank, &opts).unwrap();
+        assert!(gain_a.left[at..at + 2000] == gain_b.left[at..at + 2000]);
+        assert_eq!(
+            serde_json::to_value(&e.project).unwrap()["patterns"][0]["clips"]["drums"][1]["vel"],
+            json!(0.505f32)
+        );
+        for range in [None, Some((0, 8))] {
+            let o = beatbox::render::RenderOptions {
+                step_range: range,
+                tail: 0.1,
+                ..Default::default()
+            };
+            let want = beatbox::render::render(&e.project, &e.bank, &o).unwrap();
+            for block in [63, 512, 4096] {
+                let mut m = beatbox::rt::MixNode::new(&e.project, &e.bank, &o, block);
+                let (l, r) = m.render();
+                assert_eq!(l, want.left);
+                assert_eq!(r, want.right);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod exact_gate_automation_cache_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    fn setup() -> beatbox::Engine {
+        let mut e = beatbox::Engine::new("/tmp/cache-input-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("keys-demo.json")}),
+        )
+        .unwrap();
+        e.bank.sync(&e.project.samples);
+        e.project.tracks[0].effects.clear();
+        e.project.master_effects.clear();
+        e.project.automation.clear();
+        let p = match &mut e.project.tracks[0].instrument {
+            beatbox::instruments::Instrument::Multisample(p) => p,
+            _ => panic!(),
+        };
+        p.round_robin = false;
+        p.one_shot = false;
+        p.release = 0.005;
+        p.attack = 0.0005;
+        e.project.patterns[0].clips.clear();
+        e.project.patterns[0].clips.insert(
+            "piano".into(),
+            vec![
+                beatbox::project::Note::new(0., 0.0606, 60, 0.7),
+                beatbox::project::Note::new(4., 0.0654, 60, 0.7),
+            ],
+        );
+        e
+    }
+    fn streaming(e: &beatbox::Engine) {
+        for range in [None, Some((0, 8)), Some((4, 8))] {
+            let o = beatbox::render::RenderOptions {
+                step_range: range,
+                tail: 0.1,
+                ..Default::default()
+            };
+            let want = beatbox::render::render(&e.project, &e.bank, &o).unwrap();
+            for block in [63, 512, 4096] {
+                let mut m = beatbox::rt::MixNode::new(&e.project, &e.bank, &o, block);
+                let (l, r) = m.render();
+                assert_eq!(l, want.left);
+                assert_eq!(r, want.right);
+            }
+        }
+    }
+    #[test]
+    fn finer_gate_does_not_reuse_previous_note() {
+        let mut e = setup();
+        let o = beatbox::render::RenderOptions {
+            tail: 0.,
+            ..Default::default()
+        };
+        let (events, _) = beatbox::render::schedule(&e.project, &o);
+        assert_eq!(
+            (events[0][0].gate * 1000.) as u32,
+            (events[0][1].gate * 1000.) as u32
+        );
+        assert_ne!(events[0][0].gate, events[0][1].gate);
+        let at = events[0][1].start;
+        let a = beatbox::render::render(&e.project, &e.bank, &o).unwrap();
+        e.project.patterns[0].clips.get_mut("piano").unwrap()[0].len = 0.12;
+        let b = beatbox::render::render(&e.project, &e.bank, &o).unwrap();
+        assert!(
+            a.left[at..at + 2000] == b.left[at..at + 2000],
+            "earlier gate changed later audio"
+        );
+        streaming(&e);
+    }
+    #[test]
+    fn finer_note_automation_does_not_reuse_previous_note() {
+        let mut e = setup();
+        for n in e.project.patterns[0].clips.get_mut("piano").unwrap() {
+            n.len = 0.5;
+        }
+        let mut lane = beatbox::automation::AutomationLane::new("piano", "instrument.attack");
+        lane.points = vec![
+            beatbox::automation::AutoPoint {
+                beat: 0.,
+                value: 0.00051,
+                curve: beatbox::automation::Curve::Step,
+            },
+            beatbox::automation::AutoPoint {
+                beat: 1.,
+                value: 0.00149,
+                curve: beatbox::automation::Curve::Step,
+            },
+        ];
+        e.project.automation.push(lane);
+        let o = beatbox::render::RenderOptions {
+            tail: 0.,
+            ..Default::default()
+        };
+        let (events, _) = beatbox::render::schedule(&e.project, &o);
+        let at = events[0][1].start;
+        let a = beatbox::render::render(&e.project, &e.bank, &o).unwrap();
+        e.project.automation[0].points[0].value = 0.1;
+        let b = beatbox::render::render(&e.project, &e.bank, &o).unwrap();
+        assert!(
+            a.left[at..at + 2000] == b.left[at..at + 2000],
+            "earlier automation changed later audio"
+        );
+        streaming(&e);
     }
 }

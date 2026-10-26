@@ -27,6 +27,7 @@ zip = { version = "2", default-features = false, features = ["deflate-miniz"] }
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 eframe = { version = "0.29", optional = true }
+egui_dock = { version = "0.14", features = ["serde"], optional = true }
 cpal = { version = "0.15", optional = true }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
@@ -47,4 +48,4 @@ debug = false
 
 [features]
 default = ["gui"]
-gui = ["dep:eframe", "dep:cpal", "dep:image", "dep:alsa"]
+gui = ["dep:egui_dock", "dep:eframe", "dep:cpal", "dep:image", "dep:alsa"]

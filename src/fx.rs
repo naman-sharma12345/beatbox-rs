@@ -71,6 +71,7 @@ fx_struct!(BitcrushFx {
     mix: f32 = 1.0
 });
 fx_struct!(DelayFx {
+    wet_only: bool = false,
     steps: f32 = 3.0,
     feedback: f32 = 0.35,
     mix: f32 = 0.25,
@@ -597,7 +598,7 @@ pub const EFFECT_TYPES: &[(&str, &str)] = &[
     ("eq", "3-band EQ. low_db, mid_db, high_db, low_freq, high_freq"),
     ("distortion", "Tanh saturation. drive 0..1, mix 0..1"),
     ("bitcrush", "Lo-fi crusher. bits 1..16, downsample 1..64, mix"),
-    ("delay", "Tempo-synced stereo delay. steps (16ths, 3 = dotted 8th), feedback, mix, ping_pong, tone Hz"),
+    ("delay", "wet_only=true removes the dry leg for aux returns; default false preserves legacy insert sound. Tempo-synced stereo delay. steps (16ths, 3 = dotted 8th), feedback, mix, ping_pong, tone Hz"),
     ("reverb", "Reverb. mode freeverb (default) | fdn_room | fdn_plate | fdn_hall (8-line feedback delay network: smoother, denser). size 0..1, damping 0..1, mix, predelay_ms, width; FDN only: decay_s (RT60 seconds, 0 = from size), diffusion 0..1, low_cut_hz"),
     ("chorus", "Stereo chorus. rate_hz, depth_ms, mix"),
     ("compressor", "Feed-forward compressor. threshold_db, ratio, attack_ms, release_ms, makeup_db; soft-knee lookahead mode when any of knee_db (e.g. 6), lookahead_ms (0-10), sc_hpf_hz (sidechain high-pass, e.g. 120 so the kick does not pump), mix (<1 = parallel) is set"),
@@ -796,8 +797,16 @@ impl Effect {
                         bl[k] = tl.process(inl + dl * fb, p.tone, 0.0, FilterMode::Lowpass);
                         br[k] = tr.process(inr + dr * fb, p.tone, 0.0, FilterMode::Lowpass);
                     }
-                    l[i] = inl + dl * p.mix;
-                    r[i] = inr + dr * p.mix;
+                    l[i] = if p.wet_only {
+                        dl * p.mix
+                    } else {
+                        inl + dl * p.mix
+                    };
+                    r[i] = if p.wet_only {
+                        dr * p.mix
+                    } else {
+                        inr + dr * p.mix
+                    };
                 }
             }
             Effect::Reverb(p) => reverb(p, l, r, ctx.offset),

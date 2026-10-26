@@ -306,7 +306,13 @@ pub fn tools() -> Vec<Tool> {
                             let mut args = json!({"name": name, "sfz": path.to_string_lossy(), "one_shot": one_shot});
                             if let Some(v) = f_opt(a, "volume_db") { args["volume_db"] = json!(v); }
                             let r = e.call("add_multisample_track", &args)?;
-                            return Ok(json!({"track": name, "catalog_id": ent.id, "name": ent.name, "zones": r["zones"], "downloaded_mb": (now as f64 / 1e5).round() / 10.0, "license": ent.license}));
+                            let ti=e.project.track_index(&name)?;
+                            if let Instrument::Multisample(params)=&mut e.project.tracks[ti].instrument {
+                                params.source=format!("{} | {} | {}",ent.name,ent.source,ent.license);
+                                let names:std::collections::HashSet<String>=params.zones.iter().map(|z|z.sample.clone()).collect();
+                                for sample in &mut e.project.samples {if names.contains(&sample.name){sample.source=ent.source.clone();sample.license=ent.license.clone();}}
+                            }
+                            return Ok(json!({"track": name, "catalog_id": ent.id, "name": ent.name, "zones": r["zones"], "downloaded_mb": (now as f64 / 1e5).round() / 10.0, "license": ent.license,"source":ent.source}));
                         }
                         "vsco_pack" => return e.call("install_instrument_pack", &json!({"pack": cid.trim_start_matches("vsco_"), "track": name})),
                         "sf2" => {}
@@ -336,8 +342,31 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name:"preview_kit_piece",
+            description:"Preview one current single-key multisample-kit piece as one dry hit, before track/masterFX,fader/pan. Uses current piece level/tuning/length,attack/velocity/one-shot settings and recorded-take counter(default0),velocity default0.8. Counter wraps across available takes;ignored when Alternate takes is off. No downloads or project/history changes. play:true queues studio audition;preview trim defaults-6dB applied only to listening,not WAV. Other song audio may still play. path optional;stop_preview uses play_audio stop.",
+            mutates:false,
+            schema:||obj(json!({"track":{"type":"string"},"key":{"type":"integer","enum":[36,38,39,42,44,46,45,48,49]},"velocity":{"type":"number","minimum":0.01,"maximum":1},"take":{"type":"integer","minimum":0,"maximum":127},"path":{"type":"string"},"play":{"type":"boolean"}}), &["track","key"]),
+            run:|e,a|{
+                let ti=e.project.track_index(&s_req(a,"track")?)?;let key=a.get("key").and_then(|v|v.as_u64()).ok_or_else(||anyhow!("key must be integer"))?;
+                if ![36,38,39,42,44,46,45,48,49].contains(&key){bail!("unsupported GM drum key");}
+                let vel=match a.get("velocity"){None=>0.8,Some(v)=>v.as_f64().filter(|x|x.is_finite()&&(0.01..=1.0).contains(x)).ok_or_else(||anyhow!("velocity must be 0.01..1"))? as f32};
+                let take=match a.get("take"){None=>0,Some(v)=>v.as_u64().filter(|x|*x<=127).ok_or_else(||anyhow!("take must be integer0..127"))?};
+                let play=match a.get("play"){None=>false,Some(v)=>v.as_bool().ok_or_else(||anyhow!("play must be boolean"))?};
+                let Instrument::Multisample(p)=&e.project.tracks[ti].instrument else{bail!("requires multisample drum kit");};
+                if p.zones.is_empty()||p.zones.iter().any(|z|z.lo_note!=z.hi_note||z.root!=z.lo_note||!(35..=81).contains(&z.root)){bail!("requires single-key drum mapping");}
+                if !p.zones.iter().any(|z|z.root==key as u8){bail!("key not mapped in this kit");}
+                let p=p.clone();let name=e.project.tracks[ti].name.clone();let missing=e.bank.sync(&e.project.samples);if !missing.is_empty(){bail!("project sample decode failed: {}",missing.join("; "));}
+                let y=crate::multisample::render_multisample(&p,key as f32,vel,0.25,&e.bank,take);
+                if y.is_empty(){bail!("piece rendered no audio");}
+                let path=match s_opt(a,"path"){Some(v)=>e.resolve(&v),None=>e.renders_dir().join(format!("piece_{}_{}.wav",crate::samples::sample_name(&name),key))};
+                crate::render::write_wav(&path,&y,&y)?;let st=crate::analysis::stats(&y,&y);
+                let out=json!({"track":name,"key":key,"path":path,"seconds":y.len() as f32/SR,"velocity":vel,"take":take,"round_robin":p.round_robin,"samples":crate::multisample::pick_zones(&p,key as i32,vel,take).iter().map(|(i,_)|p.zones[*i].sample.clone()).collect::<Vec<_>>(),"peak_dbfs":st.peak_dbfs,"dry":true,"audition_trim_db":-6,"note":"dry selected take counter,wraps availabletakes;disabledAlternateTakes ignorescounter;preFX/fader;gate250ms for gatedmode;no MIDI edits,no automatic levelmatching"});
+                Ok(if play{let q=queue_audition(e,y.clone(),y,-6.0);merge(out,q)}else{out})
+            }
+        },
+        Tool {
             name: "preview_instrument",
-            description: "Hear an instrument before using it: renders a short phrase (arpeggio + chord around root, default 52 = E3; a two-bar groove for a kit; four hits for one drum) to a WAV. Same instrument keys as load_instrument, track to preview that track's soundfont instrument, or preset for any built-in preset from list_presets (synths, drums, 808s...). play: true also sounds it once on the studio's speakers (gain_db trims it) without touching the project.",
+            description: "Hear an instrument before using it: renders a short phrase (arpeggio + chord around root, default 52 = E3; a two-bar groove for a kit; four hits for one drum) to a WAV. Same instrument keys as load_instrument, track to preview that track's soundfont or melodic multisample instrument (multisample: fixed5s major phrase,root default60 clamped to recorded range,preFX/fader,current applied settings,listeningtrim default-6dB; use preview_kit_piece for mapped drums), or preset for any built-in preset from list_presets (synths, drums, 808s...). play: true also sounds it once on the studio's speakers (gain_db trims it) without touching the project.",
             mutates: false,
             schema: || obj(json!({"instrument": {"type": "string"}, "track": {"type": "string"}, "font": {"type": "string"}, "bank": {"type": "integer"}, "program": {"type": "integer"}, "drums": {"type": "boolean"}, "fixed_key": {"type": "integer"}, "root": {"type": "number"}, "path": {"type": "string"}, "preset": {"type": "string", "description": "built-in preset name (list_presets)"}, "play": {"type": "boolean"}, "gain_db": {"type": "number"}}), &[]),
             run: |e, a| {
@@ -354,6 +383,25 @@ pub fn tools() -> Vec<Tool> {
                     crate::render::write_wav(&path, &l, &r)?;
                     let out = json!({"preset": pn, "path": path, "seconds": (l.len() as f32 / SR * 10.0).round() / 10.0, "peak_dbfs": st.peak_dbfs, "rms_dbfs": st.rms_dbfs, "played_as": how});
                     return Ok(if b_or(a, "play", false) { let q = queue_audition(e, l, r, f_opt(a, "gain_db").unwrap_or(0.0)); merge(out, q) } else { out });
+                }
+                if let (Some(t),None)=(s_opt(a,"track"),s_opt(a,"instrument")) {
+                    let i=e.project.track_index(&t)?;
+                    if let Instrument::Multisample(p)=&e.project.tracks[i].instrument {
+                        let p=p.clone();
+                        if p.zones.is_empty(){bail!("instrument has no zones");}
+                        if p.zones.iter().all(|z|z.lo_note==z.hi_note&&z.root==z.lo_note&&(35..=81).contains(&z.root)){bail!("use preview_kit_piece for mapped drum kits");}
+                        let lo=p.zones.iter().map(|z|z.lo_note).min().unwrap();let hi=p.zones.iter().map(|z|z.hi_note).max().unwrap();
+                        let requested=match a.get("root"){None=>60.0,Some(v)=>v.as_f64().filter(|v|v.is_finite()&&(0.0..=127.0).contains(v)).ok_or_else(||anyhow!("root must be0..127"))? as f32};
+                        let root=requested.clamp(lo as f32,hi as f32);
+                        let missing=e.bank.sync(&e.project.samples);if !missing.is_empty(){bail!("project sample decode failed: {}",missing.join("; "));}
+                        let mut y=vec![0.0;(5.0*SR)as usize];
+                        for (take,(at,interval,gate,vel))in [(0.0,0.0,0.35,0.55),(0.5,4.0,0.35,0.65),(1.0,7.0,0.35,0.75),(1.5,12.0,0.35,0.65),(2.2,0.0,0.8,0.65),(2.2,4.0,0.8,0.6),(2.2,7.0,0.8,0.55)].into_iter().enumerate(){
+                            let pitch=(root+interval).clamp(lo as f32,hi as f32);let voice=crate::multisample::render_multisample(&p,pitch,vel,gate,&e.bank,take as u64);let start=(at*SR)as usize;for(j,v)in voice.iter().enumerate().take(y.len()-start){y[start+j]+=v;}
+                        }
+                        let path=match s_opt(a,"path"){Some(x)=>e.resolve(&x),None=>e.renders_dir().join(format!("current_{}.wav",crate::samples::sample_name(&t)))};
+                        crate::render::write_wav(&path,&y,&y)?;let st=crate::analysis::stats(&y,&y);let out=json!({"track":t,"root":root,"path":path,"seconds":5,"peak_dbfs":st.peak_dbfs,"dry":true,"played_as":"fixed major arpeggio/chord,not song-key detection","note":"current applied multisample settings,preFX/fader;5s cap may truncate long tails;no MIDI/project change"});
+                        return Ok(if b_or(a,"play",false){let q=queue_audition(e,y.clone(),y,f_opt(a,"gain_db").unwrap_or(-6.0));merge(out,q)}else{out});
+                    }
                 }
                 let p = match (s_opt(a, "track"), s_opt(a, "instrument")) {
                     (Some(t), None) => {
@@ -600,5 +648,197 @@ mod tests {
             n_tracks,
             "previews never touch the project"
         );
+    }
+}
+
+#[cfg(test)]
+mod current_piece_preview_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn current_piece_preview_readonly_and_exact() {
+        let mut e = beatbox::Engine::new("/tmp/preview-piece-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":"/tmp/combined-kit-work/combined.json"}),
+        )
+        .unwrap();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let h = e.history().0.len();
+        let v=e.call("instrument",&json!({"action":"preview_kit_piece","params":{"track":"kit","key":38,"play":true}})).unwrap();
+        assert_eq!(b, serde_json::to_value(&e.project).unwrap());
+        assert_eq!(h, e.history().0.len());
+        let beatbox::instruments::Instrument::Multisample(p) = &e.project.tracks[0].instrument
+        else {
+            panic!()
+        };
+        let y = beatbox::multisample::render_multisample(p, 38., 0.8, 0.25, &e.bank, 0);
+        assert_eq!(y.len(), 5292);
+        let q = e
+            .transport
+            .pending_audition
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        let g = 10f32.powf(-6. / 20.);
+        assert!(q.0.iter().zip(&y).all(|(a, b)| *a == *b * g));
+        assert_eq!(q.0, q.1);
+        assert_eq!(v["playing"], false);
+        let data = beatbox::samples::decode_file(std::path::Path::new(v["path"].as_str().unwrap()))
+            .unwrap();
+        assert_eq!(data.len(), y.len());
+        assert!(data.iter().zip(&y).all(|(a, b)| (a - b).abs() < 0.0001));
+        for bad in [
+            json!({"track":"kit","key":38.1}),
+            json!({"track":"kit","key":37}),
+            json!({"track":"kit","key":38,"velocity":0}),
+            json!({"track":"kit","key":38,"play":1}),
+        ] {
+            assert!(e.call("preview_kit_piece", &bad).is_err());
+            assert_eq!(b, serde_json::to_value(&e.project).unwrap());
+        }
+        e.call("play_audio", &json!({"stop":true})).unwrap();
+        assert!(matches!(e.transport.pending_audition, Some(None)));
+    }
+}
+
+#[cfg(test)]
+mod preview_take_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn preview_velocity_takes_readonly() {
+        let mut e = beatbox::Engine::new("/tmp/preview-takes-work".into());
+        e.call(
+            "load_instrument",
+            &json!({"track":"kit","catalog_id":"vcsl_acoustic_drum_kit","max_mb":100}),
+        )
+        .unwrap();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let h = e.history().0.len();
+        let mut takes = vec![];
+        for (vel, take) in [(0.8, 0), (0.8, 1), (0.3, 0)] {
+            let v = e
+                .call(
+                    "preview_kit_piece",
+                    &json!({"track":"kit","key":38,"velocity":vel,"take":take,"play":true}),
+                )
+                .unwrap();
+            assert_eq!(v["take"], take);
+            let beatbox::instruments::Instrument::Multisample(p) = &e.project.tracks[0].instrument
+            else {
+                panic!()
+            };
+            let y =
+                beatbox::multisample::render_multisample(p, 38., vel, 0.25, &e.bank, take as u64);
+            let q = e
+                .transport
+                .pending_audition
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap();
+            let g = 10f32.powf(-6. / 20.);
+            assert!(q.0.iter().zip(&y).all(|(a, b)| *a == *b * g));
+            takes.push(y);
+            assert_eq!(b, serde_json::to_value(&e.project).unwrap());
+            assert_eq!(h, e.history().0.len());
+        }
+        assert_ne!(takes[0], takes[1]);
+        assert_ne!(takes[0], takes[2]);
+        for take in [json!(-1), json!(0.5), json!(128), json!("1")] {
+            assert!(e
+                .call(
+                    "preview_kit_piece",
+                    &json!({"track":"kit","key":38,"take":take})
+                )
+                .is_err());
+        }
+        e.call(
+            "set_sample_performance",
+            &json!({"track":"kit","round_robin":false}),
+        )
+        .unwrap();
+        let mut out = vec![];
+        for take in [0, 1] {
+            e.call(
+                "preview_kit_piece",
+                &json!({"track":"kit","key":38,"take":take,"play":true}),
+            )
+            .unwrap();
+            out.push(
+                e.transport
+                    .pending_audition
+                    .as_ref()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .clone(),
+            );
+        }
+        assert_eq!(out[0], out[1]);
+    }
+}
+
+#[cfg(test)]
+mod current_phrase_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn current_melodic_preview_settings_readonly() {
+        let mut e = beatbox::Engine::new("/tmp/phrase-test-work".into());
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
+        )
+        .unwrap();
+        let b = serde_json::to_value(&e.project).unwrap();
+        let h = e.history().0.len();
+        let v = e
+            .call(
+                "instrument",
+                &json!({"action":"preview_instrument","params":{"track":"piano","play":true}}),
+            )
+            .unwrap();
+        assert_eq!(v["root"], 60.0);
+        assert_eq!(b, serde_json::to_value(&e.project).unwrap());
+        assert_eq!(h, e.history().0.len());
+        let q = e
+            .transport
+            .pending_audition
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        assert_eq!(q.0.len(), 220500);
+        assert_eq!(q.0, q.1);
+        let baseline = q.0.clone();
+        e.call(
+            "set_sample_performance",
+            &json!({"track":"piano","release_ms":1200}),
+        )
+        .unwrap();
+        let after = serde_json::to_value(&e.project).unwrap();
+        e.call("preview_instrument", &json!({"track":"piano","play":true}))
+            .unwrap();
+        assert_ne!(
+            baseline,
+            e.transport
+                .pending_audition
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .0
+        );
+        assert_eq!(after, serde_json::to_value(&e.project).unwrap());
+        assert!(e
+            .call("preview_instrument", &json!({"track":"piano","root":-1}))
+            .is_err());
+        assert!(e
+            .call("preview_instrument", &json!({"track":"drums"}))
+            .is_err());
     }
 }

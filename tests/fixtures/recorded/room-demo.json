@@ -1,0 +1,1830 @@
+{
+  "name": "Recorded starter groove",
+  "bpm": 90.0,
+  "swing": 0.0,
+  "key_root": "C",
+  "scale": "minor",
+  "tracks": [
+    {
+      "id": "trk3",
+      "name": "drums",
+      "instrument": {
+        "type": "multisample",
+        "zones": [
+          {
+            "sample": "drums_bdrumnew_hit_v2_rr1_sum",
+            "root": 36,
+            "lo_note": 36,
+            "hi_note": 36,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.25,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_bdrumnew_hit_v2_rr2_sum",
+            "root": 36,
+            "lo_note": 36,
+            "hi_note": 36,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.25,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_bdrumnew_hit_v3_rr1_sum",
+            "root": 36,
+            "lo_note": 36,
+            "hi_note": 36,
+            "vel_lo": 0.2519685,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_bdrumnew_hit_v3_rr2_sum",
+            "root": 36,
+            "lo_note": 36,
+            "hi_note": 36,
+            "vel_lo": 0.2519685,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_bdrumnew_hit_v5_rr1_sum",
+            "root": 36,
+            "lo_note": 36,
+            "hi_note": 36,
+            "vel_lo": 0.503937,
+            "vel_hi": 0.75,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_bdrumnew_hit_v5_rr2_sum",
+            "root": 36,
+            "lo_note": 36,
+            "hi_note": 36,
+            "vel_lo": 0.503937,
+            "vel_hi": 0.75,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_bdrumnew_hit_v7_rr1_sum",
+            "root": 36,
+            "lo_note": 36,
+            "hi_note": 36,
+            "vel_lo": 0.7559055,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_bdrumnew_hit_v7_rr2_sum",
+            "root": 36,
+            "lo_note": 36,
+            "hi_note": 36,
+            "vel_lo": 0.7559055,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_snare2_stick_v1_rr1_mid",
+            "root": 37,
+            "lo_note": 37,
+            "hi_note": 37,
+            "vel_lo": 0.007874016,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_snare2_stick_v1_rr2_mid",
+            "root": 37,
+            "lo_note": 37,
+            "hi_note": 37,
+            "vel_lo": 0.007874016,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_snare2_hitsn_v3_rr1_mid",
+            "root": 38,
+            "lo_note": 38,
+            "hi_note": 38,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.203125,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_snare2_hitsn_v3_rr2_mid",
+            "root": 38,
+            "lo_note": 38,
+            "hi_note": 38,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.203125,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_snare2_hitsn_v5_rr1_mid",
+            "root": 38,
+            "lo_note": 38,
+            "hi_note": 38,
+            "vel_lo": 0.20472442,
+            "vel_hi": 0.3984375,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_snare2_hitsn_v5_rr2_mid",
+            "root": 38,
+            "lo_note": 38,
+            "hi_note": 38,
+            "vel_lo": 0.20472442,
+            "vel_hi": 0.3984375,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_snare2_hitsn_v6_rr1_mid",
+            "root": 38,
+            "lo_note": 38,
+            "hi_note": 38,
+            "vel_lo": 0.4015748,
+            "vel_hi": 0.6015625,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_snare2_hitsn_v6_rr2_mid",
+            "root": 38,
+            "lo_note": 38,
+            "hi_note": 38,
+            "vel_lo": 0.4015748,
+            "vel_hi": 0.6015625,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_snare2_hitsn_v7_rr1_mid",
+            "root": 38,
+            "lo_note": 38,
+            "hi_note": 38,
+            "vel_lo": 0.6062992,
+            "vel_hi": 0.796875,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_snare2_hitsn_v7_rr2_mid",
+            "root": 38,
+            "lo_note": 38,
+            "hi_note": 38,
+            "vel_lo": 0.6062992,
+            "vel_hi": 0.796875,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_snare2_hitsn_v9_rr1_mid",
+            "root": 38,
+            "lo_note": 38,
+            "hi_note": 38,
+            "vel_lo": 0.8031496,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_snare2_hitsn_v9_rr2_mid",
+            "root": 38,
+            "lo_note": 38,
+            "hi_note": 38,
+            "vel_lo": 0.8031496,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_snare2_hitns_v2_rr1_mid",
+            "root": 40,
+            "lo_note": 40,
+            "hi_note": 40,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.25,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_snare2_hitns_v2_rr2_mid",
+            "root": 40,
+            "lo_note": 40,
+            "hi_note": 40,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.25,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_snare2_hitns_v4_rr1_mid",
+            "root": 40,
+            "lo_note": 40,
+            "hi_note": 40,
+            "vel_lo": 0.2519685,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_snare2_hitns_v4_rr2_mid",
+            "root": 40,
+            "lo_note": 40,
+            "hi_note": 40,
+            "vel_lo": 0.2519685,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_snare2_hitns_v5_rr1_mid",
+            "root": 40,
+            "lo_note": 40,
+            "hi_note": 40,
+            "vel_lo": 0.503937,
+            "vel_hi": 0.75,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_snare2_hitns_v5_rr2_mid",
+            "root": 40,
+            "lo_note": 40,
+            "hi_note": 40,
+            "vel_lo": 0.503937,
+            "vel_hi": 0.75,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_snare2_hitns_v6_rr1_mid",
+            "root": 40,
+            "lo_note": 40,
+            "hi_note": 40,
+            "vel_lo": 0.7559055,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_snare2_hitns_v6_rr2_mid",
+            "root": 40,
+            "lo_note": 40,
+            "hi_note": 40,
+            "vel_lo": 0.7559055,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_clap_rr1",
+            "root": 39,
+            "lo_note": 39,
+            "hi_note": 39,
+            "vel_lo": 0.007874016,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_clap_rr2",
+            "root": 39,
+            "lo_note": 39,
+            "hi_note": 39,
+            "vel_lo": 0.007874016,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_hihat_hitc_v1_rr1_mid",
+            "root": 42,
+            "lo_note": 42,
+            "hi_note": 42,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.25,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_hihat_hitc_v1_rr2_mid",
+            "root": 42,
+            "lo_note": 42,
+            "hi_note": 42,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.25,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_hihat_hitc_v2_rr1_mid",
+            "root": 42,
+            "lo_note": 42,
+            "hi_note": 42,
+            "vel_lo": 0.2519685,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_hihat_hitc_v2_rr2_mid",
+            "root": 42,
+            "lo_note": 42,
+            "hi_note": 42,
+            "vel_lo": 0.2519685,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_hihat_hitc_v3_rr1_mid",
+            "root": 42,
+            "lo_note": 42,
+            "hi_note": 42,
+            "vel_lo": 0.503937,
+            "vel_hi": 0.75,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_hihat_hitc_v3_rr2_mid",
+            "root": 42,
+            "lo_note": 42,
+            "hi_note": 42,
+            "vel_lo": 0.503937,
+            "vel_hi": 0.75,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_hihat_hitc_v4_rr1_mid",
+            "root": 42,
+            "lo_note": 42,
+            "hi_note": 42,
+            "vel_lo": 0.7559055,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_hihat_hitc_v4_rr2_mid",
+            "root": 42,
+            "lo_note": 42,
+            "hi_note": 42,
+            "vel_lo": 0.7559055,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_hihat_close_rr1_mid",
+            "root": 44,
+            "lo_note": 44,
+            "hi_note": 44,
+            "vel_lo": 0.007874016,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_hihat_close_rr2_mid",
+            "root": 44,
+            "lo_note": 44,
+            "hi_note": 44,
+            "vel_lo": 0.007874016,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_hihat_hito_rr1_mid",
+            "root": 46,
+            "lo_note": 46,
+            "hi_note": 46,
+            "vel_lo": 0.007874016,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_hihat_hito_rr2_mid",
+            "root": 46,
+            "lo_note": 46,
+            "hi_note": 46,
+            "vel_lo": 0.007874016,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_toml_rims_v2_rr1_mid",
+            "root": 45,
+            "lo_note": 45,
+            "hi_note": 45,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_toml_rims_v2_rr2_mid",
+            "root": 45,
+            "lo_note": 45,
+            "hi_note": 45,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_toml_rims_v4_rr1_mid",
+            "root": 45,
+            "lo_note": 45,
+            "hi_note": 45,
+            "vel_lo": 0.503937,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_toml_rims_v4_rr2_mid",
+            "root": 45,
+            "lo_note": 45,
+            "hi_note": 45,
+            "vel_lo": 0.503937,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_tomh_rims_v2_rr1_mid",
+            "root": 48,
+            "lo_note": 48,
+            "hi_note": 48,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_tomh_rims_v2_rr2_mid",
+            "root": 48,
+            "lo_note": 48,
+            "hi_note": 48,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_tomh_rims_v4_rr1_mid",
+            "root": 48,
+            "lo_note": 48,
+            "hi_note": 48,
+            "vel_lo": 0.503937,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_tomh_rims_v4_rr2_mid",
+            "root": 48,
+            "lo_note": 48,
+            "hi_note": 48,
+            "vel_lo": 0.503937,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_cymbal_crash1_pp1",
+            "root": 49,
+            "lo_note": 49,
+            "hi_note": 49,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.25,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_cymbal_crash1_pp2",
+            "root": 49,
+            "lo_note": 49,
+            "hi_note": 49,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.25,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_cymbal_crash1_mp1",
+            "root": 49,
+            "lo_note": 49,
+            "hi_note": 49,
+            "vel_lo": 0.2519685,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_cymbal_crash1_mp2",
+            "root": 49,
+            "lo_note": 49,
+            "hi_note": 49,
+            "vel_lo": 0.2519685,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_cymbal_crash1_mf1",
+            "root": 49,
+            "lo_note": 49,
+            "hi_note": 49,
+            "vel_lo": 0.503937,
+            "vel_hi": 0.75,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_cymbal_crash1_mf2",
+            "root": 49,
+            "lo_note": 49,
+            "hi_note": 49,
+            "vel_lo": 0.503937,
+            "vel_hi": 0.75,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_cymbal_crash1_ff2",
+            "root": 49,
+            "lo_note": 49,
+            "hi_note": 49,
+            "vel_lo": 0.7559055,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_cymbal_crash1_ff3",
+            "root": 49,
+            "lo_note": 49,
+            "hi_note": 49,
+            "vel_lo": 0.7559055,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 1
+          },
+          {
+            "sample": "drums_suscymb1_hit_stick_f1",
+            "root": 51,
+            "lo_note": 51,
+            "hi_note": 51,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.3359375,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_suscymb1_hit_stick_pp1",
+            "root": 51,
+            "lo_note": 51,
+            "hi_note": 51,
+            "vel_lo": 0.33858266,
+            "vel_hi": 0.6640625,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_suscymb1_hit_stick_mp1",
+            "root": 51,
+            "lo_note": 51,
+            "hi_note": 51,
+            "vel_lo": 0.6692913,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_suscymb1_hit_bell_pp1",
+            "root": 53,
+            "lo_note": 53,
+            "hi_note": 53,
+            "vel_lo": 0.007874016,
+            "vel_hi": 0.5,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          },
+          {
+            "sample": "drums_suscymb1_hit_bell_mf1",
+            "root": 53,
+            "lo_note": 53,
+            "hi_note": 53,
+            "vel_lo": 0.503937,
+            "vel_hi": 1.0,
+            "tune_cents": 0.0,
+            "gain_db": 0.0,
+            "rr": 0
+          }
+        ],
+        "attack": 0.002,
+        "release": 0.35,
+        "one_shot": true,
+        "round_robin": true,
+        "vel_crossfade": true,
+        "vel_to_gain": 0.6,
+        "gain": 0.9,
+        "source": "VCSL: Acoustic drum kit (VCSL, GM map: 36 kick, 38 snare, 42/46 hats, 45/48 toms, 49 crash) | https://github.com/sgossner/VCSL | CC0 1.0 (public domain dedication)"
+      },
+      "volume_db": -6.0,
+      "pan": 0.0,
+      "mute": false,
+      "solo": false,
+      "effects": [
+        {
+          "type": "reverb",
+          "size": 0.25,
+          "damping": 0.6,
+          "mix": 0.16,
+          "predelay_ms": 8.0,
+          "width": 0.8,
+          "mode": "fdn_room",
+          "decay_s": 0.45,
+          "diffusion": 0.75,
+          "low_cut_hz": 180.0,
+          "id": "reverb1"
+        }
+      ]
+    }
+  ],
+  "patterns": [
+    {
+      "id": "pat2",
+      "name": "groove",
+      "bars": 4,
+      "clips": {
+        "drums": [
+          {
+            "start": 0.0,
+            "len": 1.0,
+            "pitch": 36,
+            "vel": 0.9,
+            "id": "n5"
+          },
+          {
+            "start": 0.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n6"
+          },
+          {
+            "start": 2.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n7"
+          },
+          {
+            "start": 4.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n8"
+          },
+          {
+            "start": 4.1,
+            "len": 1.0,
+            "pitch": 38,
+            "vel": 0.82,
+            "id": "n9"
+          },
+          {
+            "start": 6.0,
+            "len": 1.0,
+            "pitch": 36,
+            "vel": 0.9,
+            "id": "n10"
+          },
+          {
+            "start": 6.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n11"
+          },
+          {
+            "start": 8.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n12"
+          },
+          {
+            "start": 10.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n13"
+          },
+          {
+            "start": 10.5,
+            "len": 1.0,
+            "pitch": 36,
+            "vel": 0.9,
+            "id": "n14"
+          },
+          {
+            "start": 12.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n15"
+          },
+          {
+            "start": 12.1,
+            "len": 1.0,
+            "pitch": 38,
+            "vel": 0.82,
+            "id": "n16"
+          },
+          {
+            "start": 14.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n17"
+          },
+          {
+            "start": 16.0,
+            "len": 1.0,
+            "pitch": 36,
+            "vel": 0.9,
+            "id": "n18"
+          },
+          {
+            "start": 16.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n19"
+          },
+          {
+            "start": 18.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n20"
+          },
+          {
+            "start": 20.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n21"
+          },
+          {
+            "start": 20.1,
+            "len": 1.0,
+            "pitch": 38,
+            "vel": 0.82,
+            "id": "n22"
+          },
+          {
+            "start": 22.0,
+            "len": 1.0,
+            "pitch": 36,
+            "vel": 0.9,
+            "id": "n23"
+          },
+          {
+            "start": 22.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n24"
+          },
+          {
+            "start": 24.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n25"
+          },
+          {
+            "start": 26.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n26"
+          },
+          {
+            "start": 26.5,
+            "len": 1.0,
+            "pitch": 36,
+            "vel": 0.9,
+            "id": "n27"
+          },
+          {
+            "start": 27.25,
+            "len": 1.0,
+            "pitch": 38,
+            "vel": 0.25,
+            "id": "n28"
+          },
+          {
+            "start": 28.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n29"
+          },
+          {
+            "start": 28.1,
+            "len": 1.0,
+            "pitch": 38,
+            "vel": 0.82,
+            "id": "n30"
+          },
+          {
+            "start": 30.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n31"
+          },
+          {
+            "start": 32.0,
+            "len": 1.0,
+            "pitch": 36,
+            "vel": 0.9,
+            "id": "n32"
+          },
+          {
+            "start": 32.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n33"
+          },
+          {
+            "start": 34.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n34"
+          },
+          {
+            "start": 36.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n35"
+          },
+          {
+            "start": 36.1,
+            "len": 1.0,
+            "pitch": 38,
+            "vel": 0.82,
+            "id": "n36"
+          },
+          {
+            "start": 38.0,
+            "len": 1.0,
+            "pitch": 36,
+            "vel": 0.9,
+            "id": "n37"
+          },
+          {
+            "start": 38.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n38"
+          },
+          {
+            "start": 40.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n39"
+          },
+          {
+            "start": 42.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n40"
+          },
+          {
+            "start": 42.5,
+            "len": 1.0,
+            "pitch": 36,
+            "vel": 0.9,
+            "id": "n41"
+          },
+          {
+            "start": 44.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n42"
+          },
+          {
+            "start": 44.1,
+            "len": 1.0,
+            "pitch": 38,
+            "vel": 0.82,
+            "id": "n43"
+          },
+          {
+            "start": 46.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n44"
+          },
+          {
+            "start": 48.0,
+            "len": 1.0,
+            "pitch": 36,
+            "vel": 0.9,
+            "id": "n45"
+          },
+          {
+            "start": 48.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n46"
+          },
+          {
+            "start": 50.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n47"
+          },
+          {
+            "start": 52.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n48"
+          },
+          {
+            "start": 52.1,
+            "len": 1.0,
+            "pitch": 38,
+            "vel": 0.82,
+            "id": "n49"
+          },
+          {
+            "start": 54.0,
+            "len": 1.0,
+            "pitch": 36,
+            "vel": 0.9,
+            "id": "n50"
+          },
+          {
+            "start": 54.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n51"
+          },
+          {
+            "start": 56.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n52"
+          },
+          {
+            "start": 58.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n53"
+          },
+          {
+            "start": 58.5,
+            "len": 1.0,
+            "pitch": 36,
+            "vel": 0.9,
+            "id": "n54"
+          },
+          {
+            "start": 59.25,
+            "len": 1.0,
+            "pitch": 38,
+            "vel": 0.25,
+            "id": "n55"
+          },
+          {
+            "start": 60.0,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.55,
+            "id": "n56"
+          },
+          {
+            "start": 60.1,
+            "len": 1.0,
+            "pitch": 38,
+            "vel": 0.82,
+            "id": "n57"
+          },
+          {
+            "start": 62.18,
+            "len": 0.7,
+            "pitch": 42,
+            "vel": 0.36,
+            "id": "n58"
+          }
+        ]
+      }
+    }
+  ],
+  "arrangement": [],
+  "master_effects": [],
+  "master_volume_db": 0.0,
+  "samples": [
+    {
+      "name": "drums_bdrumnew_hit_v2_rr1_sum",
+      "path": "__FIXTURE_ASSETS__/56827fe9b55f282a0db851e242bc24660d339a0e358b182966aea047240c1136.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.6
+    },
+    {
+      "name": "drums_bdrumnew_hit_v2_rr2_sum",
+      "path": "__FIXTURE_ASSETS__/f1f8979de26f8efe278fe778da7bdce2a39fbfb9f2cbf345e38ce8c66f171b59.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.71
+    },
+    {
+      "name": "drums_bdrumnew_hit_v3_rr1_sum",
+      "path": "__FIXTURE_ASSETS__/a2d8829e8b2b59e8afb12fa396b01758827059339c2a84ad066d17b36c82d1ff.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 2.08
+    },
+    {
+      "name": "drums_bdrumnew_hit_v3_rr2_sum",
+      "path": "__FIXTURE_ASSETS__/036c6c5fcfbcca845d92dbcdcef075ee6e0ae01636374a2f7dd1a696a7ba33f8.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 2.01
+    },
+    {
+      "name": "drums_bdrumnew_hit_v5_rr1_sum",
+      "path": "__FIXTURE_ASSETS__/642aaf3375eaff1307973f7de3ccbf74d18e71fb3cf9412e021b08fc3bf1981c.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 3.33
+    },
+    {
+      "name": "drums_bdrumnew_hit_v5_rr2_sum",
+      "path": "__FIXTURE_ASSETS__/a83943f8125ae39469ef5dab1d0be2fe3145c6842c0621b27be5d86aa44b325d.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 3.48
+    },
+    {
+      "name": "drums_bdrumnew_hit_v7_rr1_sum",
+      "path": "__FIXTURE_ASSETS__/7024054e68261d2cca0ee58fdf9d6f23b54370792d04aa2c1ccf41acc090bd2b.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 6.26
+    },
+    {
+      "name": "drums_bdrumnew_hit_v7_rr2_sum",
+      "path": "__FIXTURE_ASSETS__/fa4374b9ffdc3b9a3c85331ce96c447cf13e46d956cce9cfd9ba02801f71276f.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 5.63
+    },
+    {
+      "name": "drums_snare2_stick_v1_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/98258bc22a11aca0a8eb1d50a2e0a82cbe6357d30e0b55116db0b188015ff648.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 0.75
+    },
+    {
+      "name": "drums_snare2_stick_v1_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/a51181312d92049c2082d116efe96a32305b41c81c06b6c254a94cd2efd08bb1.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 0.85
+    },
+    {
+      "name": "drums_snare2_hitsn_v3_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/3d71765aa0d1e13260abeb003720aef0841432df601883177bf70e97d9af6c99.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.73
+    },
+    {
+      "name": "drums_snare2_hitsn_v3_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/770a0b6bfe95583c11014d5f9af9c94c425a15bd05234c86213aec356a2ffe29.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.31
+    },
+    {
+      "name": "drums_snare2_hitsn_v5_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/6ec8445cb207df8f1178d8c3894f47969fd53fb2b81c404317e466de4598dc3e.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.36
+    },
+    {
+      "name": "drums_snare2_hitsn_v5_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/6d563828174cf9f29d221b14e1d3309ad4db8a4ac2cf10ff0ae4f0564e0d2590.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.45
+    },
+    {
+      "name": "drums_snare2_hitsn_v6_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/ca0ee01347176a65f9d7e361203a61e736fa14acb2a743df355a4bded1ee40bd.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.36
+    },
+    {
+      "name": "drums_snare2_hitsn_v6_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/95105301c2eff6649f1983c7b2cb4bed78b310b500c7d5a0f708ac0c9c45edfc.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.37
+    },
+    {
+      "name": "drums_snare2_hitsn_v7_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/e63d9ebb2d1f85456d7554448b52330031051bc45db36f5fe08ef5f5149421e6.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.54
+    },
+    {
+      "name": "drums_snare2_hitsn_v7_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/c0ee12638c1255152d9e914c61bdbe6ff145e396d21302a91e33495d50335383.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.46
+    },
+    {
+      "name": "drums_snare2_hitsn_v9_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/ea0adea05227c09002fb7305613cb2877003dc3ba3467d3b2d60c20f5664d59a.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.67
+    },
+    {
+      "name": "drums_snare2_hitsn_v9_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/2a522774cab32b7c8ad6ea8d40ce5a4a36720c9735a653b4ee9c1c0c5294e61d.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.55
+    },
+    {
+      "name": "drums_snare2_hitns_v2_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/445dfee4836b775d990f0aca47519b1c0bae8427a9eb9776866dc232fdb37aa2.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 0.88
+    },
+    {
+      "name": "drums_snare2_hitns_v2_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/32254a0e10111bda114e1c1e6e0f68d8703b2366a18b491ab1f97f15955f404d.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 0.72
+    },
+    {
+      "name": "drums_snare2_hitns_v4_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/6814a1ed6aa68319356e174d1c46f0c67e20560e55c28d94a8361344608c6515.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 0.94
+    },
+    {
+      "name": "drums_snare2_hitns_v4_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/4918cea2a1d7b2bcff9d38ef76c8c76a2a993f86916da5589a5c6b6f5c9ffbe5.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 0.94
+    },
+    {
+      "name": "drums_snare2_hitns_v5_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/422855e723dea59d316bd71346397833340a20c538c648c1b4369e9a3617b61b.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 0.95
+    },
+    {
+      "name": "drums_snare2_hitns_v5_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/988da5852703d415f7f89d5aff99e169333df35db767b3aa4f4894939a48b1a1.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 0.84
+    },
+    {
+      "name": "drums_snare2_hitns_v6_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/1231d6e59ea7a16c58defe6d001c0dd346e2d56a4a94000111399bb5e6652714.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.11
+    },
+    {
+      "name": "drums_snare2_hitns_v6_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/22974ad3e03d6f67c5524985c0fe468b04ddada97b6cd996f76242d1d1391f9d.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.21
+    },
+    {
+      "name": "drums_clap_rr1",
+      "path": "__FIXTURE_ASSETS__/4c9f3fe4a34733b9be6ed9ce5e5aad48b19c1029ae9c6dd1b96294a847539e3f.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 0.74
+    },
+    {
+      "name": "drums_clap_rr2",
+      "path": "__FIXTURE_ASSETS__/5ae64e838b76d0658cc541f07c3c7dcfd4b08815a915f32843a8279bf2c33b9a.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 0.71
+    },
+    {
+      "name": "drums_hihat_hitc_v1_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/88447fa285b9592cfb7ff2b333977b032e667215f3db0f84d6ff0f4953e39980.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.19
+    },
+    {
+      "name": "drums_hihat_hitc_v1_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/6545c09b04b4cd8dbf004d24d7a8a560b7d6272deb598ae263b3e1a0fa9832b2.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.33
+    },
+    {
+      "name": "drums_hihat_hitc_v2_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/e1fb54c9a030800038abcebbed1c056fb74bdeec627315f3cd5fd893c6e6b031.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.4
+    },
+    {
+      "name": "drums_hihat_hitc_v2_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/72830eafed387f4b4b5904d4d6f1da23e13b48986fa1bc09d7c5771eafbb3a1a.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.42
+    },
+    {
+      "name": "drums_hihat_hitc_v3_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/b65ca06ea4f8b5209fc8d98912094be1212911f21e01bd949cc9960db049d37c.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.24
+    },
+    {
+      "name": "drums_hihat_hitc_v3_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/fac6cf410239603afff803ea97aa78fc38ccae185b5f60217c3c8cd632c265bd.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.58
+    },
+    {
+      "name": "drums_hihat_hitc_v4_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/ccaf3b3a353c22d7aac00c261229c42a1ef083285069f4c76dbafba454b46edd.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.51
+    },
+    {
+      "name": "drums_hihat_hitc_v4_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/98325d2327a7165b12840951de3fd2297e59fcdd0a6a58176a5cb4a3ed1f2958.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.35
+    },
+    {
+      "name": "drums_hihat_close_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/4e4dbb4ddbeea653f95c2c229685fd5966ed9492fb8489d89d19dbd864f1a6b4.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.34
+    },
+    {
+      "name": "drums_hihat_close_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/7a6c73b5ea831498d5c5c596b464a57e380cdc7dd2ab697bf10a2696b7f1987d.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.44
+    },
+    {
+      "name": "drums_hihat_hito_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/fa492ec14cc6924b43ad5fcf9e9a0f406d926998835bde2eb5847cd15ad25be7.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 5.82
+    },
+    {
+      "name": "drums_hihat_hito_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/f71f21883f6fe5466d15610ef0e9241ba3851c821858a958f8a6a75bff774760.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 6.16
+    },
+    {
+      "name": "drums_toml_rims_v2_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/14609eab02aa3a8de4c5bfa53c5c415ab66d5a1ccd853922a54e5e477f2156f5.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.04
+    },
+    {
+      "name": "drums_toml_rims_v2_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/4136d503447a5bee68012100a444334b8865d85ed9f0d4ddc48eb49076535059.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 0.97
+    },
+    {
+      "name": "drums_toml_rims_v4_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/05040914fff59713347d2c13b14d00d83de83ab66092a01d973dd81abaf6da22.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.83
+    },
+    {
+      "name": "drums_toml_rims_v4_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/a0e289adf2afd846b7034f27945ab5f9216a3861d4674e8d8ae7e076647b28ff.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.85
+    },
+    {
+      "name": "drums_tomh_rims_v2_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/f3b342d5fe823f97aef374c7700e297ce402f85334e5616c9fc438d07260ab3f.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.06
+    },
+    {
+      "name": "drums_tomh_rims_v2_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/a1e3d37f5be8d04282c6f773877c958b9544ec4f0321e00149d88bd7eac8d153.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.19
+    },
+    {
+      "name": "drums_tomh_rims_v4_rr1_mid",
+      "path": "__FIXTURE_ASSETS__/23cb0354a76e77b70b19ba40fa3e0954d09b1540b4be6765c64f43d2e36d1b4a.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.89
+    },
+    {
+      "name": "drums_tomh_rims_v4_rr2_mid",
+      "path": "__FIXTURE_ASSETS__/1cfca592445df3db836352da2f2cf3079a341536f8274c4aca3103e2775a0106.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.72
+    },
+    {
+      "name": "drums_cymbal_crash1_pp1",
+      "path": "__FIXTURE_ASSETS__/4b4f1f76ba77877a67bb5969fde058dfd57cc455f92979d96b8e051419be1a3a.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 9.33
+    },
+    {
+      "name": "drums_cymbal_crash1_pp2",
+      "path": "__FIXTURE_ASSETS__/5a37ad2be0115b8f52989941026831ee0825273899e03419e3447536d7388ca3.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 8.55
+    },
+    {
+      "name": "drums_cymbal_crash1_mp1",
+      "path": "__FIXTURE_ASSETS__/36d5beaaaa28cd4865a71647f89743ba4e7f5f76a3a3bc011548ead7303050fc.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 7.11
+    },
+    {
+      "name": "drums_cymbal_crash1_mp2",
+      "path": "__FIXTURE_ASSETS__/57be9c1a0aa199a3ac9ba041e7a8dad5d815da6180ce64bdfea52d5f5f599b57.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 8.03
+    },
+    {
+      "name": "drums_cymbal_crash1_mf1",
+      "path": "__FIXTURE_ASSETS__/3b4a6ed42627eedca39f6480e9825dedeaab538197fc734f85be13ba655aa6aa.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 8.48
+    },
+    {
+      "name": "drums_cymbal_crash1_mf2",
+      "path": "__FIXTURE_ASSETS__/88534fac7b69522738fa6ae39f305c424a26418c274a18ca5a08a1302e4c60a2.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 9.66
+    },
+    {
+      "name": "drums_cymbal_crash1_ff2",
+      "path": "__FIXTURE_ASSETS__/6f27c36fe2a829b667fd3372e1488437671534c0c719af9ae90128e5f99629d3.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 13.29
+    },
+    {
+      "name": "drums_cymbal_crash1_ff3",
+      "path": "__FIXTURE_ASSETS__/d469c985426b1cc5d282be7cc8a17cb9367072a21ee900a6344e08b2de281960.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 14.65
+    },
+    {
+      "name": "drums_suscymb1_hit_stick_f1",
+      "path": "__FIXTURE_ASSETS__/bc03d2057fed2e56f0aa5f34d3fa42d859ba06150f6b9433409d3fce43342fcb.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 6.88
+    },
+    {
+      "name": "drums_suscymb1_hit_stick_pp1",
+      "path": "__FIXTURE_ASSETS__/6f690228ff01e590965598c8b2da534b9c9126426ce106728be46e71a28ab93f.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 6.54
+    },
+    {
+      "name": "drums_suscymb1_hit_stick_mp1",
+      "path": "__FIXTURE_ASSETS__/17294cefa7f50367d1d9ae885a5f63a52eab372b90aeb7c3a8b400942cc95b9f.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 7.94
+    },
+    {
+      "name": "drums_suscymb1_hit_bell_pp1",
+      "path": "__FIXTURE_ASSETS__/4b1eae9ea4bef2fa129ebc519d26047f599406ba44e2e058744b08894fdff238.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 7.37
+    },
+    {
+      "name": "drums_suscymb1_hit_bell_mf1",
+      "path": "__FIXTURE_ASSETS__/5b30beca3342172715025f168966dee94e9c10b53a441aef29a5654423cfbe9d.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 7.25
+    },
+    {
+      "name": "piano_upright1_sus_c0_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/b709f4e1c9ce8648bd3886dd71a3ec8f3bc97d361f445e85c86f97e5c1ba5eaf.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 22.8
+    },
+    {
+      "name": "piano_upright1_sus_g0_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/281c2ceae2a47a95759c1cf4c8490129840e13116225d47e6b05ca657e6f2298.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 18.64
+    },
+    {
+      "name": "piano_upright1_sus_c1_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/7d5b5ff2f5e279ef55d30ff5b7327145f8fa877b2bdf5f6a8526dd97a840b07e.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 16.37
+    },
+    {
+      "name": "piano_upright1_sus_c1_vl2_rr2",
+      "path": "__FIXTURE_ASSETS__/eae5b0eed6dd60fd22d4829b76d736220e87e9d0f15fb89086f793a2a0148706.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 22.03
+    },
+    {
+      "name": "piano_upright1_sus_g1_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/519df94cc97f304bd307d31400f3c29ef98cbd6768bf6cf5162ecb9f97734151.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 17.73
+    },
+    {
+      "name": "piano_upright1_sus_g1_vl2_rr2",
+      "path": "__FIXTURE_ASSETS__/f25e450f22a8638055151d7083df27f353c449c380acd35c4323fb8f33ff1610.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 25.64
+    },
+    {
+      "name": "piano_upright1_sus_c2_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/d2dee43a796d36a1e58d958ba850ed2db87080ca86c0b7c584c2ff00eaf8a449.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 14.02
+    },
+    {
+      "name": "piano_upright1_sus_c2_vl2_rr2",
+      "path": "__FIXTURE_ASSETS__/0d39e29de5b82b2c797a744ea8783bab3c11abe6f418ddb539443db59ebf4880.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 22.57
+    },
+    {
+      "name": "piano_upright1_sus_g2_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/31a9a00b88d9c4d07e59356942d3e9ed83cef4fba37039c10d493baabfa6b94b.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 18.46
+    },
+    {
+      "name": "piano_upright1_sus_g2_vl2_rr2",
+      "path": "__FIXTURE_ASSETS__/404af4b6866dd39fcada36ad07840e6e0af5343c14d1c292320a93a5a9d97313.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 21.28
+    },
+    {
+      "name": "piano_upright1_sus_c3_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/d55c119de6e7d92bcdfe94ceb9237eeb2eb06d8103b574ac80a53d871af3e526.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 16.09
+    },
+    {
+      "name": "piano_upright1_sus_c3_vl2_rr2",
+      "path": "__FIXTURE_ASSETS__/8e3abf6ada3bb6722f531babd33ebf47f712595cf8507bb3bd9c4c6030aaba96.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 16.57
+    },
+    {
+      "name": "piano_upright1_sus_g3_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/482ed7d196fbcc7d7e5cdd35163b1a65ea8ad9809ea6c286a6aabad66a1bd3a2.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 11.39
+    },
+    {
+      "name": "piano_upright1_sus_g3_vl2_rr2",
+      "path": "__FIXTURE_ASSETS__/2d3a13aa77d69fc15bef536ead26a6e069933812814d6d0a325417a75c82d263.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 12.82
+    },
+    {
+      "name": "piano_upright1_sus_c4_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/39fdc55747ce7c0bd09215a357b577274c4c02928bf48972441ba6f47ec6e0a4.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 11.2
+    },
+    {
+      "name": "piano_upright1_sus_c4_vl2_rr2",
+      "path": "__FIXTURE_ASSETS__/d05e0e93dbd44315a7c38806079b31286dc94a3e8f1262100ca5d8beec7cd42c.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 13.56
+    },
+    {
+      "name": "piano_upright1_sus_g4_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/f6a8647d92a28553b596b7f072b1e4c2d79b5ecccbfd8a62dd20fdfce2490c16.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 6.38
+    },
+    {
+      "name": "piano_upright1_sus_g4_vl2_rr2",
+      "path": "__FIXTURE_ASSETS__/f7e94100f4d0cb1b96746a1974f6b963191fb94bbf81ad320b25b66a9dd88247.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 6.21
+    },
+    {
+      "name": "piano_upright1_sus_c5_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/e3a2e18257e012e5488459f1cf4391ac72bba29ed868cd4d1fad5995f3942280.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 4.45
+    },
+    {
+      "name": "piano_upright1_sus_c5_vl2_rr2",
+      "path": "__FIXTURE_ASSETS__/b6656b2e86e99acdee84024662c74a9e8a19798dabcad03546bf5e145791a02b.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 4.71
+    },
+    {
+      "name": "piano_upright1_sus_g5_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/8299f3ba89beef5cab1e3d0248be5a9643d136ad8772858c14fefe72e21238ae.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 3.83
+    },
+    {
+      "name": "piano_upright1_sus_g5_vl2_rr2",
+      "path": "__FIXTURE_ASSETS__/b5e3db0b407f044c086c8dde088bbacd83b126502120548e4a3acf5b6c9ee77a.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 3.38
+    },
+    {
+      "name": "piano_upright1_sus_c6_vl2_rr1",
+      "path": "__FIXTURE_ASSETS__/79c10a36a4dddd5bb118ebac9ec73af83d05f49c771401bfaaf90c1e66667b19.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.9
+    },
+    {
+      "name": "piano_upright1_sus_c6_vl2_rr2",
+      "path": "__FIXTURE_ASSETS__/a08baad0b31c5aa567566a265912f70f1fc76d6431e1891d9d6938e3cf9f7dbf.wav",
+      "source": "https://github.com/sgossner/VCSL",
+      "license": "CC0 1.0 (public domain dedication)",
+      "author": "",
+      "duration": 1.86
+    }
+  ],
+  "schema_version": 2,
+  "id_seq": 90
+}

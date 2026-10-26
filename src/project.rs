@@ -659,6 +659,107 @@ impl Project {
     }
 
     /// Find a track by (case-insensitive) name or numeric index.
+    /// Rename track `i` and every reference to it by name: the notes in each
+    /// pattern, automation, playlist clips, audio clips, macros, the vocal
+    /// map, the MIDI keys track, track outputs and sidechain sources. The
+    /// track keeps its stable id. Returns the old name.
+    pub fn rename_track(&mut self, i: usize, new: &str) -> Result<String> {
+        let new = new.trim();
+        if new.is_empty() {
+            return Err(anyhow!("a channel needs a name"));
+        }
+        if new.chars().count() > 40 {
+            return Err(anyhow!("keep channel names under 40 letters"));
+        }
+        let nl = new.to_lowercase();
+        if nl == "master" {
+            return Err(anyhow!("'master' is the master channel, pick another name"));
+        }
+        let taken = self
+            .tracks
+            .iter()
+            .enumerate()
+            .any(|(j, t)| j != i && t.name.to_lowercase() == nl)
+            || self.buses.iter().any(|b| b.name.to_lowercase() == nl);
+        if taken {
+            return Err(anyhow!("there is already a channel or bus called '{new}'"));
+        }
+        let old = self.tracks[i].name.clone();
+        let ol = old.to_lowercase();
+        self.tracks[i].name = new.to_string();
+        let same = |a: &str| a.to_lowercase() == ol;
+        for p in self.patterns.iter_mut() {
+            if let Some(v) = p.clips.remove(&ol) {
+                p.clips.insert(nl.clone(), v);
+            }
+        }
+        for l in self.automation.iter_mut().filter(|l| same(&l.target)) {
+            l.target = new.to_string();
+        }
+        for c in self.automation_clips.iter_mut().filter(|c| same(&c.target)) {
+            c.target = new.to_string();
+        }
+        for c in self.playlist.iter_mut() {
+            for t in c.tracks.iter_mut().filter(|t| same(t)) {
+                *t = new.to_string();
+            }
+        }
+        for c in self.audio_clips.iter_mut().filter(|c| same(&c.track)) {
+            c.track = new.to_string();
+        }
+        for m in self.macros.iter_mut() {
+            for t in m.targets.iter_mut().filter(|t| same(&t.track)) {
+                t.track = new.to_string();
+            }
+        }
+        if let Some(v) = self.vocal_map.as_mut().filter(|v| same(&v.track)) {
+            v.track = new.to_string();
+        }
+        if let Some(m) = self.midi.as_mut().filter(|m| same(&m.track)) {
+            m.track = new.to_string();
+        }
+        for t in self.tracks.iter_mut() {
+            if t.output.as_deref().is_some_and(same) {
+                t.output = Some(new.to_string());
+            }
+        }
+        fn fix(fx: &mut [Effect], old: &str, new: &str) {
+            for e in fx.iter_mut() {
+                let Ok(mut v) = serde_json::to_value(&*e) else {
+                    continue;
+                };
+                let mut hit = false;
+                if let Some(o) = v.as_object_mut() {
+                    for k in ["source", "sidechain"] {
+                        if o.get(k)
+                            .and_then(|x| x.as_str())
+                            .is_some_and(|x| x.to_lowercase() == old)
+                        {
+                            o.insert(k.into(), serde_json::Value::String(new.to_string()));
+                            hit = true;
+                        }
+                    }
+                }
+                if hit {
+                    if let Ok(n) = serde_json::from_value(v) {
+                        *e = n;
+                    }
+                }
+            }
+        }
+        for t in self.tracks.iter_mut() {
+            fix(&mut t.effects, &ol, new);
+        }
+        for b in self.buses.iter_mut() {
+            fix(&mut b.effects, &ol, new);
+        }
+        fix(&mut self.master_effects, &ol, new);
+        for v in self.fx_chains.values_mut() {
+            fix(v, &ol, new);
+        }
+        Ok(old)
+    }
+
     pub fn track_index(&self, key: &str) -> Result<usize> {
         let k = key.trim().to_lowercase();
         if let Some(i) = self.tracks.iter().position(|t| t.name.to_lowercase() == k) {

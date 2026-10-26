@@ -27,8 +27,7 @@ fn side(
 ) -> Result<(Vec<f32>, Vec<f32>)> {
     let path = e.resolve(what);
     let (mut l, mut r) = if what != "current" && path.is_file() {
-        let x = crate::samples::decode_file(&path)?;
-        (x.clone(), x)
+        crate::samples::decode_stereo(&path)?
     } else {
         let p = e.version(what)?;
         e.bank.sync(&p.samples);
@@ -80,6 +79,7 @@ pub fn tools() -> Vec<Tool> {
             "length_s": {"type": "number", "description": "seconds to keep (default 20)"},
             "blind": {"type": "boolean", "description": "shuffle which version is A and which is B (default false)"},
             "attach_audio": {"type": "boolean", "description": "send both clips as audio content (default false)"},
+            "play": {"type":"boolean", "description":"Queue A_then_B on studio speakers and stop song transport (default false)"},
             "reveal": {"type": "string", "description": "a blind session id: say which version was A and which was B"}
         }), &[]),
         run: |e, a| {
@@ -98,22 +98,28 @@ pub fn tools() -> Vec<Tool> {
                 (None, None) => None,
                 _ => bail!("to_bar must be after from_bar"),
             };
-            let secs = (f_opt(a, "start_s").unwrap_or(0.0), Some(f_opt(a, "length_s").unwrap_or(20.0).clamp(1.0, 120.0)));
+            let number=|key:&str,default:f32,lo:f32,hi:f32|->Result<f32>{let v=match a.get(key){Some(v)=>v.as_f64().ok_or_else(||anyhow!("{key} must be numeric"))? as f32,None=>default};if !v.is_finite()||v<lo||v>hi{bail!("{key} must be {lo}..{hi}");}Ok(v)};
+            let secs=(number("start_s",0.0,0.0,86400.0)?,Some(number("length_s",20.0,1.0,120.0)?));
             let (mut sa, mut sb) = (side(e, &an, bars, secs)?, side(e, &bn, bars, secs)?);
+            if !sa.0.iter().chain(&sa.1).chain(&sb.0).chain(&sb.1).all(|x|x.is_finite()) {bail!("A/B audio must be finite");}
             let (la, lb) = (analysis::loudness(&sa.0, &sa.1), analysis::loudness(&sb.0, &sb.1));
             // match to the quieter one: louder always sounds "better" at first
+            let matched=la.integrated_lufs > -69.0 && lb.integrated_lufs > -69.0;
             let target = la.integrated_lufs.min(lb.integrated_lufs);
-            let (ga, gb) = ((target - la.integrated_lufs).clamp(-24.0, 0.0), (target - lb.integrated_lufs).clamp(-24.0, 0.0));
+            let (mut ga,mut gb)=if matched{((target-la.integrated_lufs).min(0.0),(target-lb.integrated_lufs).min(0.0))}else{(0.0,0.0)};
             for (s, g) in [(&mut sa, ga), (&mut sb, gb)] {
                 let k = db_to_gain(g);
                 s.0.iter_mut().chain(s.1.iter_mut()).for_each(|x| *x *= k);
             }
+            let peak=sa.0.iter().chain(&sa.1).chain(&sb.0).chain(&sb.1).fold(0.0f32,|m,x|m.max(x.abs()));
+            let safety=if peak>0.95{20.0*(0.95/peak).log10()}else{0.0};
+            if safety<0.0{let k=db_to_gain(safety);for x in sa.0.iter_mut().chain(&mut sa.1).chain(&mut sb.0).chain(&mut sb.1){*x*=k;}}
+            ga+=safety;gb+=safety;
             let blind = b_or(a, "blind", false);
             let flip = blind && (crate::creative::fresh_seed() & 1 == 1);
             let (first, second, fname, sname) = if flip { (&sb, &sa, &bn, &an) } else { (&sa, &sb, &an, &bn) };
-            let sid = format!("ab{}", crate::creative::fresh_seed() % 1_000_000);
-            let dir = e.renders_dir().join("ab_listen").join(&sid);
-            std::fs::create_dir_all(&dir)?;
+            let root=e.renders_dir().join("ab_listen");std::fs::create_dir_all(&root)?;
+            let (sid,dir)=loop{let sid=format!("ab{}",crate::creative::fresh_seed());let dir=root.join(&sid);match std::fs::create_dir(&dir){Ok(())=>break(sid,dir),Err(err) if err.kind()==std::io::ErrorKind::AlreadyExists=>continue,Err(err)=>return Err(err.into())}};
             let (pa, pb, pab) = (dir.join("A.wav"), dir.join("B.wav"), dir.join("A_then_B.wav"));
             render::write_wav(&pa, &first.0, &first.1)?;
             render::write_wav(&pb, &second.0, &second.1)?;
@@ -136,13 +142,20 @@ pub fn tools() -> Vec<Tool> {
                 "A": if blind { json!("hidden (blind)") } else { json!(fname) },
                 "B": if blind { json!("hidden (blind)") } else { json!(sname) },
                 "files": {"A": pa.to_string_lossy(), "B": pb.to_string_lossy(), "A_then_B": pab.to_string_lossy()},
-                "matched_to_lufs": r1(target),
+                "matched_to_lufs": if matched {json!(r1(target+safety))}else{Value::Null},
+                "loudness_matched":matched,
+                "matching_note":if matched{"both audible sides matched; no gain boost"}else{"at least one side is silent/below the loudness gate; no loudness matching applied"},
+                "shared_safety_gain_db":r1(safety),
                 "level_change_db": if flip { json!({"A": r1(gb), "B": r1(ga)}) } else { json!({"A": r1(ga), "B": r1(gb)}) },
                 "facts": {"A": facts(&first.0, &first.1), "B": facts(&second.0, &second.1)},
                 "judgement": null,
                 "how_to_judge": "Listen to A_then_B (or A and B) at one comfortable volume. Which feels better and why: groove, vocal clarity, emotion, punch, space. These numbers describe level, not taste; they never decide.",
                 "next": if blind { format!("after listening: ab_listen {{\"reveal\": \"{sid}\"}}") } else { "keep the version the listener prefers (restore_snapshot)".into() },
             });
+            if b_or(a,"play",false) {
+                e.transport.pending.push(crate::engine::TransportCmd::Stop);
+                out["playback"]=crate::tools_library::queue_audition(e,cat(&first.0,&second.0),cat(&first.1,&second.1),0.0);
+            }
             if b_or(a, "attach_audio", false) {
                 crate::media::attach(&mut out, vec![
                     crate::media::audio_block(&crate::media::wav_bytes(&first.0, &first.1, SR as u32), "audio/wav"),
@@ -212,5 +225,135 @@ mod tests {
         ];
         got.sort();
         assert_eq!(got, vec!["current", "quiet"]);
+    }
+}
+
+#[cfg(test)]
+mod stereo_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn ab_files_preserve_stereo_and_queue_without_project_edits() {
+        let dir = std::env::temp_dir().join(format!("bb-ab-stereo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let n = 44100 * 2;
+        let l: Vec<_> = (0..n)
+            .map(|i| (i as f32 * std::f32::consts::TAU * 440. / 44100.).sin() * 0.2)
+            .collect();
+        let r = vec![0.; n];
+        let a = dir.join("a.wav");
+        let b = dir.join("b.wav");
+        beatbox::render::write_wav(&a, &l, &r).unwrap();
+        let loud: Vec<_> = l.iter().map(|v| v * 2.).collect();
+        beatbox::render::write_wav(&b, &loud, &r).unwrap();
+        let mut e = beatbox::Engine::new(dir);
+        let before = serde_json::to_value(&e.project).unwrap();
+        let h = e.history().0.len();
+        let v = e
+            .call("ab_listen", &json!({"a":a,"b":b,"length_s":2,"play":true}))
+            .unwrap();
+        assert!(v["judgement"].is_null());
+        assert!(
+            (v["facts"]["A"]["lufs"].as_f64().unwrap() - v["facts"]["B"]["lufs"].as_f64().unwrap())
+                .abs()
+                < 0.2
+        );
+        assert!(v["level_change_db"]["B"].as_f64().unwrap() < -5.9);
+        let q = e
+            .transport
+            .pending_audition
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        assert_eq!(q.0.len(), 44100 * 5);
+        assert!(q.1.iter().all(|x| x.abs() < 1e-6));
+        assert!(q.0.iter().any(|x| x.abs() > 0.1));
+        assert!(e
+            .transport
+            .pending
+            .iter()
+            .any(|x| matches!(x, beatbox::engine::TransportCmd::Stop)));
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        assert_eq!(e.history().0.len(), h);
+    }
+}
+
+#[cfg(test)]
+mod safety_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn ab_large_gain_hot_peaks_silence_and_region() {
+        let dir = std::env::temp_dir().join(format!("bb-ab-safety-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = beatbox::Engine::new(dir.clone());
+        let a = dir.join("a.wav");
+        let b = dir.join("b.wav");
+        let write = |p: &std::path::Path, amp: f32| {
+            use std::io::Write;
+            let frames = 132300u32;
+            let bytes = frames * 8;
+            let mut w = std::fs::File::create(p).unwrap();
+            w.write_all(b"RIFF").unwrap();
+            w.write_all(&(36 + bytes).to_le_bytes()).unwrap();
+            w.write_all(b"WAVEfmt ").unwrap();
+            w.write_all(&16u32.to_le_bytes()).unwrap();
+            w.write_all(&3u16.to_le_bytes()).unwrap();
+            w.write_all(&2u16.to_le_bytes()).unwrap();
+            w.write_all(&44100u32.to_le_bytes()).unwrap();
+            w.write_all(&(44100u32 * 8).to_le_bytes()).unwrap();
+            w.write_all(&8u16.to_le_bytes()).unwrap();
+            w.write_all(&32u16.to_le_bytes()).unwrap();
+            w.write_all(b"data").unwrap();
+            w.write_all(&bytes.to_le_bytes()).unwrap();
+            for i in 0..frames {
+                let x = (i as f32 * std::f32::consts::TAU * 1000. / 44100.).sin() * amp;
+                w.write_all(&x.to_le_bytes()).unwrap();
+                w.write_all(&0f32.to_le_bytes()).unwrap();
+            }
+        };
+        write(&a, 0.01);
+        write(&b, 1.0);
+        let v = e
+            .call("ab_listen", &json!({"a":a,"b":b,"length_s":2,"start_s":1}))
+            .unwrap();
+        assert_eq!(v["loudness_matched"], true);
+        assert!(v["level_change_db"]["B"].as_f64().unwrap() < -39.8);
+        assert!(
+            (v["facts"]["A"]["lufs"].as_f64().unwrap() - v["facts"]["B"]["lufs"].as_f64().unwrap())
+                .abs()
+                < 0.2
+        );
+        assert_eq!(v["facts"]["A"]["seconds"], 2.0);
+        write(&a, 2.0);
+        write(&b, 2.0);
+        let hot = e
+            .call("ab_listen", &json!({"a":a,"b":b,"length_s":2,"play":true}))
+            .unwrap();
+        assert!(hot["shared_safety_gain_db"].as_f64().unwrap() < -6.0);
+        let q = e
+            .transport
+            .pending_audition
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        assert!(q.0.iter().chain(&q.1).all(|x| x.abs() <= 0.9501));
+        write(&a, 0.0);
+        let silent = e
+            .call("ab_listen", &json!({"a":a,"b":b,"length_s":2}))
+            .unwrap();
+        assert_eq!(silent["loudness_matched"], false);
+        assert!(silent["matched_to_lufs"].is_null());
+        assert!(silent["shared_safety_gain_db"].as_f64().unwrap() < -6.0);
+        assert_ne!(silent["session"], hot["session"]);
+        for bad in [
+            json!({"a":a,"b":b,"start_s":-1}),
+            json!({"a":a,"b":b,"length_s":"6"}),
+            json!({"a":a,"b":b,"length_s":121}),
+        ] {
+            assert!(e.call("ab_listen", &bad).is_err());
+        }
     }
 }

@@ -140,3 +140,6 @@ pub mod waveform_png;
 pub mod web_import;
 
 pub use engine::Engine;
+
+#[cfg(test)]
+mod test_fixtures;

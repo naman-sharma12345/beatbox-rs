@@ -15,6 +15,44 @@ fn max_key() -> u8 {
     127
 }
 
+// Internally tagged instruments deserialize through serde Content, whose map
+// keys stay strings. JSON's native u8 map-key adapter is not used there.
+fn deserialize_key_settings<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<std::collections::BTreeMap<u8, f32>, D::Error> {
+    let raw = std::collections::BTreeMap::<String, f32>::deserialize(d)?;
+    raw.into_iter()
+        .map(|(k, v)| {
+            let key = k.parse::<u8>().map_err(serde::de::Error::custom)?;
+            if key > 127 {
+                return Err(serde::de::Error::custom("MIDI key must be 0..127"));
+            }
+            Ok((key, v))
+        })
+        .collect()
+}
+
+/// Indirect per-key response storage keeps the Instrument enum from growing.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(transparent)]
+pub struct KeyVelocityResponse(
+    #[serde(deserialize_with = "deserialize_key_settings")] pub std::collections::BTreeMap<u8, f32>,
+);
+impl std::ops::Deref for KeyVelocityResponse {
+    type Target = std::collections::BTreeMap<u8, f32>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for KeyVelocityResponse {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+fn response_empty(v: &KeyVelocityResponse) -> bool {
+    v.is_empty()
+}
+
 /// One sample mapped to a key range and velocity range.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Zone {
@@ -50,11 +88,82 @@ pub struct MultisampleParams {
     /// Play the whole sample regardless of note length (drums, plucks).
     pub one_shot: bool,
     pub round_robin: bool,
+    /// Opt-in GM open-hat46 choke by closed/pedal42/44 on this channel.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gm_hat_choke: bool,
     /// Blend neighbouring velocity layers near their boundary.
     pub vel_crossfade: bool,
     /// How much velocity changes level (0 = layers only, 1 = full).
     pub vel_to_gain: f32,
+    /// Response exponent before layer selection and level. 1 preserves input.
+    #[serde(default = "one")]
+    pub velocity_curve: f32,
+    /// Instrument-wide sample-rate fine tuning; mapping and MIDI unchanged.
+    #[serde(default)]
+    pub tune_cents: f32,
     pub gain: f32,
+    /// Absolute per-played-key trim, independent of recorded zone gains.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        deserialize_with = "deserialize_key_settings"
+    )]
+    pub key_trim_db: std::collections::BTreeMap<u8, f32>,
+    /// Absolute per-played-key tuning in cents; mapping and zone tuning unchanged.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        deserialize_with = "deserialize_key_settings"
+    )]
+    pub key_tune_cents: std::collections::BTreeMap<u8, f32>,
+    /// Optional per-key maximum playback in milliseconds, with 5ms end fade.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        deserialize_with = "deserialize_key_settings"
+    )]
+    pub key_length_ms: std::collections::BTreeMap<u8, f32>,
+    /// Per-key balance before channel effects/pan: -1 left, +1 right, 0 unchanged.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        deserialize_with = "deserialize_key_settings"
+    )]
+    pub key_pan: std::collections::BTreeMap<u8, f32>,
+    /// Per-key attack override milliseconds. Missing/zero uses instrument attack.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        deserialize_with = "deserialize_key_settings"
+    )]
+    pub key_attack_ms: std::collections::BTreeMap<u8, f32>,
+    /// Per-key exponential decay half-life milliseconds; missing/zero is off.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        deserialize_with = "deserialize_key_settings"
+    )]
+    pub key_decay_ms: std::collections::BTreeMap<u8, f32>,
+    /// Two cascaded one-pole low-pass stages per played key. Zero/missing bypasses.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        deserialize_with = "deserialize_key_settings"
+    )]
+    pub key_lowpass_hz: std::collections::BTreeMap<u8, f32>,
+    /// Per-key cascaded DC-blocking high-pass stages; missing/zero bypasses.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        deserialize_with = "deserialize_key_settings"
+    )]
+    pub key_highpass_hz: std::collections::BTreeMap<u8, f32>,
+    /// Per-played-key velocity curve override; missing/zero uses kit curve.
+    #[serde(default, skip_serializing_if = "response_empty")]
+    pub key_velocity_curve: Box<KeyVelocityResponse>,
+    /// Keys whose source recordings play backwards, before resampling/envelope.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub reverse_keys: std::collections::BTreeSet<u8>,
     /// Where the zones came from (pack / sfz) and its licence.
     pub source: String,
 }
@@ -67,9 +176,22 @@ impl Default for MultisampleParams {
             release: 0.35,
             one_shot: false,
             round_robin: true,
+            gm_hat_choke: false,
             vel_crossfade: true,
             vel_to_gain: 0.6,
+            velocity_curve: 1.0,
+            tune_cents: 0.0,
             gain: 0.9,
+            key_trim_db: Default::default(),
+            key_tune_cents: Default::default(),
+            key_length_ms: Default::default(),
+            key_pan: Default::default(),
+            key_attack_ms: Default::default(),
+            key_decay_ms: Default::default(),
+            key_lowpass_hz: Default::default(),
+            key_highpass_hz: Default::default(),
+            key_velocity_curve: Default::default(),
+            reverse_keys: Default::default(),
             source: String::new(),
         }
     }
@@ -85,11 +207,39 @@ fn key_dist(z: &Zone, key: i32) -> i32 {
     }
 }
 
+/// Non-destructive touch response, shared by layer choice and note gain.
+pub fn response_velocity(p: &MultisampleParams, velocity: f32) -> f32 {
+    let curve = if p.velocity_curve.is_finite() {
+        p.velocity_curve.clamp(0.25, 4.0)
+    } else {
+        1.0
+    };
+    if curve == 1.0 {
+        velocity
+    } else {
+        velocity.clamp(0.0, 1.0).powf(curve)
+    }
+}
+
+/// Per-key override affects layer selection and level equally, not MIDI.
+pub fn response_velocity_for_key(p: &MultisampleParams, key: i32, velocity: f32) -> f32 {
+    match p
+        .key_velocity_curve
+        .get(&(key.clamp(0, 127) as u8))
+        .copied()
+        .filter(|v| v.is_finite() && *v > 0.)
+    {
+        Some(curve) => velocity.clamp(0., 1.).powf(curve.clamp(0.25, 4.)),
+        None => response_velocity(p, velocity),
+    }
+}
+
 /// Zones to play with their weights for a key / velocity / round-robin counter.
 pub fn pick_zones(p: &MultisampleParams, key: i32, vel: f32, rr_counter: u64) -> Vec<(usize, f32)> {
     if p.zones.is_empty() {
         return vec![];
     }
+    let vel = response_velocity_for_key(p, key, vel);
     // nearest key range first (exact match = 0)
     let best = p.zones.iter().map(|z| key_dist(z, key)).min().unwrap_or(0);
     let near: Vec<usize> = (0..p.zones.len())
@@ -136,6 +286,11 @@ pub fn pick_zones(p: &MultisampleParams, key: i32, vel: f32, rr_counter: u64) ->
         } else {
             (0, 0.0)
         };
+        // A nearest layer can be selected just outside its velocity range
+        // (SFZ/MIDI ranges often leave small gaps). Do not extrapolate the
+        // boundary blend: the neighbour must never outweigh the main layer
+        // or produce a negative main weight for narrow ranges/wider gaps.
+        let t = t.clamp(0.0, 0.5);
         if other_side != 0 && t > 0.01 {
             let neigh: Vec<usize> = near
                 .iter()
@@ -170,6 +325,7 @@ pub fn render_multisample(
     let key = pitch.round() as i32;
     let picks = pick_zones(p, key, vel, seed);
     let mut out: Vec<f32> = Vec::new();
+    let vel = response_velocity_for_key(p, key, vel);
     let vel_gain = 1.0 - p.vel_to_gain.clamp(0.0, 1.0) * (1.0 - vel);
     for (zi, w) in picks {
         let z = &p.zones[zi];
@@ -179,23 +335,84 @@ pub fn render_multisample(
         if data.is_empty() {
             continue;
         }
-        let rate = 2f32.powf((pitch - z.root as f32 + z.tune_cents / 100.0) / 12.0);
+        let tune = p
+            .key_tune_cents
+            .get(&(key.clamp(0, 127) as u8))
+            .copied()
+            .filter(|x| x.is_finite())
+            .unwrap_or(0.0)
+            .clamp(-1200.0, 1200.0);
+        let global_tune = if p.tune_cents.is_finite() {
+            p.tune_cents.clamp(-100.0, 100.0)
+        } else {
+            0.0
+        };
+        let rate =
+            2f32.powf((pitch - z.root as f32 + (z.tune_cents + tune + global_tune) / 100.0) / 12.0);
         let avail = data.len() as f32 / rate / SR;
         let len = if p.one_shot {
             avail
         } else {
             (gate + p.release.max(0.005)).min(avail)
         };
-        let n = (len * SR) as usize;
+        let cap = p
+            .key_length_ms
+            .get(&(key.clamp(0, 127) as u8))
+            .copied()
+            .filter(|x| x.is_finite() && *x > 0.0)
+            .map(|x| x.clamp(10.0, 5000.0) / 1000.0);
+        let capped = cap.is_some_and(|c| c < len);
+        let n = (cap.map_or(len, |c| len.min(c)) * SR) as usize;
         if out.len() < n {
             out.resize(n, 0.0);
         }
-        let g = w * vel_gain * p.gain * crate::dsp::db_to_gain(z.gain_db);
-        let att = (p.attack.max(0.0005) * SR).max(1.0);
+        let trim = p
+            .key_trim_db
+            .get(&(key.clamp(0, 127) as u8))
+            .copied()
+            .filter(|x| x.is_finite())
+            .unwrap_or(0.0)
+            .clamp(-24.0, 6.0);
+        let g = w * vel_gain * p.gain * crate::dsp::db_to_gain(z.gain_db + trim);
+        let attack = p
+            .key_attack_ms
+            .get(&(key.clamp(0, 127) as u8))
+            .copied()
+            .filter(|v| v.is_finite() && *v > 0.)
+            .map(|v| v.clamp(0.5, 200.) / 1000.)
+            .unwrap_or(p.attack);
+        let att = (attack.max(0.0005) * SR).max(1.0);
         let rel_n = (p.release.max(0.005) * SR).max(1.0);
         let gate_n = (gate * SR) as usize;
         // band-limited pitching (windowed sinc) instead of linear interpolation
-        let src = crate::resample::pitch_read(data, rate as f64, n);
+        let reversed: Vec<f32>;
+        let source = if p.reverse_keys.contains(&(key.clamp(0, 127) as u8)) {
+            reversed = data.iter().rev().copied().collect();
+            &reversed[..]
+        } else {
+            data
+        };
+        let src = crate::resample::pitch_read(source, rate as f64, n);
+        let decay = p
+            .key_decay_ms
+            .get(&(key.clamp(0, 127) as u8))
+            .copied()
+            .filter(|v| v.is_finite() && *v > 0.)
+            .map(|v| v.clamp(10., 2000.) * 0.001 * SR);
+        let lp = p
+            .key_lowpass_hz
+            .get(&(key.clamp(0, 127) as u8))
+            .copied()
+            .filter(|v| v.is_finite() && *v > 0.)
+            .map(|v| 1. - (-2. * std::f32::consts::PI * v.clamp(100., 18000.) / SR).exp());
+        let (mut low1, mut low2) = (0f32, 0f32);
+        let hp = p
+            .key_highpass_hz
+            .get(&(key.clamp(0, 127) as u8))
+            .copied()
+            .filter(|v| v.is_finite() && *v > 0.)
+            .map(|v| (-2. * std::f32::consts::PI * v.clamp(20., 4000.) / SR).exp());
+        let (mut hp_x1, mut hp_y1, mut hp_x2, mut hp_y2) = (0f32, 0f32, 0f32, 0f32);
         for (i, o) in out.iter_mut().enumerate().take(n) {
             let a = (i as f32 / att).min(1.0);
             let r = if p.one_shot || i < gate_n {
@@ -204,8 +421,29 @@ pub fn render_multisample(
                 let x = (i - gate_n) as f32 / rel_n;
                 (1.0 - x).max(0.0).powi(2)
             };
-            let tail = ((n - i) as f32 / 64.0).min(1.0);
-            *o += src[i] * a * r * tail * g;
+            let fade_n = if capped { (0.005 * SR).max(64.0) } else { 64.0 };
+            let tail = ((n - i) as f32 / fade_n).min(1.0);
+            let d = decay.map_or(1., |half_samples| 2f32.powf(-(i as f32) / half_samples));
+            let sample = if let Some(alpha) = lp {
+                low1 += alpha * (src[i] - low1);
+                low2 += alpha * (low1 - low2);
+                low2
+            } else {
+                src[i]
+            };
+            let sample = if let Some(pole) = hp {
+                let gain = (1. + pole) * 0.5;
+                let first = gain * (sample - hp_x1) + pole * hp_y1;
+                hp_x1 = sample;
+                hp_y1 = first;
+                let second = gain * (first - hp_x2) + pole * hp_y2;
+                hp_x2 = first;
+                hp_y2 = second;
+                second
+            } else {
+                sample
+            };
+            *o += sample * a * r * tail * g * d;
         }
     }
     out
@@ -1036,5 +1274,485 @@ mod tests {
         assert_eq!((r[1].lo, r[1].hi, r[1].root), (62, 62, 62));
         assert_eq!((r[2].vel_lo, r[2].tune), (65, -5.0));
         assert_eq!(rel, Some(0.6));
+    }
+}
+
+#[cfg(test)]
+mod kit_piece_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn piece_level_absolute_history_and_audio() {
+        let mut e = beatbox::Engine::new("/tmp/piece-test-work".into());
+        e.call(
+            "load_instrument",
+            &json!({"track":"kit","catalog_id":"vcsl_acoustic_drum_kit","max_mb":100}),
+        )
+        .unwrap();
+        e.bank.sync(&e.project.samples);
+        let render = |e: &beatbox::Engine, key: f32| {
+            let beatbox::instruments::Instrument::Multisample(p) = &e.project.tracks[0].instrument
+            else {
+                panic!()
+            };
+            beatbox::multisample::render_multisample(p, key, 0.8, 0.2, &e.bank, 0)
+        };
+        let kick = render(&e, 36.);
+        let snare = render(&e, 38.);
+        let b = serde_json::to_value(&e.project).unwrap();
+        let a = json!({"track":"kit","key":38,"gain_db":-6});
+        e.call(
+            "instrument",
+            &json!({"action":"set_kit_piece_level","params":a}),
+        )
+        .unwrap();
+        let after = serde_json::to_value(&e.project).unwrap();
+        let mut ex = b.clone();
+        ex["tracks"][0]["instrument"]["key_trim_db"] = json!({"38":-6.0});
+        assert_eq!(ex, after);
+        assert_eq!(render(&e, 36.), kick);
+        let quiet = render(&e, 38.);
+        let g = 10f32.powf(-6. / 20.);
+        assert!(quiet
+            .iter()
+            .zip(&snare)
+            .all(|(a, b)| (a - b * g).abs() < 1e-6));
+        let h = e.history().0.len();
+        e.call("set_kit_piece_level", &a).unwrap();
+        assert_eq!(e.history().0.len(), h);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), after);
+        for bad in [
+            json!({"track":"kit","key":38,"gain_db":7}),
+            json!({"track":"kit","key":38.5,"gain_db":0}),
+        ] {
+            assert!(e.call("set_kit_piece_level", &bad).is_err());
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), after);
+        }
+        e.call(
+            "set_kit_piece_level",
+            &json!({"track":"kit","key":38,"gain_db":0}),
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+    }
+}
+
+#[cfg(test)]
+mod kit_tuning_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn tuning_absolute_mapping_audio_history() {
+        let mut e = beatbox::Engine::new("/tmp/tune-tests-work".into());
+        e.call(
+            "load_instrument",
+            &json!({"track":"kit","catalog_id":"vcsl_acoustic_drum_kit","max_mb":100}),
+        )
+        .unwrap();
+        e.bank.sync(&e.project.samples);
+        let render = |p: &beatbox::multisample::MultisampleParams, key: f32| {
+            beatbox::multisample::render_multisample(p, key, 0.8, 0.2, &e.bank, 0)
+        };
+        let beatbox::instruments::Instrument::Multisample(basep) =
+            e.project.tracks[0].instrument.clone()
+        else {
+            panic!()
+        };
+        let kick = render(&basep, 36.);
+        let snare = render(&basep, 38.);
+        let b = serde_json::to_value(&e.project).unwrap();
+        let a = json!({"track":"kit","key":38,"cents":-400});
+        e.call(
+            "instrument",
+            &json!({"action":"set_kit_piece_tuning","params":a}),
+        )
+        .unwrap();
+        let after = serde_json::to_value(&e.project).unwrap();
+        let mut ex = b.clone();
+        ex["tracks"][0]["instrument"]["key_tune_cents"] = json!({"38":-400.0});
+        assert_eq!(ex, after);
+        let beatbox::instruments::Instrument::Multisample(p) =
+            e.project.tracks[0].instrument.clone()
+        else {
+            panic!()
+        };
+        let tuned = beatbox::multisample::render_multisample(&p, 38., 0.8, 0.2, &e.bank, 0);
+        let mut oracle = basep.clone();
+        for z in &mut oracle.zones {
+            if z.root == 38 {
+                z.tune_cents -= 400.;
+            }
+        }
+        assert_eq!(
+            tuned,
+            beatbox::multisample::render_multisample(&oracle, 38., 0.8, 0.2, &e.bank, 0)
+        );
+        assert_ne!(tuned, snare);
+        assert!(tuned.len() > snare.len());
+        assert_eq!(
+            kick,
+            beatbox::multisample::render_multisample(&p, 36., 0.8, 0.2, &e.bank, 0)
+        );
+        let h = e.history().0.len();
+        e.call("set_kit_piece_tuning", &a).unwrap();
+        assert_eq!(h, e.history().0.len());
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), after);
+        for bad in [
+            json!({"track":"kit","key":38,"cents":1201}),
+            json!({"track":"kit","key":38.5,"cents":0}),
+            json!({"track":"kit","key":37,"cents":0}),
+        ] {
+            assert!(e.call("set_kit_piece_tuning", &bad).is_err());
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), after);
+        }
+        e.call(
+            "set_kit_piece_tuning",
+            &json!({"track":"kit","key":38,"cents":0}),
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+    }
+}
+
+#[cfg(test)]
+mod kit_length_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn piece_length_audio_history_stream() {
+        let mut e = beatbox::Engine::new("/tmp/length-test-work".into());
+        e.project.tracks.clear();
+        e.call(
+            "load_instrument",
+            &json!({"track":"kit","catalog_id":"vcsl_acoustic_drum_kit","max_mb":100}),
+        )
+        .unwrap();
+        e.bank.sync(&e.project.samples);
+        let r = |e: &beatbox::Engine, k| {
+            let beatbox::instruments::Instrument::Multisample(p) = &e.project.tracks[0].instrument
+            else {
+                panic!()
+            };
+            beatbox::multisample::render_multisample(p, k, 0.8, 0.2, &e.bank, 0)
+        };
+        let kick = r(&e, 36.);
+        let snare = r(&e, 38.);
+        let b = serde_json::to_value(&e.project).unwrap();
+        let a = json!({"track":"kit","key":38,"length_ms":120});
+        e.call(
+            "instrument",
+            &json!({"action":"set_kit_piece_length","params":a}),
+        )
+        .unwrap();
+        let after = serde_json::to_value(&e.project).unwrap();
+        let mut ex = b.clone();
+        ex["tracks"][0]["instrument"]["key_length_ms"] = json!({"38":120.0});
+        assert_eq!(ex, after);
+        let short = r(&e, 38.);
+        assert_eq!(short.len(), 5292);
+        assert!(short.len() < snare.len());
+        assert_eq!(&short[..5000], &snare[..5000]);
+        for i in 5072..short.len() {
+            let fade = ((short.len() - i) as f32 / (0.005 * 44100.0)).min(1.0);
+            assert!((short[i] - snare[i] * fade).abs() < 1e-6);
+        }
+        assert_eq!(kick, r(&e, 36.));
+        let h = e.history().0.len();
+        e.call("set_kit_piece_length", &a).unwrap();
+        assert_eq!(h, e.history().0.len());
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), after);
+        for val in [-1, 1, 9, 5001] {
+            assert!(e
+                .call(
+                    "set_kit_piece_length",
+                    &json!({"track":"kit","key":38,"length_ms":val})
+                )
+                .is_err());
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), after);
+        }
+        e.call(
+            "set_kit_piece_length",
+            &json!({"track":"kit","key":38,"length_ms":0}),
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), b);
+        e.call("set_kit_piece_length", &a).unwrap();
+        e.call("add_notes",&json!({"track":"kit","notes":[{"start":0,"pitch":38,"vel":0.8,"len":1},{"start":4,"pitch":36,"vel":0.8,"len":1},{"start":8,"pitch":38,"vel":0.8,"len":1}]})).unwrap();
+        let opts = beatbox::render::RenderOptions {
+            keep_stems: true,
+            ..Default::default()
+        };
+        let oracle = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        for block in [63, 512] {
+            let mut stream = beatbox::rt::VoiceStreamer::new(&e.project, &e.bank, &opts, block, 0);
+            let (l, r) = stream.render_all();
+            assert_eq!(l, oracle.stems[0].left);
+            assert_eq!(r, oracle.stems[0].right);
+        }
+    }
+}
+
+#[cfg(test)]
+mod kit_persistence_tests {
+    use crate as beatbox;
+    use serde_json::json;
+    #[test]
+    fn combined_kit_controls_persistence_stream() {
+        let mut e = beatbox::Engine::new("/tmp/combined-kit-work".into());
+        e.project.bpm = 120.;
+        e.project.swing = 0.;
+        e.project.tracks.clear();
+        e.project.master_effects.clear();
+        e.project.patterns[0].bars = 4;
+        e.call("load_instrument",&json!({"track":"kit","catalog_id":"vcsl_acoustic_drum_kit","max_mb":100,"volume_db":0})).unwrap();
+        e.call("add_notes",&json!({"track":"kit","notes":[{"start":0,"pitch":38,"vel":0.8,"len":1},{"start":1,"pitch":36,"vel":0.7,"len":1},{"start":2,"pitch":46,"vel":0.7,"len":1},{"start":3,"pitch":42,"vel":0.7,"len":1},{"start":24,"pitch":38,"vel":0.8,"len":1}]})).unwrap();
+        let original = serde_json::to_value(&e.project).unwrap();
+        for (name, args) in [
+            (
+                "set_kit_piece_level",
+                json!({"track":"kit","key":38,"gain_db":-4}),
+            ),
+            (
+                "set_kit_piece_tuning",
+                json!({"track":"kit","key":38,"cents":-300}),
+            ),
+            (
+                "set_kit_piece_length",
+                json!({"track":"kit","key":38,"length_ms":120}),
+            ),
+            (
+                "set_sample_performance",
+                json!({"track":"kit","gm_hat_choke":true}),
+            ),
+        ] {
+            e.call("instrument", &json!({"action":name,"params":args}))
+                .unwrap();
+        }
+        let configured = serde_json::to_value(&e.project).unwrap();
+        let mut expected = original.clone();
+        expected["tracks"][0]["instrument"]["key_trim_db"] = json!({"38":-4.0});
+        expected["tracks"][0]["instrument"]["key_tune_cents"] = json!({"38":-300.0});
+        expected["tracks"][0]["instrument"]["key_length_ms"] = json!({"38":120.0});
+        expected["tracks"][0]["instrument"]["gm_hat_choke"] = json!(true);
+        assert_eq!(configured, expected);
+        e.bank.sync(&e.project.samples);
+        let opts = beatbox::render::RenderOptions {
+            keep_stems: true,
+            ..Default::default()
+        };
+        let full = beatbox::render::render(&e.project, &e.bank, &opts).unwrap();
+        let stem = &full.stems[0];
+        for block in [1, 63, 512, 4096] {
+            let mut s = beatbox::rt::VoiceStreamer::new(&e.project, &e.bank, &opts, block, 0);
+            let (l, r) = s.render_all();
+            assert_eq!(l, stem.left);
+            assert_eq!(r, stem.right);
+        }
+
+        e.call("save_project", &json!({"path":"combined.json"}))
+            .unwrap();
+        let mut reload = beatbox::Engine::new("/tmp/combined-kit-work".into());
+        reload
+            .call("load_project", &json!({"path":"combined.json"}))
+            .unwrap();
+        assert_eq!(serde_json::to_value(&reload.project).unwrap(), configured);
+        reload.bank.sync(&reload.project.samples);
+        let roundtrip = beatbox::render::render(&reload.project, &reload.bank, &opts).unwrap();
+        assert_eq!(roundtrip.left, full.left);
+        assert_eq!(roundtrip.right, full.right);
+        for _ in 0..4 {
+            e.call("undo", &json!({})).unwrap();
+        }
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), original);
+        for _ in 0..4 {
+            e.call("redo", &json!({})).unwrap();
+        }
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), configured);
+        e.call(
+            "load_instrument",
+            &json!({"track":"piano","catalog_id":"vcsl_upright_piano_yamaha_lite","max_mb":100}),
+        )
+        .unwrap();
+        let melodic = serde_json::to_value(&e.project).unwrap();
+        for (name, param) in [
+            ("set_kit_piece_level", "gain_db"),
+            ("set_kit_piece_tuning", "cents"),
+            ("set_kit_piece_length", "length_ms"),
+        ] {
+            assert!(e
+                .call(name, &json!({"track":"piano","key":38,param:100}))
+                .is_err());
+            assert_eq!(serde_json::to_value(&e.project).unwrap(), melodic);
+        }
+    }
+}
+
+#[cfg(test)]
+mod velocity_gap_tests {
+    use super::*;
+    fn fixture() -> MultisampleParams {
+        MultisampleParams {
+            zones: vec![
+                Zone {
+                    sample: "low".into(),
+                    root: 60,
+                    lo_note: 60,
+                    hi_note: 60,
+                    vel_lo: 0.0,
+                    vel_hi: 0.4,
+                    tune_cents: 0.0,
+                    gain_db: 0.0,
+                    rr: 0,
+                },
+                Zone {
+                    sample: "high".into(),
+                    root: 60,
+                    lo_note: 60,
+                    hi_note: 60,
+                    vel_lo: 0.419,
+                    vel_hi: 1.0,
+                    tune_cents: 0.0,
+                    gain_db: 0.0,
+                    rr: 0,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn gap_blends_are_convex_and_nearest_layer_keeps_half() {
+        for p in [fixture(), {
+            let mut p = fixture();
+            p.zones[0].vel_lo = 0.39;
+            p
+        }] {
+            for i in 0..=10000 {
+                let picks = pick_zones(&p, 60, i as f32 / 10000.0, 0);
+                assert!(picks[0].1 >= 0.5, "{i}: {picks:?}");
+                assert!(picks
+                    .iter()
+                    .all(|(_, w)| w.is_finite() && *w >= 0.0 && *w <= 1.0));
+                assert!((picks.iter().map(|x| x.1).sum::<f32>() - 1.0).abs() < 1e-6);
+            }
+        }
+    }
+    #[test]
+    fn interior_disabled_and_round_robin_are_preserved() {
+        let mut p = fixture();
+        assert_eq!(pick_zones(&p, 60, 0.2, 0), vec![(0, 1.0)]);
+        let v = 0.38;
+        let expected = 0.5 * (1.0 - (0.4 - v) / 0.1);
+        let picks = pick_zones(&p, 60, v, 0);
+        assert!((picks[1].1 - expected).abs() < 1e-6);
+        p.vel_crossfade = false;
+        assert_eq!(pick_zones(&p, 60, 0.405, 0), vec![(0, 1.0)]);
+        p.vel_crossfade = true;
+        let mut rr = p.zones[0].clone();
+        rr.rr = 1;
+        rr.sample = "low_rr2".into();
+        p.zones.push(rr);
+        assert_eq!(pick_zones(&p, 60, 0.405, 1)[0].0, 2);
+        let left = pick_zones(&p, 60, 0.40949, 0);
+        let right = pick_zones(&p, 60, 0.40951, 0);
+        assert_eq!(left, vec![(0, 0.5), (1, 0.5)]);
+        assert_eq!(right, vec![(1, 0.5), (0, 0.5)]);
+    }
+}
+
+#[cfg(test)]
+mod recorded_velocity_gap_tests {
+    use serde_json::json;
+    #[test]
+    fn actual_kit_gap_preview_and_streaming() {
+        let mut e = crate::Engine::new("/tmp/recorded-gap-test".into());
+        e.call(
+            "load_project",
+            &json!({"path":crate::test_fixtures::path("recorded-groove.json")}),
+        )
+        .unwrap();
+        e.bank.sync(&e.project.samples);
+        let p = match &e.project.tracks[0].instrument {
+            crate::instruments::Instrument::Multisample(p) => p,
+            _ => panic!(),
+        };
+        for key in [36, 38, 42, 46, 49] {
+            for i in 0..=10000 {
+                let picks = super::pick_zones(p, key, i as f32 / 10000.0, 1);
+                assert!(picks[0].1 >= 0.5, "key{key} v{i}: {picks:?}");
+                assert!(picks.iter().all(|(_, w)| *w >= 0.0 && *w <= 1.0));
+            }
+        }
+        let expected = super::render_multisample(p, 38.0, 0.2032, 0.25, &e.bank, 0);
+        let saved = serde_json::to_value(&e.project).unwrap();
+        e.call(
+            "preview_kit_piece",
+            &json!({"track":"drums","key":38,"velocity":0.2032,"play":true}),
+        )
+        .unwrap();
+        let heard = &e
+            .transport
+            .pending_audition
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .0;
+        assert_eq!(expected.len(), heard.len());
+        assert!(expected
+            .iter()
+            .zip(heard)
+            .all(|(a, b)| (a * 10f32.powf(-6.0 / 20.0) - b).abs() < 1e-7));
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), saved);
+        // Put the gap velocity into the song, so both playback paths really
+        // exercise the corrected weights, not just ordinary interior notes.
+        let mut v = saved;
+        fn gap_notes(v: &mut serde_json::Value) {
+            match v {
+                serde_json::Value::Object(m) => {
+                    if m.contains_key("vel") {
+                        m.insert("vel".into(), json!(0.2032));
+                    }
+                    for x in m.values_mut() {
+                        gap_notes(x);
+                    }
+                }
+                serde_json::Value::Array(a) => {
+                    for x in a {
+                        gap_notes(x);
+                    }
+                }
+                _ => (),
+            }
+        }
+        gap_notes(&mut v);
+        e.project = serde_json::from_value(v).unwrap();
+        e.call(
+            "apply_fx_chain",
+            &json!({"track":"drums","chain":"short_drum_room"}),
+        )
+        .unwrap();
+        for range in [None, Some((16, 32))] {
+            let o = crate::render::RenderOptions {
+                step_range: range,
+                tail: 0.5,
+                ..Default::default()
+            };
+            let expected = crate::render::render(&e.project, &e.bank, &o).unwrap();
+            for block in [63, 512, 4096] {
+                let mut m = crate::rt::MixNode::new(&e.project, &e.bank, &o, block);
+                let (l, r) = m.render();
+                assert_eq!(l, expected.left);
+                assert_eq!(r, expected.right);
+            }
+        }
     }
 }

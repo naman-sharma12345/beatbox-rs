@@ -117,7 +117,7 @@ pub fn automation_lanes(
     let (full, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), strip_height(p)), Sense::hover());
     let painter = ui.painter_at(full);
-    painter.rect_filled(full, 0.0, Color32::from_rgb(24, 26, 30));
+    painter.rect_filled(full, 0.0, super::theme::Tokens::DARK.playlist_bg);
     painter.text(
         pos2(full.min.x + 4.0, full.min.y + 1.0),
         Align2::LEFT_TOP,
@@ -133,7 +133,13 @@ pub fn automation_lanes(
             pos2(full.min.x, full.min.y + AUTO_CAPTION_H),
             vec2(full.width(), AUTO_H),
         );
-        painter.text(r.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, "No automation lanes yet: add_automation / generate_automation (or the Automation view) put one here.", FontId::proportional(10.0), Color32::from_gray(120));
+        painter.text(
+            r.left_center() + vec2(6.0, 0.0),
+            Align2::LEFT_CENTER,
+            "No automation yet. Open the Automation panel to draw a lane.",
+            FontId::proportional(10.0),
+            Color32::from_gray(120),
+        );
         return actions;
     }
     for (li, lane) in p.automation.iter().enumerate() {
@@ -166,9 +172,9 @@ pub fn automation_lanes(
             head,
             3.0,
             if lane.enabled {
-                Color32::from_rgb(44, 52, 64)
+                super::theme::Tokens::DARK.button_hi
             } else {
-                Color32::from_rgb(34, 34, 38)
+                super::theme::Tokens::DARK.panel_bg2
             },
         );
         let label = format!("{} · {}", lane.target, lane.param);
@@ -194,7 +200,7 @@ pub fn automation_lanes(
         }
         // the row: background, then the envelope
         let row_bg = Rect::from_min_max(pos2(x_lo, top), pos2(x_hi, top + AUTO_H - 2.0));
-        painter.rect_filled(row_bg, 2.0, Color32::from_rgb(30, 33, 38));
+        painter.rect_filled(row_bg, 2.0, super::theme::Tokens::DARK.strip_section);
         // empty-spot click = add a point (registered first so the handles,
         // registered after it, win the hit test)
         let rr = ui.interact(row_bg, egui::Id::new(("auto-row", &key)), Sense::click());

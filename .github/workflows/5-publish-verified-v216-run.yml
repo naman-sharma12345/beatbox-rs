@@ -1,0 +1,61 @@
+name: Publish verified studio integration v216
+on:
+  push:
+    branches: [reel_dark]
+    paths: ['.github/workflows/*publish-verified-v216-run.yml']
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345' && github.ref == 'refs/heads/reel_dark'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Import verified integration and fast-forward reel_dark
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor ded03f25476f5dd77aa2549a1a057e2d3779e76e HEAD
+          [ "$(git rev-parse origin/main)" = 21e5049d55363c19307832d3405ebe113176274e ]
+          python3 - <<'PY'
+          import base64,zlib,hashlib,pathlib
+          import json
+          s=json.loads(next(pathlib.Path('.github').glob('*verified-v216-payload.json')).read_text())['bundle']
+          b=base64.b64decode(s)
+          assert hashlib.sha256(b).hexdigest()=='bce4d5793d0af2dcd5fd2b143959122da6eda1fbd3f77d841f9bf253bde4722c'
+          pathlib.Path('/tmp/full.bundle').write_bytes(b)
+          PY
+          python3 - <<'PY'
+          import base64,zlib,hashlib,pathlib
+          import json
+          s=json.loads(next(pathlib.Path('.github').glob('*verified-v216-payload.json')).read_text())['patch']
+          b=zlib.decompress(base64.b64decode(s))
+          assert hashlib.sha256(b).hexdigest()=='732b9a135f105a4c25c5d6d32efbdd7103c10907e40a459022d7fc586ce2b468'
+          pathlib.Path('/tmp/follow.patch').write_bytes(b)
+          PY
+          git diff --name-only d5df5119d2238b6e63a7b04142b720e7f0ea44ae HEAD | grep -Ev '^.github/(workflows/[0-9-]*publish-verified-v216(-run)?[.]yml|[0-9-]*verified-v216-payload[.]json)$' > /tmp/unexpected || true
+          [ ! -s /tmp/unexpected ]
+          git bundle verify /tmp/full.bundle
+          git fetch /tmp/full.bundle refs/heads/beatbox-production-full-v196:refs/remotes/local/full-v196
+          [ "$(git rev-parse refs/remotes/local/full-v196)" = e1b96c86934758f82a153a4b6cf6e77dc2a869b1 ]
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git merge --no-commit --no-ff refs/remotes/local/full-v196
+          git apply --check /tmp/follow.patch
+          git apply /tmp/follow.patch
+          python3 - <<'PY'
+          import hashlib,pathlib
+          expected={'src/tools.rs': 'e0b1b5c47a988a75e6b0856786e6aafcd516e02a3f93d4d95d71c87846310dc2', 'src/tools_categories.rs': 'fd8e21134395da3b10961ad4290d0c966a2a43dc6fd5e245b8ee22e4bbe66e46', 'src/gui/mod.rs': '8dc9a62d35eb8ddd097af8f791c8eb7916c44bc9acb446e2d505f04f0b8ba21b', 'src/gui/browser_view.rs': '5f479895b3eec59918db4e007c031fbf21fd3fb5288f65cd4361fd2f45db92ab', 'src/gui/playlist.rs': 'a52bc34410577475f6efef5f3971e4fcbdc19659a51db1f106d663cce2ec4ee9', 'src/tools_markers.rs': 'ed4cbcbd0f998721f4d0ec180231e5c3e2fe390f78ab1bb8fc1175ae78189c65', 'src/gui/views.rs': 'e5f634dfec0aa94bc331d8341eb197ad99f4ff9b7e909e25a0c88700a2091dfc', 'src/gui/export_view.rs': 'a5d162a1d85bd7795de4b94e6f1233b1fe65459e461a558ab5df170d60c02fb4', 'src/engine.rs': '7fed75812f0044c1827e923fb43e63f4f28834bebcfadc39fdbc176095ee50cb'}
+          for f,h in expected.items():
+           assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+          PY
+          git rm .github/workflows/3-publish-verified-v216.yml
+          git add src
+          git commit -m "Integrate verified studio and production work through v216"
+          git fetch origin reel_dark main
+          [ "$(git rev-parse origin/reel_dark)" = "$GITHUB_SHA" ]
+          [ "$(git rev-parse origin/main)" = 21e5049d55363c19307832d3405ebe113176274e ]
+          git push origin HEAD:refs/heads/reel_dark

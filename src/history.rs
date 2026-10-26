@@ -109,6 +109,51 @@ pub fn label(tool: &str, args: &Value) -> String {
             "lane" => "Moved clip to lane".into(),
             _ => "Edited clip".into(),
         },
+        "move_marker" => "Moved song marker".into(),
+        "rename_marker" => "Renamed song marker".into(),
+        "generate_euclidean" => "Made Euclidean rhythm".into(),
+        "balance_chord_velocities" => "Balanced chord velocities".into(),
+        "invert_note_velocities" => "Inverted MIDI dynamics".into(),
+        "reverse_note_velocities" => "Reversed note velocities".into(),
+        "rotate_note_velocities" => "Rotated note velocities".into(),
+        "reverse_melody_pitches" => "Reversed melody pitches".into(),
+        "reverse_rhythm_gaps" => "Reversed rhythm gaps".into(),
+        "rotate_melody_pitches" => "Rotated melody pitches".into(),
+        "align_chord_ends" => "Aligned chord releases".into(),
+        "distribute_note_rhythm" => "Distributed note rhythm".into(),
+        "fold_note_register" => "Folded note register".into(),
+        "reduce_chord_voices" => "Reduced MIDI chord voices".into(),
+        "quantize_note_ends" => "Quantized MIDI releases".into(),
+        "transpose_phrase" => "Transposed MIDI phrase".into(),
+        "shift_phrase" => "Moved MIDI phrase".into(),
+        "normalize_velocity" => "Normalized note velocities".into(),
+        "thin_notes" => "Thinned MIDI rhythm".into(),
+        "repeat_notes" => "Repeated MIDI phrase".into(),
+        "echo_notes" => "Added MIDI echoes".into(),
+        "stretch_notes" => "Stretched MIDI phrase".into(),
+        "rotate_notes" => "Rotated rhythm".into(),
+        "set_note_offset" => "Set note microtiming".into(),
+        "set_note_chance" => "Set note chance".into(),
+        "reset_note_humanization" => format!(
+            "Reset note humanization ({})",
+            args.get("mode")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("both")
+        ),
+        "rotate_note_lengths" => "Rotated note lengths".into(),
+        "invert_note_lengths" => "Inverted note lengths".into(),
+        "balance_chord_lengths" => "Averaged chord lengths".into(),
+        "set_note_lengths" => "Set note lengths".into(),
+        "scale_note_lengths" => "Scaled note lengths".into(),
+        "update_note_geometry" => "Moved/resized notes".into(),
+        "ramp_note_velocities" => "Ramped note velocities".into(),
+        "offset_note_velocities" => "Adjusted note velocities".into(),
+        "set_note_velocity" => "Set note velocity".into(),
+        "reverse_note_lengths" => "Reversed note lengths".into(),
+        "trim_notes_to_pattern" => "Trimmed notes to pattern edge".into(),
+        "trim_note_overlaps" => "Trimmed same-pitch overlaps".into(),
+        "remove_zero_notes" => "Removed zero-velocity/chance notes".into(),
+        "remove_duplicate_notes" => "Removed exact duplicates".into(),
         "add_track" => "Added track".into(),
         "remove_track" | "delete_track" => "Removed track".into(),
         "add_notes" | "add_note" => "Added notes".into(),
@@ -117,6 +162,7 @@ pub fn label(tool: &str, args: &Value) -> String {
         "rack_apply" => "Rack edit".into(),
         "remove_effect" => "Removed effect".into(),
         "set_instrument" => "Changed sound".into(),
+        "rename_track" => "Renamed channel".into(),
         "set_mixer" => "Mixer".into(),
         "load_project" | "open_project" => "Opened project".into(),
         "new_project" => "New project".into(),
@@ -189,6 +235,22 @@ mod tests {
             && !words.iter().any(|w| crate::gui_words::BANNED.contains(w))
     }
 
+    #[test]
+    fn midi_feature_labels_name_the_edit_and_track() {
+        for (tool, name) in [
+            ("generate_euclidean", "Made Euclidean rhythm"),
+            ("echo_notes", "Added MIDI echoes"),
+            ("stretch_notes", "Stretched MIDI phrase"),
+            ("rotate_notes", "Rotated rhythm"),
+            ("trim_note_overlaps", "Trimmed same-pitch overlaps"),
+            ("remove_duplicate_notes", "Removed exact duplicates"),
+        ] {
+            assert_eq!(
+                label(tool, &json!({"track":"soft_keys"})),
+                format!("{name} · soft keys")
+            );
+        }
+    }
     #[test]
     fn labels_read_like_a_history_list() {
         assert_eq!(
