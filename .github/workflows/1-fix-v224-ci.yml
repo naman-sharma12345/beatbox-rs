@@ -1,0 +1,35 @@
+name: Correct checkpoint preview lint conditions
+on:
+  push:
+    branches:
+    - checkpoint-ab
+    paths:
+    - .github/workflows/*fix-v224-ci.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/checkpoint-ab'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply hash-verified clean-runner regression corrections
+      shell: bash
+      run: "set -euo pipefail\n[ \"$(git rev-parse HEAD^)\" = d6d20ed1bcf25f09e72fe516b44fbedfb261ccbd\
+        \ ]\n[ \"$(git rev-parse origin/main)\" = 9882cf6d3ed72c1633320223fe8aa5fe6e56c0b7\
+        \ ]\npython3 - <<'PYCODE'\nimport base64,hashlib,pathlib,gzip\nb=gzip.decompress(base64.b64decode('H4sIADCe32oC/9VV227bMAx9z1cQeQhs2FY6YBiGFgHSYh8woHvZkyHLrCPYpgRdekGbf5/sZLOTxh2CdcCmF4uySIrn8EhZlgFfWiOWlZfLe4kPlhk7S5IEitfL6zVkny4u0g+fIem/H2G9nsF4bA9NeQeFt0/w7CWzWhKhieKrYDS8wCaafzWouZFUgVBtN7OKGHxXHgQnqBE1YCld2MDm8dXr4A06uFUtRgatb1y8Wlhs7lgrH/MhIDzPMjgawXfnwsQGRa2VJLdaDfNTPnu/cPrCO6coHL/hT3ANboMEN/OYKco36h5N7vDRRfNbpzSEA1Sgw8aCixo4lb0Bo1TXKSjCzKJQ4W/FdbqLKLh23mAJwhuDYWOIbGWo54bBtw3uIksLnsSGU4VlwIiJRooayyieqqAbHWytd4BUScJVj9luzhol6ihmnh4M14Gr6SDWazSXl101+VDNCPc9Keli+JsuhrRTsbez5Gy2Fov/iJbkTylJ/hIdJ6iYMrdj9gI9J2THpM1tp80YXl7gjYKYM5ysVsYx7ju1K+puhKP+PVRez6E22N1NEwwHsn5R1MVVP/enIEk0YSUk4QcXzxeFFki5vttaPGyS36prz4ANyUcw5PusUY/1GzAc62Gkg1B79P4Ix0ey+QcwTd4Xz1Ode8arce6L8QM+6YTsTgcAAA=='))\n\
+        assert hashlib.sha256(b).hexdigest()=='cf2cb1df70593cd06c1c5cbb22d7acba6f75f9da7c7c7c7cb0e10f56da53148b'\n\
+        pathlib.Path('/tmp/ci-fix.patch').write_bytes(b)\nPYCODE\ngit apply --check\
+        \ /tmp/ci-fix.patch\ngit apply /tmp/ci-fix.patch\npython3 - <<'PYCODE'\nimport\
+        \ pathlib,hashlib\nexpected={'src/gui/views.rs': 'da1c97b251aa23a1eb3ce68d7f374d85042e05b6afd2c332a809f38c90a33410'}\n\
+        for f,h in expected.items():\n assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f\n\
+        PYCODE\ngit config user.name 'github-actions[bot]'\ngit config user.email\
+        \ '41898282+github-actions[bot]@users.noreply.github.com'\ngit add src tests\
+        \ scripts\ngit commit -m \"Collapse checkpoint preview conditions for warnings-denied\
+        \ lint\"\ngit fetch origin checkpoint-ab main\n[ \"$(git rev-parse origin/checkpoint-ab)\"\
+        \ = \"$GITHUB_SHA\" ]\n[ \"$(git rev-parse origin/main)\" = 9882cf6d3ed72c1633320223fe8aa5fe6e56c0b7\
+        \ ]\ngit push origin HEAD:refs/heads/checkpoint-ab\n"
