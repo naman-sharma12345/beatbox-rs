@@ -543,6 +543,42 @@ fn cached_blob_valid(data: &[u8], sha: &str, direct: bool, verified: bool) -> bo
     }
 }
 
+// Publish a complete cache file in one rename so concurrent loads cannot read
+// a truncated SFZ or sample while another load refreshes the same path.
+fn publish_cache_file(path: &std::path::Path, data: &[u8]) -> Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("cache path has no filename"))?;
+    let (temporary, mut file) = loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let mut temporary_name = name.to_os_string();
+        temporary_name.push(format!(".{}.{n}.part", std::process::id()));
+        let temporary = path.with_file_name(temporary_name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => break (temporary, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let result = (|| -> Result<()> {
+        file.write_all(data)?;
+        drop(file);
+        std::fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
 pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64)> {
     let (repo, tree, branch, sfz) = (
         e.repo.as_str(),
@@ -667,7 +703,7 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
             bail!("{rp}: content does not match the pinned tree; not installed");
         }
         std::fs::create_dir_all(local.parent().unwrap())?;
-        std::fs::write(&local, &data)?;
+        publish_cache_file(&local, &data)?;
         *fetched += data.len() as u64;
         Ok(local)
     };
@@ -716,7 +752,7 @@ pub fn fetch_sfz_git(e: &Entry, max_mb: u64, max_rr: u8) -> Result<(PathBuf, u64
         .unwrap_or("program.sfz")
         .trim_end_matches(".sfz");
     let out = dir.join(&base).join(format!("{name}.beatbox_flat.sfz"));
-    std::fs::write(&out, &flat)?;
+    publish_cache_file(&out, flat.as_bytes())?;
     let _ = std::fs::write(dir.join("used"), format!("{}", now()));
     Ok((out, fetched))
 }
@@ -1260,5 +1296,50 @@ mod pinned_file_cache_tests {
         assert!(!cached_file_valid(&file, &sha, 0));
         assert_eq!(std::fs::read(&file).unwrap(), corrupt);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod cache_publication_tests {
+    #[test]
+    fn concurrent_sfz_fetches_publish_complete_files() {
+        use std::sync::{Arc, Barrier};
+        let mut entry = super::entry("vcsl_acoustic_drum_kit").unwrap();
+        entry.repo = format!("beatbox-test/concurrent-sfz-{}", std::process::id());
+        entry.sfz = "race.sfz".into();
+        let data = b"cached fixture";
+        entry.files = vec![vec![
+            "one.wav".into(),
+            super::git_blob_sha1(data).into(),
+            (data.len() as u64).into(),
+        ]];
+        entry.sfz_text = format!(
+            "{}\n<region> sample=one.wav key=60\n",
+            "// fixture padding\n".repeat(20000)
+        );
+        let directory = crate::soundfont::library_dir().join(entry.repo.replace('/', "__"));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("one.wav"), data).unwrap();
+        let entry = Arc::new(entry);
+        let start = Arc::new(Barrier::new(8));
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let (entry, start) = (entry.clone(), start.clone());
+                scope.spawn(move || {
+                    start.wait();
+                    for _ in 0..50 {
+                        let (path, downloaded) = super::fetch_sfz_git(&entry, 1, 2).unwrap();
+                        assert_eq!(downloaded, 0);
+                        assert_eq!(std::fs::read_to_string(path).unwrap(), entry.sfz_text);
+                    }
+                });
+            }
+        });
+        assert!(std::fs::read_dir(&directory).unwrap().all(|file| !file
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".part")));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }
