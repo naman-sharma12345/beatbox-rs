@@ -78,6 +78,10 @@ pub struct BrowserState {
     pub ab_snapshot: String,
     pub ab_start_s: f32,
     pub ab_length_s: f32,
+    ab_job: Option<super::MixComparisonJob>,
+    ab_ready: Option<super::MixComparison>,
+    ab_checkpoint_project: Option<Project>,
+    pub ab_result: String,
     pub translation_start_s: f32,
     pub translation_length_s: f32,
     pub translation_result: String,
@@ -373,6 +377,7 @@ impl Studio {
         ui.set_width((ui.clip_rect().width() - 32.0).max(180.0));
         self.poll_library_job();
         self.poll_translation_job(ui.ctx());
+        self.poll_browser_comparison(ui.ctx());
         if !self.browser.opened {
             self.browser.opened = true;
             self.browser.section = 5;
@@ -1385,27 +1390,154 @@ impl Studio {
             if self.browser.ab_length_s == 0.0 {
                 self.browser.ab_length_s = 6.0;
             }
+            let ab_before = (
+                self.browser.ab_snapshot.clone(),
+                self.browser.ab_start_s,
+                self.browser.ab_length_s,
+            );
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("MATCHED A/B").size(11.0).strong().color(tk.header_text));
-                if ui.small_button("CAPTURE BEFORE").clicked(){
-                    let names:Vec<String>=self.engine.lock().unwrap().snapshots.iter().map(|(n,_)|n.clone()).collect();
-                    let mut i=1;
-                    while names.contains(&format!("mix_before_{i}")){i+=1;}
-                    let name=format!("mix_before_{i}");
-                    self.browser.ab_snapshot=name.clone();
-                    call=Some(("snapshot".into(),json!({"name":name})));
+                ui.label(
+                    RichText::new("MATCHED A/B")
+                        .size(11.0)
+                        .strong()
+                        .color(tk.header_text),
+                );
+                if ui.small_button("CAPTURE BEFORE").clicked() {
+                    match super::capture_mix_checkpoint(&mut self.engine.lock().unwrap()) {
+                        Ok(name) => self.browser.ab_snapshot = name,
+                        Err(e) => self.browser.ab_result = format!("Capture failed: {e:#}"),
+                    }
                 }
-                let names:Vec<String>=self.engine.lock().unwrap().snapshots.iter().map(|(n,_)|n.clone()).collect();
-                egui::ComboBox::from_id_salt("ab_snapshot").selected_text(if self.browser.ab_snapshot.is_empty(){"Choose before"}else{&self.browser.ab_snapshot}).show_ui(ui,|ui|{
-                    for n in &names{ui.selectable_value(&mut self.browser.ab_snapshot,n.clone(),n);}
-                });
-                ui.add(egui::DragValue::new(&mut self.browser.ab_start_s).range(0.0..=86400.0).speed(0.5).prefix("Start ").suffix(" s"));
-                ui.add(egui::DragValue::new(&mut self.browser.ab_length_s).range(1.0..=20.0).speed(0.5).prefix("Length ").suffix(" s"));
-                if ui.add_enabled(names.contains(&self.browser.ab_snapshot),egui::Button::new("HEAR BEFORE / NOW").small()).clicked(){
-                    call=Some(("ab_listen".into(),json!({"a":self.browser.ab_snapshot,"b":"current","start_s":self.browser.ab_start_s,"length_s":self.browser.ab_length_s,"play":true})));
+                let names: Vec<String> = self
+                    .engine
+                    .lock()
+                    .unwrap()
+                    .snapshots
+                    .iter()
+                    .map(|(n, _)| n.clone())
+                    .collect();
+                if !names.contains(&self.browser.ab_snapshot) {
+                    self.browser.ab_snapshot.clear();
+                }
+                egui::ComboBox::from_id_salt("ab_snapshot")
+                    .selected_text(if self.browser.ab_snapshot.is_empty() {
+                        "Choose before"
+                    } else {
+                        &self.browser.ab_snapshot
+                    })
+                    .show_ui(ui, |ui| {
+                        for n in &names {
+                            ui.selectable_value(&mut self.browser.ab_snapshot, n.clone(), n);
+                        }
+                    });
+                ui.add(
+                    egui::DragValue::new(&mut self.browser.ab_start_s)
+                        .range(0.0..=86400.0)
+                        .speed(0.5)
+                        .prefix("Start ")
+                        .suffix(" s"),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.browser.ab_length_s)
+                        .range(1.0..=20.0)
+                        .speed(0.5)
+                        .prefix("Length ")
+                        .suffix(" s"),
+                );
+                if ui
+                    .add_enabled(
+                        self.browser.ab_job.is_none() && names.contains(&self.browser.ab_snapshot),
+                        egui::Button::new("PREPARE BEFORE / NOW").small(),
+                    )
+                    .clicked()
+                {
+                    let e = self.engine.lock().unwrap();
+                    match super::checkpoint_comparison_engine(&e, &self.browser.ab_snapshot) {
+                        Ok(own) => {
+                            self.browser.ab_checkpoint_project =
+                                Some(own.version(&self.browser.ab_snapshot).unwrap());
+                            let checkpoint = self.browser.ab_snapshot.clone();
+                            let start_s = self.browser.ab_start_s;
+                            let length_s = self.browser.ab_length_s;
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            let ctx = ui.ctx().clone();
+                            self.browser.ab_ready = None;
+                            self.browser.ab_result =
+                                "Preparing comparison. You can keep editing.".into();
+                            self.browser.ab_job = Some(super::MixComparisonJob {
+                                revision: e.revision,
+                                generation: e.project_load_generation,
+                                checkpoint: checkpoint.clone(),
+                                start_s,
+                                length_s,
+                                receiver: rx,
+                            });
+                            std::thread::spawn(move || {
+                                let _ = tx.send(
+                                    super::render_checkpoint_comparison(
+                                        own,
+                                        &checkpoint,
+                                        start_s,
+                                        length_s,
+                                    )
+                                    .map_err(|e| format!("{e:#}")),
+                                );
+                                ctx.request_repaint();
+                            });
+                        }
+                        Err(e) => self.browser.ab_result = format!("Comparison failed: {e:#}"),
+                    }
                 }
             });
-            ui.label(RichText::new("Capture, change the mix, then compare the chosen seconds: before, 1s gap, now. Louder side turns down; shared peak safety may lower both. Silence is not loudness-matched. No automatic winner. Stop below.").size(10.0).color(tk.text_dim));
+            if ab_before
+                != (
+                    self.browser.ab_snapshot.clone(),
+                    self.browser.ab_start_s,
+                    self.browser.ab_length_s,
+                )
+            {
+                // A new preparation in this frame already captures the new selection.
+                self.poll_browser_comparison(ui.ctx());
+            }
+            if self.browser.ab_job.is_some() {
+                ui.spinner();
+            }
+            if let Some(result) = &self.browser.ab_ready {
+                if ui.small_button("PLAY BEFORE / NOW").clicked() {
+                    let mut e = self.engine.lock().unwrap();
+                    if browser_comparison_current(
+                        result.revision,
+                        result.generation,
+                        &result.checkpoint,
+                        result.start_s,
+                        result.length_s,
+                        &self.browser,
+                        &e,
+                    ) && super::play_checkpoint_comparison(
+                        result,
+                        &self.browser.ab_snapshot,
+                        self.browser.ab_start_s,
+                        self.browser.ab_length_s,
+                        &mut e,
+                    ) {
+                        self.browser.ab_result = self
+                            .browser
+                            .ab_result
+                            .replace("Prepared;", "Queued for playback;");
+                    }
+                }
+            }
+            if ui.small_button("STOP A/B PREVIEW").clicked() {
+                self.browser.ab_job = None;
+                self.browser.ab_ready = None;
+                self.browser.ab_checkpoint_project = None;
+                self.browser.ab_result = "Comparison stopped".into();
+                super::stop_comparison_preview(&mut self.engine.lock().unwrap());
+            }
+            if !self.browser.ab_result.is_empty() {
+                ui.label(&self.browser.ab_result);
+            }
+            ui.label(RichText::new("Capture, change the mix, Prepare, then Play: before, 1s gap, now. Background full-song renders may take time. Project, checkpoint or range changes discard prepared audio. Louder side turns down; shared peak safety may lower both. Silence is not loudness-matched. No automatic winner. Save keeps the checkpoint companion file.").size(10.0).color(tk.text_dim));
             ui.add_space(8.0);
             let translation_range_before = (
                 self.browser.translation_start_s,
@@ -1772,6 +1904,91 @@ fn prepare_library_load(project: &Project, args: &mut Value) {
     if args["new_channel"] == true {
         let base = args["track"].as_str().unwrap_or("Recorded instrument");
         args["track"] = json!(new_library_channel_name(project, base));
+    }
+}
+
+fn browser_comparison_current(
+    revision: u64,
+    generation: u64,
+    checkpoint: &str,
+    start: f32,
+    length: f32,
+    browser: &BrowserState,
+    engine: &crate::Engine,
+) -> bool {
+    super::comparison_is_current(revision, generation, engine)
+        && checkpoint == browser.ab_snapshot
+        && (start, length) == (browser.ab_start_s, browser.ab_length_s)
+        && browser
+            .ab_checkpoint_project
+            .as_ref()
+            .is_some_and(|captured| {
+                engine
+                    .snapshots
+                    .iter()
+                    .any(|(n, s)| n == checkpoint && &s.project == captured)
+            })
+}
+fn browser_comparison_readout(checkpoint: &str, start: f32, length: f32, value: &Value) -> String {
+    format!("A: {checkpoint} | B: current at preparation | start {start:.2}s, requested {length:.2}s | A {}s, B {}s. {} Prepared; project unchanged.",value["facts"]["A"]["seconds"],value["facts"]["B"]["seconds"],super::comparison_note(value))
+}
+impl Studio {
+    fn poll_browser_comparison(&mut self, ctx: &egui::Context) {
+        let e = self.engine.lock().unwrap();
+        let current =
+            |r, g, c: &str, s, l| browser_comparison_current(r, g, c, s, l, &self.browser, &e);
+        let stale = self.browser.ab_job.as_ref().is_some_and(|j| {
+            !current(
+                j.revision,
+                j.generation,
+                &j.checkpoint,
+                j.start_s,
+                j.length_s,
+            )
+        }) || self.browser.ab_ready.as_ref().is_some_and(|r| {
+            !current(
+                r.revision,
+                r.generation,
+                &r.checkpoint,
+                r.start_s,
+                r.length_s,
+            )
+        });
+        drop(e);
+        if stale {
+            self.browser.ab_job = None;
+            self.browser.ab_ready = None;
+            self.browser.ab_checkpoint_project = None;
+            self.browser.ab_result = "Project, checkpoint or range changed. Prepare again.".into();
+            return;
+        }
+        if let Some(job) = self.browser.ab_job.take() {
+            match job.receiver.try_recv() {
+                Ok(Ok((value, audio))) => {
+                    self.browser.ab_result = browser_comparison_readout(
+                        &job.checkpoint,
+                        job.start_s,
+                        job.length_s,
+                        &value,
+                    );
+                    self.browser.ab_ready = Some(super::MixComparison {
+                        revision: job.revision,
+                        generation: job.generation,
+                        checkpoint: job.checkpoint,
+                        start_s: job.start_s,
+                        length_s: job.length_s,
+                        value,
+                        audio,
+                    });
+                }
+                Ok(Err(e)) => self.browser.ab_result = format!("Comparison failed: {e}"),
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.browser.ab_job = Some(job),
+                Err(_) => self.browser.ab_result = "Comparison preparation stopped".into(),
+            }
+        }
+        if self.browser.ab_job.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
     }
 }
 
@@ -3676,5 +3893,147 @@ mod translation_gui_tests {
         assert!(text.contains("shorter than requested"));
         assert!(text.contains("Prepared; project unchanged."));
         assert!(!text.contains("Queued"));
+    }
+}
+
+#[cfg(test)]
+mod browser_comparison_tests {
+    use super::*;
+    fn fixture() -> crate::Engine {
+        let mut e = crate::Engine::new(
+            std::env::temp_dir().join(format!("bb230_{}", crate::creative::fresh_seed())),
+        );
+        e.call("new_project", &json!({"name":"comparison","bpm":120}))
+            .unwrap();
+        e.call("add_track", &json!({"name":"keys","preset":"pad"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track":"keys","notes":[{"start":0,"len":16,"pitch":60}]}),
+        )
+        .unwrap();
+        e.call("snapshot", &json!({"name":"before"})).unwrap();
+        e
+    }
+    fn browser(e: &crate::Engine) -> BrowserState {
+        BrowserState {
+            ab_snapshot: "before".into(),
+            ab_start_s: 0.,
+            ab_length_s: 2.,
+            ab_checkpoint_project: Some(e.version("before").unwrap()),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn comparison_rejects_project_load_range_checkpoint_and_overwrite_changes() {
+        let mut e = fixture();
+        let mut b = browser(&e);
+        let r = e.revision;
+        let g = e.project_load_generation;
+        let valid = |b: &BrowserState, e: &crate::Engine| {
+            browser_comparison_current(r, g, "before", 0., 2., b, e)
+        };
+        assert!(valid(&b, &e));
+        b.ab_start_s = 1.;
+        assert!(!valid(&b, &e));
+        b.ab_start_s = 0.;
+        b.ab_length_s = 3.;
+        assert!(!valid(&b, &e));
+        b.ab_length_s = 2.;
+        b.ab_snapshot = "other".into();
+        assert!(!valid(&b, &e));
+        b.ab_snapshot = "before".into();
+        e.revision += 1;
+        assert!(!valid(&b, &e));
+        e.revision = r;
+        e.project_load_generation += 1;
+        assert!(!valid(&b, &e));
+        e.project_load_generation = g;
+        // Snapshot overwrites do not increment engine revision.
+        e.snapshots[0].1.project.bpm += 1.;
+        assert!(!valid(&b, &e));
+        e.snapshots.clear();
+        assert!(!valid(&b, &e));
+    }
+    #[test]
+    fn isolated_comparison_preserves_live_engine_and_uses_checkpoint_not_file() {
+        let mut e = fixture();
+        e.call("set_mixer", &json!({"track":"keys","volume_db":6}))
+            .unwrap();
+        let project = e.project.clone();
+        let revision = e.revision;
+        let history = e.undo_depth().0;
+        std::fs::create_dir_all(&e.workdir).unwrap();
+        std::fs::write(e.workdir.join("before"), b"not audio").unwrap();
+        let own = super::super::checkpoint_comparison_engine(&e, "before").unwrap();
+        let job = std::thread::spawn(move || {
+            super::super::render_checkpoint_comparison(own, "before", 0., 2.)
+        });
+        e.call("set_mixer", &json!({"track":"keys","volume_db":-9}))
+            .unwrap();
+        let (value, audio) = job.join().unwrap().unwrap();
+        assert_eq!(value["A"], "before");
+        assert_eq!(value["loudness_matched"], true);
+        assert!(value["judgement"].is_null());
+        assert!(!audio.0.is_empty());
+        assert!(value["level_change_db"]["B"].as_f64().unwrap() < 0.);
+        assert!(e.transport.pending_audition.is_none());
+        assert!(e.transport.pending.is_empty());
+        assert!(e.revision > revision);
+        assert!(e.undo_depth().0 > history);
+        assert_ne!(e.project, project);
+        let text = browser_comparison_readout("before", 0., 2., &value);
+        assert!(text.contains("Prepared; project unchanged."));
+        assert!(!text.contains("Queued"));
+    }
+    #[test]
+    fn explicit_play_queues_once_stop_clears_and_stale_play_fails() {
+        let mut e = fixture();
+        let b = browser(&e);
+        let (value, audio) = super::super::render_checkpoint_comparison(
+            super::super::checkpoint_comparison_engine(&e, "before").unwrap(),
+            "before",
+            0.,
+            2.,
+        )
+        .unwrap();
+        let result = super::super::MixComparison {
+            revision: e.revision,
+            generation: e.project_load_generation,
+            checkpoint: "before".into(),
+            start_s: 0.,
+            length_s: 2.,
+            value,
+            audio,
+        };
+        assert!(browser_comparison_current(
+            result.revision,
+            result.generation,
+            "before",
+            0.,
+            2.,
+            &b,
+            &e
+        ));
+        assert!(super::super::play_checkpoint_comparison(
+            &result, "before", 0., 2., &mut e
+        ));
+        assert!(e.transport.pending_audition.as_ref().unwrap().is_some());
+        super::super::stop_comparison_preview(&mut e);
+        assert!(e.transport.pending_audition.as_ref().unwrap().is_none());
+        e.revision += 1;
+        assert!(!super::super::play_checkpoint_comparison(
+            &result, "before", 0., 2., &mut e
+        ));
+        assert!(e.transport.pending_audition.as_ref().unwrap().is_none());
+    }
+    #[test]
+    fn readout_keeps_silence_and_different_length_warnings() {
+        let v = json!({"facts":{"A":{"seconds":1},"B":{"seconds":2}},"loudness_matched":true});
+        assert!(
+            browser_comparison_readout("before", 0., 2., &v).contains("Different rendered lengths")
+        );
+        let v = json!({"facts":{"A":{"seconds":2},"B":{"seconds":2}},"loudness_matched":false});
+        assert!(browser_comparison_readout("before", 0., 2., &v).contains("not level matched"));
     }
 }
