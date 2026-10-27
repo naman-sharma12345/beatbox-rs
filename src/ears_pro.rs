@@ -392,7 +392,7 @@ fn zone_energy(x: &[f32], lo: f32, hi: f32) -> f64 {
 /// Masking of a vocal by the beat in one zone: mean over 50 ms frames
 /// (where the vocal sounds) of the probability the beat covers it, from
 /// the beat-to-vocal ratio (0 dB -> 0.5, +6 dB -> ~0.9).
-fn zone_masking(beat: &[f32], vocal: &[f32], lo: f32, hi: f32) -> (f32, f32) {
+fn zone_masking(beat: &[f32], vocal: &[f32], lo: f32, hi: f32) -> (f32, f32, usize) {
     let b = band(beat, lo, hi);
     let v = band(vocal, lo, hi);
     let hop = (0.05 * SR) as usize;
@@ -409,9 +409,9 @@ fn zone_masking(beat: &[f32], vocal: &[f32], lo: f32, hi: f32) -> (f32, f32) {
         cnt += 1;
     }
     if cnt == 0 {
-        (0.0, -60.0)
+        (0.0, -60.0, 0)
     } else {
-        (acc / cnt as f32, ratio / cnt as f32)
+        (acc / cnt as f32, ratio / cnt as f32, cnt)
     }
 }
 
@@ -428,8 +428,9 @@ pub fn level_match(beat_l: &[f32], beat_r: &[f32], v: &mut [f32], rel_lu: f32) {
 pub struct PocketSection {
     pub name: String,
     pub occupancy_db: Vec<(String, f32)>,
-    pub masked: Vec<(String, f32)>,
-    pub free_space: f32,
+    pub masked: Vec<(String, Option<f32>)>,
+    pub free_space: Option<f32>,
+    pub active_voice_frames: usize,
 }
 
 pub fn vocal_pocket_section(name: &str, bl: &[f32], br: &[f32], vocal: &[f32]) -> PocketSection {
@@ -438,23 +439,26 @@ pub fn vocal_pocket_section(name: &str, bl: &[f32], br: &[f32], vocal: &[f32]) -
         mono.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / mono.len().max(1) as f64;
     let mut occ = Vec::new();
     let mut masked = Vec::new();
-    let mut intel = 0.5;
+    let mut intel = None;
+    let mut active_voice_frames = 0;
     for (z, lo, hi) in ZONES {
         occ.push((
             z.to_string(),
             r1(db(zone_energy(&mono, lo, hi) / total.max(1e-12))),
         ));
-        let (m, _) = zone_masking(&mono, vocal, lo, hi);
+        let (m, _, frames) = zone_masking(&mono, vocal, lo, hi);
         if z == "intelligibility" {
-            intel = m;
+            intel = (frames > 0).then_some(m);
+            active_voice_frames = frames;
         }
-        masked.push((z.to_string(), r2(m)));
+        masked.push((z.to_string(), (frames > 0).then_some(r2(m))));
     }
     PocketSection {
         name: name.to_string(),
         occupancy_db: occ,
         masked,
-        free_space: r1(100.0 * (1.0 - intel)),
+        free_space: intel.map(|m| r1(100.0 * (1.0 - m))),
+        active_voice_frames,
     }
 }
 
@@ -637,10 +641,10 @@ mod tests {
         let a = vocal_pocket_section("a", &empty, &empty, &v);
         let b = vocal_pocket_section("b", &busy, &busy, &v);
         assert!(
-            a.free_space > b.free_space + 20.0,
+            a.free_space.unwrap() > b.free_space.unwrap() + 20.0,
             "{} vs {}",
-            a.free_space,
-            b.free_space
+            a.free_space.unwrap(),
+            b.free_space.unwrap()
         );
     }
 
