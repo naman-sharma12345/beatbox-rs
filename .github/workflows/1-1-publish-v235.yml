@@ -1,0 +1,73 @@
+name: Publish silence-trim file preservation
+'on':
+  push:
+    branches:
+    - silence-guard
+    paths:
+    - .github/workflows/*publish-v235.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/silence-guard'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 7a713b602e7bb4e028fe1b0e2c00463b5320a1c0 ]
+
+        [ "$(git rev-parse origin/main)" = 7a713b602e7bb4e028fe1b0e2c00463b5320a1c0
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''8f5b801b2db28125f488b1bfcce589be5467ed021c996ee702a71ca388d52b1f''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_mix.rs'': ''700858f0018cf05e973c5d09737afbe7c9560944ee09ccda5dcd312da810be91'',
+        ''tests/strip_silence_preservation.rs'': ''e9f55080ba7ad5fba54e0c7772a565331342578f4ddfda3d49b0877f63211fe6''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_mix.rs tests/strip_silence_preservation.rs
+
+        git commit -m "Preserve source and earlier silence-trim candidates"
+
+        git fetch origin silence-guard main
+
+        [ "$(git rev-parse origin/silence-guard)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 7a713b602e7bb4e028fe1b0e2c00463b5320a1c0
+        ]
+
+        git push origin HEAD:refs/heads/silence-guard
+
+        '
