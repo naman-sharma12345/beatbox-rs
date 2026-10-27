@@ -153,6 +153,8 @@ struct MixComparison {
     revision: u64,
     generation: u64,
     checkpoint: String,
+    start_s: f32,
+    length_s: f32,
     value: Value,
     audio: PreviewAudio,
 }
@@ -160,6 +162,8 @@ struct MixComparisonJob {
     revision: u64,
     generation: u64,
     checkpoint: String,
+    start_s: f32,
+    length_s: f32,
     receiver: Receiver<MixComparisonResult>,
 }
 
@@ -180,7 +184,16 @@ fn checkpoint_comparison_engine(engine: &Engine, checkpoint: &str) -> anyhow::Re
 fn render_checkpoint_comparison(
     mut own: Engine,
     checkpoint: &str,
+    start_s: f32,
+    length_s: f32,
 ) -> anyhow::Result<(Value, PreviewAudio)> {
+    if !start_s.is_finite()
+        || !(0.0..=86400.0).contains(&start_s)
+        || !length_s.is_finite()
+        || !(1.0..=120.0).contains(&length_s)
+    {
+        anyhow::bail!("Start must be 0..86400 seconds and length 1..120 seconds");
+    }
     // ab_listen also accepts files, which take priority over snapshot names.
     // Use a private non-file alias so an unrelated file cannot replace A.
     let mut alias = "__mixer_checkpoint_comparison".to_string();
@@ -195,7 +208,7 @@ fn render_checkpoint_comparison(
     snapshot.0 = alias.clone();
     let mut value = own.call(
         "ab_listen",
-        &json!({"a": alias, "b":"current", "length_s":8.0, "play":true}),
+        &json!({"a": alias, "b":"current", "start_s":start_s, "length_s":length_s, "play":true}),
     )?;
     value["A"] = json!(checkpoint);
     let audio = own
@@ -206,20 +219,40 @@ fn render_checkpoint_comparison(
         .ok_or_else(|| anyhow::anyhow!("Comparison produced no preview"))?;
     Ok((value, audio))
 }
+fn comparison_note(value: &Value) -> &'static str {
+    if value["facts"]["A"]["seconds"] != value["facts"]["B"]["seconds"] {
+        "Different rendered lengths; not a like-for-like excerpt. Choose a shorter interval available in both versions."
+    } else if value["loudness_matched"].as_bool() == Some(true) {
+        "Level matched without boosting. Choose by listening, not loudness."
+    } else {
+        "A side is silent or below the loudness gate; not level matched."
+    }
+}
+
 fn comparison_is_current(revision: u64, generation: u64, engine: &Engine) -> bool {
     revision == engine.revision && generation == engine.project_load_generation
 }
 
-fn comparison_ready_for(result: &MixComparison, checkpoint: &str, engine: &Engine) -> bool {
+fn comparison_ready_for(
+    result: &MixComparison,
+    checkpoint: &str,
+    start_s: f32,
+    length_s: f32,
+    engine: &Engine,
+) -> bool {
     result.checkpoint == checkpoint
+        && result.start_s == start_s
+        && result.length_s == length_s
         && comparison_is_current(result.revision, result.generation, engine)
 }
 fn play_checkpoint_comparison(
     result: &MixComparison,
     checkpoint: &str,
+    start_s: f32,
+    length_s: f32,
     engine: &mut Engine,
 ) -> bool {
-    if !comparison_ready_for(result, checkpoint, engine) {
+    if !comparison_ready_for(result, checkpoint, start_s, length_s, engine) {
         return false;
     }
     engine
@@ -270,6 +303,8 @@ pub struct Studio {
     mix_readout_revision: Option<u64>,
     mix_comparison: Option<MixComparison>,
     mix_comparison_job: Option<MixComparisonJob>,
+    comparison_start_s: f32,
+    comparison_length_s: f32,
     // screenshot mode
     screenshot: Option<PathBuf>,
     frames: u64,
@@ -381,6 +416,8 @@ pub fn run(
                 mix_readout_revision: None,
                 mix_comparison: None,
                 mix_comparison_job: None,
+                comparison_start_s: 0.0,
+                comparison_length_s: 8.0,
                 screenshot,
                 frames: 0,
                 shot_requested: false,
@@ -2540,6 +2577,8 @@ mod checkpoint_comparison_tests {
         let (v, audio) = render_checkpoint_comparison(
             checkpoint_comparison_engine(&e, "before").unwrap(),
             "before",
+            0.0,
+            8.0,
         )
         .unwrap();
         assert_eq!(v["loudness_matched"], true);
@@ -2578,6 +2617,8 @@ mod checkpoint_comparison_tests {
         let (value, audio) = render_checkpoint_comparison(
             checkpoint_comparison_engine(&e, "silence").unwrap(),
             "silence",
+            0.0,
+            8.0,
         )
         .unwrap();
         assert_eq!(value["loudness_matched"], false);
@@ -2606,13 +2647,25 @@ mod checkpoint_comparison_tests {
             revision: e.revision,
             generation: e.project_load_generation,
             checkpoint: "first".into(),
+            start_s: 0.0,
+            length_s: 8.0,
             value: json!({}),
             audio: Arc::new((vec![0.; 8], vec![0.; 8])),
         };
-        assert!(!play_checkpoint_comparison(&result, "second", &mut e));
+        assert!(!play_checkpoint_comparison(
+            &result, "second", 0.0, 8.0, &mut e
+        ));
         assert!(e.transport.pending.is_empty());
         assert!(e.transport.pending_audition.is_none());
-        assert!(play_checkpoint_comparison(&result, "first", &mut e));
+        assert!(!play_checkpoint_comparison(
+            &result, "first", 1.0, 8.0, &mut e
+        ));
+        assert!(!play_checkpoint_comparison(
+            &result, "first", 0.0, 4.0, &mut e
+        ));
+        assert!(play_checkpoint_comparison(
+            &result, "first", 0.0, 8.0, &mut e
+        ));
         assert_eq!(e.transport.pending, vec![crate::engine::TransportCmd::Stop]);
         let queued = e
             .transport
@@ -2631,7 +2684,9 @@ mod checkpoint_comparison_tests {
         assert_eq!(serde_json::to_value(&e.project).unwrap(), project);
         e.transport.pending.clear();
         e.revision += 1;
-        assert!(!play_checkpoint_comparison(&result, "first", &mut e));
+        assert!(!play_checkpoint_comparison(
+            &result, "first", 0.0, 8.0, &mut e
+        ));
         assert!(e.transport.pending.is_empty());
     }
     #[test]
@@ -2650,11 +2705,102 @@ mod checkpoint_comparison_tests {
         let (value, audio) = render_checkpoint_comparison(
             checkpoint_comparison_engine(&e, "before").unwrap(),
             "before",
+            0.0,
+            8.0,
         )
         .unwrap();
         assert_eq!(value["A"], "before");
         assert!(audio.0.iter().chain(&audio.1).all(|sample| *sample == 0.));
         assert_eq!(std::fs::read(dir.join("before")).unwrap(), b"not audio");
         assert_eq!(e.snapshots[0].0, "before");
+    }
+    #[test]
+    fn later_excerpt_uses_requested_audio_and_rejects_bad_ranges() {
+        let mut e =
+            Engine::new(std::env::temp_dir().join(format!("bb225_region_{}", std::process::id())));
+        e.call("new_project", &json!({"name":"later","bpm":120}))
+            .unwrap();
+        e.call("add_track", &json!({"name":"tone","instrument":"sine"}))
+            .unwrap();
+        e.call("add_notes",&json!({"track":"tone","pattern":"A","notes":[{"pitch":60,"start":32,"len":16,"vel":0.8}]})).unwrap();
+        e.call("snapshot", &json!({"name":"before"})).unwrap();
+        let (early, _) = render_checkpoint_comparison(
+            checkpoint_comparison_engine(&e, "before").unwrap(),
+            "before",
+            0.,
+            2.,
+        )
+        .unwrap();
+        let (later, audio) = render_checkpoint_comparison(
+            checkpoint_comparison_engine(&e, "before").unwrap(),
+            "before",
+            4.,
+            2.,
+        )
+        .unwrap();
+        assert_eq!(early["loudness_matched"], false);
+        assert_eq!(later["loudness_matched"], true);
+        assert_eq!(later["facts"]["A"]["seconds"], 2.0);
+        assert_eq!(later["facts"]["B"]["seconds"], 2.0);
+        assert_eq!(audio.0.len(), crate::dsp::SR as usize * 5);
+        for (start, length) in [
+            (-1., 2.),
+            (0., 0.),
+            (0., 121.),
+            (f32::NAN, 2.),
+            (0., f32::INFINITY),
+            (99999., 2.),
+        ] {
+            assert!(render_checkpoint_comparison(
+                checkpoint_comparison_engine(&e, "before").unwrap(),
+                "before",
+                start,
+                length
+            )
+            .is_err());
+        }
+        assert!(render_checkpoint_comparison(
+            checkpoint_comparison_engine(&e, "before").unwrap(),
+            "before",
+            100.,
+            2.
+        )
+        .is_err());
+        assert!(e.transport.pending_audition.is_none());
+    }
+    #[test]
+    fn shorter_side_is_explicit_and_one_missing_side_is_rejected() {
+        let mut e =
+            Engine::new(std::env::temp_dir().join(format!("bb225_short_{}", std::process::id())));
+        e.call("new_project", &json!({"name":"short","bpm":120}))
+            .unwrap();
+        e.call("add_track", &json!({"name":"tone","instrument":"sine"}))
+            .unwrap();
+        e.call("add_notes", &json!({"track":"tone","pattern":"A","notes":[{"pitch":60,"start":0,"len":64,"vel":0.8}]})).unwrap();
+        e.call("snapshot", &json!({"name":"before"})).unwrap();
+        e.project.bpm = 240.;
+        let (value, _) = render_checkpoint_comparison(
+            checkpoint_comparison_engine(&e, "before").unwrap(),
+            "before",
+            2.,
+            8.,
+        )
+        .unwrap();
+        assert_ne!(
+            value["facts"]["A"]["seconds"],
+            value["facts"]["B"]["seconds"]
+        );
+        assert!(comparison_note(&value).starts_with("Different rendered lengths"));
+        assert!(render_checkpoint_comparison(
+            checkpoint_comparison_engine(&e, "before").unwrap(),
+            "before",
+            6.,
+            2.
+        )
+        .is_err());
+        assert!(comparison_note(
+            &json!({"facts":{"A":{"seconds":2.},"B":{"seconds":2.}},"loudness_matched":false})
+        )
+        .contains("not level matched"));
     }
 }
