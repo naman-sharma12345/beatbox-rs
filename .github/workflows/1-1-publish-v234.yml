@@ -1,0 +1,74 @@
+name: Publish processed sample file preservation
+'on':
+  push:
+    branches:
+    - sample-guard
+    paths:
+    - .github/workflows/*publish-v234.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/sample-guard'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 89042a57fe56e8ee73cea8a15a6cc14556df7009 ]
+
+        [ "$(git rev-parse origin/main)" = 89042a57fe56e8ee73cea8a15a6cc14556df7009
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''H4sIAMmt4GoC/8VYUW/juBF+96/gqkAgrW3FdpLdrbbZXoveQ3EPLdCiL4sFQUsjmxtZ0omUkyDxf78ZirIpWXGc2xYVYFsmOTPkzDffjJTINGXT6UpqJi5VFV+qmCtdyTKsFFv2R0YyT+CBfbxZLBfXN2F4Pf8gYpiz+Wz24fp6NJ1Oj7WMxuPxgKaffmLTDzcfJ5/YmH4WM4Yjac6U2II/Yu2VgWYrdstm4R8/sUtW3n0+zD2GUkPFN7X2gzAtKg4iXvvP22f2fsve37JVYBfvRtNWVy42gOriSmiIIiU2ZQaqveE06+c5yo1bgaVQzfg5Usaa0kkUpTgdV4DreSIrLrLMh9AK0ogfBH92rOAZ2q3tDYZxVuTgB71lqk5T+YALF3bifi0zYND8oSssq+I7xNoZsZadEXKdHzgDIn/0n9UzU6ExDr9yucqLCrhQsZQ8xm35FzQVOFLPz6x3rPB7IXMfo7ER+p3vPZHELrwXWy8IQniQSqvW7NNBjz37QWzvhR1/ak6881pPGCc3Xhjfsrkd3Y32gCmFXqO2N+zMhs4GuAKEeRVF9xV6ieMK/4JUTtjFI30ocntbMk+LAWj8y9z8nSafRombZBrQBZcYohiUgoRbEJUVKKi2Qssib3LvvIWjHO5ZSgjYFAm0mdjk6ay5wnC5APi4vDEJepnA9jKvs8wm5plmKF9nkxkbzyfzqw+YrKNxrYAtEeLL4iGKfs5XMofPzShKJsC/qyKPIvrG4dEYkxtDpusK/EwsIYvYBbJBwKZfmN9IT5rcIV9H0T/x+691OmH/gfhP9acvQYsX8npVFBq9bpZDvo0iDZtyKMwHxHjL5eLqmj8hoHbe5DBu9uL835/IpK/cYlRT9MWaK4CkhW7Qz0pCb3OIKMKI+LTBdg1mMuW/h+PcpqaHOCLHvPOfPMKhF3muw72dm2Rhnd9XouwwwSmIe1rcQQNsK3EuJQ1ZeohMBNKrxRc06COa5leLq5m7vw2KPMtn5vuSCcVwKXuPjD27CUKF+wnYGP/RmDs/D+d2OjCr567GuMgydNN+I/ugvJyaD/QZPMHyETHeooW8gE5IGrmj9W2s5KYsKm2TwY0WSXkGopM2cuTu0xFDNDKiCvbV2xYyJoVeUtRLVP3NpcHWukgSrisR3x3jRE8apGiCjEi6dodsO3q7C40VUSey4HEmSzcn6NrbtT6w55x4zcZoI0oL9BHFxotmu8BRcMIXu+bHx2xvImfCgwI7Iok/fCU++mbYArZQPXK1FhXSkiUorPJ3AKXiRSUx20TGRU6TsJVFrbBK5YlMCOJEiVhpWu+aCBRFZoLgkAKWuY9LFHJPT4Pz48GHUhD2+ArVd2aQ6nBnnaF4LfIcsqbd6cxsCwwFOhxEznGVzDuzyFnxmjdrNFb/drKDEsK0b0in60IqoJZg6aguAEiEgqwMZ1gSCg/BV71mo5UR1YpEXoICMZqbBAiJGFsGL0pFpmDnaru8ZP/Is0dGp2LmmDJfMRHHUGrFjNhnptfACvyqmA03rVHxGjZIGxXQppnU4eAeZdoE+PZ2wI2u++gimcPIjgFut7/m3EPvHLDvev4ram08btKPtof5TLaDoSwVWH8xn+DXdz7KfW0Nf0OyIEN8QbTxRFq6vVBfzgSUq3uJToCE5GcvLD/JiBZWr9ocxNOkgVsfT6mslD5Zt/iiU7n24G0T+5jHjc5Bh/7XI3DlnefI3pYmh+3/QCAcAj2iyiKO61IiTRLtGUqkfp1TGZUKGwqu7mRpUKvMrOFwXkGZ4fPbBnKsdFo8ImjioqQux+21XqEar5Hx3IrbtDKQvCXSexeY0u5ftDrQpFfnFazw0QGwEjDzEEHEQGf1Biu+DbrbUAzUvyGaP1n5junO1sK2qntouKw1lgjk9Wg6X5xbFM8H3uvJPh9YOpijX2ffbHBOmhmWnfdkhyTfgmpHzHnK6ypoIeEocfr2UyixXfvrEHFAcRYO/v2XX34+3fvZg+VwHFoj/AN+O6KBw1PcoRFSdbXFpxjF6zwpMOXxixhAxLrG6kivW3AQMzh/W9ZXBeoz3U3Hq7Yr67QZx+8xloD9mHnZ0e/rm1//Yi+NYYAQA3KHN3+DVNSZjqKkuRl4YjnqdAez/A0Z/mJG25AP0Y9IEYP/i9M5GGlcGGaQohJj0Ny/vBIjs94vNX/cLbv19WzK7gjyFx6zDqVvyFXUKK9soRjGS/tMRPB1knJ30jsOhTivInTBtyKrwQnAIJUMy7TYPoh0WeV3El97PsrM/+v5bCjefryBCE/6uHBjTpxjAn5fVHcIMQuwhoVC2pbXd46hqYF3J83TOM3uht9e0BSh62w39d7rNJsyKtzXO8N7py6oVdCOHBWYrBDJq0c5q1MYPlNreAABjTe6jRoRErsdeP3V56y+Xtz6fuh3MVij2DKYQ2cvL7UU5hLaD1XP3wD/FqbD/RgAAA==''))
+
+        assert hashlib.sha256(b).hexdigest()==''1bc991a30b09cc92948c7b8227c7d0bd0507c5bb47f1ec8d4237b7e138b60da1''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/sc_strip.rs'': ''5f7f4df2ae158e629d6be761adf05ece8654bd5762ecbf15b0027c5473a39788'',
+        ''tests/processed_sample_preservation.rs'': ''318d151019704c55ebc533e6b1e2855dd4e810fb2d47209e4533fbc0d319f184''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/sc_strip.rs tests/processed_sample_preservation.rs
+
+        git commit -m "Preserve source and previous files when saving processed sample
+        candidates"
+
+        git fetch origin sample-guard main
+
+        [ "$(git rev-parse origin/sample-guard)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 89042a57fe56e8ee73cea8a15a6cc14556df7009
+        ]
+
+        git push origin HEAD:refs/heads/sample-guard
+
+        '
