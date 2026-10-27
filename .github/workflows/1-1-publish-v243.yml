@@ -1,0 +1,73 @@
+name: Publish clear sample edit results and safe repeated slicing
+'on':
+  push:
+    branches:
+    - slice-guard
+    paths:
+    - .github/workflows/*publish-v243.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/slice-guard'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 73cf025267f3e9b3b84477dcaa853f3fcc059b3d ]
+
+        [ "$(git rev-parse origin/main)" = 73cf025267f3e9b3b84477dcaa853f3fcc059b3d
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''ec90096a4a9b351b41a1d816f429f2b524495357833a1e892910e9d9dfafdb1b''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/gui/browser_view.rs'': ''e15a0bc7e3732dfe510daa67f0ed82ae39b98feab92ef6a832b99b6c5a393c09'',
+        ''tests/own_samples.rs'': ''0db29f6ee449ac5ae613bdc40f71f939f6061b7fa2f8bae7429d28bda933edbf''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/gui/browser_view.rs tests/own_samples.rs
+
+        git commit -m "Keep repeated GUI slicing separate and name edit results"
+
+        git fetch origin slice-guard main
+
+        [ "$(git rev-parse origin/slice-guard)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 73cf025267f3e9b3b84477dcaa853f3fcc059b3d
+        ]
+
+        git push origin HEAD:refs/heads/slice-guard
+
+        '

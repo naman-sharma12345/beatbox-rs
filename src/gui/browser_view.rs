@@ -441,6 +441,7 @@ impl Studio {
             .clone()
             .unwrap_or((Value::Null, Value::Null));
         let mut call: Option<(String, Value)> = None;
+        let mut editor_action = false;
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("SEARCH").size(11.0).color(tk.text_dim));
             ui.add(
@@ -620,8 +621,15 @@ impl Studio {
             if let Some(si) = p.samples.iter().find(|x| {
                 !self.browser.edit.sample.is_empty() && x.name == self.browser.edit.sample
             }) {
-                if let Some(c) = audio_editor(ui, &tk, &mut self.browser.edit, si.duration) {
-                    call = Some(c);
+                if let Some((tool, mut args)) =
+                    audio_editor(ui, &tk, &mut self.browser.edit, si.duration)
+                {
+                    if tool == "slice_sample" {
+                        args["track"] =
+                            json!(new_library_channel_name(p, &format!("{}_slices", si.name)));
+                    }
+                    editor_action = true;
+                    call = Some((tool, args));
                 }
             }
         }
@@ -1867,6 +1875,22 @@ impl Studio {
             };
             match self.engine.lock().unwrap().call_from(&tool, &args, "you") {
                 Ok(v) => {
+                    if editor_action {
+                        if let Some(sample) = v["sample"].as_str() {
+                            self.toast = Some((format!("Result sample: {sample}. Open it in Project Samples to hear, edit or add a channel."), 0.0, true));
+                        } else if tool == "slice_sample" {
+                            self.toast = Some((
+                                format!(
+                                    "Created {} with {} slices and {} notes.",
+                                    v["track"].as_str().unwrap_or("slice channel"),
+                                    v["slices"],
+                                    v["notes_written"]
+                                ),
+                                0.0,
+                                true,
+                            ));
+                        }
+                    }
                     if tool == "play_audio" {
                         let message = if v["stopped"] == true {
                             "Sample preview stopped. Project unchanged.".to_string()
@@ -3377,6 +3401,7 @@ fn audio_editor(
             ed.sample.clear();
         }
     });
+    ui.label(RichText::new("Edits create a new sample in Project Samples; existing channels keep their source. Open the result there to hear or use it. SLICE creates a playable channel.").small());
     let top = if dur > 0.0 { dur } else { 600.0 };
     if let Some(sp) = ed.spec.clone() {
         spectrogram_view(ui, tk, ed, &sp, top);
@@ -3712,6 +3737,11 @@ mod drop_tests {
         assert!(entry.contains("Preview this source file without editing or adding a channel"));
         assert!(entry.contains("\"max_seconds\":12.0"));
         assert!(entry.contains("Source preview queued:"));
+        assert!(entry.contains("if tool == \"slice_sample\""));
+        assert!(entry
+            .split_whitespace()
+            .collect::<String>()
+            .contains("args[\"track\"]=json!(new_library_channel_name(p,"));
         assert!(
             entry.find("YOUR OWN FILE").unwrap() < entry.find("self.recorded_starters").unwrap()
         );

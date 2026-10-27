@@ -103,3 +103,49 @@ fn source_preview_preserves_stereo_caps_duration_and_does_not_edit_project() {
     assert_eq!(fs::read(path).unwrap(), bytes);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn explicit_fresh_slice_channel_keeps_prior_arranged_slices() {
+    let root =
+        std::env::temp_dir().join(format!("bb_slice_keep_{}", beatbox::creative::fresh_seed()));
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("loop.wav");
+    let audio: Vec<f32> = (0..44100).map(|i| (i as f32 * 0.06).sin() * 0.3).collect();
+    beatbox::render::write_wav(&path, &audio, &audio).unwrap();
+    let mut e = Engine::new(root.clone());
+    e.call("import_sample", &json!({"path":path,"name":"loop"}))
+        .unwrap();
+    e.call("slice_sample", &json!({"sample":"loop","equal":4}))
+        .unwrap();
+    let prior = e.project.clone();
+    let prior_audio = e.render_stems_all(&prior).unwrap();
+    let result = e
+        .call(
+            "slice_sample",
+            &json!({"sample":"loop","track":"loop_slices #2","equal":2}),
+        )
+        .unwrap();
+    assert_eq!(result["slices"], 2);
+    assert_eq!(e.project.tracks[..prior.tracks.len()], prior.tracks);
+    assert_eq!(
+        e.project.patterns[0].notes("loop_slices"),
+        prior.patterns[0].notes("loop_slices")
+    );
+    assert_eq!(e.project.patterns[0].notes("loop_slices #2").len(), 2);
+    let completed = e.project.clone();
+    e.call("undo", &json!({})).unwrap();
+    assert_eq!(e.project, prior);
+    let undone_audio = e.render_stems_all(&prior).unwrap();
+    assert_eq!(undone_audio.left, prior_audio.left);
+    assert_eq!(undone_audio.right, prior_audio.right);
+    e.call("redo", &json!({})).unwrap();
+    assert_eq!(e.project, completed);
+    let saved = root.join("slices.json");
+    e.call("save_project", &json!({"path":saved})).unwrap();
+    let mut reopened = Engine::new(root.clone());
+    reopened
+        .call("load_project", &json!({"path":saved}))
+        .unwrap();
+    assert_eq!(reopened.project, completed);
+    fs::remove_dir_all(root).unwrap();
+}
