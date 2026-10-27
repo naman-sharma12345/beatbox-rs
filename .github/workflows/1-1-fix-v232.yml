@@ -1,0 +1,64 @@
+name: Fix translation GUI regression test borrow
+'on':
+  push:
+    branches:
+    - translation-set
+    paths:
+    - .github/workflows/*fix-v232.yml
+permissions:
+  contents: write
+jobs:
+  fix:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/translation-set'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Correct test-only redundant reference
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 5640e695a82ec2c0ac28c4f88666256782dd63f1 ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,pathlib,hashlib
+
+        p=gzip.decompress(base64.b64decode(''H4sIAByJ4GoC/42PwWrDMAxA7/0KJYfikDgp3WGMMsgnbOdSghuL1qOzU0l2t7+fOzo2tg7qizF6fg9prcF0TGO3i67bUjgx0pAcnlriWV3XsP132veg7x6Wy+Ye6svd9zP4OgcUUKkBE60LFTzCPCGxC57Xi83qmzOcpTLgsVBpXQpFPxpBW24ayA+s/qCFKj6d7aJ1PODrJO+qypj+WRZ8k9wUMp4PRnJ2IDQ2RFHzlOH6Rjhd65/5dgxejPOsSt4HEiSQvfFAeIzI5wWqG74+EU6G0K5govCCo0BeP2t2aNvrguKX4TlivMQ+ABIe2nnNAQAA''))
+
+        assert hashlib.sha256(p).hexdigest()==''cb2b449e45f105c6c0226c294e6cd8544a6ee464a73c81302cad73e2dc688951''
+
+        pathlib.Path(''/tmp/test.patch'').write_bytes(p)
+
+        PYCODE
+
+        git apply --check /tmp/test.patch
+
+        git apply /tmp/test.patch
+
+        python3 - <<''PYCODE''
+
+        import pathlib,hashlib
+
+        assert hashlib.sha256(pathlib.Path(''src/gui/browser_view.rs'').read_bytes()).hexdigest()==''0d8caae40b76a0f18a730fff05d9f251852e5233f4603bc45bdcc2658f88196b''
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/gui/browser_view.rs
+
+        git commit -m ''Fix needless borrow in translation set GUI test''
+
+        git fetch origin translation-set
+
+        [ "$(git rev-parse origin/translation-set)" = "$GITHUB_SHA" ]
+
+        git push origin HEAD:refs/heads/translation-set
+
+        '
