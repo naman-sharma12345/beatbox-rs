@@ -664,23 +664,36 @@ if let Some(x)=read("tune_cents",-100.0,100.0)?{p.tune_cents=x;}
         },
         Tool {
             name: "preview_mix_translation",
-            description: "Non-destructive monitoring of the first 1-8 bars (default 4) of the mix, or a local stereo audio file (first 20 seconds). mode stereo, mono (L+R)/2, or phone (mono plus 180Hz low cut / 5kHz high cut, an approximation not a device simulation). No loudness boost: bass loss and cancellation remain audible. Writes a new WAV and optionally queues it on studio speakers. Project/history unchanged.",
+            description: "Non-destructive monitoring of the first 1-8 bars (default 4) of the mix, or a local stereo audio file (first 20 seconds). Optional start_s (0..86400) and length_s (1..20, default 8) select an elapsed-time excerpt instead of bars. Full project renders then crops to preserve preceding notes/effect state; may take time. Partial ending is reported. mode stereo, mono (L+R)/2, or phone (mono plus 180Hz low cut / 5kHz high cut, an approximation not a device simulation). No loudness boost: bass loss and cancellation remain audible. Writes a new WAV and optionally queues it on studio speakers. Project/history unchanged.",
             mutates: false,
-            schema: || obj(json!({"mode":{"type":"string","enum":["stereo","mono","phone"]},"bars":{"type":"integer","minimum":1,"maximum":8},"path":{"type":"string"},"play":{"type":"boolean","default":true},"stop":{"type":"boolean","description":"Stop a queued/playing translation preview without rendering"}}), &[]),
+            schema: || obj(json!({"mode":{"type":"string","enum":["stereo","mono","phone"]},"bars":{"type":"integer","minimum":1,"maximum":8},"start_s":{"type":"number","minimum":0,"maximum":86400},"length_s":{"type":"number","minimum":1,"maximum":20},"path":{"type":"string"},"play":{"type":"boolean","default":true},"stop":{"type":"boolean","description":"Stop a queued/playing translation preview without rendering"}}), &[]),
             run: |e,a| {
                 if b_or(a,"stop",false){e.transport.pending_audition=Some(None);return Ok(json!({"stopped":true}));}
                 let mode=s_opt(a,"mode").unwrap_or_else(||"mono".into());
                 if !["stereo","mono","phone"].contains(&mode.as_str()){bail!("mode must be stereo, mono or phone");}
                 let bars=match a.get("bars"){Some(v)=>v.as_u64().filter(|v|(1..=8).contains(v)).ok_or_else(||anyhow!("bars must be an integer 1..8"))?,None=>4};
+                let excerpt=a.get("start_s").is_some() || a.get("length_s").is_some();
+                if excerpt && a.get("bars").is_some(){bail!("Choose seconds or bars, not both");}
+                let number=|key:&str,default:f64,lo:f64,hi:f64|->Result<f64>{match a.get(key){None=>Ok(default),Some(v)=>v.as_f64().filter(|v|v.is_finite() && (lo..=hi).contains(v)).ok_or_else(||anyhow!("{key} must be finite in {lo}..{hi}"))}};
+                let start=number("start_s",0.0,0.0,86400.0)?;
+                let length=number("length_s",8.0,1.0,20.0)?;
                 let (mut l,mut r)=if let Some(path)=s_opt(a,"path"){
                     crate::samples::decode_stereo(&e.resolve(&path))?
                 }else{
                     e.bank.sync(&e.project.samples);
                     let end=e.project.beat_at_bar(bars as f32+1.0)*4.0;
-                    let m=crate::render::render(&e.project,&e.bank,&crate::render::RenderOptions{step_range:Some((0,end.round() as u32)),tail:0.5,..Default::default()})?;
+                    // Crop a full render for seconds mode: a window-only render would
+                    // lose held notes and the delay/reverb state preceding the excerpt.
+                    let opts=if excerpt{crate::render::RenderOptions::default()}else{crate::render::RenderOptions{step_range:Some((0,end.round() as u32)),tail:0.5,..Default::default()}};
+                    let m=crate::render::render(&e.project,&e.bank,&opts)?;
                     (m.left,m.right)
                 };
-                let n=l.len().min(r.len()).min((crate::dsp::SR*20.0) as usize);l.truncate(n);r.truncate(n);
+                let available=l.len().min(r.len());
+                let first=if excerpt{(start*crate::dsp::SR as f64).floor() as usize}else{0};
+                if first>=available{bail!("Excerpt start is past the available audio");}
+                let wanted=if excerpt{(length*crate::dsp::SR as f64).floor() as usize}else{(crate::dsp::SR*20.0) as usize};
+                let last=first.saturating_add(wanted).min(available);
+                l=l[first..last].to_vec();r=r[first..last].to_vec();let n=last-first;
                 if n==0 || !l.iter().chain(&r).all(|v|v.is_finite()){bail!("preview audio must be nonempty and finite");}
                 if mode!="stereo"{for i in 0..n{let m=(l[i]+r[i])*0.5;l[i]=m;r[i]=m;}}
                 if mode=="phone"{
@@ -695,7 +708,7 @@ if let Some(x)=read("tune_cents",-100.0,100.0)?{p.tune_cents=x;}
                 let mut i=0u64;
                 let path=loop{let p=e.renders_dir().join(format!("translation_{mode}_{i}.wav"));match crate::render::write_wav_new(&p,&l,&r){Ok(())=>break p,Err(err) if err.downcast_ref::<std::io::Error>().is_some_and(|e|e.kind()==std::io::ErrorKind::AlreadyExists)=>i+=1,Err(err)=>return Err(err)}};
                 let playback=if b_or(a,"play",true){e.transport.pending.push(crate::engine::TransportCmd::Stop);crate::tools_library::queue_audition(e,l,r,0.0)}else{json!({"playing":false})};
-                Ok(json!({"mode":mode,"path":path,"seconds":n as f32/crate::dsp::SR,"safety_gain_db":20.0*gain.log10(),"playback":playback,"note":"monitoring approximation only; no mix changes or loudness boost"}))
+                Ok(json!({"mode":mode,"path":path,"seconds":n as f32/crate::dsp::SR,"start_s":first as f64/crate::dsp::SR as f64,"requested_length_s":if excerpt{Some(length)}else{None},"truncated":excerpt && n<wanted,"safety_gain_db":20.0*gain.log10(),"playback":playback,"note":"monitoring approximation only; no mix changes or loudness boost"}))
             }
         },
         Tool {
@@ -5026,5 +5039,196 @@ mod piece_response_tests {
         assert_eq!(response_velocity_for_key(&p, 38, 0.5), 0.5);
         p.key_velocity_curve.remove(&38);
         assert_eq!(response_velocity_for_key(&p, 38, 0.5), 0.25);
+    }
+}
+
+#[cfg(test)]
+mod translation_excerpt_tests {
+    use crate as beatbox;
+    use beatbox::Engine;
+    use serde_json::json;
+    fn fixture(tag: &str) -> (Engine, std::path::PathBuf, Vec<f32>, Vec<f32>) {
+        let dir = std::env::temp_dir().join(format!("bb229_{tag}_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("source.wav");
+        let l: Vec<f32> = (0..3 * 44100)
+            .map(|i| {
+                if i < 44100 {
+                    0.0
+                } else {
+                    0.25 * (std::f32::consts::TAU * 1000.0 * i as f32 / 44100.0).sin()
+                }
+            })
+            .collect();
+        let r: Vec<f32> = l.iter().map(|x| -x).collect();
+        beatbox::render::write_wav(&path, &l, &r).unwrap();
+        (Engine::new(dir), path, l, r)
+    }
+    #[test]
+    fn stereo_excerpt_matches_actual_later_file_samples() {
+        let (mut e, p, _, _) = fixture("exact");
+        let (l, r) = beatbox::samples::decode_stereo(&p).unwrap();
+        let before = serde_json::to_value(&e.project).unwrap();
+        let rev = e.revision;
+        let undo = e.undo_depth();
+        let v = e
+            .call(
+                "preview_mix_translation",
+                &json!({"mode":"stereo","path":p,"start_s":1.25,"length_s":1.0,"play":true}),
+            )
+            .unwrap();
+        let q = e
+            .transport
+            .pending_audition
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        let a = (1.25 * 44100.0) as usize;
+        assert_eq!(q.0, l[a..a + 44100]);
+        assert_eq!(q.1, r[a..a + 44100]);
+        assert_eq!(v["truncated"], false);
+        assert_eq!(v["safety_gain_db"], 0.0);
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        assert_eq!(e.revision, rev);
+        assert_eq!(e.undo_depth(), undo);
+    }
+    #[test]
+    fn later_mono_excerpt_keeps_cancellation_and_phone_loses_bass() {
+        let (mut e, p, _, _) = fixture("fold");
+        e.call(
+            "preview_mix_translation",
+            &json!({"mode":"mono","path":p,"start_s":1.0,"length_s":1.0,"play":true}),
+        )
+        .unwrap();
+        let q = e
+            .transport
+            .pending_audition
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        assert!(q.0.iter().chain(&q.1).all(|v| v.abs() < 1e-4));
+        let x: Vec<f32> = (0..3 * 44100)
+            .map(|i| 0.3 * (std::f32::consts::TAU * 40.0 * i as f32 / 44100.0).sin())
+            .collect();
+        beatbox::render::write_wav(&p, &x, &x).unwrap();
+        let v = e
+            .call(
+                "preview_mix_translation",
+                &json!({"mode":"phone","path":p,"start_s":1.0,"length_s":1.0,"play":true}),
+            )
+            .unwrap();
+        let q = e
+            .transport
+            .pending_audition
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        let rms = (q.0.iter().map(|v| v * v).sum::<f32>() / q.0.len() as f32).sqrt();
+        assert!(rms < 0.03);
+        assert_eq!(q.0, q.1);
+        assert!(v["safety_gain_db"].as_f64().unwrap() <= 0.0);
+    }
+    #[test]
+    fn shortened_end_is_explicit_and_invalid_inputs_do_not_queue_or_write() {
+        let (mut e, p, _, _) = fixture("bounds");
+        let v = e
+            .call(
+                "preview_mix_translation",
+                &json!({"path":p,"start_s":2.5,"length_s":2.0,"play":false}),
+            )
+            .unwrap();
+        assert_eq!(v["truncated"], true);
+        assert!((v["seconds"].as_f64().unwrap() - 0.5).abs() < 1e-6);
+        let count = std::fs::read_dir(e.renders_dir()).unwrap().count();
+        for bad in [
+            json!({"start_s":3.0}),
+            json!({"start_s":-1}),
+            json!({"start_s":"1"}),
+            json!({"length_s":0}),
+            json!({"length_s":21}),
+            json!({"start_s":1,"bars":4}),
+        ] {
+            let mut a = bad;
+            a["path"] = json!(p);
+            assert!(e.call("preview_mix_translation", &a).is_err());
+            assert!(e.transport.pending_audition.is_none());
+            assert_eq!(std::fs::read_dir(e.renders_dir()).unwrap().count(), count);
+        }
+    }
+    #[test]
+    fn excerpt_safety_only_attenuates_and_saves_unique_files() {
+        let (mut e, p, _, _) = fixture("safety");
+        let x = vec![2.0; 3 * 44100];
+        crate::render::write_wav(&p, &x, &x).unwrap();
+        let a = e
+            .call(
+                "preview_mix_translation",
+                &json!({"mode":"stereo","path":p,"start_s":1.0,"length_s":1.0,"play":true}),
+            )
+            .unwrap();
+        assert!(a["safety_gain_db"].as_f64().unwrap() < 0.0);
+        let q = e
+            .transport
+            .pending_audition
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        assert!(q.0.iter().all(|x| x.abs() <= 0.95001));
+        let b = e
+            .call(
+                "preview_mix_translation",
+                &json!({"mode":"stereo","path":p,"start_s":1.0,"length_s":1.0,"play":false}),
+            )
+            .unwrap();
+        assert_ne!(a["path"], b["path"]);
+    }
+    #[test]
+    fn project_excerpt_matches_full_render_with_preceding_note_and_tempo_curve() {
+        let (mut e, _, _, _) = fixture("project");
+        e.call("new_project", &json!({"name":"carry","bpm":120}))
+            .unwrap();
+        e.call("add_track", &json!({"name":"tone","instrument":"sine"}))
+            .unwrap();
+        e.call("add_notes",&json!({"track":"tone","pattern":"A","notes":[{"pitch":72,"start":0,"len":32,"vel":0.5}]})).unwrap();
+        let mut inst = serde_json::to_value(&e.project.tracks[0].instrument).unwrap();
+        inst["amp_env"]["sustain"] = json!(1.0);
+        e.project.tracks[0].instrument = serde_json::from_value(inst).unwrap();
+        e.call(
+            "add_effect",
+            &json!({"track":"tone","type":"delay","params":{"steps":3.0,"feedback":0.3,"mix":0.3}}),
+        )
+        .unwrap();
+        e.project.tempo_points = vec![beatbox::project::TempoPoint {
+            beat: 4.0,
+            bpm: 90.0,
+            ramp: true,
+        }];
+        let m = beatbox::render::render(&e.project, &e.bank, &Default::default()).unwrap();
+        let v = e
+            .call(
+                "preview_mix_translation",
+                &json!({"mode":"stereo","start_s":1.25,"length_s":1.0,"play":true}),
+            )
+            .unwrap();
+        let q = e
+            .transport
+            .pending_audition
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        let a = (1.25 * 44100.0) as usize;
+        let g = 10f32.powf(v["safety_gain_db"].as_f64().unwrap() as f32 / 20.0);
+        assert_eq!(q.0.len(), 44100);
+        assert!(q
+            .0
+            .iter()
+            .zip(&m.left[a..a + 44100])
+            .all(|(x, y)| (x - y * g).abs() < 1e-6));
+        assert!(q.0.iter().any(|x| x.abs() > 0.01));
     }
 }
