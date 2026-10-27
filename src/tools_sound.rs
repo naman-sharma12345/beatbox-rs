@@ -531,6 +531,18 @@ fn save_new_sample(
     data: &[f32],
     note: &str,
 ) -> Result<Value> {
+    save_new_stereo_sample(e, base, new_name, data, data, note)
+}
+
+/// Keep source channels separate while reserving a fresh output file.
+fn save_new_stereo_sample(
+    e: &mut Engine,
+    base: &SampleInfo,
+    new_name: &str,
+    left: &[f32],
+    right: &[f32],
+    note: &str,
+) -> Result<Value> {
     let base_name = samples::sample_name(new_name);
     let mut name = base_name.clone();
     let mut suffix = 2;
@@ -542,7 +554,7 @@ fn save_new_sample(
             .iter()
             .any(|s| s.name.eq_ignore_ascii_case(&name))
         {
-            match crate::render::write_wav_new(&candidate, data, data) {
+            match crate::render::write_wav_new(&candidate, left, right) {
                 Ok(()) => break candidate,
                 Err(error)
                     if error
@@ -1226,35 +1238,52 @@ pub fn tools() -> Vec<Tool> {
             mutates: true,
             schema: || obj(json!({"sample": {"type": "string"}, "trim_silence_db": {"type": "number"}, "start_s": {"type": "number"}, "length_s": {"type": "number"}, "length_beats": {"type": "number"}, "reverse": {"type": "boolean"}, "fade_in_ms": {"type": "number"}, "fade_out_ms": {"type": "number"}, "normalize_db": {"type": "number"}, "normalize_lufs": {"type": "number"}, "gain_db": {"type": "number"}, "highpass_hz": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
             run: |e, a| {
-                let (info, mut d) = sample_data(e, &s_req(a, "sample")?)?;
+                let name = s_req(a, "sample")?;
+                let info = e.project.samples.iter().find(|s| s.name.eq_ignore_ascii_case(&name))
+                    .cloned().ok_or_else(|| anyhow!("no sample '{name}'"))?;
+                let (mut left, mut right) = samples::decode_stereo(&e.resolve(&info.path))?;
                 let mut done = Vec::new();
-                if let Some(t) = f_opt(a, "trim_silence_db") { let (x, y) = audio_edit::trim(&mut d, t); done.push(format!("trim {:.0}/{:.0} ms", x as f32 / SR * 1000.0, y as f32 / SR * 1000.0)); }
+                if let Some(t) = f_opt(a, "trim_silence_db") {
+                    // A signal in either channel keeps the frame. Opposite polarity must not cancel.
+                    let mut envelope: Vec<f32> = left.iter().zip(&right).map(|(l, r)| l.abs().max(r.abs())).collect();
+                    let (start, tail) = audio_edit::trim(&mut envelope, t);
+                    let end = left.len().saturating_sub(tail);
+                    left = left[start..end].to_vec(); right = right[start..end].to_vec();
+                    done.push(format!("trim {:.0}/{:.0} ms", start as f32 / SR * 1000.0, tail as f32 / SR * 1000.0));
+                }
                 let start = (f_or(a, "start_s", 0.0).max(0.0) * SR) as usize;
                 let len = f_opt(a, "length_s").map(|s| (s * SR) as usize).or_else(|| f_opt(a, "length_beats").map(|b| (b * 60.0 / e.project.bpm * SR) as usize));
                 if start > 0 || len.is_some() {
-                    let s0 = start.min(d.len());
-                    let s1 = len.map(|l| (s0 + l).min(d.len())).unwrap_or(d.len());
-                    d = d[s0..s1].to_vec();
+                    let s0 = start.min(left.len());
+                    let s1 = len.map(|l| s0.saturating_add(l).min(left.len())).unwrap_or(left.len());
+                    left = left[s0..s1].to_vec(); right = right[s0..s1].to_vec();
                     done.push(format!("region {:.3}s +{:.3}s", s0 as f32 / SR, (s1 - s0) as f32 / SR));
                 }
-                if b_or(a, "reverse", false) { audio_edit::reverse(&mut d); done.push("reverse".into()); }
+                if b_or(a, "reverse", false) { audio_edit::reverse(&mut left); audio_edit::reverse(&mut right); done.push("reverse".into()); }
                 let (fi, fo) = (f_or(a, "fade_in_ms", 0.0), f_or(a, "fade_out_ms", 0.0));
-                if fi > 0.0 || fo > 0.0 { audio_edit::fade(&mut d, fi, fo); done.push(format!("fades {fi}/{fo} ms")); }
+                if fi > 0.0 || fo > 0.0 { audio_edit::fade(&mut left, fi, fo); audio_edit::fade(&mut right, fi, fo); done.push(format!("fades {fi}/{fo} ms")); }
                 if let Some(hz) = f_opt(a, "highpass_hz") {
-                    let mut f = crate::dsp::Biquad::new(crate::dsp::BiquadKind::LowCut, hz, 0.707, 0.0);
-                    for v in d.iter_mut() { *v = f.process(*v); }
+                    for channel in [&mut left, &mut right] {
+                        let mut f = crate::dsp::Biquad::new(crate::dsp::BiquadKind::LowCut, hz, 0.707, 0.0);
+                        for v in channel.iter_mut() { *v = f.process(*v); }
+                    }
                     done.push(format!("highpass {hz} Hz"));
                 }
-                if let Some(p) = f_opt(a, "normalize_db") { let g = audio_edit::normalize(&mut d, p); done.push(format!("normalize {g:+.1} dB")); }
-                if let Some(t) = f_opt(a, "normalize_lufs") {
-                    let l = crate::analysis::loudness(&d, &d).integrated_lufs;
-                    if l > -70.0 { let g = crate::dsp::db_to_gain(t - l); d.iter_mut().for_each(|v| *v *= g); done.push(format!("loudness {l:.1} -> {t} LUFS")); }
+                if let Some(p) = f_opt(a, "normalize_db") {
+                    let peak = left.iter().chain(&right).fold(0.0f32, |p, v| p.max(v.abs()));
+                    let gain = if peak > 1e-9 { crate::dsp::db_to_gain(p.min(0.0)) / peak } else { 1.0 };
+                    left.iter_mut().chain(&mut right).for_each(|v| *v *= gain);
+                    done.push(format!("normalize {:+.1} dB", crate::dsp::gain_to_db(gain)));
                 }
-                if let Some(g) = f_opt(a, "gain_db") { let k = crate::dsp::db_to_gain(g); d.iter_mut().for_each(|v| *v *= k); done.push(format!("gain {g:+} dB")); }
+                if let Some(t) = f_opt(a, "normalize_lufs") {
+                    let l = crate::analysis::loudness(&left, &right).integrated_lufs;
+                    if l > -70.0 { let g = crate::dsp::db_to_gain(t - l); left.iter_mut().chain(&mut right).for_each(|v| *v *= g); done.push(format!("loudness {l:.1} -> {t} LUFS")); }
+                }
+                if let Some(g) = f_opt(a, "gain_db") { let k = crate::dsp::db_to_gain(g); left.iter_mut().chain(&mut right).for_each(|v| *v *= k); done.push(format!("gain {g:+} dB")); }
                 if done.is_empty() { bail!("no edits given"); }
-                if d.is_empty() { bail!("the edit left no audio"); }
+                if left.is_empty() { bail!("the edit left no audio"); }
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_edit", info.name));
-                let mut r = save_new_sample(e, &info, &nn, &d, &done.join(", "))?;
+                let mut r = save_new_stereo_sample(e, &info, &nn, &left, &right, &done.join(", "))?;
                 r["edits"] = json!(done);
                 Ok(r)
             },
