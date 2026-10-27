@@ -1,0 +1,36 @@
+name: Publish explicit Vocal Room source selection
+'on':
+  push:
+    branches:
+    - vocal-source
+    paths:
+    - .github/workflows/*publish-v227.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/vocal-source'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply verified Vocal Room source patch
+      shell: bash
+      run: "set -euo pipefail\n[ \"$(git rev-parse HEAD^)\" = e3163461f427c44cae3279f7af6262aceb2ac4ac\
+        \ ]\n[ \"$(git rev-parse origin/main)\" = e3163461f427c44cae3279f7af6262aceb2ac4ac\
+        \ ]\npython3 - <<'PYCODE'\nimport base64,gzip,hashlib,pathlib\nb=gzip.decompress(base64.b64decode('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'))\n\
+        assert hashlib.sha256(b).hexdigest()=='cb707ad67022c5d66361cd8478c21ab27579ebeb8449c201b4d1455109fa3dcc'\n\
+        pathlib.Path('/tmp/verified.patch').write_bytes(b)\nPYCODE\ngit apply --check\
+        \ /tmp/verified.patch\ngit apply /tmp/verified.patch\npython3 - <<'PYCODE'\n\
+        import hashlib,pathlib\nexpected={'src/gui/views.rs': '6e0a421d2d2864178c15bd0bb0c54c1287457ee055ed6ac22a0926c3b7c77dfc',\
+        \ 'src/tools_ears_pro.rs': '829d72508b349d64c9e36ac4c65e76819143a98161aae53dadaf7a35e21babec'}\n\
+        for f,h in expected.items():\n assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f\n\
+        PYCODE\ngit config user.name 'github-actions[bot]'\ngit config user.email\
+        \ '41898282+github-actions[bot]@users.noreply.github.com'\ngit add src/gui/views.rs\
+        \ src/tools_ears_pro.rs\ngit commit -m \"Choose explicit project track for\
+        \ Vocal Room\"\ngit fetch origin vocal-source main\n[ \"$(git rev-parse origin/vocal-source)\"\
+        \ = \"$GITHUB_SHA\" ]\n[ \"$(git rev-parse origin/main)\" = e3163461f427c44cae3279f7af6262aceb2ac4ac\
+        \ ]\ngit push origin HEAD:refs/heads/vocal-source\n"
