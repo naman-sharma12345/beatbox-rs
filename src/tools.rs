@@ -2107,8 +2107,9 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 render::write_wav(&path, &mix.left, &mix.right)?;
                 let mut stems = Vec::new();
                 if let Some(d) = stems_dir {
-                    for s in &mix.stems {
-                        let sp = d.join(format!("{}.wav", samples::sample_name(&s.name)));
+                    let names = samples::distinct_export_names(&mix.stems.iter().map(|s| samples::sample_name(&s.name)).collect::<Vec<_>>());
+                    for (s, name) in mix.stems.iter().zip(names) {
+                        let sp = d.join(format!("{name}.wav"));
                         render::write_wav(&sp, &s.left, &s.right)?;
                         stems.push(sp);
                     }

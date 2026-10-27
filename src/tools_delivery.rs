@@ -805,8 +805,14 @@ pub fn tools() -> Vec<Tool> {
                 };
                 let only: Option<Vec<String>> = a.get("tracks").and_then(|v| v.as_array()).map(|x| x.iter().filter_map(|s| s.as_str().map(|s| s.to_lowercase())).collect());
                 let mut stems: Vec<(&str, &render::Stem, bool)> = p.tracks.iter().zip(mix.stems.iter()).map(|(t, s)| ("track", s, !t.mute && (!any_solo || t.solo))).collect();
-                if b_or(a, "include_buses", true) {
-                    stems.extend(p.buses.iter().zip(mix.bus_stems.iter()).map(|(b, s)| ("bus", s, !b.mute)));
+                stems.extend(p.buses.iter().zip(mix.bus_stems.iter()).map(|(b, s)| ("bus", s, !b.mute)));
+                // Name the full set before filtering, so exporting only one
+                // track later still writes that track's own stable file.
+                let all_names: Vec<String> = stems.iter().map(|(kind, s, _)| format!("{}{}", if *kind == "bus" { "bus_" } else { "" }, samples::sample_name(&s.name))).collect();
+                let output_names = samples::distinct_export_names(&all_names);
+                let output_names: std::collections::HashMap<(&str, &str), String> = stems.iter().zip(output_names).map(|((kind, s, _), name)| ((*kind, s.name.as_str()), name)).collect();
+                if !b_or(a, "include_buses", true) {
+                    stems.retain(|(kind, _, _)| *kind != "bus");
                 }
                 if let Some(o) = &only {
                     stems.retain(|(_, s, _)| o.contains(&s.name.to_lowercase()));
@@ -836,7 +842,7 @@ pub fn tools() -> Vec<Tool> {
                     }
                 };
                 let stem_path = |kind: &str, s: &render::Stem| -> PathBuf {
-                    dir.join(format!("{}{}.{}", if kind == "bus" { "bus_" } else { "" }, samples::sample_name(&s.name), ext(&o.format)))
+                    dir.join(format!("{}.{}", output_names[&(kind, s.name.as_str())], ext(&o.format)))
                 };
                 // tp_trim: write every stem at its own gain plus the common
                 // steps so far, read each file back, trim by the hottest
