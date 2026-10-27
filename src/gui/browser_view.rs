@@ -1850,18 +1850,15 @@ pub fn translation_readout(v: &Value) -> String {
     if v["stopped"] == true {
         return "Preview stopped".into();
     }
-    format!(
-        "{}: start {:.2}s | {:.2}s rendered{} | safety gain {:.1} dB. Prepared; project unchanged.",
-        v["mode"].as_str().unwrap_or("preview"),
-        v["start_s"].as_f64().unwrap_or(0.0),
-        v["seconds"].as_f64().unwrap_or(0.0),
-        if v["truncated"] == true {
-            " (shorter than requested)"
-        } else {
-            ""
-        },
-        v["safety_gain_db"].as_f64().unwrap_or(0.0)
-    )
+    let mono=match v["mono_check"]["status"].as_str(){
+        Some("source_below_floor")=>"Source below -90 dBFS RMS measurement floor; mono change unavailable.".into(),
+        Some("mono_below_floor")=>"Source mono sum below -90 dBFS RMS; exact change unavailable. Listen before changing width.".into(),
+        Some("measured")=>format!("Source mono RMS change {:.1} dB (before filters/gain). Level change, not a quality score.",v["mono_check"]["mono_change_db"].as_f64().unwrap_or(0.0)),
+        _=>"Source mono measurement unavailable.".into(),
+    };
+    format!("{}: start {:.2}s | {:.2}s rendered{} | safety gain {:.1} dB. {} Prepared; project unchanged.",
+        v["mode"].as_str().unwrap_or("preview"),v["start_s"].as_f64().unwrap_or(0.0),v["seconds"].as_f64().unwrap_or(0.0),
+        if v["truncated"]==true{" (shorter than requested)"}else{""},v["safety_gain_db"].as_f64().unwrap_or(0.0),mono)
 }
 
 fn new_library_channel_name(project: &Project, base: &str) -> String {
@@ -4035,5 +4032,25 @@ mod browser_comparison_tests {
         );
         let v = json!({"facts":{"A":{"seconds":2},"B":{"seconds":2}},"loudness_matched":false});
         assert!(browser_comparison_readout("before", 0., 2., &v).contains("not level matched"));
+    }
+}
+
+#[cfg(test)]
+mod translation_mono_readout_tests {
+    use super::*;
+    #[test]
+    fn silence_cancellation_and_measurement_are_not_quality_scores() {
+        let mut v = json!({"mode":"mono","start_s":1.,"seconds":2.,"safety_gain_db":-6.,"mono_check":{"status":"source_below_floor","mono_change_db":null}});
+        let s = translation_readout(&v);
+        assert!(s.contains("mono change unavailable"));
+        assert!(!s.contains("RMS change 0.0"));
+        v["mono_check"]["status"] = json!("mono_below_floor");
+        assert!(translation_readout(&v).contains("exact change unavailable"));
+        v["mono_check"] = json!({"status":"measured","mono_change_db":-3.0103});
+        let s = translation_readout(&v);
+        assert!(s.contains("-3.0 dB (before filters/gain)"));
+        assert!(s.contains("safety gain -6.0 dB"));
+        assert!(s.contains("not a quality score"));
+        assert!(s.contains("Prepared;"));
     }
 }

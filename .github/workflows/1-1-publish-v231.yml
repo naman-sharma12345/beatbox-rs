@@ -1,0 +1,37 @@
+name: Publish source excerpt mono measurement
+'on':
+  push:
+    branches:
+    - mono-check
+    paths:
+    - .github/workflows/*publish-v231.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/mono-check'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply verified source mono measurement patch
+      shell: bash
+      run: "set -euo pipefail\n[ \"$(git rev-parse HEAD^)\" = aa6a2227d9f5581681fc19f34da2f4253397e0c2\
+        \ ]\n[ \"$(git rev-parse origin/main)\" = aa6a2227d9f5581681fc19f34da2f4253397e0c2\
+        \ ]\npython3 - <<'PYCODE'\nimport base64,gzip,hashlib,pathlib\nb=gzip.decompress(base64.b64decode('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'))\n\
+        assert hashlib.sha256(b).hexdigest()=='a96aa3e9df03a302e7161dbc855df3dd8690a33ff00ceac5bac362d00ab046ba'\n\
+        pathlib.Path('/tmp/verified.patch').write_bytes(b)\nPYCODE\ngit apply --check\
+        \ /tmp/verified.patch\ngit apply /tmp/verified.patch\npython3 - <<'PYCODE'\n\
+        import hashlib,pathlib\nexpected={'src/gui/browser_view.rs': '061105dd1af17d1310e935f4530eb5548fe2a5e27063391542392fd6e933dd4f',\
+        \ 'src/tools_chain.rs': '2490ef35640d648b438b8dda3268f56180ab8474170236e69adc6e6bba885c65'}\n\
+        for f,h in expected.items():\n assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f\n\
+        PYCODE\ngit config user.name 'github-actions[bot]'\ngit config user.email\
+        \ '41898282+github-actions[bot]@users.noreply.github.com'\ngit add src/gui/browser_view.rs\
+        \ src/tools_chain.rs\ngit commit -m \"Measure source excerpt mono fold change\
+        \ before monitoring transforms\"\ngit fetch origin mono-check main\n[ \"$(git\
+        \ rev-parse origin/mono-check)\" = \"$GITHUB_SHA\" ]\n[ \"$(git rev-parse\
+        \ origin/main)\" = aa6a2227d9f5581681fc19f34da2f4253397e0c2 ]\ngit push origin\
+        \ HEAD:refs/heads/mono-check\n"
