@@ -9,6 +9,29 @@ use crate::tools::{b_or, effects_of, f_or, obj, s_opt, s_req, Tool};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
+/// Source excerpt energy, before monitoring transforms and safety attenuation.
+/// -90 dBFS RMS is a measurement floor, not a quality or audibility verdict.
+fn translation_mono_measurement(left: &[f32], right: &[f32]) -> Value {
+    let n = left.len().min(right.len());
+    let (mut stereo, mut mono) = (0.0f64, 0.0f64);
+    for (&l, &r) in left.iter().zip(right) {
+        let (l, r) = (l as f64, r as f64);
+        stereo += (l * l + r * r) * 0.5;
+        mono += ((l + r) * 0.5).powi(2);
+    }
+    let floor = 1e-9;
+    let stereo = stereo / n.max(1) as f64;
+    let mono = mono / n.max(1) as f64;
+    let source = stereo > floor;
+    let folded = mono > floor;
+    json!({"status":if !source{"source_below_floor"}else if !folded{"mono_below_floor"}else{"measured"},
+        "measurement_floor_dbfs":-90.0,
+        "source_stereo_rms_dbfs":if source{Some(10.0*stereo.log10())}else{None},
+        "source_mono_rms_dbfs":if folded{Some(10.0*mono.log10())}else{None},
+        "mono_change_db":if source && folded{Some(10.0*(mono/stereo).log10())}else{None},
+        "note":"Whole-excerpt RMS: stereo mean channel power versus (L+R)/2. Before phone filtering and preview gain. Level change, not a sound-quality verdict or automatic fix."})
+}
+
 /// Built-in chains: (name, what it is for, effects as add_effect JSON).
 fn builtins() -> Vec<(&'static str, &'static str, Value)> {
     vec![
@@ -664,7 +687,7 @@ if let Some(x)=read("tune_cents",-100.0,100.0)?{p.tune_cents=x;}
         },
         Tool {
             name: "preview_mix_translation",
-            description: "Non-destructive monitoring of the first 1-8 bars (default 4) of the mix, or a local stereo audio file (first 20 seconds). Optional start_s (0..86400) and length_s (1..20, default 8) select an elapsed-time excerpt instead of bars. Full project renders then crops to preserve preceding notes/effect state; may take time. Partial ending is reported. mode stereo, mono (L+R)/2, or phone (mono plus 180Hz low cut / 5kHz high cut, an approximation not a device simulation). No loudness boost: bass loss and cancellation remain audible. Writes a new WAV and optionally queues it on studio speakers. Project/history unchanged.",
+            description: "Non-destructive monitoring of the first 1-8 bars (default 4) of the mix, or a local stereo audio file (first 20 seconds). Optional start_s (0..86400) and length_s (1..20, default 8) select an elapsed-time excerpt instead of bars. Full project renders then crops to preserve preceding notes/effect state; may take time. Partial ending is reported. mode stereo, mono (L+R)/2, or phone (mono plus 180Hz low cut / 5kHz high cut, an approximation not a device simulation). Returns source-excerpt stereo/mono RMS change before filters/safety; below -90dBFS RMS is explicitly unmeasurable. Not a quality score or fix. No loudness boost: bass loss and cancellation remain audible. Writes a new WAV and optionally queues it on studio speakers. Project/history unchanged.",
             mutates: false,
             schema: || obj(json!({"mode":{"type":"string","enum":["stereo","mono","phone"]},"bars":{"type":"integer","minimum":1,"maximum":8},"start_s":{"type":"number","minimum":0,"maximum":86400},"length_s":{"type":"number","minimum":1,"maximum":20},"path":{"type":"string"},"play":{"type":"boolean","default":true},"stop":{"type":"boolean","description":"Stop a queued/playing translation preview without rendering"}}), &[]),
             run: |e,a| {
@@ -695,6 +718,7 @@ if let Some(x)=read("tune_cents",-100.0,100.0)?{p.tune_cents=x;}
                 let last=first.saturating_add(wanted).min(available);
                 l=l[first..last].to_vec();r=r[first..last].to_vec();let n=last-first;
                 if n==0 || !l.iter().chain(&r).all(|v|v.is_finite()){bail!("preview audio must be nonempty and finite");}
+                let mono_check=translation_mono_measurement(&l,&r);
                 if mode!="stereo"{for i in 0..n{let m=(l[i]+r[i])*0.5;l[i]=m;r[i]=m;}}
                 if mode=="phone"{
                     use crate::dsp::{Biquad,BiquadKind};
@@ -708,7 +732,7 @@ if let Some(x)=read("tune_cents",-100.0,100.0)?{p.tune_cents=x;}
                 let mut i=0u64;
                 let path=loop{let p=e.renders_dir().join(format!("translation_{mode}_{i}.wav"));match crate::render::write_wav_new(&p,&l,&r){Ok(())=>break p,Err(err) if err.downcast_ref::<std::io::Error>().is_some_and(|e|e.kind()==std::io::ErrorKind::AlreadyExists)=>i+=1,Err(err)=>return Err(err)}};
                 let playback=if b_or(a,"play",true){e.transport.pending.push(crate::engine::TransportCmd::Stop);crate::tools_library::queue_audition(e,l,r,0.0)}else{json!({"playing":false})};
-                Ok(json!({"mode":mode,"path":path,"seconds":n as f32/crate::dsp::SR,"start_s":first as f64/crate::dsp::SR as f64,"requested_length_s":if excerpt{Some(length)}else{None},"truncated":excerpt && n<wanted,"safety_gain_db":20.0*gain.log10(),"playback":playback,"note":"monitoring approximation only; no mix changes or loudness boost"}))
+                Ok(json!({"mono_check":mono_check,"mode":mode,"path":path,"seconds":n as f32/crate::dsp::SR,"start_s":first as f64/crate::dsp::SR as f64,"requested_length_s":if excerpt{Some(length)}else{None},"truncated":excerpt && n<wanted,"safety_gain_db":20.0*gain.log10(),"playback":playback,"note":"monitoring approximation only; no mix changes or loudness boost"}))
             }
         },
         Tool {
@@ -5230,5 +5254,91 @@ mod translation_excerpt_tests {
             .zip(&m.left[a..a + 44100])
             .all(|(x, y)| (x - y * g).abs() < 1e-6));
         assert!(q.0.iter().any(|x| x.abs() > 0.01));
+    }
+}
+
+#[cfg(test)]
+mod translation_mono_tests {
+    use super::*;
+    fn check(left: &[f32], right: &[f32], expected: Option<f64>, status: &str) {
+        let v = translation_mono_measurement(left, right);
+        assert_eq!(v["status"], status);
+        if let Some(x) = expected {
+            assert!(
+                (v["mono_change_db"].as_f64().unwrap() - x).abs() < 0.001,
+                "{v}"
+            );
+        } else {
+            assert!(v["mono_change_db"].is_null());
+        }
+    }
+    #[test]
+    fn correlated_cancelled_one_sided_and_quadrature_sources() {
+        check(&[0.5, -0.5], &[0.5, -0.5], Some(0.), "measured");
+        check(&[0.5, -0.5], &[-0.5, 0.5], None, "mono_below_floor");
+        check(&[0.5, -0.5], &[0., 0.], Some(-3.0102999566), "measured");
+        check(
+            &[0.5, 0., -0.5, 0.],
+            &[0., 0.5, 0., -0.5],
+            Some(-3.0102999566),
+            "measured",
+        );
+    }
+    #[test]
+    fn silent_and_near_silent_audio_has_no_reassuring_mono_score() {
+        for x in [0., 1e-6, 1e-5] {
+            let v = translation_mono_measurement(&[x, -x], &[x, -x]);
+            assert_eq!(v["status"], "source_below_floor");
+            assert!(v["mono_change_db"].is_null());
+            assert!(v["source_stereo_rms_dbfs"].is_null());
+        }
+        check(&[], &[], None, "source_below_floor");
+        check(&[0.001, -0.001], &[0.001, -0.001], Some(0.), "measured");
+    }
+    #[test]
+    fn tool_measurement_uses_chosen_source_before_phone_filter_and_safety() {
+        let d = std::env::temp_dir().join(format!("bb231_{}", crate::creative::fresh_seed()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut e = Engine::new(d.clone());
+        let mut left = vec![0.; 2 * 44100];
+        let mut right = left.clone();
+        for i in 0..left.len() {
+            let x = 2. * (std::f32::consts::TAU * 40. * i as f32 / 44100.).sin();
+            left[i] = x;
+            right[i] = if i < 44100 { x } else { -x };
+        }
+        let path = d.join("source.wav");
+        crate::render::write_wav(&path, &left, &right).unwrap();
+        let before = e.project.clone();
+        let rev = e.revision;
+        let undo = e.undo_depth();
+        let mut reports = Vec::new();
+        for mode in ["stereo", "mono", "phone"] {
+            let v = e
+                .call(
+                    "preview_mix_translation",
+                    &json!({"path":path,"mode":mode,"start_s":0.,"length_s":1.,"play":false}),
+                )
+                .unwrap();
+            assert_eq!(v["mono_check"]["status"], "measured");
+            assert!(v["mono_check"]["mono_change_db"].as_f64().unwrap().abs() < 0.001);
+            reports.push(v);
+        }
+        assert!(reports[0]["safety_gain_db"].as_f64().unwrap() < 0.);
+        assert_eq!(reports[0]["mono_check"], reports[2]["mono_check"]);
+        for mode in ["stereo", "mono", "phone"] {
+            let v = e
+                .call(
+                    "preview_mix_translation",
+                    &json!({"path":path,"mode":mode,"start_s":1.,"length_s":1.,"play":false}),
+                )
+                .unwrap();
+            assert_eq!(v["mono_check"]["status"], "mono_below_floor");
+            assert!(v["mono_check"]["mono_change_db"].is_null());
+        }
+        assert_eq!(e.project, before);
+        assert_eq!(e.revision, rev);
+        assert_eq!(e.undo_depth(), undo);
+        assert!(e.transport.pending_audition.is_none());
     }
 }
