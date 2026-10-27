@@ -3922,7 +3922,7 @@ mod translation_gui_tests {
         let (v, audio) = &versions[0];
         assert_eq!(v["truncated"], true);
         assert!(!audio.0.is_empty());
-        let text = translation_readout(&v);
+        let text = translation_readout(v);
         assert!(text.contains("shorter than requested"));
         assert!(text.contains("Prepared; project unchanged."));
         assert!(!text.contains("Queued"));
