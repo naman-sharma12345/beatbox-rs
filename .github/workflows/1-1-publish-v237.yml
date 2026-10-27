@@ -1,0 +1,73 @@
+name: Publish bounce file preservation
+'on':
+  push:
+    branches:
+    - bounce-guard
+    paths:
+    - .github/workflows/*publish-v237.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/bounce-guard'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 0239366e753d5e7896e05257dac738a2c1727a6e ]
+
+        [ "$(git rev-parse origin/main)" = 0239366e753d5e7896e05257dac738a2c1727a6e
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''8760460a16f7bb5ca8fea53041a2bc900ee4bb087ea7969141e3bca2e97a5991''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_bounce.rs'': ''24eaaed19b252e64f5331f26c38b4ba730beddd9f51dd5fe9c0ae5527f7433fb'',
+        ''tests/bounce_preservation.rs'': ''7e61d5470dffe8b388a38b967ddd7deb5bbf9e7adc3f07644ba010cc8e18984e''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_bounce.rs tests/bounce_preservation.rs
+
+        git commit -m "Preserve earlier bounce files across sanitized name collisions"
+
+        git fetch origin bounce-guard main
+
+        [ "$(git rev-parse origin/bounce-guard)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 0239366e753d5e7896e05257dac738a2c1727a6e
+        ]
+
+        git push origin HEAD:refs/heads/bounce-guard
+
+        '
