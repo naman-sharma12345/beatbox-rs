@@ -14,6 +14,53 @@ use crate::project::Project;
 use eframe::egui::{self, RichText};
 use serde_json::{json, Value};
 
+type TranslationOutput = Result<(Value, super::PreviewAudio), String>;
+struct TranslationJob {
+    revision: u64,
+    generation: u64,
+    start: f32,
+    length: f32,
+    receiver: std::sync::mpsc::Receiver<TranslationOutput>,
+}
+struct TranslationReady {
+    revision: u64,
+    generation: u64,
+    start: f32,
+    length: f32,
+    value: Value,
+    audio: super::PreviewAudio,
+}
+fn translation_current(
+    revision: u64,
+    generation: u64,
+    start: f32,
+    length: f32,
+    engine: &crate::Engine,
+    current: (f32, f32),
+) -> bool {
+    super::comparison_is_current(revision, generation, engine) && (start, length) == current
+}
+fn prepare_translation(
+    mut own: crate::Engine,
+    mode: &str,
+    start: f32,
+    length: f32,
+) -> TranslationOutput {
+    let value = own
+        .call(
+            "preview_mix_translation",
+            &json!({"mode":mode,"start_s":start,"length_s":length,"play":true}),
+        )
+        .map_err(|e| format!("{e:#}"))?;
+    let audio = own
+        .transport
+        .pending_audition
+        .take()
+        .flatten()
+        .ok_or("No preview audio prepared")?;
+    Ok((value, audio))
+}
+
 #[derive(Default)]
 pub struct BrowserState {
     pub pattern_rename: Option<(String, String)>,
@@ -31,6 +78,11 @@ pub struct BrowserState {
     pub ab_snapshot: String,
     pub ab_start_s: f32,
     pub ab_length_s: f32,
+    pub translation_start_s: f32,
+    pub translation_length_s: f32,
+    pub translation_result: String,
+    translation_job: Option<TranslationJob>,
+    translation_ready: Option<TranslationReady>,
     pub sample_perf: Option<(String, f32, f32, f32, bool, bool, bool, bool, f32, f32)>,
     pub sample_perf_source: Option<(String, f32, f32, f32, bool, bool, bool, bool, f32, f32)>,
     pub kit_level_key: usize,
@@ -320,6 +372,7 @@ impl Studio {
         let tk = Tokens::DARK;
         ui.set_width((ui.clip_rect().width() - 32.0).max(180.0));
         self.poll_library_job();
+        self.poll_translation_job(ui.ctx());
         if !self.browser.opened {
             self.browser.opened = true;
             self.browser.section = 5;
@@ -1354,6 +1407,13 @@ impl Studio {
             });
             ui.label(RichText::new("Capture, change the mix, then compare the chosen seconds: before, 1s gap, now. Louder side turns down; shared peak safety may lower both. Silence is not loudness-matched. No automatic winner. Stop below.").size(10.0).color(tk.text_dim));
             ui.add_space(8.0);
+            let translation_range_before = (
+                self.browser.translation_start_s,
+                self.browser.translation_length_s,
+            );
+            if self.browser.translation_length_s == 0.0 {
+                self.browser.translation_length_s = 8.0;
+            }
             ui.horizontal_wrapped(|ui| {
                 ui.label(
                     RichText::new("MIX TRANSLATION")
@@ -1361,23 +1421,103 @@ impl Studio {
                         .strong()
                         .color(tk.header_text),
                 );
+                ui.add(
+                    egui::DragValue::new(&mut self.browser.translation_start_s)
+                        .range(0.0..=86400.0)
+                        .speed(0.5)
+                        .prefix("Start ")
+                        .suffix(" s"),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.browser.translation_length_s)
+                        .range(1.0..=20.0)
+                        .speed(0.5)
+                        .prefix("Length ")
+                        .suffix(" s"),
+                );
                 for (mode, label) in [
                     ("stereo", "HEAR STEREO"),
                     ("mono", "HEAR MONO"),
                     ("phone", "HEAR PHONE"),
                 ] {
-                    if ui.small_button(label).clicked() {
-                        call = Some((
-                            "preview_mix_translation".into(),
-                            json!({"mode":mode,"bars":4,"play":true}),
-                        ));
+                    if ui
+                        .add_enabled(
+                            self.browser.translation_job.is_none(),
+                            egui::Button::new(label.replace("HEAR", "PREPARE")).small(),
+                        )
+                        .clicked()
+                    {
+                        let (own, revision, generation) = {
+                            let e = self.engine.lock().unwrap();
+                            let mut own = crate::Engine::new(e.workdir.clone());
+                            own.project = e.project.clone();
+                            own.bank = e.bank.clone();
+                            (own, e.revision, e.project_load_generation)
+                        };
+                        let start = self.browser.translation_start_s;
+                        let length = self.browser.translation_length_s;
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        let ctx = ui.ctx().clone();
+                        self.browser.translation_ready = None;
+                        self.browser.translation_result =
+                            "Preparing project snapshot. You can keep editing.".into();
+                        self.browser.translation_job = Some(TranslationJob {
+                            revision,
+                            generation,
+                            start,
+                            length,
+                            receiver: rx,
+                        });
+                        std::thread::spawn(move || {
+                            let _ = tx.send(prepare_translation(own, mode, start, length));
+                            ctx.request_repaint();
+                        });
+                    }
+                }
+                if let Some(ready) = &self.browser.translation_ready {
+                    if ui.small_button("PLAY PREPARED").clicked() {
+                        let mut e = self.engine.lock().unwrap();
+                        if translation_current(
+                            ready.revision,
+                            ready.generation,
+                            ready.start,
+                            ready.length,
+                            &e,
+                            (
+                                self.browser.translation_start_s,
+                                self.browser.translation_length_s,
+                            ),
+                        ) {
+                            e.transport.pending.push(crate::engine::TransportCmd::Stop);
+                            e.transport.pending_audition = Some(Some(ready.audio.clone()));
+                            self.browser.translation_result = translation_readout(&ready.value)
+                                .replace(
+                                    "Prepared; project unchanged.",
+                                    "Queued for playback; project unchanged.",
+                                );
+                        }
                     }
                 }
                 if ui.small_button("STOP PREVIEW").clicked() {
+                    self.browser.translation_job = None;
+                    self.browser.translation_ready = None;
                     call = Some(("preview_mix_translation".into(), json!({"stop":true})));
                 }
             });
-            ui.label(RichText::new("First 4 bars, up to 20s. Mono fold-down / phone band-limit are monitoring checks, not mix edits or an exact phone model. No loudness boost.").size(10.0).color(tk.text_dim));
+            if translation_range_before
+                != (
+                    self.browser.translation_start_s,
+                    self.browser.translation_length_s,
+                )
+            {
+                self.browser.translation_result.clear();
+                self.browser.translation_job = None;
+                self.browser.translation_ready = None;
+            }
+            if !self.browser.translation_result.is_empty() {
+                ui.label(&self.browser.translation_result);
+            }
+            ui.label(RichText::new("Chosen elapsed-time excerpt, not bar-aligned. Background full-song render preserves preceding effects and may take time. Prepare, then Play. Edits/range changes discard old previews. Short ending is reported. Mono fold-down / phone band-limit are monitoring checks, not mix edits or an exact phone model. No loudness boost.").size(10.0).color(tk.text_dim));
             ui.add_space(8.0);
             ui.label(
                 RichText::new("KICK / BASS DUCKING")
@@ -1533,6 +1673,9 @@ impl Studio {
             };
             match self.engine.lock().unwrap().call_from(&tool, &args, "you") {
                 Ok(v) => {
+                    if tool == "preview_mix_translation" {
+                        self.browser.translation_result = translation_readout(&v);
+                    }
                     if tool == "preview_return" && v["stopped"] != true {
                         self.toast = Some((
                             format!(
@@ -1548,7 +1691,12 @@ impl Studio {
                         self.toast = Some((msg, 0.0, true));
                     }
                 }
-                Err(e) => self.toast = Some((format!("{e:#}"), 0.0, false)),
+                Err(e) => {
+                    if tool == "preview_mix_translation" {
+                        self.browser.translation_result = format!("Preview failed: {e:#}");
+                    }
+                    self.toast = Some((format!("{e:#}"), 0.0, false));
+                }
             }
             if let Some(i) = added {
                 self.selected = i;
@@ -1564,6 +1712,24 @@ impl Studio {
             );
         }
     }
+}
+
+pub fn translation_readout(v: &Value) -> String {
+    if v["stopped"] == true {
+        return "Preview stopped".into();
+    }
+    format!(
+        "{}: start {:.2}s | {:.2}s rendered{} | safety gain {:.1} dB. Prepared; project unchanged.",
+        v["mode"].as_str().unwrap_or("preview"),
+        v["start_s"].as_f64().unwrap_or(0.0),
+        v["seconds"].as_f64().unwrap_or(0.0),
+        if v["truncated"] == true {
+            " (shorter than requested)"
+        } else {
+            ""
+        },
+        v["safety_gain_db"].as_f64().unwrap_or(0.0)
+    )
 }
 
 fn new_library_channel_name(project: &Project, base: &str) -> String {
@@ -1610,6 +1776,55 @@ fn prepare_library_load(project: &Project, args: &mut Value) {
 }
 
 impl Studio {
+    fn poll_translation_job(&mut self, ctx: &egui::Context) {
+        let range = (
+            self.browser.translation_start_s,
+            self.browser.translation_length_s,
+        );
+        let e = self.engine.lock().unwrap();
+        let stale = self.browser.translation_job.as_ref().is_some_and(|j| {
+            !translation_current(j.revision, j.generation, j.start, j.length, &e, range)
+        }) || self.browser.translation_ready.as_ref().is_some_and(|r| {
+            !translation_current(r.revision, r.generation, r.start, r.length, &e, range)
+        });
+        drop(e);
+        if stale {
+            self.browser.translation_job = None;
+            self.browser.translation_ready = None;
+            self.browser.translation_result = "Project or range changed. Prepare again.".into();
+            return;
+        }
+        let result =
+            self.browser
+                .translation_job
+                .as_ref()
+                .and_then(|j| match j.receiver.try_recv() {
+                    Ok(v) => Some(v),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(_) => Some(Err("Preview preparation stopped".into())),
+                });
+        if let Some(result) = result {
+            let j = self.browser.translation_job.take().unwrap();
+            match result {
+                Ok((value, audio)) => {
+                    self.browser.translation_result = translation_readout(&value);
+                    self.browser.translation_ready = Some(TranslationReady {
+                        revision: j.revision,
+                        generation: j.generation,
+                        start: j.start,
+                        length: j.length,
+                        value,
+                        audio,
+                    });
+                }
+                Err(e) => self.browser.translation_result = format!("Preview failed: {e}"),
+            }
+        }
+        if self.browser.translation_job.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
     /// Run a library action off the UI thread: downloads happen without the
     /// engine lock, then the same MCP tool runs on the engine.
     fn library_job(&mut self, label: String, ctx: egui::Context, tool: &'static str, args: Value) {
@@ -3390,5 +3605,76 @@ mod sample_performance_sync_tests {
         other.4 = true;
         b.sync_sample_performance(other.clone());
         assert_eq!(b.sample_perf.as_ref(), Some(&other));
+    }
+}
+
+#[cfg(test)]
+mod translation_gui_tests {
+    use super::*;
+    #[test]
+    fn range_and_project_identity_guard_prepared_audio() {
+        let mut e = crate::Engine::new(
+            std::env::temp_dir().join(format!("bb229_guard_{}", std::process::id())),
+        );
+        let rev = e.revision;
+        let generation = e.project_load_generation;
+        assert!(translation_current(
+            rev,
+            generation,
+            1.0,
+            2.0,
+            &e,
+            (1.0, 2.0)
+        ));
+        assert!(!translation_current(
+            rev,
+            generation,
+            1.0,
+            2.0,
+            &e,
+            (2.0, 2.0)
+        ));
+        assert!(!translation_current(
+            rev,
+            generation,
+            1.0,
+            2.0,
+            &e,
+            (1.0, 3.0)
+        ));
+        e.revision += 1;
+        assert!(!translation_current(
+            rev,
+            generation,
+            1.0,
+            2.0,
+            &e,
+            (1.0, 2.0)
+        ));
+        e.revision = rev;
+        e.project_load_generation += 1;
+        assert!(!translation_current(
+            rev,
+            generation,
+            1.0,
+            2.0,
+            &e,
+            (1.0, 2.0)
+        ));
+    }
+    #[test]
+    fn preparation_does_not_autoplay_on_live_transport_and_reports_short_end() {
+        let mut own = crate::Engine::new(
+            std::env::temp_dir().join(format!("bb229_prepare_{}", std::process::id())),
+        );
+        own.call("new_project", &json!({"name":"prepare","bpm":120}))
+            .unwrap();
+        let (v, audio) = prepare_translation(own, "stereo", 8.0, 8.0).unwrap();
+        assert_eq!(v["truncated"], true);
+        assert!(!audio.0.is_empty());
+        let text = translation_readout(&v);
+        assert!(text.contains("shorter than requested"));
+        assert!(text.contains("Prepared; project unchanged."));
+        assert!(!text.contains("Queued"));
     }
 }
