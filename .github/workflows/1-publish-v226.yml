@@ -1,0 +1,36 @@
+name: Publish Mixer vocal room report
+'on':
+  push:
+    branches:
+    - vocal-room
+    paths:
+    - .github/workflows/*publish-v226.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/vocal-room'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply verified selectable excerpt patch
+      shell: bash
+      run: "set -euo pipefail\n[ \"$(git rev-parse HEAD^)\" = d3b6861a9d37e87315292a8d0387671778d02b2c\
+        \ ]\n[ \"$(git rev-parse origin/main)\" = d3b6861a9d37e87315292a8d0387671778d02b2c\
+        \ ]\npython3 - <<'PYCODE'\nimport base64,gzip,hashlib,pathlib\nb=gzip.decompress(base64.b64decode('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'))\n\
+        assert hashlib.sha256(b).hexdigest()=='051b316516db6400570e49e3ac79da8ea98e0fb37d956cfebd120ac8b155f33c'\n\
+        pathlib.Path('/tmp/verified.patch').write_bytes(b)\nPYCODE\ngit apply --check\
+        \ /tmp/verified.patch\ngit apply /tmp/verified.patch\npython3 - <<'PYCODE'\n\
+        import hashlib,pathlib\nexpected={'src/gui/views.rs': 'c5772a6c8aa8744d751b6e2ccf69c3312e75f4d3897984824e91623cb817e2cd',\
+        \ 'src/gui/manual_ui_tests.rs': 'ca3a7b7d8c9e50acc3be12eadd82ecc3e2fcbc9e8119feaf61db9190edb9cfae'}\n\
+        for f,h in expected.items():\n assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f\n\
+        PYCODE\ngit config user.name 'github-actions[bot]'\ngit config user.email\
+        \ '41898282+github-actions[bot]@users.noreply.github.com'\ngit add src/gui/views.rs\
+        \ src/gui/manual_ui_tests.rs\ngit commit -m \"Add read-only vocal room report\
+        \ to Mixer\"\ngit fetch origin vocal-room main\n[ \"$(git rev-parse origin/vocal-room)\"\
+        \ = \"$GITHUB_SHA\" ]\n[ \"$(git rev-parse origin/main)\" = d3b6861a9d37e87315292a8d0387671778d02b2c\
+        \ ]\ngit push origin HEAD:refs/heads/vocal-room\n"

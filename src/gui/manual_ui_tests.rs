@@ -441,7 +441,6 @@ fn every_tool_is_reachable_from_the_gui() {
         "validate_project",
         "vary_section",
         "vocal_chop",
-        "vocal_pocket",
         "vocal_to_song",
         "waveform_peaks",
         "write_phrase",
