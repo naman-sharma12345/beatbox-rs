@@ -58,7 +58,11 @@ fn format_readout(label: &str, tool: &str, v: &serde_json::Value) -> String {
     let mut out = format!("{label}\n");
     match tool {
         "vocal_pocket" => {
-            out.push_str("Proxy rap vocal estimate, not your recorded voice. Unvalidated guidance for comparing versions, not a listening verdict. No mix changes applied.\n");
+            if v["vocal"]["proxy"].as_bool() == Some(true) {
+                out.push_str("Proxy rap vocal estimate, not your recorded voice. Unvalidated guidance for comparing versions, not a listening verdict. No mix changes applied.\n");
+            } else {
+                out.push_str(&format!("Against project track: {}. Estimate, not a listening verdict. No mix changes applied.\n",v["vocal"]["track"].as_str().unwrap_or("?")));
+            }
             out.push_str("section                 estimated free space (0-100)\n");
             for sec in v["sections"].as_array().cloned().unwrap_or_default() {
                 out.push_str(&format!(
@@ -747,9 +751,26 @@ impl Studio {
             "Show inserts, sends and outputs on each channel",
         );
         let mut op: Option<(&str, &str, serde_json::Value)> = None;
+        let source_id = egui::Id::new("vocal_room_source");
+        let mut vocal_source = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<String>(source_id))
+            .unwrap_or_default();
+        if !vocal_source.is_empty() && !p.tracks.iter().any(|t| t.id == vocal_source) {
+            vocal_source.clear();
+        }
         egui::CollapsingHeader::new("Mix analysis")
             .default_open(self.mix_readout.is_some())
             .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Vocal Room source:");
+                    let selected=p.tracks.iter().find(|t|t.id==vocal_source).map(|t|t.name.as_str()).unwrap_or("Proxy rap vocal");
+                    egui::ComboBox::from_id_salt("vocal_room_source_selector").selected_text(selected).show_ui(ui,|ui| {
+                        ui.selectable_value(&mut vocal_source,String::new(),"Proxy rap vocal");
+                        for track in &p.tracks {ui.selectable_value(&mut vocal_source,track.id.clone(),format!("{} ({})",track.name,track.id));}
+                    });
+                    ui.label("Choose the voice track yourself. No automatic guessing.");
+                });
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 3.0;
                     for (label, tool, args, hover) in [
@@ -774,7 +795,7 @@ impl Studio {
                         (
                             "VOCAL ROOM",
                             "vocal_pocket",
-                            json!({}),
+                            if vocal_source.is_empty() {json!({})} else {json!({"vocal_track":vocal_source})},
                             "Estimate room for a proxy rap vocal by section and name tracks crowding 1-4 kHz. Unvalidated comparison guidance, not your recorded voice. Does not change the mix.",
                         ),
                         ("LEVELS", "level_hints", json!({}), "suggested level moves"),
@@ -819,6 +840,23 @@ impl Studio {
                     }
                 });
             });
+        let previous = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<String>(source_id))
+            .unwrap_or_default();
+        if previous != vocal_source {
+            // A completed or pending answer from another source must not appear current.
+            self.mix_job = None;
+            if self
+                .mix_readout
+                .as_ref()
+                .is_some_and(|s| s.starts_with("VOCAL ROOM\n"))
+            {
+                self.mix_readout = None;
+            }
+        }
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(source_id, vocal_source));
         if let Some((label, tool, args)) = op {
             if matches!(
                 tool,
@@ -1952,7 +1990,7 @@ mod vocal_room_tests {
 
     #[test]
     fn report_names_estimate_sections_and_competitors_without_auto_edits() {
-        let value = json!({"sections":[{"section":"hook","free_space_score":38.0}],"competing_tracks_1_4khz":[{"track":"keys","level_db":-18.2}],"findings":[{"message":"keys crowd the hook","suggested_call":{"tool":"add_effect"}}]});
+        let value = json!({"vocal":{"proxy":true},"sections":[{"section":"hook","free_space_score":38.0}],"competing_tracks_1_4khz":[{"track":"keys","level_db":-18.2}],"findings":[{"message":"keys crowd the hook","suggested_call":{"tool":"add_effect"}}]});
         let text = format_readout("VOCAL ROOM", "vocal_pocket", &value);
         for expected in [
             "Proxy rap vocal estimate",
@@ -1965,6 +2003,42 @@ mod vocal_room_tests {
             assert!(text.contains(expected), "{text}");
         }
         assert!(!text.contains("add_effect"));
+    }
+    #[test]
+    fn chosen_track_is_labeled_and_ids_exclude_voice_from_competitors() {
+        let mut e = Engine::new(std::env::temp_dir().join(format!("bb227_{}", std::process::id())));
+        e.call("new_project", &json!({"name":"voice","bpm":120}))
+            .unwrap();
+        for name in ["Voice", "Keys"] {
+            e.call("add_track", &json!({"name":name,"instrument":"sine"}))
+                .unwrap();
+            e.call("add_notes",&json!({"track":name,"pattern":"A","notes":[{"pitch":72,"start":0,"len":16,"vel":0.8}]})).unwrap();
+        }
+        let id = e.project.tracks[0].id.clone();
+        let project = serde_json::to_value(&e.project).unwrap();
+        let by_id = e.call("vocal_pocket", &json!({"vocal_track":id})).unwrap();
+        let by_name = e
+            .call("vocal_pocket", &json!({"vocal_track":"Voice"}))
+            .unwrap();
+        assert_eq!(by_id, by_name);
+        // A different track named like the stable ID must not hijack selection.
+        e.project.tracks[1].name = id.clone();
+        let collision = e.call("vocal_pocket", &json!({"vocal_track":id})).unwrap();
+        assert_eq!(collision["vocal"]["track"], "Voice");
+        e.project.tracks[1].name = "Keys".into();
+        assert_eq!(by_id["vocal"]["track"], "Voice");
+        assert!(!by_id["competing_tracks_1_4khz"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["track"] == "Voice"));
+        let text = format_readout("VOCAL ROOM", "vocal_pocket", &by_id);
+        assert!(text.contains("Against project track: Voice"));
+        assert!(!text.contains("Proxy rap vocal"));
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), project);
+        assert!(e
+            .call("vocal_pocket", &json!({"vocal_track":"missing"}))
+            .is_err());
     }
     #[test]
     fn long_multibyte_names_do_not_break_report_truncation() {

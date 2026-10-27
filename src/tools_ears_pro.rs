@@ -211,7 +211,17 @@ pub fn punch_tool(e: &mut Engine, a: &Value) -> Result<Value> {
 
 pub fn vocal_pocket_tool(e: &mut Engine, a: &Value) -> Result<Value> {
     with_snapshot(e, a, |e| {
-        let vocal_track = s_opt(a, "vocal_track");
+        let vocal_track = s_opt(a, "vocal_track")
+            .map(|key| {
+                e.project
+                    .tracks
+                    .iter()
+                    .position(|t| t.id == key)
+                    .map(Ok)
+                    .unwrap_or_else(|| e.project.track_index(&key))
+                    .map(|i| e.project.tracks[i].name.clone())
+            })
+            .transpose()?;
         let rel = f_opt(a, "vocal_level_lu").unwrap_or(-3.0);
         // the beat without the vocal, and the vocal alone (or a proxy)
         let (bl, br, vocal, proxy) = match &vocal_track {
