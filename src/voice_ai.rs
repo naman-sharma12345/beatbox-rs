@@ -1165,14 +1165,14 @@ mod denoise_guard_tests {
             ("force", json!({"force":true}), "forced", 1),
             ("no_score", json!({"score":false}), "scoring_disabled", 1),
         ] {
-            let mut e = Engine::new(root.join(label));
+            let mut e = crate::Engine::new(root.join(label));
             e.call("new_project", &json!({"name":"guard"})).unwrap();
             e.call("add_track", &json!({"name":"voice","preset":"pad"}))
                 .unwrap();
             let path = e.samples_dir().join("take.wav");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             let x: Vec<f32> = (0..4410).map(|i| 0.1 * (i as f32 * 0.1).sin()).collect();
-            beatbox::render::write_wav(&path, &x, &x).unwrap();
+            crate::render::write_wav(&path, &x, &x).unwrap();
             let bytes = std::fs::read(&path).unwrap();
             e.call("import_sample", &json!({"path":path,"name":"take"}))
                 .unwrap();
