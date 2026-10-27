@@ -1,0 +1,63 @@
+name: Fix denoise regression test module paths
+'on':
+  push:
+    branches:
+    - denoise-guard
+    paths:
+    - .github/workflows/*fix-v233.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/denoise-guard'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested denoise guard
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 0c6854090fd4f4c653b776bc8fdef4ba594c82b1 ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,pathlib
+
+        pathlib.Path(''/tmp/fix.patch'').write_bytes(gzip.decompress(base64.b64decode(''H4sIACiZ4GoC/5VTXW+bMBR9z6+446GCJbhhY2nlfagv+wt7m5CxL5lTsJHtNJna/vddh6YjSbNolpDsK5/D+QClmwbyfKkDiGvv5PWD1RIroZnzUB9PJtoo3MJNfVPfliVjtayxWNxCMZ8vynKS5/kpy2Q6nb7BdHcHeVEsPs2KEqb7DQ07q0ChsdpjtVwLp6qAPnh4nMB4pUljncRkBitvzbv08eXMg1vjczaD4azoQpHNjrHGVl5aN4YPZ96I1g/4ONBmWSntRd2eMv0kSfmYtsUA3ToAwlf4bpbaIOcGN6mzNrCV1SZtRY1tln2eTM/hpBOBYBfgB26QSdG25Ak3Ve/sCmUgqVd7X0Z0ZCvZRZk8Zxlbm40TfXqORihK3Al5/wbJrr9klvQOPQYa9GLHecgU17m3RK+9CL/IKjIvur5FTwm7NBssJkHcI9uIh+QY6YPivPGcS4eUUQRVUXBkY71waEL611z2LwFbDj9Qfmk+fvhGOtI5Y2VZzDPW0f0n/QRzVsB7SDUID3SJ9jTJmCd9RCxt21LGkfmg/ppk1XbLOUlR6DjfOE06yUt6FUVSnNv4jKUdfAcv3f8H/MRZ/Zt+FvL0GhZlpQb8xeJ111sXqqGUcfkRnfCdhv2HEFu6WPwfqF6PNVsEAAA='')))
+
+        PYCODE
+
+        git apply --check /tmp/fix.patch
+
+        git apply /tmp/fix.patch
+
+        python3 - <<''PYCODE''
+
+        import pathlib,hashlib
+
+        assert hashlib.sha256(pathlib.Path(''src/voice_ai.rs'').read_bytes()).hexdigest()==''35dd71e39c3e2eeac1fba9e696f0bfcc2877e909e98b332a0475f1b196b7ede0''
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/voice_ai.rs
+
+        git commit -m "Use crate-relative paths in denoise dispatch regression"
+
+        git fetch origin denoise-guard main
+
+        [ "$(git rev-parse origin/denoise-guard)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 8206b4afbb8b69a4bf707fee47d39067b2fa3fa4
+        ]
+
+        git push origin HEAD:refs/heads/denoise-guard
+
+        '

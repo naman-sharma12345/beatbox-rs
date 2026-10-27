@@ -1,0 +1,71 @@
+name: Publish fail-closed denoise candidate guard
+'on':
+  push:
+    branches:
+    - denoise-guard
+    paths:
+    - .github/workflows/*publish-v233.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/denoise-guard'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested denoise guard
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 8206b4afbb8b69a4bf707fee47d39067b2fa3fa4 ]
+
+        [ "$(git rev-parse origin/main)" = 8206b4afbb8b69a4bf707fee47d39067b2fa3fa4
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''e106d9ac2b909a85572a3884cfc7ddc17fde5f2f08fca87a517f12683d97dd12''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        assert hashlib.sha256(pathlib.Path(''src/voice_ai.rs'').read_bytes()).hexdigest()==''ccc5a9d5f4d984e6797d6bebea72bbadb7c635df051d302ed90ed6ce41dfa6bc''
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/voice_ai.rs
+
+        git commit -m "Keep denoised candidates without replacing clips when quality
+        evidence is unavailable"
+
+        git fetch origin denoise-guard main
+
+        [ "$(git rev-parse origin/denoise-guard)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 8206b4afbb8b69a4bf707fee47d39067b2fa3fa4
+        ]
+
+        git push origin HEAD:refs/heads/denoise-guard
+
+        '

@@ -398,6 +398,15 @@ pub fn dnsmos(bufs: &[&[f32]]) -> Result<Vec<Mos>> {
         .output();
     let _ = std::fs::remove_dir_all(&d);
     let out = out.map_err(|e| anyhow!("DNSMOS needs python (BEATBOX_PYTHON): {e}"))?;
+    if !out.status.success() {
+        bail!(
+            "DNSMOS helper failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .last()
+                .unwrap_or("no details")
+        );
+    }
     let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| {
         anyhow!(
             "DNSMOS helper said: {}",
@@ -415,12 +424,81 @@ pub fn dnsmos(bufs: &[&[f32]]) -> Result<Vec<Mos>> {
         .map(|f| {
             let s = &v["scores"][f.to_string_lossy().as_ref()];
             Ok(Mos {
-                sig: s["SIG"].as_f64().ok_or_else(|| anyhow!("no score"))? as f32,
-                bak: s["BAK"].as_f64().unwrap_or(0.0) as f32,
-                ovrl: s["OVRL"].as_f64().unwrap_or(0.0) as f32,
+                sig: finite_mos_score(s, "SIG")?,
+                bak: finite_mos_score(s, "BAK")?,
+                ovrl: finite_mos_score(s, "OVRL")?,
             })
         })
         .collect()
+}
+
+fn finite_mos_score(score: &Value, key: &str) -> Result<f32> {
+    score[key]
+        .as_f64()
+        .map(|v| v as f32)
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| anyhow!("missing or non-finite DNSMOS {key} score"))
+}
+
+/// Missing requested evidence is not a pass. Explicit opt-outs stay explicit.
+fn denoise_switch_decision(args: &Value, quality: &Value) -> (&'static str, bool) {
+    if b_or(args, "force", false) {
+        return ("forced", true);
+    }
+    if !b_or(args, "score", true) {
+        return ("scoring_disabled", true);
+    }
+    match quality["better_than_raw"].as_bool() {
+        Some(true) => ("score_improved", true),
+        Some(false) => ("score_not_improved", false),
+        None => ("score_unavailable", false),
+    }
+}
+
+fn finish_denoise(
+    e: &mut crate::Engine,
+    args: &Value,
+    info: &crate::samples::SampleInfo,
+    x: &[f32],
+    y: &[f32],
+    mut extra: Value,
+) -> Result<Value> {
+    let (reason, allowed) = denoise_switch_decision(args, &extra["quality"]);
+    let mut guarded = args.clone();
+    // A candidate must never overwrite the source or a previous candidate file.
+    let base = crate::samples::sample_name(
+        &s_opt(args, "new_name").unwrap_or_else(|| format!("{}_dn", info.name)),
+    );
+    let mut candidate = base.clone();
+    let mut suffix = 2;
+    while e
+        .project
+        .samples
+        .iter()
+        .any(|s| s.name.eq_ignore_ascii_case(&candidate))
+        || e.samples_dir().join(format!("{candidate}.wav")).exists()
+    {
+        candidate = format!("{base}_{suffix}");
+        suffix += 1;
+    }
+    guarded["new_name"] = json!(candidate);
+
+    if !allowed {
+        if let Value::Object(m) = &mut guarded {
+            m.remove("track");
+            m.remove("replace_clips");
+        }
+    }
+    extra["clip_switch_guard"] = json!({"status":reason,"replacement_allowed":allowed,"requested":b_or(args,"replace_clips",false)||s_opt(args,"track").is_some(),"note":"DNSMOS is a speech-quality estimate, not a singing-quality or taste verdict."});
+    let mut out = crate::sc_strip::finish(e, &guarded, info, x, y, "dn", "denoise_voice", extra)?;
+    if !allowed {
+        out["warning"] = json!(if reason == "score_unavailable" {
+            "Quality scoring unavailable; processed sample saved, original clips kept. Listen before choosing it. force:true or score:false explicitly bypasses this guard."
+        } else {
+            "Result did not improve both DNSMOS SIG and OVRL; processed sample saved, original clips kept. Listen before choosing it. force:true explicitly bypasses this guard."
+        });
+    }
+    Ok(out)
 }
 
 fn mos_json(m: &Mos) -> Value {
@@ -775,7 +853,7 @@ pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "denoise_voice",
-            description: "Neural noise removal for a vocal sample (writes a new one): DeepFilterNet 3 (falls back to RNNoise when it is not available; backend auto|deepfilter|rnnoise). atten_lim_db caps how far noise is pushed down (default 15; 100 = no cap; 12-20 keeps a phone take natural), mix blends with the dry take (default 1). Nothing is synthesised and no EQ is added. score (default true) rates raw vs result with DNSMOS (SIG voice, BAK background, OVRL overall) and only switches clips (track / replace_clips) when the result beats the raw take on SIG and OVRL, unless force. reduce_noise is the older spectral-subtraction tool.",
+            description: "Neural noise removal for a vocal sample (writes a new one): DeepFilterNet 3 (falls back to RNNoise when it is not available; backend auto|deepfilter|rnnoise). atten_lim_db caps how far noise is pushed down (default 15; 100 = no cap; 12-20 keeps a phone take natural), mix blends with the dry take (default 1). Nothing is synthesised and no EQ is added. score (default true) rates raw vs result with DNSMOS (SIG voice, BAK background, OVRL overall) and only switches clips (track / replace_clips) when the result beats the raw take on SIG and OVRL, unless force or score:false. If requested scoring is unavailable or invalid, the new sample is kept but original clips are not switched. DNSMOS is a speech estimate, not a singing-quality verdict. reduce_noise is the older spectral-subtraction tool.",
             mutates: true,
             schema: || crate::sc_strip::common(json!({"atten_lim_db": {"type": "number"}, "mix": {"type": "number"}, "backend": {"type": "string", "enum": ["auto", "deepfilter", "rnnoise"]}, "score": {"type": "boolean"}, "force": {"type": "boolean"}})),
             run: |e, a| {
@@ -783,20 +861,9 @@ pub fn tools() -> Vec<Tool> {
                 let o = DenoiseOpts { atten_lim_db: f_or(a, "atten_lim_db", 15.0).clamp(0.0, 100.0), mix: f_or(a, "mix", 1.0).clamp(0.0, 1.0), backend: s_opt(a, "backend").unwrap_or_else(|| "auto".into()) };
                 let (y, used, note) = denoise(&x, &o)?;
                 let sc = if b_or(a, "score", true) { score_pair(&x, &y) } else { Value::Null };
-                let ok = sc.get("better_than_raw").and_then(|v| v.as_bool()).unwrap_or(true) || b_or(a, "force", false);
-                let mut a2 = a.clone();
-                if !ok {
-                    if let Value::Object(m) = &mut a2 {
-                        m.remove("track");
-                        m.remove("replace_clips");
-                    }
-                }
-                let mut out = crate::sc_strip::finish(e, &a2, &info, &x, &y, "dn", "denoise_voice", json!({"backend": used, "atten_lim_db": o.atten_lim_db, "mix": o.mix, "quality": sc}))?;
+                let mut out = finish_denoise(e,a,&info,&x,&y,json!({"backend":used,"atten_lim_db":o.atten_lim_db,"mix":o.mix,"quality":sc}))?;
                 if let Some(n) = note {
                     out["note"] = json!(n);
-                }
-                if !ok {
-                    out["warning"] = json!("the result did not beat the raw take on DNSMOS SIG and OVRL, so clips were NOT switched (force switches anyway)");
                 }
                 Ok(out)
             },
@@ -956,5 +1023,232 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0, f32::max);
         assert!(err < 1e-3, "reconstruction error {err}");
+    }
+}
+
+#[cfg(test)]
+mod denoise_guard_tests {
+    use super::*;
+    #[test]
+    fn absent_requested_score_is_not_permission_to_replace() {
+        for quality in [
+            Value::Null,
+            json!({"unavailable":"python missing"}),
+            json!({"better_than_raw":null}),
+        ] {
+            assert_eq!(
+                denoise_switch_decision(&json!({}), &quality),
+                ("score_unavailable", false)
+            );
+            assert_eq!(
+                denoise_switch_decision(&json!({"force":true}), &quality),
+                ("forced", true)
+            );
+            assert_eq!(
+                denoise_switch_decision(&json!({"score":false}), &quality),
+                ("scoring_disabled", true)
+            );
+        }
+        assert_eq!(
+            denoise_switch_decision(&json!({}), &json!({"better_than_raw":false})),
+            ("score_not_improved", false)
+        );
+        assert_eq!(
+            denoise_switch_decision(&json!({}), &json!({"better_than_raw":true})),
+            ("score_improved", true)
+        );
+    }
+    #[test]
+    fn missing_null_or_float_overflow_score_is_unavailable() {
+        for v in [
+            json!({}),
+            json!({"SIG":null}),
+            json!({"SIG":1e100}),
+            json!({"SIG":"4.2"}),
+        ] {
+            assert!(finite_mos_score(&v, "SIG").is_err());
+        }
+        assert!(finite_mos_score(&json!({"SIG":4.}), "OVRL").is_err());
+        assert_eq!(finite_mos_score(&json!({"SIG":4.25}), "SIG").unwrap(), 4.25);
+    }
+    #[test]
+    fn finish_guard_saves_candidate_but_keeps_original_clips_until_explicit_opt_out() {
+        let mut e = crate::Engine::new(
+            std::env::temp_dir().join(format!("bb233_{}", crate::creative::fresh_seed())),
+        );
+        e.call("new_project", &json!({"name":"guard","bpm":120}))
+            .unwrap();
+        e.call("add_track", &json!({"name":"voice","preset":"pad"}))
+            .unwrap();
+        let x = vec![0.1; 4410];
+        let path = e.workdir.join("source.wav");
+        crate::render::write_wav(&path, &x, &x).unwrap();
+        let info = crate::samples::SampleInfo {
+            name: "take".into(),
+            path: path.to_string_lossy().into(),
+            source: "fixture".into(),
+            license: "CC0".into(),
+            author: "test".into(),
+            duration: 0.1,
+        };
+        crate::tools::register_sample(&mut e, info.clone()).unwrap();
+        e.call(
+            "add_audio_clip",
+            &json!({"sample":"take","track":"voice","start_beat":0}),
+        )
+        .unwrap();
+        let original = e.project.audio_clips.clone();
+        let bytes = std::fs::read(&path).unwrap();
+        let reserved = e.samples_dir().join("candidate.wav");
+        std::fs::create_dir_all(e.samples_dir()).unwrap();
+        std::fs::write(&reserved, b"preserve existing file").unwrap();
+
+        let a = json!({"sample":"take","replace_clips":true,"new_name":"candidate"});
+        let out = finish_denoise(
+            &mut e,
+            &a,
+            &info,
+            &x,
+            &x,
+            json!({"quality":{"unavailable":"offline"}}),
+        )
+        .unwrap();
+        assert_eq!(out["clips_switched"], 0);
+        assert_eq!(out["clip_switch_guard"]["status"], "score_unavailable");
+        assert!(out["warning"]
+            .as_str()
+            .unwrap()
+            .contains("original clips kept"));
+        assert_eq!(e.project.audio_clips, original);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(std::fs::read(&reserved).unwrap(), b"preserve existing file");
+        assert!(e.project.samples.iter().any(|s| s.name == "candidate_2"));
+        let out = finish_denoise(
+            &mut e,
+            &json!({"sample":"take","track":"voice","new_name":"forced","force":true}),
+            &info,
+            &x,
+            &x,
+            json!({"quality":{"unavailable":"offline"}}),
+        )
+        .unwrap();
+        assert_eq!(out["clips_switched"], 1);
+        assert_eq!(out["clip_switch_guard"]["status"], "forced");
+        assert_eq!(e.project.audio_clips[0].sample, "forced");
+    }
+    #[test]
+    fn actual_denoise_dispatch_preserves_source_and_unique_candidates() {
+        if std::env::var_os("BEATBOX233_CHILD").is_none() {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "actual_denoise_dispatch_preserves_source_and_unique_candidates",
+                    "--nocapture",
+                ])
+                .env("BEATBOX233_CHILD", "1")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            return;
+        }
+        let root = std::path::PathBuf::from(&format!("/tmp/v233_dispatch_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // This is an isolated process: score failure cannot race other tests.
+        std::env::set_var("BEATBOX_PYTHON", "/nonexistent-bb233-python");
+        for (label, extra, status, switched) in [
+            ("guard", json!({}), "score_unavailable", 0),
+            ("force", json!({"force":true}), "forced", 1),
+            ("no_score", json!({"score":false}), "scoring_disabled", 1),
+        ] {
+            let mut e = crate::Engine::new(root.join(label));
+            e.call("new_project", &json!({"name":"guard"})).unwrap();
+            e.call("add_track", &json!({"name":"voice","preset":"pad"}))
+                .unwrap();
+            let path = e.samples_dir().join("take.wav");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let x: Vec<f32> = (0..4410).map(|i| 0.1 * (i as f32 * 0.1).sin()).collect();
+            crate::render::write_wav(&path, &x, &x).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            e.call("import_sample", &json!({"path":path,"name":"take"}))
+                .unwrap();
+            e.call(
+                "add_audio_clip",
+                &json!({"sample":"take","track":"voice","start_beat":0}),
+            )
+            .unwrap();
+            let original = e.project.audio_clips.clone();
+            let mut args =
+                json!({"sample":"take","new_name":"take","track":"voice","backend":"rnnoise"});
+            for (k, v) in extra.as_object().unwrap() {
+                args[k] = v.clone();
+            }
+            let r = e.call("denoise_voice", &args).unwrap();
+            assert_eq!(r["clips_switched"], switched);
+            assert_eq!(r["clip_switch_guard"]["status"], status);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(r["sample"], "take_2");
+            if switched == 0 {
+                assert_eq!(e.project.audio_clips, original);
+            } else {
+                assert_eq!(e.project.audio_clips[0].sample, "take_2");
+            }
+            println!("{} {}", label, serde_json::to_string_pretty(&r).unwrap());
+            // A second candidate must preserve the first too.
+            let p = e.samples_dir().join("take_2.wav");
+            let first = std::fs::read(&p).unwrap();
+            let r2 = e.call("denoise_voice", &args).unwrap();
+            assert_eq!(r2["sample"], "take_3");
+            assert_eq!(std::fs::read(&p).unwrap(), first);
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn scoring_helper_errors_and_invalid_payloads_fail_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        if std::env::var_os("BEATBOX233_SCORE_CHILD").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "scoring_helper_errors_and_invalid_payloads_fail_closed",
+                    "--nocapture",
+                ])
+                .env("BEATBOX233_SCORE_CHILD", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let d = std::env::temp_dir().join(format!("bb233_score_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let helper = d.join("fake-python");
+        std::env::set_var("BEATBOX_PYTHON", &helper);
+        for (payload, code) in [
+            (r#"{"scores":{}}"#, 0),
+            (r#"{"scores":{}}"#, 1),
+            ("not JSON", 0),
+        ] {
+            std::fs::write(
+                &helper,
+                format!("#!/bin/sh\nprintf '%s' '{}'\nexit {}\n", payload, code),
+            )
+            .unwrap();
+            std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let q = score_pair(&[0.1; 441], &[0.05; 441]);
+            assert!(q["unavailable"].is_string());
+            assert_eq!(
+                denoise_switch_decision(&json!({}), &q),
+                ("score_unavailable", false)
+            );
+        }
+        std::fs::remove_dir_all(d).unwrap();
     }
 }
