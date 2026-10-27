@@ -231,6 +231,33 @@ fn sanitize(name: &str) -> String {
     }
 }
 
+/// Stable basenames for one export set. Preserve every natural basename so a
+/// collision suffix cannot steal another track's own name. Compare case-folded
+/// names too, because exported folders may move to case-insensitive filesystems.
+pub(crate) fn distinct_export_names(names: &[String]) -> Vec<String> {
+    let bases = names;
+    let reserved: std::collections::HashSet<String> =
+        bases.iter().map(|n| n.to_lowercase()).collect();
+    let mut used = std::collections::HashSet::new();
+    bases
+        .iter()
+        .map(|base| {
+            if used.insert(base.to_lowercase()) {
+                return base.clone();
+            }
+            let mut i = 2u64;
+            loop {
+                let candidate = format!("{base}_{i}");
+                let key = candidate.to_lowercase();
+                if !reserved.contains(&key) && used.insert(key) {
+                    break candidate;
+                }
+                i += 1;
+            }
+        })
+        .collect()
+}
+
 pub fn sample_name(raw: &str) -> String {
     sanitize(raw)
 }

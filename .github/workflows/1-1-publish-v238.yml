@@ -1,0 +1,75 @@
+name: Publish distinct stem export names
+'on':
+  push:
+    branches:
+    - stem-names
+    paths:
+    - .github/workflows/*publish-v238.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/stem-names'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = f401ad6d1cbc89768bee6eca5cb3f74e4bd72371 ]
+
+        [ "$(git rev-parse origin/main)" = f401ad6d1cbc89768bee6eca5cb3f74e4bd72371
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''50fba6051ccd1f3f8f7d9c1465b425185c469564eedcb2ae8f6c2c68bcc560c2''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/samples.rs'': ''9d43e3d0ad5f4375975bab5148f4c85bf2a80a069b5d5bf04975da36c9887fcf'',
+        ''src/tools.rs'': ''ba7ba12b1e74afb94d424620a0e1f16db5c2b06ca16857e8d1d7bb3c1e05aae8'',
+        ''src/tools_delivery.rs'': ''1dd5acfe9a37525f5544be81db6cfa93e1175470c4020936dfc1471c8e9ddd01'',
+        ''tests/stem_names.rs'': ''5fbbe574a209ea4bcd175f162dee44a8052669e57e97d8b24c7d0f408a272f85''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/samples.rs src/tools.rs src/tools_delivery.rs tests/stem_names.rs
+
+        git commit -m "Keep distinct stem exports from sharing sanitized file paths"
+
+        git fetch origin stem-names main
+
+        [ "$(git rev-parse origin/stem-names)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = f401ad6d1cbc89768bee6eca5cb3f74e4bd72371
+        ]
+
+        git push origin HEAD:refs/heads/stem-names
+
+        '
