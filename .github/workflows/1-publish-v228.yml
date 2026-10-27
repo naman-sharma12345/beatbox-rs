@@ -1,0 +1,38 @@
+name: Guard Vocal Room scores when source evidence is absent
+'on':
+  push:
+    branches:
+    - voice-evidence
+    paths:
+    - .github/workflows/*publish-v228.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/voice-evidence'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply verified voice-evidence patch
+      shell: bash
+      run: "set -euo pipefail\n[ \"$(git rev-parse HEAD^)\" = 25833a3b988ca5fe45918c1e371a1affc81c34d4\
+        \ ]\n[ \"$(git rev-parse origin/main)\" = 25833a3b988ca5fe45918c1e371a1affc81c34d4\
+        \ ]\npython3 - <<'PYCODE'\nimport base64,gzip,hashlib,pathlib\nb=gzip.decompress(base64.b64decode('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'))\n\
+        assert hashlib.sha256(b).hexdigest()=='ffed6c96befd089f2b5e2823efd9cb61ac8088ac289ce1c776511d59cb1ffa47'\n\
+        pathlib.Path('/tmp/verified.patch').write_bytes(b)\nPYCODE\ngit apply --check\
+        \ /tmp/verified.patch\ngit apply /tmp/verified.patch\npython3 - <<'PYCODE'\n\
+        import hashlib,pathlib\nexpected={'src/gui/views.rs': '07bf345381b194e64d7be8a5ad2a1c1ecaceeed0905949eb2008a612ee5b3024',\
+        \ 'src/tools_ears_pro.rs': '847f69dc9a2d631b987bf0c7b5c46a1389ad7187574ad011b73db5313fb85e91',\
+        \ 'src/ears_pro.rs': 'ab2a0e4295799c5babadf049f5cb78c36fd8ba210d8020d996b3dfef3b142b6c'}\n\
+        for f,h in expected.items():\n assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f\n\
+        PYCODE\ngit config user.name 'github-actions[bot]'\ngit config user.email\
+        \ '41898282+github-actions[bot]@users.noreply.github.com'\ngit add src/gui/views.rs\
+        \ src/tools_ears_pro.rs src/ears_pro.rs\ngit commit -m \"Do not score absent\
+        \ Vocal Room source evidence\"\ngit fetch origin voice-evidence main\n[ \"\
+        $(git rev-parse origin/voice-evidence)\" = \"$GITHUB_SHA\" ]\n[ \"$(git rev-parse\
+        \ origin/main)\" = 25833a3b988ca5fe45918c1e371a1affc81c34d4 ]\ngit push origin\
+        \ HEAD:refs/heads/voice-evidence\n"
