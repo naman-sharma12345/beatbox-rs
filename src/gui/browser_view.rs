@@ -3738,7 +3738,10 @@ mod drop_tests {
         assert!(entry.contains("\"max_seconds\":12.0"));
         assert!(entry.contains("Source preview queued:"));
         assert!(entry.contains("if tool == \"slice_sample\""));
-        assert!(entry.contains("args[\"track\"] = json!(new_library_channel_name(p,"));
+        assert!(entry
+            .split_whitespace()
+            .collect::<String>()
+            .contains("args[\"track\"]=json!(new_library_channel_name(p,"));
         assert!(
             entry.find("YOUR OWN FILE").unwrap() < entry.find("self.recorded_starters").unwrap()
         );
