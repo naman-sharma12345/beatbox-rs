@@ -766,11 +766,27 @@ pub fn tools() -> Vec<Tool> {
                 let from = f_opt(a, "from_beat").map(|f| f.max(lo)).unwrap_or(lo);
                 let to = f_opt(a, "to_beat").map(|t| t.min(hi)).unwrap_or(hi);
                 let buf = mixdown(e, &idx, from, to)?;
-                let name = crate::samples::sample_name(&s_opt(a, "name").unwrap_or_else(|| format!("{track}_consolidated")));
+                let base_name = crate::samples::sample_name(&s_opt(a, "name").unwrap_or_else(|| format!("{track}_consolidated")));
                 let dir = e.workdir.join("consolidated");
                 std::fs::create_dir_all(&dir)?;
-                let file = dir.join(format!("{name}.wav"));
-                crate::render::write_wav(&file, &buf, &buf)?;
+                let mut name = base_name.clone();
+                let mut suffix = 2;
+                let file = loop {
+                    if e.project.samples.iter().any(|s| s.name.eq_ignore_ascii_case(&name)) {
+                        name = format!("{base_name}_{suffix}");
+                        suffix += 1;
+                        continue;
+                    }
+                    let file = dir.join(format!("{name}.wav"));
+                    match crate::render::write_wav_new(&file, &buf, &buf) {
+                        Ok(()) => break file,
+                        Err(error) if error.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) => {
+                            name = format!("{base_name}_{suffix}");
+                            suffix += 1;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                };
                 let reg = register_sample(e, SampleInfo {
                     name: name.clone(),
                     path: file.to_string_lossy().into(),
