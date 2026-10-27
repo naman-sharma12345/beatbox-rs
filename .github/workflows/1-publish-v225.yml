@@ -1,0 +1,36 @@
+name: Publish selectable checkpoint A/B excerpt
+'on':
+  push:
+    branches:
+    - ab-excerpt
+    paths:
+    - .github/workflows/*publish-v225.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/ab-excerpt'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply verified selectable excerpt patch
+      shell: bash
+      run: "set -euo pipefail\n[ \"$(git rev-parse HEAD^)\" = 0a70529ac690481501357742f89a8b6855f09738\
+        \ ]\n[ \"$(git rev-parse origin/main)\" = 0a70529ac690481501357742f89a8b6855f09738\
+        \ ]\npython3 - <<'PYCODE'\nimport base64,gzip,hashlib,pathlib\nb=gzip.decompress(base64.b64decode('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'))\n\
+        assert hashlib.sha256(b).hexdigest()=='3119766c3c07577a8df7d4a6bfc6a792be1b0eb27ddf5eb3238da7c1852e5257'\n\
+        pathlib.Path('/tmp/verified.patch').write_bytes(b)\nPYCODE\ngit apply --check\
+        \ /tmp/verified.patch\ngit apply /tmp/verified.patch\npython3 - <<'PYCODE'\n\
+        import hashlib,pathlib\nexpected={'src/gui/mod.rs': '3b8b6c7b6970b9c7487a0f30b98f2376835c919f3813474c378e808062980dfc',\
+        \ 'src/gui/views.rs': '686118dbee47fcb80e6b0d48e08713f21d9450ea2d8aa19fa6e03a7d428fa010'}\n\
+        for f,h in expected.items():\n assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f\n\
+        PYCODE\ngit config user.name 'github-actions[bot]'\ngit config user.email\
+        \ '41898282+github-actions[bot]@users.noreply.github.com'\ngit add src/gui/mod.rs\
+        \ src/gui/views.rs\ngit commit -m \"Choose elapsed-time excerpts for checkpoint\
+        \ A/B\"\ngit fetch origin ab-excerpt main\n[ \"$(git rev-parse origin/ab-excerpt)\"\
+        \ = \"$GITHUB_SHA\" ]\n[ \"$(git rev-parse origin/main)\" = 0a70529ac690481501357742f89a8b6855f09738\
+        \ ]\ngit push origin HEAD:refs/heads/ab-excerpt\n"
