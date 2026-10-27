@@ -270,7 +270,7 @@ pub(super) fn import_dropped(
             .and_then(|v| v.as_str())
             .unwrap_or(&name)
             .to_string();
-        let track = format!("{name}_s");
+        let track = new_library_channel_name(&engine.project, &format!("{name}_s"));
         match engine.call_from(
             "add_sample_track",
             &json!({"name": track, "sample": name}),
@@ -409,7 +409,7 @@ impl Studio {
         self.poll_browser_comparison(ui.ctx());
         if !self.browser.opened {
             self.browser.opened = true;
-            self.browser.section = 5;
+            self.browser.section = 6;
         }
         if self.browser.catalog.is_none() {
             let mut e = self.engine.lock().unwrap();
@@ -461,7 +461,8 @@ impl Studio {
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
             for (i, label) in [
-                (5usize, "Recorded sounds"),
+                (6usize, "Your samples"),
+                (5, "Recorded sounds"),
                 (1, "Modeled synths"),
                 (0, "Sample packs"),
                 (2, "Effects & MIDI"),
@@ -475,10 +476,61 @@ impl Studio {
         let section = self.browser.section;
         let q = self.browser.search.clone();
         let track = self.browser.track.clone();
+        if section <= 1 || section == 6 {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("YOUR OWN FILE").size(11.0).color(tk.text_dim));
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut self.browser.file_path)
+                        .desired_width((ui.available_width() - 150.0).clamp(110.0, 300.0))
+                        .hint_text("path to a sound file"),
+                )
+                .on_hover_text("Paste the path of a wav, mp3, flac or ogg file");
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let ready = !self.browser.file_path.trim().is_empty();
+                let go = ui
+                    .add_enabled(ready, egui::Button::new("+ Add as channel"))
+                    .on_hover_text("Bring this file into the project on its own channel. You can also drop a file on the window.")
+                    .clicked();
+                if (go || enter) && ready {
+                    let raw = self.browser.file_path.trim().trim_matches(|c| c == '"' || c == '\'');
+                    let raw = raw.strip_prefix("file://").unwrap_or(raw);
+                    let path = match (raw.strip_prefix("~/"), std::env::var_os("HOME")) {
+                        (Some(rest), Some(home)) => std::path::PathBuf::from(home).join(rest),
+                        _ => std::path::PathBuf::from(raw),
+                    };
+                    let (added, failed, channel) = {
+                        let mut e = self.engine.lock().unwrap();
+                        let (added, failed) = import_dropped(&mut e, &[path]);
+                        let channel = if added.is_empty() {
+                            None
+                        } else {
+                            e.project.tracks.last().map(|t| t.name.clone())
+                        };
+                        (added, failed, channel)
+                    };
+                    self.toast = match (added.first(), failed.first()) {
+                        (Some(a), _) => {
+                            self.browser.file_path.clear();
+                            // like any channel added here, it is the selected one right away
+                            self.selected = p.tracks.len();
+                            self.browser.track = channel.unwrap_or_default();
+                            Some((format!("Added {a} as a new channel"), 0.0, true))
+                        }
+                        (None, Some(f)) => Some((f.clone(), 0.0, false)),
+                        _ => None,
+                    };
+                }
+            });
+            ui.add_space(4.0);
+        }
+        if section == 6 {
+            ui.label(RichText::new("Bring any local WAV, MP3, FLAC or OGG. Drop a file on the window, or paste its path above. Open EDIT below to trim, reverse, fade or slice into playable notes. Packs are optional.").small());
+            self.sample_link_import(ui, &track);
+        }
         if section == 5 {
             self.recorded_starters(ui, &track);
         }
-        if section == 0 {
+        if section == 0 || section == 6 {
             ui.add_space(10.0);
             ui.label(
                 RichText::new(format!("PROJECT SAMPLES ({})", p.samples.len()))
@@ -488,16 +540,34 @@ impl Studio {
             );
             if p.samples.is_empty() {
                 ui.label(
-                    RichText::new("No project samples yet. Import a sound below, then open it in the audio editor.")
+                    RichText::new("No project samples yet. Add a file above or import a link, then open EDIT.")
                         .size(10.0)
                         .color(tk.text_dim),
                 );
             }
+            ui.horizontal_wrapped(|ui| {
+                if ui.small_button("STOP SAMPLE PREVIEW").clicked() {
+                    call = Some(("play_audio".into(), json!({"stop":true})));
+                }
+                ui.label(RichText::new("HEAR: raw file, first 12 seconds, -6 dB listening trim. No track effects or pitch changes. Song audio can still play.").small());
+            });
             for s in &p.samples {
                 if !matches(&q, &s.name, &s.source) {
                     continue;
                 }
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .small_button("HEAR")
+                        .on_hover_text(
+                            "Preview this source file without editing or adding a channel",
+                        )
+                        .clicked()
+                    {
+                        call = Some((
+                            "play_audio".into(),
+                            json!({"sample":s.name,"gain_db":-6.0,"max_seconds":12.0}),
+                        ));
+                    }
                     if ui
                         .small_button("+ New channel")
                         .on_hover_text("Add this sample as its own channel")
@@ -505,7 +575,7 @@ impl Studio {
                     {
                         call = Some((
                             "add_sample_track".into(),
-                            json!({"name": format!("{}_s", s.name), "sample": s.name}),
+                            json!({"name": new_library_channel_name(p, &format!("{}_s", s.name)), "sample": s.name}),
                         ));
                     }
                     if ui
@@ -556,6 +626,7 @@ impl Studio {
             }
         }
         if section == 0 {
+            self.sample_link_import(ui, &track);
             self.sound_library(ui, &track);
         }
         ui.add_space(6.0);
@@ -566,47 +637,6 @@ impl Studio {
         let h = ui.available_height() - 8.0;
         let hear_busy = self.browser.job.as_ref().map(|j| j.0.clone());
         let mut hear: Option<String> = None;
-        if section <= 1 {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("YOUR OWN FILE").size(11.0).color(tk.text_dim));
-                let field = ui.add(
-                    egui::TextEdit::singleline(&mut self.browser.file_path)
-                        .desired_width((ui.available_width() - 150.0).clamp(110.0, 300.0))
-                        .hint_text("path to a sound file"),
-                )
-                .on_hover_text("Paste the path of a wav, mp3, flac or ogg file");
-                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let ready = !self.browser.file_path.trim().is_empty();
-                let go = ui
-                    .add_enabled(ready, egui::Button::new("+ Add as channel"))
-                    .on_hover_text("Bring this file into the project on its own channel. You can also drop a file on the window.")
-                    .clicked();
-                if (go || enter) && ready {
-                    let raw = self.browser.file_path.trim().trim_matches(|c| c == '"' || c == '\'');
-                    let raw = raw.strip_prefix("file://").unwrap_or(raw);
-                    let path = match (raw.strip_prefix("~/"), std::env::var_os("HOME")) {
-                        (Some(rest), Some(home)) => std::path::PathBuf::from(home).join(rest),
-                        _ => std::path::PathBuf::from(raw),
-                    };
-                    let (added, failed) = {
-                        let mut e = self.engine.lock().unwrap();
-                        import_dropped(&mut e, &[path])
-                    };
-                    self.toast = match (added.first(), failed.first()) {
-                        (Some(a), _) => {
-                            self.browser.file_path.clear();
-                            // like any channel added here, it is the selected one right away
-                            self.selected = p.tracks.len();
-                            self.browser.track = format!("{a}_s");
-                            Some((format!("Added {a} as a new channel"), 0.0, true))
-                        }
-                        (None, Some(f)) => Some((f.clone(), 0.0, false)),
-                        _ => None,
-                    };
-                }
-            });
-            ui.add_space(4.0);
-        }
         if section == 1 {
             // ---------- instrument presets
             ui.label(
@@ -1837,6 +1867,16 @@ impl Studio {
             };
             match self.engine.lock().unwrap().call_from(&tool, &args, "you") {
                 Ok(v) => {
+                    if tool == "play_audio" {
+                        let message = if v["stopped"] == true {
+                            "Sample preview stopped. Project unchanged.".to_string()
+                        } else if v["playing"] == true {
+                            format!("Source preview queued: {} s, -6 dB listening trim. Project unchanged.", v["play_seconds"])
+                        } else {
+                            "Preview unavailable: no studio audio output attached. Project unchanged.".to_string()
+                        };
+                        self.toast = Some((message, 0.0, true));
+                    }
                     if tool == "preview_mix_translation" {
                         self.browser.translation_result = translation_readout(&v);
                     }
@@ -3015,6 +3055,80 @@ impl Studio {
         }
     }
 
+    fn sample_link_import(&mut self, ui: &mut egui::Ui, track: &str) {
+        let tk = Tokens::DARK;
+        let busy = self.browser.job.as_ref().map(|j| j.0.clone());
+        let mut job: Option<(String, &'static str, Value)> = None;
+        ui.collapsing(
+            RichText::new("Import your own sound from a link")
+                .size(11.0)
+                .color(tk.text_dim),
+            |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("IMPORT FROM URL")
+                            .size(11.0)
+                            .color(tk.text_dim),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.browser.url)
+                            .desired_width(360.0)
+                            .hint_text("https://... direct audio / .sf2 / sample archive"),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.browser.url_name)
+                            .desired_width(120.0)
+                            .hint_text("name (optional)"),
+                    );
+                    let ready = self.browser.url.trim().starts_with("https://") && busy.is_none();
+                    let mut args = json!({"url": self.browser.url.trim()});
+                    if !self.browser.url_name.trim().is_empty() {
+                        args["name"] = json!(self.browser.url_name.trim());
+                    }
+                    if ui
+                        .add_enabled(ready, egui::Button::new("IMPORT").small())
+                        .on_hover_text("Import the audio at this link")
+                        .clicked()
+                    {
+                        job = Some((String::from("import"), "import_from_url", args.clone()));
+                    }
+                    let mut a2 = args.clone();
+                    a2["track"] = json!(track);
+                    if ui
+                        .add_enabled(
+                            ready && !track.is_empty(),
+                            egui::Button::new("IMPORT TO TARGET TRACK").small(),
+                        )
+                        .on_hover_text(format!("import_from_url {a2}"))
+                        .clicked()
+                    {
+                        job = Some((String::from("import"), "import_from_url", a2));
+                    }
+                    if let Some(b) = &busy {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new(format!("{b}..."))
+                                .size(11.0)
+                                .color(tk.text_dim),
+                        );
+                    } else if !self.browser.job_result.is_empty() {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&self.browser.job_result)
+                                    .size(11.0)
+                                    .color(tk.text),
+                            )
+                            .truncate(),
+                        );
+                    }
+                });
+            },
+        );
+        if let Some((label, tool, args)) = job {
+            self.library_job(label, ui.ctx().clone(), tool, args);
+        }
+    }
+
     fn sound_library(&mut self, ui: &mut egui::Ui, track: &str) {
         let tk = Tokens::DARK;
         self.poll_library_job();
@@ -3068,72 +3182,6 @@ impl Studio {
         .id_salt("br_library")
         .default_open(true)
         .show(ui, |ui| {
-            ui.collapsing(
-                RichText::new("Import your own sound from a link")
-                    .size(11.0)
-                    .color(tk.text_dim),
-                |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            RichText::new("IMPORT FROM URL")
-                                .size(11.0)
-                                .color(tk.text_dim),
-                        );
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.browser.url)
-                                .desired_width(360.0)
-                                .hint_text("https://... .wav / .sf2 / .zip of samples"),
-                        );
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.browser.url_name)
-                                .desired_width(120.0)
-                                .hint_text("name (optional)"),
-                        );
-                        let ready =
-                            self.browser.url.trim().starts_with("https://") && busy.is_none();
-                        let mut args = json!({"url": self.browser.url.trim()});
-                        if !self.browser.url_name.trim().is_empty() {
-                            args["name"] = json!(self.browser.url_name.trim());
-                        }
-                        if ui
-                            .add_enabled(ready, egui::Button::new("IMPORT").small())
-                            .on_hover_text("Import the audio at this link")
-                            .clicked()
-                        {
-                            job = Some((String::from("import"), "import_from_url", args.clone()));
-                        }
-                        let mut a2 = args.clone();
-                        a2["track"] = json!(track);
-                        if ui
-                            .add_enabled(
-                                ready && !track.is_empty(),
-                                egui::Button::new("IMPORT TO TARGET TRACK").small(),
-                            )
-                            .on_hover_text(format!("import_from_url {a2}"))
-                            .clicked()
-                        {
-                            job = Some((String::from("import"), "import_from_url", a2));
-                        }
-                        if let Some(b) = &busy {
-                            ui.spinner();
-                            ui.label(
-                                RichText::new(format!("{b}..."))
-                                    .size(11.0)
-                                    .color(tk.text_dim),
-                            );
-                        } else if !self.browser.job_result.is_empty() {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&self.browser.job_result)
-                                        .size(11.0)
-                                        .color(tk.text),
-                                )
-                                .truncate(),
-                            );
-                        }
-                    });
-                },
-            );
             if busy.is_none() && !self.browser.job_result.is_empty() {
                 ui.add(
                     egui::Label::new(
@@ -3652,6 +3700,24 @@ mod drop_tests {
     use super::*;
 
     #[test]
+    fn own_samples_are_the_browser_entry_not_the_pack_catalog() {
+        let source = include_str!("browser_view.rs");
+        let entry = source.split("pub(super) fn browser_view").nth(1).unwrap();
+        assert!(entry.contains("self.browser.section = 6;"));
+        assert!(entry.contains("(6usize, \"Your samples\")"));
+        assert!(entry.contains("if section <= 1 || section == 6"));
+        assert!(entry.contains("if section == 0 || section == 6"));
+        assert!(entry.contains("self.sample_link_import(ui, &track)"));
+        assert!(entry.contains("STOP SAMPLE PREVIEW"));
+        assert!(entry.contains("Preview this source file without editing or adding a channel"));
+        assert!(entry.contains("\"max_seconds\":12.0"));
+        assert!(entry.contains("Source preview queued:"));
+        assert!(
+            entry.find("YOUR OWN FILE").unwrap() < entry.find("self.recorded_starters").unwrap()
+        );
+    }
+
+    #[test]
     fn dropped_audio_files_become_channels_and_other_files_are_refused() {
         let d = std::env::temp_dir().join(format!("drop_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -3686,6 +3752,30 @@ mod drop_tests {
             "no channel {track}: {:?}",
             e.project.tracks.iter().map(|t| &t.name).collect::<Vec<_>>()
         );
+    }
+    #[test]
+    fn occupied_channel_names_do_not_leave_an_import_without_a_channel() {
+        let root =
+            std::env::temp_dir().join(format!("drop_collision_{}", crate::creative::fresh_seed()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("mine.wav");
+        let audio = vec![0.1f32; 4410];
+        crate::render::write_wav(&path, &audio, &audio).unwrap();
+        let mut e = crate::Engine::new(root.clone());
+        e.call("add_track", &json!({"name":"mine_s","preset":"piano"}))
+            .unwrap();
+        e.call("add_bus", &json!({"name":"mine_s #2","preset":"none"}))
+            .unwrap();
+        let tracks = e.project.tracks.clone();
+        let buses = e.project.buses.clone();
+        let (added, failed) = import_dropped(&mut e, &[path]);
+        assert_eq!(added, vec!["mine"]);
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(e.project.tracks.len(), tracks.len() + 1);
+        assert_eq!(e.project.tracks[..tracks.len()], tracks);
+        assert_eq!(e.project.buses, buses);
+        assert_eq!(e.project.tracks.last().unwrap().name, "mine_s #3");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 
