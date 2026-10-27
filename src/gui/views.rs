@@ -65,11 +65,14 @@ fn format_readout(label: &str, tool: &str, v: &serde_json::Value) -> String {
             }
             out.push_str("section                 estimated free space (0-100)\n");
             for sec in v["sections"].as_array().cloned().unwrap_or_default() {
-                out.push_str(&format!(
-                    "{}: {:.0}\n",
-                    sec["section"].as_str().unwrap_or("?"),
-                    num(&sec["free_space_score"])
-                ));
+                let section = sec["section"].as_str().unwrap_or("?");
+                if let Some(score) = sec["free_space_score"].as_f64() {
+                    out.push_str(&format!("{section}: {score:.0}\n"));
+                } else {
+                    out.push_str(&format!(
+                        "{section}: no measurable voice activity in 1-4 kHz; no score\n"
+                    ));
+                }
             }
             out.push_str("Tracks filling the vocal clarity band (1-4 kHz), busiest first:\n");
             for track in v["competing_tracks_1_4khz"]
@@ -2039,6 +2042,81 @@ mod vocal_room_tests {
         assert!(e
             .call("vocal_pocket", &json!({"vocal_track":"missing"}))
             .is_err());
+    }
+    #[test]
+    fn voice_evidence_gate_distinguishes_silence_low_level_and_activity() {
+        let n = 44100;
+        let beat = vec![0.0; n];
+        for amp in [0.0f32, 1e-8] {
+            let v: Vec<f32> = (0..n)
+                .map(|i| amp * (std::f32::consts::TAU * 2000.0 * i as f32 / 44100.0).sin())
+                .collect();
+            let p = crate::ears_pro::vocal_pocket_section("quiet", &beat, &beat, &v);
+            assert!(p.free_space.is_none());
+            assert_eq!(p.active_voice_frames, 0);
+            assert!(p.masked.iter().all(|(_, m)| m.is_none()));
+        }
+        let v: Vec<f32> = (0..n)
+            .map(|i| 0.1 * (std::f32::consts::TAU * 2000.0 * i as f32 / 44100.0).sin())
+            .collect();
+        let p = crate::ears_pro::vocal_pocket_section("active", &beat, &beat, &v);
+        assert!(p.active_voice_frames > 0);
+        assert!(p.free_space.is_some());
+        let p = crate::ears_pro::vocal_pocket_section("empty", &[], &[], &[]);
+        assert!(p.free_space.is_none());
+        assert_eq!(p.active_voice_frames, 0);
+    }
+    #[test]
+    fn silent_sections_do_not_replace_supported_worst_section() {
+        let mut e = Engine::new(
+            std::env::temp_dir().join(format!("bb228_sections_{}", std::process::id())),
+        );
+        e.call("new_project", &json!({"name":"sections","bpm":120}))
+            .unwrap();
+        e.call("add_track", &json!({"name":"Voice","instrument":"sine"}))
+            .unwrap();
+        e.call("add_notes",&json!({"track":"Voice","pattern":"A","notes":[{"pitch":96,"start":0,"len":16,"vel":0.8}]})).unwrap();
+        e.call("add_pattern", &json!({"name":"Silent","bars":4}))
+            .unwrap();
+        e.call(
+            "set_arrangement",
+            &json!({"sections":[{"pattern":"Silent","repeats":1},{"pattern":"A","repeats":1}]}),
+        )
+        .unwrap();
+        let v = e
+            .call("vocal_pocket", &json!({"vocal_track":"Voice"}))
+            .unwrap();
+        let rows = v["sections"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{v}");
+        assert!(rows[0]["free_space_score"].is_null(), "{v}");
+        assert!(rows[1]["free_space_score"].is_number(), "{v}");
+        assert_eq!(v["worst_section"]["section"], "A");
+        let text = format_readout("VOCAL ROOM", "vocal_pocket", &v);
+        assert!(text.contains("Silent: no measurable"));
+        assert!(text.contains("A: 100"), "{text}");
+    }
+    #[test]
+    fn silent_chosen_source_does_not_claim_perfect_room() {
+        let mut e = Engine::new(std::env::temp_dir().join(format!("bb228_{}", std::process::id())));
+        e.call("new_project", &json!({"name":"silent source","bpm":120}))
+            .unwrap();
+        e.call("add_track", &json!({"name":"Voice","instrument":"sine"}))
+            .unwrap();
+        let before = serde_json::to_value(&e.project).unwrap();
+        let v = e
+            .call("vocal_pocket", &json!({"vocal_track":"Voice"}))
+            .unwrap();
+        assert!(v["sections"][0]["free_space_score"].is_null(), "{v}");
+        assert_eq!(v["sections"][0]["voice_evidence"], "none_above_gate");
+        assert!(v["worst_section"].is_null());
+        assert!(v["findings"].as_array().unwrap().is_empty());
+        let text = format_readout("VOCAL ROOM", "vocal_pocket", &v);
+        assert!(
+            text.contains("no measurable voice activity in 1-4 kHz; no score"),
+            "{text}"
+        );
+        assert!(!text.contains(": 100"));
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
     }
     #[test]
     fn long_multibyte_names_do_not_break_report_truncation() {

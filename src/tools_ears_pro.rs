@@ -259,10 +259,14 @@ pub fn vocal_pocket_tool(e: &mut Engine, a: &Value) -> Result<Value> {
         let mut worst: Option<(f32, String)> = None;
         for (name, s0, s1) in &secs {
             let ps = ep::vocal_pocket_section(name, &bl[*s0..*s1], &br[*s0..*s1], &vocal[*s0..*s1]);
-            if worst.as_ref().map(|w| ps.free_space < w.0).unwrap_or(true) {
-                worst = Some((ps.free_space, name.clone()));
+            if let Some(score) = ps.free_space {
+                if worst.as_ref().map(|w| score < w.0).unwrap_or(true) {
+                    worst = Some((score, name.clone()));
+                }
             }
             out.push(json!({"section": name, "free_space_score": ps.free_space,
+                "voice_evidence": if ps.active_voice_frames == 0 { "none_above_gate" } else { "activity_above_gate" },
+                "active_voice_frames_50ms": ps.active_voice_frames,
                 "beat_occupancy_db": ps.occupancy_db.iter().map(|(z, d)| json!({"zone": z, "db_of_total": d})).collect::<Vec<_>>(),
                 "vocal_masked": ps.masked.iter().map(|(z, m)| json!({"zone": z, "probability": m})).collect::<Vec<_>>()}));
         }
@@ -572,7 +576,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "vocal_pocket",
-            description: "How much room the beat leaves for a rap vocal, per section: beat energy in the body (200-500 Hz), intelligibility (1-4 kHz) and sibilance (5-8 kHz) zones, the probability a vocal is masked there, a 0-100 free-space score, and which tracks fill 1-4 kHz most, with a dynamic-EQ carve as the fix. Uses vocal_track when you have one, else a proxy rap vocal (speech-shaped noise on a 16th flow at -3 LU vs the beat).",
+            description: "How much room the beat leaves for a rap vocal, per section: beat energy in the body (200-500 Hz), intelligibility (1-4 kHz) and sibilance (5-8 kHz) zones, the probability a vocal is masked there, a 0-100 free-space score, and which tracks fill 1-4 kHz most, with a dynamic-EQ carve as the fix. Sections with no 1-4 kHz source activity above the existing -90 dBFS energy gate return null free_space_score and no worst-section/fix claim; zone masking is null where source evidence is absent. Activity is not voice recognition. Uses vocal_track when you have one, else a proxy rap vocal (speech-shaped noise on a 16th flow at -3 LU vs the beat).",
             mutates: false,
             schema: || {
                 obj(
