@@ -57,6 +57,35 @@ fn format_readout(label: &str, tool: &str, v: &serde_json::Value) -> String {
     let num = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0);
     let mut out = format!("{label}\n");
     match tool {
+        "vocal_pocket" => {
+            out.push_str("Proxy rap vocal estimate, not your recorded voice. Unvalidated guidance for comparing versions, not a listening verdict. No mix changes applied.\n");
+            out.push_str("section                 estimated free space (0-100)\n");
+            for sec in v["sections"].as_array().cloned().unwrap_or_default() {
+                out.push_str(&format!(
+                    "{}: {:.0}\n",
+                    sec["section"].as_str().unwrap_or("?"),
+                    num(&sec["free_space_score"])
+                ));
+            }
+            out.push_str("Tracks filling the vocal clarity band (1-4 kHz), busiest first:\n");
+            for track in v["competing_tracks_1_4khz"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+            {
+                out.push_str(&format!(
+                    "{}: {:.1} dB\n",
+                    track["track"].as_str().unwrap_or("?"),
+                    num(&track["level_db"])
+                ));
+            }
+            for finding in v["findings"].as_array().cloned().unwrap_or_default() {
+                out.push_str(&format!(
+                    "! {}\n",
+                    finding["message"].as_str().unwrap_or("?")
+                ));
+            }
+        }
         "stereo_image" => {
             let o = &v["overall"];
             out.push_str(&format!(
@@ -129,7 +158,11 @@ fn format_readout(label: &str, tool: &str, v: &serde_json::Value) -> String {
         }
     }
     if out.len() > 4000 {
-        out.truncate(4000);
+        let mut end = 4000;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
         out.push_str(" ...");
     }
     out
@@ -738,6 +771,12 @@ impl Studio {
                             json!({}),
                             "which tracks fight for the same frequencies",
                         ),
+                        (
+                            "VOCAL ROOM",
+                            "vocal_pocket",
+                            json!({}),
+                            "Estimate room for a proxy rap vocal by section and name tracks crowding 1-4 kHz. Unvalidated comparison guidance, not your recorded voice. Does not change the mix.",
+                        ),
                         ("LEVELS", "level_hints", json!({}), "suggested level moves"),
                         (
                             "BALANCE",
@@ -787,6 +826,7 @@ impl Studio {
                     | "check_master"
                     | "masking_matrix"
                     | "level_hints"
+                    | "vocal_pocket"
                     | "stereo_image"
                     | "eq_curve"
             ) {
@@ -839,7 +879,11 @@ impl Studio {
         if let Some(readout) = self.mix_readout.clone() {
             egui::ScrollArea::vertical()
                 .id_salt("mix_readout")
-                .max_height((ui.available_height() * 0.22).clamp(48.0, 110.0))
+                .max_height(if readout.starts_with("VOCAL ROOM\n") {
+                    (ui.available_height() * 0.45).clamp(100.0, 220.0)
+                } else {
+                    (ui.available_height() * 0.22).clamp(48.0, 110.0)
+                })
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.label(
@@ -1897,5 +1941,62 @@ mod automation_cursor_tests {
             let seconds = curve.secs_at_beat(beat) as f32;
             assert!((automation_playhead_beat(&e.project, seconds) - beat as f32).abs() < 1e-4);
         }
+    }
+}
+
+#[cfg(test)]
+mod vocal_room_tests {
+    use super::format_readout;
+    use crate::engine::Engine;
+    use serde_json::json;
+
+    #[test]
+    fn report_names_estimate_sections_and_competitors_without_auto_edits() {
+        let value = json!({"sections":[{"section":"hook","free_space_score":38.0}],"competing_tracks_1_4khz":[{"track":"keys","level_db":-18.2}],"findings":[{"message":"keys crowd the hook","suggested_call":{"tool":"add_effect"}}]});
+        let text = format_readout("VOCAL ROOM", "vocal_pocket", &value);
+        for expected in [
+            "Proxy rap vocal estimate",
+            "Unvalidated",
+            "No mix changes applied",
+            "hook: 38",
+            "keys: -18.2 dB",
+            "keys crowd the hook",
+        ] {
+            assert!(text.contains(expected), "{text}");
+        }
+        assert!(!text.contains("add_effect"));
+    }
+    #[test]
+    fn long_multibyte_names_do_not_break_report_truncation() {
+        let name = "आ".repeat(1600);
+        let value = json!({"sections":[{"section":name,"free_space_score":50.0}]});
+        let text = format_readout("VOCAL ROOM", "vocal_pocket", &value);
+        assert!(text.len() <= 4004);
+        assert!(text.ends_with(" ..."));
+    }
+    #[test]
+    fn engine_report_keeps_source_undo_and_transport_unchanged() {
+        let mut e = Engine::new(std::env::temp_dir().join(format!("bb226_{}", std::process::id())));
+        e.call("new_project", &json!({"name":"room","bpm":120}))
+            .unwrap();
+        e.call("add_track", &json!({"name":"keys","instrument":"sine"}))
+            .unwrap();
+        e.call("add_notes",&json!({"track":"keys","pattern":"A","notes":[{"pitch":72,"start":0,"len":16,"vel":0.8}]})).unwrap();
+        let project = serde_json::to_value(&e.project).unwrap();
+        let revision = e.revision;
+        let undo = e.undo_depth();
+        let value = e.call("vocal_pocket", &json!({})).unwrap();
+        assert_eq!(value["vocal"]["proxy"], true);
+        assert!(!value["sections"].as_array().unwrap().is_empty());
+        assert!(value["competing_tracks_1_4khz"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["track"] == "keys"));
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), project);
+        assert_eq!(e.revision, revision);
+        assert_eq!(e.undo_depth(), undo);
+        assert!(e.transport.pending.is_empty());
+        assert!(e.transport.pending_audition.is_none());
     }
 }
