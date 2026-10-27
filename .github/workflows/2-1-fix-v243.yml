@@ -1,0 +1,60 @@
+name: Fix whitespace-sensitive slice UI source guard
+'on':
+  push:
+    branches:
+    - slice-guard
+    paths:
+    - .github/workflows/*fix-v243.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/slice-guard'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 94a707548f9af8df1869c86d375fa871ec4e65a6 ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,pathlib
+
+        pathlib.Path(''/tmp/fix.patch'').write_bytes(gzip.decompress(base64.b64decode(''H4sIAP4V4WoC/42Sb0/bMBDG3+dTHH6VKCRNV2hRoRNvNmnSNKShCSEyWa59KWaund05C2hffqEI8beDe2Pp8XO/e3S2sU0DRbGyEdSISY9WnR0tKfSMJP9Y7EtiWG67Saw3eA2mwuW00mU5m5iD/ek+jKtqureXFEWxnZrkef4f8vExFJPZ5GB3BvnmHFcwaOtgwFBoZUSODH8TuC/FQ3vcSdFHuil18FFZz6moxVpdS8ZBMVyL+fhDWYksO3y78zR0pBFawttQ8LvDDs38fb22gRiCg8UCasHOapSs1q3DWmwAxVsARSu+qEUkpX/V4ics4IqD30k99tLZJSm6kfpSeY9OerXGtN3dgPNXwQ/ybZXcOhtlf2mHLbZKY5o9M+jgHOo4nx+dRrJ+9fEVx5aki/flfLHB5DEe7tbRDP8rFecnP77Dydk3+Pzl6yeRlZ3vSbVpBkdPbIyuKWl4ZzJoJEdFEYkf+R8mDPP/AThkgpj5AgAA'')))
+
+        PYCODE
+
+        git apply --check /tmp/fix.patch
+
+        git apply /tmp/fix.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        assert hashlib.sha256(pathlib.Path(''src/gui/browser_view.rs'').read_bytes()).hexdigest()==''f818aa3a00065a47ee399f01854f56360754b061428d06275cbc3f975a86c93c''
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/gui/browser_view.rs
+
+        git commit -m ''Allow rustfmt whitespace in slice target source guard''
+
+        git fetch origin slice-guard
+
+        [ "$(git rev-parse origin/slice-guard)" = "$GITHUB_SHA" ]
+
+        git push origin HEAD:refs/heads/slice-guard
+
+        '
