@@ -14,7 +14,7 @@ use crate::project::Project;
 use eframe::egui::{self, RichText};
 use serde_json::{json, Value};
 
-type TranslationOutput = Result<(Value, super::PreviewAudio), String>;
+type TranslationOutput = Result<Vec<(Value, super::PreviewAudio)>, String>;
 struct TranslationJob {
     revision: u64,
     generation: u64,
@@ -27,8 +27,7 @@ struct TranslationReady {
     generation: u64,
     start: f32,
     length: f32,
-    value: Value,
-    audio: super::PreviewAudio,
+    versions: Vec<(Value, super::PreviewAudio)>,
 }
 fn translation_current(
     revision: u64,
@@ -40,25 +39,54 @@ fn translation_current(
 ) -> bool {
     super::comparison_is_current(revision, generation, engine) && (start, length) == current
 }
-fn prepare_translation(
-    mut own: crate::Engine,
-    mode: &str,
-    start: f32,
-    length: f32,
-) -> TranslationOutput {
-    let value = own
-        .call(
-            "preview_mix_translation",
-            &json!({"mode":mode,"start_s":start,"length_s":length,"play":true}),
-        )
-        .map_err(|e| format!("{e:#}"))?;
-    let audio = own
+// PREPARE ALL uses the same in-memory pipeline as "prepare_mix_translation_set", without writing temporary WAVs.
+fn prepare_translation(mut own: crate::Engine, start: f32, length: f32) -> TranslationOutput {
+    crate::tools_chain::prepare_translation_set(
+        &mut own,
+        &json!({"start_s":start,"length_s":length}),
+    )
+    .map(|versions| {
+        versions
+            .into_iter()
+            .map(|v| (v.value, std::sync::Arc::new((v.left, v.right))))
+            .collect()
+    })
+    .map_err(|e| format!("{e:#}"))
+}
+
+fn translation_version(
+    ready: &TranslationReady,
+    mode: usize,
+) -> Option<&(Value, super::PreviewAudio)> {
+    ready.versions.get(mode)
+}
+
+fn play_translation(
+    ready: &TranslationReady,
+    mode: usize,
+    engine: &mut crate::Engine,
+    range: (f32, f32),
+) -> Option<String> {
+    if !translation_current(
+        ready.revision,
+        ready.generation,
+        ready.start,
+        ready.length,
+        engine,
+        range,
+    ) {
+        return None;
+    }
+    let (value, audio) = translation_version(ready, mode)?;
+    engine
         .transport
-        .pending_audition
-        .take()
-        .flatten()
-        .ok_or("No preview audio prepared")?;
-    Ok((value, audio))
+        .pending
+        .push(crate::engine::TransportCmd::Stop);
+    engine.transport.pending_audition = Some(Some(audio.clone()));
+    Some(translation_readout(value).replace(
+        "Prepared; project unchanged.",
+        "Queued for playback; project unchanged.",
+    ))
 }
 
 #[derive(Default)]
@@ -82,6 +110,7 @@ pub struct BrowserState {
     ab_ready: Option<super::MixComparison>,
     ab_checkpoint_project: Option<Project>,
     pub ab_result: String,
+    pub translation_mode: usize,
     pub translation_start_s: f32,
     pub translation_length_s: f32,
     pub translation_result: String,
@@ -1567,66 +1596,69 @@ impl Studio {
                         .prefix("Length ")
                         .suffix(" s"),
                 );
-                for (mode, label) in [
-                    ("stereo", "HEAR STEREO"),
-                    ("mono", "HEAR MONO"),
-                    ("phone", "HEAR PHONE"),
-                ] {
-                    if ui
-                        .add_enabled(
-                            self.browser.translation_job.is_none(),
-                            egui::Button::new(label.replace("HEAR", "PREPARE")).small(),
-                        )
-                        .clicked()
+                if ui
+                    .add_enabled(
+                        self.browser.translation_job.is_none(),
+                        egui::Button::new("PREPARE ALL").small(),
+                    )
+                    .clicked()
+                {
+                    let (own, revision, generation) = {
+                        let e = self.engine.lock().unwrap();
+                        let mut own = crate::Engine::new(e.workdir.clone());
+                        own.project = e.project.clone();
+                        own.bank = e.bank.clone();
+                        (own, e.revision, e.project_load_generation)
+                    };
+                    let start = self.browser.translation_start_s;
+                    let length = self.browser.translation_length_s;
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let ctx = ui.ctx().clone();
+                    self.browser.translation_ready = None;
+                    self.browser.translation_result =
+                        "Preparing project snapshot. You can keep editing.".into();
+                    self.browser.translation_job = Some(TranslationJob {
+                        revision,
+                        generation,
+                        start,
+                        length,
+                        receiver: rx,
+                    });
+                    std::thread::spawn(move || {
+                        let _ = tx.send(prepare_translation(own, start, length));
+                        ctx.request_repaint();
+                    });
+                }
+                let previous_mode = self.browser.translation_mode;
+                for (mode, label) in ["Stereo", "Mono", "Phone approx."].iter().enumerate() {
+                    ui.selectable_value(&mut self.browser.translation_mode, mode, *label);
+                }
+                if previous_mode != self.browser.translation_mode {
+                    if let Some((value, _)) = self
+                        .browser
+                        .translation_ready
+                        .as_ref()
+                        .and_then(|r| translation_version(r, self.browser.translation_mode))
                     {
-                        let (own, revision, generation) = {
-                            let e = self.engine.lock().unwrap();
-                            let mut own = crate::Engine::new(e.workdir.clone());
-                            own.project = e.project.clone();
-                            own.bank = e.bank.clone();
-                            (own, e.revision, e.project_load_generation)
-                        };
-                        let start = self.browser.translation_start_s;
-                        let length = self.browser.translation_length_s;
-                        let (tx, rx) = std::sync::mpsc::channel();
-                        let ctx = ui.ctx().clone();
-                        self.browser.translation_ready = None;
-                        self.browser.translation_result =
-                            "Preparing project snapshot. You can keep editing.".into();
-                        self.browser.translation_job = Some(TranslationJob {
-                            revision,
-                            generation,
-                            start,
-                            length,
-                            receiver: rx,
-                        });
-                        std::thread::spawn(move || {
-                            let _ = tx.send(prepare_translation(own, mode, start, length));
-                            ctx.request_repaint();
-                        });
+                        self.browser.translation_result = format!(
+                            "{} Selected only; press Play to start this version.",
+                            translation_readout(value)
+                        );
                     }
                 }
                 if let Some(ready) = &self.browser.translation_ready {
                     if ui.small_button("PLAY PREPARED").clicked() {
                         let mut e = self.engine.lock().unwrap();
-                        if translation_current(
-                            ready.revision,
-                            ready.generation,
-                            ready.start,
-                            ready.length,
-                            &e,
+                        if let Some(result) = play_translation(
+                            ready,
+                            self.browser.translation_mode,
+                            &mut e,
                             (
                                 self.browser.translation_start_s,
                                 self.browser.translation_length_s,
                             ),
                         ) {
-                            e.transport.pending.push(crate::engine::TransportCmd::Stop);
-                            e.transport.pending_audition = Some(Some(ready.audio.clone()));
-                            self.browser.translation_result = translation_readout(&ready.value)
-                                .replace(
-                                    "Prepared; project unchanged.",
-                                    "Queued for playback; project unchanged.",
-                                );
+                            self.browser.translation_result = result;
                         }
                     }
                 }
@@ -1649,7 +1681,7 @@ impl Studio {
             if !self.browser.translation_result.is_empty() {
                 ui.label(&self.browser.translation_result);
             }
-            ui.label(RichText::new("Chosen elapsed-time excerpt, not bar-aligned. Background full-song render preserves preceding effects and may take time. Prepare, then Play. Edits/range changes discard old previews. Short ending is reported. Mono fold-down / phone band-limit are monitoring checks, not mix edits or an exact phone model. No loudness boost.").size(10.0).color(tk.text_dim));
+            ui.label(RichText::new("Chosen elapsed-time excerpt, not bar-aligned. Background full-song render preserves preceding effects and may take time. Prepare All renders once. Select a version, then Play from excerpt start; selecting alone never switches live audio. Stop to end the current preview. Edits/range changes discard prepared versions. Safety gain is per mode, not level matching. Short ending is reported. Mono fold-down / phone band-limit are monitoring checks, not mix edits or an exact phone model. No loudness boost.").size(10.0).color(tk.text_dim));
             ui.add_space(8.0);
             ui.label(
                 RichText::new("KICK / BASS DUCKING")
@@ -2020,15 +2052,17 @@ impl Studio {
         if let Some(result) = result {
             let j = self.browser.translation_job.take().unwrap();
             match result {
-                Ok((value, audio)) => {
-                    self.browser.translation_result = translation_readout(&value);
+                Ok(versions) => {
+                    self.browser.translation_result = versions
+                        .get(self.browser.translation_mode)
+                        .map(|(value, _)| translation_readout(value))
+                        .unwrap_or_default();
                     self.browser.translation_ready = Some(TranslationReady {
                         revision: j.revision,
                         generation: j.generation,
                         start: j.start,
                         length: j.length,
-                        value,
-                        audio,
+                        versions,
                     });
                 }
                 Err(e) => self.browser.translation_result = format!("Preview failed: {e}"),
@@ -3883,10 +3917,12 @@ mod translation_gui_tests {
         );
         own.call("new_project", &json!({"name":"prepare","bpm":120}))
             .unwrap();
-        let (v, audio) = prepare_translation(own, "stereo", 8.0, 8.0).unwrap();
+        let versions = prepare_translation(own, 8.0, 8.0).unwrap();
+        assert_eq!(versions.len(), 3);
+        let (v, audio) = &versions[0];
         assert_eq!(v["truncated"], true);
         assert!(!audio.0.is_empty());
-        let text = translation_readout(&v);
+        let text = translation_readout(v);
         assert!(text.contains("shorter than requested"));
         assert!(text.contains("Prepared; project unchanged."));
         assert!(!text.contains("Queued"));
@@ -4052,5 +4088,51 @@ mod translation_mono_readout_tests {
         assert!(s.contains("safety gain -6.0 dB"));
         assert!(s.contains("not a quality score"));
         assert!(s.contains("Prepared;"));
+    }
+}
+
+#[cfg(test)]
+mod translation_set_gui_tests {
+    use super::*;
+    #[test]
+    fn prepared_modes_share_one_capture_selection_does_not_queue_play_does() {
+        let mut e = crate::Engine::new(
+            std::env::temp_dir().join(format!("bb232gui_{}", crate::creative::fresh_seed())),
+        );
+        e.call("new_project", &json!({"name":"gui","bpm":120}))
+            .unwrap();
+        let mut own = crate::Engine::new(e.workdir.clone());
+        own.project = e.project.clone();
+        let versions = prepare_translation(own, 0., 1.).unwrap();
+        assert_eq!(versions.len(), 3);
+        let ready = TranslationReady {
+            revision: e.revision,
+            generation: e.project_load_generation,
+            start: 0.,
+            length: 1.,
+            versions,
+        };
+        for mode in 0..3 {
+            assert_eq!(
+                translation_version(&ready, mode).unwrap().0["mode"],
+                ["stereo", "mono", "phone"][mode]
+            );
+        }
+        assert!(e.transport.pending_audition.is_none());
+        assert!(play_translation(&ready, 3, &mut e, (0., 1.)).is_none());
+        assert!(e.transport.pending.is_empty());
+        assert!(play_translation(&ready, 2, &mut e, (0., 2.)).is_none());
+        assert!(e.transport.pending_audition.is_none());
+        let result = play_translation(&ready, 2, &mut e, (0., 1.)).unwrap();
+        assert!(result.starts_with("phone:"));
+        assert!(result.contains("Queued"));
+        let audio = e.transport.pending_audition.take().flatten().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&audio, &ready.versions[2].1));
+        e.revision += 1;
+        assert!(play_translation(&ready, 0, &mut e, (0., 1.)).is_none());
+        assert!(e.transport.pending_audition.is_none());
+        e.revision -= 1;
+        e.project_load_generation += 1;
+        assert!(play_translation(&ready, 0, &mut e, (0., 1.)).is_none());
     }
 }

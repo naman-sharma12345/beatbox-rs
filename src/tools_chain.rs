@@ -32,6 +32,131 @@ fn translation_mono_measurement(left: &[f32], right: &[f32]) -> Value {
         "note":"Whole-excerpt RMS: stereo mean channel power versus (L+R)/2. Before phone filtering and preview gain. Level change, not a sound-quality verdict or automatic fix."})
 }
 
+#[allow(clippy::type_complexity)]
+fn translation_source(
+    e: &mut Engine,
+    a: &Value,
+) -> Result<(Vec<f32>, Vec<f32>, usize, usize, bool, f64)> {
+    let bars = match a.get("bars") {
+        Some(v) => v
+            .as_u64()
+            .filter(|v| (1..=8).contains(v))
+            .ok_or_else(|| anyhow!("bars must be an integer 1..8"))?,
+        None => 4,
+    };
+    let excerpt = a.get("start_s").is_some() || a.get("length_s").is_some();
+    if excerpt && a.get("bars").is_some() {
+        bail!("Choose seconds or bars, not both");
+    }
+    let number = |key: &str, default: f64, lo: f64, hi: f64| -> Result<f64> {
+        match a.get(key) {
+            None => Ok(default),
+            Some(v) => v
+                .as_f64()
+                .filter(|v| v.is_finite() && (lo..=hi).contains(v))
+                .ok_or_else(|| anyhow!("{key} must be finite in {lo}..{hi}")),
+        }
+    };
+    let start = number("start_s", 0.0, 0.0, 86400.0)?;
+    let length = number("length_s", 8.0, 1.0, 20.0)?;
+    let (mut l, mut r) = if let Some(path) = s_opt(a, "path") {
+        crate::samples::decode_stereo(&e.resolve(&path))?
+    } else {
+        e.bank.sync(&e.project.samples);
+        let end = e.project.beat_at_bar(bars as f32 + 1.0) * 4.0;
+        // Crop a full render for seconds mode: a window-only render would
+        // lose held notes and the delay/reverb state preceding the excerpt.
+        let opts = if excerpt {
+            crate::render::RenderOptions::default()
+        } else {
+            crate::render::RenderOptions {
+                step_range: Some((0, end.round() as u32)),
+                tail: 0.5,
+                ..Default::default()
+            }
+        };
+        let m = crate::render::render(&e.project, &e.bank, &opts)?;
+        (m.left, m.right)
+    };
+    let available = l.len().min(r.len());
+    let first = if excerpt {
+        (start * crate::dsp::SR as f64).floor() as usize
+    } else {
+        0
+    };
+    if first >= available {
+        bail!("Excerpt start is past the available audio");
+    }
+    let wanted = if excerpt {
+        (length * crate::dsp::SR as f64).floor() as usize
+    } else {
+        (crate::dsp::SR * 20.0) as usize
+    };
+    let last = first.saturating_add(wanted).min(available);
+    l = l[first..last].to_vec();
+    r = r[first..last].to_vec();
+    let n = last - first;
+    if n == 0 || !l.iter().chain(&r).all(|v| v.is_finite()) {
+        bail!("preview audio must be nonempty and finite");
+    }
+    Ok((l, r, first, wanted, excerpt, length))
+}
+
+fn translation_transform(l: &mut [f32], r: &mut [f32], mode: &str) -> f32 {
+    let n = l.len().min(r.len());
+    if mode != "stereo" {
+        for i in 0..n {
+            let m = (l[i] + r[i]) * 0.5;
+            l[i] = m;
+            r[i] = m;
+        }
+    }
+    if mode == "phone" {
+        use crate::dsp::{Biquad, BiquadKind};
+        let mut hp = Biquad::new(BiquadKind::LowCut, 180.0, 0.707, 0.0);
+        let mut lp = Biquad::new(BiquadKind::HighCut, 5000.0, 0.707, 0.0);
+        for i in 0..n {
+            let y = lp.process(hp.process(l[i]));
+            l[i] = y;
+            r[i] = y;
+        }
+    }
+    let peak = l.iter().chain(r.iter()).fold(0.0f32, |m, x| m.max(x.abs()));
+    let gain = if peak > 0.95 { 0.95 / peak } else { 1.0 };
+    for x in l.iter_mut().chain(r.iter_mut()) {
+        *x *= gain;
+    }
+    gain
+}
+
+pub(crate) struct TranslationVariant {
+    pub value: Value,
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+}
+
+/// One isolated render, then exactly the same per-mode DSP as individual previews.
+pub(crate) fn prepare_translation_set(
+    e: &mut Engine,
+    a: &Value,
+) -> Result<Vec<TranslationVariant>> {
+    let (left, right, first, wanted, excerpt, length) = translation_source(e, a)?;
+    let n = left.len();
+    let mono_check = translation_mono_measurement(&left, &right);
+    let mut versions = Vec::new();
+    for mode in ["stereo", "mono", "phone"] {
+        let (mut l, mut r) = (left.clone(), right.clone());
+        let gain = translation_transform(&mut l, &mut r, mode);
+        let value = json!({"mode":mode,"mono_check":mono_check,"seconds":n as f32/crate::dsp::SR,"start_s":first as f64/crate::dsp::SR as f64,"requested_length_s":if excerpt{Some(length)}else{None},"truncated":excerpt && n<wanted,"safety_gain_db":20.0*gain.log10()});
+        versions.push(TranslationVariant {
+            value,
+            left: l,
+            right: r,
+        });
+    }
+    Ok(versions)
+}
+
 /// Built-in chains: (name, what it is for, effects as add_effect JSON).
 fn builtins() -> Vec<(&'static str, &'static str, Value)> {
     vec![
@@ -209,7 +334,7 @@ pub fn tools() -> Vec<Tool> {
                     let mut l=dry.left[..n].to_vec();let mut r=dry.right[..n].to_vec();l.extend(std::iter::repeat_n(0.0,gap));r.extend(std::iter::repeat_n(0.0,gap));l.extend_from_slice(&mix.left[..n]);r.extend_from_slice(&mix.right[..n]);(l,r)
                 }else{let stem=mix.bus_stems.iter_mut().find(|s|s.name==name).context("selected bus was not rendered")?;(std::mem::take(&mut stem.left),std::mem::take(&mut stem.right))};
                 let cap=if mode=="mix_ab"{40.6}else{20.0};let n=l.len().min(r.len()).min((crate::dsp::SR*cap)as usize);l.truncate(n);r.truncate(n);if n==0||!l.iter().chain(&r).all(|v|v.is_finite()){bail!("bus audio must be nonempty and finite");}
-                let peak=l.iter().chain(&r).fold(0f32,|m,x|m.max(x.abs()));let gain=if peak>0.95{0.95/peak}else{1.0};for x in l.iter_mut().chain(&mut r){*x*=gain;}
+                let peak=l.iter().chain(r.iter()).fold(0f32,|m,x|m.max(x.abs()));let gain=if peak>0.95{0.95/peak}else{1.0};for x in l.iter_mut().chain(&mut r){*x*=gain;}
                 let mut i=0u64;let path=loop{let p=e.renders_dir().join(format!("return_audition_{i}.wav"));match crate::render::write_wav_new(&p,&l,&r){Ok(())=>break p,Err(err)if err.downcast_ref::<std::io::Error>().is_some_and(|e|e.kind()==std::io::ErrorKind::AlreadyExists)=>i+=1,Err(err)=>return Err(err)}};
                 let playback=if b_or(a,"play",true){e.transport.pending.push(crate::engine::TransportCmd::Stop);crate::tools_library::queue_audition(e,l,r,0.0)}else{json!({"playing":false})};
                 Ok(json!({"bus":name,"downstream_excluded":if mode=="bus_only"{output}else{None},"path":path,"seconds":n as f32/crate::dsp::SR,"preview_gain_db":20.0*gain.log10(),"playback":playback,"mode":mode,"order":if mode=="mix_ab"{"without bus, 0.6s gap, with bus"}else{"bus only"},"note":if mode=="mix_ab"{"full mix incl master/downstream; shared peak reduction, no loudness match; project unchanged"}else{"bus post-FX/fader only; excludes master/downstream FX; project unchanged"}}))
@@ -694,45 +819,32 @@ if let Some(x)=read("tune_cents",-100.0,100.0)?{p.tune_cents=x;}
                 if b_or(a,"stop",false){e.transport.pending_audition=Some(None);return Ok(json!({"stopped":true}));}
                 let mode=s_opt(a,"mode").unwrap_or_else(||"mono".into());
                 if !["stereo","mono","phone"].contains(&mode.as_str()){bail!("mode must be stereo, mono or phone");}
-                let bars=match a.get("bars"){Some(v)=>v.as_u64().filter(|v|(1..=8).contains(v)).ok_or_else(||anyhow!("bars must be an integer 1..8"))?,None=>4};
-                let excerpt=a.get("start_s").is_some() || a.get("length_s").is_some();
-                if excerpt && a.get("bars").is_some(){bail!("Choose seconds or bars, not both");}
-                let number=|key:&str,default:f64,lo:f64,hi:f64|->Result<f64>{match a.get(key){None=>Ok(default),Some(v)=>v.as_f64().filter(|v|v.is_finite() && (lo..=hi).contains(v)).ok_or_else(||anyhow!("{key} must be finite in {lo}..{hi}"))}};
-                let start=number("start_s",0.0,0.0,86400.0)?;
-                let length=number("length_s",8.0,1.0,20.0)?;
-                let (mut l,mut r)=if let Some(path)=s_opt(a,"path"){
-                    crate::samples::decode_stereo(&e.resolve(&path))?
-                }else{
-                    e.bank.sync(&e.project.samples);
-                    let end=e.project.beat_at_bar(bars as f32+1.0)*4.0;
-                    // Crop a full render for seconds mode: a window-only render would
-                    // lose held notes and the delay/reverb state preceding the excerpt.
-                    let opts=if excerpt{crate::render::RenderOptions::default()}else{crate::render::RenderOptions{step_range:Some((0,end.round() as u32)),tail:0.5,..Default::default()}};
-                    let m=crate::render::render(&e.project,&e.bank,&opts)?;
-                    (m.left,m.right)
-                };
-                let available=l.len().min(r.len());
-                let first=if excerpt{(start*crate::dsp::SR as f64).floor() as usize}else{0};
-                if first>=available{bail!("Excerpt start is past the available audio");}
-                let wanted=if excerpt{(length*crate::dsp::SR as f64).floor() as usize}else{(crate::dsp::SR*20.0) as usize};
-                let last=first.saturating_add(wanted).min(available);
-                l=l[first..last].to_vec();r=r[first..last].to_vec();let n=last-first;
-                if n==0 || !l.iter().chain(&r).all(|v|v.is_finite()){bail!("preview audio must be nonempty and finite");}
+                let (mut l,mut r,first,wanted,excerpt,length)=translation_source(e,a)?;
+                let n=l.len();
                 let mono_check=translation_mono_measurement(&l,&r);
-                if mode!="stereo"{for i in 0..n{let m=(l[i]+r[i])*0.5;l[i]=m;r[i]=m;}}
-                if mode=="phone"{
-                    use crate::dsp::{Biquad,BiquadKind};
-                    let mut hp=Biquad::new(BiquadKind::LowCut,180.0,0.707,0.0);
-                    let mut lp=Biquad::new(BiquadKind::HighCut,5000.0,0.707,0.0);
-                    for i in 0..n{let y=lp.process(hp.process(l[i]));l[i]=y;r[i]=y;}
-                }
-                let peak=l.iter().chain(&r).fold(0.0f32,|m,x|m.max(x.abs()));
-                let gain=if peak>0.95 {0.95/peak}else{1.0};
-                for x in l.iter_mut().chain(&mut r){*x*=gain;}
+                let gain=translation_transform(&mut l,&mut r,&mode);
                 let mut i=0u64;
                 let path=loop{let p=e.renders_dir().join(format!("translation_{mode}_{i}.wav"));match crate::render::write_wav_new(&p,&l,&r){Ok(())=>break p,Err(err) if err.downcast_ref::<std::io::Error>().is_some_and(|e|e.kind()==std::io::ErrorKind::AlreadyExists)=>i+=1,Err(err)=>return Err(err)}};
                 let playback=if b_or(a,"play",true){e.transport.pending.push(crate::engine::TransportCmd::Stop);crate::tools_library::queue_audition(e,l,r,0.0)}else{json!({"playing":false})};
                 Ok(json!({"mono_check":mono_check,"mode":mode,"path":path,"seconds":n as f32/crate::dsp::SR,"start_s":first as f64/crate::dsp::SR as f64,"requested_length_s":if excerpt{Some(length)}else{None},"truncated":excerpt && n<wanted,"safety_gain_db":20.0*gain.log10(),"playback":playback,"note":"monitoring approximation only; no mix changes or loudness boost"}))
+            }
+        },
+        Tool {
+            name: "prepare_mix_translation_set",
+            description: "Prepare stereo, mono and approximate-phone monitoring WAVs from one source render. Same excerpt, transforms and individual attenuation-only safety as preview_mix_translation. No level matching or quality judgement. Returns each path, shared source mono measurement and per-mode safety gain. No playback, project or history change. Seconds/excerpt, bars and local audio path have the same semantics as preview_mix_translation.",
+            mutates: false,
+            schema: || obj(json!({"bars":{"type":"integer","minimum":1,"maximum":8},"start_s":{"type":"number","minimum":0,"maximum":86400},"length_s":{"type":"number","minimum":1,"maximum":20},"path":{"type":"string"}}), &[]),
+            run: |e,a| {
+                let prepared=prepare_translation_set(e,a)?;
+                let mut versions=Vec::new();
+                for mut version in prepared {
+                    let mode=version.value["mode"].as_str().unwrap();
+                    let mut i=0u64;
+                    let path=loop{let p=e.renders_dir().join(format!("translation_{mode}_{i}.wav"));match crate::render::write_wav_new(&p,&version.left,&version.right){Ok(())=>break p,Err(err) if err.downcast_ref::<std::io::Error>().is_some_and(|e|e.kind()==std::io::ErrorKind::AlreadyExists)=>i+=1,Err(err)=>return Err(err)}};
+                    version.value["path"]=json!(path);
+                    versions.push(version.value);
+                }
+                Ok(json!({"versions":versions,"note":"One source render. No playback or mix changes. Per-mode attenuation-only safety, not loudness matching. Approximate phone filter, not a device model."}))
             }
         },
         Tool {
@@ -5340,5 +5452,135 @@ mod translation_mono_tests {
         assert_eq!(e.revision, rev);
         assert_eq!(e.undo_depth(), undo);
         assert!(e.transport.pending_audition.is_none());
+    }
+}
+
+#[cfg(test)]
+mod translation_set_tests {
+    use super::*;
+    fn fixture() -> Engine {
+        let mut e = Engine::new(
+            std::env::temp_dir().join(format!("bb232_{}", crate::creative::fresh_seed())),
+        );
+        e.call("new_project", &json!({"name":"set","bpm":120}))
+            .unwrap();
+        e.call("add_track", &json!({"name":"keys","preset":"pad"}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track":"keys","notes":[{"start":0,"len":32,"pitch":60}]}),
+        )
+        .unwrap();
+        e
+    }
+    #[test]
+    fn shared_render_float_audio_exactly_equals_individual_modes() {
+        let mut e = fixture();
+        let before = serde_json::to_value(&e.project).unwrap();
+        let revision = e.revision;
+        let prepared =
+            prepare_translation_set(&mut e, &json!({"start_s":1.,"length_s":2.})).unwrap();
+        assert_eq!(prepared.len(), 3);
+        for v in prepared {
+            let single = e
+                .call(
+                    "preview_mix_translation",
+                    &json!({"mode":v.value["mode"],"start_s":1.,"length_s":2.,"play":true}),
+                )
+                .unwrap();
+            let audio = e.transport.pending_audition.take().flatten().unwrap();
+            assert_eq!(v.left, audio.0);
+            assert_eq!(v.right, audio.1);
+            assert_eq!(
+                v.value["mono_check"]["status"],
+                single["mono_check"]["status"]
+            );
+            assert!(
+                (v.value["mono_check"]["mono_change_db"].as_f64().unwrap()
+                    - single["mono_check"]["mono_change_db"].as_f64().unwrap())
+                .abs()
+                    < 0.0001
+            );
+            assert!(
+                (v.value["safety_gain_db"].as_f64().unwrap()
+                    - single["safety_gain_db"].as_f64().unwrap())
+                .abs()
+                    < 0.0001
+            );
+        }
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        assert_eq!(e.revision, revision);
+    }
+    #[test]
+    fn set_tool_writes_same_wavs_without_transport_or_project_changes() {
+        let mut e = fixture();
+        let before = serde_json::to_value(&e.project).unwrap();
+        let revision = e.revision;
+        let v = e
+            .call(
+                "prepare_mix_translation_set",
+                &json!({"start_s":7.,"length_s":20.}),
+            )
+            .unwrap();
+        assert!(e.transport.pending_audition.is_none());
+        assert!(e.transport.pending.is_empty());
+        for item in v["versions"].as_array().unwrap() {
+            assert_eq!(item["truncated"], true);
+            let a = e
+                .call(
+                    "preview_mix_translation",
+                    &json!({"mode":item["mode"],"start_s":7.,"length_s":20.,"play":false}),
+                )
+                .unwrap();
+            assert_eq!(
+                std::fs::read(item["path"].as_str().unwrap()).unwrap(),
+                std::fs::read(a["path"].as_str().unwrap()).unwrap()
+            );
+        }
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        assert_eq!(e.revision, revision);
+        assert!(e.transport.pending_audition.is_none());
+        assert!(e.transport.pending.is_empty());
+    }
+    #[test]
+    fn invalid_set_ranges_do_not_queue_and_silent_set_has_no_mono_score() {
+        let mut e = fixture();
+        for a in [
+            json!({"bars":1,"start_s":0}),
+            json!({"length_s":0}),
+            json!({"start_s":9999}),
+            json!({"bars":9}),
+        ] {
+            assert!(e.call("prepare_mix_translation_set", &a).is_err());
+            assert!(e.transport.pending_audition.is_none());
+        }
+        e.call("set_mixer", &json!({"track":"keys","mute":true}))
+            .unwrap();
+        let v = e
+            .call("prepare_mix_translation_set", &json!({"length_s":1}))
+            .unwrap();
+        for item in v["versions"].as_array().unwrap() {
+            assert_eq!(item["mono_check"]["status"], "source_below_floor");
+            assert!(item["mono_check"]["mono_change_db"].is_null());
+            assert_eq!(item["safety_gain_db"], 0.0);
+        }
+    }
+    #[test]
+    fn transforms_keep_cancellation_and_individual_safety_not_level_matching() {
+        let input = [2., -2., 2., -2.];
+        let inverse = [-2., 2., -2., 2.];
+        let (mut l, mut r) = (input, inverse);
+        let stereo = translation_transform(&mut l, &mut r, "stereo");
+        assert!(stereo < 1.);
+        let (mut l, mut r) = (input, inverse);
+        let mono = translation_transform(&mut l, &mut r, "mono");
+        assert_eq!(mono, 1.);
+        assert_eq!(l, [0.; 4]);
+        assert_eq!(r, l);
+        let (mut l, mut r) = (input, inverse);
+        let phone = translation_transform(&mut l, &mut r, "phone");
+        assert_eq!(phone, 1.);
+        assert_eq!(l, [0.; 4]);
+        assert_eq!(r, l);
     }
 }
