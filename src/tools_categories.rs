@@ -90,7 +90,7 @@ pub const CATEGORIES: &[Category] = &[
     Category {
         name: "effects",
         description: "Effects: add/tweak/remove/bypass/reorder effects, FX chains, one-knob polish, A/B an effect.",
-        actions: &["preview_return", "set_return_filter", "create_parallel_send", "create_echo_send", "create_room_send", "add_effect", "tweak_effect", "remove_effect", "get_effects", "set_track_insert_bypass", "bypass_effect", "reorder_effects", "describe_effect", "place_fx", "move_effect", "ab_compare", "list_fx_chains", "apply_fx_chain", "save_fx_chain", "copy_fx_chain", "soundgoodizer", "set_bus_glue", "set_track_colour", "set_drum_punch", "set_musical_delay", "set_bass_safe_width", "duck_to_track", "preview_mix_translation", "multiband_dynamics"],
+        actions: &["preview_return", "set_return_filter", "create_parallel_send", "create_echo_send", "create_room_send", "add_effect", "tweak_effect", "remove_effect", "get_effects", "set_track_insert_bypass", "bypass_effect", "reorder_effects", "describe_effect", "place_fx", "move_effect", "ab_compare", "list_fx_chains", "apply_fx_chain", "save_fx_chain", "copy_fx_chain", "soundgoodizer", "set_bus_glue", "set_track_colour", "set_drum_punch", "set_musical_delay", "set_bass_safe_width", "duck_to_track", "preview_mix_translation", "prepare_mix_translation_set", "multiband_dynamics"],
     },
     Category {
         name: "vocals",
