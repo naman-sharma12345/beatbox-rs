@@ -657,8 +657,20 @@ fn save(
         let g = 0.98 / pk;
         y.iter_mut().for_each(|v| *v *= g);
     }
-    let name = crate::samples::sample_name(nn);
+    let base_name = crate::samples::sample_name(nn);
     std::fs::create_dir_all(e.samples_dir())?;
+    let mut name = base_name.clone();
+    let mut suffix = 2;
+    while e
+        .project
+        .samples
+        .iter()
+        .any(|s| s.name.eq_ignore_ascii_case(&name))
+        || e.samples_dir().join(format!("{name}.wav")).exists()
+    {
+        name = format!("{base_name}_{suffix}");
+        suffix += 1;
+    }
     let path = e.samples_dir().join(format!("{name}.wav"));
     crate::render::write_wav(&path, &y, &y)?;
     let info = crate::samples::SampleInfo {
