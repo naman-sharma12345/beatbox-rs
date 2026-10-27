@@ -406,9 +406,19 @@ pub fn tools() -> Vec<Tool> {
                     let mut data: Vec<f32> = Vec::new();
                     for (s, t) in &rg { data.extend_from_slice(&mono[*s..*t]); }
                     if data.is_empty() { bail!("everything is below the threshold"); }
-                    let path = e.samples_dir().join(format!("{}_stripped.wav", crate::samples::sample_name(&sname)));
+                    let base_name = format!("{}_stripped", crate::samples::sample_name(&sname));
+                    std::fs::create_dir_all(e.samples_dir())?;
+                    let mut name = base_name.clone();
+                    let mut suffix = 2;
+                    while e.project.samples.iter().any(|s| s.name.eq_ignore_ascii_case(&name))
+                        || e.samples_dir().join(format!("{name}.wav")).exists()
+                    {
+                        name = format!("{base_name}_{suffix}");
+                        suffix += 1;
+                    }
+                    let path = e.samples_dir().join(format!("{name}.wav"));
                     crate::render::write_wav(&path, &data, &data)?;
-                    let info = crate::samples::SampleInfo { name: format!("{sname}_stripped"), path: path.to_string_lossy().to_string(), source: format!("strip_silence of {sname}"), license: String::new(), author: String::new(), duration: 0.0 };
+                    let info = crate::samples::SampleInfo { name, path: path.to_string_lossy().to_string(), source: format!("strip_silence of {sname}"), license: String::new(), author: String::new(), duration: 0.0 };
                     let reg = crate::tools::register_sample(e, info)?;
                     out["new_sample"] = reg["sample"].clone();
                     out["new_s"] = json!((data.len() as f32 / SR * 100.0).round() / 100.0);
