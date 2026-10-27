@@ -61,12 +61,37 @@ fn bounce(e: &mut Engine, a: &Value) -> Result<Value> {
     }
     let dir = e.workdir.join("bounces");
     std::fs::create_dir_all(&dir)?;
-    let file = dir.join(format!("{}.wav", crate::samples::sample_name(&name)));
-    render::write_wav(&file, &stem.left, &stem.right)?;
+    let base_name = crate::samples::sample_name(&name);
+    let mut sample_name = base_name.clone();
+    let mut suffix = 2;
+    let file = loop {
+        if e.project
+            .samples
+            .iter()
+            .any(|s| s.name.eq_ignore_ascii_case(&sample_name))
+        {
+            sample_name = format!("{base_name}_{suffix}");
+            suffix += 1;
+            continue;
+        }
+        let file = dir.join(format!("{sample_name}.wav"));
+        match render::write_wav_new(&file, &stem.left, &stem.right) {
+            Ok(()) => break file,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) =>
+            {
+                sample_name = format!("{base_name}_{suffix}");
+                suffix += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    };
     let reg = register_sample(
         e,
         SampleInfo {
-            name: crate::samples::sample_name(&name),
+            name: sample_name,
             path: file.to_string_lossy().into(),
             source: format!("bounce of track '{src}'"),
             license: "own render".into(),
