@@ -1,0 +1,73 @@
+name: Publish consolidated clip file preservation
+'on':
+  push:
+    branches:
+    - consolidate-guard
+    paths:
+    - .github/workflows/*publish-v236.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/consolidate-guard'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 73a8cf4c196b51c6739e31cbc33766d4dee20419 ]
+
+        [ "$(git rev-parse origin/main)" = 73a8cf4c196b51c6739e31cbc33766d4dee20419
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''d6a5af26de717603e040b4949ec27eec7fb794e64147621ddfae64465c02f7b1''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_timeline.rs'': ''1ed0646440ddaef4cc6921c5cfe9231285b63a63bf97890f95288f70800c9232'',
+        ''tests/consolidate_preservation.rs'': ''d00e5479605d5f21ac948965a404ecbca50ab927080320d1f3c8f80726537572''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_timeline.rs tests/consolidate_preservation.rs
+
+        git commit -m "Preserve prior consolidated clips and undo audio"
+
+        git fetch origin consolidate-guard main
+
+        [ "$(git rev-parse origin/consolidate-guard)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 73a8cf4c196b51c6739e31cbc33766d4dee20419
+        ]
+
+        git push origin HEAD:refs/heads/consolidate-guard
+
+        '
