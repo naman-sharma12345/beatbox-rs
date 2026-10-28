@@ -1,0 +1,73 @@
+name: Publish stereo denoise validation
+'on':
+  push:
+    branches:
+    - stereo-denoise
+    paths:
+    - .github/workflows/*publish-v250.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/stereo-denoise'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 0ba7113be1f9c0c618dd904e1d2ff04af3f83c3e ]
+
+        [ "$(git rev-parse origin/main)" = 0ba7113be1f9c0c618dd904e1d2ff04af3f83c3e
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''92a2f6ba3438494893ea3e93eda14f91643eb7f0d62bbcccc0d655bafe7f67ff''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_sound.rs'': ''01f9ddd035df1b0d5d8cfc50f23c03d0c9e1ded7586f12165896d2d9faaa0745'',
+        ''tests/stereo_denoise.rs'': ''8d8702dbeb9b87c5bb68fdac9a0884db9dfa4d626d751706aafbaa1fbdd4cc04''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_sound.rs tests/stereo_denoise.rs
+
+        git commit -m "Preserve stereo channels when denoising samples"
+
+        git fetch origin stereo-denoise main
+
+        [ "$(git rev-parse origin/stereo-denoise)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 0ba7113be1f9c0c618dd904e1d2ff04af3f83c3e
+        ]
+
+        git push origin HEAD:refs/heads/stereo-denoise
+
+        '
