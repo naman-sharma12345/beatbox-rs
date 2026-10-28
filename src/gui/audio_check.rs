@@ -187,6 +187,8 @@ struct Prepared {
     bounds: Bounds,
     path: PathBuf,
     audio: super::PreviewAudio,
+    requested_bounds: Bounds,
+    raw: Value,
 }
 enum Output {
     Report(Report),
@@ -199,6 +201,7 @@ struct Job {
 
 /// Actual production hit rectangles, useful to pointer tests and native drivers.
 /// They are geometry, never a way to inject a completed report.
+#[derive(Clone)]
 pub(super) struct Targets {
     check: egui::Rect,
     whole: egui::Rect,
@@ -208,6 +211,15 @@ pub(super) struct Targets {
     last: egui::Rect,
     clip: egui::Rect,
     max_text_right: f32,
+    play_enabled: bool,
+    report_heading: egui::Rect,
+    notice: egui::Rect,
+    first_event: egui::Rect,
+    last_event: egui::Rect,
+    last_detail: egui::Rect,
+    prepared: egui::Rect,
+    stale: egui::Rect,
+    error: egui::Rect,
 }
 impl Default for Targets {
     fn default() -> Self {
@@ -220,6 +232,15 @@ impl Default for Targets {
             last: egui::Rect::NOTHING,
             clip: egui::Rect::NOTHING,
             max_text_right: 0.0,
+            play_enabled: false,
+            report_heading: egui::Rect::NOTHING,
+            notice: egui::Rect::NOTHING,
+            first_event: egui::Rect::NOTHING,
+            last_event: egui::Rect::NOTHING,
+            last_detail: egui::Rect::NOTHING,
+            prepared: egui::Rect::NOTHING,
+            stale: egui::Rect::NOTHING,
+            error: egui::Rect::NOTHING,
         }
     }
 }
@@ -234,8 +255,12 @@ pub(super) struct State {
     expected_request: Option<u64>,
     error: Option<String>,
     stale: bool,
+    native_targets: Option<Targets>,
 }
 impl State {
+    pub(super) fn begin_native_frame(&mut self) {
+        self.native_targets = None;
+    }
     fn invalidate(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);
         self.stale = true;
@@ -405,6 +430,8 @@ impl State {
                     bounds: actual,
                     path: path.clone(),
                     audio: Arc::new(audio),
+                    requested_bounds: bounds,
+                    raw: value,
                 }))
             })();
             if result.is_ok() {
@@ -471,6 +498,8 @@ impl State {
                         && self.prepared.is_some() && self.job.is_none();
                     let response = ui.add_enabled(ready, egui::Button::new("Play excerpt"));
                     targets.play = response.rect;
+                    targets.play_enabled = response.enabled();
+                    if native_focus(ui.ctx(), "transport") { response.scroll_to_me(Some(egui::Align::TOP)); }
                     play = response.clicked();
                     let response = ui.button("Stop excerpt");
                     targets.stop = response.rect;
@@ -481,10 +510,12 @@ impl State {
                 if let Some(error) = &self.error {
                     let response = ui.add(egui::Label::new(format!("Audio check: {error} Retry when ready.")).wrap());
                     targets.max_text_right = targets.max_text_right.max(response.rect.right());
+                    targets.error = response.rect;
+                    if native_focus(ui.ctx(), "error") { response.scroll_to_me(Some(egui::Align::TOP)); }
                 }
-                if self.stale && self.report.is_some() { ui.add(egui::Label::new("Previous report is stale. Check audio again. Play disabled.").wrap()); }
+                if self.stale && self.report.is_some() { targets.stale = ui.add(egui::Label::new("Previous report is stale. Check audio again. Play disabled.").wrap()).rect; }
                 if let Some(p) = &self.prepared {
-                    ui.add(egui::Label::new(format!("Prepared {:.2} to {:.2} s: {}", p.bounds.start,p.bounds.end,p.path.display())).wrap());
+                    targets.prepared = ui.add(egui::Label::new(format!("Prepared {:.2} to {:.2} s: {}", p.bounds.start,p.bounds.end,p.path.display())).wrap()).rect;
                 }
                 if let Some((key, report)) = &self.report {
                     let current = self.current(key, &engine.lock().unwrap());
@@ -505,6 +536,13 @@ impl State {
         }
         if stop {
             super::stop_comparison_preview(&mut engine.lock().unwrap());
+        }
+        if ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(egui::Id::new("audio_native_active")))
+            .unwrap_or(false)
+        {
+            self.native_targets = Some(targets.clone());
         }
         targets
     }
@@ -554,7 +592,7 @@ fn show_report(
     targets: &mut Targets,
 ) {
     let source = report.raw["source"].as_str().unwrap_or("Whole mix");
-    ui.add(
+    let summary = ui.add(
         egui::Label::new(format!(
             "Source: {source}. {} events returned; {} warnings, {} failures in checked window.",
             report.events.len(),
@@ -563,6 +601,10 @@ fn show_report(
         ))
         .wrap(),
     );
+    targets.report_heading = summary.rect;
+    if native_focus(ui.ctx(), "report") {
+        summary.scroll_to_me(Some(egui::Align::TOP));
+    }
     if let Some(b) = report.window {
         ui.label(format!(
             "Checked {:.2} to {:.2} s (absolute elapsed time)",
@@ -571,14 +613,16 @@ fn show_report(
     } else {
         ui.add(egui::Label::new("Effective window metadata unavailable. Ending applicability unverified; event times are absolute elapsed seconds.").wrap());
     }
-    ui.add(
-        egui::Label::new(if report.ending_checked {
-            "Source ending checked in this window"
-        } else {
-            "Excerpt boundary, song ending not checked"
-        })
-        .wrap(),
-    );
+    targets.notice = ui
+        .add(
+            egui::Label::new(if report.ending_checked {
+                "Source ending checked in this window"
+            } else {
+                "Excerpt boundary, song ending not checked"
+            })
+            .wrap(),
+        )
+        .rect;
     if report.events.is_empty() {
         ui.add(
             egui::Label::new(
@@ -593,18 +637,23 @@ fn show_report(
             .end
             .map(|end| format!(" to {end:.2}"))
             .unwrap_or_default();
-        ui.add(
+        let heading = ui.add(
             egui::Label::new(format!(
                 "{} | {} | {:.2}{range} s",
                 event.kind, event.severity, event.time
             ))
             .wrap(),
         );
+        if index == 0 {
+            targets.first_event = heading.rect;
+        }
+        targets.last_event = heading.rect;
         if let Some(track) = &event.track {
             let response = ui.add(egui::Label::new(format!("Track: {track}")).wrap());
             targets.max_text_right = targets.max_text_right.max(response.rect.right());
         }
         let response = ui.add(egui::Label::new(&event.detail).wrap());
+        targets.last_detail = response.rect;
         targets.max_text_right = targets.max_text_right.max(response.rect.right());
         if let Ok(b) = report.excerpt(index) {
             ui.horizontal_wrapped(|ui| {
@@ -617,7 +666,378 @@ fn show_report(
             });
         }
     }
-    targets.last = ui.label("End of returned event report").rect;
+    let last = ui.label("End of returned event report");
+    if ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(egui::Id::new("audio_native_last")))
+        .unwrap_or(false)
+    {
+        last.scroll_to_me(Some(egui::Align::BOTTOM));
+    }
+    targets.last = last.rect;
+}
+
+fn native_terminal_visible(scenario: NativeScenario, t: &Targets, state: &State) -> bool {
+    let seen = |r: egui::Rect| r.is_positive() && t.clip.contains_rect(r);
+    if state.job.is_some() {
+        return false;
+    }
+    match scenario {
+        NativeScenario::Long => {
+            state
+                .report
+                .as_ref()
+                .is_some_and(|(_, r)| r.events.len() >= 21)
+                && seen(t.last_event)
+                && seen(t.last_detail)
+                && seen(t.last)
+        }
+        NativeScenario::Stale => {
+            state.stale
+                && state.prepared.is_none()
+                && !t.play_enabled
+                && seen(t.play)
+                && seen(t.stale)
+        }
+        NativeScenario::Prepared => {
+            state.prepared.is_some() && t.play_enabled && seen(t.play) && seen(t.prepared)
+        }
+        NativeScenario::InvalidRange => state.error.is_some() && !t.play_enabled && seen(t.error),
+        _ => {
+            state.report.is_some()
+                && !state.stale
+                && seen(t.report_heading)
+                && seen(t.notice)
+                && seen(t.first_event)
+        }
+    }
+}
+
+fn native_focus(ctx: &egui::Context, focus: &str) -> bool {
+    ctx.data(|d| d.get_temp::<String>(egui::Id::new("audio_native_focus")))
+        .is_some_and(|value| value == focus)
+}
+
+/// Screenshot-only selectors. Not CLI/MCP actions and never active in ordinary Studio.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NativeScenario {
+    Populated,
+    Interior,
+    InvalidRange,
+    Retry,
+    Prepared,
+    Stale,
+    Long,
+}
+impl NativeScenario {
+    fn select(
+        value: Option<&str>,
+        screenshot: bool,
+        no_listen: bool,
+    ) -> Result<Option<Self>, String> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        if !screenshot || !no_listen {
+            return Err("Audio scenarios require --screenshot and BEATBOX_NO_LISTEN=1.".into());
+        }
+        Self::parse(value).map(Some)
+    }
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "populated" => Ok(Self::Populated),
+            "interior" => Ok(Self::Interior),
+            "invalid-range" => Ok(Self::InvalidRange),
+            "retry" => Ok(Self::Retry),
+            "prepared" => Ok(Self::Prepared),
+            "stale" => Ok(Self::Stale),
+            "long" => Ok(Self::Long),
+            _ => Err(format!("Unknown audio screenshot scenario: {value}")),
+        }
+    }
+}
+
+/// Bounded adapter over the SAME handlers used by pane buttons. The only
+/// accepted reports/errors/previews come through request_check/request_prepare
+/// and pump. No ReadyReport/Output injection, sleeps, playback or listener.
+pub(super) struct NativeCapture {
+    scenario: NativeScenario,
+    name: String,
+    pub(super) scale: f32,
+    started: std::time::Instant,
+    phase: u8,
+    settled: u8,
+    actions: Vec<Value>,
+}
+impl NativeCapture {
+    pub(super) fn from_environment(screenshot: bool) -> Result<Option<Self>, String> {
+        let Some(name) = std::env::var_os("BEATBOX_AUDIO_SCENARIO") else {
+            return Ok(None);
+        };
+        let name = name.into_string().map_err(|_| "Scenario must be UTF-8.")?;
+        let scenario = NativeScenario::select(
+            Some(&name),
+            screenshot,
+            std::env::var("BEATBOX_NO_LISTEN").as_deref() == Ok("1"),
+        )?
+        .ok_or("Missing scenario.")?;
+        let scale = match std::env::var("BEATBOX_AUDIO_SCALE").as_deref() {
+            Ok("2") => 2.0,
+            Ok("1") | Err(_) => 1.0,
+            _ => return Err("Audio capture scale must be 1 or 2.".into()),
+        };
+        Ok(Some(Self {
+            scenario,
+            name,
+            scale,
+            started: std::time::Instant::now(),
+            phase: 0,
+            settled: 0,
+            actions: Vec::new(),
+        }))
+    }
+    pub(super) fn activate(&self, ctx: &egui::Context) {
+        ctx.set_pixels_per_point(self.scale);
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("audio_native_active"), true);
+            d.insert_temp(
+                egui::Id::new("audio_native_last"),
+                self.scenario == NativeScenario::Long,
+            );
+            let focus = match self.scenario {
+                NativeScenario::Prepared | NativeScenario::Stale => "transport",
+                NativeScenario::InvalidRange => "error",
+                NativeScenario::Long => "last",
+                _ => "report",
+            };
+            d.insert_temp(egui::Id::new("audio_native_focus"), focus.to_string());
+        });
+    }
+    fn log(&mut self, action: &str, result: Value) {
+        let row = json!({"elapsed_ms":self.started.elapsed().as_millis(), "action":action,"result":result});
+        eprintln!("audio-native {row}");
+        self.actions.push(row);
+    }
+    fn request(
+        &mut self,
+        state: &mut State,
+        e: &Engine,
+        ctx: &egui::Context,
+    ) -> Result<(), String> {
+        self.log("request_check", state.params.args()?);
+        state.request_check(e, ctx);
+        if state.job.is_none() {
+            return Err("Check worker was not launched.".into());
+        }
+        Ok(())
+    }
+    fn proof(&self, state: &State) -> Value {
+        json!({"report":state.report.as_ref().map(|(_,r)|&r.raw), "error":state.error,
+            "worker_pending":state.job.is_some(), "stale":state.stale,
+            "play_widget_enabled":state.native_targets.as_ref().map(|t|t.play_enabled),
+            "prepared":state.prepared.as_ref().map(|p|json!({"path":p.path,
+                "start_s":p.bounds.start,"end_s":p.bounds.end,
+                "decoded_frames":p.audio.0.len(),"decoded_seconds":p.audio.0.len() as f64 / crate::dsp::SR as f64,
+                "request":{"start_s":p.requested_bounds.start,"end_s":p.requested_bounds.end,
+                    "out":p.path,"max_seconds":60,"tail_s":0,"spectrogram":false,"inline_audio":false},
+                "raw":p.raw}))})
+    }
+    /// Called AFTER painting the real workspace. True means a genuine terminal
+    /// state has remained paintable for several frames, not just a click sent.
+    pub(super) fn advance(
+        &mut self,
+        state: &mut State,
+        e: &mut Engine,
+        ctx: &egui::Context,
+        song_ready: bool,
+    ) -> Result<bool, String> {
+        if self.started.elapsed() > std::time::Duration::from_secs(90) {
+            return Err(format!(
+                "Audio scenario {} exceeded 90 s in phase {}",
+                self.name, self.phase
+            ));
+        }
+        // Native capture never queues playback, including the baseline shot autoplay.
+        if e.transport.playing
+            || e.transport
+                .pending_audition
+                .as_ref()
+                .is_some_and(|p| p.is_some())
+        {
+            return Err("Unexpected playback during audio capture.".into());
+        }
+        if !song_ready {
+            return Ok(false);
+        }
+        if self.phase == 0 {
+            self.log(
+                "song_render_ready",
+                json!({"revision":e.revision,"generation":e.project_load_generation}),
+            );
+            state.params = match self.scenario {
+                NativeScenario::Interior => Parameters {
+                    whole: false,
+                    start: 0.0,
+                    end: 1.0,
+                },
+                NativeScenario::InvalidRange | NativeScenario::Retry => Parameters {
+                    whole: false,
+                    start: 60000.0,
+                    end: 60001.0,
+                },
+                _ => Parameters::default(),
+            };
+            self.request(state, e, ctx)?;
+            self.phase = 1;
+            return Ok(false);
+        }
+        if state.job.is_some() {
+            return Ok(false);
+        }
+        if self.phase == 1
+            && matches!(
+                self.scenario,
+                NativeScenario::InvalidRange | NativeScenario::Retry
+            )
+        {
+            let error = state
+                .error
+                .as_ref()
+                .ok_or("Expected a real invalid-range worker error.")?;
+            if state.report.is_some()
+                || !error.contains("artifact window starts outside the available source")
+                || error.contains("internal error")
+            {
+                return Err(
+                    "Invalid-range scenario did not produce an ordinary analysis error.".into(),
+                );
+            }
+            if self.scenario == NativeScenario::Retry {
+                self.log("invalid_range_error", json!(error));
+                state.params = Parameters::default();
+                self.request(state, e, ctx)?;
+                self.phase = 2;
+                return Ok(false);
+            }
+        } else {
+            if let Some(error) = &state.error {
+                return Err(format!("Audio worker failed: {error}"));
+            }
+            let (key, report) = state
+                .report
+                .as_ref()
+                .ok_or("Worker finished without report.")?;
+            if (self.scenario != NativeScenario::Stale || self.phase < 3) && !state.current(key, e)
+            {
+                return Err("Expected a current real report.".into());
+            }
+            if report.events.is_empty() {
+                return Err(
+                    "Authored project yielded no findings; populated evidence missing.".into(),
+                );
+            }
+            if self.scenario == NativeScenario::Interior
+                && (report.ending_checked
+                    || report.window.is_none_or(|b| {
+                        b.start != 0.0 || (b.end - 1.0).abs() > 1.0 / crate::dsp::SR
+                    })
+                    || report.source_end.is_none_or(|end| end <= 1.0))
+            {
+                return Err("Interior window applicability was not verified.".into());
+            }
+            if self.scenario == NativeScenario::Long && report.events.len() < 21 {
+                return Err(
+                    "Actual detector returned fewer than 21 findings; long evidence missing."
+                        .into(),
+                );
+            }
+            if matches!(
+                self.scenario,
+                NativeScenario::Prepared | NativeScenario::Stale
+            ) && self.phase == 1
+            {
+                self.log("real_check_complete", self.proof(state));
+                state.request_prepare(0, e, ctx);
+                if state.job.is_none() {
+                    return Err("Prepare worker was not launched.".into());
+                }
+                self.log(
+                    "request_prepare",
+                    json!({"event_index":0,"tail_s":0,"spectrogram":false,"inline_audio":false}),
+                );
+                self.phase = 2;
+                return Ok(false);
+            }
+            if matches!(
+                self.scenario,
+                NativeScenario::Prepared | NativeScenario::Stale
+            ) && self.phase == 2
+            {
+                if state.prepared.is_none() {
+                    return Err("Prepare completed without decoded audio.".into());
+                }
+                if self.scenario == NativeScenario::Stale {
+                    self.log("real_prepare_complete", self.proof(state));
+                    let before = e.revision;
+                    let result = e
+                        .call_from(
+                            "set_tempo",
+                            &json!({"bpm":if e.project.bpm == 123.0 {124.0} else {123.0}}),
+                            "mcp",
+                        )
+                        .map_err(|err| format!("Shared Engine edit failed: {err:#}"))?;
+                    if e.revision == before {
+                        return Err("Shared Engine edit did not advance revision.".into());
+                    }
+                    self.log("same_shared_engine_call_from_not_external_mcp",json!({"before_revision":before,"after_revision":e.revision,"result":result}));
+                    state.pump(e, ctx);
+                    self.phase = 3;
+                    return Ok(false);
+                }
+            }
+        }
+        let Some(targets) = &state.native_targets else {
+            return Ok(false);
+        };
+        let valid = native_terminal_visible(self.scenario, targets, state);
+        self.settled = if valid {
+            self.settled.saturating_add(1)
+        } else {
+            0
+        };
+        Ok(self.settled >= 5)
+    }
+    pub(super) fn manifest(
+        &self,
+        path: &std::path::Path,
+        state: &State,
+        ctx: &egui::Context,
+        dimensions: [usize; 2],
+    ) -> Result<(), String> {
+        let rect = |r: egui::Rect| [r.min.x, r.min.y, r.max.x, r.max.y];
+        let geometry = state.native_targets.as_ref().map(|t| {
+            json!({
+            "clip":rect(t.clip),"report_heading":rect(t.report_heading),
+            "ending_notice":rect(t.notice),"first_event":rect(t.first_event),
+            "last_event":rect(t.last_event),"last_detail":rect(t.last_detail),
+            "last_marker":rect(t.last),"play":rect(t.play),"prepared":rect(t.prepared),
+            "stale":rect(t.stale),"error":rect(t.error),
+            "terminal_visible":native_terminal_visible(self.scenario,t,state)})
+        });
+        let doc = json!({"schema":1,"scenario":self.name,"scale":self.scale,
+            "build_sha":option_env!("BEATBOX_BUILD_SHA"),
+            "elapsed_ms":self.started.elapsed().as_millis(),"geometry":geometry,
+            "captured_project":state.report.as_ref().map(|(key,_)|&key.project),
+            "viewport_pixels":dimensions,"logical_viewport":[ctx.screen_rect().width(),ctx.screen_rect().height()],
+            "pixels_per_point":ctx.pixels_per_point(),"actions":self.actions,"result":self.proof(state),
+            "capture":"native viewport; production handlers; genuine worker completions",
+            "autoplay":false,"external_mcp_proof":false,"pending_capture":"not attempted"});
+        std::fs::write(
+            path.with_extension("json"),
+            serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())
+    }
 }
 
 // All production handlers and UI must precede this first test gate so the
@@ -684,6 +1104,8 @@ mod tests {
             bounds: Bounds::checked(0.0, 1.0).unwrap(),
             path: PathBuf::from("unit-fixture-only.wav"),
             audio: Arc::new((vec![0.0; 8], vec![0.0; 8])),
+            requested_bounds: Bounds::checked(0.0, 1.0).unwrap(),
+            raw: json!({"unit_fixture_only":true}),
         });
     }
     fn wait(state: &mut State, e: &Engine, ctx: &egui::Context) {
@@ -693,6 +1115,168 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(state.job.is_none(), "bounded worker wait expired");
+    }
+
+    #[test]
+    fn native_selection_requires_screenshot_and_no_listener_and_rejects_typos() {
+        assert_eq!(NativeScenario::select(None, false, false).unwrap(), None);
+        for name in [
+            "populated",
+            "interior",
+            "invalid-range",
+            "retry",
+            "prepared",
+            "stale",
+            "long",
+        ] {
+            assert!(NativeScenario::select(Some(name), true, true)
+                .unwrap()
+                .is_some());
+            assert!(NativeScenario::select(Some(name), false, true).is_err());
+            assert!(NativeScenario::select(Some(name), true, false).is_err());
+        }
+        for name in ["", "pending", "Populated", "ready-injection", "long "] {
+            assert!(NativeScenario::select(Some(name), true, true).is_err());
+        }
+    }
+
+    #[test]
+    fn native_terminal_gates_require_visible_real_state_not_just_old_rectangles() {
+        let dir = TestDir::new();
+        let e = dir.engine();
+        let mut state = ready(&e, 37); // unit-only report; never passed to a native window
+        let visible = Rect::from_min_max(Pos2::new(10.0, 10.0), Pos2::new(90.0, 30.0));
+        let mut t = Targets {
+            clip: Rect::from_min_max(Pos2::ZERO, Pos2::new(100.0, 100.0)),
+            report_heading: visible,
+            notice: visible,
+            first_event: visible,
+            last_event: visible,
+            last_detail: visible,
+            last: visible,
+            play: visible,
+            prepared: visible,
+            stale: visible,
+            error: visible,
+            ..Default::default()
+        };
+        assert!(native_terminal_visible(
+            NativeScenario::Populated,
+            &t,
+            &state
+        ));
+        assert!(native_terminal_visible(NativeScenario::Long, &t, &state));
+        t.last = Rect::from_min_max(Pos2::new(10.0, 110.0), Pos2::new(90.0, 130.0));
+        assert!(!native_terminal_visible(NativeScenario::Long, &t, &state));
+        assert!(!native_terminal_visible(
+            NativeScenario::Prepared,
+            &t,
+            &state
+        ));
+        prepared(&mut state);
+        assert!(!native_terminal_visible(
+            NativeScenario::Prepared,
+            &t,
+            &state
+        ));
+        t.play_enabled = true;
+        assert!(native_terminal_visible(
+            NativeScenario::Prepared,
+            &t,
+            &state
+        ));
+        state.invalidate();
+        assert!(!native_terminal_visible(NativeScenario::Stale, &t, &state));
+        t.play_enabled = false;
+        assert!(native_terminal_visible(NativeScenario::Stale, &t, &state));
+        state.begin_native_frame();
+        assert!(state.native_targets.is_none());
+        state = ready(&e, 1);
+        assert!(!native_terminal_visible(NativeScenario::Long, &t, &state));
+        state.error = Some("ordinary invalid range".into());
+        assert!(native_terminal_visible(
+            NativeScenario::InvalidRange,
+            &t,
+            &state
+        ));
+        let (_tx, rx) = mpsc::channel();
+        state.job = Some(Job {
+            key: state.report.as_ref().unwrap().0.clone(),
+            receiver: rx,
+        });
+        assert!(!native_terminal_visible(
+            NativeScenario::InvalidRange,
+            &t,
+            &state
+        ));
+    }
+
+    #[test]
+    fn actual_invalid_range_worker_can_be_corrected_and_retried() {
+        let dir = TestDir::new();
+        let e = dir.engine();
+        let ctx = egui::Context::default();
+        let mut state = State {
+            params: Parameters {
+                whole: false,
+                start: 60000.0,
+                end: 60001.0,
+            },
+            ..Default::default()
+        };
+        state.request_check(&e, &ctx);
+        assert!(state.job.is_some(), "not a local bounds-validation error");
+        wait(&mut state, &e, &ctx);
+        assert!(state.error.is_some());
+        assert!(state
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("artifact window starts outside the available source"));
+        assert!(!state.error.as_ref().unwrap().contains("internal error"));
+        assert!(state.report.is_none());
+        state.params = Parameters::default();
+        state.request_check(&e, &ctx);
+        wait(&mut state, &e, &ctx);
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(state.report.is_some());
+        assert!(e.transport.pending.is_empty());
+        assert!(e.transport.pending_audition.is_none());
+    }
+
+    #[test]
+    fn authored_impulse_project_real_detector_produces_long_report_without_injection() {
+        let dir = TestDir::new();
+        let mut e = dir.engine();
+        e.project.patterns[0].bars = 4;
+        let mut samples: Vec<f32> = (0..4 * 44100)
+            .map(|i| 0.025 * (std::f32::consts::TAU * 220.0 * i as f32 / 44100.0).sin())
+            .collect();
+        for j in 0..32 {
+            samples[((0.10 + 0.11 * j as f64) * 44100.0).round() as usize] += 0.7;
+        }
+        let path = dir.0.join("impulses.wav");
+        std::fs::write(&path, crate::media::wav_bytes(&samples, &samples, 44100)).unwrap();
+        e.call("import_sample", &json!({"path":path,"name":"impulses"}))
+            .unwrap();
+        e.call(
+            "add_track",
+            &json!({"name":"Diagnostic signal","preset":"pad","volume_db":0}),
+        )
+        .unwrap();
+        e.call(
+            "add_audio_clip",
+            &json!({"track":"Diagnostic signal","sample":"impulses","start_beat":0,"length_s":4}),
+        )
+        .unwrap();
+        let ctx = egui::Context::default();
+        let mut state = State::default();
+        state.request_check(&e, &ctx);
+        wait(&mut state, &e, &ctx);
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(state.report.as_ref().unwrap().1.events.len() >= 21);
+        assert!(e.transport.pending.is_empty());
+        assert!(e.transport.pending_audition.is_none());
     }
 
     #[test]

@@ -316,6 +316,7 @@ pub struct Studio {
     comparison_length_s: f32,
     // screenshot mode
     screenshot: Option<PathBuf>,
+    native_capture: Option<audio_check::NativeCapture>,
     frames: u64,
     shot_requested: bool,
     /// Performance mode: the pattern looping live, and a launch waiting for
@@ -365,19 +366,30 @@ pub fn run(
     screenshot: Option<PathBuf>,
     view: Option<String>,
 ) -> anyhow::Result<()> {
+    let native_capture = audio_check::NativeCapture::from_environment(screenshot.is_some())
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let native_scale = native_capture.as_ref().map_or(1.0, |c| c.scale);
+    let view = if native_capture.is_some() {
+        Some("mixer".to_string())
+    } else {
+        view
+    };
     let view = view
         .and_then(|v| VIEWS.iter().position(|n| n.eq_ignore_ascii_case(&v)))
         .unwrap_or(3);
     let engine = Arc::new(Mutex::new(engine));
-    let server_ok = crate::server::spawn(engine.clone(), listen).is_ok();
+    // The existing screenshot tool sets this guard. Honor it here, before any
+    // socket is bound; scenario evidence never requires a control listener.
+    let server_ok = std::env::var("BEATBOX_NO_LISTEN").as_deref() != Ok("1")
+        && crate::server::spawn(engine.clone(), listen).is_ok();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Beatbox Studio")
             .with_inner_size(
                 if screenshot.is_some() && std::env::var_os("BEATBOX_NARROW_SHOT").is_some() {
-                    [1100.0, 700.0]
+                    [1100.0 * native_scale, 700.0 * native_scale]
                 } else {
-                    [1480.0, 920.0]
+                    [1480.0 * native_scale, 920.0 * native_scale]
                 },
             )
             .with_min_inner_size([1100.0, 700.0]),
@@ -389,6 +401,9 @@ pub fn run(
         options,
         Box::new(move |cc| {
             apply_theme(&cc.egui_ctx);
+            if let Some(capture) = &native_capture {
+                capture.activate(&cc.egui_ctx);
+            }
             let saved_rev = engine.lock().unwrap().revision;
             let seen_project_load = engine.lock().unwrap().project_load_generation;
             let workspace = if screenshot.is_some() {
@@ -422,7 +437,9 @@ pub fn run(
                 dragging: false,
                 toast: None,
                 render_job: None,
-                mix_readout: None,
+                // The existing header uses this flag only for its initial open
+                // default. Remove the empty opener next frame; no report is injected.
+                mix_readout: native_capture.as_ref().map(|_| String::new()),
                 mix_job: None,
                 mix_readout_revision: None,
                 audio_check: audio_check::State::default(),
@@ -431,6 +448,7 @@ pub fn run(
                 comparison_start_s: 0.0,
                 comparison_length_s: 8.0,
                 screenshot,
+                native_capture,
                 frames: 0,
                 shot_requested: false,
                 perf: None,
@@ -1937,6 +1955,15 @@ impl eframe::App for Studio {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frames += 1;
+        if self.native_capture.is_some() {
+            self.audio_check.begin_native_frame();
+        }
+        if self.native_capture.is_some()
+            && self.frames == 2
+            && self.mix_readout.as_deref() == Some("")
+        {
+            self.mix_readout = None;
+        }
         self.audio_check.pump(&self.engine.lock().unwrap(), ctx);
         // audio files dropped on the window become channels
         let dropped: Vec<PathBuf> = ctx.input(|i| {
@@ -2342,16 +2369,34 @@ impl eframe::App for Studio {
 
         // screenshot automation
         if let Some(path) = self.screenshot.clone() {
-            if self.frames == 2 {
+            if self.native_capture.is_none() && self.frames == 2 {
+                // Keep the ordinary screenshot cursor, but never autoplay for
+                // any capture (including the original ten workflow images).
                 self.player.seek(p.song_seconds() * 0.38);
-                self.player.play();
             }
             let ready = self
                 .rendered
                 .as_ref()
                 .map(|r| r.rev == rev)
                 .unwrap_or(false);
-            if ready && self.frames > 30 && !self.shot_requested {
+            let scenario_ready = if let Some(capture) = &mut self.native_capture {
+                match capture.advance(
+                    &mut self.audio_check,
+                    &mut self.engine.lock().unwrap(),
+                    ctx,
+                    ready,
+                ) {
+                    Ok(ready) => ready,
+                    Err(error) => {
+                        eprintln!("audio-native FAILED: {error}");
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        false
+                    }
+                }
+            } else {
+                true
+            };
+            if ready && scenario_ready && self.frames > 30 && !self.shot_requested {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
                 self.shot_requested = true;
             }
@@ -2365,14 +2410,32 @@ impl eframe::App for Studio {
                 })
             });
             if let Some(img) = shot {
+                if self.native_capture.is_some() && (!scenario_ready || !self.shot_requested) {
+                    eprintln!(
+                        "audio-native FAILED: terminal state changed before viewport capture"
+                    );
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
                 let [w, h] = img.size;
                 let mut buf = Vec::with_capacity(w * h * 4);
                 for px in &img.pixels {
                     buf.extend_from_slice(&px.to_array());
                 }
                 if let Some(im) = image::RgbaImage::from_raw(w as u32, h as u32, buf) {
-                    let _ = im.save(&path);
-                    eprintln!("screenshot saved to {}", path.display());
+                    let saved = im.save(&path).map_err(|e| e.to_string()).and_then(|_| {
+                        if let Some(capture) = &self.native_capture {
+                            capture.manifest(&path, &self.audio_check, ctx, [w, h])
+                        } else {
+                            Ok(())
+                        }
+                    });
+                    if let Err(error) = saved {
+                        let _ = std::fs::remove_file(&path);
+                        eprintln!("screenshot FAILED: {error}");
+                    } else {
+                        eprintln!("screenshot saved to {}", path.display());
+                    }
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }

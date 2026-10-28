@@ -12,6 +12,7 @@ env:
 jobs:
   shots:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,7 +23,22 @@ jobs:
           sudo apt-get install -y libasound2-dev pkg-config libxkbcommon-dev libwayland-dev libx11-dev \
             xvfb xauth libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcursor1 libxrandr2 libxi6 python3
       - name: build (release, GUI feature)
-        run: cargo build --release
+        run: |
+          mkdir -p shots
+          git rev-parse HEAD > shots/build-sha.txt
+          rustc --version --verbose > shots/rustc.txt
+          BEATBOX_BUILD_SHA="$(cat shots/build-sha.txt)" cargo build --release
+          sha256sum target/release/beatbox > shots/binary-sha256.txt
+          python3 - <<'PYPROV'
+          import json, os, subprocess
+          from pathlib import Path
+          Path('shots/checkout.json').write_text(json.dumps({
+              'checkout_sha': subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+              'github_sha': os.environ.get('GITHUB_SHA'),
+              'event': os.environ.get('GITHUB_EVENT_NAME'),
+              'ref': os.environ.get('GITHUB_REF'),
+              'run_id': os.environ.get('GITHUB_RUN_ID')},indent=2))
+          PYPROV
       - name: produce demo beats (rich projects)
         run: |
           mkdir -p demo
@@ -56,7 +72,164 @@ jobs:
           shoot demo/melodic.json playlist ${SHOT_TAG}_playlist_melodic
           shoot demo/melodic.json browser ${SHOT_TAG}_browser_melodic
           ls -la shots
-          [ "$ok" -gt 0 ]
+          [ "$ok" -eq 10 ]
+          for suffix in sequencer mixer automation playlist browser; do
+            test -s "shots/${SHOT_TAG}_${suffix}.png"
+            test -s "shots/${SHOT_TAG}_${suffix}_melodic.png"
+          done
+      - name: tiny authored audio project (no additional producer run)
+        run: |
+          mkdir -p shots/native-fixture
+          python3 - <<'PYFIX'
+          import math, struct, wave
+          from pathlib import Path
+          path = Path('shots/native-fixture/impulses.wav')
+          samples = [0.025*math.sin(math.tau*220*i/44100) for i in range(4*44100)]
+          for j in range(32):
+              samples[round((0.10+0.11*j)*44100)] += 0.7
+          with wave.open(str(path),'wb') as f:
+              f.setparams((2,2,44100,0,'NONE','not compressed'))
+              f.writeframes(b''.join(struct.pack('<hh',round(x*32767),round(x*32767)) for x in samples))
+          PYFIX
+          project="$GITHUB_WORKSPACE/shots/native-fixture/project.json"
+          call() { ./target/release/beatbox call "$1" "$2" --project "$project" >> shots/fixture-actions.log 2>&1; }
+          call new_project '{"name":"Authored diagnostic impulses, not a music quality oracle","bpm":240}'
+          call remove_effect '{"track":"master","index":0}'
+          call remove_effect '{"track":"master","index":0}'
+          call import_sample "{\"path\":\"$GITHUB_WORKSPACE/shots/native-fixture/impulses.wav\",\"name\":\"impulses\",\"license\":\"CC0\",\"source\":\"deterministic authored CI signal\"}"
+          call add_track '{"name":"Diagnostic signal","preset":"pad","volume_db":0}'
+          call add_audio_clip '{"track":"Diagnostic signal","sample":"impulses","start_beat":0,"length_s":4}'
+          sha256sum shots/native-fixture/* > shots/fixture-sha256.txt
+      - name: real native audio-check scenarios and exact manifest
+        run: |
+          python3 - <<'PYNATIVE'
+          import hashlib, json, os, shutil, struct, subprocess, wave, zlib
+          from pathlib import Path
+          root = Path.cwd()
+          shots = root/'shots'
+          binary = root/'target/release/beatbox'
+          project = shots/'native-fixture/project.json'
+          fixture = shots/'native-fixture/impulses.wav'
+          digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          fixture_hashes = {str(p.relative_to(root)):digest(p) for p in (project, fixture)}
+          scenarios = ['populated','interior','invalid-range','retry','prepared','stale','long']
+          cases = [(s,w,h,1) for s in scenarios for w,h in [(1100,700),(1480,920)]]
+          cases += [(s,w,h,2) for s in ['populated','long'] for w,h in [(1100,700),(1480,920)]]
+          expected = [f'audio_{s}_{w}x{h}_{scale}x' for s,w,h,scale in cases]
+          manifest = {'schema':1,'expected':expected,'fixture_sha256':fixture_hashes,
+                      'cases':[], 'missing':[], 'pending':'not attempted; no artificial worker delay',
+                      'external_mcp_proof':False, 'human_inspection':'outstanding'}
+          def save():
+              (shots/'native-results-manifest.json').write_text(json.dumps(manifest,indent=2))
+          save()
+          def png_stream(path):
+              # Decode RGBA8 pixels, not only IHDR. Visual inspection is separate.
+              data=path.read_bytes()
+              assert data[:8] == b'\x89PNG\r\n\x1a\n'
+              pos=8; payload=bytearray(); dims=None; ended=False
+              while pos<len(data):
+                  n=struct.unpack('>I',data[pos:pos+4])[0]
+                  kind=data[pos+4:pos+8]; chunk=data[pos+8:pos+8+n]
+                  crc=struct.unpack('>I',data[pos+8+n:pos+12+n])[0]
+                  assert zlib.crc32(kind+chunk)&0xffffffff == crc
+                  if kind==b'IHDR':
+                      w,h,depth,color,compression,filtering,interlace=struct.unpack('>IIBBBBB',chunk)
+                      assert (depth,color,compression,filtering,interlace)==(8,6,0,0,0)
+                      dims=(w,h)
+                  if kind==b'IDAT': payload.extend(chunk)
+                  if kind==b'IEND': ended=True
+                  pos += n+12
+              assert ended and pos==len(data) and dims
+              w,h=dims; raw=zlib.decompress(payload); stride=w*4+1
+              assert len(raw)==stride*h and all(raw[y*stride]<=4 for y in range(h))
+              pixels=hashlib.sha256(); previous=bytearray(w*4)
+              for y in range(h):
+                  mode=raw[y*stride]; row=bytearray(raw[y*stride+1:(y+1)*stride])
+                  if mode==1:
+                      for x in range(4,len(row)): row[x]=(row[x]+row[x-4])&255
+                  elif mode==2:
+                      row=bytearray((a+b)&255 for a,b in zip(row,previous))
+                  elif mode in (3,4):
+                      for x in range(len(row)):
+                          left=row[x-4] if x>=4 else 0
+                          above=previous[x]; corner=previous[x-4] if x>=4 else 0
+                          if mode==3: predictor=(left+above)//2
+                          else:
+                              estimate=left+above-corner
+                              da,db,dc=abs(estimate-left),abs(estimate-above),abs(estimate-corner)
+                              predictor=left if da<=db and da<=dc else above if db<=dc else corner
+                          row[x]=(row[x]+predictor)&255
+                  pixels.update(row); previous=row
+              return dims,pixels.hexdigest()
+          failures=[]
+          for scenario,w,h,scale in cases:
+              name=f'audio_{scenario}_{w}x{h}_{scale}x'
+              png=shots/(name+'.png'); result=png.with_suffix('.json'); log=png.with_suffix('.log')
+              for path in (png,result): path.unlink(missing_ok=True)
+              env=os.environ.copy()
+              env.update(BEATBOX_AUDIO_SCENARIO=scenario,BEATBOX_AUDIO_SCALE=str(scale),BEATBOX_NO_LISTEN='1')
+              env.pop('BEATBOX_NARROW_SHOT',None)
+              if w==1100: env['BEATBOX_NARROW_SHOT']='1'
+              command=['xvfb-run','-a','-s',f'-screen 0 {w*scale}x{h*scale}x24',
+                       'timeout','110s',str(binary),'call','screenshot',
+                       json.dumps({'view':'mixer','out':str(png),'inline':False}),'--project',str(project)]
+              row={'name':name,'command':command,'scenario':scenario,'scale':scale,
+                   'logical_size':[w,h],'expected_pixels':[w*scale,h*scale]}
+              try:
+                  with log.open('wb') as f:
+                      run=subprocess.run(command,env=env,stdout=f,stderr=subprocess.STDOUT,timeout=120)
+                  row['exit_code']=run.returncode
+                  assert run.returncode==0, 'capture process failed'
+                  assert png.is_file() and result.is_file(), 'required PNG or native result missing'
+                  dimensions,pixel_hash=png_stream(png)
+                  assert dimensions==(w*scale,h*scale), 'unexpected pixel dimensions'
+                  row['decoded_rgba_sha256']=pixel_hash
+                  doc=json.loads(result.read_text())
+                  assert doc['scenario']==scenario and doc['scale']==scale
+                  assert doc['viewport_pixels']==[w*scale,h*scale]
+                  assert abs(doc['pixels_per_point']-scale)<0.01
+                  assert all(abs(a-b)<1.1 for a,b in zip(doc['logical_viewport'],[w,h]))
+                  assert doc['build_sha']==(shots/'build-sha.txt').read_text().strip()
+                  assert doc['autoplay'] is False and doc['external_mcp_proof'] is False
+                  assert doc['result']['worker_pending'] is False
+                  assert doc['geometry']['terminal_visible'] is True
+                  assert any(a['action']=='request_check' for a in doc['actions'])
+                  if scenario=='retry': assert any(a['action']=='invalid_range_error' for a in doc['actions'])
+                  if scenario=='interior': assert doc['result']['report']['window_bounds']['source_end_checked'] is False
+                  if scenario=='invalid-range':
+                      assert 'artifact window starts outside the available source' in doc['result']['error']
+                      assert doc['result']['report'] is None
+                  else: assert doc['result']['report']['events']
+                  if scenario=='long': assert len(doc['result']['report']['events'])>=21
+                  if scenario=='prepared': assert doc['result']['prepared'] and doc['result']['play_widget_enabled'] is True
+                  if scenario=='stale':
+                      assert doc['result']['stale'] is True and doc['result']['play_widget_enabled'] is False
+                      assert any(a['action']=='same_shared_engine_call_from_not_external_mcp' for a in doc['actions'])
+                  # Preserve genuine preview outputs in the existing upload directory.
+                  previews=[doc['result'].get('prepared')]
+                  previews += [a['result'].get('prepared') for a in doc['actions'] if isinstance(a['result'],dict)]
+                  row['excerpts']=[]
+                  for preview in previews:
+                      if not preview: continue
+                      source=Path(preview['path']).resolve()
+                      assert source.is_relative_to((root/'renders').resolve()) and source.is_file()
+                      dest=shots/'excerpts'/source.name; dest.parent.mkdir(exist_ok=True)
+                      shutil.copyfile(source,dest)
+                      with wave.open(str(dest)) as wav:
+                          frames,rate=wav.getnframes(),wav.getframerate()
+                          assert frames>0 and rate==44100
+                          assert abs(frames/rate-preview['decoded_seconds'])<1/rate
+                      row['excerpts'].append({'file':str(dest.relative_to(shots)),'sha256':digest(dest),'frames':frames,'rate':rate})
+                  row.update(status='captured_uninspected',png_sha256=digest(png),result_sha256=digest(result))
+              except Exception as error:
+                  row.update(status='missing_or_invalid',error=str(error))
+                  manifest['missing'].append(name); failures.append(name)
+              manifest['cases'].append(row); save()
+          assert fixture_hashes=={str(p.relative_to(root)):digest(p) for p in (project,fixture)}, 'fixture changed'
+          required=[shots/(name+suffix) for name in expected for suffix in ['.png','.json','.log']]
+          assert all(p.is_file() and p.stat().st_size>0 for p in required), 'exact required-file set incomplete'
+          assert not failures, f'Native scenarios missing or invalid: {failures}'
+          PYNATIVE
       - uses: actions/upload-artifact@v4
         if: always()
         with:
