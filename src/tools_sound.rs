@@ -1308,16 +1308,24 @@ pub fn tools() -> Vec<Tool> {
             mutates: true,
             schema: || obj(json!({"sample": {"type": "string"}, "strength": {"type": "number"}, "floor_db": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
             run: |e, a| {
-                let (info, d) = sample_data(e, &s_req(a, "sample")?)?;
+                let name = s_req(a, "sample")?;
+                let info = e.project.samples.iter().find(|s| s.name.eq_ignore_ascii_case(&name))
+                    .cloned().ok_or_else(|| anyhow!("no sample '{name}'"))?;
+                let (left, right) = samples::decode_stereo(&e.resolve(&info.path))?;
                 let strength = f_or(a, "strength", 0.8).clamp(0.0, 1.0);
                 let floor = f_or(a, "floor_db", -24.0).clamp(-60.0, 0.0);
-                if d.len() < 4096 {
+                if left.len() < 4096 {
                     bail!("sample too short to read a noise floor (needs ~0.1 s)");
                 }
-                let (y, reduced) = crate::speech_song::denoise(&d, floor, strength);
+                let (out_left, _) = crate::speech_song::denoise(&left, floor, strength);
+                let (out_right, _) = crate::speech_song::denoise(&right, floor, strength);
+                let energy = |l: &[f32], r: &[f32]| l.iter().chain(r).map(|v| (*v as f64).powi(2)).sum::<f64>();
+                let before = energy(&left, &right);
+                let after = energy(&out_left, &out_right);
+                let reduced = if before > 1e-12 { (10.0 * (after.max(1e-20) / before).log10()) as f32 } else { 0.0 };
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_denoised", info.name));
                 let what = format!("denoise strength {strength} floor {floor} dB");
-                let mut r = save_new_sample(e, &info, &nn, &y, &what)?;
+                let mut r = save_new_stereo_sample(e, &info, &nn, &out_left, &out_right, &what)?;
                 r["noise_reduced_db"] = json!((reduced * 10.0).round() / 10.0);
                 Ok(r)
             },
