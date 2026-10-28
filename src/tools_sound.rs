@@ -1155,15 +1155,19 @@ pub fn tools() -> Vec<Tool> {
             mutates: true,
             schema: || obj(json!({"sample": {"type": "string"}, "shift": {"type": "number"}, "amount": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
             run: |e, a| {
-                let (info, x) = sample_data(e, &s_req(a, "sample")?)?;
-                if x.len() < crate::vocal_repair::N * 2 {
+                let name = s_req(a, "sample")?;
+                let info = e.project.samples.iter().find(|s| s.name.eq_ignore_ascii_case(&name))
+                    .cloned().ok_or_else(|| anyhow!("no sample '{name}'"))?;
+                let (left, right) = samples::decode_stereo(&e.resolve(&info.path))?;
+                if left.len() < crate::vocal_repair::N * 2 {
                     bail!("the sample is too short to formant-shift");
                 }
                 let shift = f_or(a, "shift", 0.85).clamp(0.5, 2.0);
                 let amount = f_or(a, "amount", 1.0).clamp(0.0, 1.0);
-                let y = formant_shift(&x, shift, amount);
+                let out_left = formant_shift(&left, shift, amount);
+                let out_right = formant_shift(&right, shift, amount);
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_formant", info.name));
-                save_new_sample(e, &info, &nn, &y, &format!("formant x{shift:.2}, amount {amount:.2}"))
+                save_new_stereo_sample(e, &info, &nn, &out_left, &out_right, &format!("formant x{shift:.2}, amount {amount:.2}"))
             },
         },
         Tool {
