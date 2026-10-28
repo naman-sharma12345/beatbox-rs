@@ -1,0 +1,74 @@
+name: Publish MIDI owner identity validation
+'on':
+  push:
+    branches:
+    - midi-owner-identity
+    paths:
+    - .github/workflows/*publish-v266.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/midi-owner-identity'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = cb11c769d2661d5cfc9da27d8a3e773e1687eaf5 ]
+
+        [ "$(git rev-parse origin/main)" = cb11c769d2661d5cfc9da27d8a3e773e1687eaf5
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''e2ece17ea0304a231c635632458f3c029144de94ebb82645de6e572b24e9c59c''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/midi_in.rs'': ''5100becab7c742ef31b4225f0f7858108269fdd68938128523ab307e9f422067'',
+        ''src/gui/browser_view.rs'': ''9cc0d13e1f7d0d9b9ee0a5a7d583c3322ac6cf7355f7a72df330ebcdaf61db31'',
+        ''tests/track_midi_targets.rs'': ''53d31b661b97de8bfd1745236ed81d0d76ab984b30cf1b384f1af3bdcc7c5aac''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/midi_in.rs src/gui/browser_view.rs tests/track_midi_targets.rs
+
+        git commit -m "Bind MIDI mixer controls to stable track identity"
+
+        git fetch origin midi-owner-identity main
+
+        [ "$(git rev-parse origin/midi-owner-identity)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = cb11c769d2661d5cfc9da27d8a3e773e1687eaf5
+        ]
+
+        git push origin HEAD:refs/heads/midi-owner-identity
+
+        '
