@@ -1,0 +1,73 @@
+name: Publish send removal clip preservation validation
+'on':
+  push:
+    branches:
+    - send-removal
+    paths:
+    - .github/workflows/*publish-v262.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/send-removal'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 266d0d88794a3c59dc691146b5d6d269cc805765 ]
+
+        [ "$(git rev-parse origin/main)" = 266d0d88794a3c59dc691146b5d6d269cc805765
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''df0d5a9b47cd04fb1fc21fd94a4dee626602b3ab049b61f16b5dade1b0561728''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_studio.rs'': ''2906881adfb1f814b053daf88674f5adb2cf66b67e24a84dcde570bef88e9fb7'',
+        ''tests/send_remove_targets.rs'': ''b5b72fe45f8d79290deb07739dbc3bd0c330b60eccd2fd45bdad334d2c82cef1''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_studio.rs tests/send_remove_targets.rs
+
+        git commit -m "Clear deleted send automation clips"
+
+        git fetch origin send-removal main
+
+        [ "$(git rev-parse origin/send-removal)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 266d0d88794a3c59dc691146b5d6d269cc805765
+        ]
+
+        git push origin HEAD:refs/heads/send-removal
+
+        '
