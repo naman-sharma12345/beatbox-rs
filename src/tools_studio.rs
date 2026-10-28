@@ -143,6 +143,16 @@ pub(crate) fn drop_send_lanes(p: &mut Project, track: Option<&str>, bus: &str) {
     let owner_id = track
         .and_then(|t| p.track_index(t).ok())
         .map(|i| p.tracks[i].id.clone());
+    let send_ids: Vec<(String, String, String)> = p
+        .tracks
+        .iter()
+        .flat_map(|t| {
+            t.sends
+                .iter()
+                .filter(|s| s.bus.eq_ignore_ascii_case(bus) && !s.id.is_empty())
+                .map(|s| (t.name.clone(), t.id.clone(), s.id.clone()))
+        })
+        .collect();
     let removed = |owner: &str, param: &str| {
         let owner_ok = track.is_none_or(|t| {
             owner.eq_ignore_ascii_case(t)
@@ -151,7 +161,11 @@ pub(crate) fn drop_send_lanes(p: &mut Project, track: Option<&str>, bus: &str) {
                     .is_some_and(|id| !id.is_empty() && owner.eq_ignore_ascii_case(id))
         });
         owner_ok
-            && matches!(parse_target(param), Some(Target::Send(b)) if b.eq_ignore_ascii_case(bus))
+            && matches!(parse_target(param), Some(Target::Send(b)) if b.eq_ignore_ascii_case(bus)
+            || send_ids.iter().any(|(name, id, send_id)| {
+                (owner.eq_ignore_ascii_case(name) || (!id.is_empty() && owner.eq_ignore_ascii_case(id)))
+                    && b.eq_ignore_ascii_case(send_id)
+            }))
     };
     p.automation
         .retain(|lane| !removed(&lane.target, &lane.param));
@@ -898,6 +912,8 @@ pub fn tools() -> Vec<Tool> {
             schema: || obj(json!({"name": {"type": "string"}}), &["name"]),
             run: |e, a| {
                 let bi = e.project.bus_index(&s_req(a, "name")?)?;
+                let bus_name = e.project.buses[bi].name.clone();
+                drop_send_lanes(&mut e.project, None, &bus_name);
                 let b = e.project.buses.remove(bi);
                 let mut rerouted = Vec::new();
                 for t in e.project.tracks.iter_mut() {
@@ -908,7 +924,6 @@ pub fn tools() -> Vec<Tool> {
                     t.sends.retain(|s| !s.bus.eq_ignore_ascii_case(&b.name));
                 }
                 drop_owner_controls(&mut e.project, &b.name, &b.id);
-                drop_send_lanes(&mut e.project, None, &b.name);
                 Ok(json!({"removed": b.name, "rerouted_to_master": rerouted}))
             },
         },
@@ -934,19 +949,23 @@ pub fn tools() -> Vec<Tool> {
                 let mut out = Vec::new();
                 for n in names {
                     let ti = e.project.track_index(&n)?;
-                    let t = &mut e.project.tracks[ti];
-                    if t.output.as_deref().is_some_and(|o| o.eq_ignore_ascii_case(&bus)) {
-                        bail!("'{}' already outputs to '{bus}'; a send would double it", t.name);
-                    }
-                    t.sends.retain(|s| !s.bus.eq_ignore_ascii_case(&bus));
-                    if !b_or(a, "remove", false) {
-                        t.sends.push(Send { bus: bus.clone(), db, pre_fader: b_or(a, "pre_fader", false), id: String::new() });
-                    }
-                    out.push(json!({"track": t.name, "sends": t.sends.iter().map(|s| format!("{} {:+.1} dB{}", s.bus, s.db, if s.pre_fader { " pre" } else { "" })).collect::<Vec<_>>()}));
                     if b_or(a, "remove", false) {
                         let tn = e.project.tracks[ti].name.clone();
                         drop_send_lanes(&mut e.project, Some(&tn), &bus);
                     }
+                    let t = &mut e.project.tracks[ti];
+                    if t.output.as_deref().is_some_and(|o| o.eq_ignore_ascii_case(&bus)) {
+                        bail!("'{}' already outputs to '{bus}'; a send would double it", t.name);
+                    }
+                    if b_or(a, "remove", false) {
+                        t.sends.retain(|s| !s.bus.eq_ignore_ascii_case(&bus));
+                    } else if let Some(send) = t.sends.iter_mut().find(|s| s.bus.eq_ignore_ascii_case(&bus)) {
+                        send.db = db;
+                        send.pre_fader = b_or(a, "pre_fader", false);
+                    } else {
+                        t.sends.push(Send { bus: bus.clone(), db, pre_fader: b_or(a, "pre_fader", false), id: String::new() });
+                    }
+                    out.push(json!({"track": t.name, "sends": t.sends.iter().map(|s| format!("{} {:+.1} dB{}", s.bus, s.db, if s.pre_fader { " pre" } else { "" })).collect::<Vec<_>>()}));
                 }
                 Ok(json!({"updated": out}))
             },
@@ -966,15 +985,16 @@ pub fn tools() -> Vec<Tool> {
                 let mut routed = Vec::new();
                 for n in names {
                     let ti = e.project.track_index(&n)?;
+                    if let Some(d) = &dest {
+                        let tn = e.project.tracks[ti].name.clone();
+                        drop_send_lanes(&mut e.project, Some(&tn), d);
+                    }
                     let t = &mut e.project.tracks[ti];
                     if let Some(d) = &dest {
                         t.sends.retain(|s| !s.bus.eq_ignore_ascii_case(d));
                     }
                     t.output = dest.clone();
                     let tn = t.name.clone();
-                    if let Some(d) = &dest {
-                        drop_send_lanes(&mut e.project, Some(&tn), d);
-                    }
                     routed.push(tn);
                 }
                 Ok(json!({"routed": routed, "to": dest.unwrap_or_else(|| "master".into())}))
