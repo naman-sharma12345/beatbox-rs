@@ -20,6 +20,7 @@ mod player;
 mod playlist;
 mod rack_view;
 mod render_job;
+mod rhythm_trial;
 mod shortcuts;
 mod theme;
 mod views;
@@ -966,7 +967,12 @@ impl Studio {
                 .call_from("load_project", &json!({"path": path}), "you");
         match r {
             Ok(_) => {
-                self.seen_project_load = self.engine.lock().unwrap().project_load_generation;
+                let generation = self.engine.lock().unwrap().project_load_generation;
+                rhythm_trial::feedback::loaded(
+                    &mut self.piano.rhythm_trial_status,
+                    &mut self.seen_project_load,
+                    generation,
+                );
                 self.project_path = Some(path.clone());
                 self.saved_rev = self.engine.lock().unwrap().revision;
                 self.toast = Some((format!("Opened {}", path.display()), 0.0, true));
@@ -2082,9 +2088,12 @@ impl eframe::App for Studio {
             250
         }));
         let generation = self.engine.lock().unwrap().project_load_generation;
-        if project_notice_is_stale(self.seen_project_load, generation) {
+        if rhythm_trial::feedback::observe_load(
+            &mut self.piano.rhythm_trial_status,
+            &mut self.seen_project_load,
+            generation,
+        ) {
             self.toast = None;
-            self.seen_project_load = generation;
         }
         let (p, rev, log, undo) = self.snapshot();
         // closing the window with unsaved edits asks first
@@ -2287,6 +2296,7 @@ impl eframe::App for Studio {
         self.workspace_ui(ctx, &p, rev, &log, undo);
 
         self.export_window(ctx);
+        self.rhythm_trial_ui(ctx);
 
         // toast
         if let Some((msg, t0, ok)) = &mut self.toast {

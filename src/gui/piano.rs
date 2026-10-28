@@ -588,6 +588,8 @@ fn repeat_capacity(notes: &[Note], selected: &[usize], period: f32, steps: f32) 
 #[derive(Debug, Clone, Default)]
 pub struct PianoState {
     pub euclidean: EuclideanControls,
+    pub(super) rhythm_trial: Option<super::rhythm_trial::Trial>,
+    pub(super) rhythm_trial_status: String,
     pub echo: EchoControls,
     pub stretch: StretchControls,
     pub rotation_steps: f32,
@@ -1607,6 +1609,7 @@ impl Studio {
             pos2(header.left() + 6.0, header.top() + HEADER_H),
             pos2(header.right() - 4.0, header.bottom()),
         );
+        let mut try_rhythm = false;
         let mut tr = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(helpers)
@@ -1619,8 +1622,12 @@ impl Studio {
         ] {
             tr.menu_button(label, |ui| {
                 if label == "Compose" {
+                    ui.set_max_width(420.0);
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     ui.label("Euclidean rhythm");
                     ui.label(RichText::new("Scope: this track, whole current pattern").small());
+                    ui.label(format!("Track: {} [{}]", t.name, t.id));
+                    ui.label(format!("Pattern: {} [{}]", pat.name, pat.id));
                     ui.horizontal(|ui| {
                         ui.label("Subdivisions / bar");
                         ui.add(
@@ -1652,9 +1659,27 @@ impl Studio {
                     } else {
                         "Write notes (layer)"
                     };
-                    if ui.button(action).clicked() {
-                        op = Some(("generate_euclidean", self.piano.euclidean.args()));
-                        ui.close_menu();
+                    ui.label(format!(
+                        "{} hits / {} slots, rotation {}. {} the whole track in this pattern.",
+                        self.piano.euclidean.pulses, self.piano.euclidean.slots,
+                        self.piano.euclidean.rotation,
+                        if self.piano.euclidean.replace { "Replace" } else { "Layer onto" }
+                    ));
+                    ui.label("Try captures the WHOLE PROJECT before writing. Pattern edits affect every arranged occurrence, not only selected notes.");
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button(action).clicked() {
+                            op = Some(("generate_euclidean", self.piano.euclidean.args()));
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(self.piano.rhythm_trial.is_none(), egui::Button::new("Try & compare")).clicked() {
+                            try_rhythm = true;
+                            ui.close_menu();
+                        }
+                    });
+                    if self.piano.rhythm_trial.is_some() {
+                        ui.label("Finish the open rhythm trial before starting another.");
+                    } else if !self.piano.rhythm_trial_status.is_empty() {
+                        ui.label(&self.piano.rhythm_trial_status);
                     }
                     ui.separator();
                 }
@@ -1665,6 +1690,17 @@ impl Studio {
                     }
                 }
             });
+        }
+        if try_rhythm {
+            let selected_ids = self
+                .piano
+                .selected
+                .iter()
+                .filter_map(|i| notes.get(*i))
+                .map(|n| n.id.clone())
+                .collect();
+            self.start_rhythm_trial(p);
+            self.piano.reselect_ids = Some(selected_ids);
         }
         if let Some((id, mut a)) = op {
             let ids: Vec<&str> = self
