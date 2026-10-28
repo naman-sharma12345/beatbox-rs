@@ -1,0 +1,73 @@
+name: Publish stereo formant validation
+'on':
+  push:
+    branches:
+    - stereo-formant
+    paths:
+    - .github/workflows/*publish-v251.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/stereo-formant'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 9e38a01ec5cca79dedf3de24055324dff2609fdf ]
+
+        [ "$(git rev-parse origin/main)" = 9e38a01ec5cca79dedf3de24055324dff2609fdf
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''bc6633ba527fbfbc0a73c66c955672f090850842e3fd6cd80165fa06f2b4112d''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_sound.rs'': ''6f3e29e12156d6c9f4cdf330b7093f8326fc50546ada323855b92c2193833745'',
+        ''tests/stereo_formant.rs'': ''427fc71d1d6db50d784873f9b6a37a3da00e11bcbf622d9da85c9ae89e86feba''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_sound.rs tests/stereo_formant.rs
+
+        git commit -m "Preserve stereo channels in formant sample shifts"
+
+        git fetch origin stereo-formant main
+
+        [ "$(git rev-parse origin/stereo-formant)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 9e38a01ec5cca79dedf3de24055324dff2609fdf
+        ]
+
+        git push origin HEAD:refs/heads/stereo-formant
+
+        '
