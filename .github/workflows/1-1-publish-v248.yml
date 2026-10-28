@@ -1,0 +1,73 @@
+name: Publish slice boundary validation
+'on':
+  push:
+    branches:
+    - slice-boundaries
+    paths:
+    - .github/workflows/*publish-v248.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/slice-boundaries'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = fa6ce115f571cf7c22fff9bfc351c26758158996 ]
+
+        [ "$(git rev-parse origin/main)" = fa6ce115f571cf7c22fff9bfc351c26758158996
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''H4sIAO1j4WoC/91YXXObRhR9169Y0xkPRAgjWZUTnKR5yUNfm05fPBpmBReLBO2S3UVO6ui/9+4uSCChyG6dpK1mLAx7936fsxeleZaR0eg2V4ReSJFcKM4LGUtesTQQkix6Hg5ylsInktFsOl2EQRBOFpC9CMk4DGfT6WA0GvXqGgyHw359b96Q0Th8PvNnZGiu45Dgs7JakIwRI+x6ZPSa/AHJy9/x9jW5H5D9z+b68FmeEc6CLBdSuV6Q8DKHFP+p2J2gZcyFO/bIa+KGGAN5Rt795hEqSSXzP4Hc6505kyCUG/ok9K7JptdAAYq84ytwjRmPvNqajFcVmkVNz8wtroRayXBfCcoLUDRn7pdzqahQX4i5kJckpYoGBTDX8657N0ouVFwxlF8U4B4RSiGtyt5Fm6BcxrAq1Wfj7ILmxZnrqCUQSVdlAWSJSWGc0CrNOckEXYHEqhBZ5Ak4/XlBpUpULKEK3EonmvrEWdFPsdkkHZ9cTrAgBRpwxz6ZTXeZ93rqqHMsONcppMEtKNfRd44XrGjplrlKljHPPDRJmSy5xET80iry5cw72hsmt9gD48lzMrI2di0wSNvwUCCVvDABxAvdu1TkIC1Kjq4NGNyRLMcsrngKDUYsgkL7CYIkzJIEMgOdixTWF6wqihovxzVr2IR+iJjxxz9rxAyGlQSyAKoW/FMU3WP3YhFWwJT0yVt2mzNAkBghbOsU4veSsyjS381jlUZRJvHupxtteD4YIgL5GqXzdZ7m7DZWOfsc28aIUw4yZlzFiUCjYJuoLrHuJdtvreIZ/cDWUaRQNk5zgWh8z7HzMy5WVJ25uxZ1FotYLnV7W4Xx/cbxd8vbMI3tfA3ouAC5jCVojFvBLWoyWQuCNhrTonDPtU8NF2zBoZ0tqVqis3rdOufooIM7unbaYhYPr8gakrObMJggSQTTeS2wdU8A1lpE0Z3I0TjqcM+1fp+cm/3NtdcRLnIsGi3QiA4A/U/t7l5pZBsCKGorHUXYea6JISk4gx2DQJDo+J18VZrsmloiIs91I5y594624ETGS4ch2p3IJMDZeN4u/30eYP6rQtcZWnLGWJd5HNvOjeXu4taNerk27jvwsaKFE82mfptJzL1hg2g8mW28lraveEulJvYYPp651ukbp9Y398nkK1LY7diKupgKWEdYJ6CFuCj6dXsTRe9MLMKV+nw4h6AU/D0kSjNW8kHehPNgt5VAIaEBj/6UlOUJUrJNiHDquDaHXsrARmFp7SCSncDNeI6kt70L51ugcEEMoWIs5AYzGvjIjVfBvO1Qy2K3dp34bedrfgD3RMi+tYmmAvuH8gvKPuhz9/DQqqPrLoxbda9j2RzkpwGUv8NTF05tvhCwQubb8sUBXWz2WJJBbA5HPdgIbG88p2Ssn6KdwrZrHynu/D7NjpoTtUaLH02Ip3jwqRgQrXYI8AH8pjlx3ly/O2Ohgh9GWNr2lq9a9HT1JPQ0fgw9jR/Z0d2etoe9iR0nrVhWYo0dJnHgTDm2NX5RlsY0URgp3vMSWHyXqyWvVIOCZEnZ7RONA8ad2sy/aRp4IBjMgKC/xvPDJ722F5+xFv+V0x/fArnQLuy4vrbdRtx3nw7+DubacLvszHyZAvGVEJtzFgINkV3WW8ptmvydisO9Glm9e435nq3aNUnX0O1Ti5RAZ8zZL7+Wjmsth9XXq1jvY31mFUP6gHZrRPdL7hScpicdeFC16qQ0lvZz05loLmdBcPmiPcuYqmIgR0eXvf47Mch0pa1dfKHMLif780pw6kEzA3Wfhv7hoLNF4CPi2E/Xtw9na/ERUbXL3Ay142MCOAwdH/0MlX6Lua9isMbzyI5+Cb6hq/gDQCnxoPpYoRSkzQssx3duhLY5MxmipPnJ5R+fi7ULP/492Tpy8k35mlw96XvyN50j0/QBc2TfqbZ3jvXNiah7Nyc+lO86p9N0Pw+KK/ODQXiM/qbh/5H+msPzjLZ+zWwL2LwM9Q+IhkeOEoUR9MnV4yjhLyV9TIVJFwAA''))
+
+        assert hashlib.sha256(b).hexdigest()==''460fdc53b099c9e8725de798d488f02b06bd6ba8f8c9c2dd3ba4e8ce1e258572''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_sound.rs'': ''30beea83a266964ce5d53f6f7843fd264a07302f13c0160b790f08edd22fed1f'',
+        ''tests/slice_boundaries.rs'': ''31cb5700faf528012762521e0205b68ebbd9840a0a8650c360a217ddd035ac70''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_sound.rs tests/slice_boundaries.rs
+
+        git commit -m "Keep slice boundaries distinct and inside the source"
+
+        git fetch origin slice-boundaries main
+
+        [ "$(git rev-parse origin/slice-boundaries)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = fa6ce115f571cf7c22fff9bfc351c26758158996
+        ]
+
+        git push origin HEAD:refs/heads/slice-boundaries
+
+        '
