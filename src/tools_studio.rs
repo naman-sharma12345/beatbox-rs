@@ -471,6 +471,193 @@ pub(crate) fn drop_owner_controls(p: &mut Project, owner: &str, id: &str) -> usi
     before - p.automation.len()
 }
 
+/// A removal plan is computed before anything is changed. Preview and commit
+/// consume this same dependency walk, including controls of incoming sends.
+/// Indices are local to this project snapshot, never persisted or sent back
+/// as edit handles. Public results use stable IDs plus readable names.
+struct BusRemoval {
+    bus: usize,
+    tracks: Vec<usize>,
+    buses: Vec<usize>,
+    sends: Vec<(usize, usize)>,
+    lanes: Vec<usize>,
+    clips: Vec<usize>,
+    macros: Vec<(usize, usize)>,
+}
+
+fn owner_reference(key: &str, name: &str, id: &str) -> bool {
+    let key = key.trim();
+    key.eq_ignore_ascii_case(name) || (!id.is_empty() && key.eq_ignore_ascii_case(id))
+}
+
+impl BusRemoval {
+    fn walk(p: &Project, key: &str) -> Result<Self> {
+        let bus = p.bus_index(key).or_else(|err| {
+            p.buses
+                .iter()
+                .position(|b| !b.id.is_empty() && b.id.eq_ignore_ascii_case(key.trim()))
+                .ok_or(err)
+        })?;
+        // Prefer the actual route resolver. Case-insensitive IDs are a cleanup
+        // fallback only, never an override of a live name/ID resolution.
+        let resolve_bus = |key: &str| {
+            p.bus_index(key).ok().or_else(|| {
+                p.buses
+                    .iter()
+                    .position(|b| !b.id.is_empty() && b.id.eq_ignore_ascii_case(key.trim()))
+            })
+        };
+        let owner = &p.buses[bus];
+        let matches = |key: &str| resolve_bus(key) == Some(bus);
+        let sends: Vec<(usize, usize)> = p
+            .tracks
+            .iter()
+            .enumerate()
+            .flat_map(|(ti, t)| {
+                let matches = &matches;
+                t.sends
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(si, s)| matches(&s.bus).then_some((ti, si)))
+            })
+            .collect();
+        let control = |target: &str, param: &str| -> Result<bool> {
+            let track = p.track_index(target).ok().or_else(|| {
+                p.tracks
+                    .iter()
+                    .position(|t| !t.id.is_empty() && t.id.eq_ignore_ascii_case(target.trim()))
+            });
+            let removed_owner = owner_reference(target, &owner.name, &owner.id);
+            // Names and IDs are not disjoint namespaces. Do not strip a
+            // potentially live track/master/other-bus control on that basis.
+            if removed_owner {
+                let surviving_owner = target.eq_ignore_ascii_case("master")
+                    || track.is_some()
+                    || p.buses
+                        .iter()
+                        .enumerate()
+                        .any(|(i, b)| i != bus && owner_reference(target, &b.name, &b.id));
+                if surviving_owner {
+                    bail!("AmbiguousBusRemoval: owner '{target}' identifies removed and surviving channels");
+                }
+                return Ok(true);
+            }
+            let Some(Target::Send(destination)) = parse_target(param) else {
+                return Ok(false);
+            };
+            let Some(ti) = track else {
+                return Ok(false);
+            };
+            let mut removed = false;
+            let mut surviving = false;
+            // Playback tests each send's stored bus reference and send ID,
+            // rather than treating every suffix as a naked bus reference.
+            for (si, send) in p.tracks[ti].sends.iter().enumerate() {
+                if send.bus.eq_ignore_ascii_case(&destination)
+                    || (!send.id.is_empty() && send.id.eq_ignore_ascii_case(&destination))
+                {
+                    if sends.contains(&(ti, si)) {
+                        removed = true;
+                    } else {
+                        surviving = true;
+                    }
+                }
+            }
+            if removed && surviving {
+                bail!("AmbiguousBusRemoval: send control '{target}:{param}' identifies removed and surviving sends");
+            }
+            if removed || surviving {
+                return Ok(removed);
+            }
+            // Legacy/dangling bus aliases are cleaned only after excluding
+            // concrete surviving send matches on this owning track.
+            Ok(matches(&destination))
+        };
+        let mut lanes = Vec::new();
+        for (i, lane) in p.automation.iter().enumerate() {
+            if control(&lane.target, &lane.param)? {
+                lanes.push(i);
+            }
+        }
+        let mut clips = Vec::new();
+        for (i, clip) in p.automation_clips.iter().enumerate() {
+            if control(&clip.target, &clip.param)? {
+                clips.push(i);
+            }
+        }
+        let mut macros = Vec::new();
+        for (mi, knob) in p.macros.iter().enumerate() {
+            for (ti, target) in knob.targets.iter().enumerate() {
+                if control(&target.track, &target.param)? {
+                    macros.push((mi, ti));
+                }
+            }
+        }
+        Ok(Self {
+            bus,
+            tracks: p
+                .tracks
+                .iter()
+                .enumerate()
+                .filter_map(|(i, t)| t.output.as_deref().is_some_and(matches).then_some(i))
+                .collect(),
+            buses: p
+                .buses
+                .iter()
+                .enumerate()
+                .filter_map(|(i, b)| {
+                    (i != bus && b.output.as_deref().is_some_and(matches)).then_some(i)
+                })
+                .collect(),
+            lanes,
+            clips,
+            macros,
+            sends,
+        })
+    }
+
+    fn impact(&self, p: &Project) -> Value {
+        json!({
+            "track_outputs": self.tracks.iter().map(|&i| json!({"id": p.tracks[i].id, "name": p.tracks[i].name})).collect::<Vec<_>>(),
+            "bus_outputs": self.buses.iter().map(|&i| json!({"id": p.buses[i].id, "name": p.buses[i].name})).collect::<Vec<_>>(),
+            "sends": self.sends.iter().map(|&(ti, si)| json!({"id": p.tracks[ti].sends[si].id, "track_id": p.tracks[ti].id, "track": p.tracks[ti].name})).collect::<Vec<_>>(),
+            "automation": self.lanes.iter().map(|&i| json!({"id": p.automation[i].id, "target": p.automation[i].target, "param": p.automation[i].param})).collect::<Vec<_>>(),
+            "automation_clips": self.clips.iter().map(|&i| json!({"id": p.automation_clips[i].id, "name": p.automation_clips[i].name, "target": p.automation_clips[i].target, "param": p.automation_clips[i].param})).collect::<Vec<_>>(),
+            "macro_targets": self.macros.iter().map(|&(mi, ti)| json!({"macro": p.macros[mi].name, "target": p.macros[mi].targets[ti].track, "param": p.macros[mi].targets[ti].param})).collect::<Vec<_>>()
+        })
+    }
+
+    fn apply(&self, p: &mut Project) {
+        for &i in &self.tracks {
+            p.tracks[i].output = None;
+        }
+        for &i in &self.buses {
+            p.buses[i].output = None;
+        }
+        for &(ti, si) in self.sends.iter().rev() {
+            p.tracks[ti].sends.remove(si);
+        }
+        for &i in self.lanes.iter().rev() {
+            p.automation.remove(i);
+        }
+        for &i in self.clips.iter().rev() {
+            p.automation_clips.remove(i);
+        }
+        for &(mi, ti) in self.macros.iter().rev() {
+            p.macros[mi].targets.remove(ti);
+        }
+        p.buses.remove(self.bus);
+    }
+}
+
+/// Also used by the rack UI against its project snapshot, without an engine
+/// call, undo entry, ID normalization, file access or project mutation.
+pub(crate) fn bus_removal_preview(p: &Project, key: &str, revision: u64) -> Result<Value> {
+    let plan = BusRemoval::walk(p, key)?;
+    let bus = &p.buses[plan.bus];
+    Ok(json!({"bus": bus.name, "bus_id": bus.id, "revision": revision, "impact": plan.impact(p)}))
+}
+
 /// After removing effect `removed` from `owner`'s chain: drop its lanes and
 /// shift the indices of later ones. Returns the number of lanes dropped.
 pub fn reindex_fx_lanes(p: &mut Project, owner: &str, removed: usize) -> usize {
@@ -951,25 +1138,36 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "remove_bus",
-            description: "Delete a bus. Tracks routed to it go back to the master; sends to it and its automation are removed.",
-            mutates: true,
+            name: "preview_remove_bus",
+            description: "Inspect bus removal without editing the project, history or files. Accepts name or stable ID, case-insensitively. Returns bus_id, revision and exact impact lists: track_outputs, bus_outputs, sends, automation, automation_clips and macro_targets. Example: preview_remove_bus {name:'mix'}, then remove_bus {name:<bus_id>, expected_revision:<revision>}. Refresh the preview if that revision is stale.",
+            mutates: false,
             schema: || obj(json!({"name": {"type": "string"}}), &["name"]),
+            run: |e, a| bus_removal_preview(&e.project, &s_req(a, "name")?, e.revision),
+        },
+        Tool {
+            name: "remove_bus",
+            description: "Delete a bus in one undo step. Tracks and buses routed to it go back to master; incoming sends and their controls, and the bus's own controls, are removed. Use preview_remove_bus first, then pass its bus_id as name and its revision as expected_revision to reject stale previews. Returns the preview's exact impact plus existing removed/rerouted_to_master fields and rerouted_buses_to_master.",
+            mutates: true,
+            schema: || obj(json!({
+                "name": {"type": "string"},
+                "expected_revision": {"type": "integer", "minimum": 0, "description": "Revision from preview_remove_bus; a mismatch rejects the deletion without changes"}
+            }), &["name"]),
             run: |e, a| {
-                let bi = e.project.bus_index(&s_req(a, "name")?)?;
-                let bus_name = e.project.buses[bi].name.clone();
-                drop_send_lanes(&mut e.project, None, &bus_name);
-                let b = e.project.buses.remove(bi);
-                let mut rerouted = Vec::new();
-                for t in e.project.tracks.iter_mut() {
-                    if t.output.as_deref().is_some_and(|o| o.eq_ignore_ascii_case(&b.name)) {
-                        t.output = None;
-                        rerouted.push(t.name.clone());
+                if let Some(value) = a.get("expected_revision") {
+                    let expected = value.as_u64().ok_or_else(|| anyhow!("expected_revision must be a nonnegative integer"))?;
+                    if expected != e.revision {
+                        bail!("The project changed since the bus removal preview (StaleRevision: expected {expected}, actual {}). Refresh the impact before removing.", e.revision);
                     }
-                    t.sends.retain(|s| !s.bus.eq_ignore_ascii_case(&b.name));
                 }
-                drop_owner_controls(&mut e.project, &b.name, &b.id);
-                Ok(json!({"removed": b.name, "rerouted_to_master": rerouted}))
+                let plan = BusRemoval::walk(&e.project, &s_req(a, "name")?)?;
+                let result = json!({
+                    "removed": e.project.buses[plan.bus].name,
+                    "rerouted_to_master": plan.tracks.iter().map(|&i| e.project.tracks[i].name.clone()).collect::<Vec<_>>(),
+                    "rerouted_buses_to_master": plan.buses.iter().map(|&i| e.project.buses[i].name.clone()).collect::<Vec<_>>(),
+                    "impact": plan.impact(&e.project)
+                });
+                plan.apply(&mut e.project);
+                Ok(result)
             },
         },
         Tool {
