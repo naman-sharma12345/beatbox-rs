@@ -1,0 +1,73 @@
+name: Publish stereo silence stripping
+'on':
+  push:
+    branches:
+    - stereo-strip
+    paths:
+    - .github/workflows/*publish-v246.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/stereo-strip'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 6c8ed476172781798022947a5280210d0e73c3b5 ]
+
+        [ "$(git rev-parse origin/main)" = 6c8ed476172781798022947a5280210d0e73c3b5
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''5a628581312960dca9171d96d54b217a4e26144ea555760db8d99f2d366e9fb4''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_mix.rs'': ''83c0c8b30e009b8fe275c7b6a178fc60c3775c0e7ee04cb097e8dfd2d1a6c7c1'',
+        ''tests/stereo_strip.rs'': ''3e69dafb7e03a04635a968c2ca5ef25d1c3697ec1c698985cc43425c64e22a06''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_mix.rs tests/stereo_strip.rs
+
+        git commit -m "Preserve stereo regions when stripping silence"
+
+        git fetch origin stereo-strip main
+
+        [ "$(git rev-parse origin/stereo-strip)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 6c8ed476172781798022947a5280210d0e73c3b5
+        ]
+
+        git push origin HEAD:refs/heads/stereo-strip
+
+        '
