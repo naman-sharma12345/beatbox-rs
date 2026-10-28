@@ -547,6 +547,102 @@ pub fn quantize_onsets(x: &[f32], grid_samples: usize, amount: f32) -> (Vec<f32>
     (out, hits, moved)
 }
 
+/// Quantize stereo attacks with shared marks, warp slots and stretch alignment.
+pub fn quantize_onsets_stereo(
+    left: &[f32],
+    right: &[f32],
+    grid_samples: usize,
+    amount: f32,
+) -> (Vec<f32>, Vec<f32>, usize, usize) {
+    assert_eq!(left.len(), right.len());
+    let x = left;
+    let amount = amount.clamp(0.0, 1.0);
+    let g = grid_samples.max(HOP * 4) as f64;
+    if x.len() < 4096 || amount < 1e-3 {
+        return (left.to_vec(), right.to_vec(), 0, 0);
+    }
+    let confident_marks = |x: &[f32]| {
+        let env = onset_envelope(x);
+        let mean = env.iter().sum::<f32>() / env.len().max(1) as f32;
+        let mut marks: Vec<usize> = onsets(x, 0.5, ((g / SR as f64 * 500.0).max(30.0)) as f32);
+        marks.retain(|&m| m > 256 && m + 256 < x.len());
+        marks.dedup();
+        // only confident hits move: a steady pad's flux wobbles to ~2x its own
+        // mean and fakes hits, while a real attack stands many times above it
+        marks.retain(|&m| {
+            let f = m / HOP;
+            let lo = f.saturating_sub(1);
+            let hi = (f + 2).min(env.len());
+            env[lo..hi].iter().cloned().fold(0.0f32, f32::max) >= mean * 4.0
+        });
+        marks
+    };
+    let mut marks = confident_marks(left);
+    marks.extend(confident_marks(right));
+    marks.sort_unstable();
+    marks.dedup_by(|a, b| a.abs_diff(*b) <= 64);
+    let hits = marks.len();
+    if hits < 2 {
+        return (left.to_vec(), right.to_vec(), hits, 0);
+    }
+    marks.insert(0, 0);
+    marks.push(x.len());
+    // moved position of each mark: the ends stay put, the rest snap
+    let mut moved = 0usize;
+    let mut pos: Vec<f64> = Vec::with_capacity(marks.len());
+    for (i, &m) in marks.iter().enumerate() {
+        if i == 0 || i == marks.len() - 1 {
+            pos.push(m as f64);
+            continue;
+        }
+        let t = ((m as f64 / g).round() * g).clamp(0.0, x.len() as f64);
+        if (t - m as f64).abs() > SR as f64 * 0.002 {
+            moved += 1;
+        }
+        pos.push(m as f64 + amount as f64 * (t - m as f64));
+    }
+    // a snapped hit must not cross its neighbours
+    for i in 1..pos.len() {
+        if pos[i] < pos[i - 1] {
+            pos[i] = pos[i - 1];
+        }
+    }
+    let fade = (0.005 * SR) as usize;
+    let mut out = vec![0.0f32; x.len()];
+    let mut out_right = vec![0.0f32; x.len()];
+    for i in 0..marks.len() - 1 {
+        let seg_left = &left[marks[i]..marks[i + 1]];
+        let seg_right = &right[marks[i]..marks[i + 1]];
+        let slot = (pos[i + 1] - pos[i]).max(1.0);
+        let factor = (slot / seg_left.len() as f64) as f32;
+        let (mut piece, mut piece_right) = if (factor - 1.0).abs() < 0.02 {
+            (seg_left.to_vec(), seg_right.to_vec())
+        } else {
+            time_stretch_stereo(seg_left, seg_right, factor.clamp(0.5, 2.0))
+        };
+        piece.resize(slot as usize, 0.0);
+        piece.truncate(slot as usize);
+        piece_right.resize(slot as usize, 0.0);
+        piece_right.truncate(slot as usize);
+        let start = pos[i] as usize;
+        if start >= out.len() {
+            break;
+        }
+        let n = piece.len().min(out.len() - start);
+        // click-free joins: the piece's tail fades into the next hit, whose
+        // attack starts unfaded (beat-slice style, like Recycle)
+        let f = fade.min(n / 2);
+        for j in 0..f {
+            let gc = 0.5 * (1.0 + (std::f32::consts::PI * j as f32 / f as f32).cos());
+            piece[n - f + j] *= gc;
+            piece_right[n - f + j] *= gc;
+        }
+        out[start..start + n].copy_from_slice(&piece[..n]);
+        out_right[start..start + n].copy_from_slice(&piece_right[..n]);
+    }
+    (out, out_right, hits, moved)
+}
+
 /// Constant offset of a take against a reference, from onset times: every
 /// take-onset/reference-onset pair within `max_offset_s` votes in a 1 ms
 /// histogram and the winning bin's median is the offset. Returns

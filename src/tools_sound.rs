@@ -523,17 +523,6 @@ pub(crate) fn sample_data(e: &mut Engine, name: &str) -> Result<(SampleInfo, Vec
     Ok((info, d))
 }
 
-/// Write mono data as a new sample file and register it.
-fn save_new_sample(
-    e: &mut Engine,
-    base: &SampleInfo,
-    new_name: &str,
-    data: &[f32],
-    note: &str,
-) -> Result<Value> {
-    save_new_stereo_sample(e, base, new_name, data, data, note)
-}
-
 /// Keep source channels separate while reserving a fresh output file.
 fn save_new_stereo_sample(
     e: &mut Engine,
@@ -1183,7 +1172,10 @@ pub fn tools() -> Vec<Tool> {
             mutates: true,
             schema: || obj(json!({"sample": {"type": "string"}, "grid": {"type": "string", "enum": ["1/4", "1/8", "1/16"], "description": "grid note (default 1/16)"}, "amount": {"type": "number", "minimum": 0, "maximum": 1}, "bpm": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
             run: |e, a| {
-                let (info, data) = sample_data(e, &s_req(a, "sample")?)?;
+                let name = s_req(a, "sample")?;
+                let info = e.project.samples.iter().find(|s| s.name.eq_ignore_ascii_case(&name))
+                    .cloned().ok_or_else(|| anyhow!("no sample '{name}'"))?;
+                let (left, right) = samples::decode_stereo(&e.resolve(&info.path))?;
                 let bpm = f_opt(a, "bpm").unwrap_or(e.project.bpm);
                 if bpm <= 0.0 {
                     bail!("give a bpm (or set the project tempo)");
@@ -1196,14 +1188,14 @@ pub fn tools() -> Vec<Tool> {
                 };
                 let g = (60.0 / bpm * denom * SR) as usize;
                 let amount = f_or(a, "amount", 1.0).clamp(0.0, 1.0);
-                let (out, hits, moved) = audio_edit::quantize_onsets(&data, g, amount);
+                let (out_left, out_right, hits, moved) = audio_edit::quantize_onsets_stereo(&left, &right, g, amount);
                 if hits < 2 {
                     bail!("found {hits} hits to snap - quantize needs clear transients (try stretch_sample for smooth material)");
                 }
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_q", info.name));
                 let grid = s_opt(a, "grid").unwrap_or_else(|| "1/16".into());
                 let what = format!("quantize {grid} grid x{amount} at {bpm} BPM");
-                let mut r = save_new_sample(e, &info, &nn, &out, &what)?;
+                let mut r = save_new_stereo_sample(e, &info, &nn, &out_left, &out_right, &what)?;
                 r["hits"] = json!(hits);
                 r["moved"] = json!(moved);
                 Ok(r)

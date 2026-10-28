@@ -1,0 +1,74 @@
+name: Publish stereo quantize validation
+'on':
+  push:
+    branches:
+    - stereo-quantize
+    paths:
+    - .github/workflows/*publish-v254.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/stereo-quantize'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 783293d59fb9f80454645eb9cabf6ad3958e09da ]
+
+        [ "$(git rev-parse origin/main)" = 783293d59fb9f80454645eb9cabf6ad3958e09da
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''78f0a429cd32d8099ed4439ab840e60327cb55d75de259431e780bc441260981''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/audio_edit.rs'': ''0660a39f648ee1d4b56be8d8cc798aa2644e045b35cb78fafc10932eb40258bd'',
+        ''src/tools_sound.rs'': ''d178b020f34468df2e04a933096bc03f759f2a05cb30ed55a53e77d790fc3e48'',
+        ''tests/stereo_quantize.rs'': ''6e3a5d9b42565e2d5f3b79881c5ba6bfe744cd95700612cc3ad4bab0df4d331d''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/audio_edit.rs src/tools_sound.rs tests/stereo_quantize.rs
+
+        git commit -m "Keep stereo channels aligned when quantizing samples"
+
+        git fetch origin stereo-quantize main
+
+        [ "$(git rev-parse origin/stereo-quantize)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 783293d59fb9f80454645eb9cabf6ad3958e09da
+        ]
+
+        git push origin HEAD:refs/heads/stereo-quantize
+
+        '
