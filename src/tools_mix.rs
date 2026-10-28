@@ -396,32 +396,37 @@ pub fn tools() -> Vec<Tool> {
             run: |e, a| {
                 let (name, l, r) = crate::tools_sound::audio_for(e, a)?;
                 if s_opt(a, "sample").is_none() && s_opt(a, "path").is_none() { bail!("give a sample or a path"); }
-                let mono: Vec<f32> = l.iter().zip(r.iter()).map(|(x, y)| 0.5 * (x + y)).collect();
+                let activity: Vec<f32> = l.iter().zip(&r).map(|(x, y)| x.abs().max(y.abs())).collect();
                 let pad = (f_opt(a, "pad_ms").unwrap_or(10.0).max(0.0) * 0.001 * SR) as usize;
-                let rg = sc_dsp::non_silent_ranges(&mono, f_opt(a, "threshold_db").unwrap_or(-48.0), (f_opt(a, "min_gap_ms").unwrap_or(80.0).max(1.0) * 0.001 * SR) as usize, pad, pad);
+                let rg = sc_dsp::non_silent_ranges(&activity, f_opt(a, "threshold_db").unwrap_or(-48.0), (f_opt(a, "min_gap_ms").unwrap_or(80.0).max(1.0) * 0.001 * SR) as usize, pad, pad);
                 let regions: Vec<Value> = rg.iter().map(|(s, t)| json!([(*s as f32 / SR * 1000.0).round() / 1000.0, (*t as f32 / SR * 1000.0).round() / 1000.0])).collect();
-                let mut out = json!({"source": name, "regions_s": regions, "count": rg.len(), "original_s": (mono.len() as f32 / SR * 100.0).round() / 100.0});
+                let mut out = json!({"source": name, "regions_s": regions, "count": rg.len(), "original_s": (activity.len() as f32 / SR * 100.0).round() / 100.0});
                 if b_or(a, "apply", false) {
                     let Some(sname) = s_opt(a, "sample") else { bail!("apply needs a registered sample") };
-                    let mut data: Vec<f32> = Vec::new();
-                    for (s, t) in &rg { data.extend_from_slice(&mono[*s..*t]); }
-                    if data.is_empty() { bail!("everything is below the threshold"); }
+                    let mut left: Vec<f32> = Vec::new();
+                    let mut right: Vec<f32> = Vec::new();
+                    for (s, t) in &rg { left.extend_from_slice(&l[*s..*t]); right.extend_from_slice(&r[*s..*t]); }
+                    if left.is_empty() { bail!("everything is below the threshold"); }
                     let base_name = format!("{}_stripped", crate::samples::sample_name(&sname));
                     std::fs::create_dir_all(e.samples_dir())?;
                     let mut name = base_name.clone();
                     let mut suffix = 2;
-                    while e.project.samples.iter().any(|s| s.name.eq_ignore_ascii_case(&name))
-                        || e.samples_dir().join(format!("{name}.wav")).exists()
-                    {
+                    let path = loop {
+                        let candidate = e.samples_dir().join(format!("{name}.wav"));
+                        if !e.project.samples.iter().any(|s| s.name.eq_ignore_ascii_case(&name)) {
+                            match crate::render::write_wav_new(&candidate, &left, &right) {
+                                Ok(()) => break candidate,
+                                Err(error) if error.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) => {},
+                                Err(error) => return Err(error),
+                            }
+                        }
                         name = format!("{base_name}_{suffix}");
                         suffix += 1;
-                    }
-                    let path = e.samples_dir().join(format!("{name}.wav"));
-                    crate::render::write_wav(&path, &data, &data)?;
+                    };
                     let info = crate::samples::SampleInfo { name, path: path.to_string_lossy().to_string(), source: format!("strip_silence of {sname}"), license: String::new(), author: String::new(), duration: 0.0 };
                     let reg = crate::tools::register_sample(e, info)?;
                     out["new_sample"] = reg["sample"].clone();
-                    out["new_s"] = json!((data.len() as f32 / SR * 100.0).round() / 100.0);
+                    out["new_s"] = json!((left.len() as f32 / SR * 100.0).round() / 100.0);
                 }
                 Ok(out)
             },
