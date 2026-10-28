@@ -137,15 +137,26 @@ pub(crate) fn static_value(p: &Project, owner: &str, param: &str) -> Result<f32>
     }
 }
 
-/// Remove `send.<bus>` automation lanes (of one track, or of every track)
-/// once that send is gone.
+/// Remove `send.<bus>` automation lanes and reusable clips (of one track, or
+/// every track) once that send is gone, before a later send can reuse its name.
 pub(crate) fn drop_send_lanes(p: &mut Project, track: Option<&str>, bus: &str) {
-    p.automation.retain(|l| {
-        let owner_ok = track.is_none_or(|t| l.target.eq_ignore_ascii_case(t));
-        let is_it =
-            matches!(parse_target(&l.param), Some(Target::Send(b)) if b.eq_ignore_ascii_case(bus));
-        !(owner_ok && is_it)
-    });
+    let owner_id = track
+        .and_then(|t| p.track_index(t).ok())
+        .map(|i| p.tracks[i].id.clone());
+    let removed = |owner: &str, param: &str| {
+        let owner_ok = track.is_none_or(|t| {
+            owner.eq_ignore_ascii_case(t)
+                || owner_id
+                    .as_ref()
+                    .is_some_and(|id| !id.is_empty() && owner.eq_ignore_ascii_case(id))
+        });
+        owner_ok
+            && matches!(parse_target(param), Some(Target::Send(b)) if b.eq_ignore_ascii_case(bus))
+    };
+    p.automation
+        .retain(|lane| !removed(&lane.target, &lane.param));
+    p.automation_clips
+        .retain(|clip| !removed(&clip.target, &clip.param));
 }
 
 /// The track's send a `send.<bus>` lane drives: by bus name or send id,
