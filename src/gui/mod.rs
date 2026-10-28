@@ -5,6 +5,7 @@
 //! lets `beatbox mcp --connect` drive this window live.
 
 mod analyze_view;
+mod audio_check;
 mod browser_view;
 mod channel_rack;
 mod console;
@@ -308,6 +309,7 @@ pub struct Studio {
     mix_readout: Option<String>,
     mix_job: Option<(u64, Receiver<Result<String, String>>)>,
     mix_readout_revision: Option<u64>,
+    audio_check: audio_check::State,
     mix_comparison: Option<MixComparison>,
     mix_comparison_job: Option<MixComparisonJob>,
     comparison_start_s: f32,
@@ -423,6 +425,7 @@ pub fn run(
                 mix_readout: None,
                 mix_job: None,
                 mix_readout_revision: None,
+                audio_check: audio_check::State::default(),
                 mix_comparison: None,
                 mix_comparison_job: None,
                 comparison_start_s: 0.0,
@@ -1934,6 +1937,7 @@ impl eframe::App for Studio {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frames += 1;
+        self.audio_check.pump(&self.engine.lock().unwrap(), ctx);
         // audio files dropped on the window become channels
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw

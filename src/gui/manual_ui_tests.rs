@@ -2,8 +2,9 @@
 //! beatbox-rs is fully manual ... The whole beatbox-rs should be
 //! controllable through mcp." These checks keep it that way.
 
-const SOURCES: [(&str, &str); 18] = [
+const SOURCES: [(&str, &str); 19] = [
     ("analyze_view.rs", include_str!("analyze_view.rs")),
+    ("audio_check.rs", include_str!("audio_check.rs")),
     ("browser_view.rs", include_str!("browser_view.rs")),
     ("channel_rack.rs", include_str!("channel_rack.rs")),
     ("console.rs", include_str!("console.rs")),
@@ -322,7 +323,6 @@ fn every_tool_is_reachable_from_the_gui() {
         "describe_instrument",
         "describe_tool",
         "design_sound",
-        "detect_artifacts",
         "detect_key",
         "detect_transients",
         "detect_vocal_onsets",
@@ -416,7 +416,6 @@ fn every_tool_is_reachable_from_the_gui() {
         "remove_marker",
         "remove_pattern",
         "remove_tempo_point",
-        "render_preview",
         "render_spectrogram",
         "render_waveform_png",
         "reorder_effects",
@@ -523,4 +522,26 @@ fn save_success_feedback_is_guarded_by_tool_result() {
     assert!(!failure.contains("saved_rev"));
     // and success is only reported from the Ok arm, with the success flag
     assert!(success.contains("0.0, true"));
+}
+
+#[test]
+fn wording_scan_covers_audio_check_production_labels() {
+    let (_, src) = SOURCES
+        .iter()
+        .find(|(file, _)| *file == "audio_check.rs")
+        .expect("audio check registered");
+    let scanned = literals(production_source(src));
+    for label in [
+        "Check audio",
+        "Prepare excerpt",
+        "Play excerpt",
+        "Stop excerpt",
+        "Excerpt boundary, song ending not checked",
+        "End of returned event report",
+    ] {
+        assert!(
+            scanned.iter().any(|(_, lit)| lit == label),
+            "production label not scanned: {label}"
+        );
+    }
 }

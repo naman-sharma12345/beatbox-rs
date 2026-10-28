@@ -91,6 +91,138 @@ pub(crate) fn region(p: &Project, a: &Value, total: usize) -> Result<(usize, usi
     Ok((x0, x1, label))
 }
 
+// Artifact checks use literal windows, never preview ring-out semantics.
+const ARTIFACT_MAX_EVENTS: usize = 256;
+
+fn artifact_number(a: &Value, key: &str) -> Result<Option<f64>> {
+    a.get(key)
+        .map(|v| {
+            let x = v
+                .as_f64()
+                .ok_or_else(|| anyhow!("{key} must be a finite nonnegative number"))?;
+            if !x.is_finite() || x < 0.0 || !(x as f32).is_finite() {
+                bail!("{key} must be a finite nonnegative number representable as f32");
+            }
+            Ok(x)
+        })
+        .transpose()
+}
+
+fn artifact_event_budget(n: u64) -> Result<usize> {
+    if !(1..=ARTIFACT_MAX_EVENTS as u64).contains(&n) {
+        bail!("max_events must be an integer from 1 to {ARTIFACT_MAX_EVENTS}");
+    }
+    Ok(n as usize)
+}
+
+fn artifact_options(a: &Value) -> Result<ArtifactOptions> {
+    let max_events = match a.get("max_events") {
+        None => 20,
+        Some(v) => artifact_event_budget(v.as_u64().ok_or_else(|| {
+            anyhow!("max_events must be an integer from 1 to {ARTIFACT_MAX_EVENTS}")
+        })?)?,
+    };
+    Ok(ArtifactOptions {
+        clicks: b_or(a, "clicks", true),
+        max_events,
+        tail_s: artifact_number(a, "tail_s")?.unwrap_or(6.0) as f32,
+    })
+}
+
+fn validate_artifact_selectors(a: &Value) -> Result<()> {
+    if !a.is_object() {
+        bail!("artifact arguments must be an object");
+    }
+    for key in ["clicks", "per_track"] {
+        if a.get(key).is_some_and(|v| !v.is_boolean()) {
+            bail!("{key} must be a boolean");
+        }
+    }
+    let mut sources = 0;
+    for k in ["track", "sample", "path"] {
+        if let Some(v) = a.get(k) {
+            if v.as_str().is_none_or(|s| s.trim().is_empty()) {
+                bail!("{k} must be a nonempty string");
+            }
+            sources += 1;
+        }
+    }
+    if sources > 1 {
+        bail!("choose only one of track, sample or path");
+    }
+    let seconds = a.get("start_s").is_some() || a.get("end_s").is_some();
+    let beats = a.get("start_beat").is_some() || a.get("end_beat").is_some();
+    let section = a.get("section").is_some();
+    if (seconds as u8 + beats as u8 + section as u8) > 1 {
+        bail!("choose only one window coordinate system: seconds, beats or section");
+    }
+    if (a.get("path").is_some() || a.get("sample").is_some()) && (beats || section) {
+        bail!("file/sample windows accept seconds only, not timeline beats or sections");
+    }
+    if let Some(v) = a.get("section") {
+        if !(v.as_str().is_some_and(|s| !s.trim().is_empty()) || v.as_u64().is_some()) {
+            bail!("section must be a nonempty name or nonnegative integer index");
+        }
+    }
+    for (start, end) in [("start_s", "end_s"), ("start_beat", "end_beat")] {
+        let lo = artifact_number(a, start)?.unwrap_or(0.0);
+        if let Some(hi) = artifact_number(a, end)? {
+            if hi <= lo {
+                bail!("{end} must be greater than {start}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn artifact_seconds_bounds(total: usize, start: f64, end: f64) -> Result<(usize, usize)> {
+    if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start {
+        bail!("artifact window must have finite, nonnegative, ordered nonempty bounds");
+    }
+    let source_end = total as f64 / SR as f64;
+    if start >= source_end {
+        bail!("artifact window starts outside the available source");
+    }
+    let lo = (start * SR as f64) as usize;
+    let hi = if end >= source_end {
+        total
+    } else {
+        (end * SR as f64) as usize
+    };
+    if hi <= lo {
+        bail!("artifact window contains no samples");
+    }
+    Ok((lo, hi))
+}
+
+fn artifact_region(p: &Project, a: &Value, total: usize) -> Result<(usize, usize, String)> {
+    // Validate here too so this resolver is safe when called independently.
+    validate_artifact_selectors(a)?;
+    if a.get("section").is_some() || a.get("start_beat").is_some() || a.get("end_beat").is_some() {
+        let mut literal = a.clone();
+        literal
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("arguments must be an object"))?
+            .remove("tail_s");
+        return region(p, &literal, total);
+    }
+    let start = artifact_number(a, "start_s")?.unwrap_or(0.0);
+    let end = artifact_number(a, "end_s")?.unwrap_or(total as f64 / SR as f64);
+    let (lo, hi) = artifact_seconds_bounds(total, start, end)?;
+    let label = if a.get("start_s").is_some() || a.get("end_s").is_some() {
+        format!("{start}-{end} s")
+    } else {
+        "whole".to_string()
+    };
+    Ok((lo, hi, label))
+}
+
+fn artifact_endpoint_context(events: &mut Vec<ears::Artifact>, source_end_checked: bool) {
+    if !source_end_checked {
+        events.retain(|ev| ev.kind != "truncated_tail" && ev.kind != "end_level_jump");
+    }
+}
+
 fn has_region(a: &Value) -> bool {
     ["section", "start_beat", "end_beat", "start_s", "end_s"]
         .iter()
@@ -308,25 +440,23 @@ pub fn tools() -> Vec<Tool> {
             schema: || obj(with_props(with_props(source_props(), region_props()), json!({
                 "per_track": {"type": "boolean", "description": "Also scan every track solo for noise beds/clicks (slower)"},
                 "clicks": {"type": "boolean", "description": "Run the click detector (default true)"},
-                "max_events": {"type": "integer"},
-                "tail_s": {"type": "number", "description": "Seconds at the end treated as outro for end-level jumps (default 6)"},
+                "max_events": {"type": "integer", "minimum": 1, "maximum": 256, "description": "Per-detector event budget (default 20, range 1..256)"},
+                "tail_s": {"type": "number", "description": "Analysis horizon in seconds for outro end-level jumps, not window ring-out (finite, nonnegative; default 6)"},
             })), &[]),
             run: |e, a| {
+                validate_artifact_selectors(a)?;
+                let o = artifact_options(a)?;
                 let (name, l, r, is_mix) = source(e, a)?;
                 let p = e.project.clone();
-                let (s0, s1, label) = if is_mix { region(&p, a, l.len())? } else {
-                    let n = l.len().min(r.len());
-                    (((f_opt(a, "start_s").unwrap_or(0.0)) * SR) as usize, ((f_opt(a, "end_s").map(|x| x * SR).unwrap_or(n as f32)) as usize).min(n), "file".to_string())
-                };
-                let o = ArtifactOptions {
-                    clicks: b_or(a, "clicks", true),
-                    max_events: u_or(a, "max_events", 20) as usize,
-                    tail_s: f_opt(a, "tail_s").unwrap_or(6.0),
-                };
+                let n = l.len().min(r.len());
+                let (s0, s1, label) = artifact_region(&p, a, n)?;
+                let label = if is_mix { label } else { "file".to_string() };
+                let source_end_checked = s1 == n;
                 // drum attacks are transients, not clicks: scan deeper, then mask them
                 let onsets = if is_mix || s_opt(a, "track").is_some() { ears::drum_onsets(&p) } else { Vec::new() };
-                let wide = ArtifactOptions { max_events: o.max_events * 8, ..o };
+                let wide = ArtifactOptions { max_events: o.max_events.checked_mul(8).ok_or_else(|| anyhow!("max_events overflow"))?, ..o };
                 let (mut events, bed) = ears::detect_artifacts(&l[s0..s1], &r[s0..s1], &wide);
+                artifact_endpoint_context(&mut events, source_end_checked);
                 let masked = ears::mask_drum_clicks(&mut events, &onsets, s0);
                 let mut nclick = 0;
                 events.retain(|x| x.kind != "click" || { nclick += 1; nclick <= o.max_events });
@@ -339,8 +469,10 @@ pub fn tools() -> Vec<Tool> {
                     let names: Vec<String> = p.tracks.iter().filter(|t| !t.mute).map(|t| t.name.clone()).collect();
                     for t in names {
                         let m = render_track(e, &t)?;
-                        let (b0, b1) = ears::clamp_range(m.left.len(), s0, s1);
+                        let (b0, b1) = ears::clamp_range(m.left.len().min(m.right.len()), s0, s1);
+                        if b1 <= b0 { continue; }
                         let (mut ev, mut bed) = ears::detect_artifacts(&m.left[b0..b1], &m.right[b0..b1], &wide);
+                        artifact_endpoint_context(&mut ev, b1 == m.left.len().min(m.right.len()));
                         // a solo noise-percussion track is judged between its own hits
                         if bed.detected {
                             if let Some(spans) = ears::own_hit_spans(&p, &e.bank, p.track_index(&t)?) {
@@ -363,7 +495,10 @@ pub fn tools() -> Vec<Tool> {
                 let fails = events.iter().filter(|x| x.severity == "fail").count();
                 let warns = events.iter().filter(|x| x.severity == "warn").count();
                 Ok(json!({"source": name, "window": label, "clean": fails + warns == 0, "fail": fails, "warn": warns, "drum_attack_transients_ignored": masked,
-                    "events": events, "noise_bed": bed, "culprits": culprits}))
+                    "events": events, "noise_bed": bed, "culprits": culprits,
+                    "window_bounds": {"start_s": s0 as f64 / SR as f64, "end_s": s1 as f64 / SR as f64,
+                        "source_end_s": n as f64 / SR as f64, "source_end_checked": source_end_checked},
+                    "scope_note": if source_end_checked { "Findings describe only the checked window; source ending checked." } else { "Excerpt boundary: source ending not checked. Clean applies only to this window, not the whole source." }}))
             },
         },
         Tool {
@@ -890,5 +1025,80 @@ mod region_integration_tests {
             .unwrap();
         assert_eq!(a["peaks"], b["peaks"]);
         assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod artifact_window_tests {
+    use super::*;
+    #[test]
+    fn literal_windows_and_preview_ringout_stay_distinct() {
+        let p = Project::default();
+        let n = (10.0 * SR) as usize;
+        for args in [
+            json!({"start_s":1,"end_s":2}),
+            json!({"start_beat":2,"end_beat":4}),
+            json!({"section":0}),
+        ] {
+            let a = artifact_region(&p, &args, n).unwrap();
+            let mut explicit = args.clone();
+            explicit["tail_s"] = json!(6);
+            assert_eq!(a, artifact_region(&p, &explicit, n).unwrap());
+        }
+        let args = json!({"start_s":1,"end_s":2,"tail_s":6});
+        assert_eq!(
+            artifact_region(&p, &args, n).unwrap().1,
+            (2.0 * SR) as usize
+        );
+        assert_eq!(region(&p, &args, n).unwrap().1, (8.0 * SR) as usize);
+    }
+    #[test]
+    fn unequal_channels_and_nonfinite_bounds_are_safe() {
+        let l = [0.0; 8];
+        let r = [0.0; 4];
+        let (lo, hi) = artifact_seconds_bounds(l.len().min(r.len()), 0.0, 1.0).unwrap();
+        assert_eq!((l[lo..hi].len(), r[lo..hi].len()), (4, 4));
+        for (lo, hi) in [
+            (f64::NAN, 1.0),
+            (0.0, f64::INFINITY),
+            (-1.0, 1.0),
+            (1.0, 1.0),
+            (0.0, 0.0),
+        ] {
+            assert!(artifact_seconds_bounds(44100, lo, hi).is_err());
+        }
+        assert!(artifact_seconds_bounds(0, 0.0, 1.0).is_err());
+    }
+    #[test]
+    fn endpoint_context_removes_only_endpoint_findings() {
+        let kinds = [
+            "click",
+            "dc_step",
+            "noise_bed",
+            "truncated_tail",
+            "end_level_jump",
+        ];
+        let events = || {
+            kinds
+                .iter()
+                .map(|kind| ears::Artifact {
+                    kind: kind.to_string(),
+                    severity: "warn".into(),
+                    time_s: 1.0,
+                    end_s: None,
+                    detail: String::new(),
+                    track: None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut all = events();
+        artifact_endpoint_context(&mut all, true);
+        assert_eq!(all.len(), 5);
+        let mut excerpt = events();
+        artifact_endpoint_context(&mut excerpt, false);
+        assert_eq!(
+            excerpt.iter().map(|x| x.kind.as_str()).collect::<Vec<_>>(),
+            vec!["click", "dc_step", "noise_bed"]
+        );
     }
 }
