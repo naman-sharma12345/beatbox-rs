@@ -1086,6 +1086,10 @@ pub fn tools() -> Vec<Tool> {
                 };
                 if on.first().copied().unwrap_or(1) > (0.02 * SR) as usize { on.insert(0, 0); }
                 if let Some(first) = on.first_mut() { *first = 0; }
+                on.retain(|&start| start < data.len());
+                on.sort_unstable();
+                on.dedup();
+                if on.is_empty() { bail!("the sample has no audio frames to slice"); }
                 on.truncate(u_or(a, "max_slices", 32).clamp(1, 64) as usize);
                 let root = a.get("root").map(pitch_of).transpose()?.unwrap_or(36);
                 if on.len() > 128 - root as usize {
