@@ -1123,12 +1123,19 @@ pub fn tools() -> Vec<Tool> {
             mutates: true,
             schema: || obj(json!({"sample": {"type": "string"}, "factor": {"type": "number"}, "source_bpm": {"type": "number"}, "target_bpm": {"type": "number"}, "semitones": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
             run: |e, a| {
-                let (info, data) = sample_data(e, &s_req(a, "sample")?)?;
+                let name = s_req(a, "sample")?;
+                let info = e.project.samples.iter().find(|s| s.name.eq_ignore_ascii_case(&name))
+                    .cloned().ok_or_else(|| anyhow!("no sample '{name}'"))?;
+                let (left, right) = samples::decode_stereo(&e.resolve(&info.path))?;
                 let mut note = Vec::new();
                 let factor = match f_opt(a, "factor") {
                     Some(f) => f,
                     None if a.get("target_bpm").is_some() || a.get("source_bpm").is_some() => {
-                        let src = f_opt(a, "source_bpm").unwrap_or_else(|| audio_edit::estimate_bpm(&data).0);
+                        let src = f_opt(a, "source_bpm").unwrap_or_else(|| {
+                            let l = audio_edit::estimate_bpm(&left);
+                            let r = audio_edit::estimate_bpm(&right);
+                            if r.1 > l.1 { r.0 } else { l.0 }
+                        });
                         if src <= 0.0 { bail!("couldn't detect the loop tempo; pass source_bpm"); }
                         let dst = f_opt(a, "target_bpm").unwrap_or(e.project.bpm);
                         note.push(format!("{src} -> {dst} BPM"));
@@ -1136,16 +1143,16 @@ pub fn tools() -> Vec<Tool> {
                     }
                     None => 1.0,
                 };
-                let mut out = audio_edit::time_stretch(&data, factor.clamp(0.25, 4.0));
+                let (mut out_left, mut out_right) = audio_edit::time_stretch_stereo(&left, &right, factor.clamp(0.25, 4.0));
                 if (factor - 1.0).abs() > 1e-3 { note.push(format!("x{factor:.3} length")); }
                 if let Some(st) = f_opt(a, "semitones").filter(|s| s.abs() > 1e-3) {
-                    out = audio_edit::pitch_shift(&out, st);
+                    (out_left, out_right) = audio_edit::pitch_shift_stereo(&out_left, &out_right, st);
                     note.push(format!("{st:+} st"));
                 }
                 if note.is_empty() { bail!("nothing to do: give factor, target_bpm/source_bpm or semitones"); }
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_stretched", info.name));
-                let mut r = save_new_sample(e, &info, &nn, &out, &note.join(", "))?;
-                r["seconds"] = json!((out.len() as f32 / SR * 100.0).round() / 100.0);
+                let mut r = save_new_stereo_sample(e, &info, &nn, &out_left, &out_right, &note.join(", "))?;
+                r["seconds"] = json!((out_left.len() as f32 / SR * 100.0).round() / 100.0);
                 Ok(r)
             },
         },
