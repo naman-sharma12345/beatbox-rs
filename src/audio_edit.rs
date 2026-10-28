@@ -557,14 +557,41 @@ pub fn quantize_onsets(x: &[f32], grid_samples: usize, amount: f32) -> (Vec<f32>
 pub fn find_offset(reference: &[f32], take: &[f32], max_offset_s: f32) -> (isize, usize, f32) {
     let r = onsets(reference, 0.5, 30.0);
     let t = onsets(take, 0.5, 30.0);
+    offset_from_onsets(&r, &t, max_offset_s)
+}
+
+/// Stereo offset detection combines channel onset positions without downmixing.
+/// Nearby channel detections of the same attack count as one vote.
+pub fn find_offset_stereo(
+    reference_left: &[f32],
+    reference_right: &[f32],
+    take_left: &[f32],
+    take_right: &[f32],
+    max_offset_s: f32,
+) -> (isize, usize, f32) {
+    let combined = |left: &[f32], right: &[f32]| {
+        let mut marks = onsets(left, 0.5, 30.0);
+        marks.extend(onsets(right, 0.5, 30.0));
+        marks.sort_unstable();
+        marks.dedup_by(|a, b| a.abs_diff(*b) <= 64);
+        marks
+    };
+    offset_from_onsets(
+        &combined(reference_left, reference_right),
+        &combined(take_left, take_right),
+        max_offset_s,
+    )
+}
+
+fn offset_from_onsets(r: &[usize], t: &[usize], max_offset_s: f32) -> (isize, usize, f32) {
     if r.is_empty() || t.is_empty() {
         return (0, 0, 0.0);
     }
     let max = (max_offset_s.max(0.05) * SR) as isize;
     let bin = (0.001 * SR) as isize;
     let mut hist: std::collections::BTreeMap<isize, Vec<isize>> = std::collections::BTreeMap::new();
-    for &to in &t {
-        for &ro in &r {
+    for &to in t {
+        for &ro in r {
             let d = to as isize - ro as isize;
             if d.abs() <= max {
                 hist.entry(d / bin).or_default().push(d);

@@ -1215,42 +1215,45 @@ pub fn tools() -> Vec<Tool> {
             mutates: true,
             schema: || obj(json!({"sample": {"type": "string"}, "reference": {"type": "string", "description": "reference sample name, or 'mix' for the rendered song"}, "max_offset_s": {"type": "number"}, "min_confidence": {"type": "number"}, "new_name": {"type": "string"}}), &["sample", "reference"]),
             run: |e, a| {
-                let (info, data) = sample_data(e, &s_req(a, "sample")?)?;
+                let name = s_req(a, "sample")?;
+                let info = e.project.samples.iter().find(|s| s.name.eq_ignore_ascii_case(&name))
+                    .cloned().ok_or_else(|| anyhow!("no sample '{name}'"))?;
+                let (left, right) = samples::decode_stereo(&e.resolve(&info.path))?;
                 let reference = s_req(a, "reference")?;
-                let ref_data = if reference.eq_ignore_ascii_case("mix") {
+                let (ref_left, ref_right) = if reference.eq_ignore_ascii_case("mix") {
                     let mix = crate::render::render(
                         &e.project.clone(),
                         &e.bank,
                         &crate::render::RenderOptions::default(),
                     )?;
-                    mix.left
-                        .iter()
-                        .zip(mix.right.iter())
-                        .map(|(l, r)| (l + r) * 0.5)
-                        .collect::<Vec<f32>>()
+                    (mix.left, mix.right)
                 } else {
-                    sample_data(e, &reference)?.1
+                    let r = e.project.samples.iter().find(|s| s.name.eq_ignore_ascii_case(&reference))
+                        .ok_or_else(|| anyhow!("no sample '{reference}'"))?;
+                    samples::decode_stereo(&e.resolve(&r.path))?
                 };
                 let max_off = f_or(a, "max_offset_s", 2.0);
                 let min_conf = f_or(a, "min_confidence", 0.5);
-                let (off, votes, conf) = audio_edit::find_offset(&ref_data, &data, max_off);
+                let (off, votes, conf) = audio_edit::find_offset_stereo(&ref_left, &ref_right, &left, &right, max_off);
                 if conf < min_conf {
                     bail!(
                         "only {conf:.2} of the take's onsets agree with the reference (want {min_conf:.2}) - pass a reference the take was actually recorded against"
                     );
                 }
-                let out = if off > 0 {
-                    data[off as usize..].to_vec()
-                } else if off < 0 {
-                    let mut o = vec![0.0f32; (-off) as usize];
-                    o.extend_from_slice(&data);
-                    o
-                } else {
-                    data.clone()
+                let shifted = |data: &[f32]| {
+                    if off > 0 {
+                        data[(off as usize).min(data.len())..].to_vec()
+                    } else if off < 0 {
+                        let mut out = vec![0.; (-off) as usize];
+                        out.extend_from_slice(data);
+                        out
+                    } else { data.to_vec() }
                 };
+                let out_left = shifted(&left);
+                let out_right = shifted(&right);
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_aligned", info.name));
                 let what = format!("aligned to {reference}: shifted {:+.1} ms", off as f32 / SR * 1000.0);
-                let mut r = save_new_sample(e, &info, &nn, &out, &what)?;
+                let mut r = save_new_stereo_sample(e, &info, &nn, &out_left, &out_right, &what)?;
                 r["offset_ms"] = json!((off as f32 / SR * 1000.0 * 10.0).round() / 10.0);
                 r["votes"] = json!(votes);
                 r["confidence"] = json!((conf * 100.0).round() / 100.0);
