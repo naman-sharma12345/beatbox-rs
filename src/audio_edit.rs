@@ -109,7 +109,22 @@ pub fn onsets_stereo(left: &[f32], right: &[f32], sensitivity: f32, min_gap_ms: 
 
 /// Tempo estimate from onset autocorrelation: (bpm, confidence 0..1).
 pub fn estimate_bpm(x: &[f32]) -> (f32, f32) {
-    let env = onset_envelope(x);
+    bpm_from_envelope(&onset_envelope(x))
+}
+
+/// Tempo evidence from both channels without a phase-cancelling mono fold.
+/// Combine nonnegative flux envelopes, then use the unchanged tempo scorer.
+pub fn estimate_bpm_stereo(left: &[f32], right: &[f32]) -> (f32, f32) {
+    let common = left.len().min(right.len());
+    let mut env = onset_envelope(&left[..common]);
+    let right_env = onset_envelope(&right[..common]);
+    for (left, right) in env.iter_mut().zip(right_env) {
+        *left = 0.5 * (*left + right);
+    }
+    bpm_from_envelope(&env)
+}
+
+fn bpm_from_envelope(env: &[f32]) -> (f32, f32) {
     if env.len() < 64 {
         return (0.0, 0.0);
     }
@@ -828,7 +843,9 @@ pub fn profile(name: &str, l: &[f32], r: &[f32]) -> AudioProfile {
     let mid = mono.len() / 2;
     let half = (30.0 * SR) as usize;
     let seg = &mono[mid.saturating_sub(half)..(mid + half).min(mono.len())];
-    let (bpm, conf) = estimate_bpm(seg);
+    let lo = mid.saturating_sub(half);
+    let hi = (mid + half).min(l.len().min(r.len()));
+    let (bpm, conf) = estimate_bpm_stereo(&l[lo..hi], &r[lo..hi]);
     let key = estimate_key(seg)
         .first()
         .map(|k| k.0.clone())

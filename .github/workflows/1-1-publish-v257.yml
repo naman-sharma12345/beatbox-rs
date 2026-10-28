@@ -1,0 +1,73 @@
+name: Publish stereo tempo validation
+'on':
+  push:
+    branches:
+    - stereo-tempo
+    paths:
+    - .github/workflows/*publish-v257.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/stereo-tempo'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = c84d89e3fb307d8cdb40fd787048327dea15828e ]
+
+        [ "$(git rev-parse origin/main)" = c84d89e3fb307d8cdb40fd787048327dea15828e
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''8a569e8aadde71b03972a00aa376c8fd417ae2c2429acff13b0f5282010f2ac2''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/audio_edit.rs'': ''b0521198eec4564520b1eb6d18a07a44cf1c22622624848a41be3c4c0b0007a2'',
+        ''tests/stereo_tempo.rs'': ''f085590b0e8481af4d78f8d13419aafb85521cd1fb71b0af8f471daee5df227f''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/audio_edit.rs tests/stereo_tempo.rs
+
+        git commit -m "Estimate stereo tempo without mono cancellation"
+
+        git fetch origin stereo-tempo main
+
+        [ "$(git rev-parse origin/stereo-tempo)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = c84d89e3fb307d8cdb40fd787048327dea15828e
+        ]
+
+        git push origin HEAD:refs/heads/stereo-tempo
+
+        '
