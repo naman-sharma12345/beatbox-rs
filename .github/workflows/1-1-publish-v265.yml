@@ -1,0 +1,73 @@
+name: Publish audio clip owner removal preservation validation
+'on':
+  push:
+    branches:
+    - audio-owner-removal
+    paths:
+    - .github/workflows/*publish-v265.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/audio-owner-removal'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = b961208aa71544d0193bd6b727851b1f050ba422 ]
+
+        [ "$(git rev-parse origin/main)" = b961208aa71544d0193bd6b727851b1f050ba422
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''H4sIALg54moC/+VYz2/bNhS++69gNCCQZpuxXbfN1DUoMPTQUy9DL0FA0NJTwkYmVZJyWjT53/dIUbZsK467pdthAhJLFPl+fx8flYuiIOPxtbCEnxmdnVmlSkO1IYutx4GQOXwlMH9dzGdzSud8en4+Kch0Mnk1nw/G4/HO+sFwONyV8e4dGU9n0xej38jQ/05fEByr6kWcaW4hIYUkmdLA/JI4IeML8gmy3//ExwvyfUB2r0JpUhEhCdBKq8+QWVpxa0FLQwX+sGVtUUzPSndVNCtFhabBUq0gPrVU8iVQq1ip7kBn3ECcJG/2Fz8MhrtDJVjipbEFoFVA3nZs4nUuFGuUlSBjlLknoH+2BsuFjO+ze3ISZ9Rqnt1S+MLEtXRx4iYTgnlDg/XJvmR33d+T+MRSkVNhGCwr+w3DcnpKnhIp8iRJ+sxd+4uObvk9Puw36RNUcglekKuCNPXZZ8a61Wmaa1UxdScxm5mSVrvKOMW8bvSMSHDe36DJj6iBosDZhxX5cDCjap0BCwueVjfeVffxNv5slDyJv0dNdeVRStpVEa+tWnIrlGTedbaZ459xyrYFnQlh5CHpyfRP1+qlrHPaee+fnU3bOBkNeu8dnhGUeZd8LBhrzprwNzos19dgAxkdej2QcEcKUQJZqhxaTmoYa9JclMKrYjHPzz1VneWwOpN1WQaWOijcsdZkNEHKGk2ncySswbA2QBbA7UJ9TdP38lpIeNOMGtA5MJeENHX/cfiXSyf+ajBEcssB6xBy1lWVK0yFVBajyasKuGaYIJcyHKgdA2Gkhm0Ja6Us1q+xeZqCXGEJI5hZLnSc0M8KmQIxiDk+iTfFETLWIMjdW/b9IRptJqw9ydACK1YIjEKDuWEGII9Dma1JwKsuTJgNTjfjZRmfOtMSWss7zas1wzmbkZFv0Gb3vrExskoCveOrqDutTD3XFy9mFzg7xpTNZpOXk4QuUd69QAIThBuC78mvZEInrxNqUFjin2YvE5qpssQiXete+6UBS0Gn6Z3GPYGh3vjU2YTwLd1fr9Ee8WhHk900xRKLvQdZicbH63AAzZz3kVhWSltm+LIqIUKxLRCdpij1+iKX1Sj17kdbAN61oJXK81ArXYlBykqJDDVFFeYKLA5Ugkt1lNxucaCGDaS7ZbHW1xiwURh8DH7gM4LFMhftKJ3QhyTICGY85lrDHfvebWtDb/6t2PgahMIetXO7yawFokNDcKdFgwdDmMsNsoJl8OUkdvJHZNLSKCm0WrakQLwzBNsXnt24R0U0VCXPYAnSeqhg3+FpRIvrpjmKm/IceeTU5xc9XLFx+GnSWJM7cFlXniaeYof/Gy8svlnfqnQSz/Nm3Q/xyM/lD9cXW9cXX7ZQINEtQBVdtQVyJJLsYQz16W7188aACR2RGd3S28tERzDSY8xkD3MSt2tOaq8jXAg9fviJEWM+9YlHYXdPb5BvcNcuv7V9qu+O7oS9YbXMFW7k+I9ntuYl3qvKEUkXqbGvklaDw4QDeLfq9s8UYR/qTHIJbrDCHFKgUx5hUWekQ2ydUXdmirt1hV2VG3Lnj3BUIG/fhlrqzvPW5FtLd2HnTGzSZLYcCWM9DmHh1WXDx8ftGZ8+fvjjfd+e0aHgRuhlbx97haXas6R3Oxj5eB+cHTwbtW73TN6mESQ/pW+ROff4cONRWyWdOPECc3SgONrwuVrshO1wnDrHnab69jfwvyfNW7srzHDMa5iyz35NssYeXDTQN3VTjuuikHN7ZB9oLUrF82e35ohoPHdhHOpQTtcyQ2fRx2lIo4sS2rNDKbjBQS5z5mofKc/egDb9XMb6eEzkW2XqcWsuJ1fuw8RuzfZgzs0MJISi3IeaGk9M4UPNwYXTzcLok/qQvY+okFbt8edjzd/ljNIrp3AF2Y+2siI/EhuP08s/TKbby3GLvwHZUt16o8Lzpmk0HpnGjdP+jPpE/77pWfjtkWeep0i+ldQf0UfCGXY26jT0b2bPEmohV4iSvIkybva+d9IOSc1G46DTfGN57gZg4/1xUVwKg13ytQ+k+ySo9eZMe8wu8F9S1V/0oSfrtRYAAA==''))
+
+        assert hashlib.sha256(b).hexdigest()==''7dda6749b6107b455386d9704cdd9b7a564f0dcedc5ca834240526d102859876''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools.rs'': ''a4ac6dbf1e6542861fc33a40958fa64b7b68d78cd8517b049e2991f1560ccd2e'',
+        ''tests/track_audio_targets.rs'': ''873e4b151ab0e538fb34e12d8bca17a7704d25b677f79060f232b73fcb774acd''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools.rs tests/track_audio_targets.rs
+
+        git commit -m "Drop audio clips owned by deleted tracks"
+
+        git fetch origin audio-owner-removal main
+
+        [ "$(git rev-parse origin/audio-owner-removal)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = b961208aa71544d0193bd6b727851b1f050ba422
+        ]
+
+        git push origin HEAD:refs/heads/audio-owner-removal
+
+        '
