@@ -1,0 +1,74 @@
+name: Publish source track removal preservation validation
+'on':
+  push:
+    branches:
+    - source-removal
+    paths:
+    - .github/workflows/*publish-v264.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/source-removal'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = c5926b8eb8edf47bba32367d1f24e95649548dd7 ]
+
+        [ "$(git rev-parse origin/main)" = c5926b8eb8edf47bba32367d1f24e95649548dd7
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''f7516df8ac4676b349d5fcd246ce0952506f22630aab60a1aeaeeaa692eb33a9''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools.rs'': ''6551ede763ca24fa8c235b48173cb06c85b6bb3d087d0e9fbab759abced5e2c3'',
+        ''src/tools_studio.rs'': ''3d002bed9d9d299eeacb50b7905b0aaaf675e0c8e0ddd29fa6600564605d0299'',
+        ''tests/track_source_targets.rs'': ''3200ca530dacfde02dece4e7b14e72269ac363d07f3930038e49467c33cec4e6''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools.rs src/tools_studio.rs tests/track_source_targets.rs
+
+        git commit -m "Remove effects keyed to deleted tracks"
+
+        git fetch origin source-removal main
+
+        [ "$(git rev-parse origin/source-removal)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = c5926b8eb8edf47bba32367d1f24e95649548dd7
+        ]
+
+        git push origin HEAD:refs/heads/source-removal
+
+        '
