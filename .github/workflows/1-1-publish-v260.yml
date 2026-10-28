@@ -1,0 +1,73 @@
+name: Publish effect removal target preservation validation
+'on':
+  push:
+    branches:
+    - fx-removal
+    paths:
+    - .github/workflows/*publish-v260.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/fx-removal'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 8268d69a14136b6bbd1260f2a4f3f7f1e4783346 ]
+
+        [ "$(git rev-parse origin/main)" = 8268d69a14136b6bbd1260f2a4f3f7f1e4783346
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''1516b6c8548b277a39ea02ac7523f94e35f37bb35a785d651d661e2a748286c8''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_studio.rs'': ''66feb62f9785254434ddb65c5d8a09a5b02880fef878db65dda41f78db61e9c9'',
+        ''tests/fx_remove_targets.rs'': ''f794e1055f9f5952a822c43c37975fc21e9a9049677ee15c7c0e5bfc874c9baa''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_studio.rs tests/fx_remove_targets.rs
+
+        git commit -m "Preserve surviving controls and drop deleted effect targets"
+
+        git fetch origin fx-removal main
+
+        [ "$(git rev-parse origin/fx-removal)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 8268d69a14136b6bbd1260f2a4f3f7f1e4783346
+        ]
+
+        git push origin HEAD:refs/heads/fx-removal
+
+        '
