@@ -1,0 +1,73 @@
+name: Publish registered stereo source parity
+'on':
+  push:
+    branches:
+    - stereo-source
+    paths:
+    - .github/workflows/*publish-v245.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/stereo-source'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 438f2d6f9cbc3f3b72287ee0a7766382aac630e4 ]
+
+        [ "$(git rev-parse origin/main)" = 438f2d6f9cbc3f3b72287ee0a7766382aac630e4
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''6ea5a441edf0d60374208842ae718d0aec0e08d1b8645251e7351bd042ed53c8''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_sound.rs'': ''ae9f58cdfbab1e6f7e023781b93cff9ff02f35d135d4468bbfda8c0e4814f692'',
+        ''tests/stereo_sources.rs'': ''070efd6abd623a0a918a7569016291e720b264b20659c905aba7ab374a3af94f''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_sound.rs tests/stereo_sources.rs
+
+        git commit -m "Read original stereo channels for registered audio sources"
+
+        git fetch origin stereo-source main
+
+        [ "$(git rev-parse origin/stereo-source)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 438f2d6f9cbc3f3b72287ee0a7766382aac630e4
+        ]
+
+        git push origin HEAD:refs/heads/stereo-source
+
+        '

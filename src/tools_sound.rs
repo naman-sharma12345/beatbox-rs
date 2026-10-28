@@ -579,8 +579,15 @@ fn save_new_stereo_sample(
 
 pub(crate) fn audio_for(e: &mut Engine, a: &Value) -> Result<(String, Vec<f32>, Vec<f32>)> {
     if let Some(n) = s_opt(a, "sample") {
-        let (info, d) = sample_data(e, &n)?;
-        return Ok((info.name, d.clone(), d));
+        let info = e
+            .project
+            .samples
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(&n))
+            .cloned()
+            .ok_or_else(|| anyhow!("no sample '{n}'"))?;
+        let (left, right) = samples::decode_stereo(&e.resolve(&info.path))?;
+        return Ok((info.name, left, right));
     }
     if let Some(p) = s_opt(a, "path") {
         let path = e.resolve(&p);
