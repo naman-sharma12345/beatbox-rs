@@ -1,0 +1,73 @@
+name: Publish send identity preservation validation
+'on':
+  push:
+    branches:
+    - send-identity
+    paths:
+    - .github/workflows/*publish-v263.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/send-identity'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 43f951353a1df365c0342cee3a59085edd7eb851 ]
+
+        [ "$(git rev-parse origin/main)" = 43f951353a1df365c0342cee3a59085edd7eb851
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''42546876da8ebe2ea411d1407e2e3e28e8437dfb5ab91ef3b9e443d0af608379''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_studio.rs'': ''ccc9df1207449f355b079421dfeaadbaaf47ae3e50fdc8759ef6f87a9fbb4053'',
+        ''tests/send_id_targets.rs'': ''7e2e98990a2bf3ddaf601f34e093ae03bd80945169e4bb650830a4827d2f96b2''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_studio.rs tests/send_id_targets.rs
+
+        git commit -m "Preserve stable send identity and clean ID targets"
+
+        git fetch origin send-identity main
+
+        [ "$(git rev-parse origin/send-identity)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 43f951353a1df365c0342cee3a59085edd7eb851
+        ]
+
+        git push origin HEAD:refs/heads/send-identity
+
+        '
