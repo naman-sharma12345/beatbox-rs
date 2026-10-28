@@ -1088,6 +1088,9 @@ pub fn tools() -> Vec<Tool> {
                 if let Some(first) = on.first_mut() { *first = 0; }
                 on.truncate(u_or(a, "max_slices", 32).clamp(1, 64) as usize);
                 let root = a.get("root").map(pitch_of).transpose()?.unwrap_or(36);
+                if on.len() > 128 - root as usize {
+                    bail!("{} slices starting at MIDI {root} exceed the playable note range; choose root {} or lower, or reduce the number of slices", on.len(), 128 - on.len());
+                }
                 let slices: Vec<f32> = on.iter().map(|&s| s as f32 / SR).collect();
                 let name = s_opt(a, "track").unwrap_or_else(|| format!("{}_slices", info.name));
                 let inst = Instrument::Sampler(instruments::SamplerParams { sample: info.name.clone(), root, one_shot: true, slices: slices.clone(), ..Default::default() });
@@ -1102,12 +1105,12 @@ pub fn tools() -> Vec<Tool> {
                         let st = t / step;
                         if st >= steps { break; }
                         let next = slices.get(k + 1).copied().unwrap_or(data.len() as f32 / SR);
-                        notes.push(Note::new((st * 4.0).round() / 4.0, ((next - t) / step).max(0.25), (root as usize + k).min(127) as u8, 0.9));
+                        notes.push(Note::new((st * 4.0).round() / 4.0, ((next - t) / step).max(0.25), (root as usize + k) as u8, 0.9));
                     }
                     written = notes.len();
                     *e.project.patterns[pi].notes_mut(&name) = notes;
                 }
-                Ok(json!({"track": name, "slices": slices.len(), "map": slices.iter().enumerate().map(|(k, t)| json!({"note": crate::theory::note_name((root as usize + k).min(127) as u8), "start_s": (t * 1000.0).round() / 1000.0})).collect::<Vec<_>>(), "notes_written": written}))
+                Ok(json!({"track": name, "slices": slices.len(), "map": slices.iter().enumerate().map(|(k, t)| json!({"note": crate::theory::note_name((root as usize + k) as u8), "start_s": (t * 1000.0).round() / 1000.0})).collect::<Vec<_>>(), "notes_written": written}))
             },
         },
         Tool {

@@ -1,0 +1,73 @@
+name: Publish slice note range validation
+'on':
+  push:
+    branches:
+    - slice-note-range
+    paths:
+    - .github/workflows/*publish-v247.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/slice-note-range'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = b89843c163d17059425eba1d588b1c45a6821fce ]
+
+        [ "$(git rev-parse origin/main)" = b89843c163d17059425eba1d588b1c45a6821fce
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''ff42188764336d5f010e069616117af8f825f2095bfdef632b4d6710bda0da8d''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_sound.rs'': ''211952aad698301e9b196bb003bdcab7c340a67f20e8636924784042893a0c45'',
+        ''tests/slice_note_range.rs'': ''f8d4adfd73e6c0ee71a44422a10b1949accb875ff627e18c991384bd64397422''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_sound.rs tests/slice_note_range.rs
+
+        git commit -m "Reject slice maps outside the playable note range"
+
+        git fetch origin slice-note-range main
+
+        [ "$(git rev-parse origin/slice-note-range)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = b89843c163d17059425eba1d588b1c45a6821fce
+        ]
+
+        git push origin HEAD:refs/heads/slice-note-range
+
+        '
