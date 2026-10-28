@@ -1213,9 +1213,13 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 for p in e.project.patterns.iter_mut() {
                     p.clips.remove(&t.name.to_lowercase());
                 }
+                let clips_before = e.project.audio_clips.len();
+                e.project.audio_clips.retain(|c| !(c.track.eq_ignore_ascii_case(&t.name)
+                    || (!t.id.is_empty() && c.track.eq_ignore_ascii_case(&t.id))));
+                let clips = clips_before - e.project.audio_clips.len();
                 let lanes = crate::tools_studio::drop_owner_controls(&mut e.project, &t.name, &t.id);
                 let effects = crate::tools_studio::drop_track_source_effects(&mut e.project, &t.name, &t.id);
-                Ok(json!({"removed": t.name, "automation_lanes_removed": lanes, "source_effects_removed": effects}))
+                Ok(json!({"removed": t.name, "automation_lanes_removed": lanes, "source_effects_removed": effects, "audio_clips_removed": clips}))
             },
         },
         Tool {
