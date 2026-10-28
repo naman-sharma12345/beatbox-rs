@@ -1,0 +1,74 @@
+name: Publish channel removal control preservation validation
+'on':
+  push:
+    branches:
+    - channel-removal
+    paths:
+    - .github/workflows/*publish-v261.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/channel-removal'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = b2a2273cd31a8b92ce7b73cf2331ed8157ad1417 ]
+
+        [ "$(git rev-parse origin/main)" = b2a2273cd31a8b92ce7b73cf2331ed8157ad1417
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''eec4c1aba5cf1adf45a46f15971bddbe1190acd329fa436b1cb1e62335f76452''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools.rs'': ''0685198a7f74463f03417488577a985b9a8a6e912b3a8cd57d9e1eb1835dd1c0'',
+        ''src/tools_studio.rs'': ''d12340379de2bb10276150f42a6fcd823e948afcec3d901655f83fe6d3f8206f'',
+        ''tests/channel_remove_targets.rs'': ''34a8d4b48590c95906d569ceeed32baf632a9606694f5e6d6d00b27e25060f9e''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools.rs src/tools_studio.rs tests/channel_remove_targets.rs
+
+        git commit -m "Drop deleted channel controls before name reuse"
+
+        git fetch origin channel-removal main
+
+        [ "$(git rev-parse origin/channel-removal)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = b2a2273cd31a8b92ce7b73cf2331ed8157ad1417
+        ]
+
+        git push origin HEAD:refs/heads/channel-removal
+
+        '

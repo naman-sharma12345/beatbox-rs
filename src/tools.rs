@@ -1213,9 +1213,8 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                 for p in e.project.patterns.iter_mut() {
                     p.clips.remove(&t.name.to_lowercase());
                 }
-                let before = e.project.automation.len();
-                e.project.automation.retain(|l| !l.target.eq_ignore_ascii_case(&t.name));
-                Ok(json!({"removed": t.name, "automation_lanes_removed": before - e.project.automation.len()}))
+                let lanes = crate::tools_studio::drop_owner_controls(&mut e.project, &t.name, &t.id);
+                Ok(json!({"removed": t.name, "automation_lanes_removed": lanes}))
             },
         },
         Tool {
