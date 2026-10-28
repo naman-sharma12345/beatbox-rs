@@ -94,7 +94,7 @@ pub fn tools() -> Vec<Tool> {
                 if let Some(p) = a.get("params") {
                     reject_unknown(p, &effective, &format!("place_fx {t}"))?;
                 }
-                let track = s_req(a, "track")?;
+                let track = crate::tools_studio::owner_of(&e.project, &s_req(a, "track")?)?;
                 if let Effect::Sidechain(sc) = &fxn {
                     e.project.track_index(&sc.source).context("sidechain source track")?;
                 }
@@ -113,9 +113,12 @@ pub fn tools() -> Vec<Tool> {
                         Some(_) => bail!("position must be 'first', 'last' or an index"),
                     }
                 };
+                let positions: Vec<usize> = (0..chain.len()).map(|i| if i >= at { i + 1 } else { i }).collect();
                 chain.insert(at, fxn);
                 fx::ensure_ids(chain);
-                Ok(json!({"track": track, "inserted_at": at, "id": chain[at].id(), "chain": chain_json(chain), "effective": effective}))
+                let result = json!({"track": track, "inserted_at": at, "id": chain[at].id(), "chain": chain_json(chain), "effective": effective});
+                crate::tools_studio::remap_fx_targets(&mut e.project, &track, &positions);
+                Ok(result)
             },
         },
         Tool {
@@ -130,7 +133,7 @@ pub fn tools() -> Vec<Tool> {
                 "after": {"type": ["integer", "string"]},
             }), &["track", "effect"]),
             run: |e, a| {
-                let track = s_req(a, "track")?;
+                let track = crate::tools_studio::owner_of(&e.project, &s_req(a, "track")?)?;
                 let chain = effects_of(&mut e.project, &track)?;
                 let from = resolve_pos(chain, a.get("effect").ok_or_else(|| anyhow!("missing 'effect'"))?, "effect")?;
                 let item = chain.remove(from);
@@ -163,7 +166,14 @@ pub fn tools() -> Vec<Tool> {
                     }
                 };
                 chain.insert(at, item);
-                Ok(json!({"track": track, "moved_from": from, "moved_to": at, "chain": chain_json(chain)}))
+                let mut order: Vec<usize> = (0..chain.len()).collect();
+                let old = order.remove(from);
+                order.insert(at, old);
+                let mut positions = vec![0; order.len()];
+                for (new, old) in order.into_iter().enumerate() { positions[old] = new; }
+                let result = json!({"track": track, "moved_from": from, "moved_to": at, "chain": chain_json(chain)});
+                crate::tools_studio::remap_fx_targets(&mut e.project, &track, &positions);
+                Ok(result)
             },
         },
         Tool {

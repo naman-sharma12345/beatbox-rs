@@ -5,7 +5,7 @@
 //! offline sample editing / analysis (slice, stretch, edit, analyze).
 
 use crate::audio_edit;
-use crate::automation::{self, parse_target, Target};
+use crate::automation;
 use crate::dsp::SR;
 use crate::engine::Engine;
 use crate::fx::{self, Effect};
@@ -984,12 +984,9 @@ pub fn tools() -> Vec<Tool> {
                 let old = chain.clone();
                 *chain = order.iter().map(|&i| old[i].clone()).collect();
                 let names: Vec<String> = chain.iter().map(|x| x.type_name()).collect();
-                for l in e.project.automation.iter_mut() {
-                    if !l.target.eq_ignore_ascii_case(&owner) { continue; }
-                    if let Some(Target::Fx(i, path)) = parse_target(&l.param) {
-                        if let Some(newi) = order.iter().position(|&o| o == i) { l.param = format!("fx.{newi}.{}", path.join(".")); }
-                    }
-                }
+                let mut positions = vec![0; order.len()];
+                for (new, &old) in order.iter().enumerate() { positions[old] = new; }
+                crate::tools_studio::remap_fx_targets(&mut e.project, &owner, &positions);
                 Ok(json!({"track": owner, "chain": names}))
             },
         },

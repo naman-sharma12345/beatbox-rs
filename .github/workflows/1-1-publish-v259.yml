@@ -1,0 +1,75 @@
+name: Publish effect target preservation validation
+'on':
+  push:
+    branches:
+    - fx-targets
+    paths:
+    - .github/workflows/*publish-v259.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/fx-targets'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = ef017b71d46faea8892c138f4f0ba4d42438ff5c ]
+
+        [ "$(git rev-parse origin/main)" = ef017b71d46faea8892c138f4f0ba4d42438ff5c
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''f34b15499aac06b1a2abd28e57830665bab4c6d008399f83dd117b45204ea99f''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_fx2.rs'': ''c541cbdddb2e4b04a2b93a241351c7113bc339e2e2f1d165ea97e52be2d27ea3'',
+        ''src/tools_studio.rs'': ''c16b98bd83ef6209d73d3f589a5e017be63f871a5940d10f12279977c9dcb2a3'',
+        ''src/tools_sound.rs'': ''ccea4da9f4fc793130e481eb57ee686289342ba0ca0e04af8b707b546455a38a'',
+        ''tests/fx_move_automation.rs'': ''b0c72e7e246f3d7f4deb1ad92d787be35747753a110f85c8af42b4f6424353ae''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_fx2.rs src/tools_studio.rs src/tools_sound.rs tests/fx_move_automation.rs
+
+        git commit -m "Preserve automation clip and macro targets through FX edits"
+
+        git fetch origin fx-targets main
+
+        [ "$(git rev-parse origin/fx-targets)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = ef017b71d46faea8892c138f4f0ba4d42438ff5c
+        ]
+
+        git push origin HEAD:refs/heads/fx-targets
+
+        '

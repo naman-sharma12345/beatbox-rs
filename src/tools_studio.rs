@@ -345,6 +345,47 @@ pub(crate) fn lane_mut<'a>(p: &'a mut Project, owner: &str, param: &str) -> &'a 
     }
 }
 
+/// Keep positional control references on their original insert after a reorder
+/// or insertion. The mapping is old position -> new position; unrelated owners,
+/// non-effect parameters and stable-ID paths are left untouched.
+pub(crate) fn remap_fx_targets(p: &mut Project, owner: &str, positions: &[usize]) {
+    let owner_id = p
+        .track_index(owner)
+        .ok()
+        .map(|i| p.tracks[i].id.clone())
+        .or_else(|| p.bus_index(owner).ok().map(|i| p.buses[i].id.clone()));
+    let matches = |target: &str| {
+        target.eq_ignore_ascii_case(owner)
+            || owner_id
+                .as_ref()
+                .is_some_and(|id| !id.is_empty() && target.eq_ignore_ascii_case(id))
+    };
+    let remap = |param: &mut String| {
+        if let Some(Target::Fx(i, path)) = parse_target(param) {
+            if let Some(new) = positions.get(i) {
+                *param = format!("fx.{new}.{}", path.join("."));
+            }
+        }
+    };
+    for lane in &mut p.automation {
+        if matches(&lane.target) {
+            remap(&mut lane.param);
+        }
+    }
+    for clip in &mut p.automation_clips {
+        if matches(&clip.target) {
+            remap(&mut clip.param);
+        }
+    }
+    for knob in &mut p.macros {
+        for target in &mut knob.targets {
+            if matches(&target.track) {
+                remap(&mut target.param);
+            }
+        }
+    }
+}
+
 /// After removing effect `removed` from `owner`'s chain: drop its lanes and
 /// shift the indices of later ones. Returns the number of lanes dropped.
 pub fn reindex_fx_lanes(p: &mut Project, owner: &str, removed: usize) -> usize {
