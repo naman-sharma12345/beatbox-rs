@@ -132,8 +132,15 @@ pub fn stats(l: &[f32], r: &[f32]) -> Stats {
         sum += (l[i] as f64).powi(2) + (r[i] as f64).powi(2);
     }
     let rms = (sum / (2 * n) as f64).sqrt() as f32;
-    let mono: Vec<f32> = l.iter().zip(r.iter()).map(|(a, b)| 0.5 * (a + b)).collect();
-    let spec = power_spectrum(&mono);
+    // Spectral balance describes energy in both channels, not a mono fold.
+    // Sum power after the FFT so opposite-polarity channels cannot cancel.
+    // Keep the same common-frame boundary as the level measurements above.
+    let common = l.len().min(r.len());
+    let mut spec = power_spectrum(&l[..common]);
+    let right_spec = power_spectrum(&r[..common]);
+    for (left, right) in spec.iter_mut().zip(right_spec) {
+        *left = 0.5 * (*left + right);
+    }
     let bin_hz = SR / FRAME as f32;
     let total: f32 = spec.iter().skip(1).sum::<f32>().max(1e-12);
     let mut centroid = 0.0;
