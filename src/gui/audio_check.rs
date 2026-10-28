@@ -205,7 +205,6 @@ struct Job {
 pub(super) struct Targets {
     check: egui::Rect,
     whole: egui::Rect,
-    #[cfg(test)]
     whole_id: Option<egui::Id>,
     play: egui::Rect,
     stop: egui::Rect,
@@ -228,7 +227,6 @@ impl Default for Targets {
         Self {
             check: egui::Rect::NOTHING,
             whole: egui::Rect::NOTHING,
-            #[cfg(test)]
             whole_id: None,
             play: egui::Rect::NOTHING,
             stop: egui::Rect::NOTHING,
@@ -487,8 +485,7 @@ impl State {
                     ui.label("Source: whole mix");
                     let response = ui.checkbox(&mut self.params.whole, "Full duration");
                     targets.whole = response.rect;
-                    #[cfg(test)]
-                    { targets.whole_id = Some(response.id); }
+                    targets.whole_id = Some(response.id);
                     if !self.params.whole {
                         ui.label("Elapsed seconds");
                         ui.add(egui::DragValue::new(&mut self.params.start).speed(0.1).prefix("Start "));
@@ -1025,6 +1022,7 @@ impl NativeCapture {
         let geometry = state.native_targets.as_ref().map(|t| {
             json!({
             "clip":rect(t.clip),"report_heading":rect(t.report_heading),
+            "whole":rect(t.whole),"whole_response_id":t.whole_id.map(|id|format!("{id:?}")),
             "ending_notice":rect(t.notice),"first_event":rect(t.first_event),
             "last_event":rect(t.last_event),"last_detail":rect(t.last_detail),
             "last_marker":rect(t.last),"play":rect(t.play),"prepared":rect(t.prepared),
