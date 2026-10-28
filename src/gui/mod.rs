@@ -19,6 +19,7 @@ mod piano;
 mod player;
 mod playlist;
 mod rack_view;
+mod render_job;
 mod shortcuts;
 mod theme;
 mod views;
@@ -34,14 +35,16 @@ use crate::render::{self, Mix, RenderOptions};
 use crate::{fx, theory};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use player::Player;
+use render_job::{Completion, Key as RenderKey, Message as RenderMessage, Source as RenderSource};
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use widgets::*;
 
 struct Rendered {
     rev: u64,
+    generation: u64,
     mix: Arc<Mix>,
     peaks: Vec<(f32, f32)>,
     spectrum: Vec<f32>,
@@ -288,10 +291,13 @@ pub struct Studio {
     selected: usize,
     // render pipeline
     rendered: Option<Rendered>,
-    rendering: Option<(u64, Receiver<Rendered>)>,
+    rendering: Option<(RenderKey, Receiver<RenderMessage<Rendered>>)>,
+    render_state: render_job::State,
     /// Live edit while playing: the affected bars' splice, ahead of the
     /// full render (crate::live_splice).
-    live: Option<Receiver<Arc<Mix>>>,
+    live: Option<(RenderKey, Receiver<Arc<Mix>>)>,
+    /// A provisional splice may need to fall back to the last completed mix.
+    live_applied: bool,
     inspector: Option<InspectorCache>,
     dragging: bool,
     toast: Option<(String, f64, bool)>,
@@ -406,7 +412,9 @@ pub fn run(
                 selected: 0,
                 rendered: None,
                 rendering: None,
+                render_state: Default::default(),
                 live: None,
+                live_applied: false,
                 inspector: None,
                 dragging: false,
                 toast: None,
@@ -719,80 +727,118 @@ impl Studio {
         (e.project.clone(), e.revision, e.history(), e.undo_depth())
     }
 
-    fn pump_render(&mut self, project: &Project, rev: u64, ctx: &egui::Context) {
-        // an edit made while playing: its bars are heard as soon as they are
-        // spliced in (the player swaps at its next block, crossfaded)
-        if let Some(rx) = &self.live {
-            if let Ok(m) = rx.try_recv() {
-                if self.perf.is_none() && self.perf_next.is_none() {
-                    if let Some(r) = &self.rendered {
-                        self.player.set_mix(m, r.loop_secs);
+    fn pump_render(&mut self, ctx: &egui::Context) {
+        // Capture identity, project and bank under one engine lock. The frame's
+        // earlier UI snapshot can already be stale after New/Open or a remote edit.
+        let engine = self.engine.clone();
+        let mut e = engine.lock().unwrap();
+        let current = RenderSource {
+            revision: e.revision,
+            load_generation: e.project_load_generation,
+        };
+        let completed = self
+            .rendering
+            .as_ref()
+            .and_then(|(key, rx)| render_job::poll(*key, rx));
+        if let Some(message) = completed {
+            self.rendering = None;
+            self.live = None;
+            match self.render_state.finish(message, current) {
+                Completion::Install(r) => {
+                    // Keep the identity lock until installation: a load/edit
+                    // cannot slip between checking the source and swapping audio.
+                    if self.perf.is_none() && self.perf_next.is_none() {
+                        self.player.set_mix(r.mix.clone(), r.loop_secs);
                     }
+                    self.rendered = Some(r);
+                    self.live_applied = false;
                 }
-                self.live = None;
-            }
-        }
-        if let Some((want, rx)) = &self.rendering {
-            if let Ok(r) = rx.try_recv() {
-                let _ = want;
-                self.live = None;
-                // performance mode keeps looping its pattern; the song comes
-                // back on exit
-                if self.perf.is_none() && self.perf_next.is_none() {
-                    self.player.set_mix(r.mix.clone(), r.loop_secs);
-                }
-                self.rendered = Some(r);
-                self.rendering = None;
-            }
-        }
-        let have = self.rendered.as_ref().map(|r| r.rev);
-        let busy = self.rendering.is_some();
-        if have != Some(rev) && !busy && !self.dragging {
-            let mut p = project.clone();
-            let bank = {
-                let mut e = self.engine.lock().unwrap();
-                let samples = e.project.samples.clone();
-                e.bank.sync(&samples);
-                e.bank.clone()
-            };
-            p.arrangement = project.arrangement.clone();
-            let (tx, rx) = channel();
-            let ctx = ctx.clone();
-            // while the song plays, splice the edited bars into the playing
-            // buffer first; the full render below still follows
-            let prev =
-                (self.player.is_playing() && self.perf.is_none() && self.perf_next.is_none())
-                    .then(|| {
-                        self.rendered
-                            .as_ref()
-                            .map(|r| (r.project.clone(), r.mix.clone()))
-                    })
-                    .flatten();
-            let (ltx, lrx) = channel();
-            self.live = prev.is_some().then_some(lrx);
-            std::thread::spawn(move || {
-                if let Some((op, om)) = prev {
-                    if let crate::live_splice::Dirty::Steps(a, b) =
-                        crate::live_splice::dirty_steps(&op, &p)
-                    {
-                        if !crate::live_splice::worth_splicing(&op, &p, a, b) {
-                            // the full render below is as quick
-                        } else if let Ok((m, _)) =
-                            crate::live_splice::splice(&op, &p, &bank, &om, a, b)
-                        {
-                            let _ = ltx.send(Arc::new(m));
-                            ctx.request_repaint();
+                Completion::Failed => {
+                    // Splices are provisional. A failed full render falls back
+                    // to the last completed mix, without stopping or seeking.
+                    if self.live_applied && self.perf.is_none() && self.perf_next.is_none() {
+                        if let Some(r) = &self.rendered {
+                            self.player.set_mix(r.mix.clone(), r.loop_secs);
                         }
                     }
+                    self.live_applied = false;
                 }
-                if let Ok(mix) = render::render(
-                    &p,
-                    &bank,
-                    &RenderOptions {
-                        keep_stems: true,
-                        ..Default::default()
-                    },
-                ) {
+                Completion::Discard => {}
+            }
+        }
+        // Poll the full result first so a completed failure cannot be preceded
+        // by a queued provisional splice in the same frame.
+        if let Some((key, rx)) = &self.live {
+            match rx.try_recv() {
+                Ok(m) => {
+                    if self.render_state.accepts(*key, current)
+                        && self.perf.is_none()
+                        && self.perf_next.is_none()
+                    {
+                        if let Some(r) = &self.rendered {
+                            self.player.set_mix(m, r.loop_secs);
+                            self.live_applied = true;
+                        }
+                    }
+                    self.live = None;
+                }
+                Err(TryRecvError::Disconnected) => self.live = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if !self.render_state.can_start(current) || self.dragging {
+            return;
+        }
+        let p = e.project.clone();
+        let samples = p.samples.clone();
+        e.bank.sync(&samples);
+        let bank = e.bank.clone();
+        let key = self.render_state.begin(current);
+        drop(e);
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        // Never splice across whole-project loads, including same-revision
+        // reloads. New advances revision; dirty_steps also requires equal
+        // non-note content before splicing. Ordinary edits keep this fast path.
+        let prev = (self.player.is_playing() && self.perf.is_none() && self.perf_next.is_none())
+            .then(|| {
+                self.rendered
+                    .as_ref()
+                    .filter(|r| r.generation == current.load_generation)
+                    .map(|r| (r.project.clone(), r.mix.clone()))
+            })
+            .flatten();
+        let (ltx, lrx) = channel();
+        self.live = prev.is_some().then_some((key, lrx));
+        // Thread creation failure drops the sender; the next poll handles it as
+        // a disconnect. Panics anywhere in preparation send an explicit failure.
+        let _ = std::thread::Builder::new()
+            .name("playback-render".into())
+            .spawn(move || {
+                let message = render_job::run(key, || {
+                    if let Some((op, om)) = prev {
+                        if let crate::live_splice::Dirty::Steps(a, b) =
+                            crate::live_splice::dirty_steps(&op, &p)
+                        {
+                            if crate::live_splice::worth_splicing(&op, &p, a, b) {
+                                if let Ok((m, _)) =
+                                    crate::live_splice::splice(&op, &p, &bank, &om, a, b)
+                                {
+                                    let _ = ltx.send(Arc::new(m));
+                                    ctx.request_repaint();
+                                }
+                            }
+                        }
+                    }
+                    let mix = render::render(
+                        &p,
+                        &bank,
+                        &RenderOptions {
+                            keep_stems: true,
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(|error| format!("Could not prepare sound: {error:#}"))?;
                     let mono: Vec<f32> = mix
                         .left
                         .iter()
@@ -810,21 +856,57 @@ impl Studio {
                         .map(|s| views::strip_meter(&s.name, &s.left, &s.right))
                         .collect();
                     strips.push(views::strip_meter("master", &mix.left, &mix.right));
-                    let _ = tx.send(Rendered {
+                    Ok(Rendered {
                         strips,
-                        rev,
+                        rev: current.revision,
+                        generation: current.load_generation,
                         mix: Arc::new(mix),
                         peaks,
                         spectrum,
                         report,
                         loop_secs,
-                        project: Arc::new(p.clone()),
-                    });
+                        project: Arc::new(p),
+                    })
+                });
+                let _ = tx.send(message);
+                ctx.request_repaint();
+            });
+        self.rendering = Some((key, rx));
+    }
+
+    fn render_recovery_ui(&mut self, ctx: &egui::Context) {
+        let current = {
+            let e = self.engine.lock().unwrap();
+            RenderSource {
+                revision: e.revision,
+                load_generation: e.project_load_generation,
+            }
+        };
+        let Some(error) = self.render_state.error(current).map(str::to_owned) else {
+            return;
+        };
+        egui::TopBottomPanel::top("render_recovery").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Sound is not up to date").color(WARN))
+                    .on_hover_text(&error);
+                if ui.button("Retry sound").clicked() {
+                    self.render_state.retry();
                     ctx.request_repaint();
                 }
+                ui.label(
+                    RichText::new(if self.rendered.is_some() {
+                        "Last completed mix kept. Open Details for the cause."
+                    } else {
+                        "No playable mix yet. Open Details for the cause."
+                    })
+                    .size(11.0)
+                    .color(DIM),
+                );
             });
-            self.rendering = Some((rev, rx));
-        }
+            ui.collapsing("Details", |ui| {
+                ui.label(error);
+            });
+        });
     }
 
     fn save_tooltip(&self) -> String {
@@ -2193,7 +2275,8 @@ impl eframe::App for Studio {
         if !ctx.input(|i| i.pointer.any_down()) {
             self.dragging = false;
         }
-        self.pump_render(&p, rev, ctx);
+        self.pump_render(ctx);
+        self.render_recovery_ui(ctx);
         self.poll_render_job(ctx);
 
         // keyboard shortcuts (ported table: shortcuts.rs)

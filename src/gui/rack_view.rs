@@ -4,8 +4,8 @@
 //! with a range is a slider (logarithmic where the spec says log), an enum
 //! a drop-down, a bool a checkbox. Above the strips a patch bay draws every
 //! route (outputs, aux sends, sidechain keys) as a cable between the strips'
-//! columns. Every edit is one `rack_apply` command, the same surface remote
-//! clients use.
+//! columns. Insert/routing edits use `rack_apply`; bus removal first previews
+//! dependencies, then uses the shared revision-checked `remove_bus` action.
 
 use super::Studio;
 use crate::project::Project;
@@ -270,6 +270,17 @@ fn strip_column(
                         StripKind::Master => "master",
                     };
                     ui.label(RichText::new(kind).size(10.0).color(DIM));
+                    if s.kind == StripKind::Bus {
+                        let r = ui.small_button("Remove...").on_hover_text(
+                            "Review affected routes and controls before removing this bus",
+                        );
+                        geo.insert(format!("remove-bus:{}", s.id), r.rect);
+                        if r.clicked() {
+                            // A UI intent, intercepted before rack_apply. Opening
+                            // the preview must not edit the project or history.
+                            out.push(json!({"op": "preview_remove_bus", "strip": s.id}));
+                        }
+                    }
                     // where it goes, on the same row (the cable above shows it too)
                     if let Some(o) = &s.output {
                         let name = rack
@@ -427,7 +438,7 @@ fn patch_cables(painter: &egui::Painter, bay: Rect, rack: &RackState, geo: &mut 
     }
 }
 
-/// Draw the whole rack; returns the commands the person made this frame.
+/// Draw the whole rack; returns rack commands and bus-removal preview intents.
 pub fn rack_panel(ui: &mut egui::Ui, rack: &RackState, geo: &mut RackGeo) -> Vec<Value> {
     let mut out = Vec::new();
     egui::ScrollArea::both()
@@ -494,6 +505,179 @@ pub fn rack_panel(ui: &mut egui::Ui, rack: &RackState, geo: &mut RackGeo) -> Vec
     out
 }
 
+fn removal_preview_id() -> egui::Id {
+    egui::Id::new("rack-bus-removal-preview")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RemovalChoice {
+    Cancel,
+    Refresh,
+    Commit,
+}
+
+fn removal_owner(p: &Project, key: &str) -> String {
+    p.tracks
+        .iter()
+        .map(|t| (&t.id, &t.name))
+        .chain(p.buses.iter().map(|b| (&b.id, &b.name)))
+        .find(|(id, name)| {
+            name.eq_ignore_ascii_case(key.trim())
+                || (!id.is_empty() && id.eq_ignore_ascii_case(key.trim()))
+        })
+        .map(|(_, name)| name.clone())
+        .unwrap_or_else(|| key.to_string())
+}
+
+fn removal_param(p: &Project, owner: &str, param: &str) -> String {
+    match crate::automation::parse_target(param) {
+        Some(crate::automation::Target::Send(destination)) => {
+            let track = removal_owner(p, owner);
+            let bus = p
+                .tracks
+                .iter()
+                .find(|t| t.name == track)
+                .and_then(|t| crate::tools_studio::find_send(t, &destination))
+                .map(|s| s.bus.clone())
+                .unwrap_or(destination);
+            format!("send to {}", removal_owner(p, &bus))
+        }
+        Some(crate::automation::Target::Fx(index, path)) => {
+            format!(
+                "insert {} / {}",
+                index + 1,
+                path.join(" ").replace('_', " ")
+            )
+        }
+        _ => param.replace(['.', '_'], " "),
+    }
+}
+
+/// Readable impact details, not a raw protocol response. Kept separate from
+/// the window so pointer tests exercise the exact destructive controls.
+fn removal_controls(
+    ui: &mut egui::Ui,
+    p: &Project,
+    preview: &Value,
+    stale: bool,
+    missing: bool,
+    geo: &mut RackGeo,
+) -> Option<RemovalChoice> {
+    ui.label(format!(
+        "Bus to remove: '{}'. Review the changes below.",
+        preview["bus"].as_str().unwrap_or("")
+    ));
+    ui.label("Outputs below will return to master. Listed sends and controls will be removed. Undo restores the whole edit.");
+    if missing {
+        ui.colored_label(
+            OFF,
+            "This bus no longer exists. Cancel and choose another bus.",
+        );
+    } else if stale {
+        ui.colored_label(
+            OFF,
+            "The project changed. Refresh and review the impact before removing.",
+        );
+    }
+    egui::ScrollArea::vertical()
+        .max_height(280.0)
+        .show(ui, |ui| {
+            for (key, label) in [
+                ("track_outputs", "Track outputs to master"),
+                ("bus_outputs", "Bus outputs to master"),
+                ("sends", "Sends to remove"),
+                ("automation", "Automation lanes to remove"),
+                ("automation_clips", "Automation clips to remove"),
+                ("macro_targets", "Macro controls to remove"),
+            ] {
+                let entries = preview["impact"][key]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                ui.label(RichText::new(format!("{label}: {}", entries.len())).strong());
+                for item in entries {
+                    let text = if key.ends_with("outputs") {
+                        item["name"].as_str().unwrap_or("").to_string()
+                    } else if key == "sends" {
+                        format!("{} send", item["track"].as_str().unwrap_or(""))
+                    } else {
+                        let target = item["target"].as_str().unwrap_or("");
+                        let owner = removal_owner(p, target);
+                        let param = removal_param(p, target, item["param"].as_str().unwrap_or(""));
+                        let prefix = item["name"].as_str().or_else(|| item["macro"].as_str());
+                        match prefix {
+                            Some(name) => format!("{name}: {owner} / {param}"),
+                            None => format!("{owner} / {param}"),
+                        }
+                    };
+                    ui.label(text);
+                }
+            }
+        });
+    let mut choice = None;
+    ui.horizontal(|ui| {
+        let cancel = ui.button("Cancel");
+        geo.insert("remove-bus-cancel".into(), cancel.rect);
+        if cancel.clicked() {
+            choice = Some(RemovalChoice::Cancel);
+        }
+        let refresh = ui.add_enabled(!missing, egui::Button::new("Refresh impact"));
+        geo.insert("remove-bus-refresh".into(), refresh.rect);
+        if refresh.clicked() {
+            choice = Some(RemovalChoice::Refresh);
+        }
+        let commit = ui.add_enabled(!stale && !missing, egui::Button::new("Remove bus"));
+        geo.insert("remove-bus-commit".into(), commit.rect);
+        if commit.clicked() {
+            choice = Some(RemovalChoice::Commit);
+        }
+    });
+    choice
+}
+
+fn removal_commit(preview: &Value) -> Value {
+    json!({"name": preview["bus_id"], "expected_revision": preview["revision"]})
+}
+
+/// State lives in this rack's egui context, not Studio or a new revision model.
+/// Refresh uses the stable ID only: a reused display name is a different bus.
+fn removal_dialog(ctx: &egui::Context, p: &Project, rev: u64) -> Option<Value> {
+    let id = removal_preview_id();
+    let preview = ctx.data(|d| d.get_temp::<Value>(id))?;
+    let key = preview["bus_id"].as_str().unwrap_or("");
+    let current = crate::tools_studio::bus_removal_preview(p, key, rev).ok();
+    let stale = current.as_ref() != Some(&preview);
+    let mut open = true;
+    let mut choice = None;
+    egui::Window::new("Review bus removal")
+        .id(id.with("window"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_width(440.0)
+        .show(ctx, |ui| {
+            choice = removal_controls(
+                ui,
+                p,
+                &preview,
+                stale,
+                current.is_none(),
+                &mut RackGeo::new(),
+            );
+        });
+    if !open || choice == Some(RemovalChoice::Cancel) {
+        ctx.data_mut(|d| d.remove::<Value>(id));
+    } else if choice == Some(RemovalChoice::Refresh) {
+        if let Some(current) = current {
+            ctx.data_mut(|d| d.insert_temp(id, current));
+        }
+    } else if choice == Some(RemovalChoice::Commit) && !stale {
+        ctx.data_mut(|d| d.remove::<Value>(id));
+        return Some(removal_commit(&preview));
+    }
+    None
+}
+
 impl Studio {
     /// `rev` is the revision `p` was read at: an edit made on this frame's
     /// picture is refused (StaleRevision) if something else changed the
@@ -501,12 +685,29 @@ impl Studio {
     pub(super) fn rack_view(&mut self, ui: &mut egui::Ui, p: &Project, rev: u64) {
         let rack = RackState::from_project(p);
         let mut geo = RackGeo::new();
-        let cmds = rack_panel(ui, &rack, &mut geo);
+        let mut cmds = rack_panel(ui, &rack, &mut geo);
+        cmds.retain(|cmd| {
+            if cmd["op"] != "preview_remove_bus" {
+                return true;
+            }
+            if let Some(key) = cmd["strip"].as_str() {
+                if let Ok(preview) = crate::tools_studio::bus_removal_preview(p, key, rev) {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(removal_preview_id(), preview));
+                }
+            }
+            false
+        });
         if !cmds.is_empty() {
             self.call(
                 "rack_apply",
                 json!({"commands": cmds, "expected_revision": rev}),
             );
+        }
+        if let Some(args) = removal_dialog(ui.ctx(), p, rev) {
+            // Recheck the revision inside the engine lock: another editor may
+            // have changed the project since this frame's snapshot was read.
+            self.call("remove_bus", args);
         }
     }
 }
@@ -589,6 +790,159 @@ mod tests {
             vec![press(at, false)],
             vec![],
         ]
+    }
+
+    fn click_removal_control(
+        p: &Project,
+        preview: &Value,
+        stale: bool,
+        missing: bool,
+        button: &str,
+    ) -> Vec<RemovalChoice> {
+        let ctx = egui::Context::default();
+        let mut geo = RackGeo::new();
+        let mut choices = Vec::new();
+        let mut frame = |events, time| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 900.0))),
+                    events,
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        if let Some(choice) =
+                            removal_controls(ui, p, preview, stale, missing, &mut geo)
+                        {
+                            choices.push(choice);
+                        }
+                    });
+                },
+            );
+            geo[button].center()
+        };
+        frame(vec![], 0.0);
+        let at = frame(vec![], 0.05);
+        for (i, events) in click(at).into_iter().enumerate() {
+            frame(events, 0.1 + i as f64 * 0.05);
+        }
+        choices
+    }
+
+    #[test]
+    fn bus_remove_button_opens_review_without_a_destructive_command() {
+        let mut e = engine();
+        e.call("add_bus", &json!({"name": "mix"})).unwrap();
+        let before = e.project.clone();
+        let depth = e.undo_depth();
+        let bus = e.project.buses[0].id.clone();
+        let commands = drive(&e.project, &|g| {
+            click(g[&format!("remove-bus:{bus}")].center())
+        });
+        assert_eq!(
+            commands,
+            vec![json!({"op": "preview_remove_bus", "strip": bus})]
+        );
+        assert_eq!(e.project, before);
+        assert_eq!(e.undo_depth(), depth);
+    }
+
+    #[test]
+    fn bus_review_cancel_refresh_and_stale_controls_are_real_pointer_actions() {
+        let mut e = engine();
+        e.call("add_bus", &json!({"name": "mix"})).unwrap();
+        let preview =
+            crate::tools_studio::bus_removal_preview(&e.project, "mix", e.revision).unwrap();
+        let before = e.project.clone();
+        assert!(
+            click_removal_control(&e.project, &preview, true, false, "remove-bus-commit")
+                .is_empty()
+        );
+        assert!(
+            click_removal_control(&e.project, &preview, true, true, "remove-bus-refresh")
+                .is_empty()
+        );
+        assert!(
+            click_removal_control(&e.project, &preview, true, true, "remove-bus-commit").is_empty()
+        );
+        assert_eq!(
+            click_removal_control(&e.project, &preview, true, false, "remove-bus-refresh"),
+            vec![RemovalChoice::Refresh]
+        );
+        assert_eq!(
+            click_removal_control(&e.project, &preview, false, false, "remove-bus-cancel"),
+            vec![RemovalChoice::Cancel]
+        );
+        assert_eq!(e.project, before);
+    }
+
+    #[test]
+    fn bus_review_commit_uses_the_shared_preview_and_engine_revision_guard() {
+        let mut e = engine();
+        e.call("add_bus", &json!({"name": "mix"})).unwrap();
+        e.call("add_bus", &json!({"name": "drums"})).unwrap();
+        e.call("route_bus", &json!({"bus": "drums", "destination": "mix"}))
+            .unwrap();
+        e.call(
+            "set_send",
+            &json!({"track": "bass", "bus": "mix", "db": -12.0}),
+        )
+        .unwrap();
+        let preview =
+            crate::tools_studio::bus_removal_preview(&e.project, "mix", e.revision).unwrap();
+        assert_eq!(
+            preview,
+            e.call("preview_remove_bus", &json!({"name": "mix"}))
+                .unwrap()
+        );
+        let before = e.project.clone();
+        let depth = e.undo_depth().0;
+        assert_eq!(
+            click_removal_control(&e.project, &preview, false, false, "remove-bus-commit"),
+            vec![RemovalChoice::Commit]
+        );
+        let args = removal_commit(&preview);
+        let result = e.call("remove_bus", &args).unwrap();
+        assert_eq!(result["impact"], preview["impact"]);
+        assert_eq!(e.undo_depth().0, depth + 1);
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(e.project, before);
+        // A click prepared from an old frame cannot delete after another edit.
+        assert!(e
+            .call("remove_bus", &args)
+            .unwrap_err()
+            .to_string()
+            .contains("StaleRevision"));
+        assert_eq!(e.project, before);
+    }
+
+    #[test]
+    fn removal_controls_show_names_instead_of_owner_and_send_ids() {
+        let mut e = engine();
+        e.call("add_bus", &json!({"name": "mix"})).unwrap();
+        e.call(
+            "set_send",
+            &json!({"track": "bass", "bus": "mix", "db": -12.0}),
+        )
+        .unwrap();
+        let track = e.project.tracks[0].id.to_uppercase();
+        let bus = e.project.buses[0].id.to_uppercase();
+        let send = e.project.tracks[0].sends[0].id.to_uppercase();
+        assert_eq!(removal_owner(&e.project, &track), "bass");
+        assert_eq!(removal_owner(&e.project, &bus), "mix");
+        assert_eq!(
+            removal_param(&e.project, &track, &format!("send.{send}")),
+            "send to mix"
+        );
+        assert_eq!(
+            removal_param(&e.project, &track, &format!("send.{bus}")),
+            "send to mix"
+        );
+        assert_eq!(
+            removal_param(&e.project, &track, "fx.0.cutoff"),
+            "insert 1 / cutoff"
+        );
     }
 
     #[test]
