@@ -344,6 +344,92 @@ pub fn time_stretch(x: &[f32], factor: f32) -> Vec<f32> {
     out
 }
 
+/// Stereo WSOLA with one alignment search shared by both channels.
+/// The sum of per-channel correlations avoids opposed-channel cancellation.
+pub fn time_stretch_stereo(left: &[f32], right: &[f32], factor: f32) -> (Vec<f32>, Vec<f32>) {
+    assert_eq!(left.len(), right.len());
+    let x = left;
+    let factor = factor.clamp(0.25, 4.0);
+    if (factor - 1.0).abs() < 1e-3 || x.len() < 4096 {
+        if x.len() < 4096 {
+            return (
+                crate::samples::resample(left, 1.0, factor),
+                crate::samples::resample(right, 1.0, factor),
+            );
+        }
+        return (left.to_vec(), right.to_vec());
+    }
+    let n = 1764; // 40 ms window
+    let hop_out = n / 2;
+    let hop_in = hop_out as f32 / factor;
+    let tol = 441; // +-10 ms search
+    let w = hann(n);
+    let out_len = (x.len() as f32 * factor) as usize;
+    let mut out = vec![0.0f32; out_len + n];
+    let mut out_right = vec![0.0f32; out_len + n];
+    let mut norm = vec![0.0f32; out_len + n];
+    let mut prev_end: isize = 0; // where the natural continuation would read
+    let mut k = 0usize;
+    loop {
+        let o = k * hop_out;
+        if o >= out_len {
+            break;
+        }
+        let nominal = (k as f32 * hop_in) as isize;
+        let pos = if k == 0 {
+            0
+        } else {
+            // find the offset whose start best matches the continuation
+            let mut best = nominal;
+            let mut bv = f32::MIN;
+            let probe = 512;
+            let lo = (nominal - tol as isize).max(0);
+            let hi = (nominal + tol as isize).min(x.len() as isize - n as isize - 1);
+            let mut c = lo;
+            while c <= hi {
+                let mut s = 0.0f32;
+                for j in (0..probe).step_by(2) {
+                    let a = x
+                        .get((prev_end + j as isize) as usize)
+                        .copied()
+                        .unwrap_or(0.0);
+                    s += a * x[(c + j as isize) as usize];
+                    let ar = right
+                        .get((prev_end + j as isize) as usize)
+                        .copied()
+                        .unwrap_or(0.0);
+                    s += ar * right[(c + j as isize) as usize];
+                }
+                if s > bv {
+                    bv = s;
+                    best = c;
+                }
+                c += 4;
+            }
+            best
+        };
+        if pos < 0 || pos as usize + n > x.len() {
+            break;
+        }
+        for j in 0..n {
+            out[o + j] += x[pos as usize + j] * w[j];
+            out_right[o + j] += right[pos as usize + j] * w[j];
+            norm[o + j] += w[j];
+        }
+        prev_end = pos + hop_out as isize;
+        k += 1;
+    }
+    for ((v, r), g) in out.iter_mut().zip(out_right.iter_mut()).zip(norm.iter()) {
+        if *g > 1e-3 {
+            *v /= g;
+            *r /= g;
+        }
+    }
+    out.truncate(out_len);
+    out_right.truncate(out_len);
+    (out, out_right)
+}
+
 /// Transient-first stretch ("beats" mode): cut the take at its onsets and
 /// lay the slices on the stretched grid - drums keep their crack instead of
 /// smearing like they do under WSOLA (Ableton's Beats, FL's Slice mode).
@@ -507,6 +593,16 @@ pub fn pitch_shift(x: &[f32], semitones: f32) -> Vec<f32> {
     let r = 2f32.powf(semitones.clamp(-24.0, 24.0) / 12.0);
     let stretched = time_stretch(x, r);
     crate::samples::resample(&stretched, r, 1.0)
+}
+
+/// Pitch shift with shared stereo stretch alignment and equal resampling.
+pub fn pitch_shift_stereo(left: &[f32], right: &[f32], semitones: f32) -> (Vec<f32>, Vec<f32>) {
+    let r = 2f32.powf(semitones.clamp(-24.0, 24.0) / 12.0);
+    let (left, right) = time_stretch_stereo(left, right, r);
+    (
+        crate::samples::resample(&left, r, 1.0),
+        crate::samples::resample(&right, r, 1.0),
+    )
 }
 
 pub fn reverse(x: &mut [f32]) {
