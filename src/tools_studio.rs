@@ -389,18 +389,48 @@ pub(crate) fn remap_fx_targets(p: &mut Project, owner: &str, positions: &[usize]
 /// After removing effect `removed` from `owner`'s chain: drop its lanes and
 /// shift the indices of later ones. Returns the number of lanes dropped.
 pub fn reindex_fx_lanes(p: &mut Project, owner: &str, removed: usize) -> usize {
-    let before = p.automation.len();
-    p.automation.retain(|l| {
-        !(l.target.eq_ignore_ascii_case(owner)
-            && matches!(parse_target(&l.param), Some(Target::Fx(i, _)) if i == removed))
-    });
-    for l in p.automation.iter_mut() {
-        if !l.target.eq_ignore_ascii_case(owner) {
-            continue;
-        }
-        if let Some(Target::Fx(i, path)) = parse_target(&l.param) {
+    let owner = owner_of(p, owner).unwrap_or_else(|_| owner.to_string());
+    let owner_id = p
+        .track_index(&owner)
+        .ok()
+        .map(|i| p.tracks[i].id.clone())
+        .or_else(|| p.bus_index(&owner).ok().map(|i| p.buses[i].id.clone()));
+    let matches = |target: &str| {
+        target.eq_ignore_ascii_case(&owner)
+            || owner_id
+                .as_ref()
+                .is_some_and(|id| !id.is_empty() && target.eq_ignore_ascii_case(id))
+    };
+    let deleted =
+        |param: &str| matches!(parse_target(param), Some(Target::Fx(i, _)) if i == removed);
+    let shift = |param: &mut String| {
+        if let Some(Target::Fx(i, path)) = parse_target(param) {
             if i > removed {
-                l.param = format!("fx.{}.{}", i - 1, path.join("."));
+                *param = format!("fx.{}.{}", i - 1, path.join("."));
+            }
+        }
+    };
+    let before = p.automation.len();
+    p.automation
+        .retain(|lane| !(matches(&lane.target) && deleted(&lane.param)));
+    for lane in &mut p.automation {
+        if matches(&lane.target) {
+            shift(&mut lane.param);
+        }
+    }
+    p.automation_clips
+        .retain(|clip| !(matches(&clip.target) && deleted(&clip.param)));
+    for clip in &mut p.automation_clips {
+        if matches(&clip.target) {
+            shift(&mut clip.param);
+        }
+    }
+    for knob in &mut p.macros {
+        knob.targets
+            .retain(|target| !(matches(&target.track) && deleted(&target.param)));
+        for target in &mut knob.targets {
+            if matches(&target.track) {
+                shift(&mut target.param);
             }
         }
     }
