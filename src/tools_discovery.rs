@@ -215,22 +215,28 @@ pub fn tools() -> Vec<Tool> {
                 "name": {"type": "string"},
                 "arguments": {"type": "object", "description": "the tool's arguments (describe_tool shows them)"}
             }), &["name"]),
-            run: |e, a| {
-                let name = s_req(a, "name")?;
-                if name == "call_tool" {
-                    bail!("call_tool cannot call itself");
-                }
-                if tools::find(&name).is_none() && crate::tools_categories::find(&name).is_none() {
-                    return Err(anyhow!(
-                        "unknown tool '{name}'. Did you mean: {}? (search_tools finds tools)",
-                        crate::tools_meta::suggest(&name, 3).join(", ")
-                    ));
-                }
-                let args = a.get("arguments").cloned().unwrap_or(json!({}));
-                e.call_nested(&name, &args, "call_tool")
-            },
+            // The normalizer peels this wrapper without running its handler.
+            // Internal validated dispatch of the registry entry uses it too.
+            run: |e, a| e.call_nested("call_tool", a, "call_tool"),
         },
     ]
+}
+
+/// Shared wrapper parsing for pure invocation normalization and the fallback
+/// handler. Keep the existing target/default/validation behavior in one place.
+pub(crate) fn call_target(a: &Value) -> anyhow::Result<(String, Value)> {
+    let name = s_req(a, "name")?;
+    if name == "call_tool" {
+        bail!("call_tool cannot call itself");
+    }
+    if tools::find(&name).is_none() && crate::tools_categories::find(&name).is_none() {
+        return Err(anyhow!(
+            "unknown tool '{name}'. Did you mean: {}? (search_tools finds tools)",
+            crate::tools_meta::suggest(&name, 3).join(", ")
+        ));
+    }
+    let args = a.get("arguments").cloned().unwrap_or(json!({}));
+    Ok((name, args))
 }
 
 #[cfg(test)]

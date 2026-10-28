@@ -10,6 +10,7 @@ use crate::tools;
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -86,7 +87,43 @@ impl std::fmt::Debug for PerfLaunch {
 const RENDER_CACHE: usize = 3;
 const RENDER_CACHE_MB: f32 = 240.0;
 
+/// A resolved category answer is not a tool invocation. Terminal names must
+/// never go back through category lookup (notably legacy history/transport).
+pub(crate) enum Invocation {
+    Answer(Value),
+    Terminal {
+        tool: &'static tools::Tool,
+        args: Value,
+        notes: Vec<String>,
+    },
+}
+
+const MAX_WRAPPER_HOPS: usize = 32;
+
+/// Owned guard so dispatch can borrow the engine while policy stays inherited.
+/// Engine-local, not thread-local: private comparison engines are independent.
+pub(crate) struct BatchPolicyGuard(Arc<AtomicUsize>);
+
+impl Drop for BatchPolicyGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn check_batch_action(name: &str) -> Result<()> {
+    if matches!(
+        name,
+        "batch" | "undo" | "redo" | "load_project" | "new_project" | "produce_track"
+    ) {
+        return Err(anyhow!(
+            "effective action '{name}' can't run inside a batch"
+        ));
+    }
+    Ok(())
+}
+
 pub struct Engine {
+    batch_policy: Arc<AtomicUsize>,
     pub transport: Transport,
     /// MIDI controller links, keyboard track, recorder and connected port.
     pub midi: crate::midi_in::MidiState,
@@ -123,6 +160,7 @@ const MAX_UNDO: usize = 100;
 impl Engine {
     pub fn new(workdir: PathBuf) -> Self {
         let mut e = Engine {
+            batch_policy: Arc::new(AtomicUsize::new(0)),
             transport: Transport::default(),
             midi: Default::default(),
             project: Project::default(),
@@ -168,17 +206,64 @@ impl Engine {
     }
 
     pub fn call_from(&mut self, name: &str, args: &Value, source: &str) -> Result<Value> {
-        // a category tool (project, mixer, ...) names one engine tool by `action`
-        if let Some(cat) = crate::tools_categories::find(name) {
-            return match crate::tools_categories::resolve(cat, args)? {
-                crate::tools_categories::Resolved::Answer(v) => Ok(v),
-                crate::tools_categories::Resolved::Call(t, a) => self.call_tool_from(t, &a, source),
-                crate::tools_categories::Resolved::Routed(t, a, note) => self
-                    .call_tool_from(t, &a, source)
-                    .map(|v| with_note(v, note)),
-            };
+        match Self::normalize_invocation(name, args)? {
+            Invocation::Answer(v) => Ok(v),
+            Invocation::Terminal { tool, args, notes } => self
+                .call_tool_from(tool.name, &args, source)
+                .map(|v| with_notes(v, notes)),
         }
-        self.call_tool_from(name, args, source)
+    }
+
+    /// Pure syntax/routing only: no handlers, IDs, seeds, depth or live state.
+    pub(crate) fn normalize_invocation(name: &str, args: &Value) -> Result<Invocation> {
+        let mut name = name.to_owned();
+        let mut args = args.clone();
+        let mut notes = Vec::new();
+        let mut hops = 0;
+        loop {
+            // Resolve once per fresh invocation, not again for its terminal.
+            let tool = if let Some(cat) = crate::tools_categories::find(&name) {
+                let (terminal, inner) = match crate::tools_categories::resolve(cat, &args)? {
+                    crate::tools_categories::Resolved::Answer(v) => {
+                        return Ok(Invocation::Answer(with_notes(v, notes)));
+                    }
+                    crate::tools_categories::Resolved::Call(t, a) => (t, a),
+                    crate::tools_categories::Resolved::Routed(t, a, note) => {
+                        notes.push(note);
+                        (t, a)
+                    }
+                };
+                args = inner;
+                tools::find(terminal).ok_or_else(|| unknown_tool(terminal))?
+            } else {
+                tools::find(&name).ok_or_else(|| unknown_tool(&name))?
+            };
+            if tool.name != "call_tool" {
+                return Ok(Invocation::Terminal { tool, args, notes });
+            }
+            if hops == MAX_WRAPPER_HOPS {
+                return Err(anyhow!(
+                    "call_tool wrapper hop limit ({MAX_WRAPPER_HOPS}) exceeded"
+                ));
+            }
+            hops += 1;
+            check_unknown_args(tool, tool.name, &args)?;
+            (name, args) = crate::tools_discovery::call_target(&args)?;
+        }
+    }
+
+    /// Policy failures are structural; ordinary normalization errors remain
+    /// per-call execution errors, especially for atomic=false compatibility.
+    pub(crate) fn preflight_batch_call(name: &str, args: &Value) -> Result<()> {
+        if let Ok(Invocation::Terminal { tool, .. }) = Self::normalize_invocation(name, args) {
+            check_batch_action(tool.name)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn batch_policy_scope(&self) -> BatchPolicyGuard {
+        self.batch_policy.fetch_add(1, Ordering::Relaxed);
+        BatchPolicyGuard(Arc::clone(&self.batch_policy))
     }
 
     /// Run one engine tool by its own name (no category resolution).
@@ -298,6 +383,12 @@ impl Engine {
         args: &Value,
         top: bool,
     ) -> (Result<Value>, Value) {
+        // Final boundary also covers internal forwarding, regardless of source.
+        if self.batch_policy.load(Ordering::Relaxed) != 0 {
+            if let Err(err) = check_batch_action(tool.name) {
+                return (Err(err), args.clone());
+            }
+        }
         let empty = Value::Object(Default::default());
         let args = if args.is_null() { &empty } else { args };
         if let Err(e) = check_unknown_args(tool, name, args) {
@@ -393,18 +484,12 @@ impl Engine {
     /// rolled back on its own failure; the outer call keeps the single undo
     /// step and the revision bump.
     pub(crate) fn call_nested(&mut self, name: &str, args: &Value, source: &str) -> Result<Value> {
-        if let Some(cat) = crate::tools_categories::find(name) {
-            return match crate::tools_categories::resolve(cat, args)? {
-                crate::tools_categories::Resolved::Answer(v) => Ok(v),
-                crate::tools_categories::Resolved::Call(t, a) => {
-                    self.call_nested_tool(t, &a, source)
-                }
-                crate::tools_categories::Resolved::Routed(t, a, note) => self
-                    .call_nested_tool(t, &a, source)
-                    .map(|v| with_note(v, note)),
-            };
+        match Self::normalize_invocation(name, args)? {
+            Invocation::Answer(v) => Ok(v),
+            Invocation::Terminal { tool, args, notes } => self
+                .call_nested_tool(tool.name, &args, source)
+                .map(|v| with_notes(v, notes)),
         }
-        self.call_nested_tool(name, args, source)
     }
 
     fn call_nested_tool(&mut self, name: &str, args: &Value, source: &str) -> Result<Value> {
@@ -868,6 +953,14 @@ pub fn clean_floats(v: Value) -> Value {
     }
 }
 
+// Apply inner routing notes first, matching nested forwarding's precedence.
+fn with_notes(mut v: Value, notes: Vec<String>) -> Value {
+    for note in notes.into_iter().rev() {
+        v = with_note(v, note);
+    }
+    v
+}
+
 /// Add a `note` to a tool's answer (an object gets the field; anything else
 /// is wrapped as {result, note}).
 fn with_note(v: Value, note: String) -> Value {
@@ -902,4 +995,213 @@ fn playlist_sources_changed(before: &Project, now: &Project) -> bool {
             .find(|p| p.name.eq_ignore_ascii_case(&c.pattern));
         a != b
     })
+}
+
+#[cfg(test)]
+mod batch_policy_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn forward(e: &mut Engine, a: &Value) -> Result<Value> {
+        match a["via"].as_str().unwrap() {
+            "top" => e.call_from(
+                "help",
+                &json!({"action":"call_tool","params":{
+                    "name":"history","arguments":{"action":"undo"}
+                }}),
+                "not-batch",
+            ),
+            "nested" => e.call_nested("mixer", &json!({"action":"undo"}), "not-batch"),
+            // Even a misleading diagnostic name cannot hide the actual tool.
+            "validated" => {
+                e.dispatch_validated(
+                    tools::find("undo").unwrap(),
+                    "innocent-name",
+                    &json!({}),
+                    false,
+                )
+                .0
+            }
+            "wrapper-handler" => {
+                e.dispatch_validated(
+                    tools::find("call_tool").unwrap(),
+                    "call_tool",
+                    &json!({
+                        "name":"history","arguments":{"action":"undo"}
+                    }),
+                    false,
+                )
+                .0
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn inherited_policy_reaches_internal_dispatch_and_is_engine_local() {
+        let mut e = Engine::new(std::env::temp_dir());
+        e.call("set_tempo", &json!({"bpm":130})).unwrap();
+        let project = e.project.clone();
+        let history = e.history();
+        let revision = e.revision;
+        let forwarder = tools::Tool {
+            name: "test_forward",
+            description: "test only",
+            mutates: false,
+            schema: || tools::obj(json!({"via":{"type":"string"}}), &["via"]),
+            run: forward,
+        };
+        let policy = e.batch_policy_scope();
+        for via in ["top", "nested", "validated", "wrapper-handler"] {
+            let (r, _) =
+                e.dispatch_validated(&forwarder, forwarder.name, &json!({"via":via}), false);
+            let error = r.unwrap_err().to_string();
+            assert!(error.contains("effective action 'undo'"), "{via}: {error}");
+            assert_eq!(e.project, project);
+            assert_eq!(e.history(), history);
+            assert_eq!(e.revision, revision);
+        }
+        // A different engine on the same thread does not inherit this policy.
+        let mut other = Engine::new(std::env::temp_dir());
+        other
+            .call("new_project", &json!({"name":"independent"}))
+            .unwrap();
+        drop(policy);
+        e.call("history", &json!({"action":"undo"})).unwrap();
+        assert_eq!(e.project.bpm, 120.0);
+    }
+
+    #[test]
+    fn policy_guard_unwinds_and_contained_panic_keeps_outer_policy() {
+        let mut e = Engine::new(std::env::temp_dir());
+        let panicker = tools::Tool {
+            name: "test_panic",
+            description: "test only",
+            mutates: false,
+            schema: || tools::obj(json!({}), &[]),
+            run: |e, _| {
+                let _inner = e.batch_policy_scope();
+                panic!("batch policy cleanup probe");
+            },
+        };
+        let outer = e.batch_policy_scope();
+        let (r, _) = e.dispatch_validated(&panicker, panicker.name, &json!({}), false);
+        assert!(r.unwrap_err().to_string().contains("cleanup probe"));
+        assert_eq!(e.batch_policy.load(Ordering::Relaxed), 1);
+        assert!(e.call("new_project", &json!({})).is_err());
+        drop(outer);
+        assert_eq!(e.batch_policy.load(Ordering::Relaxed), 0);
+        e.call("new_project", &json!({"name":"after-contained-panic"}))
+            .unwrap();
+        // Also unwind a scope wholly inside the panic boundary, with no outer guard.
+        assert!(e
+            .dispatch_validated(&panicker, panicker.name, &json!({}), false)
+            .0
+            .is_err());
+        assert_eq!(e.batch_policy.load(Ordering::Relaxed), 0);
+        e.call(
+            "batch",
+            &json!({"calls":[{"tool":"set_tempo","args":{"bpm":131}}]}),
+        )
+        .unwrap();
+        e.call("undo", &json!({})).unwrap();
+    }
+
+    #[test]
+    fn wrapper_normalization_does_not_promote_internal_seeds_to_top_level() {
+        let mut e = Engine::new(std::env::temp_dir());
+        {
+            let _caller = tools::CallDepth::enter();
+            e.call_from(
+                "call_tool",
+                &json!({"name":"pattern","arguments":{
+                    "action":"generate_drums","params":{"style":"trap"}
+                }}),
+                "internal",
+            )
+            .unwrap();
+            assert_eq!(tools::CallDepth::current(), 1);
+            assert!(e.project.seed_log.is_empty());
+        }
+        assert_eq!(tools::CallDepth::current(), 0);
+        let r = e
+            .call(
+                "call_tool",
+                &json!({"name":"generate_drums","arguments":{
+                    "style":"trap"
+                }}),
+            )
+            .unwrap();
+        assert_eq!(r["seed_source"], "fresh");
+        assert_eq!(e.project.seed_log.len(), 1);
+    }
+
+    #[test]
+    fn normalization_is_pure_and_keeps_legacy_terminals_and_inner_notes() {
+        assert!(matches!(
+            Engine::normalize_invocation("project", &json!({})).unwrap(),
+            Invocation::Answer(_)
+        ));
+        for (name, args) in [
+            ("history", json!({})),
+            ("transport", json!({"action":"status"})),
+        ] {
+            match Engine::normalize_invocation(name, &args).unwrap() {
+                Invocation::Terminal {
+                    tool,
+                    args: resolved,
+                    ..
+                } => {
+                    assert_eq!(tool.name, name);
+                    assert_eq!(resolved, args);
+                }
+                _ => panic!("legacy call should terminate"),
+            }
+        }
+        let resolved = Engine::normalize_invocation(
+            "mixer",
+            &json!({"action":"call_tool",
+                "params":{"name":"notes","arguments":{"action":"set_tempo","bpm":133}}
+            }),
+        )
+        .unwrap();
+        match resolved {
+            Invocation::Terminal { tool, args, notes } => {
+                assert_eq!(tool.name, "set_tempo");
+                assert_eq!(args, json!({"bpm":133}));
+                assert_eq!(notes.len(), 2);
+                assert!(with_notes(json!({}), notes)["note"]
+                    .as_str()
+                    .unwrap()
+                    .contains("project"));
+            }
+            _ => panic!("expected terminal"),
+        }
+        // Preflight neither rejects an ordinary failure globally nor resolves
+        // a new effect ID/seed against a project that has not yet been edited.
+        Engine::preflight_batch_call("no-such-tool", &json!({})).unwrap();
+        match Engine::normalize_invocation(
+            "tweak_effect",
+            &json!({
+                "track":"later", "index":"filter1", "params":{"cutoff":900}
+            }),
+        )
+        .unwrap()
+        {
+            Invocation::Terminal { args, .. } => assert_eq!(args["index"], "filter1"),
+            _ => panic!("expected terminal"),
+        }
+        match Engine::normalize_invocation(
+            "call_tool",
+            &json!({
+                "name":"generate_drums","arguments":{"style":"trap"}
+            }),
+        )
+        .unwrap()
+        {
+            Invocation::Terminal { args, .. } => assert!(args.get("seed").is_none()),
+            _ => panic!("expected terminal"),
+        }
+        assert_eq!(tools::CallDepth::current(), 0);
+    }
 }

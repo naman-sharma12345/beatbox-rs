@@ -451,7 +451,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "batch",
-            description: "Run many tool calls in one round trip and ONE undo step: calls=[{tool, args}]. Every call goes through the same validation as a standalone call (unknown arguments are rejected, stable effect ids like 'fx.<id>.<param>' resolve against the project as it is after the earlier calls). atomic=true (default): the first failing call rolls back the whole batch and the error names it. atomic=false (partial success): each failing call is rolled back on its own, the others are kept, and results list ok/error per call; the kept calls are still one undo step. batch/undo/redo/load_project/new_project/produce_track can't be nested.",
+            description: "Run many tool calls in one round trip and ONE undo step: calls=[{tool, args}]. Every call goes through the same validation as a standalone call (unknown arguments are rejected, stable effect ids like 'fx.<id>.<param>' resolve against the project as it is after the earlier calls). atomic=true (default): the first failing call rolls back project edits and the error names it. External/session effects (files, checkpoints, transport) are not transactional. atomic=false (partial success): each failing call's project edits are rolled back on its own, the others are kept, and results list ok/error per call; the kept calls are still one undo step. batch/undo/redo/load_project/new_project/produce_track can't be nested, including category and call_tool aliases (max 32 wrapper hops).",
             mutates: true,
             schema: || obj(json!({"calls": {"type": "array", "items": {"type": "object", "properties": {"tool": {"type": "string"}, "args": {"type": "object"}}, "required": ["tool"]}}, "atomic": {"type": "boolean"}}), &["calls"]),
             run: |e, a| {
@@ -462,10 +462,11 @@ pub fn tools() -> Vec<Tool> {
                 let mut plan = Vec::with_capacity(calls.len());
                 for (i, c) in calls.iter().enumerate() {
                     let name = c.get("tool").or_else(|| c.get("name")).and_then(|v| v.as_str()).ok_or_else(|| anyhow!("call {i} has no tool"))?;
-                    if matches!(name, "batch" | "undo" | "redo" | "load_project" | "new_project" | "produce_track") { bail!("call {i}: '{name}' can't run inside a batch"); }
                     let args = c.get("args").or_else(|| c.get("arguments")).cloned().unwrap_or(json!({}));
+                    crate::engine::Engine::preflight_batch_call(name, &args).map_err(|err| anyhow!("call {i} ({name}): {err:#}"))?;
                     plan.push((name, args));
                 }
+                let _policy = e.batch_policy_scope();
                 let mut results = Vec::new();
                 let mut errors = 0;
                 for (i, (name, args)) in plan.into_iter().enumerate() {
@@ -474,7 +475,7 @@ pub fn tools() -> Vec<Tool> {
                     match e.call_nested(name, &args, "batch") {
                         Ok(v) => results.push(json!({"index": i, "tool": name, "ok": true, "result": v})),
                         Err(err) => {
-                            if atomic { bail!("batch call {i} ({name}) failed, nothing applied: {err:#}"); }
+                            if atomic { bail!("batch call {i} ({name}) failed; project edits rolled back; external/session effects are not transactional: {err:#}"); }
                             errors += 1;
                             results.push(json!({"index": i, "tool": name, "ok": false, "error": format!("{err:#}")}));
                         }
