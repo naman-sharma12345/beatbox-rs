@@ -386,6 +386,21 @@ pub(crate) fn remap_fx_targets(p: &mut Project, owner: &str, positions: &[usize]
     }
 }
 
+/// Remove controls belonging to a deleted channel so a later channel with the
+/// same display name cannot inherit them. Keep unrelated macro targets intact.
+pub(crate) fn drop_owner_controls(p: &mut Project, owner: &str, id: &str) -> usize {
+    let matches = |target: &str| {
+        target.eq_ignore_ascii_case(owner) || (!id.is_empty() && target.eq_ignore_ascii_case(id))
+    };
+    let before = p.automation.len();
+    p.automation.retain(|lane| !matches(&lane.target));
+    p.automation_clips.retain(|clip| !matches(&clip.target));
+    for knob in &mut p.macros {
+        knob.targets.retain(|target| !matches(&target.track));
+    }
+    before - p.automation.len()
+}
+
 /// After removing effect `removed` from `owner`'s chain: drop its lanes and
 /// shift the indices of later ones. Returns the number of lanes dropped.
 pub fn reindex_fx_lanes(p: &mut Project, owner: &str, removed: usize) -> usize {
@@ -881,7 +896,7 @@ pub fn tools() -> Vec<Tool> {
                     }
                     t.sends.retain(|s| !s.bus.eq_ignore_ascii_case(&b.name));
                 }
-                e.project.automation.retain(|l| !l.target.eq_ignore_ascii_case(&b.name));
+                drop_owner_controls(&mut e.project, &b.name, &b.id);
                 drop_send_lanes(&mut e.project, None, &b.name);
                 Ok(json!({"removed": b.name, "rerouted_to_master": rerouted}))
             },
