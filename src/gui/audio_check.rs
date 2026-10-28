@@ -205,6 +205,8 @@ struct Job {
 pub(super) struct Targets {
     check: egui::Rect,
     whole: egui::Rect,
+    #[cfg(test)]
+    whole_id: Option<egui::Id>,
     play: egui::Rect,
     stop: egui::Rect,
     last_prepare: egui::Rect,
@@ -226,6 +228,8 @@ impl Default for Targets {
         Self {
             check: egui::Rect::NOTHING,
             whole: egui::Rect::NOTHING,
+            #[cfg(test)]
+            whole_id: None,
             play: egui::Rect::NOTHING,
             stop: egui::Rect::NOTHING,
             last_prepare: egui::Rect::NOTHING,
@@ -481,7 +485,10 @@ impl State {
                 ui.label(RichText::new("Check audio").strong());
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Source: whole mix");
-                    targets.whole = ui.checkbox(&mut self.params.whole, "Full duration").rect;
+                    let response = ui.checkbox(&mut self.params.whole, "Full duration");
+                    targets.whole = response.rect;
+                    #[cfg(test)]
+                    { targets.whole_id = Some(response.id); }
                     if !self.params.whole {
                         ui.label("Elapsed seconds");
                         ui.add(egui::DragValue::new(&mut self.params.start).speed(0.1).prefix("Start "));
@@ -1730,7 +1737,10 @@ mod tests {
         prepared(&mut state);
         let mut h = Harness::new(1480.0, 920.0, 2.0);
         h.frame(&mut state, &engine, vec![]);
-        h.frame(&mut state, &engine, vec![]);
+        let targets = h.frame(&mut state, &engine, vec![]);
+        let whole_id = targets
+            .whole_id
+            .expect("production Full duration response ID");
         let key = |key, pressed| InputEvent::Key {
             key,
             physical_key: None,
@@ -1738,17 +1748,40 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::NONE,
         };
-        h.frame(&mut state, &engine, vec![key(egui::Key::Tab, true)]);
-        h.frame(&mut state, &engine, vec![key(egui::Key::Tab, false)]);
-        assert!(
-            h.ctx.memory(|m| m.focused().is_some()),
-            "Tab reaches production controls"
+        // The scroll area's drag interaction is also focusable. Traverse the
+        // actual focus order, rather than assuming the first Tab is a checkbox.
+        let mut focused = Vec::new();
+        for _ in 0..32 {
+            h.frame(&mut state, &engine, vec![key(egui::Key::Tab, true)]);
+            let targets = h.frame(&mut state, &engine, vec![key(egui::Key::Tab, false)]);
+            assert_eq!(
+                targets.whole_id,
+                Some(whole_id),
+                "checkbox ID stays stable during Tab traversal"
+            );
+            let current = h.ctx.memory(|m| m.focused());
+            focused.push(current);
+            if current == Some(whole_id) {
+                break;
+            }
+        }
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(whole_id),
+            "Tab must reach the exact Full duration checkbox before Space; focus trace: {focused:?}"
         );
+        assert!(state.params.whole, "Tab alone must not change the range");
+        assert!(!state.stale, "Tab alone must not invalidate the report");
+        assert!(
+            state.prepared.is_some(),
+            "Tab alone must retain the excerpt"
+        );
+        assert!(engine.lock().unwrap().transport.pending.is_empty());
         h.frame(&mut state, &engine, vec![key(egui::Key::Space, true)]);
         h.frame(&mut state, &engine, vec![key(egui::Key::Space, false)]);
         assert!(
             !state.params.whole,
-            "Space activates the first focused checkbox"
+            "Space activates the exact focused Full duration checkbox"
         );
         assert!(state.stale);
         assert!(state.prepared.is_none());
