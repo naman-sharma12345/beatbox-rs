@@ -1409,7 +1409,7 @@ pub fn tools() -> Vec<Tool> {
                 let (name, l, r) = audio_for(e, a)?;
                 let prof = audio_edit::profile(&name, &l, &r);
                 let mono: Vec<f32> = l.iter().zip(r.iter()).map(|(x, y)| 0.5 * (x + y)).collect();
-                let on = audio_edit::onsets(&mono, 0.5, 60.0);
+                let on = audio_edit::onsets_stereo(&l, &r, 0.5, 60.0);
                 let keys = audio_edit::estimate_key(&mono);
                 let mut v = serde_json::to_value(&prof)?;
                 v["key_candidates"] = json!(keys.iter().map(|(k, c)| json!({"key": k, "score": c})).collect::<Vec<_>>());

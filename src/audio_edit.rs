@@ -91,6 +91,22 @@ pub fn onsets(x: &[f32], sensitivity: f32, min_gap_ms: f32) -> Vec<usize> {
         .collect()
 }
 
+/// Stereo onset positions without phase cancellation from a mono fold.
+/// Nearby detections in the two channels describe one attack, not two.
+/// Silent channels do not contribute the mono detector's short-buffer fallback.
+pub fn onsets_stereo(left: &[f32], right: &[f32], sensitivity: f32, min_gap_ms: f32) -> Vec<usize> {
+    let common = left.len().min(right.len());
+    let mut marks = Vec::new();
+    for channel in [&left[..common], &right[..common]] {
+        if channel.iter().any(|v| v.abs() > 1e-12) {
+            marks.extend(onsets(channel, sensitivity, min_gap_ms));
+        }
+    }
+    marks.sort_unstable();
+    marks.dedup_by(|a, b| a.abs_diff(*b) <= 64);
+    marks
+}
+
 /// Tempo estimate from onset autocorrelation: (bpm, confidence 0..1).
 pub fn estimate_bpm(x: &[f32]) -> (f32, f32) {
     let env = onset_envelope(x);
