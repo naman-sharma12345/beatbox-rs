@@ -1214,7 +1214,8 @@ pub(crate) fn core_tools() -> Vec<Tool> {
                     p.clips.remove(&t.name.to_lowercase());
                 }
                 let lanes = crate::tools_studio::drop_owner_controls(&mut e.project, &t.name, &t.id);
-                Ok(json!({"removed": t.name, "automation_lanes_removed": lanes}))
+                let effects = crate::tools_studio::drop_track_source_effects(&mut e.project, &t.name, &t.id);
+                Ok(json!({"removed": t.name, "automation_lanes_removed": lanes, "source_effects_removed": effects}))
             },
         },
         Tool {

@@ -411,6 +411,51 @@ pub(crate) fn remap_fx_targets(p: &mut Project, owner: &str, positions: &[usize]
     }
 }
 
+/// Remove source-keyed effects when their source track disappears. Removing
+/// the insert (rather than clearing the source) cannot turn keyed EQ into an
+/// unrelated self-keyed effect. Reindex surviving controls after each removal.
+pub(crate) fn drop_track_source_effects(p: &mut Project, source: &str, source_id: &str) -> usize {
+    let matches = |fx: &Effect| {
+        let key = match fx {
+            Effect::Sidechain(sc) => &sc.source,
+            Effect::DynamicEq(eq) => &eq.source,
+            _ => return false,
+        };
+        key.eq_ignore_ascii_case(source)
+            || (!source_id.is_empty() && key.eq_ignore_ascii_case(source_id))
+    };
+    let owners: Vec<String> = p
+        .tracks
+        .iter()
+        .map(|t| t.name.clone())
+        .chain(p.buses.iter().map(|b| b.name.clone()))
+        .chain(std::iter::once("master".to_string()))
+        .collect();
+    let mut removed = 0;
+    for owner in owners {
+        let indices: Vec<usize> = chain_of(p, &owner)
+            .iter()
+            .enumerate()
+            .filter_map(|(i, fx)| matches(fx).then_some(i))
+            .collect();
+        for i in indices.into_iter().rev() {
+            if let Ok(ti) = p.track_index(&owner) {
+                p.tracks[ti].effects.remove(i);
+            } else if let Ok(bi) = p.bus_index(&owner) {
+                p.buses[bi].effects.remove(i);
+            } else {
+                p.master_effects.remove(i);
+            }
+            reindex_fx_lanes(p, &owner, i);
+            removed += 1;
+        }
+    }
+    for chain in p.fx_chains.values_mut() {
+        chain.retain(|fx| !matches(fx));
+    }
+    removed
+}
+
 /// Remove controls belonging to a deleted channel so a later channel with the
 /// same display name cannot inherit them. Keep unrelated macro targets intact.
 pub(crate) fn drop_owner_controls(p: &mut Project, owner: &str, id: &str) -> usize {
