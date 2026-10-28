@@ -226,6 +226,19 @@ pub fn chroma_split(x: &[f32]) -> ([f32; 12], [f32; 12]) {
     (c, bass)
 }
 
+/// Combine channel chroma evidence without an audio mono fold.
+/// This preserves candidates under polarity inversion, not musical certainty.
+pub fn chroma_split_stereo(left: &[f32], right: &[f32]) -> ([f32; 12], [f32; 12]) {
+    let common = left.len().min(right.len());
+    let (mut full, mut bass) = chroma_split(&left[..common]);
+    let (right_full, right_bass) = chroma_split(&right[..common]);
+    for i in 0..12 {
+        full[i] = 0.5 * (full[i] + right_full[i]);
+        bass[i] = 0.5 * (bass[i] + right_bass[i]);
+    }
+    (full, bass)
+}
+
 /// One ranked key hypothesis.
 #[derive(Clone, Debug, Serialize)]
 pub struct KeyCandidate {
@@ -269,7 +282,14 @@ pub fn rank_keys(full: &[f32; 12], bass: &[f32; 12]) -> Vec<KeyCandidate> {
 
 /// Top-3 keys plus the margin between the first two and a confidence label.
 pub fn key_report(x: &[f32]) -> serde_json::Value {
-    let (c, b) = chroma_split(x);
+    key_report_from_chroma(chroma_split(x))
+}
+
+pub fn key_report_stereo(left: &[f32], right: &[f32]) -> serde_json::Value {
+    key_report_from_chroma(chroma_split_stereo(left, right))
+}
+
+fn key_report_from_chroma((c, b): ([f32; 12], [f32; 12])) -> serde_json::Value {
     if c.iter().all(|v| *v == 0.0) {
         return serde_json::json!({"candidates": [], "confidence": "none"});
     }
@@ -291,7 +311,14 @@ pub fn key_report(x: &[f32]) -> serde_json::Value {
 
 /// Best key guesses for audio: [(name like "A minor", score)], top 3.
 pub fn estimate_key(x: &[f32]) -> Vec<(String, f32)> {
-    let (c, b) = chroma_split(x);
+    keys_from_chroma(chroma_split(x))
+}
+
+pub fn estimate_key_stereo(left: &[f32], right: &[f32]) -> Vec<(String, f32)> {
+    keys_from_chroma(chroma_split_stereo(left, right))
+}
+
+fn keys_from_chroma((c, b): ([f32; 12], [f32; 12])) -> Vec<(String, f32)> {
     if c.iter().all(|v| *v == 0.0) {
         return vec![];
     }
@@ -838,15 +865,13 @@ pub fn profile(name: &str, l: &[f32], r: &[f32]) -> AudioProfile {
         em += m * m;
         es += s * s;
     }
-    let mono: Vec<f32> = l.iter().zip(r.iter()).map(|(a, b)| 0.5 * (a + b)).collect();
     // tempo / key on at most ~60 s from the middle (speed)
-    let mid = mono.len() / 2;
+    let mid = l.len().min(r.len()) / 2;
     let half = (30.0 * SR) as usize;
-    let seg = &mono[mid.saturating_sub(half)..(mid + half).min(mono.len())];
     let lo = mid.saturating_sub(half);
     let hi = (mid + half).min(l.len().min(r.len()));
     let (bpm, conf) = estimate_bpm_stereo(&l[lo..hi], &r[lo..hi]);
-    let key = estimate_key(seg)
+    let key = estimate_key_stereo(&l[lo..hi], &r[lo..hi])
         .first()
         .map(|k| k.0.clone())
         .unwrap_or_default();

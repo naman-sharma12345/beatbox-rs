@@ -1408,12 +1408,11 @@ pub fn tools() -> Vec<Tool> {
             run: |e, a| {
                 let (name, l, r) = audio_for(e, a)?;
                 let prof = audio_edit::profile(&name, &l, &r);
-                let mono: Vec<f32> = l.iter().zip(r.iter()).map(|(x, y)| 0.5 * (x + y)).collect();
                 let on = audio_edit::onsets_stereo(&l, &r, 0.5, 60.0);
-                let keys = audio_edit::estimate_key(&mono);
+                let keys = audio_edit::estimate_key_stereo(&l, &r);
                 let mut v = serde_json::to_value(&prof)?;
                 v["key_candidates"] = json!(keys.iter().map(|(k, c)| json!({"key": k, "score": c})).collect::<Vec<_>>());
-                v["key_detail"] = audio_edit::key_report(&mono);
+                v["key_detail"] = audio_edit::key_report_stereo(&l, &r);
                 // a tempo read at low confidence is a guess (speech, rubato, a pad): say so
                 let conf = v["bpm_confidence"].as_f64().unwrap_or(0.0);
                 v["bpm_reliable"] = json!(conf >= 0.35);
