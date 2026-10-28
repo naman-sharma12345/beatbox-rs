@@ -48,47 +48,6 @@ pub(super) mod feedback {
         loaded(status, seen, generation);
         true
     }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn try_keep_and_successful_undo_dismiss_status() {
-            let mut status = String::new();
-            for changed in [true, false] {
-                attempted(&mut status, Ok(changed));
-                assert!(!status.is_empty());
-                assert!(finished(&mut status, Ok(())));
-                assert!(status.is_empty());
-            }
-        }
-
-        #[test]
-        fn local_load_acknowledges_generation_and_clears_even_without_trial() {
-            let mut status = String::new();
-            let mut seen = 7;
-            for result in [Ok(true), Ok(false), Err("Before checkpoint remains".into())] {
-                attempted(&mut status, result);
-                loaded(&mut status, &mut seen, 8);
-                assert!(status.is_empty());
-                assert_eq!(seen, 8);
-            }
-        }
-
-        #[test]
-        fn failed_undo_preserves_feedback_until_external_load() {
-            let mut status = String::new();
-            assert!(!finished(&mut status, Err("Use History".into())));
-            assert_eq!(status, "Use History");
-            let mut seen = u64::MAX;
-            assert!(!observe_load(&mut status, &mut seen, u64::MAX));
-            assert_eq!(status, "Use History");
-            assert!(observe_load(&mut status, &mut seen, 0));
-            assert!(status.is_empty());
-            assert_eq!(seen, 0);
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -378,7 +337,44 @@ impl Studio {
 
 #[cfg(test)]
 mod tests {
+    use super::feedback::{attempted, finished, loaded, observe_load};
     use super::*;
+
+    #[test]
+    fn try_keep_and_successful_undo_dismiss_status() {
+        let mut status = String::new();
+        for changed in [true, false] {
+            attempted(&mut status, Ok(changed));
+            assert!(!status.is_empty());
+            assert!(finished(&mut status, Ok(())));
+            assert!(status.is_empty());
+        }
+    }
+
+    #[test]
+    fn local_load_acknowledges_generation_and_clears_even_without_trial() {
+        let mut status = String::new();
+        let mut seen = 7;
+        for result in [Ok(true), Ok(false), Err("Before checkpoint remains".into())] {
+            attempted(&mut status, result);
+            loaded(&mut status, &mut seen, 8);
+            assert!(status.is_empty());
+            assert_eq!(seen, 8);
+        }
+    }
+
+    #[test]
+    fn failed_undo_preserves_feedback_until_external_load() {
+        let mut status = String::new();
+        assert!(!finished(&mut status, Err("Use History".into())));
+        assert_eq!(status, "Use History");
+        let mut seen = u64::MAX;
+        assert!(!observe_load(&mut status, &mut seen, u64::MAX));
+        assert_eq!(status, "Use History");
+        assert!(observe_load(&mut status, &mut seen, 0));
+        assert!(status.is_empty());
+        assert_eq!(seen, 0);
+    }
 
     // No sample files, device, audio render, comparison files or GUI shell.
     fn fixture() -> Engine {

@@ -65,7 +65,7 @@ fn state(e: &Engine) -> Value {
 }
 
 fn files(dir: &TempDir) -> Vec<(PathBuf, Vec<u8>)> {
-    let mut out: Vec<_> = std::fs::read_dir(&dir.0)
+    let mut out: Vec<(PathBuf, Vec<u8>)> = std::fs::read_dir(&dir.0)
         .unwrap()
         .map(|entry| {
             let p = entry.unwrap().path();
@@ -102,7 +102,7 @@ fn aliases(name: &str, args: Value) -> Vec<(String, Value)> {
         wrapper(&home, params),
         category_wrapper(name, args.clone()),
     ];
-    let mut nested = (name.into(), args);
+    let mut nested: (String, Value) = (name.into(), args);
     for _ in 0..4 {
         nested = category_wrapper(&nested.0, nested.1);
     }
@@ -264,7 +264,7 @@ fn standalone_aliases_answers_routing_and_wrapper_validation() {
 fn wrapper_hop_boundary_is_bounded_and_does_not_poison_next_call() {
     let dir = TempDir::new();
     let mut e = Engine::new(dir.0.clone());
-    let mut invocation = ("set_tempo".into(), json!({"bpm":133}));
+    let mut invocation: (String, Value) = ("set_tempo".into(), json!({"bpm":133}));
     for _ in 0..32 {
         invocation = category_wrapper(&invocation.0, invocation.1);
     }

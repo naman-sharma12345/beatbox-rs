@@ -73,13 +73,33 @@ fn is_ident(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+// This prefix rule requires all production code to precede the final test module.
+fn production_source(src: &str) -> &str {
+    src.split("#[cfg(test)]").next().unwrap_or(src)
+}
+
+#[test]
+fn wording_scan_covers_rhythm_trial_production_labels() {
+    let (_, src) = SOURCES
+        .iter()
+        .find(|(file, _)| *file == "rhythm_trial.rs")
+        .expect("rhythm trial must remain in the wording scan");
+    let scanned = literals(production_source(src));
+    for label in ["Rhythm trial", "Open matched A/B"] {
+        assert!(
+            scanned.iter().any(|(_, lit)| lit == label),
+            "wording scan misses production label: {label}"
+        );
+    }
+}
+
 #[test]
 fn gui_text_has_no_ai_wording() {
     let banned = crate::gui_words::BANNED;
     let mut bad = Vec::new();
     for (file, src) in SOURCES {
         // a file's own tests are not on screen
-        let src = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let src = production_source(src);
         for (line, lit) in literals(src) {
             // tool names and JSON keys are identifiers, not words a user reads
             if is_ident(&lit) {
@@ -211,7 +231,7 @@ fn gui_has_only_manual_views() {
 fn every_gui_action_is_an_mcp_tool() {
     let mut missing = Vec::new();
     for (file, src) in SOURCES {
-        let src = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let src = production_source(src);
         // call("tool", ..) / call_from("tool", ..) / op = Some(("tool", ..)) / Some(("tool".into(), ..))
         for pat in ["call(\"", "call_from(\"", "Some((\""] {
             let mut rest = src;
