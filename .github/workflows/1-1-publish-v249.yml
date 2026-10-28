@@ -1,0 +1,73 @@
+name: Publish stereo spectral edit validation
+'on':
+  push:
+    branches:
+    - stereo-spectral
+    paths:
+    - .github/workflows/*publish-v249.yml
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'naman-sharma12345/beatbox-rs' && github.actor == 'naman-sharma12345'
+      && github.ref == 'refs/heads/stereo-spectral'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Apply exact locally tested sample preservation patch
+      shell: bash
+      run: 'set -euo pipefail
+
+        [ "$(git rev-parse HEAD^)" = 4229de08dd46e8b5f5b778123219f735b73d1989 ]
+
+        [ "$(git rev-parse origin/main)" = 4229de08dd46e8b5f5b778123219f735b73d1989
+        ]
+
+        python3 - <<''PYCODE''
+
+        import base64,gzip,hashlib,pathlib
+
+        b=gzip.decompress(base64.b64decode(''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''))
+
+        assert hashlib.sha256(b).hexdigest()==''b5e687fa0bdeda4c536c1efd323de75097748b54100bc5d4c541cf60fa1be9a0''
+
+        pathlib.Path(''/tmp/checked.patch'').write_bytes(b)
+
+        PYCODE
+
+        git apply --check /tmp/checked.patch
+
+        git apply /tmp/checked.patch
+
+        python3 - <<''PYCODE''
+
+        import hashlib,pathlib
+
+        expected={''src/tools_sound.rs'': ''a0d52e331eda35db7e452d2e7831c4ca829a8ad6d5c954f38796797fcb17f6dd'',
+        ''tests/stereo_spectral.rs'': ''1cb939c956287c4890abb9bb1fd2df7db120f66f54168942406b5b266993b2b5''}
+
+        for f,h in expected.items(): assert hashlib.sha256(pathlib.Path(f).read_bytes()).hexdigest()==h,f
+
+        PYCODE
+
+        git config user.name ''github-actions[bot]''
+
+        git config user.email ''41898282+github-actions[bot]@users.noreply.github.com''
+
+        git add src/tools_sound.rs tests/stereo_spectral.rs
+
+        git commit -m "Preserve stereo channels in spectral sample edits"
+
+        git fetch origin stereo-spectral main
+
+        [ "$(git rev-parse origin/stereo-spectral)" = "$GITHUB_SHA" ]
+
+        [ "$(git rev-parse origin/main)" = 4229de08dd46e8b5f5b778123219f735b73d1989
+        ]
+
+        git push origin HEAD:refs/heads/stereo-spectral
+
+        '

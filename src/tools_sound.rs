@@ -1341,8 +1341,11 @@ pub fn tools() -> Vec<Tool> {
             mutates: true,
             schema: || obj(json!({"sample": {"type": "string"}, "start_s": {"type": "number"}, "end_s": {"type": "number"}, "low_hz": {"type": "number"}, "high_hz": {"type": "number"}, "gain_db": {"type": "number"}, "mode": {"type": "string", "enum": ["band", "outside"]}, "soft_ms": {"type": "number"}, "soft_octaves": {"type": "number"}, "new_name": {"type": "string"}}), &["sample"]),
             run: |e, a| {
-                let (info, d) = sample_data(e, &s_req(a, "sample")?)?;
-                let dur = d.len() as f32 / SR;
+                let name = s_req(a, "sample")?;
+                let info = e.project.samples.iter().find(|s| s.name.eq_ignore_ascii_case(&name))
+                    .cloned().ok_or_else(|| anyhow!("no sample '{name}'"))?;
+                let (left, right) = samples::decode_stereo(&e.resolve(&info.path))?;
+                let dur = left.len() as f32 / SR;
                 let t0 = f_or(a, "start_s", 0.0).max(0.0);
                 let t1 = f_opt(a, "end_s").unwrap_or(dur).min(dur);
                 if t1 <= t0 {
@@ -1369,10 +1372,15 @@ pub fn tools() -> Vec<Tool> {
                     soft_ms: f_or(a, "soft_ms", 10.0),
                     soft_oct: f_or(a, "soft_octaves", 0.1),
                 };
-                let (y, ch) = audio_edit::spectral_edit(&d, SR, &reg);
+                let (out_left, _) = audio_edit::spectral_edit(&left, SR, &reg);
+                let (out_right, _) = audio_edit::spectral_edit(&right, SR, &reg);
+                let energy = |l: &[f32], r: &[f32]| l.iter().chain(r).map(|v| (*v as f64).powi(2)).sum::<f64>();
+                let before = energy(&left, &right);
+                let after = energy(&out_left, &out_right);
+                let ch = if before > 1e-12 { (10.0 * (after.max(1e-20) / before).log10()) as f32 } else { 0.0 };
                 let nn = s_opt(a, "new_name").unwrap_or_else(|| format!("{}_spectral", info.name));
                 let what = format!("spectral {mode} {lo:.0}-{hi:.0} Hz {t0:.2}-{t1:.2} s {:+} dB", reg.gain_db);
-                let mut r = save_new_sample(e, &info, &nn, &y, &what)?;
+                let mut r = save_new_stereo_sample(e, &info, &nn, &out_left, &out_right, &what)?;
                 r["changed_db"] = json!((ch * 10.0).round() / 10.0);
                 r["region"] = json!({"start_s": t0, "end_s": t1, "low_hz": lo, "high_hz": hi, "mode": mode});
                 Ok(r)
