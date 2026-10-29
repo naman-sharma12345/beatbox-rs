@@ -108,6 +108,44 @@ fn save_allows_leave(saved: bool, has_file: bool, revision: u64, saved_revision:
     saved && !needs_leave_warning(has_file, revision, saved_revision)
 }
 
+/// Pending confirmation is a veto, not permission to close the root window.
+#[derive(Default)]
+struct QuitCloseState {
+    pending: bool,
+    approved_once: bool,
+}
+
+// Only the quit dialog may grant approval; ordinary saves are not approval.
+enum QuitChoice {
+    Save(bool),
+    Discard,
+    Cancel,
+}
+
+impl QuitCloseState {
+    /// Return whether this incoming root close must be cancelled.
+    fn incoming_close(&mut self, requested: bool, needs_warning: bool) -> bool {
+        if !requested {
+            return false;
+        }
+        if std::mem::take(&mut self.approved_once) {
+            return false;
+        }
+        if self.pending || needs_warning {
+            self.pending = true;
+            return true;
+        }
+        false
+    }
+
+    /// Return whether to emit Close, with a permit for its resulting event.
+    fn resolve(&mut self, choice: QuitChoice) -> bool {
+        self.pending = false;
+        self.approved_once = matches!(choice, QuitChoice::Save(true) | QuitChoice::Discard);
+        self.approved_once
+    }
+}
+
 /// Called while the caller holds the engine lock, including revision capture.
 fn save_project_revision(engine: &mut Engine, path: &std::path::Path) -> anyhow::Result<u64> {
     engine.call_from("save_project", &json!({"path": path}), "you")?;
@@ -281,7 +319,7 @@ pub struct Studio {
     seen_project_load: u64,
     /// "unsaved changes" prompt before File > New project
     confirm_new: bool,
-    confirm_quit: bool,
+    quit_close: QuitCloseState,
     mixer_routing: bool,
     open_list: bool,
     pending_open: Option<PathBuf>,
@@ -413,7 +451,7 @@ pub fn run(
                 saved_rev,
                 seen_project_load,
                 confirm_new: false,
-                confirm_quit: false,
+                quit_close: QuitCloseState::default(),
                 mixer_routing: false,
                 open_list: false,
                 pending_open: None,
@@ -2139,15 +2177,16 @@ impl eframe::App for Studio {
             self.toast = None;
         }
         let (p, rev, log, undo) = self.snapshot();
-        // closing the window with unsaved edits asks first
-        if ctx.input(|i| i.viewport().close_requested())
-            && !self.confirm_quit
-            && self.needs_leave_warning()
+        // Every incoming close is vetoed while the quit question is pending.
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+        let needs_warning = self.needs_leave_warning();
+        if self
+            .quit_close
+            .incoming_close(close_requested, needs_warning)
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.confirm_quit = true;
         }
-        if self.confirm_quit {
+        if self.quit_close.pending {
             let mut action = 0; // 1 save and quit, 2 quit anyway, 3 stay
             egui::Window::new("Quit without saving?")
                 .collapsible(false)
@@ -2169,20 +2208,16 @@ impl eframe::App for Studio {
                         }
                     });
                 });
-            match action {
-                1 => {
-                    if self.save_before_leave() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    } else {
-                        self.confirm_quit = false;
-                    }
-                }
-                2 => {
-                    self.saved_rev = self.engine.lock().unwrap().revision;
+            let choice = match action {
+                1 => Some(QuitChoice::Save(self.save_before_leave())),
+                2 => Some(QuitChoice::Discard),
+                3 => Some(QuitChoice::Cancel),
+                _ => None,
+            };
+            if let Some(choice) = choice {
+                if self.quit_close.resolve(choice) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                3 => self.confirm_quit = false,
-                _ => {}
             }
         }
         if self.open_list {
@@ -2464,6 +2499,110 @@ fn project_has_nothing_to_render(p: &crate::project::Project) -> bool {
         && p.playlist.is_empty()
         && p.audio_clips.is_empty()
         && p.vocal_map.is_none()
+}
+
+#[cfg(test)]
+mod quit_close_tests {
+    use super::{needs_leave_warning, QuitChoice, QuitCloseState};
+
+    #[test]
+    fn edited_and_fileless_first_second_third_close_are_vetoed() {
+        for (has_file, revision, saved) in [(true, 10, 9), (false, 9, 9)] {
+            let mut state = QuitCloseState::default();
+            for _ in 0..3 {
+                assert!(state.incoming_close(true, needs_leave_warning(has_file, revision, saved)));
+                assert!(state.pending);
+                assert!(!state.approved_once);
+            }
+        }
+    }
+
+    #[test]
+    fn pending_then_external_save_clean_still_vetoes() {
+        let mut state = QuitCloseState::default();
+        assert!(state.incoming_close(true, needs_leave_warning(true, 10, 9)));
+        for _ in 0..2 {
+            assert!(state.incoming_close(true, needs_leave_warning(true, 10, 10)));
+        }
+        assert!(!state.approved_once);
+    }
+
+    #[test]
+    fn cancel_in_same_close_update_keeps_veto_and_later_dirty_asks() {
+        let mut state = QuitCloseState::default();
+        assert!(state.incoming_close(true, true));
+        // The production route handles the incoming event before dialog choices.
+        let cancel_close = state.incoming_close(true, true);
+        assert!(!state.resolve(QuitChoice::Cancel));
+        assert!(cancel_close);
+        assert!(!state.pending);
+        assert!(!state.approved_once);
+        assert!(!state.incoming_close(false, true));
+        assert!(state.incoming_close(true, true));
+        assert!(state.pending);
+    }
+
+    #[test]
+    fn no_event_is_inert_and_clean_initial_close_passes() {
+        let mut state = QuitCloseState::default();
+        assert!(!state.incoming_close(false, true));
+        assert!(!state.pending);
+        assert!(!state.incoming_close(true, needs_leave_warning(true, 9, 9)));
+        assert!(!state.pending);
+        assert!(state.incoming_close(true, true));
+        assert!(!state.incoming_close(false, false));
+        assert!(state.pending);
+    }
+
+    #[test]
+    fn new_and_open_pending_do_not_supply_quit_approval() {
+        // New/Open retain independent pending fields. Their actual routing is
+        // checked in manual_ui_tests; neither invokes quit resolution.
+        for _pending_action in ["New", "Open"] {
+            for warning in [
+                needs_leave_warning(true, 10, 9),
+                needs_leave_warning(false, 9, 9),
+            ] {
+                let mut state = QuitCloseState::default();
+                assert!(state.incoming_close(true, warning));
+                assert!(state.incoming_close(true, warning));
+                assert!(state.incoming_close(true, warning));
+            }
+        }
+    }
+
+    #[test]
+    fn successful_save_and_discard_permit_exactly_one_incoming_close() {
+        for choice in [QuitChoice::Save(true), QuitChoice::Discard] {
+            let mut state = QuitCloseState::default();
+            assert!(state.incoming_close(true, true));
+            assert!(state.resolve(choice));
+            assert!(!state.pending);
+            assert!(state.approved_once);
+            // No event must not spend approval for the generated Close event.
+            assert!(!state.incoming_close(false, true));
+            assert!(state.approved_once);
+            // Still-fileless Discard must pass, without changing saved state.
+            assert!(!state.incoming_close(true, needs_leave_warning(false, 9, 9)));
+            assert!(!state.approved_once);
+            assert!(!state.pending);
+            assert!(state.incoming_close(true, true));
+            assert!(state.pending);
+        }
+    }
+
+    #[test]
+    fn failed_save_never_permits_and_later_close_asks_again() {
+        for warning in [true, false] {
+            let mut state = QuitCloseState::default();
+            assert!(state.incoming_close(true, true));
+            assert!(!state.resolve(QuitChoice::Save(false)));
+            assert!(!state.pending);
+            assert!(!state.approved_once);
+            assert!(!state.incoming_close(false, warning));
+            assert!(state.incoming_close(true, true));
+        }
+    }
 }
 
 #[cfg(test)]
