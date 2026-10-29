@@ -243,6 +243,88 @@ impl StripMeter {
 // used here under MIT). See THIRD_PARTY_NOTICES.md.
 const STRIP_W: f32 = 96.0;
 const MASTER_W: f32 = 150.0;
+// Caption text is the serialized effect type, in processing order. No elision,
+// label substitution or tooltip-only disclosure: even a long token can wrap.
+fn master_caption_text(p: &Project) -> String {
+    if p.master_effects.is_empty() {
+        "No master effects".into()
+    } else {
+        p.master_effects
+            .iter()
+            .map(|e| e.type_name())
+            .collect::<Vec<_>>()
+            .join(" / ")
+    }
+}
+
+fn master_caption_galley(ui: &egui::Ui, text: &str, width: f32) -> std::sync::Arc<egui::Galley> {
+    // egui prefers word/separator boundaries, falling back to characters for
+    // oversized tokens. Unlimited rows preserve every character.
+    let mut job =
+        egui::text::LayoutJob::simple(text.to_owned(), FontId::monospace(10.5), ACCENT, width);
+    // The caption clip is a hard width limit. Default output rounding lets
+    // epaint wrap rows up to 0.5 UI points wider than the requested width.
+    job.round_output_size_to_nearest_ui_point = false;
+    ui.fonts(|fonts| fonts.layout_job(job))
+}
+
+fn master_below_caption_height(p: &Project, has_loudness: bool) -> f32 {
+    let status = if has_loudness { 90.0 } else { 24.0 };
+    let lift = if crate::mix_rules::current_master_lift(p).is_some() {
+        38.0
+    } else {
+        19.0
+    };
+    status + lift + 90.0 + 58.0 // fader minimum and fixed bottom controls
+}
+
+fn master_strip_min_height(ui: &egui::Ui, p: &Project, has_loudness: bool) -> f32 {
+    let galley = master_caption_galley(ui, &master_caption_text(p), MASTER_W - 10.0);
+    let row = master_caption_galley(ui, "Mg", MASTER_W - 10.0).size().y;
+    // Two readable lines even at the compact limit. The old 260-point minimum
+    // cannot fit loudness + active LIFT + a 90-point fader even without a caption.
+    260.0_f32.max(
+        8.0 + galley.size().y.min(2.0 * row) + 4.0 + master_below_caption_height(p, has_loudness),
+    )
+}
+
+/// Paint the real caption in a bounded viewport. Only this region scrolls;
+/// controls below it never inherit the chain's unbounded content height.
+fn master_caption_ui(ui: &mut egui::Ui, text: &str, rect: Rect) -> f32 {
+    let mut galley = master_caption_galley(ui, text, rect.width());
+    if galley.size().y <= rect.height() {
+        let height = galley.size().y;
+        ui.painter()
+            .with_clip_rect(rect)
+            .galley(rect.min, galley, ACCENT);
+        return height;
+    }
+    let mut caption_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("master-caption")
+            .layout(egui::Layout::top_down(egui::Align::Min))
+            .max_rect(rect),
+    );
+    caption_ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+    caption_ui.spacing_mut().scroll.floating = false;
+    // Reserve the non-floating bar before measuring. It remains visible for
+    // overflow, making the caption-only scrolling affordance explicit.
+    let width = rect.width() - caption_ui.spacing().scroll.allocated_width();
+    galley = master_caption_galley(&caption_ui, text, width);
+    egui::ScrollArea::vertical()
+        .id_salt("master-caption-scroll")
+        .max_height(rect.height())
+        .min_scrolled_height(0.0)
+        .max_width(rect.width())
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+        .show(&mut caption_ui, |ui| {
+            let (r, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
+            ui.painter().galley(r.min, galley, ACCENT);
+        });
+    rect.height()
+}
+
 /// Insert / send slot rows: (inserts, sends) for a strip of height `h`. Short windows get
 /// fewer rows so the fader keeps a usable throw.
 fn slot_rows(h: f32) -> (usize, usize) {
@@ -937,7 +1019,10 @@ impl Studio {
                     );
                 });
         }
-        let h = (ui.available_height() - 18.0).clamp(260.0, 500.0);
+        // Reserve for the full loudness state as well as LIFT, so a completed
+        // render cannot make the master fader escape the compact strip.
+        let min_h = master_strip_min_height(ui, p, true);
+        let h = (ui.available_height() - 18.0).clamp(min_h, 500.0);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let scroll_w = ui.available_width() - MASTER_W - 8.0;
@@ -1326,7 +1411,6 @@ impl Studio {
     }
 
     fn master_strip(&mut self, ui: &mut egui::Ui, p: &Project, h: f32, pos: Option<f32>) {
-        let t = Tokens::DARK;
         let ((lv_l, lv_r), peak) = self.strip_meter_levels("master", pos);
         let current = self
             .rendered
@@ -1335,6 +1419,38 @@ impl Studio {
         let loud = current
             .filter(|r| !p.tracks.is_empty() && r.report.master.peak_dbfs >= -69.0)
             .map(|r| r.report.loudness.clone());
+        let engine = self.engine.clone();
+        let rendered_rev = self.rendered.as_ref().map(|r| r.rev);
+        let mut dragging = self.dragging;
+        Self::master_strip_ui(
+            ui,
+            p,
+            h,
+            ((lv_l, lv_r), peak),
+            move || rendered_rev.is_some_and(|rev| rev == engine.lock().unwrap().revision),
+            loud.as_ref(),
+            &mut dragging,
+            |tool, args| self.call(tool, args),
+        );
+        self.dragging = dragging;
+    }
+
+    // The production strip drawing path is shared with headless egui geometry
+    // tests, without constructing a Studio, audio device or render worker.
+    #[allow(clippy::too_many_arguments)]
+    fn master_strip_ui(
+        ui: &mut egui::Ui,
+        p: &Project,
+        h: f32,
+        meter: ((f32, f32), f32),
+        current: impl Fn() -> bool,
+        loud: Option<&crate::analysis::Loudness>,
+        dragging: &mut bool,
+        mut call: impl FnMut(&str, serde_json::Value),
+    ) {
+        let t = Tokens::DARK;
+        let ((lv_l, lv_r), peak) = meter;
+        let h = h.max(master_strip_min_height(ui, p, loud.is_some()));
         let (r, _) = ui.allocate_exact_size(Vec2::new(MASTER_W, h), Sense::hover());
         let pt = ui.painter().clone();
         pt.rect_filled(r, 0.0, super::theme::Tokens::DARK.strip_bg);
@@ -1346,18 +1462,10 @@ impl Studio {
         let x0 = r.min.x + 5.0;
         let iw = MASTER_W - 10.0;
         let mut y = r.min.y + 8.0;
-        pt.with_clip_rect(r).text(
-            Pos2::new(r.center().x, y + 5.0),
-            Align2::CENTER_CENTER,
-            p.master_effects
-                .iter()
-                .map(|e| e.type_name())
-                .collect::<Vec<_>>()
-                .join(" / "),
-            FontId::monospace(10.5),
-            ACCENT,
-        );
-        y += 14.0;
+        let caption_budget =
+            r.height() - 8.0 - 4.0 - master_below_caption_height(p, loud.is_some());
+        let caption = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(iw, caption_budget));
+        y += master_caption_ui(ui, &master_caption_text(p), caption) + 4.0;
         if let Some(l) = &loud {
             let rows = [
                 (
@@ -1416,11 +1524,7 @@ impl Studio {
             pt.text(
                 Pos2::new(r.center().x, y + 9.0),
                 Align2::CENTER_CENTER,
-                if current.is_none() {
-                    "UPDATING"
-                } else {
-                    "SILENCE"
-                },
+                if !current() { "UPDATING" } else { "SILENCE" },
                 FontId::monospace(10.0),
                 t.text_dim,
             );
@@ -1447,7 +1551,7 @@ impl Studio {
                 egui::Button::new(egui::RichText::new(label).size(9.0)).selected(on),
             );
             if b.on_hover_text("Master lift: presence bell + air shelf (MixProfile). Click to turn it on/off; drag P (presence dB), A (air dB) and N (the extra bell nudge, dB at its centre, default 3.5 kHz) below.").clicked() {
-                self.call("master_lift", json!({"preset": if on { "off" } else { "default" }}));
+                call("master_lift", json!({"preset": if on { "off" } else { "default" }}));
             }
             y += 19.0;
             if on {
@@ -1479,7 +1583,7 @@ impl Studio {
                         if (val_now - val).abs() > 0.05 {
                             let mut a = serde_json::Map::new();
                             a.insert(key.to_string(), json!(val_now));
-                            self.call("master_lift", serde_json::Value::Object(a));
+                            call("master_lift", serde_json::Value::Object(a));
                         }
                     }
                 }
@@ -1497,12 +1601,12 @@ impl Studio {
         let (fresp, done) = console_fader(ui, fr, vid, &mut vv);
         if fresp.dragged() {
             ui.ctx().data_mut(|d| d.insert_temp(vid, vv));
-            self.dragging = true;
+            *dragging = true;
         }
         if done {
             ui.ctx().data_mut(|d| d.remove::<f32>(vid));
-            self.call("set_mixer", json!({"track": "master", "volume_db": vv}));
-            self.dragging = false;
+            call("set_mixer", json!({"track": "master", "volume_db": vv}));
+            *dragging = false;
         }
         let mr = Rect::from_min_max(
             Pos2::new(fr.max.x + 6.0, fr.min.y + 6.0),
@@ -1542,11 +1646,7 @@ impl Studio {
         pt.text(
             Pos2::new(vr.center().x, vr.max.y + 8.0),
             Align2::CENTER_CENTER,
-            if self
-                .rendered
-                .as_ref()
-                .is_some_and(|r| r.rev == self.engine.lock().unwrap().revision)
-            {
+            if current() {
                 format!("pk {}", fmt_db(peak))
             } else {
                 "pk --".into()
@@ -1951,6 +2051,393 @@ fn automation_playhead_beat(p: &Project, seconds: f32) -> f32 {
 #[cfg(test)]
 mod automation_cursor_tests {
     use super::*;
+    // These exercise the same production painter/widgets used by master_strip,
+    // not a parallel arithmetic model. No Studio, renderer, device or GUI launch.
+    fn caption_project(count: usize, lift: bool) -> Project {
+        let mut p = Project::new("Authored caption geometry", 120.0);
+        p.master_effects = (0..count)
+            .map(|i| {
+                crate::fx::Effect::from_type(["compressor", "gain", "limiter"][i % 3]).unwrap()
+            })
+            .collect();
+        if lift {
+            let mut effect: crate::fx::Effect = serde_json::from_value(json!({
+                "type":"parametric_eq", "bands":[
+                    {"kind":"bell","freq":3000.0,"gain_db":1.0,"q":0.7},
+                    {"kind":"high_shelf","freq":9000.0,"gain_db":1.0,"q":0.7}
+                ]
+            }))
+            .unwrap();
+            effect.set_id(crate::mix_rules::MASTER_LIFT_ID);
+            p.master_effects.push(effect);
+        }
+        p
+    }
+
+    fn text_shapes(
+        clip: Rect,
+        shape: &egui::Shape,
+        out: &mut Vec<(Rect, egui::epaint::TextShape)>,
+    ) {
+        match shape {
+            egui::Shape::Text(text) => out.push((clip, text.clone())),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    text_shapes(clip, shape, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn frame_text(output: &egui::FullOutput) -> Vec<(Rect, egui::epaint::TextShape)> {
+        let mut texts = Vec::new();
+        for shape in &output.shapes {
+            text_shapes(shape.clip_rect, &shape.shape, &mut texts);
+        }
+        texts
+    }
+
+    #[test]
+    fn master_production_geometry_empty_three_many_minimum_and_2x() {
+        for scale in [1.0, 2.0] {
+            for requested_h in [260.0, 320.0, 500.0] {
+                for count in [0, 3, 90] {
+                    for lift in [false, true] {
+                        for has_loudness in [false, true] {
+                            let ctx = egui::Context::default();
+                            apply_theme(&ctx);
+                            ctx.set_pixels_per_point(scale);
+                            let p = caption_project(count, lift);
+                            let before = serde_json::to_value(&p).unwrap();
+                            let loud = crate::analysis::Loudness::default();
+                            let mut calls = Vec::new();
+                            let mut output = egui::FullOutput::default();
+                            let mut scroll_id = egui::Id::NULL;
+                            for frame in 0..3 {
+                                output = ctx.run(
+                                    egui::RawInput {
+                                        screen_rect: Some(Rect::from_min_size(
+                                            Pos2::ZERO,
+                                            Vec2::new(1100.0, 700.0),
+                                        )),
+                                        time: Some(frame as f64 / 60.0),
+                                        ..Default::default()
+                                    },
+                                    |ctx| {
+                                        egui::CentralPanel::default().show(ctx, |ui| {
+                                            scroll_id = ui
+                                                .id()
+                                                .with(egui::Id::new("master-caption"))
+                                                .with(egui::Id::new("master-caption-scroll"));
+                                            Studio::master_strip_ui(
+                                                ui,
+                                                &p,
+                                                requested_h,
+                                                ((-20.0, -21.0), -6.0),
+                                                || true,
+                                                has_loudness.then_some(&loud),
+                                                &mut false,
+                                                |tool, args| calls.push((tool.to_owned(), args)),
+                                            );
+                                        });
+                                    },
+                                );
+                            }
+                            assert!((ctx.pixels_per_point() - scale).abs() < 0.01);
+                            let strip = output
+                                .shapes
+                                .iter()
+                                .find_map(|s| match &s.shape {
+                                    egui::Shape::Rect(rect)
+                                        if rect.fill == Tokens::DARK.strip_bg
+                                            && (rect.rect.width() - MASTER_W).abs() < 0.01 =>
+                                    {
+                                        Some(rect.rect)
+                                    }
+                                    _ => None,
+                                })
+                                .expect("actual production strip background");
+                            let fader = ctx
+                                .read_response(egui::Id::new("fader-master"))
+                                .expect("actual console_fader response");
+                            assert!(fader.enabled());
+                            assert!(fader.rect.height() >= 89.99);
+                            assert!(strip.contains_rect(fader.rect));
+                            assert!(fader.rect.bottom() <= strip.bottom() - 58.0 + 0.01);
+                            assert!(strip.height() >= requested_h);
+                            assert!(strip.bottom() < 700.0);
+                            let texts = frame_text(&output);
+                            let expected = master_caption_text(&p);
+                            let (clip, caption) = texts
+                                .iter()
+                                .find(|(_, t)| t.galley.job.text == expected)
+                                .expect("complete actual caption galley is painted");
+                            assert!(!caption.galley.elided);
+                            assert_eq!(caption.galley.job.text, expected);
+                            let glyphs: String = caption
+                                .galley
+                                .rows
+                                .iter()
+                                .flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr))
+                                .collect();
+                            assert_eq!(
+                                glyphs, expected,
+                                "painted rows must retain every character"
+                            );
+                            for section in &caption.galley.job.sections {
+                                assert_eq!(section.format.font_id, FontId::monospace(10.5));
+                                assert_eq!(section.format.color, ACCENT);
+                            }
+                            for (row_index, row) in caption.galley.rows.iter().enumerate() {
+                                assert!(
+                                    row.rect.width() <= clip.width() + 0.01,
+                                    "caption row exceeds clip: scale={scale} requested_h={requested_h} count={count} lift={lift} has_loudness={has_loudness} chain={expected:?} row_index={row_index} row={:?} row_width={} clip={clip:?} clip_width={} wrap_width={} effective_wrap_width={} round_output={}",
+                                    row.rect,
+                                    row.rect.width(),
+                                    clip.width(),
+                                    caption.galley.job.wrap.max_width,
+                                    caption.galley.job.effective_wrap_width(),
+                                    caption.galley.job.round_output_size_to_nearest_ui_point,
+                                );
+                            }
+                            assert!(caption.pos.x >= strip.left() + 5.0 - 0.01);
+                            assert!(
+                                caption.pos.x + caption.galley.rect.right()
+                                    <= strip.right() - 5.0 + 0.01
+                            );
+                            // Caption pixels stop before LOUDNESS or the factual
+                            // SILENCE status, not just before the fader.
+                            let (_, status) = texts
+                                .iter()
+                                .find(|(_, t)| {
+                                    t.galley.job.text
+                                        == if has_loudness { "LOUDNESS" } else { "SILENCE" }
+                                })
+                                .unwrap();
+                            let caption_bottom =
+                                (caption.pos.y + caption.galley.size().y).min(clip.bottom());
+                            assert!(caption_bottom <= status.pos.y + 0.01);
+                            for (_, text) in &texts {
+                                if text.galley.job.text == "MASTER"
+                                    || text.galley.job.text.starts_with("LIFT")
+                                    || text.galley.job.text == "LOUDNESS"
+                                {
+                                    assert!(strip.expand(0.5).contains_rect(
+                                        text.galley.rect.translate(text.pos.to_vec2())
+                                    ));
+                                }
+                            }
+                            if count == 0 && !lift {
+                                assert_eq!(expected, "No master effects");
+                            }
+                            if count == 3 && !lift {
+                                assert_eq!(expected, "compressor / gain / limiter");
+                                assert!(caption.galley.rows.len() >= 2);
+                                assert!(
+                                    caption.pos.y + caption.galley.size().y <= clip.bottom() + 0.01
+                                );
+                            }
+                            if count == 90 {
+                                assert!(caption.galley.size().y > clip.height());
+                                assert!(egui::scroll_area::State::load(&ctx, scroll_id).is_some());
+                            }
+                            assert!(calls.is_empty(), "drawing must not dispatch edits");
+                            assert_eq!(serde_json::to_value(&p).unwrap(), before);
+                            assert!(!ctx.tessellate(output.shapes, scale).is_empty());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn master_caption_long_token_and_final_chain_content_are_scroll_reachable_at_2x() {
+        for scale in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+            apply_theme(&ctx);
+            ctx.set_pixels_per_point(scale);
+            // Longer than any currently serialized effect type. This exercises
+            // the real production caption widget's character-break fallback.
+            let token = "unbrokenmastereffectname".repeat(24);
+            let text = format!("compressor / {token} / gain / limiter");
+            let rect = Rect::from_min_size(Pos2::new(20.0, 20.0), Vec2::new(140.0, 28.0));
+            let mut id = egui::Id::NULL;
+            let mut output = egui::FullOutput::default();
+            for frame in 0..5 {
+                if frame == 3 {
+                    let mut state = egui::scroll_area::State::load(&ctx, id).unwrap();
+                    state.offset.y = 1_000_000.0;
+                    state.store(&ctx, id);
+                }
+                output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            Pos2::ZERO,
+                            Vec2::new(1100.0, 700.0),
+                        )),
+                        time: Some(frame as f64 / 60.0),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            id = ui
+                                .id()
+                                .with(egui::Id::new("master-caption"))
+                                .with(egui::Id::new("master-caption-scroll"));
+                            assert_eq!(master_caption_ui(ui, &text, rect), rect.height());
+                        });
+                    },
+                );
+                let texts = frame_text(&output);
+                let (clip, painted) = texts
+                    .iter()
+                    .find(|(_, t)| t.galley.job.text == text)
+                    .unwrap();
+                assert!(!painted.galley.elided);
+                let glyphs: String = painted
+                    .galley
+                    .rows
+                    .iter()
+                    .flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr))
+                    .collect();
+                assert_eq!(glyphs, text);
+                assert!(painted.galley.rows.len() > 20);
+                for (row_index, row) in painted.galley.rows.iter().enumerate() {
+                    assert!(
+                        row.rect.width() <= clip.width() + 0.01,
+                        "caption row exceeds clip: scale={scale} frame={frame} chain={text:?} row_index={row_index} row={:?} row_width={} clip={clip:?} clip_width={} wrap_width={} effective_wrap_width={} round_output={}",
+                        row.rect,
+                        row.rect.width(),
+                        clip.width(),
+                        painted.galley.job.wrap.max_width,
+                        painted.galley.job.effective_wrap_width(),
+                        painted.galley.job.round_output_size_to_nearest_ui_point,
+                    );
+                }
+                assert!(rect.expand(0.01).contains_rect(*clip));
+                if frame >= 4 {
+                    let last = painted
+                        .galley
+                        .rows
+                        .last()
+                        .unwrap()
+                        .rect
+                        .translate(painted.pos.to_vec2());
+                    assert!(
+                        clip.expand(0.5).contains_rect(last),
+                        "last row must be reachable, not elided"
+                    );
+                    assert!(egui::scroll_area::State::load(&ctx, id).unwrap().offset.y > 0.0);
+                }
+            }
+            assert!(!ctx.tessellate(output.shapes, scale).is_empty());
+        }
+    }
+
+    #[test]
+    fn overflowing_caption_leaves_real_fader_and_lift_clickable() {
+        for scale in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+            apply_theme(&ctx);
+            ctx.set_pixels_per_point(scale);
+            let mut p = caption_project(90, true);
+            p.master_volume_db = -9.0;
+            let before = serde_json::to_value(&p).unwrap();
+            let loud = crate::analysis::Loudness::default();
+            let mut calls = Vec::new();
+            let mut draw = |input| {
+                ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        // Match the actual mixer's horizontal strip parent too.
+                        ui.horizontal_top(|ui| {
+                            Studio::master_strip_ui(
+                                ui,
+                                &p,
+                                260.0,
+                                ((-20.0, -21.0), -6.0),
+                                || true,
+                                Some(&loud),
+                                &mut false,
+                                |tool, args| calls.push((tool.to_owned(), args)),
+                            );
+                        });
+                    });
+                })
+            };
+            let input = |time, events, modifiers| egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 700.0))),
+                time: Some(time),
+                events,
+                modifiers,
+                ..Default::default()
+            };
+            for frame in 0..3 {
+                draw(input(
+                    frame as f64 / 60.0,
+                    Vec::new(),
+                    egui::Modifiers::default(),
+                ));
+            }
+            let fader = ctx.read_response(egui::Id::new("fader-master")).unwrap();
+            let pos = fader.rect.center();
+            let alt = egui::Modifiers {
+                alt: true,
+                ..Default::default()
+            };
+            for (time, pressed) in [(0.1, true), (0.2, false)] {
+                draw(input(
+                    time,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: alt,
+                        },
+                    ],
+                    alt,
+                ));
+            }
+            let output = draw(input(0.3, Vec::new(), egui::Modifiers::default()));
+            let texts = frame_text(&output);
+            let (_, lift) = texts
+                .iter()
+                .find(|(_, t)| t.galley.job.text.starts_with("LIFT "))
+                .unwrap();
+            let pos = lift.galley.rect.translate(lift.pos.to_vec2()).center();
+            for (time, pressed) in [(0.4, true), (0.5, false)] {
+                draw(input(
+                    time,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::default(),
+                        },
+                    ],
+                    egui::Modifiers::default(),
+                ));
+            }
+            drop(draw);
+            assert_eq!(
+                calls,
+                vec![
+                    (
+                        "set_mixer".to_owned(),
+                        json!({"track":"master","volume_db":0.0})
+                    ),
+                    ("master_lift".to_owned(), json!({"preset":"off"})),
+                ]
+            );
+            assert_eq!(serde_json::to_value(&p).unwrap(), before);
+        }
+    }
+
     #[test]
     fn cursor_value_follows_tempo_jumps_ramps_and_constant_compatibility() {
         let mut e = crate::engine::Engine::new(std::env::temp_dir().join("automation-cursor-test"));

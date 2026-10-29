@@ -100,6 +100,52 @@ jobs:
           call add_track '{"name":"Diagnostic signal","preset":"pad","volume_db":0}'
           call add_audio_clip '{"track":"Diagnostic signal","sample":"impulses","start_beat":0,"length_s":4}'
           sha256sum shots/native-fixture/* > shots/fixture-sha256.txt
+      - name: tiny authored master-caption projects (existing JSON tools only)
+        run: |
+          python3 - <<'PYCAPTIONFIX'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          root = Path.cwd()
+          folder = root/'shots/master-caption'
+          folder.mkdir(parents=True, exist_ok=True)
+          binary = root/'target/release/beatbox'
+          chains = {'chain':['compressor','gain','limiter'], 'empty':[],
+                    'long':['parametric_eq','compressor','gain','limiter']*12}
+          inputs = {}
+          for name, chain in chains.items():
+              inputs[name] = [
+                  ['new_project', {'name':f'Authored MASTER caption {name}', 'bpm':120,
+                                   'patterns':[{'name':'A','bars':1}]}],
+                  ['remove_effect', {'track':'master','index':0}],
+                  ['remove_effect', {'track':'master','index':0}],
+                  ['add_track', {'name':'Caption tone', 'volume_db':-18,
+                                 'instrument':{'type':'synth','osc1':'sine','osc2':'sine',
+                                               'osc_mix':0.0,'unison':1,'noise_level':0.0}}],
+                  ['add_notes', {'track':'Caption tone','pattern':'A',
+                                 'notes':[{'pitch':60,'start':0,'len':16,'vel':0.4}]}],
+              ] + [['add_effect', {'track':'master','type':effect}] for effect in chain]
+          # Retain exact authored inputs. Project JSON is written only by the
+          # existing tools, never patched to manufacture a screenshot state.
+          (folder/'fixture-inputs.json').write_text(json.dumps(inputs,indent=2))
+          env=os.environ.copy()
+          env['BEATBOX_NO_LISTEN']='1'
+          with (folder/'fixture-actions.log').open('wb') as log:
+              for name, actions in inputs.items():
+                  project=folder/(name+'.json')
+                  project.unlink(missing_ok=True)
+                  for tool, args in actions:
+                      command=[str(binary),'call',tool,json.dumps(args),'--project',str(project)]
+                      log.write((json.dumps(command)+'\n').encode()); log.flush()
+                      run=subprocess.run(command,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=60)
+                      assert run.returncode==0, f'caption fixture tool failed: {name} {tool}'
+                  doc=json.loads(project.read_text())
+                  assert [e['type'] for e in doc['master_effects']]==chains[name], 'authored chain order changed'
+                  assert len(doc['tracks'])==1 and doc['patterns'][0]['bars']==1
+          hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in [folder/'fixture-inputs.json',folder/'fixture-actions.log']
+                           +[folder/(name+'.json') for name in chains]}
+          (folder/'fixture-sha256.json').write_text(json.dumps(hashes,indent=2))
+          PYCAPTIONFIX
       - name: real native audio-check scenarios and exact manifest
         run: |
           python3 - <<'PYNATIVE'
@@ -161,6 +207,18 @@ jobs:
                           row[x]=(row[x]+predictor)&255
                   pixels.update(row); previous=row
               return dims,pixels.hexdigest()
+          # The original ten ordinary screenshots remain mandatory. Decode
+          # them with the same verifier, not just a nonzero-byte existence test.
+          ordinary=[]
+          for suffix in ['sequencer','mixer','automation','playlist','browser']:
+              for variant in ['', '_melodic']:
+                  path=shots/(os.environ['SHOT_TAG']+'_'+suffix+variant+'.png')
+                  dimensions,pixels=png_stream(path)
+                  assert dimensions==(1480,920), f'ordinary screenshot dimensions: {path}'
+                  ordinary.append({'file':str(path.relative_to(shots)), 'pixels':list(dimensions),
+                                   'png_sha256':digest(path),'decoded_rgba_sha256':pixels,
+                                   'status':'captured_uninspected'})
+          assert len(ordinary)==10
           failures=[]
           for scenario,w,h,scale in cases:
               name=f'audio_{scenario}_{w}x{h}_{scale}x'
@@ -225,6 +283,84 @@ jobs:
                   row.update(status='missing_or_invalid',error=str(error))
                   manifest['missing'].append(name); failures.append(name)
               manifest['cases'].append(row); save()
+          # Ordinary screenshot mode has NO NativeCapture scale adapter.
+          # Do not use BEATBOX_AUDIO_SCALE here or claim these prove 2x captions.
+          folder=shots/'master-caption'
+          fixture_digests=json.loads((folder/'fixture-sha256.json').read_text())
+          def check_caption_fixtures():
+              assert fixture_digests=={name:digest(folder/name) for name in fixture_digests}, 'caption fixture inputs changed'
+          check_caption_fixtures()
+          caption_cases=[('chain',1480,920),('chain',1100,700),('empty',1100,700),
+                         ('long',1100,700),('long',1480,920)]
+          caption_expected=[f'master_{name}_{w}x{h}_1x.png' for name,w,h in caption_cases]
+          caption_manifest={'schema':1,'expected':caption_expected,'cases':[], 'missing':[],
+                            'fixture_sha256':fixture_digests,
+                            'checkout_sha':(shots/'build-sha.txt').read_text().strip(),
+                            'binary_sha256':digest(binary),
+                            'rustc_sha256':digest(shots/'rustc.txt'),
+                            'checkout_provenance_sha256':digest(shots/'checkout.json'),
+                            'binary_sha256_file':'../binary-sha256.txt','rustc_file':'../rustc.txt',
+                            'scale_contract':'ordinary native screenshots at 1x only',
+                            'mix_analysis':'collapsed by ordinary fresh screenshot state; visual inspection outstanding',
+                            'native_2x_caption':'UNRUN and unsupported by ordinary screenshot adapter; requires separate authority',
+                            'geometry_tests_2x':'authored; not runtime native proof',
+                            'autoplay':False,'external_mcp_proof':False,'human_inspection':'outstanding'}
+          def save_caption():
+              (folder/'manifest.json').write_text(json.dumps(caption_manifest,indent=2))
+          save_caption()
+          assert caption_manifest['binary_sha256']==(shots/'binary-sha256.txt').read_text().split()[0], 'capture binary differs from build provenance'
+          for (name,w,h),filename in zip(caption_cases,caption_expected):
+              png=folder/filename; log=png.with_suffix('.log')
+              source=folder/(name+'.json')
+              chain=[effect['type'] for effect in json.loads(source.read_text())['master_effects']]
+              png.unlink(missing_ok=True)
+              env=os.environ.copy()
+              env['BEATBOX_NO_LISTEN']='1'
+              for key in ['BEATBOX_AUDIO_SCENARIO','BEATBOX_AUDIO_SCALE','BEATBOX_NARROW_SHOT']:
+                  env.pop(key,None)
+              if w==1100: env['BEATBOX_NARROW_SHOT']='1'
+              command=['xvfb-run','-a','-s',f'-screen 0 {w}x{h}x24','timeout','110s',
+                       str(binary),'call','screenshot',
+                       json.dumps({'view':'mixer','out':str(png),'inline':False}),'--project',str(source)]
+              row={'file':filename,'command':command,'fixture':source.name,
+                   'fixture_sha256':digest(source),'chain_order':chain,
+                   'expected_pixels':[w,h],'scale':1,
+                   'environment':{'BEATBOX_NO_LISTEN':'1','BEATBOX_NARROW_SHOT':env.get('BEATBOX_NARROW_SHOT'),
+                                  'BEATBOX_AUDIO_SCENARIO':None,'BEATBOX_AUDIO_SCALE':None}}
+              try:
+                  with log.open('wb') as f:
+                      run=subprocess.run(command,env=env,stdout=f,stderr=subprocess.STDOUT,timeout=120)
+                  row['exit_code']=run.returncode
+                  assert run.returncode==0, 'caption capture process failed'
+                  assert png.is_file() and png.stat().st_size>0, 'exact caption PNG missing'
+                  dimensions,pixels=png_stream(png)
+                  assert dimensions==(w,h), 'caption pixel dimensions mismatch'
+                  row.update(status='captured_uninspected',png_sha256=digest(png),
+                             decoded_rgba_sha256=pixels,log_sha256=digest(log),pixels=list(dimensions))
+              except Exception as error:
+                  row.update(status='missing_or_invalid',error=str(error))
+                  caption_manifest['missing'].append(filename)
+              caption_manifest['cases'].append(row); save_caption()
+          check_caption_fixtures()
+          assert digest(binary)==caption_manifest['binary_sha256'], 'capture binary changed'
+          caption_required=[folder/file for file in caption_expected]
+          caption_required += [folder/file.replace('.png','.log') for file in caption_expected]
+          caption_required += [folder/file for file in ['chain.json','empty.json','long.json',
+                               'fixture-inputs.json','fixture-actions.log','fixture-sha256.json','manifest.json']]
+          assert all(path.is_file() and path.stat().st_size>0 for path in caption_required), 'caption exact required files incomplete'
+          assert len(caption_manifest['cases'])==5 and not caption_manifest['missing'], 'all five caption cases are required'
+          assert all(row['status']=='captured_uninspected' for row in caption_manifest['cases'])
+          all_pngs=[row['file'] for row in ordinary]
+          all_pngs += [name+'.png' for name in expected]
+          all_pngs += ['master-caption/'+name for name in caption_expected]
+          assert len(all_pngs)==33 and len(set(all_pngs))==33
+          assert all((shots/name).is_file() for name in all_pngs), '28 existing + 5 caption PNGs required'
+          (shots/'evidence-manifest.json').write_text(json.dumps({
+              'schema':1,'expected_pngs':all_pngs,'ordinary':ordinary,
+              'audio_manifest':'native-results-manifest.json',
+              'caption_manifest':'master-caption/manifest.json',
+              'checkout_sha':(shots/'build-sha.txt').read_text().strip(),
+              'human_inspection':'outstanding'},indent=2))
           assert fixture_hashes=={str(p.relative_to(root)):digest(p) for p in (project,fixture)}, 'fixture changed'
           required=[shots/(name+suffix) for name in expected for suffix in ['.png','.json','.log']]
           assert all(p.is_file() and p.stat().st_size>0 for p in required), 'exact required-file set incomplete'

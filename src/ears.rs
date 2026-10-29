@@ -726,6 +726,36 @@ pub fn drum_onsets(p: &Project) -> Vec<usize> {
     out
 }
 
+/// Scheduled source membership for artifact masking, not full acoustic attribution.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ArtifactOnsetScope {
+    Mix,
+    /// Resolved project index; render_track deliberately unmutes this source.
+    ExplicitTrack(usize),
+}
+
+/// Keep the legacy producer-facing drum_onsets policy separate. Routing, gain,
+/// automation and effects can still change whether a scheduled attack is heard.
+pub(crate) fn artifact_drum_onsets(p: &Project, scope: ArtifactOnsetScope) -> Vec<usize> {
+    let (events, _) = crate::render::schedule(p, &Default::default());
+    // Renderer counts even muted solos when deciding whether other tracks play.
+    let any_solo = p.tracks.iter().any(|t| t.solo);
+    let mut out = Vec::new();
+    for (i, (t, ev)) in p.tracks.iter().zip(events.iter()).enumerate() {
+        let member = match scope {
+            ArtifactOnsetScope::Mix => !t.mute && (!any_solo || t.solo),
+            ArtifactOnsetScope::ExplicitTrack(selected) => i == selected,
+        };
+        let role = crate::tools_mix::role_of(&t.name, &t.instrument);
+        if member && matches!(role, "kick" | "snare" | "hats" | "cymbal" | "perc") {
+            out.extend(ev.iter().map(|e| e.start));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// For a percussion track, the sample spans where its own hits are still
 /// sounding (onset until the voice decays below -60 dB of its peak),
 /// merged and sorted; None for tonal tracks. Used to judge a solo drum
@@ -1114,5 +1144,115 @@ mod tests {
             "{st:?}"
         );
         assert!((st[0].1 - 0.05).abs() < 0.01, "{st:?}");
+    }
+}
+
+#[cfg(test)]
+mod artifact_source_scope_tests {
+    use super::*;
+    use crate::project::{Note, TempoPoint, Track};
+
+    fn fixture() -> Project {
+        let mut p = Project::new("scoped attacks", 120.0);
+        p.patterns[0].bars = 1;
+        for (name, preset) in [("Lead", "pad"), ("Kick", "kick"), ("Snare", "snare")] {
+            p.tracks.push(Track::new(
+                name,
+                crate::instruments::preset(preset).unwrap(),
+            ));
+        }
+        p.patterns[0]
+            .notes_mut("Kick")
+            .push(Note::new(4.0, 1.0, 60, 0.8));
+        p.patterns[0]
+            .notes_mut("Snare")
+            .push(Note::new(8.0, 1.0, 60, 0.8));
+        p
+    }
+
+    #[test]
+    fn exact_foreign_mask_counterexample_and_own_positive() {
+        let mut p = fixture();
+        p.tracks[0].solo = true;
+        let mut pcm = vec![0.0; 88_200];
+        pcm[22_050] = 0.5;
+        let (events, _) = detect_artifacts(&pcm, &pcm, &ArtifactOptions::default());
+        assert!(events.iter().any(|e| e.kind == "click" && e.time_s == 0.5));
+        let mut legacy = events.clone();
+        assert_eq!(mask_drum_clicks(&mut legacy, &drum_onsets(&p), 0), 1);
+        assert!(!legacy.iter().any(|e| e.kind == "click"));
+        for scope in [
+            ArtifactOnsetScope::Mix,
+            ArtifactOnsetScope::ExplicitTrack(0),
+        ] {
+            let mut scoped = events.clone();
+            assert_eq!(
+                mask_drum_clicks(&mut scoped, &artifact_drum_onsets(&p, scope), 0),
+                0
+            );
+            assert!(scoped.iter().any(|e| e.kind == "click" && e.time_s == 0.5));
+        }
+        p.tracks[1].mute = true;
+        let mut own = events;
+        assert_eq!(
+            mask_drum_clicks(
+                &mut own,
+                &artifact_drum_onsets(&p, ArtifactOnsetScope::ExplicitTrack(1)),
+                0
+            ),
+            1
+        );
+        assert!(drum_onsets(&p).iter().all(|&at| at != 22_050));
+    }
+
+    #[test]
+    fn membership_multiple_and_muted_solos_selected_override() {
+        let mut p = fixture();
+        let mix = |p: &Project| artifact_drum_onsets(p, ArtifactOnsetScope::Mix);
+        assert_eq!(mix(&p), vec![22_050, 44_100]);
+        p.tracks[1].solo = true;
+        p.tracks[2].solo = true;
+        assert_eq!(mix(&p), vec![22_050, 44_100]);
+        p.tracks[1].mute = true;
+        assert_eq!(mix(&p), vec![44_100]);
+        p.tracks[2].solo = false;
+        assert!(mix(&p).is_empty()); // muted solo still excludes non-solos
+        assert_eq!(
+            artifact_drum_onsets(&p, ArtifactOnsetScope::ExplicitTrack(1)),
+            vec![22_050]
+        );
+        assert_eq!(
+            artifact_drum_onsets(&p, ArtifactOnsetScope::ExplicitTrack(2)),
+            vec![44_100]
+        );
+        assert!(artifact_drum_onsets(&p, ArtifactOnsetScope::ExplicitTrack(0)).is_empty());
+        assert_eq!(drum_onsets(&p), vec![44_100]); // legacy deliberately ignores solo
+    }
+
+    #[test]
+    fn scheduling_probability_tempo_duplicates_and_renamed_id() {
+        let mut p = fixture();
+        p.tracks[1].id = "t-percussion".into();
+        p.tracks[1].name = "Renamed".into();
+        let notes = p.patterns[0].clips.remove("kick").unwrap();
+        p.patterns[0].clips.insert("renamed".into(), notes.clone());
+        p.patterns[0].notes_mut("Renamed").extend(notes);
+        let mut absent = Note::new(12.0, 1.0, 60, 0.8);
+        absent.prob = 0.0;
+        p.patterns[0].notes_mut("Renamed").push(absent);
+        p.tempo_points.push(TempoPoint {
+            beat: 0.0,
+            bpm: 60.0,
+            ramp: false,
+        });
+        let ti = p.track_index("t-percussion").unwrap();
+        assert_eq!(ti, 1);
+        let (scheduled, _) = crate::render::schedule(&p, &Default::default());
+        assert_eq!(scheduled[ti].len(), 2);
+        assert_eq!(scheduled[ti][0].start, 44_100);
+        assert_eq!(
+            artifact_drum_onsets(&p, ArtifactOnsetScope::ExplicitTrack(ti)),
+            vec![44_100]
+        );
     }
 }

@@ -73,6 +73,32 @@ states this limitation in returned JSON. Per-track culprit scans use their own
 available stereo end for this context and still report their existing
 click/noise-only subset.
 
+### Scheduled percussion source policy
+
+Click masking uses bounded scheduled source membership, not full acoustic
+attribution. Whole-mix masks include percussion-role tracks satisfying the
+renderer's `!mute && (!any_solo || solo)` predicate. `any_solo` counts all
+tracks, including muted solos. Explicit track scans resolve the same project
+track index as the solo renderer and use only that track's scheduled percussion
+attacks, including its selected-unmute override. Tonal tracks contribute none.
+Each per-track culprit pass uses its own track mask, never the primary mix mask;
+the existing unmuted-track iteration and culprit time coordinates are unchanged.
+File and registered-sample scans receive no project-timeline attack masks.
+
+Existing instrument/name role heuristics, schedule probability and tempo mapping,
+sorted/deduplicated coordinates, masking margins, detector thresholds and budgets
+are unchanged. `drum_attack_transients_ignored` still counts only clicks actually
+removed from the primary report. The public legacy `drum_onsets` helper used by
+producer-facing listening remains unchanged, including its non-solo policy.
+
+This does not determine full-path audibility: bus routing/mutes, sends, faders,
+automation, sidechains and master/effect processing can change an attack's
+acoustic contribution. A scheduled coincidence is not proof of causation, and
+neither fewer findings nor `clean` is a musical-quality verdict. No renderer,
+DSP or audio-output behavior is changed. Focused authored source controls live
+in `tests/artifact_source_scope.rs`; execution and audio parity require actual
+runner evidence, not just authored assertions or unchanged source-file hashes.
+
 ### Verification boundary
 
 Focused integration fixtures live in `tests/artifact_windows.rs`; pure resolver
