@@ -577,6 +577,9 @@ fn wording_scan_covers_all_studio_production_and_new_seams() {
         "fn save_allows_leave(",
         "fn save_project_revision(",
         "impl QuitCloseState",
+        "fn persist_screenshot(",
+        "fn approve_completed_capture(",
+        "fn fail_screenshot(",
         "fn save_before_leave(",
         "fn project_has_nothing_to_render(",
         "impl eframe::App for Studio",
@@ -659,4 +662,49 @@ fn root_close_routes_through_tested_state_and_explicit_quit_approval() {
         1
     );
     assert_eq!(route.matches("ViewportCommand::Close)").count(), 1);
+}
+
+#[test]
+fn screenshot_shutdown_requires_completed_writes_and_capture_specific_approval() {
+    let studio = production_source(include_str!("mod.rs"));
+    let capture = studio.split("// screenshot automation").nth(1).unwrap();
+    let capture = capture
+        .split("fn project_has_nothing_to_render")
+        .next()
+        .unwrap();
+    assert!(capture.contains("if let Some(path) = self.screenshot.clone()"));
+    assert!(capture.contains("if let Some(img) = shot"));
+    assert!(capture.contains("let saved = persist_screenshot("));
+    assert!(capture.contains("im.save(&path).map_err(|e| e.to_string())"));
+    assert!(capture.contains("capture.manifest(&path, &self.audio_check, ctx, [w, h])"));
+    assert!(capture.contains("Ok(receipt) => receipt"));
+    assert!(
+        capture.contains(".approve_completed_capture(self.screenshot.is_some(), Some(receipt))")
+    );
+    assert_eq!(capture.matches("ViewportCommand::Close)").count(), 1);
+    assert_eq!(studio.matches(".approve_completed_capture(").count(), 1);
+    assert!(capture.find("im.save(&path)").unwrap() < capture.find("capture.manifest(").unwrap());
+    assert!(
+        capture.find("capture.manifest(").unwrap()
+            < capture.find(".approve_completed_capture(").unwrap()
+    );
+    assert!(
+        capture.find(".approve_completed_capture(").unwrap()
+            < capture.find("ViewportCommand::Close)").unwrap()
+    );
+    assert!(!capture.contains("QuitChoice::Discard"));
+    assert!(!capture.contains("saved_rev ="));
+    assert!(!capture.contains("project_path ="));
+    assert_eq!(capture.matches("fail_screenshot(").count(), 3);
+    assert!(capture.contains("Invalid screenshot pixel buffer"));
+    assert!(capture.contains("fail_screenshot(&error)"));
+    let failure = studio
+        .split("fn fail_screenshot(error: &str) -> ! {")
+        .nth(1)
+        .unwrap();
+    let failure = failure.split("\n}").next().unwrap();
+    assert!(failure.contains("eprintln!(\"screenshot FAILED: {error}\")"));
+    assert!(failure.contains("std::process::exit(1)"));
+    assert!(!failure.contains("approved_once"));
+    assert!(!failure.contains("ViewportCommand::Close"));
 }
