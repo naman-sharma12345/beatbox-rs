@@ -316,6 +316,149 @@ fn grid_scale(width: f32, bars: u32, zoom: f32) -> f32 {
     (f64::from(width) / f64::from(bars.max(1)) * f64::from(zoom)).min(f64::from(f32::MAX)) as f32
 }
 
+// Capture-only transient initialization, never native input or a project edit.
+fn reveal_view(c: &crate::project::PlaylistClip, total_bars: u32) -> PlaylistView {
+    PlaylistView {
+        scroll_bar: c.start_bar as f32,
+        scroll_lane: c.lane as f32,
+        zoom: (total_bars as f32 / (c.bars.max(1) as f32 + 2.0)).clamp(ZOOM_MIN, ZOOM_MAX),
+    }
+}
+
+pub(super) fn capture_view(
+    ctx: &egui::Context,
+    p: &Project,
+    revision: u64,
+    generation: u64,
+    case: &str,
+    id: Option<&str>,
+    initialize: bool,
+) -> Result<Value, String> {
+    if !matches!(
+        case,
+        "shared" | "independent" | "long-overview" | "long-reveal" | "tempo"
+    ) {
+        return Err("Unknown capture view selector".into());
+    }
+    let selected = if let Some(id) = id {
+        let mut clips = p.playlist.iter().filter(|c| c.id == id);
+        let c = clips.next().ok_or("Capture clip ID missing")?;
+        if clips.next().is_some() {
+            return Err("Capture clip ID duplicated".into());
+        }
+        let pi = p.pattern_index(&c.pattern).map_err(|e| e.to_string())?;
+        if p.patterns.iter().filter(|x| x.name == c.pattern).count() != 1 {
+            return Err("Capture source identity ambiguous".into());
+        }
+        let source_id = &p.patterns[pi].id;
+        if source_id.is_empty() || p.patterns.iter().filter(|x| x.id == *source_id).count() != 1 {
+            return Err("Capture source stable ID missing/ambiguous".into());
+        }
+        let shares = p
+            .playlist
+            .iter()
+            .filter(|x| p.pattern_index(&x.pattern).ok() == Some(pi))
+            .count();
+        if (case == "shared" && shares < 2) || (case == "independent" && shares != 1) {
+            return Err("Capture source sharing mismatch".into());
+        }
+        Some((c, pi, shares))
+    } else {
+        None
+    };
+    let long = matches!(case, "long-overview" | "long-reveal");
+    if (matches!(case, "shared" | "independent") || long) != selected.is_some() {
+        return Err("Capture selection requirement mismatch".into());
+    }
+    let end = p
+        .playlist
+        .iter()
+        .map(|c| c.start_bar.saturating_add(c.bars.max(1)))
+        .max()
+        .unwrap_or(0);
+    let total = end.saturating_add(8).max(16);
+    let lanes = p
+        .playlist
+        .iter()
+        .map(|c| c.lane.saturating_add(1))
+        .max()
+        .unwrap_or(0)
+        .max(3) as usize
+        + 1;
+    let mut view = PlaylistView::default();
+    if let Some((c, _, _)) = selected {
+        if long && (end < 1024 || c.lane != 19) {
+            return Err("Capture long/lane20 fixture mismatch".into());
+        }
+        if case == "long-reveal" {
+            view = reveal_view(c, total);
+        }
+        if case == "long-overview" {
+            view.scroll_lane = c.lane as f32;
+        }
+    }
+    view = view.clamped(total, lanes);
+    let owner = GridOwner {
+        revision,
+        generation,
+    };
+    let key = egui::Id::new("flpl_state");
+    if initialize {
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                key,
+                GridSel {
+                    pattern: selected.map_or(0, |(_, pi, _)| pi),
+                    clip_sel: id.map(str::to_owned),
+                    view,
+                    owner,
+                    ..Default::default()
+                },
+            )
+        });
+    }
+    let sel = ctx
+        .data(|d| d.get_temp::<GridSel>(key))
+        .ok_or("Capture view unavailable")?;
+    if sel.owner != owner
+        || sel.clip_sel.as_deref() != id
+        || sel.view != view
+        || sel.paint
+        || sel.active_drag.is_some()
+        || sel.toast.is_some()
+        || sel.swallow_release
+    {
+        return Err("Capture selection/view drift".into());
+    }
+    if !initialize && sel.geo.is_none() {
+        return Err("Capture grid has not painted".into());
+    }
+    if let Some((c, pi, _)) = selected {
+        if sel.pattern != pi {
+            return Err("Capture selected source drift".into());
+        }
+        if !initialize
+            && sel.draft.as_ref().is_none_or(|d| {
+                d.id != c.id
+                    || d.owner != owner
+                    || d.start != u64::from(c.start_bar) + 1
+                    || d.lane != u64::from(c.lane) + 1
+                    || d.length != u64::from(c.bars.max(1))
+                    || d.copies != 1
+            })
+        {
+            return Err("Capture current form not painted or draft changed".into());
+        }
+    }
+    Ok(
+        json!({"selected_id":id, "source":selected.map(|(c,pi,n)| json!({
+        "id":p.patterns[pi].id,"name":c.pattern,"index":pi,"share_count":n,"start_bar":c.start_bar,
+        "bars":c.bars,"lane":c.lane,"offset_bars":c.offset_bars})),
+        "view":{"scroll_bar":view.scroll_bar,"scroll_lane":view.scroll_lane,"zoom":view.zoom},
+        "mode":"Select", "total_bars":total, "lanes":lanes}),
+    )
+}
+
 fn guarded_grid_call(
     e: &mut crate::engine::Engine,
     owner: GridOwner,
@@ -456,10 +599,7 @@ fn clip_controls(
         tests::record_target(ui, "Reveal clip", &response);
         if response.clicked() {
             let c = selected.unwrap();
-            sel.view.scroll_bar = c.start_bar as f32;
-            sel.view.scroll_lane = c.lane as f32;
-            sel.view.zoom =
-                (total_bars as f32 / (c.bars.max(1) as f32 + 2.0)).clamp(ZOOM_MIN, ZOOM_MAX);
+            sel.view = reveal_view(c, total_bars);
         }
         let response = ui
             .add_enabled(sel.song_navigation, egui::Button::new("Go to playhead"))
@@ -1851,6 +1991,160 @@ mod tests {
             generation: e.project_load_generation,
         }
     }
+    #[test]
+    fn capture_initializer_is_view_only_and_checks_current_identity() {
+        let e = test_engine("capture");
+        let before = (
+            project_value(&e),
+            e.revision,
+            e.project_load_generation,
+            e.undo_depth(),
+        );
+        let id = e.project.playlist[0].id.as_str();
+        let ctx = egui::Context::default();
+        let initialized = capture_view(
+            &ctx,
+            &e.project,
+            e.revision,
+            e.project_load_generation,
+            "shared",
+            Some(id),
+            true,
+        )
+        .unwrap();
+        assert_eq!(initialized["source"]["share_count"], 2);
+        assert_eq!(initialized["selected_id"], id);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let key = egui::Id::new("flpl_state");
+                let mut sel = ui.data(|d| d.get_temp::<GridSel>(key)).unwrap();
+                assert!(playlist_grid(ui, &e.project, &mut sel, 0.0).is_empty());
+                ui.data_mut(|d| d.insert_temp(key, sel));
+            });
+        });
+        assert_eq!(
+            capture_view(
+                &ctx,
+                &e.project,
+                e.revision,
+                e.project_load_generation,
+                "shared",
+                Some(id),
+                false
+            )
+            .unwrap(),
+            initialized
+        );
+        assert!(capture_view(
+            &ctx,
+            &e.project,
+            e.revision + 1,
+            e.project_load_generation,
+            "shared",
+            Some(id),
+            false
+        )
+        .is_err());
+        assert!(capture_view(
+            &ctx,
+            &e.project,
+            e.revision,
+            e.project_load_generation + 1,
+            "shared",
+            Some(id),
+            false
+        )
+        .is_err());
+        assert_eq!(
+            (
+                project_value(&e),
+                e.revision,
+                e.project_load_generation,
+                e.undo_depth()
+            ),
+            before
+        );
+    }
+
+    #[test]
+    fn capture_initializer_rejects_missing_ambiguous_and_wrong_shared_sources() {
+        let e = test_engine("capture_bad");
+        let ctx = egui::Context::default();
+        let id = e.project.playlist[0].id.as_str();
+        for (case, id) in [
+            ("shared", None),
+            ("shared", Some("missing")),
+            ("independent", Some(id)),
+            ("empty", None),
+            ("long-reveal", Some(id)),
+        ] {
+            assert!(capture_view(&ctx, &e.project, 1, 1, case, id, true).is_err());
+        }
+        let mut p = e.project.clone();
+        p.playlist.push(p.playlist[0].clone());
+        assert!(capture_view(&ctx, &p, 1, 1, "shared", Some(id), true).is_err());
+        p = e.project.clone();
+        p.patterns
+            .push(p.patterns[p.pattern_index(&p.playlist[0].pattern).unwrap()].clone());
+        assert!(capture_view(&ctx, &p, 1, 1, "shared", Some(id), true).is_err());
+    }
+
+    #[test]
+    fn capture_long_views_use_production_reveal_and_keep_overview_distinct() {
+        let mut e = test_engine("capture_long");
+        let id = e.project.playlist[0].id.clone();
+        e.call(
+            "playlist_clip",
+            &json!({"action":"move","id":id,"to_bar":1022,"lane":19}),
+        )
+        .unwrap();
+        let ctx = egui::Context::default();
+        let overview = capture_view(
+            &ctx,
+            &e.project,
+            e.revision,
+            e.project_load_generation,
+            "long-overview",
+            Some(&id),
+            true,
+        )
+        .unwrap();
+        assert_eq!(overview["view"]["scroll_bar"], 0.0);
+        assert_eq!(overview["view"]["zoom"], 1.0);
+        assert_eq!(overview["view"]["scroll_lane"], 13.0);
+        let detail = capture_view(
+            &ctx,
+            &e.project,
+            e.revision,
+            e.project_load_generation,
+            "long-reveal",
+            Some(&id),
+            true,
+        )
+        .unwrap();
+        let c = e.project.playlist.iter().find(|c| c.id == id).unwrap();
+        let expected = reveal_view(c, 1032).clamped(1032, 21);
+        assert_eq!(detail["view"]["scroll_bar"], expected.scroll_bar);
+        assert_eq!(detail["view"]["zoom"], expected.zoom);
+        assert_ne!(detail["view"], overview["view"]);
+        ctx.data_mut(|d| {
+            let key = egui::Id::new("flpl_state");
+            let mut sel = d.get_temp::<GridSel>(key).unwrap();
+            sel.paint = true;
+            d.insert_temp(key, sel);
+        });
+        assert!(capture_view(
+            &ctx,
+            &e.project,
+            e.revision,
+            e.project_load_generation,
+            "long-reveal",
+            Some(&id),
+            false
+        )
+        .is_err());
+    }
+
     fn project_value(e: &Engine) -> Value {
         serde_json::to_value(&e.project).unwrap()
     }

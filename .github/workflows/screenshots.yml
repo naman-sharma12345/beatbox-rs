@@ -350,15 +350,158 @@ jobs:
           assert all(path.is_file() and path.stat().st_size>0 for path in caption_required), 'caption exact required files incomplete'
           assert len(caption_manifest['cases'])==5 and not caption_manifest['missing'], 'all five caption cases are required'
           assert all(row['status']=='captured_uninspected' for row in caption_manifest['cases'])
+          def arrangement_appearance():
+              # Arrangement appearance only, reusing this verifier and capture tool.
+              folder=shots/'arrangement'
+              folder.mkdir(exist_ok=True)
+              action_log=folder/'fixture-actions.log'
+              inputs=[]
+              fixture_env=os.environ.copy()
+              fixture_env['BEATBOX_NO_LISTEN']='1'
+              for key in ['BEATBOX_AUDIO_SCENARIO','BEATBOX_AUDIO_SCALE','BEATBOX_ARRANGEMENT_CAPTURE',
+                          'BEATBOX_ARRANGEMENT_CLIP_ID','BEATBOX_ARRANGEMENT_ACTION_HASH']:
+                  fixture_env.pop(key,None)
+              with action_log.open('wb') as log:
+                  def call(project,tool,args):
+                      inputs.append({'project':project.name,'tool':tool,'args':args})
+                      command=[str(binary),'call',tool,json.dumps(args),'--project',str(project)]
+                      log.write((json.dumps(command)+'\n').encode()); log.flush()
+                      run=subprocess.run(command,env=fixture_env,capture_output=True,timeout=60)
+                      log.write(run.stdout+run.stderr); log.flush()
+                      assert run.returncode==0, f'arrangement fixture failed: {tool}'
+                      return json.loads(run.stdout)
+                  def fresh(name,bpm=120):
+                      project=folder/(name+'.json'); project.unlink(missing_ok=True)
+                      call(project,'new_project',{'name':'Authored arrangement '+name,'bpm':bpm,
+                           'patterns':[{'name':'A','bars':1},{'name':'B','bars':1}]})
+                      for _ in range(2): call(project,'remove_effect',{'track':'master','index':0})
+                      return project
+                  def tone(project):
+                      call(project,'add_track',{'name':'Tone','volume_db':-24,
+                           'instrument':{'type':'synth','osc1':'sine','osc2':'sine','osc_mix':0.0,'unison':1,'noise_level':0.0}})
+                      for pattern,pitch in [('A',60),('B',67)]:
+                          call(project,'add_notes',{'track':'Tone','pattern':pattern,
+                               'notes':[{'pitch':pitch,'start':0,'len':4,'vel':0.4}]})
+                  shared=fresh('shared'); tone(shared)
+                  for pattern,start,lane in [('A',0,0),('A',3,1),('B',6,2)]:
+                      call(shared,'place_pattern',{'pattern':pattern,'start_bar':start,'bars':2,'lane':lane})
+                  original=json.loads(shared.read_text())
+                  selected=original['playlist'][0]
+                  selected_id=selected['id']
+                  assert selected_id and sum(c['pattern']==selected['pattern'] for c in original['playlist'])==2
+                  assert len({c['id'] for c in original['playlist']})==3
+                  independent=folder/'independent.json'
+                  shutil.copyfile(shared,independent)
+                  result=call(independent,'playlist_clip',{'action':'make_unique','id':selected_id})
+                  unique=json.loads(independent.read_text())
+                  copied=next(c for c in unique['playlist'] if c['id']==selected_id)
+                  assert copied['pattern']==result['new_pattern'] and copied['pattern']!=selected['pattern']
+                  assert {k:v for k,v in copied.items() if k!='pattern'}=={k:v for k,v in selected.items() if k!='pattern'}
+                  assert unique['playlist'][1:]==original['playlist'][1:]
+                  assert sum(c['pattern']==copied['pattern'] for c in unique['playlist'])==1
+                  source=lambda doc,name: next(p for p in doc['patterns'] if p['name']==name)
+                  assert source(unique,copied['pattern'])['clips']==source(original,selected['pattern'])['clips']
+                  long=fresh('long',400); tone(long)
+                  for start,lane in [(0,0),(1023,19)]:
+                      call(long,'place_pattern',{'pattern':'A','start_bar':start,'bars':1,'lane':lane})
+                  long_doc=json.loads(long.read_text()); distant=long_doc['playlist'][-1]['id']
+                  assert long_doc['bpm']==400 and max(c['start_bar']+c['bars'] for c in long_doc['playlist'])==1024
+                  assert long_doc['playlist'][-1]['lane']==19 and distant
+                  tempo=fresh('tempo'); tone(tempo)
+                  call(tempo,'place_pattern',{'pattern':'A','start_bar':0,'bars':8,'lane':0})
+                  call(tempo,'set_tempo',{'bpm':120})
+                  call(tempo,'add_tempo_point',{'beat':4,'bpm':60})
+                  call(tempo,'add_tempo_point',{'beat':12,'bpm':180,'ramp':True})
+                  tempo_doc=json.loads(tempo.read_text())
+                  assert tempo_doc['bpm']==120
+                  assert [(p['beat'],p['bpm'],p.get('ramp',False)) for p in tempo_doc['tempo_points']]==[(4,60,False),(12,180,True)]
+              (folder/'fixture-inputs.json').write_text(json.dumps(inputs,indent=2))
+              fixture_names=['shared','independent','long','tempo']
+              arrangement_hashes={p.name:digest(p) for p in [folder/(n+'.json') for n in fixture_names]
+                                  +[folder/'fixture-inputs.json',action_log]}
+              (folder/'fixture-sha256.json').write_text(json.dumps(arrangement_hashes,indent=2))
+              arrangement_cases=[(case,fixture,clip,w,h) for case,fixture,clip in [
+                  ('shared','shared',selected_id),
+                  ('independent','independent',selected_id),('long-overview','long',distant),
+                  ('long-reveal','long',distant),('tempo','tempo',None)] for w,h in [(1100,700)]]
+              arrangement_cases += [('shared','shared',selected_id,1480,920),('long-overview','long',distant,1480,920)]
+              arrangement_expected=[f'{c}_{w}x{h}_1x.png' for c,_,_,w,h in arrangement_cases]
+              arrangement_manifest={'expected':arrangement_expected,'cases':[],'missing':[],
+                  'fixture_sha256':arrangement_hashes,'checkout_sha':(shots/'build-sha.txt').read_text().strip(),
+                  'checkout_tree':subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip(),
+                  'binary_sha256':digest(binary),'rustc_sha256':digest(shots/'rustc.txt'),
+                  'checkout_provenance_sha256':digest(shots/'checkout.json'),
+                  'state_origin':['engine_json_prepared','capture_initialized_view','no_native_input'],
+                  'long_render_bound':'400 BPM, 1024 fixed bars = 614.4 seconds; no renderer changes; timeout remains 110 seconds',
+                  'unrun':['empty Select grid (ordinary header collapsed)','native2x','real Fit/Reveal buttons','stale draft/drag','Studio focus','ordinary Close'],
+                  'human_inspection':'outstanding'}
+              def save_arrangement():
+                  (folder/'manifest.json').write_text(json.dumps(arrangement_manifest,indent=2))
+              save_arrangement()
+              for (case,fixture,clip,w,h),filename in zip(arrangement_cases,arrangement_expected):
+                  png=folder/filename; sidecar=png.with_suffix('.json'); log=png.with_suffix('.log')
+                  for path in (png,sidecar): path.unlink(missing_ok=True)
+                  env=fixture_env.copy(); env.pop('BEATBOX_NARROW_SHOT',None)
+                  env.update(BEATBOX_ARRANGEMENT_CAPTURE=case,
+                             BEATBOX_ARRANGEMENT_ACTION_HASH=arrangement_hashes[action_log.name])
+                  if clip: env['BEATBOX_ARRANGEMENT_CLIP_ID']=clip
+                  if w==1100: env['BEATBOX_NARROW_SHOT']='1'
+                  project=folder/(fixture+'.json')
+                  row={'file':filename,'fixture':project.name,'selected_id':clip,'expected_pixels':[w,h]}
+                  command=['xvfb-run','-a','-s',f'-screen 0 {w}x{h}x24','timeout','110s',str(binary),
+                           'call','screenshot',json.dumps({'view':'playlist','out':str(png),'inline':False}),
+                           '--project',str(project)]
+                  row['command']=command
+                  try:
+                      with log.open('wb') as out:
+                          run=subprocess.run(command,env=env,stdout=out,stderr=subprocess.STDOUT,timeout=120)
+                      row['exit_code']=run.returncode
+                      assert run.returncode==0 and png.is_file() and sidecar.is_file(), 'required capture failed'
+                      dimensions,pixels=png_stream(png); doc=json.loads(sidecar.read_text())
+                      assert dimensions==(w,h) and doc['viewport_pixels']==[w,h]
+                      assert abs(doc['pixels_per_point']-1)<0.01
+                      assert all(abs(a-b)<1.1 for a,b in zip(doc['logical_viewport'],[w,h]))
+                      assert doc['selector']==case and doc['final_view_state']['selected_id']==clip
+                      assert doc['initial_view_state']==doc['final_view_state']
+                      assert doc['state_origin']==arrangement_manifest['state_origin']
+                      assert doc['playing'] is False and doc['native_input'] is False
+                      assert doc['status']=='captured_uninspected'
+                      assert doc['render_revision']==doc['revision'] and doc['render_load_generation']==doc['load_generation']
+                      if clip:
+                          actual=json.loads(project.read_text())
+                          placement=next(c for c in actual['playlist'] if c['id']==clip)
+                          pattern=source(actual,placement['pattern'])
+                          observed=doc['final_view_state']['source']
+                          assert observed['id']==pattern['id'] and observed['name']==pattern['name']
+                          assert observed['share_count']==sum(c['pattern']==placement['pattern'] for c in actual['playlist'])
+                      assert doc['build_sha']==arrangement_manifest['checkout_sha']
+                      assert doc['action_log_sha256']==arrangement_hashes[action_log.name]
+                      assert len(doc['project_serialized_sha256'])==64
+                      assert all(digest(folder/n)==v for n,v in arrangement_hashes.items()), 'fixture drift'
+                      row.update(status='captured_uninspected',png_sha256=digest(png),
+                                 sidecar_sha256=digest(sidecar),log_sha256=digest(log),decoded_rgba_sha256=pixels)
+                  except Exception as error:
+                      row.update(status='missing_or_invalid',error=str(error)); arrangement_manifest['missing'].append(filename)
+                  arrangement_manifest['cases'].append(row); save_arrangement()
+              assert len(arrangement_manifest['cases'])==7 and not arrangement_manifest['missing']
+              assert {p.name for p in folder.glob('*.png')}==set(arrangement_expected), 'unexpected/stale arrangement PNG'
+              assert all((folder/name.replace('.png',suffix)).is_file() and (folder/name.replace('.png',suffix)).stat().st_size>0
+                         for name in arrangement_expected for suffix in ['.png','.json','.log'])
+              assert digest(binary)==arrangement_manifest['binary_sha256']
+              return arrangement_expected
+          arrangement_expected=arrangement_appearance()
           all_pngs=[row['file'] for row in ordinary]
           all_pngs += [name+'.png' for name in expected]
           all_pngs += ['master-caption/'+name for name in caption_expected]
-          assert len(all_pngs)==33 and len(set(all_pngs))==33
-          assert all((shots/name).is_file() for name in all_pngs), '28 existing + 5 caption PNGs required'
+          all_pngs += ['arrangement/'+name for name in arrangement_expected]
+          assert len(all_pngs)==40 and len(set(all_pngs))==40
+          assert {str(p.relative_to(shots)) for p in shots.rglob('*.png')}==set(all_pngs), 'unexpected/stale PNG in shots tree'
+          assert all((shots/name).is_file() for name in all_pngs), '33 existing + 7 arrangement PNGs required'
           (shots/'evidence-manifest.json').write_text(json.dumps({
               'schema':1,'expected_pngs':all_pngs,'ordinary':ordinary,
               'audio_manifest':'native-results-manifest.json',
               'caption_manifest':'master-caption/manifest.json',
+              'arrangement_manifest':'arrangement/manifest.json',
               'checkout_sha':(shots/'build-sha.txt').read_text().strip(),
               'human_inspection':'outstanding'},indent=2))
           assert fixture_hashes=={str(p.relative_to(root)):digest(p) for p in (project,fixture)}, 'fixture changed'
