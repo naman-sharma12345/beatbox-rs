@@ -765,6 +765,8 @@ impl Studio {
         egui::CollapsingHeader::new("Mix analysis")
             .default_open(self.mix_readout.is_some())
             .show(ui, |ui| {
+                self.audio_check.show(ui, &self.engine);
+                ui.separator();
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Vocal Room source:");
                     let selected=p.tracks.iter().find(|t|t.id==vocal_source).map(|t|t.name.as_str()).unwrap_or("Proxy rap vocal");
