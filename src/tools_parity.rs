@@ -40,6 +40,15 @@ fn studio_screenshot(project: &Path, png: &Path, view: &str) -> Result<()> {
         .arg("--view")
         .arg(view);
     cmd.env("BEATBOX_NO_LISTEN", "1");
+    run_screenshot_command(&mut cmd, png, headless)
+}
+
+// In headless mode the collected status is xvfb-run's, not a separate GUI status.
+fn run_screenshot_command(
+    cmd: &mut std::process::Command,
+    png: &Path,
+    headless: bool,
+) -> Result<()> {
     let out = cmd.output().with_context(|| {
         if headless {
             "running xvfb-run (install xvfb for headless screenshots)".to_string()
@@ -47,14 +56,28 @@ fn studio_screenshot(project: &Path, png: &Path, view: &str) -> Result<()> {
             "starting the studio".to_string()
         }
     })?;
-    if !png.exists() {
+    let failed = !out.status.success();
+    if failed || !png.exists() {
+        // This bounds the diagnostic, not Command::output's captured buffers.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let mut chars = stderr.chars();
+        let mut diagnostic: String = chars.by_ref().take(400).collect();
+        if chars.next().is_some() {
+            diagnostic.push_str(" [truncated]");
+        } else if diagnostic.is_empty() {
+            diagnostic.push_str("<empty>");
+        }
+        if failed {
+            bail!(
+                "screenshot command failed ({}); stderr: {}",
+                out.status,
+                diagnostic
+            );
+        }
         bail!(
-            "studio did not write a screenshot (exit {:?}): {}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
-                .chars()
-                .take(400)
-                .collect::<String>()
+            "studio did not write a screenshot ({}); stderr: {}",
+            out.status,
+            diagnostic
         );
     }
     Ok(())
@@ -464,5 +487,267 @@ mod marker_transport_timing_tests {
             }
         }
         assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod screenshot_process_tests {
+    use super::run_screenshot_command;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // A valid 1x1 PNG, not just the PNG signature.
+    const PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4,
+        0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 100, 248, 15, 0, 1, 5,
+        1, 1, 39, 24, 227, 102, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            for _ in 0..64 {
+                let path = std::env::temp_dir().join(format!(
+                    "beatbox-shot-status-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => panic!("scratch directory: {e}"),
+                }
+            }
+            panic!("could not allocate a unique scratch directory");
+        }
+        fn png(&self) -> PathBuf {
+            self.0.join("shot.png")
+        }
+        fn child(&self, mode: &str) -> Command {
+            let mut cmd = Command::new(std::env::current_exe().unwrap());
+            cmd.args([
+                "--exact",
+                "tools_parity::screenshot_process_tests::screenshot_child_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("BEATBOX_SCREENSHOT_TEST_CHILD", mode)
+            .env("BEATBOX_SCREENSHOT_TEST_DIR", &self.0);
+            cmd
+        }
+        fn run(&self, mode: &str) -> anyhow::Result<()> {
+            run_screenshot_command(&mut self.child(mode), &self.png(), false)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // Added 2026-10-29: adds one ignored fixture per feature campaign, not a
+    // missing GUI acceptance test. Only the exact child invocation executes it.
+    #[test]
+    #[ignore = "child-only fixture for screenshot command tests"]
+    fn screenshot_child_fixture() {
+        let Ok(mode) = std::env::var("BEATBOX_SCREENSHOT_TEST_CHILD") else {
+            return;
+        };
+        let dir = PathBuf::from(std::env::var_os("BEATBOX_SCREENSHOT_TEST_DIR").unwrap());
+        assert!(dir.is_absolute() && dir.is_dir());
+        if matches!(mode.as_str(), "success_png" | "nonzero_png") {
+            std::fs::write(dir.join("shot.png"), PNG).unwrap();
+        }
+        let (stdout, stderr) = match mode.as_str() {
+            "success_png" | "nonzero_png" | "success_missing" | "nonzero_missing" => (
+                b"stdout-must-stay-private".to_vec(),
+                b"fixture diagnostic".to_vec(),
+            ),
+            "empty" => (Vec::new(), Vec::new()),
+            "lossy" => {
+                let mut bytes = vec![0xff];
+                bytes.extend("界".repeat(405).as_bytes());
+                (b"stdout-must-stay-private".to_vec(), bytes)
+            }
+            "streams" => (vec![b'o'; 128 * 1024], vec![b'e'; 128 * 1024]),
+            other => panic!("unknown child fixture mode: {other}"),
+        };
+        std::io::stdout().write_all(&stdout).unwrap();
+        std::io::stdout().flush().unwrap();
+        std::io::stderr().write_all(&stderr).unwrap();
+        std::io::stderr().flush().unwrap();
+        std::process::exit(if mode.starts_with("success_") { 0 } else { 23 });
+    }
+
+    fn assert_failure(error: &anyhow::Error) {
+        let text = error.to_string();
+        assert!(text.starts_with("screenshot command failed ("), "{text}");
+        assert!(text.contains("23"), "{text}");
+        assert!(!text.contains("stdout-must-stay-private"), "{text}");
+        assert!(!text.contains("did not write"), "{text}");
+    }
+    #[test]
+    fn screenshot_child_success_with_png() {
+        let scratch = Scratch::new();
+        scratch.run("success_png").unwrap();
+        assert_eq!(std::fs::read(scratch.png()).unwrap(), PNG);
+    }
+    #[test]
+    fn screenshot_child_nonzero_with_png_is_error() {
+        let scratch = Scratch::new();
+        let status = scratch.child("nonzero_png").output().unwrap().status;
+        std::fs::remove_file(scratch.png()).unwrap();
+        assert!(!scratch.png().exists());
+        let error = scratch.run("nonzero_png").unwrap_err();
+        assert_failure(&error);
+        assert!(error
+            .to_string()
+            .starts_with(&format!("screenshot command failed ({status}); stderr: ")));
+        assert!(error.to_string().contains("; stderr: fixture diagnostic"));
+        assert_eq!(std::fs::read(scratch.png()).unwrap(), PNG);
+    }
+    #[test]
+    fn screenshot_child_nonzero_with_preexisting_png_is_error() {
+        let scratch = Scratch::new();
+        std::fs::write(scratch.png(), PNG).unwrap();
+        assert_failure(&scratch.run("nonzero_missing").unwrap_err());
+        assert_eq!(std::fs::read(scratch.png()).unwrap(), PNG);
+    }
+    #[test]
+    fn screenshot_child_success_without_png_is_error() {
+        let scratch = Scratch::new();
+        let text = scratch.run("success_missing").unwrap_err().to_string();
+        assert!(
+            text.starts_with("studio did not write a screenshot ("),
+            "{text}"
+        );
+        assert!(text.contains("; stderr: fixture diagnostic"));
+        assert!(!scratch.png().exists());
+    }
+    #[test]
+    fn screenshot_child_nonzero_without_png_is_error() {
+        let scratch = Scratch::new();
+        assert_failure(&scratch.run("nonzero_missing").unwrap_err());
+        assert!(!scratch.png().exists());
+    }
+    #[test]
+    fn screenshot_child_stderr_is_lossy_bounded_and_labelled() {
+        let scratch = Scratch::new();
+        let error = scratch.run("lossy").unwrap_err();
+        assert_failure(&error);
+        let text = error.to_string();
+        let diagnostic = text.split_once("; stderr: ").unwrap().1;
+        assert_eq!(
+            diagnostic,
+            format!("\u{fffd}{} [truncated]", "界".repeat(399))
+        );
+    }
+    #[test]
+    fn screenshot_child_empty_stderr_is_labelled() {
+        let scratch = Scratch::new();
+        let error = scratch.run("empty").unwrap_err();
+        assert_failure(&error);
+        assert!(error.to_string().ends_with("; stderr: <empty>"));
+    }
+    #[test]
+    fn screenshot_child_spawn_error_keeps_context() {
+        let scratch = Scratch::new();
+        for (headless, context) in [
+            (false, "starting the studio"),
+            (
+                true,
+                "running xvfb-run (install xvfb for headless screenshots)",
+            ),
+        ] {
+            let mut cmd = Command::new(scratch.0.join("absent-executable"));
+            let error = run_screenshot_command(&mut cmd, &scratch.png(), headless).unwrap_err();
+            assert_eq!(error.to_string(), context);
+            assert!(error.chain().count() >= 2);
+        }
+    }
+    #[test]
+    fn screenshot_child_collects_both_modest_streams() {
+        let scratch = Scratch::new();
+        let error = scratch.run("streams").unwrap_err();
+        assert_failure(&error);
+        assert_eq!(
+            error.to_string().split_once("; stderr: ").unwrap().1,
+            format!("{} [truncated]", "e".repeat(400))
+        );
+    }
+}
+
+#[cfg(test)]
+mod screenshot_contract_tests {
+    #[test]
+    fn screenshot_schema_is_unchanged() {
+        let tool = super::tools()
+            .into_iter()
+            .find(|t| t.name == "screenshot")
+            .unwrap();
+        assert!(!tool.mutates);
+        assert_eq!(
+            (tool.schema)(),
+            super::obj(
+                serde_json::json!({
+                    "view": {"type": "string", "enum": ["sequencer", "mixer", "automation", "playlist", "vocal", "browser"], "description": "default sequencer"},
+                    "out": {"type": "string", "description": "PNG path (default renders/screenshot_<view>.png)"},
+                    "inline": {"type": "boolean", "description": "Return the image block (default true)"},
+                }),
+                &[]
+            )
+        );
+    }
+    #[test]
+    fn screenshot_source_preserves_routing_cleanup_and_success_contract() {
+        let source = include_str!("tools_parity.rs");
+        let wrapper = source
+            .split("fn studio_screenshot(")
+            .nth(1)
+            .unwrap()
+            .split("fn run_screenshot_command(")
+            .next()
+            .unwrap();
+        for part in [
+            "cmd.arg(\"studio\")",
+            ".arg(project)",
+            ".arg(\"--screenshot\")",
+            ".arg(png)",
+            ".arg(\"--view\")",
+            ".arg(view)",
+            "cmd.env(\"BEATBOX_NO_LISTEN\", \"1\")",
+            "run_screenshot_command(&mut cmd, png, headless)",
+        ] {
+            assert!(wrapper.contains(part), "{part}");
+        }
+        let helper = source
+            .split("fn run_screenshot_command(")
+            .nth(1)
+            .unwrap()
+            .split("fn perf_state(")
+            .next()
+            .unwrap();
+        assert!(
+            helper.find("!out.status.success()").unwrap() < helper.find("!png.exists()").unwrap()
+        );
+        let handler = source
+            .split("name: \"screenshot\"")
+            .nth(1)
+            .unwrap()
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(handler.find("remove_file(&proj)").unwrap() < handler.find("r?;").unwrap());
+        for part in [
+            "media::png_dims(&png)?",
+            "json!({\"path\": out, \"view\": view, \"width\": w, \"height\": h})",
+            "media::link_block(&out, \"image/png\")",
+            "media::image_block(&png)",
+            "media::attach(&mut v, blocks)",
+        ] {
+            assert!(handler.contains(part), "{part}");
+        }
     }
 }
