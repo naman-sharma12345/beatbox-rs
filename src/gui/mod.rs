@@ -115,7 +115,8 @@ struct QuitCloseState {
     approved_once: bool,
 }
 
-// Only the quit dialog may grant approval; ordinary saves are not approval.
+// Dialog choices grant approval; completed screenshot capture has its own receipt.
+// Ordinary saves and capture environment settings are not approval.
 enum QuitChoice {
     Save(bool),
     Discard,
@@ -138,12 +139,44 @@ impl QuitCloseState {
         false
     }
 
+    /// Only opted-in capture with all required writes completed may close unsaved.
+    fn approve_completed_capture(
+        &mut self,
+        screenshot_mode: bool,
+        receipt: Option<ScreenshotPersisted>,
+    ) -> bool {
+        if !screenshot_mode || receipt.is_none() {
+            return false;
+        }
+        self.pending = false;
+        self.approved_once = true;
+        true
+    }
+
     /// Return whether to emit Close, with a permit for its resulting event.
     fn resolve(&mut self, choice: QuitChoice) -> bool {
         self.pending = false;
         self.approved_once = matches!(choice, QuitChoice::Save(true) | QuitChoice::Discard);
         self.approved_once
     }
+}
+
+/// Created only after the PNG and any required companion manifest were written.
+struct ScreenshotPersisted;
+
+fn persist_screenshot(
+    write_png: impl FnOnce() -> Result<(), String>,
+    write_manifest: impl FnOnce() -> Result<(), String>,
+) -> Result<ScreenshotPersisted, String> {
+    write_png()?;
+    write_manifest()?;
+    Ok(ScreenshotPersisted)
+}
+
+/// Capture failures must not request a guarded Close or report successful exit.
+fn fail_screenshot(error: &str) -> ! {
+    eprintln!("screenshot FAILED: {error}");
+    std::process::exit(1)
 }
 
 /// Called while the caller holds the engine lock, including revision capture.
@@ -2433,9 +2466,7 @@ impl eframe::App for Studio {
                 ) {
                     Ok(ready) => ready,
                     Err(error) => {
-                        eprintln!("audio-native FAILED: {error}");
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        false
+                        fail_screenshot(&format!("audio-native: {error}"));
                     }
                 }
             } else {
@@ -2456,33 +2487,44 @@ impl eframe::App for Studio {
             });
             if let Some(img) = shot {
                 if self.native_capture.is_some() && (!scenario_ready || !self.shot_requested) {
-                    eprintln!(
-                        "audio-native FAILED: terminal state changed before viewport capture"
-                    );
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    return;
+                    fail_screenshot("audio-native: terminal state changed before viewport capture");
                 }
                 let [w, h] = img.size;
                 let mut buf = Vec::with_capacity(w * h * 4);
                 for px in &img.pixels {
                     buf.extend_from_slice(&px.to_array());
                 }
-                if let Some(im) = image::RgbaImage::from_raw(w as u32, h as u32, buf) {
-                    let saved = im.save(&path).map_err(|e| e.to_string()).and_then(|_| {
+                let saved = persist_screenshot(
+                    || {
+                        let im = image::RgbaImage::from_raw(w as u32, h as u32, buf)
+                            .ok_or_else(|| "Invalid screenshot pixel buffer".to_string())?;
+                        im.save(&path).map_err(|e| e.to_string())
+                    },
+                    || {
                         if let Some(capture) = &self.native_capture {
                             capture.manifest(&path, &self.audio_check, ctx, [w, h])
                         } else {
                             Ok(())
                         }
-                    });
-                    if let Err(error) = saved {
+                    },
+                );
+                let receipt = match saved {
+                    Ok(receipt) => receipt,
+                    Err(error) => {
                         let _ = std::fs::remove_file(&path);
-                        eprintln!("screenshot FAILED: {error}");
-                    } else {
-                        eprintln!("screenshot saved to {}", path.display());
+                        fail_screenshot(&error);
                     }
+                };
+                if self
+                    .quit_close
+                    .approve_completed_capture(self.screenshot.is_some(), Some(receipt))
+                {
+                    eprintln!(
+                        "screenshot saved to {}; capture complete, closing",
+                        path.display()
+                    );
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(
@@ -2499,6 +2541,73 @@ fn project_has_nothing_to_render(p: &crate::project::Project) -> bool {
         && p.playlist.is_empty()
         && p.audio_clips.is_empty()
         && p.vocal_map.is_none()
+}
+
+#[cfg(test)]
+mod capture_shutdown_tests {
+    use super::{persist_screenshot, QuitCloseState};
+    use std::cell::Cell;
+
+    #[test]
+    fn completed_capture_permits_one_dirty_close_without_claiming_saved() {
+        for pending in [false, true] {
+            let mut quit = QuitCloseState {
+                pending,
+                approved_once: false,
+            };
+            let receipt = persist_screenshot(|| Ok(()), || Ok(())).unwrap();
+            assert!(quit.approve_completed_capture(true, Some(receipt)));
+            assert!(!quit.pending);
+            assert!(!quit.incoming_close(false, true));
+            assert!(quit.approved_once, "no event must retain approval");
+            assert!(!quit.incoming_close(true, true));
+            assert!(!quit.approved_once);
+            assert!(quit.incoming_close(true, true));
+        }
+    }
+
+    #[test]
+    fn ordinary_mode_and_missing_receipt_never_authorize_close() {
+        for screenshot_mode in [false, true] {
+            let mut quit = QuitCloseState::default();
+            assert!(!quit.approve_completed_capture(screenshot_mode, None));
+            assert!(quit.incoming_close(true, true));
+            assert!(quit.pending);
+            assert!(!quit.approved_once);
+        }
+        let mut quit = QuitCloseState::default();
+        let receipt = persist_screenshot(|| Ok(()), || Ok(())).unwrap();
+        assert!(!quit.approve_completed_capture(false, Some(receipt)));
+        assert!(quit.incoming_close(true, true));
+    }
+
+    #[test]
+    fn failed_png_or_partial_manifest_cannot_supply_a_receipt() {
+        let manifest_called = Cell::new(false);
+        let result = persist_screenshot(
+            || Err("PNG write failed".into()),
+            || {
+                manifest_called.set(true);
+                Ok(())
+            },
+        );
+        assert!(!manifest_called.get());
+        assert_eq!(result.err().as_deref(), Some("PNG write failed"));
+        let png_written = Cell::new(false);
+        let result = persist_screenshot(
+            || {
+                png_written.set(true);
+                Ok(())
+            },
+            || Err("JSON write failed after PNG".into()),
+        );
+        assert!(png_written.get());
+        assert!(result.is_err());
+        let mut quit = QuitCloseState::default();
+        assert!(!quit.approve_completed_capture(true, result.ok()));
+        assert!(quit.incoming_close(true, true));
+        assert!(!quit.approved_once);
+    }
 }
 
 #[cfg(test)]
