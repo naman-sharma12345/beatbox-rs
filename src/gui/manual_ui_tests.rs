@@ -698,7 +698,13 @@ fn screenshot_shutdown_requires_completed_writes_and_capture_specific_approval()
     assert!(!capture.contains("QuitChoice::Discard"));
     assert!(!capture.contains("saved_rev ="));
     assert!(!capture.contains("project_path ="));
-    assert_eq!(capture.matches("fail_screenshot(").count(), 3);
+    assert_eq!(capture.matches("fail_screenshot(").count(), 6);
+    assert!(capture.contains(
+        ".check(self, ctx)\n                    .unwrap_or_else(|e| fail_screenshot(&e))"
+    ));
+    assert!(capture.contains("fail_screenshot(\"Arrangement render generation mismatch\")"));
+    assert!(capture
+        .contains("fail_screenshot(\"Arrangement capture not requested or render not ready\")"));
     assert!(capture.contains("Invalid screenshot pixel buffer"));
     assert!(capture.contains("fail_screenshot(&error)"));
     let failure = studio
