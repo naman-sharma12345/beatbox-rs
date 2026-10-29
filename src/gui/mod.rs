@@ -98,32 +98,30 @@ impl PerfRec {
     }
 }
 
-/// Follow the revision guard already used by New/Open/Quit prompts.
+/// Fileless projects need protection even before their first edit.
+fn needs_leave_warning(has_file: bool, revision: u64, saved_revision: u64) -> bool {
+    !has_file || revision != saved_revision
+}
+
+/// A matching revision alone cannot turn a failed save into permission to leave.
+fn save_allows_leave(saved: bool, has_file: bool, revision: u64, saved_revision: u64) -> bool {
+    saved && !needs_leave_warning(has_file, revision, saved_revision)
+}
+
+/// Called while the caller holds the engine lock, including revision capture.
+fn save_project_revision(engine: &mut Engine, path: &std::path::Path) -> anyhow::Result<u64> {
+    engine.call_from("save_project", &json!({"path": path}), "you")?;
+    Ok(engine.revision)
+}
+
+/// Describe the same file/revision state used by New/Open/Quit prompts.
 fn save_state(has_file: bool, revision: u64, saved_revision: u64) -> &'static str {
     if !has_file {
         "Not saved"
-    } else if revision != saved_revision {
+    } else if needs_leave_warning(has_file, revision, saved_revision) {
         "Unsaved changes"
     } else {
         "Saved"
-    }
-}
-
-#[cfg(test)]
-mod save_state_tests {
-    use super::save_state;
-    #[test]
-    fn file_required_before_claiming_saved() {
-        assert_eq!(save_state(false, 0, 0), "Not saved");
-        assert_eq!(save_state(false, 9, 2), "Not saved");
-    }
-    #[test]
-    fn edits_follow_existing_revision_guard() {
-        assert_eq!(save_state(true, 2, 2), "Saved");
-        assert_eq!(save_state(true, 3, 2), "Unsaved changes");
-        assert_eq!(save_state(true, 3, 3), "Saved");
-        // Undo can also advance revisions: do not promise content equality.
-        assert_eq!(save_state(true, 4, 3), "Unsaved changes");
     }
 }
 
@@ -939,11 +937,22 @@ impl Studio {
         };
         match &self.project_path {
             Some(path) => format!("Save project ({key})\n{}", self.engine.lock().unwrap().resolve(&path.to_string_lossy()).display()),
-            None => format!("Save project ({key})\nNo project file yet. First Save creates a new .beatbox.json file without overwriting another beat."),
+            None => format!("Save project ({key})\nNo project file yet. First Save creates a new Beatbox project file without overwriting another beat."),
         }
     }
 
-    fn save(&mut self) {
+    fn needs_leave_warning(&self) -> bool {
+        let revision = self.engine.lock().unwrap().revision;
+        needs_leave_warning(self.project_path.is_some(), revision, self.saved_rev)
+    }
+
+    fn save_before_leave(&mut self) -> bool {
+        let saved = self.save();
+        let revision = self.engine.lock().unwrap().revision;
+        save_allows_leave(saved, self.project_path.is_some(), revision, self.saved_rev)
+    }
+
+    fn save(&mut self) -> bool {
         // A project without a file gets a name nobody is using yet, so the first
         // Save can never overwrite another beat in the folder.
         let eng = self.engine.clone();
@@ -956,16 +965,16 @@ impl Studio {
             }
             p
         });
-        let result =
-            self.engine
-                .lock()
-                .unwrap()
-                .call_from("save_project", &json!({"path": path}), "you");
+        let result = {
+            let mut engine = self.engine.lock().unwrap();
+            save_project_revision(&mut engine, &path)
+        };
         match result {
-            Ok(_) => {
+            Ok(written_revision) => {
                 self.project_path = Some(path.clone());
-                self.saved_rev = self.engine.lock().unwrap().revision;
+                self.saved_rev = written_revision;
                 self.toast = Some((format!("Saved {}", path.display()), 0.0, true));
+                true
             }
             Err(e) => {
                 self.toast = Some((
@@ -975,7 +984,8 @@ impl Studio {
                     ),
                     0.0,
                     false,
-                ))
+                ));
+                false
             }
         }
     }
@@ -1112,7 +1122,9 @@ impl Studio {
             }
             Action::Undo => self.call("undo", json!({})),
             Action::Redo => self.call("redo", json!({})),
-            Action::Save => self.save(),
+            Action::Save => {
+                self.save();
+            }
             Action::Render => self.render_wav(),
             Action::View(v) => {
                 if v < VIEWS.len() {
@@ -1315,7 +1327,7 @@ impl Studio {
                                 .on_hover_text("Start an empty beat. Undo brings the previous one back.")
                                 .clicked()
                             {
-                                if self.engine.lock().unwrap().revision != self.saved_rev {
+                                if self.needs_leave_warning() {
                                     self.confirm_new = true;
                                 } else {
                                     self.start_new_project();
@@ -2130,7 +2142,7 @@ impl eframe::App for Studio {
         // closing the window with unsaved edits asks first
         if ctx.input(|i| i.viewport().close_requested())
             && !self.confirm_quit
-            && self.engine.lock().unwrap().revision != self.saved_rev
+            && self.needs_leave_warning()
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm_quit = true;
@@ -2159,8 +2171,7 @@ impl eframe::App for Studio {
                 });
             match action {
                 1 => {
-                    self.save();
-                    if self.engine.lock().unwrap().revision == self.saved_rev {
+                    if self.save_before_leave() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     } else {
                         self.confirm_quit = false;
@@ -2203,7 +2214,7 @@ impl eframe::App for Studio {
             }
             if let Some(f) = pick {
                 self.open_list = false;
-                if self.engine.lock().unwrap().revision != self.saved_rev {
+                if self.needs_leave_warning() {
                     self.pending_open = Some(f);
                 } else {
                     self.open_project_file(f);
@@ -2234,9 +2245,9 @@ impl eframe::App for Studio {
                 });
             match action {
                 1 => {
-                    self.save();
+                    let saved = self.save_before_leave();
                     self.pending_open = None;
-                    if self.engine.lock().unwrap().revision == self.saved_rev {
+                    if saved {
                         self.open_project_file(target);
                     }
                 }
@@ -2272,9 +2283,8 @@ impl eframe::App for Studio {
                 });
             match action {
                 1 => {
-                    self.save();
-                    // only continue if the save went through
-                    if self.engine.lock().unwrap().revision == self.saved_rev {
+                    // Only continue after this save succeeds with no later edit.
+                    if self.save_before_leave() {
                         self.confirm_new = false;
                         self.start_new_project();
                     } else {
@@ -2446,9 +2456,6 @@ impl eframe::App for Studio {
     }
 }
 
-#[cfg(test)]
-mod manual_ui_tests;
-
 /// True only when no pattern, arrangement section, playlist clip, audio clip
 /// or vocal map exists, so a render could only produce silence.
 fn project_has_nothing_to_render(p: &crate::project::Project) -> bool {
@@ -2458,6 +2465,151 @@ fn project_has_nothing_to_render(p: &crate::project::Project) -> bool {
         && p.audio_clips.is_empty()
         && p.vocal_map.is_none()
 }
+
+#[cfg(test)]
+mod save_state_tests {
+    use super::save_state;
+    #[test]
+    fn file_required_before_claiming_saved() {
+        assert_eq!(save_state(false, 0, 0), "Not saved");
+        assert_eq!(save_state(false, 9, 2), "Not saved");
+    }
+    #[test]
+    fn edits_follow_existing_revision_guard() {
+        assert_eq!(save_state(true, 2, 2), "Saved");
+        assert_eq!(save_state(true, 3, 2), "Unsaved changes");
+        assert_eq!(save_state(true, 3, 3), "Saved");
+        // Undo can also advance revisions: do not promise content equality.
+        assert_eq!(save_state(true, 4, 3), "Unsaved changes");
+    }
+}
+
+#[cfg(test)]
+mod unsaved_guard_tests {
+    use super::{needs_leave_warning, save_allows_leave};
+
+    #[test]
+    fn fileless_equal_revision_needs_warning_for_every_leave_action() {
+        // These are the shared predicates called by New, Open and OS Close.
+        for revision in [0, 9, u64::MAX] {
+            assert!(needs_leave_warning(false, revision, revision));
+            assert!(!save_allows_leave(true, false, revision, revision));
+            assert!(!needs_leave_warning(true, revision, revision));
+        }
+        assert!(needs_leave_warning(true, 10, 9));
+        assert!(needs_leave_warning(true, 8, 9));
+    }
+
+    #[test]
+    fn failed_attempt_blocks_leave_even_when_numeric_revisions_match() {
+        let failing_save = || -> Result<u64, &'static str> { Err("write failed") };
+        let result = failing_save();
+        assert!(!save_allows_leave(result.is_ok(), true, 9, 9));
+        assert!(!save_allows_leave(result.is_ok(), false, 9, 9));
+    }
+
+    #[test]
+    fn success_allows_only_the_captured_revision_not_a_later_edit() {
+        let written_revision = 9;
+        assert!(save_allows_leave(true, true, 9, written_revision));
+        // An edit observed after releasing the save lock is still dirty.
+        assert!(needs_leave_warning(true, 10, written_revision));
+        assert!(!save_allows_leave(true, true, 10, written_revision));
+    }
+}
+
+// Real-engine temporary-I/O coverage. Requires the normal crate test build;
+// the lightweight extracted predicate harness does not execute this module.
+#[cfg(test)]
+mod save_revision_io_tests {
+    use super::*;
+
+    struct TempProject(PathBuf);
+    impl TempProject {
+        fn new() -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "beatbox-unsaved-guard-{}-{unique}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for TempProject {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn actual_save_captures_locked_revision_and_later_edit_stays_dirty() {
+        let dir = TempProject::new();
+        let engine = Mutex::new(Engine::new(dir.0.clone()));
+        let (written, project) = {
+            let mut held = engine.lock().unwrap();
+            held.call_from("set_tempo", &json!({"bpm": 97}), "you")
+                .unwrap();
+            let expected = held.revision;
+            let project = held.project.clone();
+            let written =
+                save_project_revision(&mut held, std::path::Path::new("saved.beatbox.json"))
+                    .unwrap();
+            assert_eq!(written, expected);
+            assert_eq!(held.revision, expected);
+            (written, project)
+        };
+        let mut reloaded = Engine::new(dir.0.clone());
+        reloaded
+            .call_from(
+                "load_project",
+                &json!({"path": "saved.beatbox.json"}),
+                "you",
+            )
+            .unwrap();
+        assert_eq!(reloaded.project, project);
+        let mut held = engine.lock().unwrap();
+        held.call_from("set_tempo", &json!({"bpm": 101}), "you")
+            .unwrap();
+        assert!(needs_leave_warning(true, held.revision, written));
+        assert!(!save_allows_leave(true, true, held.revision, written));
+    }
+
+    #[test]
+    fn actual_failure_beneath_regular_file_never_allows_equal_revision_leave() {
+        let dir = TempProject::new();
+        let mut engine = Engine::new(dir.0.clone());
+        let saved_revision =
+            save_project_revision(&mut engine, std::path::Path::new("saved.beatbox.json")).unwrap();
+        let project = engine.project.clone();
+        let bytes = std::fs::read(dir.0.join("saved.beatbox.json")).unwrap();
+        std::fs::write(dir.0.join("blocked"), b"regular file, not a directory").unwrap();
+        let result = save_project_revision(&mut engine, &dir.0.join("blocked/child.beatbox.json"));
+        assert!(result.is_err());
+        assert_eq!(engine.revision, saved_revision);
+        assert_eq!(engine.project, project);
+        assert!(!save_allows_leave(
+            result.is_ok(),
+            true,
+            engine.revision,
+            saved_revision
+        ));
+        assert_eq!(
+            std::fs::read(dir.0.join("saved.beatbox.json")).unwrap(),
+            bytes
+        );
+        assert_eq!(
+            std::fs::read(dir.0.join("blocked")).unwrap(),
+            b"regular file, not a directory"
+        );
+    }
+}
+
+#[cfg(test)]
+mod manual_ui_tests;
 
 #[cfg(test)]
 mod playback_cursor_tests {

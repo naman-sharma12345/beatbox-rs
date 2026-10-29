@@ -501,14 +501,17 @@ fn piano_drag_uses_press_origin_before_hit_testing() {
 #[test]
 fn save_success_feedback_is_guarded_by_tool_result() {
     let studio = include_str!("mod.rs");
-    let save = studio.split("fn save(&mut self) {").nth(1).unwrap();
+    let save = studio.split("fn save(&mut self) -> bool {").nth(1).unwrap();
     let save = save.split("fn render_wav").next().unwrap();
     // only this function: the next one (open) has its own Ok/Err arms
     let save = save.split("\n    fn ").next().unwrap();
     assert!(save.contains("match result"));
-    let success = save.split("Ok(_) => {").nth(1).unwrap();
+    let success = save.split("Ok(written_revision) => {").nth(1).unwrap();
     let success = success.split("Err(e) =>").next().unwrap();
     assert!(success.contains("self.project_path = Some(path.clone())"));
+    assert!(success.contains("self.saved_rev = written_revision"));
+    assert!(!success.contains("lock()"));
+    assert!(save.contains("save_project_revision(&mut engine, &path)"));
     assert!(success.contains("format!(\"Saved {}\""));
     // the failure toast names the file and shows the real error, and never
     // reports success (the last argument, `true`, only appears under Ok)
@@ -544,4 +547,72 @@ fn wording_scan_covers_audio_check_production_labels() {
             "production label not scanned: {label}"
         );
     }
+}
+
+#[test]
+fn leave_actions_use_shared_file_and_save_guards() {
+    let studio = production_source(include_str!("mod.rs"));
+    // New, selected Open and OS Close all ask the same live-state predicate.
+    assert_eq!(studio.matches("self.needs_leave_warning()").count(), 3);
+    // Their Save-first actions all gate continuation on this attempt's result.
+    assert_eq!(studio.matches("self.save_before_leave()").count(), 3);
+    let guard = studio
+        .split("fn save_before_leave(&mut self)")
+        .nth(1)
+        .unwrap();
+    let guard = guard.split("\n    fn ").next().unwrap();
+    assert!(guard.contains("let saved = self.save()"));
+    assert!(guard.contains(
+        "save_allows_leave(saved, self.project_path.is_some(), revision, self.saved_rev)"
+    ));
+    assert!(!studio.contains("revision == self.saved_rev"));
+}
+
+#[test]
+fn wording_scan_covers_all_studio_production_and_new_seams() {
+    let studio = include_str!("mod.rs");
+    let production = production_source(studio);
+    for seam in [
+        "fn needs_leave_warning(",
+        "fn save_allows_leave(",
+        "fn save_project_revision(",
+        "fn save_before_leave(",
+        "fn project_has_nothing_to_render(",
+        "impl eframe::App for Studio",
+    ] {
+        assert!(production.contains(seam), "unscanned production: {seam}");
+    }
+    let scanned = literals(production);
+    for label in [
+        "Not saved",
+        "Saved",
+        "Save, then quit",
+        "Save, then open",
+        "Save, then start new",
+        "Cancel",
+        "Discard changes",
+    ] {
+        assert!(
+            scanned.iter().any(|(_, lit)| lit == label),
+            "unscanned label: {label}"
+        );
+    }
+    // There must not be another production island after the first test module.
+    let tests = &studio[production.len()..];
+    assert!(!tests.contains("impl Studio"));
+    assert!(!tests.contains("impl eframe::App"));
+    assert!(!tests.contains("fn project_has_nothing_to_render("));
+}
+
+#[test]
+fn leave_dialogs_keep_cancel_discard_and_undo_paths() {
+    let studio = production_source(include_str!("mod.rs"));
+    assert!(studio.contains("3 => self.confirm_quit = false"));
+    assert!(studio.contains("3 => self.pending_open = None"));
+    assert!(studio.contains("3 => self.confirm_new = false"));
+    assert!(studio.contains("2 => {\n                    self.pending_open = None;\n                    self.open_project_file(target);"));
+    assert!(studio.contains("2 => {\n                    self.confirm_new = false;\n                    self.start_new_project();"));
+    assert!(studio.contains("Undo brings the previous one back."));
+    assert!(studio.contains("Undo only works until you close the app."));
+    assert!(studio.contains("Action::Undo => self.call(\"undo\", json!({}))"));
 }
