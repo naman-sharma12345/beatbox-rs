@@ -1948,7 +1948,7 @@ mod tests {
                     let mut args = args.clone();
                     args["op"] = args["action"].take();
                     args["action"] = json!("playlist_clip");
-                    guarded_grid_call(&mut e, r.sel.owner, "timeline", &args).unwrap()
+                    guarded_grid_call(&mut e, r.sel.owner, "arrange", &args).unwrap()
                 } else {
                     guarded_grid_call(&mut e, r.sel.owner, tool, args).unwrap()
                 };
