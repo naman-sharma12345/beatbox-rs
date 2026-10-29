@@ -453,7 +453,13 @@ pub fn tools() -> Vec<Tool> {
                 let label = if is_mix { label } else { "file".to_string() };
                 let source_end_checked = s1 == n;
                 // drum attacks are transients, not clicks: scan deeper, then mask them
-                let onsets = if is_mix || s_opt(a, "track").is_some() { ears::drum_onsets(&p) } else { Vec::new() };
+                let onsets = if let Some(t) = s_opt(a, "track") {
+                    ears::artifact_drum_onsets(&p, ears::ArtifactOnsetScope::ExplicitTrack(p.track_index(&t)?))
+                } else if is_mix {
+                    ears::artifact_drum_onsets(&p, ears::ArtifactOnsetScope::Mix)
+                } else {
+                    Vec::new()
+                };
                 let wide = ArtifactOptions { max_events: o.max_events.checked_mul(8).ok_or_else(|| anyhow!("max_events overflow"))?, ..o };
                 let (mut events, bed) = ears::detect_artifacts(&l[s0..s1], &r[s0..s1], &wide);
                 artifact_endpoint_context(&mut events, source_end_checked);
@@ -483,7 +489,8 @@ pub fn tools() -> Vec<Tool> {
                                 }
                             }
                         }
-                        ears::mask_drum_clicks(&mut ev, &onsets, b0);
+                        let own_onsets = ears::artifact_drum_onsets(&p, ears::ArtifactOnsetScope::ExplicitTrack(p.track_index(&t)?));
+                        ears::mask_drum_clicks(&mut ev, &own_onsets, b0);
                         let mut nc = 0;
                         ev.retain(|x| x.kind != "click" || { nc += 1; nc <= o.max_events });
                         let worst: Vec<_> = ev.into_iter().filter(|x| x.kind == "noise_bed" || x.kind == "click").collect();
