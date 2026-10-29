@@ -576,6 +576,7 @@ fn wording_scan_covers_all_studio_production_and_new_seams() {
         "fn needs_leave_warning(",
         "fn save_allows_leave(",
         "fn save_project_revision(",
+        "impl QuitCloseState",
         "fn save_before_leave(",
         "fn project_has_nothing_to_render(",
         "impl eframe::App for Studio",
@@ -607,7 +608,7 @@ fn wording_scan_covers_all_studio_production_and_new_seams() {
 #[test]
 fn leave_dialogs_keep_cancel_discard_and_undo_paths() {
     let studio = production_source(include_str!("mod.rs"));
-    assert!(studio.contains("3 => self.confirm_quit = false"));
+    assert!(studio.contains("3 => Some(QuitChoice::Cancel)"));
     assert!(studio.contains("3 => self.pending_open = None"));
     assert!(studio.contains("3 => self.confirm_new = false"));
     assert!(studio.contains("2 => {\n                    self.pending_open = None;\n                    self.open_project_file(target);"));
@@ -615,4 +616,47 @@ fn leave_dialogs_keep_cancel_discard_and_undo_paths() {
     assert!(studio.contains("Undo brings the previous one back."));
     assert!(studio.contains("Undo only works until you close the app."));
     assert!(studio.contains("Action::Undo => self.call(\"undo\", json!({}))"));
+}
+
+#[test]
+fn root_close_routes_through_tested_state_and_explicit_quit_approval() {
+    let studio = production_source(include_str!("mod.rs"));
+    assert!(studio.contains("quit_close: QuitCloseState"));
+    assert!(studio.contains("quit_close: QuitCloseState::default()"));
+    let route = studio
+        .split("let close_requested = ctx.input")
+        .nth(1)
+        .unwrap();
+    let route = route.split("if self.open_list {").next().unwrap();
+    assert!(route.contains("i.viewport().close_requested()"));
+    assert!(route.contains("let needs_warning = self.needs_leave_warning()"));
+    let compact: String = route.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(compact.contains("ifself.quit_close.incoming_close(close_requested,needs_warning){ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose)"));
+    assert!(route.contains("if self.quit_close.pending {"));
+    assert!(route.contains("1 => Some(QuitChoice::Save(self.save_before_leave()))"));
+    assert!(route.contains("2 => Some(QuitChoice::Discard)"));
+    assert!(route.contains("3 => Some(QuitChoice::Cancel)"));
+    assert!(route.contains("if self.quit_close.resolve(choice) {\n                    ctx.send_viewport_cmd(egui::ViewportCommand::Close)"));
+    assert!(!route.contains("saved_rev ="));
+    // New/Open keep independent questions and cannot grant quit approval.
+    let new = studio.split(".button(\"New project\")").nth(1).unwrap();
+    let new = new.split(".button(\"Open project...\")").next().unwrap();
+    assert!(new.contains("self.confirm_new = true"));
+    assert!(!new.contains("quit_close"));
+    let open = studio.split("if let Some(f) = pick {").nth(1).unwrap();
+    let open = open.split("if let Some(target)").next().unwrap();
+    assert!(open.contains("self.pending_open = Some(f)"));
+    assert!(!open.contains("quit_close"));
+    assert!(!route.contains("self.confirm_new"));
+    assert!(!route.contains("self.pending_open"));
+    assert!(!studio.contains("confirm_quit"));
+    assert_eq!(studio.matches("self.quit_close.resolve(").count(), 1);
+    let compact_studio: String = studio.chars().filter(|c| !c.is_whitespace()).collect();
+    assert_eq!(
+        compact_studio
+            .matches("self.quit_close.incoming_close(")
+            .count(),
+        1
+    );
+    assert_eq!(route.matches("ViewportCommand::Close)").count(), 1);
 }
