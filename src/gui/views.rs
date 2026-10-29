@@ -260,8 +260,11 @@ fn master_caption_text(p: &Project) -> String {
 fn master_caption_galley(ui: &egui::Ui, text: &str, width: f32) -> std::sync::Arc<egui::Galley> {
     // egui prefers word/separator boundaries, falling back to characters for
     // oversized tokens. Unlimited rows preserve every character.
-    let job =
+    let mut job =
         egui::text::LayoutJob::simple(text.to_owned(), FontId::monospace(10.5), ACCENT, width);
+    // The caption clip is a hard width limit. Default output rounding lets
+    // epaint wrap rows up to 0.5 UI points wider than the requested width.
+    job.round_output_size_to_nearest_ui_point = false;
     ui.fonts(|fonts| fonts.layout_job(job))
 }
 
@@ -2186,8 +2189,17 @@ mod automation_cursor_tests {
                                 assert_eq!(section.format.font_id, FontId::monospace(10.5));
                                 assert_eq!(section.format.color, ACCENT);
                             }
-                            for row in &caption.galley.rows {
-                                assert!(row.rect.width() <= clip.width() + 0.01);
+                            for (row_index, row) in caption.galley.rows.iter().enumerate() {
+                                assert!(
+                                    row.rect.width() <= clip.width() + 0.01,
+                                    "caption row exceeds clip: scale={scale} requested_h={requested_h} count={count} lift={lift} has_loudness={has_loudness} chain={expected:?} row_index={row_index} row={:?} row_width={} clip={clip:?} clip_width={} wrap_width={} effective_wrap_width={} round_output={}",
+                                    row.rect,
+                                    row.rect.width(),
+                                    clip.width(),
+                                    caption.galley.job.wrap.max_width,
+                                    caption.galley.job.effective_wrap_width(),
+                                    caption.galley.job.round_output_size_to_nearest_ui_point,
+                                );
                             }
                             assert!(caption.pos.x >= strip.left() + 5.0 - 0.01);
                             assert!(
@@ -2292,11 +2304,18 @@ mod automation_cursor_tests {
                     .collect();
                 assert_eq!(glyphs, text);
                 assert!(painted.galley.rows.len() > 20);
-                assert!(painted
-                    .galley
-                    .rows
-                    .iter()
-                    .all(|r| r.rect.width() <= clip.width() + 0.01));
+                for (row_index, row) in painted.galley.rows.iter().enumerate() {
+                    assert!(
+                        row.rect.width() <= clip.width() + 0.01,
+                        "caption row exceeds clip: scale={scale} frame={frame} chain={text:?} row_index={row_index} row={:?} row_width={} clip={clip:?} clip_width={} wrap_width={} effective_wrap_width={} round_output={}",
+                        row.rect,
+                        row.rect.width(),
+                        clip.width(),
+                        painted.galley.job.wrap.max_width,
+                        painted.galley.job.effective_wrap_width(),
+                        painted.galley.job.round_output_size_to_nearest_ui_point,
+                    );
+                }
                 assert!(rect.expand(0.01).contains_rect(*clip));
                 if frame >= 4 {
                     let last = painted
