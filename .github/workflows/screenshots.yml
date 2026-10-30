@@ -400,7 +400,28 @@ jobs:
                   assert unique['playlist'][1:]==original['playlist'][1:]
                   assert sum(c['pattern']==copied['pattern'] for c in unique['playlist'])==1
                   source=lambda doc,name: next(p for p in doc['patterns'] if p['name']==name)
-                  assert source(unique,copied['pattern'])['clips']==source(original,selected['pattern'])['clips']
+                  original_pattern=source(original,selected['pattern'])
+                  copied_pattern=source(unique,copied['pattern'])
+                  # Only authored note identity changes; retain every other payload key.
+                  def note_payloads(clips):
+                      return {track:[{k:v for k,v in note.items() if k!='id'} for note in notes]
+                              for track,notes in clips.items()}
+                  assert note_payloads(copied_pattern['clips'])==note_payloads(original_pattern['clips'])
+                  assert {k:v for k,v in copied_pattern.items() if k not in ('id','name','clips')}=={
+                      k:v for k,v in original_pattern.items() if k not in ('id','name','clips')}
+                  assert source(unique,selected['pattern'])==original_pattern
+                  assert unique['tracks']==original['tracks']
+                  pattern_id=copied_pattern.get('id')
+                  assert isinstance(pattern_id,str) and pattern_id.strip()
+                  assert pattern_id not in {p.get('id') for p in original['patterns']}
+                  assert sum(p.get('id')==pattern_id for p in unique['patterns'])==1
+                  copied_ids=[n.get('id') for notes in copied_pattern['clips'].values() for n in notes]
+                  assert all(isinstance(n,str) and n.strip() for n in copied_ids)
+                  assert len(copied_ids)==len(set(copied_ids))
+                  # Generated pl: sections may omit ids or repeat source note ids.
+                  original_ids={n.get('id') for p in original['patterns']
+                                for notes in p['clips'].values() for n in notes if n.get('id')}
+                  assert not set(copied_ids)&original_ids
                   long=fresh('long',400); tone(long)
                   for start,lane in [(0,0),(1023,19)]:
                       call(long,'place_pattern',{'pattern':'A','start_bar':start,'bars':1,'lane':lane})
@@ -432,7 +453,7 @@ jobs:
                   'binary_sha256':digest(binary),'rustc_sha256':digest(shots/'rustc.txt'),
                   'checkout_provenance_sha256':digest(shots/'checkout.json'),
                   'state_origin':['engine_json_prepared','capture_initialized_view','no_native_input'],
-                  'long_render_bound':'400 BPM, 1024 fixed bars = 614.4 seconds; no renderer changes; timeout remains 110 seconds',
+                  'long_render_bound':'400 BPM; playlist extent 1024 bars for GUI Fit/Reveal; existing compiler clamps sections to 1+64+1=66 bars (39.6 seconds musical body, source-derived, not measured); not 1024-bar audio acceptance; timeout remains 110 seconds; no renderer changes',
                   'unrun':['empty Select grid (ordinary header collapsed)','native2x','real Fit/Reveal buttons','stale draft/drag','Studio focus','ordinary Close'],
                   'human_inspection':'outstanding'}
               def save_arrangement():
