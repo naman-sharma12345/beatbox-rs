@@ -60,13 +60,17 @@ fn run_screenshot_command(
     if failed || !png.exists() {
         // This bounds the diagnostic, not Command::output's captured buffers.
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let mut chars = stderr.chars();
-        let mut diagnostic: String = chars.by_ref().take(400).collect();
-        if chars.next().is_some() {
-            diagnostic.push_str(" [truncated]");
-        } else if diagnostic.is_empty() {
-            diagnostic.push_str("<empty>");
-        }
+        let count = stderr.chars().count();
+        let diagnostic = if count == 0 {
+            "<empty>".to_string()
+        } else if count <= 1600 {
+            stderr.into_owned()
+        } else {
+            let mut diagnostic: String = stderr.chars().take(400).collect();
+            diagnostic.push_str(&format!("\n[omitted {} stderr characters]\n", count - 1600));
+            diagnostic.extend(stderr.chars().skip(count - 1200));
+            diagnostic
+        };
         if failed {
             bail!(
                 "screenshot command failed ({}); stderr: {}",
@@ -557,7 +561,10 @@ mod screenshot_process_tests {
         };
         let dir = PathBuf::from(std::env::var_os("BEATBOX_SCREENSHOT_TEST_DIR").unwrap());
         assert!(dir.is_absolute() && dir.is_dir());
-        if matches!(mode.as_str(), "success_png" | "nonzero_png") {
+        if matches!(
+            mode.as_str(),
+            "success_png" | "nonzero_png" | "nonzero_long_png"
+        ) {
             std::fs::write(dir.join("shot.png"), PNG).unwrap();
         }
         let (stdout, stderr) = match mode.as_str() {
@@ -571,6 +578,22 @@ mod screenshot_process_tests {
                 bytes.extend("界".repeat(405).as_bytes());
                 (b"stdout-must-stay-private".to_vec(), bytes)
             }
+            mode if mode.starts_with("boundary_") => {
+                let count: usize = mode.strip_prefix("boundary_").unwrap().parse().unwrap();
+                (
+                    b"stdout-must-stay-private".to_vec(),
+                    "界".repeat(count).into_bytes(),
+                )
+            }
+            "long" | "success_long_missing" | "nonzero_long_png" | "middle_only" => {
+                let (head, middle, tail) = long_stderr_regions(mode == "middle_only");
+                let mut bytes = head.into_bytes();
+                bytes.extend(middle.as_bytes());
+                // One malformed byte decodes to one replacement scalar in the omitted middle.
+                bytes.push(0xff);
+                bytes.extend(tail.as_bytes());
+                (b"stdout-must-stay-private".to_vec(), bytes)
+            }
             "streams" => (vec![b'o'; 128 * 1024], vec![b'e'; 128 * 1024]),
             other => panic!("unknown child fixture mode: {other}"),
         };
@@ -579,6 +602,22 @@ mod screenshot_process_tests {
         std::io::stderr().write_all(&stderr).unwrap();
         std::io::stderr().flush().unwrap();
         std::process::exit(if mode.starts_with("success_") { 0 } else { 23 });
+    }
+
+    fn long_stderr_regions(middle_only: bool) -> (String, String, String) {
+        let reason = "screenshot FAILED: synthetic terminal reason";
+        let head = "界🙂".repeat(200);
+        let middle = if middle_only {
+            "screenshot FAILED: middle-only-synthetic"
+        } else {
+            "omitted-middle-private"
+        };
+        let tail = if middle_only {
+            "終🙂".repeat(600)
+        } else {
+            format!("{}{}", "終".repeat(1200 - reason.chars().count()), reason)
+        };
+        (head, middle.to_string(), tail)
     }
 
     fn assert_failure(error: &anyhow::Error) {
@@ -639,10 +678,7 @@ mod screenshot_process_tests {
         assert_failure(&error);
         let text = error.to_string();
         let diagnostic = text.split_once("; stderr: ").unwrap().1;
-        assert_eq!(
-            diagnostic,
-            format!("\u{fffd}{} [truncated]", "界".repeat(399))
-        );
+        assert_eq!(diagnostic, format!("\u{fffd}{}", "界".repeat(405)));
     }
     #[test]
     fn screenshot_child_empty_stderr_is_labelled() {
@@ -672,10 +708,76 @@ mod screenshot_process_tests {
         let scratch = Scratch::new();
         let error = scratch.run("streams").unwrap_err();
         assert_failure(&error);
+        assert!(!error.to_string().contains(&"o".repeat(400)));
         assert_eq!(
             error.to_string().split_once("; stderr: ").unwrap().1,
-            format!("{} [truncated]", "e".repeat(400))
+            format!(
+                "{}\n[omitted 129472 stderr characters]\n{}",
+                "e".repeat(400),
+                "e".repeat(1200)
+            )
         );
+    }
+    #[test]
+    fn screenshot_child_stderr_scalar_boundaries() {
+        for count in [0, 399, 400, 401, 1599, 1600, 1601] {
+            let scratch = Scratch::new();
+            let error = scratch.run(&format!("boundary_{count}")).unwrap_err();
+            assert_failure(&error);
+            let text = error.to_string();
+            let diagnostic = text.split_once("; stderr: ").unwrap().1;
+            let expected = match count {
+                0 => "<empty>".to_string(),
+                1601 => format!(
+                    "{}\n[omitted 1 stderr characters]\n{}",
+                    "界".repeat(400),
+                    "界".repeat(1200)
+                ),
+                _ => "界".repeat(count),
+            };
+            assert_eq!(diagnostic, expected, "scalar count {count}");
+            assert!(!diagnostic.contains("screenshot FAILED"));
+        }
+    }
+
+    #[test]
+    fn screenshot_child_long_stderr_keeps_head_tail_not_middle_or_stdout() {
+        for mode in [
+            "long",
+            "success_long_missing",
+            "nonzero_long_png",
+            "middle_only",
+        ] {
+            let scratch = Scratch::new();
+            let error = scratch.run(mode).unwrap_err();
+            let text = error.to_string();
+            if mode == "success_long_missing" {
+                assert!(text.starts_with("studio did not write a screenshot ("));
+            } else {
+                assert_failure(&error);
+            }
+            let (head, middle, tail) = long_stderr_regions(mode == "middle_only");
+            let diagnostic = text.split_once("; stderr: ").unwrap().1;
+            assert_eq!(
+                diagnostic,
+                format!(
+                    "{head}\n[omitted {} stderr characters]\n{tail}",
+                    middle.chars().count() + 1
+                )
+            );
+            assert!(!diagnostic.contains(&middle));
+            assert!(!text.contains("stdout-must-stay-private"));
+            assert!(!diagnostic.contains('\u{fffd}'));
+            assert_eq!(
+                diagnostic.contains("screenshot FAILED:"),
+                mode != "middle_only"
+            );
+            if mode == "nonzero_long_png" {
+                assert_eq!(std::fs::read(scratch.png()).unwrap(), PNG);
+            } else {
+                assert!(!scratch.png().exists());
+            }
+        }
     }
 }
 
