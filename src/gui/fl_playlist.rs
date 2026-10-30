@@ -173,6 +173,56 @@ impl GridGeo {
     }
 }
 
+// Drawing density only: never changes GridGeo, snapping or clip rectangles.
+fn drawing_stride(bar_px: f32, minimum_px: f32, minimum_bars: u32) -> u32 {
+    let mut stride = minimum_bars;
+    if !bar_px.is_finite() || bar_px <= 0.0 || !minimum_px.is_finite() {
+        return 1 << 31;
+    }
+    while (stride as f64) * (bar_px as f64) < minimum_px.max(0.0) as f64 && stride < (1 << 31) {
+        stride *= 2;
+    }
+    stride
+}
+
+/// Fully visible bar anchor plus globally aligned musical labels. Width is
+/// measured with the actual ruler font; reserve a gap and avoid clipped ends.
+fn ruler_bars(scroll: f32, end: f32, bar_px: f32, width: f32) -> Vec<u32> {
+    if !scroll.is_finite()
+        || !end.is_finite()
+        || !bar_px.is_finite()
+        || !width.is_finite()
+        || scroll < 0.0
+        || end < scroll
+        || bar_px <= 0.0
+        || width < 0.0
+    {
+        return Vec::new();
+    }
+    let first = scroll.ceil() as u32;
+    let last = end.floor() as u32;
+    let stride = drawing_stride(bar_px, width + 12.0, 4) as u64;
+    let mut bars = Vec::new();
+    let fits = |b: u32| ((end as f64) - b as f64) * bar_px as f64 >= width as f64 + 3.0;
+    if first > last || !fits(first) {
+        return bars;
+    }
+    bars.push(first);
+    let first_multiple = (first as u64 / stride + 1) * stride;
+    // Bounded even for pathological extents/scales; calculations cannot wrap.
+    for b in (first_multiple..=last as u64)
+        .step_by(stride as usize)
+        .take(2047)
+    {
+        let bar = b as u32;
+        let previous = *bars.last().unwrap();
+        if (bar - previous) as f64 * bar_px as f64 >= (width + 12.0) as f64 && fits(bar) {
+            bars.push(bar);
+        }
+    }
+    bars
+}
+
 /// Where a clip lands after a drag of `d` points: whole bars and lanes,
 /// clamped so it never starts before bar 0, never sits on a lane past the
 /// last track (`lanes - 1`) and is never shorter than one grid step (one
@@ -836,37 +886,41 @@ pub fn playlist_grid(
     );
     let b0 = geo.bar_at(grid.min.x).floor().max(0.0) as u32;
     let b1 = geo.bar_at(grid.max.x).ceil().max(0.0) as u32;
-    let label_every = if bar_px >= 12.0 {
-        4
-    } else if bar_px >= 6.0 {
-        8
-    } else {
-        16
-    };
-    let stride = ((b1.saturating_sub(b0)) / 1024).max(1);
-    for b in (b0..=b1).step_by(stride as usize) {
+    let ruler_font = FontId::monospace(9.5);
+    let digits = b1.saturating_add(1).to_string().len();
+    let label_width = ruler
+        .layout_no_wrap("8".repeat(digits), ruler_font.clone(), DIM)
+        .size()
+        .x;
+    // Below eight points per line, omit minor bars rather than draw a mesh.
+    let grid_stride = drawing_stride(bar_px, 8.0, 1);
+    let major_stride = drawing_stride(bar_px, 32.0, 4);
+    let first_line = (b0 as u64).div_ceil(grid_stride as u64) * grid_stride as u64;
+    for b in (first_line..=b1 as u64)
+        .step_by(grid_stride as usize)
+        .take(2048)
+    {
         let x = geo.x_of(b as f32);
-        let major = b % 4 == 0;
         gp.line_segment(
             [pos2(x, grid.min.y), pos2(x, grid.max.y)],
             Stroke::new(
                 1.0_f32,
-                if major {
+                if b % major_stride as u64 == 0 {
                     super::theme::Tokens::DARK.bar_line
                 } else {
                     super::theme::Tokens::DARK.grid_line
                 },
             ),
         );
-        if b % label_every == 0 {
-            ruler.text(
-                pos2(x + 3.0, full.min.y + RULER_H * 0.5),
-                Align2::LEFT_CENTER,
-                (b + 1).to_string(),
-                FontId::monospace(9.5),
-                DIM,
-            );
-        }
+    }
+    for b in ruler_bars(view.scroll_bar, geo.bar_at(grid.max.x), bar_px, label_width) {
+        ruler.text(
+            pos2(geo.x_of(b as f32) + 3.0, full.min.y + RULER_H * 0.5),
+            Align2::LEFT_CENTER,
+            b.saturating_add(1).to_string(),
+            ruler_font.clone(),
+            DIM,
+        );
     }
     // lanes in view
     let l0 = view.scroll_lane.floor().max(0.0) as usize;
@@ -2925,5 +2979,84 @@ mod tests {
         let g = r.sel.geo.unwrap();
         r.click(pos2(g.x_of(5.5), g.y_of(1.0) + 14.0));
         assert!(r.calls.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ruler_density_tests {
+    use super::{drawing_stride, egui, ruler_bars};
+
+    #[test]
+    fn compact_and_wide_1024_extent_labels_do_not_overlap() {
+        for pixels in [944.0_f32, 1324.0] {
+            // Actual initialized grid includes eight bars of padding.
+            for extent in [1024.0_f32, 1032.0] {
+                let px = pixels / extent;
+                let labels = ruler_bars(0.0, extent, px, 29.0);
+                assert_eq!(labels[0], 0);
+                assert!(labels.len() >= 8 && labels.len() < 40);
+                for pair in labels.windows(2) {
+                    assert!((pair[1] - pair[0]) as f32 * px >= 41.0);
+                }
+                let stride = drawing_stride(px, 41.0, 4);
+                assert!(stride.is_power_of_two());
+                assert!(labels[1..].iter().all(|b| b % stride == 0));
+                let grid = drawing_stride(px, 8.0, 1);
+                assert!(grid.is_power_of_two() && grid as f32 * px >= 8.0);
+            }
+        }
+    }
+
+    #[test]
+    fn short_normal_and_reveal_keep_bar_coordinates_and_anchor() {
+        assert_eq!(ruler_bars(0.0, 16.0, 59.0, 12.0), vec![0, 4, 8, 12]);
+        assert_eq!(drawing_stride(59.0, 8.0, 1), 1);
+        assert_eq!(ruler_bars(1023.0, 1026.0, 314.0, 29.0), vec![1023, 1024]);
+        let labels = ruler_bars(1023.25, 1039.25, 59.0, 29.0);
+        assert_eq!(labels[0], 1024);
+        for b in labels {
+            let x = (b as f32 - 1023.25) * 59.0;
+            assert!(x >= 0.0);
+            assert!((1023.25 + x / 59.0 - b as f32).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn drawing_density_never_moves_grid_or_clip_coordinates() {
+        for (scroll, px, end) in [(0.0, 944.0 / 1032.0, 1032.0), (1023.0, 314.0, 1026.0)] {
+            let geo = super::GridGeo {
+                grid: egui::Rect::from_min_max(egui::pos2(126.0, 482.0), egui::pos2(1070.0, 706.0)),
+                bar_px: px,
+                scroll_bar: scroll,
+                scroll_lane: 13.0,
+            };
+            let before = geo;
+            let clip_x = geo.x_of(1023.0);
+            let clip_y = geo.y_of(19.0);
+            let _labels = ruler_bars(scroll, end, px, 29.0);
+            let _stride = drawing_stride(px, 8.0, 1);
+            assert_eq!(geo, before);
+            assert_eq!(geo.x_of(1023.0), clip_x);
+            assert_eq!(geo.y_of(19.0), clip_y);
+            assert!((geo.bar_at(clip_x) - 1023.0).abs() < 0.001);
+            assert_eq!(geo.lane_at(clip_y), 19.0);
+        }
+    }
+
+    #[test]
+    fn density_invalid_floats_and_extreme_ranges_are_bounded() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(ruler_bars(bad, 16.0, 59.0, 29.0).is_empty());
+            assert!(ruler_bars(0.0, bad, 59.0, 29.0).is_empty());
+            assert!(ruler_bars(0.0, 16.0, bad, 29.0).is_empty());
+            assert!(ruler_bars(0.0, 16.0, 59.0, bad).is_empty());
+            assert_eq!(drawing_stride(bad, 8.0, 1), 1 << 31);
+        }
+        assert!(ruler_bars(0.0, 16.0, 0.0, 29.0).is_empty());
+        assert!(ruler_bars(0.0, 16.0, -1.0, 29.0).is_empty());
+        assert!(ruler_bars(0.0, 16.0, 59.0, -1.0).is_empty());
+        assert!(ruler_bars(0.0, 0.01, 1.0, 29.0).is_empty());
+        assert!(ruler_bars(0.0, u32::MAX as f32, 1.0, 0.0).len() <= 2048);
+        assert_eq!(drawing_stride(f32::MIN_POSITIVE, 8.0, 1), 1 << 31);
     }
 }
