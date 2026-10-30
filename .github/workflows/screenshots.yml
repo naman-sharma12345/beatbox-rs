@@ -422,11 +422,13 @@ jobs:
                   original_ids={n.get('id') for p in original['patterns']
                                 for notes in p['clips'].values() for n in notes if n.get('id')}
                   assert not set(copied_ids)&original_ids
-                  long=fresh('long',400); tone(long)
+                  long=fresh('long',300); tone(long)
                   for start,lane in [(0,0),(1023,19)]:
                       call(long,'place_pattern',{'pattern':'A','start_bar':start,'bars':1,'lane':lane})
                   long_doc=json.loads(long.read_text()); distant=long_doc['playlist'][-1]['id']
-                  assert long_doc['bpm']==400 and max(c['start_bar']+c['bars'] for c in long_doc['playlist'])==1024
+                  assert long_doc['bpm']==300 and 40 <= long_doc['bpm'] <= 300, 'long fixture must match current UI BPM range 40..300'
+                  assert (1+64+1)*4*60/long_doc['bpm']==52.8, '66-bar musical body is source-derived, not measured'
+                  assert max(c['start_bar']+c['bars'] for c in long_doc['playlist'])==1024
                   assert long_doc['playlist'][-1]['lane']==19 and distant
                   tempo=fresh('tempo'); tone(tempo)
                   call(tempo,'place_pattern',{'pattern':'A','start_bar':0,'bars':8,'lane':0})
@@ -453,7 +455,7 @@ jobs:
                   'binary_sha256':digest(binary),'rustc_sha256':digest(shots/'rustc.txt'),
                   'checkout_provenance_sha256':digest(shots/'checkout.json'),
                   'state_origin':['engine_json_prepared','capture_initialized_view','no_native_input'],
-                  'long_render_bound':'400 BPM; playlist extent 1024 bars for GUI Fit/Reveal; existing compiler clamps sections to 1+64+1=66 bars (39.6 seconds musical body, source-derived, not measured); not 1024-bar audio acceptance; timeout remains 110 seconds; no renderer changes',
+                  'long_render_bound':'300 BPM; playlist extent 1024 bars for GUI Fit/Reveal; existing compiler clamps sections to 1+64+1=66 bars (52.8 seconds musical body, source-derived, not measured); not 1024-bar audio acceptance; timeout remains 110 seconds; no renderer changes',
                   'unrun':['empty Select grid (ordinary header collapsed)','native2x','real Fit/Reveal buttons','stale draft/drag','Studio focus','ordinary Close'],
                   'human_inspection':'outstanding'}
               def save_arrangement():
