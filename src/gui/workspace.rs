@@ -415,7 +415,7 @@ impl TabViewer for Viewer<'_> {
                     }
                     Pane::Mixer => s.mixer(ui, p),
                     Pane::Rack => s.rack_view(ui, p, self.rev),
-                    Pane::Playlist => s.playlist_view(ui, p),
+                    Pane::Playlist => s.playlist_view(ui, p, self.rev),
                     Pane::Automation | Pane::Vocal | Pane::Browser => {
                         egui::ScrollArea::vertical()
                             .id_salt("content")

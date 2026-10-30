@@ -2,13 +2,15 @@
 //! beatbox-rs is fully manual ... The whole beatbox-rs should be
 //! controllable through mcp." These checks keep it that way.
 
-const SOURCES: [(&str, &str); 19] = [
+const SOURCES: [(&str, &str); 21] = [
     ("analyze_view.rs", include_str!("analyze_view.rs")),
     ("audio_check.rs", include_str!("audio_check.rs")),
     ("browser_view.rs", include_str!("browser_view.rs")),
     ("channel_rack.rs", include_str!("channel_rack.rs")),
     ("console.rs", include_str!("console.rs")),
     ("export_view.rs", include_str!("export_view.rs")),
+    ("fl_playlist.rs", include_str!("fl_playlist.rs")),
+    ("fl_automation.rs", include_str!("fl_automation.rs")),
     ("mod.rs", include_str!("mod.rs")),
     ("piano.rs", include_str!("piano.rs")),
     ("player.rs", include_str!("player.rs")),
@@ -76,7 +78,8 @@ fn is_ident(s: &str) -> bool {
 
 // This prefix rule requires all production code to precede the final test module.
 fn production_source(src: &str) -> &str {
-    src.split("#[cfg(test)]").next().unwrap_or(src)
+    // Inline cfg(test) response hooks do not end the production source.
+    src.split("\n#[cfg(test)]").next().unwrap_or(src)
 }
 
 #[test]
@@ -695,7 +698,13 @@ fn screenshot_shutdown_requires_completed_writes_and_capture_specific_approval()
     assert!(!capture.contains("QuitChoice::Discard"));
     assert!(!capture.contains("saved_rev ="));
     assert!(!capture.contains("project_path ="));
-    assert_eq!(capture.matches("fail_screenshot(").count(), 3);
+    assert_eq!(capture.matches("fail_screenshot(").count(), 6);
+    assert!(capture.contains(
+        ".check(self, ctx)\n                    .unwrap_or_else(|e| fail_screenshot(&e))"
+    ));
+    assert!(capture.contains("fail_screenshot(\"Arrangement render generation mismatch\")"));
+    assert!(capture
+        .contains("fail_screenshot(\"Arrangement capture not requested or render not ready\")"));
     assert!(capture.contains("Invalid screenshot pixel buffer"));
     assert!(capture.contains("fail_screenshot(&error)"));
     let failure = studio
@@ -707,4 +716,53 @@ fn screenshot_shutdown_requires_completed_writes_and_capture_specific_approval()
     assert!(failure.contains("std::process::exit(1)"));
     assert!(!failure.contains("approved_once"));
     assert!(!failure.contains("ViewportCommand::Close"));
+}
+
+#[test]
+fn wording_scan_covers_clip_grid_and_automation_production_labels() {
+    for (file, labels) in [
+        (
+            "fl_playlist.rs",
+            &[
+                "Select",
+                "Paint",
+                "Fit song",
+                "Reveal clip",
+                "Go to playhead",
+                "Move",
+                "Set length",
+                "Duplicate after",
+                "Make independent",
+            ][..],
+        ),
+        (
+            "fl_automation.rs",
+            &[
+                "AUTOMATION",
+                "No automation yet. Open the Automation panel to draw a lane.",
+            ][..],
+        ),
+    ] {
+        let (_, src) = SOURCES
+            .iter()
+            .find(|(name, _)| *name == file)
+            .expect("Grid modules must remain in wording scan");
+        let scanned = literals(production_source(src));
+        for label in labels {
+            assert!(
+                scanned.iter().any(|(_, lit)| lit == label),
+                "Missing production wording coverage: {file}: {label}"
+            );
+        }
+    }
+}
+
+#[test]
+fn wording_scan_keeps_production_after_inline_test_response_hooks() {
+    let src = include_str!("fl_playlist.rs");
+    let production = production_source(src);
+    assert!(production.contains("tests::record_target"));
+    assert!(production.contains("pub fn playlist_grid("));
+    assert!(production.contains("Choose Paint to place clips; Select never adds music"));
+    assert!(!production.contains("struct EventGrid"));
 }

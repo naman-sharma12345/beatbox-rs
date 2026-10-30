@@ -1,6 +1,6 @@
 //! FL-style pattern playlist: pattern clips on numbered playlist tracks,
-//! painted, dragged and resized directly on a bar grid. Click an empty cell to
-//! paint the selected pattern there, drag a clip to move it (bars and lanes),
+//! selected, painted, dragged and resized directly on a bar grid. Select is
+//! the safe default; Paint places the selected pattern in an empty cell, drag a clip to move it (bars and lanes),
 //! drag its right edge to resize it, right-click it for split / trim /
 //! duplicate / delete. Every gesture is one call to the same playlist tool an
 //! MCP client uses (place_pattern, playlist_clip), so it is one undo step.
@@ -15,6 +15,8 @@ pub(crate) const HEAD_W: f32 = 96.0;
 const LANE_H: f32 = 28.0;
 const RULER_H: f32 = 16.0;
 const EDGE_PX: f32 = 7.0;
+// Keep compiled step counts, as well as clip endpoints, inside u32.
+const EDIT_BAR_LIMIT: u32 = u32::MAX / crate::project::STEPS_PER_BAR;
 
 /// Playlist copies are stored as "pl:<bar>:<name>"; people only see the name.
 pub fn friendly_name(name: &str) -> &str {
@@ -39,7 +41,7 @@ pub fn pattern_color(name: &str) -> Color32 {
 /// Where a drag lands: whole bars and lanes from pixel deltas.
 pub fn snap_drag(dx: f32, dy: f32, bar_px: f32) -> (i64, i64) {
     (
-        (dx / bar_px.max(1.0)).round() as i64,
+        (dx / bar_px.max(f32::MIN_POSITIVE)).round() as i64,
         (dy / LANE_H).round() as i64,
     )
 }
@@ -92,7 +94,7 @@ impl Grab {
 /// At most this many lanes are shown at once; more scroll (mouse wheel).
 pub const MAX_VISIBLE_LANES: usize = 8;
 pub const ZOOM_MIN: f32 = 0.25;
-pub const ZOOM_MAX: f32 = 8.0;
+pub const ZOOM_MAX: f32 = 4096.0;
 
 /// What part of the song the grid shows: `scroll_bar` bars hidden off the
 /// left, `scroll_lane` lanes hidden off the top, and `zoom` times the width
@@ -171,6 +173,56 @@ impl GridGeo {
     }
 }
 
+// Drawing density only: never changes GridGeo, snapping or clip rectangles.
+fn drawing_stride(bar_px: f32, minimum_px: f32, minimum_bars: u32) -> u32 {
+    let mut stride = minimum_bars;
+    if !bar_px.is_finite() || bar_px <= 0.0 || !minimum_px.is_finite() {
+        return 1 << 31;
+    }
+    while (stride as f64) * (bar_px as f64) < minimum_px.max(0.0) as f64 && stride < (1 << 31) {
+        stride *= 2;
+    }
+    stride
+}
+
+/// Fully visible bar anchor plus globally aligned musical labels. Width is
+/// measured with the actual ruler font; reserve a gap and avoid clipped ends.
+fn ruler_bars(scroll: f32, end: f32, bar_px: f32, width: f32) -> Vec<u32> {
+    if !scroll.is_finite()
+        || !end.is_finite()
+        || !bar_px.is_finite()
+        || !width.is_finite()
+        || scroll < 0.0
+        || end < scroll
+        || bar_px <= 0.0
+        || width < 0.0
+    {
+        return Vec::new();
+    }
+    let first = scroll.ceil() as u32;
+    let last = end.floor() as u32;
+    let stride = drawing_stride(bar_px, width + 12.0, 4) as u64;
+    let mut bars = Vec::new();
+    let fits = |b: u32| ((end as f64) - b as f64) * bar_px as f64 >= width as f64 + 3.0;
+    if first > last || !fits(first) {
+        return bars;
+    }
+    bars.push(first);
+    let first_multiple = (first as u64 / stride + 1) * stride;
+    // Bounded even for pathological extents/scales; calculations cannot wrap.
+    for b in (first_multiple..=last as u64)
+        .step_by(stride as usize)
+        .take(2047)
+    {
+        let bar = b as u32;
+        let previous = *bars.last().unwrap();
+        if (bar - previous) as f64 * bar_px as f64 >= (width + 12.0) as f64 && fits(bar) {
+            bars.push(bar);
+        }
+    }
+    bars
+}
+
 /// Where a clip lands after a drag of `d` points: whole bars and lanes,
 /// clamped so it never starts before bar 0, never sits on a lane past the
 /// last track (`lanes - 1`) and is never shorter than one grid step (one
@@ -190,7 +242,7 @@ fn dragged_clip(
         Some((Grab::Move, d)) => {
             let (db, dl) = snap_drag(d.x, d.y, bar_px);
             (
-                (s + db).max(0) as u32,
+                (s.saturating_add(db)).clamp(0, i64::from(u32::MAX).saturating_sub(n)) as u32,
                 (l + dl).clamp(0, last_lane) as u32,
                 n as u32,
             )
@@ -198,11 +250,13 @@ fn dragged_clip(
         Some((Grab::Resize, d)) => (
             s as u32,
             l as u32,
-            (n + (d.x / bar_px.max(1.0)).round() as i64).max(1) as u32,
+            (n.saturating_add((d.x / bar_px.max(f32::MIN_POSITIVE)).round() as i64))
+                .clamp(1, i64::from(u32::MAX).saturating_sub(s).max(1)) as u32,
         ),
         Some((Grab::ResizeStart, d)) => {
             let end = s + n;
-            let ns = (s + (d.x / bar_px.max(1.0)).round() as i64).clamp(0, end - 1);
+            let ns = (s.saturating_add((d.x / bar_px.max(f32::MIN_POSITIVE)).round() as i64))
+                .clamp(0, end - 1);
             (ns as u32, l as u32, (end - ns) as u32)
         }
         None => (s as u32, l as u32, n as u32),
@@ -220,58 +274,494 @@ pub struct GridSel {
     pub toast: Option<String>,
     pub view: PlaylistView,
     pub geo: Option<GridGeo>,
+    pub(super) paint: bool,
+    pub(super) owner: GridOwner,
+    pub(super) draft: Option<ClipDraft>,
+    pub(super) swallow_release: bool,
+    pub(super) song_navigation: bool,
+    pub(super) active_drag: Option<(GridOwner, bool)>,
+}
+
+/// Identity is captured at gesture/draft origin, not replaced on release.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct GridOwner {
+    revision: u64,
+    generation: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ClipDraft {
+    id: String,
+    owner: GridOwner,
+    start: u64,
+    lane: u64,
+    length: u64,
+    copies: u64,
+}
+
+impl ClipDraft {
+    fn new(c: &crate::project::PlaylistClip, owner: GridOwner) -> Self {
+        Self {
+            id: c.id.clone(),
+            owner,
+            start: u64::from(c.start_bar) + 1,
+            lane: u64::from(c.lane) + 1,
+            length: u64::from(c.bars.max(1)),
+            copies: 1,
+        }
+    }
+    fn payload(&self, c: &crate::project::PlaylistClip, action: &str) -> Option<Value> {
+        let start = self.start.checked_sub(1)?;
+        let lane = self.lane.checked_sub(1)?;
+        let limit = u64::from(EDIT_BAR_LIMIT);
+        let valid =
+            start.checked_add(u64::from(c.bars.max(1)))? <= limit && lane < u64::from(u32::MAX);
+        match action {
+            "move" if valid && (start != u64::from(c.start_bar) || lane != u64::from(c.lane)) => {
+                Some(json!({"action": action, "id": self.id, "to_bar": start, "lane": lane}))
+            }
+            "trim"
+                if self.length > 0
+                    && self.length != u64::from(c.bars.max(1))
+                    && u64::from(c.start_bar).checked_add(self.length)? <= limit =>
+            {
+                Some(
+                    json!({"action": action, "id": self.id, "end_bar": u64::from(c.start_bar) + self.length}),
+                )
+            }
+            "duplicate"
+                if (1..=64).contains(&self.copies)
+                    && u64::from(c.start_bar)
+                        .checked_add(u64::from(c.bars.max(1)).checked_mul(self.copies + 1)?)?
+                        <= limit =>
+            {
+                Some(json!({"action": action, "id": self.id, "count": self.copies}))
+            }
+            "make_unique" => Some(json!({"action": action, "id": self.id})),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct GridDrag {
+    kind: u8,
+    x: f32,
+    y: f32,
+    owner: GridOwner,
+    paint: bool,
+}
+
+fn grid_scale(width: f32, bars: u32, zoom: f32) -> f32 {
+    let width = if width.is_finite() {
+        width.max(1.0)
+    } else {
+        1.0
+    };
+    let zoom = if zoom.is_finite() {
+        zoom.clamp(ZOOM_MIN, ZOOM_MAX)
+    } else {
+        1.0
+    };
+    (f64::from(width) / f64::from(bars.max(1)) * f64::from(zoom)).min(f64::from(f32::MAX)) as f32
+}
+
+// Capture-only transient initialization, never native input or a project edit.
+fn reveal_view(c: &crate::project::PlaylistClip, total_bars: u32) -> PlaylistView {
+    PlaylistView {
+        scroll_bar: c.start_bar as f32,
+        scroll_lane: c.lane as f32,
+        zoom: (total_bars as f32 / (c.bars.max(1) as f32 + 2.0)).clamp(ZOOM_MIN, ZOOM_MAX),
+    }
+}
+
+pub(super) fn capture_view(
+    ctx: &egui::Context,
+    p: &Project,
+    revision: u64,
+    generation: u64,
+    case: &str,
+    id: Option<&str>,
+    initialize: bool,
+) -> Result<Value, String> {
+    if !matches!(
+        case,
+        "shared" | "independent" | "long-overview" | "long-reveal" | "tempo"
+    ) {
+        return Err("Unknown capture view selector".into());
+    }
+    let selected = if let Some(id) = id {
+        let mut clips = p.playlist.iter().filter(|c| c.id == id);
+        let c = clips.next().ok_or("Capture clip ID missing")?;
+        if clips.next().is_some() {
+            return Err("Capture clip ID duplicated".into());
+        }
+        let pi = p.pattern_index(&c.pattern).map_err(|e| e.to_string())?;
+        if p.patterns.iter().filter(|x| x.name == c.pattern).count() != 1 {
+            return Err("Capture source identity ambiguous".into());
+        }
+        let source_id = &p.patterns[pi].id;
+        if source_id.is_empty() || p.patterns.iter().filter(|x| x.id == *source_id).count() != 1 {
+            return Err("Capture source stable ID missing/ambiguous".into());
+        }
+        let shares = p
+            .playlist
+            .iter()
+            .filter(|x| p.pattern_index(&x.pattern).ok() == Some(pi))
+            .count();
+        if (case == "shared" && shares < 2) || (case == "independent" && shares != 1) {
+            return Err("Capture source sharing mismatch".into());
+        }
+        Some((c, pi, shares))
+    } else {
+        None
+    };
+    let long = matches!(case, "long-overview" | "long-reveal");
+    if (matches!(case, "shared" | "independent") || long) != selected.is_some() {
+        return Err("Capture selection requirement mismatch".into());
+    }
+    let end = p
+        .playlist
+        .iter()
+        .map(|c| c.start_bar.saturating_add(c.bars.max(1)))
+        .max()
+        .unwrap_or(0);
+    let total = end.saturating_add(8).max(16);
+    let lanes = p
+        .playlist
+        .iter()
+        .map(|c| c.lane.saturating_add(1))
+        .max()
+        .unwrap_or(0)
+        .max(3) as usize
+        + 1;
+    let mut view = PlaylistView::default();
+    if let Some((c, _, _)) = selected {
+        if long && (end < 1024 || c.lane != 19) {
+            return Err("Capture long/lane20 fixture mismatch".into());
+        }
+        if case == "long-reveal" {
+            view = reveal_view(c, total);
+        }
+        if case == "long-overview" {
+            view.scroll_lane = c.lane as f32;
+        }
+    }
+    view = view.clamped(total, lanes);
+    let owner = GridOwner {
+        revision,
+        generation,
+    };
+    let key = egui::Id::new("flpl_state");
+    if initialize {
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                key,
+                GridSel {
+                    pattern: selected.map_or(0, |(_, pi, _)| pi),
+                    clip_sel: id.map(str::to_owned),
+                    view,
+                    owner,
+                    ..Default::default()
+                },
+            )
+        });
+    }
+    let sel = ctx
+        .data(|d| d.get_temp::<GridSel>(key))
+        .ok_or("Capture view unavailable")?;
+    if sel.owner != owner
+        || sel.clip_sel.as_deref() != id
+        || sel.view != view
+        || sel.paint
+        || sel.active_drag.is_some()
+        || sel.toast.is_some()
+        || sel.swallow_release
+    {
+        return Err("Capture selection/view drift".into());
+    }
+    if !initialize && sel.geo.is_none() {
+        return Err("Capture grid has not painted".into());
+    }
+    if let Some((c, pi, _)) = selected {
+        if sel.pattern != pi {
+            return Err("Capture selected source drift".into());
+        }
+        if !initialize
+            && sel.draft.as_ref().is_none_or(|d| {
+                d.id != c.id
+                    || d.owner != owner
+                    || d.start != u64::from(c.start_bar) + 1
+                    || d.lane != u64::from(c.lane) + 1
+                    || d.length != u64::from(c.bars.max(1))
+                    || d.copies != 1
+            })
+        {
+            return Err("Capture current form not painted or draft changed".into());
+        }
+    }
+    Ok(
+        json!({"selected_id":id, "source":selected.map(|(c,pi,n)| json!({
+        "id":p.patterns[pi].id,"name":c.pattern,"index":pi,"share_count":n,"start_bar":c.start_bar,
+        "bars":c.bars,"lane":c.lane,"offset_bars":c.offset_bars})),
+        "view":{"scroll_bar":view.scroll_bar,"scroll_lane":view.scroll_lane,"zoom":view.zoom},
+        "mode":"Select", "total_bars":total, "lanes":lanes}),
+    )
+}
+
+fn guarded_grid_call(
+    e: &mut crate::engine::Engine,
+    owner: GridOwner,
+    tool: &str,
+    args: &Value,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        e.revision == owner.revision && e.project_load_generation == owner.generation,
+        "Clip edit expired after a project change. Refresh and try again."
+    );
+    e.call_from(tool, args, "you")
 }
 
 impl Studio {
-    pub(super) fn fl_playlist(&mut self, ui: &mut egui::Ui, p: &Project) {
-        let bar_now = self.player.position_secs() * p.bpm / 240.0;
-        let vid = egui::Id::new("flpl_view");
-        let view = ui
-            .data(|d| d.get_temp::<PlaylistView>(vid))
-            .unwrap_or_default();
-        let mut sel = GridSel {
-            pattern: self.pattern,
-            clip_sel: self.clip_sel.clone(),
-            toast: None,
-            view,
-            geo: None,
+    pub(super) fn fl_playlist(&mut self, ui: &mut egui::Ui, p: &Project, revision: u64) {
+        let bar_now = super::playlist::marker_beat(p, self.player.position_secs()) / 4.0;
+        let vid = egui::Id::new("flpl_state");
+        let owner = GridOwner {
+            revision,
+            generation: self.seen_project_load,
         };
-        let mut actions = playlist_grid(ui, p, &mut sel, bar_now);
-        // the track automation lanes, on the grid's bar axis (scroll + zoom)
-        if let Some(geo) = sel.geo {
-            actions.extend(super::fl_automation::automation_lanes(ui, p, &geo));
-        }
-        ui.data_mut(|d| d.insert_temp(vid, sel.view));
-        self.pattern = sel.pattern;
-        self.clip_sel = sel.clip_sel;
-        if let Some(t) = sel.toast {
-            self.toast = Some((t, 0.0, false));
-        }
-        for (tool, args) in actions {
-            // "Make unique" appends a new pattern; edit that copy next, so
-            // the piano roll and step grid change what the block now plays.
-            let unique =
-                (args.get("action").and_then(|a| a.as_str()) == Some("make_unique")).then(|| {
-                    args.get("id")
-                        .and_then(|i| i.as_str())
-                        .unwrap_or("")
-                        .to_string()
-                });
-            self.call(tool, args);
-            if let Some(id) = unique {
-                let e = self.engine.lock().unwrap();
-                let now = &e.project;
-                if let Some(pi) = now
-                    .playlist
+        let mut sel = ui.data(|d| d.get_temp::<GridSel>(vid)).unwrap_or_default();
+        if sel.owner.generation != owner.generation {
+            let had_pattern_selection = sel.draft.is_some();
+            sel = GridSel {
+                swallow_release: true,
+                ..Default::default()
+            };
+            if had_pattern_selection
+                || p.playlist
                     .iter()
-                    .find(|c| c.id == id)
-                    .and_then(|c| now.pattern_index(&c.pattern).ok())
-                {
-                    self.pattern = pi;
-                }
+                    .any(|c| Some(&c.id) == self.clip_sel.as_ref())
+            {
+                self.clip_sel = None;
+            }
+            sel.toast = Some("Project loaded. Clip controls refreshed in Select mode.".into());
+        }
+        sel.owner = owner;
+        sel.song_navigation =
+            self.perf.is_none() && self.perf_next.is_none() && !self.player.launch_pending();
+        sel.pattern = self.pattern;
+        sel.clip_sel = self.clip_sel.clone();
+        let actions = playlist_grid(ui, p, &mut sel, bar_now);
+        self.pattern = sel.pattern;
+        self.clip_sel = sel.clip_sel.clone();
+        for (tool, args) in actions {
+            // Validation and dispatch share this lock; never check, unlock, call.
+            let result = {
+                let mut e = self.engine.lock().unwrap();
+                guarded_grid_call(&mut e, owner, tool, &args).map(|value| {
+                    if let Some(id) = value["new_ids"]
+                        .as_array()
+                        .and_then(|ids| ids.first())
+                        .and_then(Value::as_str)
+                    {
+                        if e.project.playlist.iter().any(|c| c.id == id) {
+                            self.clip_sel = Some(id.to_owned());
+                        }
+                    }
+                    if let Some(name) = value["new_pattern"].as_str() {
+                        if let Ok(pi) = e.project.pattern_index(name) {
+                            self.pattern = pi;
+                        }
+                    }
+                })
+            };
+            if let Err(err) = result {
+                sel.toast = Some(format!("{err:#}"));
+                break;
             }
         }
+        // Automation keeps the exact grid axis and its existing command handlers.
+        if let Some(geo) = sel.geo {
+            for (tool, args) in super::fl_automation::automation_lanes(ui, p, &geo) {
+                self.call(tool, args);
+            }
+        }
+        if let Some(t) = sel.toast.take() {
+            self.toast = Some((t, 0.0, false));
+        }
+        ui.data_mut(|d| d.insert_temp(vid, sel));
     }
+}
+
+/// Sample the visible source repetitions, never a prefix of the song.
+/// Returned positions are clip-local bars, including the source offset phase.
+fn preview_repeats(
+    left: f64,
+    right: f64,
+    len: f64,
+    source: f64,
+    offset: u32,
+    budget: usize,
+) -> impl Iterator<Item = f64> + Clone {
+    let span = source.max(1.0 / f64::from(crate::project::STEPS_PER_BAR));
+    let off = f64::from(offset);
+    let left = left.max(0.0);
+    let right = right.min(len);
+    let first = ((left + off) / span).floor() as u64;
+    let end = ((right + off) / span).ceil() as u64;
+    let count = if right > left {
+        end.saturating_sub(first)
+    } else {
+        0
+    };
+    let samples = count.min(budget.clamp(1, 64) as u64);
+    (0..samples).map(move |i| (first + i * count / samples) as f64 * span - off)
+}
+
+fn clip_controls(
+    ui: &mut egui::Ui,
+    p: &Project,
+    sel: &mut GridSel,
+    bar_now: f32,
+    total_bars: u32,
+    actions: &mut Vec<(&'static str, Value)>,
+) {
+    let selected = p
+        .playlist
+        .iter()
+        .find(|c| Some(&c.id) == sel.clip_sel.as_ref());
+    ui.horizontal_wrapped(|ui| {
+        let _response = ui.selectable_value(&mut sel.paint, false, "Select");
+        #[cfg(test)]
+        tests::record_target(ui, "Select", &_response);
+        let _response = ui.selectable_value(&mut sel.paint, true, "Paint");
+        #[cfg(test)]
+        tests::record_target(ui, "Paint", &_response);
+        let response = ui.button("Fit song");
+        #[cfg(test)]
+        tests::record_target(ui, "Fit song", &response);
+        if response.clicked() {
+            sel.view.scroll_bar = 0.0;
+            sel.view.zoom = 1.0;
+        }
+        let response = ui.add_enabled(selected.is_some(), egui::Button::new("Reveal clip"));
+        #[cfg(test)]
+        tests::record_target(ui, "Reveal clip", &response);
+        if response.clicked() {
+            let c = selected.unwrap();
+            sel.view = reveal_view(c, total_bars);
+        }
+        let response = ui
+            .add_enabled(sel.song_navigation, egui::Button::new("Go to playhead"))
+            .on_hover_text("Scroll only. Unavailable during performance or a queued launch.");
+        #[cfg(test)]
+        tests::record_target(ui, "Go to playhead", &response);
+        if response.clicked() {
+            sel.view.scroll_bar = bar_now.clamp(0.0, total_bars as f32);
+        }
+        let response = ui.button("Zoom out");
+        #[cfg(test)]
+        tests::record_target(ui, "Zoom out", &response);
+        if response.clicked() {
+            sel.view.zoom = (sel.view.zoom / 2.0).clamp(ZOOM_MIN, ZOOM_MAX);
+        }
+        let response = ui.button("Zoom in");
+        #[cfg(test)]
+        tests::record_target(ui, "Zoom in", &response);
+        if response.clicked() {
+            sel.view.zoom = (sel.view.zoom * 2.0).clamp(ZOOM_MIN, ZOOM_MAX);
+        }
+        ui.label(format!("{:.0}%", sel.view.zoom * 100.0));
+    });
+    let source = p
+        .patterns
+        .get(sel.pattern)
+        .filter(|p| !p.name.starts_with("pl:"));
+    ui.label(if sel.paint {
+        source
+            .map(|p| {
+                format!(
+                    "Paint: {}. Click an empty cell to place it.",
+                    friendly_name(&p.name)
+                )
+            })
+            .unwrap_or_else(|| "Painting unavailable. Select a source pattern first.".into())
+    } else {
+        "Select: empty clicks clear a pattern clip selection without adding music.".into()
+    });
+    ui.small("Playlist grid bars: 4 quarter-note beats");
+    let Some(c) = selected else {
+        sel.draft = None;
+        return;
+    };
+    let changed = sel
+        .draft
+        .as_ref()
+        .is_none_or(|d| d.id != c.id || d.owner != sel.owner);
+    let stale = sel
+        .draft
+        .as_ref()
+        .is_some_and(|d| d.id == c.id && d.owner != sel.owner);
+    if changed {
+        sel.draft = Some(ClipDraft::new(c, sel.owner));
+    }
+    if stale {
+        sel.toast = Some("Clip changed. Draft refreshed; review values before applying.".into());
+    }
+    let d = sel.draft.as_mut().unwrap();
+    let shared = p
+        .pattern_index(&c.pattern)
+        .ok()
+        .map(|pi| {
+            p.playlist
+                .iter()
+                .filter(|other| p.pattern_index(&other.pattern).ok() == Some(pi))
+                .count()
+        })
+        .unwrap_or(0);
+    ui.label(format!("Selected clip: {} | start {} | end {} | length {} | lane {} | source offset {} | {} placements",
+        friendly_name(&c.pattern), u64::from(c.start_bar)+1,
+        u64::from(c.start_bar)+u64::from(c.bars.max(1)), c.bars.max(1), u64::from(c.lane)+1, c.offset_bars, shared));
+    ui.small("Lane changes display only. Editing this pattern changes its shared placements.");
+    // A fresh owner must never inherit egui's focused numeric text buffer.
+    ui.push_id((&d.id, d.owner.revision, d.owner.generation), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for (label, field) in [
+                ("Start", &mut d.start),
+                ("Lane", &mut d.lane),
+                ("Length", &mut d.length),
+                ("Copies", &mut d.copies),
+            ] {
+                ui.label(label);
+                let _response = ui
+                    .push_id(label, |ui| {
+                        ui.add(egui::DragValue::new(field).range(
+                            1..=if label == "Copies" {
+                                64
+                            } else if label == "Lane" {
+                                u64::from(u32::MAX)
+                            } else {
+                                u64::from(EDIT_BAR_LIMIT)
+                            },
+                        ))
+                    })
+                    .inner;
+                #[cfg(test)]
+                tests::record_target(ui, label, &_response);
+            }
+        });
+    });
+    ui.horizontal_wrapped(|ui| {
+        for (label, action) in [("Move", "move"), ("Set length", "trim"), ("Duplicate after", "duplicate"), ("Make independent", "make_unique")] {
+            let payload = d.payload(c, action);
+            let response = ui.add_enabled(payload.is_some() && !stale, egui::Button::new(label)).on_disabled_hover_text("No change, expired draft, or values outside the grid range.");
+            let response = if action == "make_unique" { response.on_hover_text("Copy pattern notes without changing placement timing. Other placements keep the original source.") }
+                else if action == "duplicate" { response.on_hover_text("1 to 64 copies after this clip, sharing its source.") } else { response };
+            #[cfg(test)]
+            tests::record_target(ui, label, &response);
+            if response.clicked() { actions.push(("playlist_clip", payload.unwrap())); }
+        }
+    });
 }
 
 /// The playlist grid itself, driven by egui pointer input (a real mouse,
@@ -287,7 +777,7 @@ pub fn playlist_grid(
     let lanes = p
         .playlist
         .iter()
-        .map(|c| c.lane + 1)
+        .map(|c| c.lane.saturating_add(1))
         .max()
         .unwrap_or(0)
         .max(3) as usize
@@ -296,17 +786,40 @@ pub fn playlist_grid(
     let end_bar = p
         .playlist
         .iter()
-        .map(|c| c.start_bar + c.bars.max(1))
+        .map(|c| c.start_bar.saturating_add(c.bars.max(1)))
         .max()
         .unwrap_or(0);
-    let total_bars = (end_bar + 8).max(16);
+    let total_bars = end_bar.saturating_add(8).max(16);
+    let was_paint = sel.paint;
+    clip_controls(ui, p, sel, bar_now, total_bars, &mut actions);
+    let mode_changed = was_paint != sel.paint;
+    let cancel_key = sel.active_drag.is_some()
+        && !ui.ctx().wants_keyboard_input()
+        && ui.input(|i| i.key_pressed(egui::Key::Escape));
+    let cancel = mode_changed
+        || cancel_key
+        || sel
+            .active_drag
+            .is_some_and(|(owner, paint)| owner != sel.owner || paint != sel.paint);
+    if cancel {
+        sel.toast = Some("Drag cancelled. No clip edit applied.".into());
+    }
+    let swallow = sel.swallow_release || cancel;
+    if !ui.input(|i| i.pointer.primary_down()) {
+        sel.swallow_release = false;
+        sel.active_drag = None;
+    } else if cancel {
+        sel.swallow_release = true;
+    }
     let h = RULER_H + LANE_H * visible as f32 + 2.0;
     let (full, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
     let grid = Rect::from_min_max(
         pos2(full.min.x + HEAD_W, full.min.y + RULER_H),
-        pos2(full.max.x, full.min.y + RULER_H + LANE_H * visible as f32),
+        pos2(
+            full.max.x.max(full.min.x + HEAD_W + 1.0),
+            full.min.y + RULER_H + LANE_H * visible as f32,
+        ),
     );
-    let fit_px = (grid.width() / total_bars as f32).max(10.0);
     // mouse wheel over the grid: Ctrl zooms around the pointer, Shift (or a
     // sideways wheel) scrolls bars, plain wheel scrolls lanes when they overflow
     let mut view = sel.view.clamped(total_bars, lanes);
@@ -316,14 +829,14 @@ pub fn playlist_grid(
     {
         let zoom = ui.input(|i| i.zoom_delta());
         if zoom != 1.0 && zoom.is_finite() {
-            let old_px = (fit_px * view.zoom).max(3.0);
+            let old_px = grid_scale(grid.width(), total_bars, view.zoom);
             let anchor = view.scroll_bar + (hp.x - grid.min.x) / old_px;
             view.zoom = (view.zoom * zoom).clamp(ZOOM_MIN, ZOOM_MAX);
-            let new_px = (fit_px * view.zoom).max(3.0);
+            let new_px = grid_scale(grid.width(), total_bars, view.zoom);
             view.scroll_bar = anchor - (hp.x - grid.min.x) / new_px;
         }
         let d = ui.input(|i| i.smooth_scroll_delta);
-        let px = (fit_px * view.zoom).max(3.0);
+        let px = grid_scale(grid.width(), total_bars, view.zoom);
         let mut used = egui::Vec2::ZERO;
         if d.x != 0.0 {
             view.scroll_bar -= d.x / px;
@@ -341,7 +854,7 @@ pub fn playlist_grid(
     sel.view = view;
     let geo = GridGeo {
         grid,
-        bar_px: (fit_px * view.zoom).max(3.0),
+        bar_px: grid_scale(grid.width(), total_bars, view.zoom),
         scroll_bar: view.scroll_bar,
         scroll_lane: view.scroll_lane,
     };
@@ -373,36 +886,41 @@ pub fn playlist_grid(
     );
     let b0 = geo.bar_at(grid.min.x).floor().max(0.0) as u32;
     let b1 = geo.bar_at(grid.max.x).ceil().max(0.0) as u32;
-    let label_every = if bar_px >= 12.0 {
-        4
-    } else if bar_px >= 6.0 {
-        8
-    } else {
-        16
-    };
-    for b in b0..=b1 {
+    let ruler_font = FontId::monospace(9.5);
+    let digits = b1.saturating_add(1).to_string().len();
+    let label_width = ruler
+        .layout_no_wrap("8".repeat(digits), ruler_font.clone(), DIM)
+        .size()
+        .x;
+    // Below eight points per line, omit minor bars rather than draw a mesh.
+    let grid_stride = drawing_stride(bar_px, 8.0, 1);
+    let major_stride = drawing_stride(bar_px, 32.0, 4);
+    let first_line = (b0 as u64).div_ceil(grid_stride as u64) * grid_stride as u64;
+    for b in (first_line..=b1 as u64)
+        .step_by(grid_stride as usize)
+        .take(2048)
+    {
         let x = geo.x_of(b as f32);
-        let major = b % 4 == 0;
         gp.line_segment(
             [pos2(x, grid.min.y), pos2(x, grid.max.y)],
             Stroke::new(
                 1.0_f32,
-                if major {
+                if b % major_stride as u64 == 0 {
                     super::theme::Tokens::DARK.bar_line
                 } else {
                     super::theme::Tokens::DARK.grid_line
                 },
             ),
         );
-        if b % label_every == 0 {
-            ruler.text(
-                pos2(x + 3.0, full.min.y + RULER_H * 0.5),
-                Align2::LEFT_CENTER,
-                (b + 1).to_string(),
-                FontId::monospace(9.5),
-                DIM,
-            );
-        }
+    }
+    for b in ruler_bars(view.scroll_bar, geo.bar_at(grid.max.x), bar_px, label_width) {
+        ruler.text(
+            pos2(geo.x_of(b as f32) + 3.0, full.min.y + RULER_H * 0.5),
+            Align2::LEFT_CENTER,
+            b.saturating_add(1).to_string(),
+            ruler_font.clone(),
+            DIM,
+        );
     }
     // lanes in view
     let l0 = view.scroll_lane.floor().max(0.0) as usize;
@@ -422,7 +940,7 @@ pub fn playlist_grid(
         heads.text(
             head.left_center() + vec2(8.0, 0.0),
             Align2::LEFT_CENTER,
-            format!("Track {}", l + 1),
+            format!("Lane {}", l + 1),
             FontId::proportional(11.0),
             TEXT,
         );
@@ -441,21 +959,57 @@ pub fn playlist_grid(
             continue;
         }
         let resp = ui.interact(lane_r, ui.id().with(("flpl_lane", l)), Sense::click());
-        if resp.clicked() {
+        if resp.clicked() && !swallow {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let bar = geo.bar_at(pos.x).floor().max(0.0) as u32;
                 let lane = (geo.lane_at(pos.y).floor().max(0.0) as usize).min(lanes - 1) as u32;
+                if p.playlist.iter().any(|c| {
+                    (c.lane == lane
+                        && bar >= c.start_bar
+                        && bar < c.start_bar.saturating_add(c.bars.max(1)))
+                        || Rect::from_min_size(
+                            pos2(
+                                geo.x_of(c.start_bar as f32) + 1.0,
+                                geo.y_of(c.lane as f32) + 2.0,
+                            ),
+                            vec2((c.bars.max(1) as f32 * bar_px - 2.0).max(1.0), LANE_H - 4.0),
+                        )
+                        .contains(pos)
+                }) {
+                    continue;
+                }
+                if !sel.paint {
+                    if p.playlist
+                        .iter()
+                        .any(|c| Some(&c.id) == sel.clip_sel.as_ref())
+                    {
+                        sel.clip_sel = None;
+                    }
+                    continue;
+                }
                 match p
                     .patterns
                     .get(sel.pattern)
                     .map(|pt| pt.name.clone())
                     .filter(|n| !n.starts_with("pl:"))
                 {
-                    Some(name) => actions.extend(paint_calls(p, &name, bar, lane)),
-                    None => sel.toast = Some(
-                        "Select a pattern to paint (the generated pl: sections can't be placed)"
-                            .into(),
-                    ),
+                    Some(name) => {
+                        let bars = p.patterns[sel.pattern].bars.max(1);
+                        if bar
+                            .checked_add(bars)
+                            .is_some_and(|end| end <= EDIT_BAR_LIMIT)
+                        {
+                            actions.extend(paint_calls(p, &name, bar, lane));
+                        } else {
+                            sel.toast = Some("Placement exceeds the grid range.".into());
+                        }
+                    }
+                    None => {
+                        sel.toast = Some(
+                            "Select a source pattern to paint; section copies cannot be placed"
+                                .into(),
+                        )
+                    }
                 }
             }
         }
@@ -463,9 +1017,19 @@ pub fn playlist_grid(
     // clips
     for c in &p.playlist {
         let id = ui.id().with(("flpl_clip", c.id.as_str()));
-        let grab: Option<(Grab, egui::Vec2)> = ui
-            .data(|d| d.get_temp::<(u8, f32, f32)>(id))
-            .map(|(g, x, y)| (Grab::from_code(g), vec2(x, y)));
+        let origin = ui.data(|d| d.get_temp::<GridDrag>(id));
+        let stale_drag = origin
+            .as_ref()
+            .is_some_and(|g| g.owner != sel.owner || g.paint != sel.paint);
+        let blocked = swallow || stale_drag;
+        if blocked && origin.is_some() {
+            ui.data_mut(|d| d.remove::<GridDrag>(id));
+            sel.swallow_release = ui.input(|i| i.pointer.primary_down());
+            sel.toast = Some("Drag cancelled. No clip edit applied.".into());
+        }
+        let grab = origin
+            .filter(|_| !blocked)
+            .map(|g| (Grab::from_code(g.kind), vec2(g.x, g.y)));
         let (start, lane, len) = dragged_clip(c.start_bar, c.lane, c.bars, grab, bar_px, lanes);
         let (start, lane, len) = (start as f32, lane as f32, len as f32);
         let r = Rect::from_min_size(
@@ -485,27 +1049,59 @@ pub fn playlist_grid(
             gp.with_clip_rect(vr).text(
                 pos2(vr.min.x.max(r.min.x) + 4.0, title.center().y),
                 Align2::LEFT_CENTER,
-                &c.pattern,
+                friendly_name(&c.pattern),
                 FontId::proportional(8.5),
                 Color32::from_rgb(20, 20, 24),
             );
         }
         // the pattern's notes, tiny, so a clip reads as its music
-        if let Ok(pi) = p.pattern_index(&c.pattern) {
+        let preview = grid
+            .intersect(ui.clip_rect())
+            .intersect(ui.ctx().screen_rect());
+        if let Some(pi) = p
+            .pattern_index(&c.pattern)
+            .ok()
+            .filter(|_| r.intersect(preview).is_positive())
+        {
             let pat = &p.patterns[pi];
             let steps = pat.steps().max(1) as f32;
             let body = Rect::from_min_max(
                 pos2(r.min.x, title.max.y + 1.0),
                 pos2(r.max.x, r.max.y - 1.0),
             );
-            let per_rep = pat.bars.max(1) as f32 * bar_px;
-            let reps = (len / pat.bars.max(1) as f32).ceil() as usize;
+            let source_bars =
+                f64::from(pat.steps().max(1)) / f64::from(crate::project::STEPS_PER_BAR);
+            let per_rep = source_bars as f32 * bar_px;
+            let left = f64::from(geo.bar_at(preview.min.x)) - f64::from(start);
+            let reps: Vec<_> = preview_repeats(
+                left,
+                left + f64::from(preview.width() / bar_px),
+                f64::from(len),
+                source_bars,
+                c.offset_bars,
+                preview.width().ceil() as usize,
+            )
+            .collect();
+            // At most 16,384 note visits per clip, regardless of song extent.
+            let note_budget = (16384 / (8 * reps.len().max(1))).min(256);
+            #[cfg(test)]
+            let mut preview_visits = 0usize;
             for (ti, (_, notes)) in pat.clips.iter().enumerate().take(8) {
                 let yy = body.min.y + 1.0 + (ti as f32 * 1.6) % (body.height() - 2.0).max(1.0);
-                for k in 0..reps {
-                    for n in notes.iter().take(256) {
-                        let x0 = r.min.x + k as f32 * per_rep + n.start / steps * per_rep;
-                        if x0 >= r.max.x - 1.0 || x0 < grid.min.x - 2.0 || x0 > grid.max.x {
+                for &bar in &reps {
+                    for n in notes.iter().take(note_budget) {
+                        #[cfg(test)]
+                        {
+                            preview_visits += 1;
+                        }
+                        let x0 = geo.x_of((f64::from(start) + bar) as f32)
+                            + 1.0
+                            + n.start / steps * per_rep;
+                        if x0 < r.min.x
+                            || x0 >= r.max.x - 1.0
+                            || x0 < grid.min.x - 2.0
+                            || x0 > grid.max.x
+                        {
                             continue;
                         }
                         gp.line_segment(
@@ -515,6 +1111,9 @@ pub fn playlist_grid(
                     }
                 }
             }
+            #[cfg(test)]
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new("preview-note-visits"), preview_visits));
         }
         gp.rect_stroke(
             r,
@@ -555,12 +1154,26 @@ pub fn playlist_grid(
                 rr.intersect(grid)
             }
         };
-        let body_resp = ui.interact(hit(r), id.with("body"), Sense::click_and_drag());
+        let precise = r.width() >= EDGE_PX * 4.0;
+        let body_resp = ui.interact(
+            hit(r),
+            id.with("body"),
+            if precise {
+                Sense::click_and_drag()
+            } else {
+                Sense::click()
+            },
+        );
+        let edge_sense = if precise {
+            Sense::drag()
+        } else {
+            Sense::hover()
+        };
         let left_resp = ui
-            .interact(hit(left_full), id.with("left"), Sense::drag())
+            .interact(hit(left_full), id.with("left"), edge_sense)
             .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
         let edge_resp = ui
-            .interact(hit(edge_full), id.with("edge"), Sense::drag())
+            .interact(hit(edge_full), id.with("edge"), edge_sense)
             .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
         let busy = |r: &egui::Response| r.drag_started() || r.dragged() || r.drag_stopped();
         let (resp, kind) = if busy(&edge_resp) {
@@ -570,18 +1183,31 @@ pub fn playlist_grid(
         } else {
             (&body_resp, Grab::Move)
         };
-        if resp.drag_started() {
-            ui.data_mut(|d| d.insert_temp(id, (kind.code(), 0.0f32, 0.0f32)));
+        if resp.drag_started() && !blocked {
+            sel.active_drag = Some((sel.owner, sel.paint));
+            ui.data_mut(|d| {
+                d.insert_temp(
+                    id,
+                    GridDrag {
+                        kind: kind.code(),
+                        x: 0.0,
+                        y: 0.0,
+                        owner: sel.owner,
+                        paint: sel.paint,
+                    },
+                )
+            });
         }
-        if resp.dragged() {
-            let d = resp.drag_delta();
-            let cur =
-                ui.data(|m| m.get_temp::<(u8, f32, f32)>(id))
-                    .unwrap_or((kind.code(), 0.0, 0.0));
-            ui.data_mut(|m| m.insert_temp(id, (cur.0, cur.1 + d.x, cur.2 + d.y)));
+        if resp.dragged() && !blocked {
+            let delta = resp.drag_delta();
+            if let Some(mut cur) = ui.data(|m| m.get_temp::<GridDrag>(id)) {
+                cur.x += delta.x;
+                cur.y += delta.y;
+                ui.data_mut(|m| m.insert_temp(id, cur));
+            }
         }
-        if resp.drag_stopped() {
-            ui.data_mut(|m| m.remove::<(u8, f32, f32)>(id));
+        if resp.drag_stopped() && !blocked && grab.is_some() {
+            ui.data_mut(|m| m.remove::<GridDrag>(id));
             let (s, l, n) = (start as u32, lane as u32, len as u32);
             match kind {
                 Grab::Resize if n != c.bars.max(1) => actions.push((
@@ -599,23 +1225,30 @@ pub fn playlist_grid(
                 _ => {}
             }
         }
-        if body_resp.clicked() {
+        if body_resp.clicked() && !blocked {
             sel.clip_sel = Some(c.id.clone());
-            if let Ok(pi) = p.pattern_index(&c.pattern) {
+            let preview = grid
+                .intersect(ui.clip_rect())
+                .intersect(ui.ctx().screen_rect());
+            if let Some(pi) = p
+                .pattern_index(&c.pattern)
+                .ok()
+                .filter(|_| r.intersect(preview).is_positive())
+            {
                 sel.pattern = pi;
             }
         }
         let menu = super::playlist::pattern_clip_menu(c, bar_now);
         body_resp
             .on_hover_text(format!(
-                "{} · bar {}–{} · drag to move, drag an edge to trim, right-click for more",
-                c.pattern,
-                c.start_bar + 1,
-                c.start_bar + c.bars.max(1)
+                "{} · grid bars {} to {} · zoom in or use exact fields for narrow clips; right-click for more",
+                friendly_name(&c.pattern),
+                u64::from(c.start_bar) + 1,
+                u64::from(c.start_bar) + u64::from(c.bars.max(1))
             ))
             .context_menu(|ui| {
                 for (label, tool, args) in menu.clone() {
-                    if ui.button(label).clicked() {
+                    if ui.button(label).clicked() && !blocked {
                         actions.push((tool, args));
                         ui.close_menu();
                     }
@@ -632,14 +1265,15 @@ pub fn playlist_grid(
     }
     let overlaps = p.playlist.iter().enumerate().any(|(i, a)| {
         p.playlist[i + 1..].iter().any(|b| {
-            a.start_bar < b.start_bar + b.bars.max(1) && b.start_bar < a.start_bar + a.bars.max(1)
+            a.start_bar < b.start_bar.saturating_add(b.bars.max(1))
+                && b.start_bar < a.start_bar.saturating_add(a.bars.max(1))
         })
     });
     if overlaps {
         pt.text(
             grid.left_bottom() + vec2(6.0, -4.0),
             Align2::LEFT_BOTTOM,
-            "Blocks that share the same bars play together, on any track.",
+            "Blocks that share the same bars play together, on any lane.",
             FontId::proportional(11.0),
             DIM,
         );
@@ -648,7 +1282,7 @@ pub fn playlist_grid(
         pt.text(
             grid.center(),
             Align2::CENTER_CENTER,
-            "Click a cell to paint the selected pattern here",
+            "Choose Paint to place clips; Select never adds music",
             FontId::proportional(12.0),
             DIM,
         );
@@ -789,7 +1423,7 @@ mod tests {
         let v = PlaylistView {
             scroll_bar: -3.0,
             scroll_lane: 99.0,
-            zoom: 100.0,
+            zoom: ZOOM_MAX * 2.0,
         }
         .clamped(32, 11);
         assert_eq!(
@@ -839,10 +1473,21 @@ mod tests {
         view: PlaylistView,
         gesture: &dyn Fn(&dyn Fn(f32, f32) -> egui::Pos2) -> Vec<Vec<egui::Event>>,
     ) -> (Vec<(&'static str, Value)>, GridSel) {
+        drive_mode(p, ppp, view, false, gesture)
+    }
+
+    fn drive_mode(
+        p: &Project,
+        ppp: f32,
+        view: PlaylistView,
+        paint: bool,
+        gesture: &dyn Fn(&dyn Fn(f32, f32) -> egui::Pos2) -> Vec<Vec<egui::Event>>,
+    ) -> (Vec<(&'static str, Value)>, GridSel) {
         let ctx = egui::Context::default();
         ctx.set_pixels_per_point(ppp);
         let mut sel = GridSel {
             view,
+            paint,
             ..Default::default()
         };
         let mut out = Vec::new();
@@ -950,12 +1595,13 @@ mod tests {
                 "ppp {ppp}: {resized:?}"
             );
             // click an empty cell: the selected pattern is painted there
-            let painted = drive(&p, ppp, &|at| {
+            let painted = drive_mode(&p, ppp, PlaylistView::default(), true, &|at| {
                 let c = at(10.5, 1.0);
                 drag(c, c)
             });
             assert!(
                 painted
+                    .0
                     .iter()
                     .any(|(t, a)| *t == "place_pattern" && a["start_bar"] == 10 && a["lane"] == 1),
                 "ppp {ppp}: {painted:?}"
@@ -1080,7 +1726,7 @@ mod tests {
                 let tr = find(&c, "trim");
                 assert!(tr.len() == 1 && tr[0]["end_bar"] == 5, "{tag}: {c:?}");
                 // paint: an empty cell in view maps through scroll and zoom
-                let (c, _) = drive_view(&p, ppp, v, &|at| {
+                let (c, _) = drive_mode(&p, ppp, v, true, &|at| {
                     // bar 7.5 is in view for every view above (the song shows 16 bars at least, so the most zoomed one shows bars 2.5 to 7.8)
                     let a = at(7.5, 4.0);
                     drag(a, a)
@@ -1175,5 +1821,1242 @@ mod tests {
                 s.view
             );
         }
+    }
+
+    #[derive(Clone, Debug)]
+    struct Target {
+        name: String,
+        response: egui::Response,
+        visible: Rect,
+    }
+    const TARGETS: &str = "playlist-grid-test-responses";
+    pub(super) fn record_target(ui: &egui::Ui, name: &str, response: &egui::Response) {
+        let target = Target {
+            name: name.into(),
+            response: response.clone(),
+            visible: if ui.is_visible() {
+                response
+                    .interact_rect
+                    .intersect(ui.clip_rect())
+                    .intersect(ui.ctx().screen_rect())
+            } else {
+                Rect::NOTHING
+            },
+        };
+        ui.ctx().data_mut(|d| {
+            let key = egui::Id::new(TARGETS);
+            let mut targets = d.get_temp::<Vec<Target>>(key).unwrap_or_default();
+            targets.push(target);
+            d.insert_temp(key, targets);
+        });
+    }
+    /// Tests below use real egui events. They are authored here for the existing
+    /// adequate GUI test runner; local extracted probes do not execute them.
+    struct EventGrid {
+        ctx: egui::Context,
+        p: Project,
+        sel: GridSel,
+        calls: Vec<(&'static str, Value)>,
+        targets: Vec<Target>,
+        shapes: Vec<egui::epaint::ClippedShape>,
+        screen: Rect,
+        tick: usize,
+        bar_now: f32,
+    }
+
+    impl EventGrid {
+        fn new(p: Project, ppp: f32, size: egui::Vec2) -> Self {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(ppp);
+            let mut r = Self {
+                ctx,
+                p,
+                sel: GridSel {
+                    song_navigation: true,
+                    ..Default::default()
+                },
+                calls: Vec::new(),
+                targets: Vec::new(),
+                shapes: Vec::new(),
+                screen: Rect::from_min_size(pos2(0.0, 0.0), size),
+                tick: 0,
+                bar_now: 0.0,
+            };
+            r.frame(vec![]);
+            r.frame(vec![]);
+            r
+        }
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            self.tick += 1;
+            self.ctx
+                .data_mut(|d| d.insert_temp(egui::Id::new("preview-note-visits"), 0usize));
+            self.ctx
+                .data_mut(|d| d.insert_temp(egui::Id::new(TARGETS), Vec::<Target>::new()));
+            let out = self.ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(self.screen),
+                    events,
+                    time: Some(self.tick as f64 * 0.05),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        self.calls
+                            .extend(playlist_grid(ui, &self.p, &mut self.sel, self.bar_now));
+                    });
+                },
+            );
+            self.shapes = out.shapes;
+            self.targets = self.ctx.data_mut(|d| {
+                d.get_temp::<Vec<Target>>(egui::Id::new(TARGETS))
+                    .unwrap_or_default()
+            });
+        }
+        fn visible_target(&self, name: &str) -> Result<&Target, String> {
+            let matches: Vec<_> = self.targets.iter().filter(|t| t.name == name).collect();
+            if matches.len() != 1 {
+                return Err(format!(
+                    "Expected unique control {name}, got {}",
+                    matches.len()
+                ));
+            }
+            let t = matches[0];
+            if !t.visible.is_positive() || !t.visible.contains_rect(t.response.rect) {
+                return Err(format!("Control {name} is hidden or clipped"));
+            }
+            Ok(t)
+        }
+        fn target(&self, name: &str) -> Result<&Target, String> {
+            let t = self.visible_target(name)?;
+            if !t.response.enabled() {
+                return Err(format!("Control {name} is disabled"));
+            }
+            Ok(t)
+        }
+        fn disabled_point(&self, name: &str) -> egui::Pos2 {
+            let t = self.visible_target(name).unwrap();
+            assert!(!t.response.enabled(), "{name} must really be disabled");
+            assert!(self.target(name).is_err());
+            t.visible.center()
+        }
+        fn point(&self, name: &str) -> egui::Pos2 {
+            self.target(name)
+                .unwrap_or_else(|e| panic!("{e}"))
+                .visible
+                .center()
+        }
+        fn press(&mut self, at: egui::Pos2, down: bool) {
+            self.frame(vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: down,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ]);
+        }
+        fn click(&mut self, at: egui::Pos2) {
+            self.press(at, true);
+            self.press(at, false);
+            self.frame(vec![]);
+        }
+        fn button(&mut self, label: &str) {
+            let at = self.point(label);
+            self.click(at);
+        }
+        fn key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+            for pressed in [true, false] {
+                self.frame(vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                }]);
+            }
+        }
+        fn focus_number(&mut self, name: &str) -> egui::Id {
+            let id = self.target(name).unwrap().response.id;
+            let at = self.point(name);
+            self.click(at);
+            self.click(at);
+            assert!(
+                self.ctx.memory(|m| m.has_focus(id)),
+                "Numeric response {name} must own focus before typing"
+            );
+            self.frame(vec![]);
+            assert!(self.ctx.wants_keyboard_input());
+            id
+        }
+        fn pending_number(&mut self, name: &str, value: &str) -> egui::Id {
+            let id = self.focus_number(name);
+            self.key(
+                egui::Key::A,
+                egui::Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            );
+            self.frame(vec![egui::Event::Text(value.to_owned())]);
+            assert!(self.ctx.memory(|m| m.has_focus(id)));
+            assert_eq!(
+                self.ctx.data_mut(|d| d.get_temp::<String>(id)).as_deref(),
+                Some(value)
+            );
+            id
+        }
+        fn edit_number(&mut self, label: &str, value: &str) {
+            self.pending_number(label, value);
+            self.key(egui::Key::Enter, egui::Modifiers::default());
+            assert!(self.calls.is_empty(), "Typing must not dispatch a mutation");
+        }
+    }
+
+    fn test_engine(tag: &str) -> Engine {
+        let mut e = Engine::new(
+            std::env::temp_dir().join(format!("flpl_form_{tag}_{}", std::process::id())),
+        );
+        e.call("add_track", &json!({"name":"kick", "preset":"kick"}))
+            .unwrap();
+        e.call("add_pattern", &json!({"name":"verse", "bars":2}))
+            .unwrap();
+        e.call(
+            "toggle_step",
+            &json!({"pattern":"verse", "track":"kick", "step":0}),
+        )
+        .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern":"verse", "start_bar":2, "lane":0}),
+        )
+        .unwrap();
+        e.call(
+            "place_pattern",
+            &json!({"pattern":"verse", "start_bar":8, "lane":1}),
+        )
+        .unwrap();
+        e
+    }
+    fn owner(e: &Engine) -> GridOwner {
+        GridOwner {
+            revision: e.revision,
+            generation: e.project_load_generation,
+        }
+    }
+    #[test]
+    fn capture_initializer_is_view_only_and_checks_current_identity() {
+        let e = test_engine("capture");
+        let before = (
+            project_value(&e),
+            e.revision,
+            e.project_load_generation,
+            e.undo_depth(),
+        );
+        let id = e.project.playlist[0].id.as_str();
+        let ctx = egui::Context::default();
+        let initialized = capture_view(
+            &ctx,
+            &e.project,
+            e.revision,
+            e.project_load_generation,
+            "shared",
+            Some(id),
+            true,
+        )
+        .unwrap();
+        assert_eq!(initialized["source"]["share_count"], 2);
+        assert_eq!(initialized["selected_id"], id);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let key = egui::Id::new("flpl_state");
+                let mut sel = ui.data(|d| d.get_temp::<GridSel>(key)).unwrap();
+                assert!(playlist_grid(ui, &e.project, &mut sel, 0.0).is_empty());
+                ui.data_mut(|d| d.insert_temp(key, sel));
+            });
+        });
+        assert_eq!(
+            capture_view(
+                &ctx,
+                &e.project,
+                e.revision,
+                e.project_load_generation,
+                "shared",
+                Some(id),
+                false
+            )
+            .unwrap(),
+            initialized
+        );
+        assert!(capture_view(
+            &ctx,
+            &e.project,
+            e.revision + 1,
+            e.project_load_generation,
+            "shared",
+            Some(id),
+            false
+        )
+        .is_err());
+        assert!(capture_view(
+            &ctx,
+            &e.project,
+            e.revision,
+            e.project_load_generation + 1,
+            "shared",
+            Some(id),
+            false
+        )
+        .is_err());
+        assert_eq!(
+            (
+                project_value(&e),
+                e.revision,
+                e.project_load_generation,
+                e.undo_depth()
+            ),
+            before
+        );
+    }
+
+    #[test]
+    fn capture_initializer_rejects_missing_ambiguous_and_wrong_shared_sources() {
+        let e = test_engine("capture_bad");
+        let ctx = egui::Context::default();
+        let id = e.project.playlist[0].id.as_str();
+        for (case, id) in [
+            ("shared", None),
+            ("shared", Some("missing")),
+            ("independent", Some(id)),
+            ("empty", None),
+            ("long-reveal", Some(id)),
+        ] {
+            assert!(capture_view(&ctx, &e.project, 1, 1, case, id, true).is_err());
+        }
+        let mut p = e.project.clone();
+        p.playlist.push(p.playlist[0].clone());
+        assert!(capture_view(&ctx, &p, 1, 1, "shared", Some(id), true).is_err());
+        p = e.project.clone();
+        p.patterns
+            .push(p.patterns[p.pattern_index(&p.playlist[0].pattern).unwrap()].clone());
+        assert!(capture_view(&ctx, &p, 1, 1, "shared", Some(id), true).is_err());
+    }
+
+    #[test]
+    fn capture_long_views_use_production_reveal_and_keep_overview_distinct() {
+        let mut e = test_engine("capture_long");
+        let id = e.project.playlist[0].id.clone();
+        e.call(
+            "playlist_clip",
+            &json!({"action":"move","id":id,"to_bar":1022,"lane":19}),
+        )
+        .unwrap();
+        let ctx = egui::Context::default();
+        let overview = capture_view(
+            &ctx,
+            &e.project,
+            e.revision,
+            e.project_load_generation,
+            "long-overview",
+            Some(&id),
+            true,
+        )
+        .unwrap();
+        assert_eq!(overview["view"]["scroll_bar"], 0.0);
+        assert_eq!(overview["view"]["zoom"], 1.0);
+        assert_eq!(overview["view"]["scroll_lane"], 13.0);
+        let detail = capture_view(
+            &ctx,
+            &e.project,
+            e.revision,
+            e.project_load_generation,
+            "long-reveal",
+            Some(&id),
+            true,
+        )
+        .unwrap();
+        let c = e.project.playlist.iter().find(|c| c.id == id).unwrap();
+        let expected = reveal_view(c, 1032).clamped(1032, 21);
+        assert_eq!(detail["view"]["scroll_bar"], expected.scroll_bar);
+        assert_eq!(detail["view"]["zoom"], expected.zoom);
+        assert_ne!(detail["view"], overview["view"]);
+        ctx.data_mut(|d| {
+            let key = egui::Id::new("flpl_state");
+            let mut sel = d.get_temp::<GridSel>(key).unwrap();
+            sel.paint = true;
+            d.insert_temp(key, sel);
+        });
+        assert!(capture_view(
+            &ctx,
+            &e.project,
+            e.revision,
+            e.project_load_generation,
+            "long-reveal",
+            Some(&id),
+            false
+        )
+        .is_err());
+    }
+
+    fn project_value(e: &Engine) -> Value {
+        serde_json::to_value(&e.project).unwrap()
+    }
+
+    #[test]
+    fn select_default_clear_preserves_audio_selection_and_paint_is_intentional() {
+        let p = one_clip_project();
+        for ppp in [1.0, 2.0] {
+            for size in [vec2(1280.0, 720.0), vec2(1920.0, 1080.0)] {
+                let mut r = EventGrid::new(p.clone(), ppp, size);
+                assert!(!r.sel.paint);
+                let g = r.sel.geo.unwrap();
+                r.click(pos2(g.x_of(0.8), g.y_of(0.0) + 14.0));
+                assert_eq!(r.sel.clip_sel.as_deref(), Some(p.playlist[0].id.as_str()));
+                assert!(r.calls.is_empty());
+                // Selection adds a form, so obtain the current geometry again.
+                let g = r.sel.geo.unwrap();
+                r.click(pos2(g.x_of(10.5), g.y_of(1.0) + 14.0));
+                assert!(r.sel.clip_sel.is_none());
+                assert!(r.calls.is_empty());
+                r.sel.clip_sel = Some("audio-selection-not-a-pattern-clip".into());
+                r.frame(vec![]);
+                let g = r.sel.geo.unwrap();
+                r.click(pos2(g.x_of(10.5), g.y_of(1.0) + 14.0));
+                assert_eq!(
+                    r.sel.clip_sel.as_deref(),
+                    Some("audio-selection-not-a-pattern-clip")
+                );
+                r.button("Paint");
+                assert!(r.sel.paint);
+                assert!(r.calls.is_empty());
+                let g = r.sel.geo.unwrap();
+                r.click(pos2(g.x_of(10.5), g.y_of(1.0) + 14.0));
+                assert_eq!(
+                    r.calls,
+                    vec![(
+                        "place_pattern",
+                        json!({"pattern":"verse","start_bar":10,"lane":1})
+                    )]
+                );
+                r.calls.clear();
+                r.click(pos2(g.x_of(0.8), g.y_of(0.0) + 14.0));
+                assert!(
+                    r.calls.is_empty(),
+                    "Clip clicks cannot paint behind the clip"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn form_buttons_are_exact_single_edits_with_exact_undo_and_redo() {
+        for (label, action) in [
+            ("Move", "move"),
+            ("Set length", "trim"),
+            ("Duplicate after", "duplicate"),
+            ("Make independent", "make_unique"),
+        ] {
+            for categorized in [false, true] {
+                let mut e = test_engine(action);
+                let id = e.project.playlist[0].id.clone();
+                e.call(
+                    "playlist_clip",
+                    &json!({"id":id,"action":"trim","start_bar":3}),
+                )
+                .unwrap();
+                let c = e.project.playlist[0].clone();
+                assert_eq!(c.offset_bars, 1);
+                let before = project_value(&e);
+                let depth = e.undo_depth();
+                let rev = e.revision;
+                let mut r = EventGrid::new(e.project.clone(), 1.0, vec2(1280.0, 720.0));
+                r.sel.owner = owner(&e);
+                r.sel.clip_sel = Some(c.id.clone());
+                r.frame(vec![]);
+                let d = r.sel.draft.as_mut().unwrap();
+                d.start = 6;
+                d.lane = 4;
+                d.length = 5;
+                d.copies = 2;
+                r.frame(vec![]);
+                r.button(label);
+                r.frame(vec![]);
+                assert_eq!(r.calls.len(), 1, "{label}");
+                let (tool, args) = &r.calls[0];
+                assert_eq!(*tool, "playlist_clip");
+                let expected = match action {
+                    "move" => json!({"action":"move", "id":c.id, "to_bar":5, "lane":3}),
+                    "trim" => json!({"action":"trim", "id":c.id, "end_bar":8}),
+                    "duplicate" => json!({"action":"duplicate", "id":c.id, "count":2}),
+                    _ => json!({"action":"make_unique", "id":c.id}),
+                };
+                assert_eq!(*args, expected);
+                let out = if categorized {
+                    let mut args = args.clone();
+                    args["op"] = args["action"].take();
+                    args["action"] = json!("playlist_clip");
+                    guarded_grid_call(&mut e, r.sel.owner, "arrange", &args).unwrap()
+                } else {
+                    guarded_grid_call(&mut e, r.sel.owner, tool, args).unwrap()
+                };
+                assert_eq!(e.revision, rev + 1);
+                assert_eq!(e.undo_depth(), (depth.0 + 1, 0));
+                let now = &e.project.playlist[0];
+                assert_eq!(now.id, c.id);
+                assert_eq!(now.offset_bars, c.offset_bars);
+                assert_eq!(
+                    e.project.playlist[1], r.p.playlist[1],
+                    "Unrelated placement"
+                );
+                match action {
+                    "move" => assert_eq!((now.start_bar, now.lane, now.bars), (5, 3, 1)),
+                    "trim" => assert_eq!((now.start_bar, now.bars), (3, 5)),
+                    "duplicate" => {
+                        let ids = out["new_ids"].as_array().unwrap();
+                        assert_eq!(ids.len(), 2);
+                        assert_ne!(ids[0], ids[1]);
+                        for (k, id) in ids.iter().enumerate() {
+                            let copy = e
+                                .project
+                                .playlist
+                                .iter()
+                                .find(|p| p.id == id.as_str().unwrap())
+                                .unwrap();
+                            assert_eq!(copy.pattern, c.pattern);
+                            assert_eq!(copy.start_bar, 4 + k as u32);
+                        }
+                    }
+                    _ => {
+                        assert_eq!(out["new_pattern"], "verse #2");
+                        assert_eq!(now.pattern, "verse #2");
+                    }
+                }
+                let after = project_value(&e);
+                e.call("undo", &json!({})).unwrap();
+                assert_eq!(project_value(&e), before);
+                e.call("redo", &json!({})).unwrap();
+                assert_eq!(project_value(&e), after);
+            }
+        }
+    }
+
+    #[test]
+    fn independent_source_notes_do_not_change_the_other_placement() {
+        let mut e = test_engine("isolation");
+        let c = e.project.playlist[0].clone();
+        let d = ClipDraft::new(&c, owner(&e));
+        let old_source = e.project.patterns[e.project.pattern_index("verse").unwrap()].clone();
+        guarded_grid_call(
+            &mut e,
+            d.owner,
+            "playlist_clip",
+            &d.payload(&c, "make_unique").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(e.project.playlist[0].id, c.id);
+        e.call(
+            "toggle_step",
+            &json!({"pattern":"verse #2", "track":"kick", "step":4}),
+        )
+        .unwrap();
+        assert_eq!(
+            e.project.patterns[e.project.pattern_index("verse").unwrap()],
+            old_source
+        );
+        assert_eq!(e.project.playlist[1].pattern, "verse");
+        assert_ne!(
+            e.project.patterns[e.project.pattern_index("verse #2").unwrap()].clips,
+            old_source.clips
+        );
+    }
+
+    #[test]
+    fn grid_only_drafts_persist_through_navigation_and_numeric_focus_emits_no_grid_calls() {
+        let e = test_engine("focus");
+        let mut r = EventGrid::new(e.project.clone(), 1.0, vec2(1280.0, 720.0));
+        r.sel.owner = owner(&e);
+        r.sel.clip_sel = Some(e.project.playlist[0].id.clone());
+        r.frame(vec![]);
+        r.edit_number("Start", "6");
+        assert_eq!(r.sel.draft.as_ref().unwrap().start, 6);
+        r.edit_number("Length", "5");
+        assert_eq!(r.sel.draft.as_ref().unwrap().length, 5);
+        let numeric_id = r.target("Start").unwrap().response.id;
+        for label in [
+            "Fit song",
+            "Reveal clip",
+            "Go to playhead",
+            "Paint",
+            "Select",
+            "Zoom in",
+            "Zoom out",
+        ] {
+            r.button(label);
+        }
+        for _ in 0..4 {
+            r.frame(vec![]);
+        }
+        assert_eq!(r.sel.draft.as_ref().unwrap().start, 6);
+        assert_eq!(r.sel.draft.as_ref().unwrap().length, 5);
+        assert_eq!(r.target("Start").unwrap().response.id, numeric_id);
+        assert!(r.calls.is_empty());
+        assert_eq!(r.sel.pattern, 0);
+        // Ordinary keyboard focus can activate buttons. Do not add shortcuts.
+        let mut keyboard = EventGrid::new(one_clip_project(), 1.0, vec2(1280.0, 720.0));
+        let mut reached_paint = false;
+        for _ in 0..24 {
+            keyboard.key(egui::Key::Tab, egui::Modifiers::default());
+            keyboard.key(egui::Key::Space, egui::Modifiers::default());
+            if keyboard.sel.paint {
+                reached_paint = true;
+                break;
+            }
+        }
+        assert!(reached_paint, "Paint must be keyboard-focusable");
+        assert!(keyboard.calls.is_empty());
+    }
+
+    #[test]
+    fn focused_start_text_is_not_rebound_after_engine_edit_undo_or_reused_id_load() {
+        for ppp in [1.0, 2.0] {
+            for change in ["edit", "undo", "load"] {
+                for commit in ["enter", "pointer"] {
+                    let mut e = test_engine(&format!("focused_{change}_{commit}_{ppp}"));
+                    // Undo must retain both selected clip and its stable ID.
+                    e.call("set_tempo", &json!({"bpm":123})).unwrap();
+                    let id = e.project.playlist[0].id.clone();
+                    let mut r = EventGrid::new(e.project.clone(), ppp, vec2(1280.0, 720.0));
+                    r.sel.owner = owner(&e);
+                    r.sel.clip_sel = Some(id.clone());
+                    r.frame(vec![]);
+                    let old_id = r.pending_number("Start", "77");
+                    assert_eq!(r.sel.draft.as_ref().unwrap().start, 77);
+                    match change {
+                        "undo" => {
+                            e.call("undo", &json!({})).unwrap();
+                        }
+                        "load" => e.replace_project(e.project.clone()),
+                        _ => {
+                            e.call("set_tempo", &json!({"bpm":130})).unwrap();
+                        }
+                    }
+                    let before = project_value(&e);
+                    let rev = e.revision;
+                    let depth = e.undo_depth();
+                    r.p = e.project.clone();
+                    r.sel.owner = owner(&e);
+                    r.frame(vec![]);
+                    assert_eq!(r.sel.clip_sel.as_deref(), Some(id.as_str()));
+                    assert_ne!(r.target("Start").unwrap().response.id, old_id);
+                    let fresh_start = u64::from(e.project.playlist[0].start_bar) + 1;
+                    assert_eq!(r.sel.draft.as_ref().unwrap().start, fresh_start);
+                    assert!(r.sel.toast.as_deref().unwrap().contains("refreshed"));
+                    if commit == "enter" {
+                        r.key(egui::Key::Enter, Default::default());
+                    } else {
+                        r.button("Select");
+                    }
+                    for _ in 0..3 {
+                        r.frame(vec![]);
+                    }
+                    assert_eq!(r.sel.draft.as_ref().unwrap().start, fresh_start);
+                    assert!(!r.ctx.memory(|m| m.has_focus(old_id)));
+                    let at = r.disabled_point("Move");
+                    r.click(at);
+                    assert!(r.calls.is_empty());
+                    assert_eq!(project_value(&e), before);
+                    assert_eq!(e.revision, rev);
+                    assert_eq!(e.undo_depth(), depth);
+                    r.edit_number("Start", "11");
+                    r.button("Move");
+                    assert_eq!(
+                        r.calls,
+                        vec![(
+                            "playlist_clip",
+                            json!({"action":"move", "id":id, "to_bar":10, "lane":0})
+                        )]
+                    );
+                    let (tool, args) = &r.calls[0];
+                    guarded_grid_call(&mut e, r.sel.owner, tool, args).unwrap();
+                    assert_eq!(e.project.playlist[0].start_bar, 10);
+                    assert_eq!(e.revision, rev + 1);
+                    assert_eq!(e.undo_depth(), (depth.0 + 1, 0));
+                    e.call("undo", &json!({})).unwrap();
+                    assert_eq!(project_value(&e), before);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn preview_shapes_include_repeat_5000_of_8192_and_visible_iteration_budget() {
+        for ppp in [1.0, 2.0] {
+            let e = test_engine("preview");
+            let mut p = e.project.clone();
+            p.playlist.truncate(1);
+            p.playlist[0].start_bar = 0;
+            p.playlist[0].bars = 8192;
+            let pi = p.pattern_index("verse").unwrap();
+            p.patterns[pi].bars = 1;
+            let mut r = EventGrid::new(p, ppp, vec2(1280.0, 720.0));
+            r.sel.view.scroll_bar = 5000.0;
+            r.sel.view.zoom = ZOOM_MAX;
+            r.frame(vec![]);
+            let g = r.sel.geo.unwrap();
+            let color = pattern_color("verse").gamma_multiply(0.95);
+            fn notes(shape: &egui::epaint::Shape, color: Color32, out: &mut Vec<[egui::Pos2; 2]>) {
+                match shape {
+                    egui::epaint::Shape::LineSegment { points, stroke }
+                        if stroke.color == egui::epaint::ColorMode::Solid(color)
+                            && stroke.width == 1.0 =>
+                    {
+                        out.push(*points)
+                    }
+                    egui::epaint::Shape::Vec(v) => {
+                        for s in v {
+                            notes(s, color, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut strokes = Vec::new();
+            for shape in &r.shapes {
+                let mut found = Vec::new();
+                notes(&shape.shape, color, &mut found);
+                strokes.extend(
+                    found
+                        .into_iter()
+                        .filter(|s| shape.clip_rect.contains(s[0]) && r.screen.contains(s[0])),
+                );
+            }
+            assert!(
+                strokes
+                    .iter()
+                    .any(|s| (s[0].x - (g.x_of(5000.0) + 1.0)).abs() < 0.1),
+                "Missing actual preview shape at repetition 5000"
+            );
+            // Compiler offset semantics: a two-bar source at offset one puts
+            // its step-zero note on odd clip-local bars, not on bar 5000.
+            let pi = r.p.pattern_index("verse").unwrap();
+            r.p.patterns[pi].bars = 2;
+            r.p.playlist[0].offset_bars = 1;
+            r.frame(vec![]);
+            let g = r.sel.geo.unwrap();
+            let mut offset_strokes = Vec::new();
+            for shape in &r.shapes {
+                notes(&shape.shape, color, &mut offset_strokes);
+            }
+            assert!(offset_strokes
+                .iter()
+                .any(|s| (s[0].x - (g.x_of(5001.0) + 1.0)).abs() < 0.1));
+            assert!(!offset_strokes
+                .iter()
+                .any(|s| (s[0].x - (g.x_of(5000.0) + 1.0)).abs() < 0.1));
+            // A partial first source repetition must not draw its earlier
+            // notes outside the left edge of a clip that starts onscreen.
+            r.p.playlist[0].start_bar = 2;
+            r.sel.view.scroll_bar = 0.0;
+            r.sel.view.zoom = 1024.0;
+            r.frame(vec![]);
+            let g = r.sel.geo.unwrap();
+            let mut initial_strokes = Vec::new();
+            for shape in &r.shapes {
+                notes(&shape.shape, color, &mut initial_strokes);
+            }
+            assert!(initial_strokes
+                .iter()
+                .any(|s| (s[0].x - (g.x_of(3.0) + 1.0)).abs() < 0.1));
+            assert!(initial_strokes.iter().all(|s| s[0].x >= g.x_of(2.0) + 1.0));
+            r.p.playlist[0].start_bar = 0;
+            r.sel.view.zoom = ZOOM_MAX;
+            // No Engine compilation of this synthetic extreme clip: exercise
+            // actual drawing-loop visits with eight dense source rows.
+            let note = r.p.patterns[pi].clips.values().next().unwrap()[0].clone();
+            r.p.patterns[pi].clips.clear();
+            for track in 0..8 {
+                r.p.patterns[pi]
+                    .clips
+                    .insert(format!("dense-{track}"), vec![note.clone(); 1024]);
+            }
+            r.p.playlist[0].bars = u32::MAX;
+            r.sel.view.scroll_bar = 3_000_000_000.0;
+            r.frame(vec![]);
+            let visits = r
+                .ctx
+                .data_mut(|d| d.get_temp::<usize>(egui::Id::new("preview-note-visits")))
+                .unwrap();
+            assert_eq!(
+                visits, 16384,
+                "Actual dense visible drawing loop must obey its budget"
+            );
+        }
+        // The same production sampler bounds dense extreme extents around the
+        // actual viewport, and retains the offset phase used by the compiler.
+        for width in [1, 320, 1920, 3840] {
+            let reps: Vec<_> = preview_repeats(
+                3_000_000_000.0,
+                3_100_000_000.0,
+                f64::from(u32::MAX),
+                0.5,
+                17,
+                width,
+            )
+            .collect();
+            assert!(reps.len() <= width.min(64));
+            assert!(reps
+                .iter()
+                .all(|b| *b >= 3_000_000_000.0 - 0.5 && *b < 3_100_000_000.0));
+            let per_track = (16384 / (8 * reps.len().max(1))).min(256);
+            assert!(8 * reps.len() * per_track <= 16384);
+        }
+        assert_eq!(
+            preview_repeats(0.0, 4.0, 4.0, 2.0, 1, 64).collect::<Vec<_>>(),
+            vec![-1.0, 1.0, 3.0]
+        );
+        assert!(preview_repeats(5.0, 6.0, 4.0, 1.0, 0, 64).next().is_none());
+    }
+
+    #[test]
+    fn response_targets_reject_hidden_offviewport_duplicate_and_disabled_at_both_scales() {
+        for ppp in [1.0, 2.0] {
+            let mut r = EventGrid::new(one_clip_project(), ppp, vec2(210.0, 720.0));
+            r.sel.clip_sel = Some(r.p.playlist[0].id.clone());
+            r.frame(vec![]);
+            // A narrow layout wraps controls. Actual responses, not a value
+            // painted next to a label, identify every editable field.
+            let at = r.disabled_point("Move");
+            r.click(at);
+            assert!(r.calls.is_empty());
+            let start_id = r.target("Start").unwrap().response.id;
+            r.edit_number("Start", "17");
+            assert_eq!(r.sel.draft.as_ref().unwrap().start, 17);
+            assert_eq!(r.target("Start").unwrap().response.id, start_id);
+            assert_eq!(r.sel.draft.as_ref().unwrap().length, 2);
+            assert_eq!(r.sel.draft.as_ref().unwrap().lane, 1);
+            assert_eq!(r.sel.draft.as_ref().unwrap().copies, 1);
+            // Record real distinct responses in both duplicate and hidden UIs.
+            for hidden in [false, true] {
+                r.ctx
+                    .data_mut(|d| d.insert_temp(egui::Id::new(TARGETS), Vec::<Target>::new()));
+                let _ = r.ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(r.screen),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            if hidden {
+                                ui.set_invisible();
+                            }
+                            for _ in 0..if hidden { 1 } else { 2 } {
+                                let response = ui.button("Start");
+                                record_target(ui, "Start", &response);
+                            }
+                        });
+                    },
+                );
+                r.targets = r
+                    .ctx
+                    .data_mut(|d| d.get_temp::<Vec<Target>>(egui::Id::new(TARGETS)).unwrap());
+                assert!(
+                    r.target("Start").is_err(),
+                    "Duplicate or hidden responses must not be clicked"
+                );
+                if !hidden {
+                    assert_eq!(r.targets.len(), 2);
+                    assert_ne!(r.targets[0].response.id, r.targets[1].response.id);
+                }
+            }
+            r.screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(210.0, 36.0));
+            r.frame(vec![]);
+            assert!(
+                r.target("Start").is_err(),
+                "An offscreen field must not be clicked"
+            );
+            assert!(r.calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn stale_drafts_and_locked_guard_reject_revision_or_reused_id_generation() {
+        for change in ["edit", "load", "undo", "generation-only"] {
+            let mut e = test_engine("stale");
+            let c = e.project.playlist[0].clone();
+            let mut d = ClipDraft::new(&c, owner(&e));
+            d.start = 5;
+            match change {
+                "load" => e.replace_project(e.project.clone()),
+                "undo" => {
+                    e.call("undo", &json!({})).unwrap();
+                }
+                "generation-only" => e.project_load_generation += 1,
+                _ => {
+                    e.call("set_tempo", &json!({"bpm":130})).unwrap();
+                }
+            }
+            assert!(e.project.playlist.iter().any(|now| now.id == c.id));
+            let before = project_value(&e);
+            let revision = e.revision;
+            let depth = e.undo_depth();
+            assert!(guarded_grid_call(
+                &mut e,
+                d.owner,
+                "playlist_clip",
+                &d.payload(&c, "move").unwrap()
+            )
+            .is_err());
+            assert_eq!(project_value(&e), before);
+            assert_eq!(e.revision, revision);
+            assert_eq!(e.undo_depth(), depth);
+            d.owner = owner(&e);
+            guarded_grid_call(
+                &mut e,
+                d.owner,
+                "playlist_clip",
+                &d.payload(&c, "move").unwrap(),
+            )
+            .unwrap();
+            assert_eq!(e.project.playlist[0].start_bar, 4);
+        }
+    }
+
+    #[test]
+    fn invalid_noop_and_stale_form_clicks_do_not_emit_calls() {
+        let e = test_engine("invalid");
+        let c = e.project.playlist[0].clone();
+        let mut r = EventGrid::new(e.project.clone(), 1.0, vec2(1280.0, 720.0));
+        r.sel.owner = owner(&e);
+        r.sel.clip_sel = Some(c.id.clone());
+        r.frame(vec![]);
+        for label in ["Move", "Set length"] {
+            let at = r.disabled_point(label);
+            r.click(at);
+        }
+        assert!(r.calls.is_empty(), "No-op buttons are disabled");
+        let mut d = ClipDraft::new(&c, owner(&e));
+        for value in [0, u64::MAX] {
+            d.start = value;
+            assert!(d.payload(&c, "move").is_none());
+        }
+        d = ClipDraft::new(&c, owner(&e));
+        d.length = 0;
+        assert!(d.payload(&c, "trim").is_none());
+        d.length = u64::MAX;
+        assert!(d.payload(&c, "trim").is_none());
+        for n in [0, 65, u64::MAX] {
+            d.copies = n;
+            assert!(d.payload(&c, "duplicate").is_none());
+        }
+        d = ClipDraft::new(&c, owner(&e));
+        d.copies = 64;
+        assert_eq!(d.payload(&c, "duplicate").unwrap()["count"], 64);
+        let mut far = c.clone();
+        far.start_bar = u32::MAX - 2;
+        assert!(ClipDraft::new(&far, owner(&e))
+            .payload(&far, "duplicate")
+            .is_none());
+        r.sel.draft.as_mut().unwrap().start = 12;
+        r.sel.owner.revision += 1;
+        let at = r.disabled_point("Move");
+        r.press(at, true);
+        r.press(at, false);
+        r.frame(vec![]);
+        assert!(r.calls.is_empty());
+        assert!(r.sel.toast.as_deref().unwrap().contains("refreshed"));
+        assert_eq!(
+            r.sel.draft.as_ref().unwrap().start,
+            u64::from(c.start_bar) + 1
+        );
+    }
+
+    #[test]
+    fn stale_or_cancelled_drag_swallows_release_even_over_empty_paint_cell() {
+        for change in ["revision", "generation", "mode", "escape", "deleted"] {
+            let p = one_clip_project();
+            let mut r = EventGrid::new(p, 1.0, vec2(1280.0, 720.0));
+            r.button("Paint");
+            let g = r.sel.geo.unwrap();
+            let from = pos2(g.x_of(0.8), g.y_of(0.0) + 14.0);
+            let to = pos2(g.x_of(5.8), g.y_of(1.0) + 14.0);
+            r.press(from, true);
+            r.frame(vec![egui::Event::PointerMoved(from + vec2(20.0, 0.0))]);
+            assert!(r.sel.active_drag.is_some());
+            match change {
+                "revision" => r.sel.owner.revision += 1,
+                "generation" => r.sel.owner.generation += 1,
+                "mode" => r.sel.paint = false,
+                "deleted" => {
+                    r.p.playlist.clear();
+                    r.sel.owner.revision += 1;
+                }
+                _ => {
+                    r.key(egui::Key::Escape, egui::Modifiers::default());
+                }
+            }
+            r.frame(vec![egui::Event::PointerMoved(to)]);
+            r.press(to, false);
+            r.frame(vec![]);
+            assert!(r.calls.is_empty(), "{change}: {:?}", r.calls);
+            assert!(r.sel.active_drag.is_none());
+        }
+    }
+
+    #[test]
+    fn fit_1024_reveal_lane_20_and_navigation_leave_engine_untouched() {
+        let mut e = test_engine("navigation");
+        let id = e.project.playlist[0].id.clone();
+        e.call(
+            "playlist_clip",
+            &json!({"id":id,"action":"move","to_bar":1022,"lane":20}),
+        )
+        .unwrap();
+        let before = project_value(&e);
+        let rev = e.revision;
+        let depth = e.undo_depth();
+        for ppp in [1.0, 2.0] {
+            for size in [
+                vec2(640.0, 720.0),
+                vec2(1280.0, 720.0),
+                vec2(1920.0, 1080.0),
+            ] {
+                let mut r = EventGrid::new(e.project.clone(), ppp, size);
+                r.sel.owner = owner(&e);
+                r.button("Fit song");
+                let g = r.sel.geo.unwrap();
+                assert!(g.x_of(1024.0) <= g.grid.max.x);
+                assert_eq!(g.scroll_bar, 0.0);
+                if size.x == 640.0 {
+                    assert!(g.bar_px < 1.0);
+                }
+                r.sel.clip_sel = Some(id.clone());
+                r.frame(vec![]);
+                r.button("Reveal clip");
+                let g = r.sel.geo.unwrap();
+                assert!(
+                    g.y_of(20.0) >= g.grid.min.y && g.y_of(20.0) + LANE_H <= g.grid.max.y + 0.01
+                );
+                assert!(g.x_of(1022.0) >= g.grid.min.x && g.x_of(1024.0) <= g.grid.max.x);
+                let row = super::super::fl_automation::AutoRow {
+                    rect: g.grid,
+                    lo: 0.0,
+                    hi: 1.0,
+                };
+                assert_eq!(row.x_of_beat(&g, 4096.0), g.x_of(1024.0));
+                r.bar_now = 50.5;
+                r.button("Go to playhead");
+                assert!((r.sel.view.scroll_bar - 50.5).abs() < 0.01);
+                r.sel.song_navigation = false;
+                r.bar_now = 80.0;
+                r.frame(vec![]);
+                let at = r.disabled_point("Go to playhead");
+                r.click(at);
+                assert!((r.sel.view.scroll_bar - 50.5).abs() < 0.01);
+                assert!(r.calls.is_empty());
+                assert_eq!(project_value(&e), before);
+                assert_eq!(e.revision, rev);
+                assert_eq!(e.undo_depth(), depth);
+            }
+        }
+    }
+
+    #[test]
+    fn overview_clip_has_no_ambiguous_resize_or_move() {
+        let mut p = one_clip_project();
+        p.playlist[0].bars = 1024;
+        let far = p.playlist[0].clone();
+        let mut tiny = far.clone();
+        tiny.id = "overview-tiny".into();
+        tiny.start_bar = 512;
+        tiny.bars = 1;
+        tiny.lane = 1;
+        p.playlist.push(tiny);
+        let mut r = EventGrid::new(p, 1.0, vec2(640.0, 720.0));
+        let g = r.sel.geo.unwrap();
+        assert!(g.bar_px < 1.0);
+        let at = pos2(g.x_of(512.0) + 1.25, g.y_of(1.0) + 14.0);
+        for frame in drag(at, at + vec2(30.0, 0.0)) {
+            r.frame(frame);
+        }
+        assert!(r.calls.is_empty());
+        r.sel.paint = true;
+        r.frame(vec![]);
+        let g = r.sel.geo.unwrap();
+        r.click(pos2(g.x_of(512.0) + 1.25, g.y_of(1.0) + 14.0));
+        assert!(
+            r.calls.is_empty(),
+            "Minimum-width overview hits cannot paint behind clips"
+        );
+    }
+
+    #[test]
+    fn finite_geometry_and_tempo_ramps_keep_fixed_four_quarter_grid() {
+        for w in [0.0, -5.0, f32::NAN, f32::INFINITY, 1.0, 640.0, f32::MAX] {
+            for z in [0.0, -1.0, f32::NAN, f32::INFINITY, 0.25, 1.0, 4096.0] {
+                let px = grid_scale(w, 1032, z);
+                assert!(px.is_finite() && px > 0.0, "{w} {z}: {px}");
+            }
+        }
+        let mut p = one_clip_project();
+        p.bpm = 120.0;
+        let source = p.pattern_index("verse").unwrap();
+        p.patterns[source].meter = Some((7, 8));
+        p.tempo_points = vec![
+            crate::project::TempoPoint {
+                beat: 4.0,
+                bpm: 60.0,
+                ramp: false,
+            },
+            crate::project::TempoPoint {
+                beat: 12.0,
+                bpm: 180.0,
+                ramp: true,
+            },
+        ];
+        let curve = crate::tempo_curve::TempoCurve::new(&p);
+        for beat in [0.0, 4.0, 8.0, 12.0, 20.0] {
+            let sec = curve.secs_at_beat(beat) as f32;
+            let grid_bar = super::super::playlist::marker_beat(&p, sec) / 4.0;
+            assert!((f64::from(grid_bar) - beat / 4.0).abs() < 0.0001);
+        }
+    }
+    #[test]
+    fn renamed_source_keeps_stable_clip_owner_and_engine_errors_keep_history() {
+        let mut e = test_engine("rename");
+        let id = e.project.playlist[0].id.clone();
+        let name = "A long readable source name with spaces and a second verse";
+        e.call(
+            "rename_pattern",
+            &json!({"pattern":"verse","new_name":name}),
+        )
+        .unwrap();
+        let c = e
+            .project
+            .playlist
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap()
+            .clone();
+        let mut d = ClipDraft::new(&c, owner(&e));
+        d.lane = 21;
+        let args = d.payload(&c, "move").unwrap();
+        assert_eq!(args["id"], id);
+        guarded_grid_call(&mut e, d.owner, "playlist_clip", &args).unwrap();
+        assert_eq!(e.project.playlist[0].pattern, name);
+        assert_eq!(e.project.playlist[0].lane, 20);
+        let before = project_value(&e);
+        let rev = e.revision;
+        let history = e.history();
+        let depth = e.undo_depth();
+        let fresh = owner(&e);
+        assert!(guarded_grid_call(
+            &mut e,
+            fresh,
+            "playlist_clip",
+            &json!({"action":"move","id":"absent","to_bar":1})
+        )
+        .is_err());
+        assert_eq!(project_value(&e), before);
+        assert_eq!(e.revision, rev);
+        assert_eq!(e.history(), history);
+        assert_eq!(e.undo_depth(), depth);
+    }
+
+    #[test]
+    fn unavailable_paint_source_cannot_create_a_clip() {
+        let mut r = EventGrid::new(one_clip_project(), 1.0, vec2(1280.0, 720.0));
+        r.sel.pattern = usize::MAX;
+        r.button("Paint");
+        let g = r.sel.geo.unwrap();
+        r.click(pos2(g.x_of(10.5), g.y_of(1.0) + 14.0));
+        assert!(r.calls.is_empty());
+        assert!(r.sel.toast.as_deref().unwrap().contains("source pattern"));
+        r.p.patterns.clear();
+        r.p.playlist.clear();
+        r.p.arrangement.clear();
+        r.frame(vec![]);
+        let g = r.sel.geo.unwrap();
+        r.click(pos2(g.x_of(5.5), g.y_of(1.0) + 14.0));
+        assert!(r.calls.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ruler_density_tests {
+    use super::{drawing_stride, egui, ruler_bars};
+
+    #[test]
+    fn compact_and_wide_1024_extent_labels_do_not_overlap() {
+        for pixels in [944.0_f32, 1324.0] {
+            // Actual initialized grid includes eight bars of padding.
+            for extent in [1024.0_f32, 1032.0] {
+                let px = pixels / extent;
+                let labels = ruler_bars(0.0, extent, px, 29.0);
+                assert_eq!(labels[0], 0);
+                assert!(labels.len() >= 8 && labels.len() < 40);
+                for pair in labels.windows(2) {
+                    assert!((pair[1] - pair[0]) as f32 * px >= 41.0);
+                }
+                let stride = drawing_stride(px, 41.0, 4);
+                assert!(stride.is_power_of_two());
+                assert!(labels[1..].iter().all(|b| b % stride == 0));
+                let grid = drawing_stride(px, 8.0, 1);
+                assert!(grid.is_power_of_two() && grid as f32 * px >= 8.0);
+            }
+        }
+    }
+
+    #[test]
+    fn short_normal_and_reveal_keep_bar_coordinates_and_anchor() {
+        assert_eq!(ruler_bars(0.0, 16.0, 59.0, 12.0), vec![0, 4, 8, 12]);
+        assert_eq!(drawing_stride(59.0, 8.0, 1), 1);
+        assert_eq!(ruler_bars(1023.0, 1026.0, 314.0, 29.0), vec![1023, 1024]);
+        let labels = ruler_bars(1023.25, 1039.25, 59.0, 29.0);
+        assert_eq!(labels[0], 1024);
+        for b in labels {
+            let x = (b as f32 - 1023.25) * 59.0;
+            assert!(x >= 0.0);
+            assert!((1023.25 + x / 59.0 - b as f32).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn drawing_density_never_moves_grid_or_clip_coordinates() {
+        for (scroll, px, end) in [(0.0, 944.0 / 1032.0, 1032.0), (1023.0, 314.0, 1026.0)] {
+            let geo = super::GridGeo {
+                grid: egui::Rect::from_min_max(egui::pos2(126.0, 482.0), egui::pos2(1070.0, 706.0)),
+                bar_px: px,
+                scroll_bar: scroll,
+                scroll_lane: 13.0,
+            };
+            let before = geo;
+            let clip_x = geo.x_of(1023.0);
+            let clip_y = geo.y_of(19.0);
+            let _labels = ruler_bars(scroll, end, px, 29.0);
+            let _stride = drawing_stride(px, 8.0, 1);
+            assert_eq!(geo, before);
+            assert_eq!(geo.x_of(1023.0), clip_x);
+            assert_eq!(geo.y_of(19.0), clip_y);
+            assert!((geo.bar_at(clip_x) - 1023.0).abs() < 0.001);
+            assert_eq!(geo.lane_at(clip_y), 19.0);
+        }
+    }
+
+    #[test]
+    fn density_invalid_floats_and_extreme_ranges_are_bounded() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(ruler_bars(bad, 16.0, 59.0, 29.0).is_empty());
+            assert!(ruler_bars(0.0, bad, 59.0, 29.0).is_empty());
+            assert!(ruler_bars(0.0, 16.0, bad, 29.0).is_empty());
+            assert!(ruler_bars(0.0, 16.0, 59.0, bad).is_empty());
+            assert_eq!(drawing_stride(bad, 8.0, 1), 1 << 31);
+        }
+        assert!(ruler_bars(0.0, 16.0, 0.0, 29.0).is_empty());
+        assert!(ruler_bars(0.0, 16.0, -1.0, 29.0).is_empty());
+        assert!(ruler_bars(0.0, 16.0, 59.0, -1.0).is_empty());
+        assert!(ruler_bars(0.0, 0.01, 1.0, 29.0).is_empty());
+        assert!(ruler_bars(0.0, u32::MAX as f32, 1.0, 0.0).len() <= 2048);
+        assert_eq!(drawing_stride(f32::MIN_POSITIVE, 8.0, 1), 1 << 31);
     }
 }

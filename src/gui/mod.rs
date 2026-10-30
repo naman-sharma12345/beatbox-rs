@@ -386,6 +386,7 @@ pub struct Studio {
     // screenshot mode
     screenshot: Option<PathBuf>,
     native_capture: Option<audio_check::NativeCapture>,
+    arrangement_capture: Option<ArrangementCapture>,
     frames: u64,
     shot_requested: bool,
     /// Performance mode: the pattern looping live, and a launch waiting for
@@ -428,6 +429,185 @@ pub const VIEWS: [&str; 7] = [
     "RACK",
 ];
 
+/// Bounded appearance-only capture. No project/transport command is issued here.
+struct ArrangementCapture {
+    case: String,
+    id: Option<String>,
+    action_hash: String,
+    project_bytes: Vec<u8>,
+    revision: u64,
+    generation: u64,
+    history: (usize, usize),
+    seek_revision: u64,
+    state: Option<Value>,
+    started: std::time::Instant,
+}
+
+impl ArrangementCapture {
+    fn from_environment(
+        screenshot: bool,
+        view: Option<&str>,
+        e: &Engine,
+    ) -> anyhow::Result<Option<Self>> {
+        let Some(case) = std::env::var_os("BEATBOX_ARRANGEMENT_CAPTURE") else {
+            return Ok(None);
+        };
+        let case = case
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("Non-UTF8 arrangement selector"))?;
+        anyhow::ensure!(
+            matches!(
+                case.as_str(),
+                "shared" | "independent" | "long-overview" | "long-reveal" | "tempo"
+            ),
+            "Unknown arrangement selector"
+        );
+        anyhow::ensure!(
+            screenshot && std::env::var("BEATBOX_NO_LISTEN").as_deref() == Ok("1"),
+            "Arrangement capture requires screenshot and NO_LISTEN=1"
+        );
+        anyhow::ensure!(
+            std::env::var_os("BEATBOX_AUDIO_SCENARIO").is_none()
+                && std::env::var_os("BEATBOX_AUDIO_SCALE").is_none(),
+            "Mixed audio/arrangement capture"
+        );
+        anyhow::ensure!(
+            view.is_none_or(|v| v.eq_ignore_ascii_case("playlist")),
+            "Arrangement capture requires playlist view"
+        );
+        let id = std::env::var_os("BEATBOX_ARRANGEMENT_CLIP_ID")
+            .map(|v| {
+                v.into_string()
+                    .map_err(|_| anyhow::anyhow!("Non-UTF8 clip ID"))
+            })
+            .transpose()?;
+        let action_hash = std::env::var("BEATBOX_ARRANGEMENT_ACTION_HASH")?;
+        anyhow::ensure!(
+            action_hash.len() == 64 && action_hash.bytes().all(|b| b.is_ascii_hexdigit()),
+            "Missing/invalid action hash"
+        );
+        Ok(Some(Self {
+            case,
+            id,
+            action_hash,
+            project_bytes: serde_json::to_vec(&e.project)?,
+            revision: e.revision,
+            generation: e.project_load_generation,
+            history: e.undo_depth(),
+            seek_revision: 0,
+            state: None,
+            started: std::time::Instant::now(),
+        }))
+    }
+
+    fn check(&self, studio: &Studio, ctx: &egui::Context) -> Result<Value, String> {
+        if self.started.elapsed().as_secs() > 90 {
+            return Err("Arrangement capture timeout".into());
+        }
+        let e = studio.engine.lock().unwrap();
+        if e.revision != self.revision
+            || e.project_load_generation != self.generation
+            || e.undo_depth() != self.history
+            || serde_json::to_vec(&e.project).map_err(|e| e.to_string())? != self.project_bytes
+        {
+            return Err("Arrangement project/revision/generation/history drift".into());
+        }
+        if studio.player.is_playing()
+            || studio.player.auditioning()
+            || studio.player.launch_pending()
+            || studio.perf.is_some()
+            || studio.perf_next.is_some()
+            || studio.perf_rec.is_some()
+            || e.transport.playing
+            || e.transport.auditioning
+            || !e.transport.pending.is_empty()
+            || e.transport.pending_audition.is_some()
+            || e.transport.pending_launch.is_some()
+            || !e.transport.pending_notes.is_empty()
+            || e.transport.perf_playing.is_some()
+            || e.transport.perf_queued.is_some()
+        {
+            return Err("Arrangement transport drift".into());
+        }
+        // Preserve the pre-existing ordinary screenshot seek at frame 2.
+        let sought = studio.frames >= 2;
+        let seconds = if sought {
+            e.project.song_seconds() * 0.38
+        } else {
+            0.0
+        };
+        if studio.player.seek_revision != self.seek_revision + u64::from(sought)
+            || !studio.player.position_secs().is_finite()
+            || (studio.player.position_secs() - seconds).abs() > 0.01
+            || (studio.frames > 2 && (e.transport.position_s - seconds).abs() > 0.01)
+            || studio.clip_sel != self.id
+        {
+            return Err("Arrangement cursor/selection drift".into());
+        }
+        let state = fl_playlist::capture_view(
+            ctx,
+            &e.project,
+            self.revision,
+            self.generation,
+            &self.case,
+            self.id.as_deref(),
+            false,
+        )?;
+        if self.state.as_ref() != Some(&state) {
+            return Err("Arrangement initialized view changed".into());
+        }
+        Ok(state)
+    }
+
+    fn manifest(
+        &self,
+        studio: &Studio,
+        ctx: &egui::Context,
+        path: &std::path::Path,
+        pixels: [usize; 2],
+    ) -> Result<(), String> {
+        let state = self.check(studio, ctx)?;
+        if !studio.shot_requested
+            || studio
+                .rendered
+                .as_ref()
+                .is_none_or(|r| r.rev != self.revision || r.generation != self.generation)
+        {
+            return Err("Arrangement capture not requested or render identity mismatch".into());
+        }
+        let narrow = std::env::var_os("BEATBOX_NARROW_SHOT").is_some();
+        let expected = if narrow { [1100, 700] } else { [1480, 920] };
+        let logical = ctx.screen_rect().size();
+        if pixels != expected
+            || (ctx.pixels_per_point() - 1.0).abs() > 0.01
+            || (logical.x - expected[0] as f32).abs() > 1.1
+            || (logical.y - expected[1] as f32).abs() > 1.1
+        {
+            return Err("Arrangement dimensions/ppp mismatch (only native1x supported)".into());
+        }
+        let e = studio.engine.lock().unwrap();
+        let doc = json!({"schema":1,"selector":self.case,
+            "state_origin":["engine_json_prepared","capture_initialized_view","no_native_input"],
+            "initial_view_state":self.state,"final_view_state":state,
+            "project_serialized_sha256":crate::palette::sha256_hex(&self.project_bytes),
+            "revision":self.revision,"load_generation":self.generation,"history_depth":self.history,
+            "render_revision":studio.rendered.as_ref().map(|r|r.rev),
+            "render_load_generation":studio.rendered.as_ref().map(|r|r.generation),
+            "action_log_sha256":self.action_hash,"build_sha":option_env!("BEATBOX_BUILD_SHA").unwrap_or("unknown"),
+            "viewport_pixels":pixels,"logical_viewport":[logical.x,logical.y],"pixels_per_point":ctx.pixels_per_point(),
+            "playing":false,"autoplay":false,"seek_origin":"existing ordinary frame2 38%-duration seek",
+            "seek_revision":studio.player.seek_revision,"seconds":studio.player.position_secs(),
+            "beat":playlist::marker_beat(&e.project,studio.player.position_secs()),
+            "status":"captured_uninspected","native_input":false,
+            "limitations":"Appearance only; toolbar activation, stale draft/drag, Studio focus and ordinary Close UNRUN; bounds require image inspection; native2x UNRUN"});
+        std::fs::write(
+            path.with_extension("json"),
+            serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())
+    }
+}
+
 pub fn run(
     engine: Engine,
     listen: &str,
@@ -435,6 +615,8 @@ pub fn run(
     screenshot: Option<PathBuf>,
     view: Option<String>,
 ) -> anyhow::Result<()> {
+    let arrangement_capture =
+        ArrangementCapture::from_environment(screenshot.is_some(), view.as_deref(), &engine)?;
     let native_capture = audio_check::NativeCapture::from_environment(screenshot.is_some())
         .map_err(|e| anyhow::anyhow!(e))?;
     let native_scale = native_capture.as_ref().map_or(1.0, |c| c.scale);
@@ -518,6 +700,7 @@ pub fn run(
                 comparison_length_s: 8.0,
                 screenshot,
                 native_capture,
+                arrangement_capture,
                 frames: 0,
                 shot_requested: false,
                 perf: None,
@@ -2210,6 +2393,31 @@ impl eframe::App for Studio {
             self.toast = None;
         }
         let (p, rev, log, undo) = self.snapshot();
+        if let Some(capture) = &mut self.arrangement_capture {
+            if capture.state.is_none() {
+                let e = self.engine.lock().unwrap();
+                if rev != e.revision || self.seen_project_load != e.project_load_generation {
+                    fail_screenshot("Arrangement initialization identity drift");
+                }
+                let state = fl_playlist::capture_view(
+                    ctx,
+                    &e.project,
+                    capture.revision,
+                    capture.generation,
+                    &capture.case,
+                    capture.id.as_deref(),
+                    true,
+                )
+                .unwrap_or_else(|e| fail_screenshot(&e));
+                self.clip_sel = capture.id.clone();
+                if let Some(pi) = state["source"]["index"].as_u64() {
+                    self.pattern = pi as usize;
+                }
+                capture.seek_revision = self.player.seek_revision;
+                capture.state = Some(state);
+            }
+        }
+
         // Every incoming close is vetoed while the quit question is pending.
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         let needs_warning = self.needs_leave_warning();
@@ -2472,6 +2680,19 @@ impl eframe::App for Studio {
             } else {
                 true
             };
+            if let Some(capture) = &self.arrangement_capture {
+                capture
+                    .check(self, ctx)
+                    .unwrap_or_else(|e| fail_screenshot(&e));
+                if ready
+                    && self
+                        .rendered
+                        .as_ref()
+                        .is_none_or(|r| r.generation != capture.generation)
+                {
+                    fail_screenshot("Arrangement render generation mismatch");
+                }
+            }
             if ready && scenario_ready && self.frames > 30 && !self.shot_requested {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
                 self.shot_requested = true;
@@ -2489,6 +2710,16 @@ impl eframe::App for Studio {
                 if self.native_capture.is_some() && (!scenario_ready || !self.shot_requested) {
                     fail_screenshot("audio-native: terminal state changed before viewport capture");
                 }
+                if let Some(capture) = &self.arrangement_capture {
+                    if !self.shot_requested
+                        || !ready
+                        || self.rendered.as_ref().is_none_or(|r| {
+                            r.rev != capture.revision || r.generation != capture.generation
+                        })
+                    {
+                        fail_screenshot("Arrangement capture not requested or render not ready");
+                    }
+                }
                 let [w, h] = img.size;
                 let mut buf = Vec::with_capacity(w * h * 4);
                 for px in &img.pixels {
@@ -2503,6 +2734,8 @@ impl eframe::App for Studio {
                     || {
                         if let Some(capture) = &self.native_capture {
                             capture.manifest(&path, &self.audio_check, ctx, [w, h])
+                        } else if let Some(capture) = &self.arrangement_capture {
+                            capture.manifest(self, ctx, &path, [w, h])
                         } else {
                             Ok(())
                         }
@@ -2512,6 +2745,9 @@ impl eframe::App for Studio {
                     Ok(receipt) => receipt,
                     Err(error) => {
                         let _ = std::fs::remove_file(&path);
+                        if self.arrangement_capture.is_some() {
+                            let _ = std::fs::remove_file(path.with_extension("json"));
+                        }
                         fail_screenshot(&error);
                     }
                 };

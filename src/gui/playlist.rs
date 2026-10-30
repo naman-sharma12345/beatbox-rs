@@ -122,7 +122,7 @@ fn playlist_meter_map(p: &Project) -> TempoMap {
 }
 
 impl Studio {
-    pub(super) fn playlist_view(&mut self, ui: &mut egui::Ui, p: &Project) {
+    pub(super) fn playlist_view(&mut self, ui: &mut egui::Ui, p: &Project, rev: u64) {
         let tk = Tokens::DARK;
         let map = playlist_meter_map(p);
         let clips = placed_clips(p);
@@ -293,7 +293,7 @@ impl Studio {
             if let Some(first) = p.patterns.first() {
                 ui.label(
                     egui::RichText::new(format!(
-                        "Nothing is placed in the playlist yet, so Play uses pattern {} alone. Open the pattern grid and click a cell to arrange a song.",
+                        "Nothing is placed in the playlist yet, so Play uses pattern {} alone. Open the pattern grid and choose Paint to arrange a song.",
                         first.name
                     ))
                     .size(11.0)
@@ -303,17 +303,17 @@ impl Studio {
         }
         // FL-style pattern playlist: paint, drag and resize pattern clips
         if p.playlist.is_empty() {
-            egui::CollapsingHeader::new("PATTERN GRID - paint clips")
+            egui::CollapsingHeader::new("PATTERN GRID - Select / Paint")
                 .default_open(false)
-                .show(ui, |ui| self.fl_playlist(ui, p));
+                .show(ui, |ui| self.fl_playlist(ui, p, rev));
         } else {
             ui.label(
-                egui::RichText::new("PATTERN GRID - paint clips")
+                egui::RichText::new("PATTERN GRID - Select / Paint")
                     .monospace()
                     .size(11.0)
                     .color(tk.text_dim),
             );
-            self.fl_playlist(ui, p);
+            self.fl_playlist(ui, p, rev);
         }
         ui.add_space(6.0);
         // pattern clips on the playlist, by stable id: click to select, right-click to edit
@@ -665,7 +665,7 @@ impl Studio {
                         let resp = ui
                             .interact(r, ui.id().with(("pl_clip", ti, ci)), Sense::click())
                             .on_hover_text(format!(
-                                "{} · {} · bar {} ({} ticks) · click selects this track and pattern; open PATTERN GRID - paint clips above to move or arrange clips",
+                                "{} · {} · bar {} ({} ticks) · click selects this track and pattern; open PATTERN GRID - Select / Paint above to move or arrange clips",
                                 t.name,
                                 pat.name,
                                 map.bar_beat_at_tick(c.start).bar,
