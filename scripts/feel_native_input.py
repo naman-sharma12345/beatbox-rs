@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Finite ordinary Notes calibration only. No scored controls or acceptance path."""
+"""Finite selected_dialog calibration only. No scored controls or acceptance path."""
 import ctypes as C
 import hashlib
 import http.client
@@ -17,6 +17,9 @@ import zlib
 ROOT = Path.cwd()
 OUT = ROOT / 'native-calibration'
 DEADLINE = 0
+STAGE = 'selected_dialog'
+APPROVAL = {'head': '438f038576409328a6e34862ed98290e69febc51', 'parent_review_sha256': '9bce4b34fafea9a27ca4f84a61d2b277182f5f0c9712551d6a55abfa005d57f5', 'original_png_sha256': ['483bce5ef62dd455cc0f1749f8ccb8f81abbc92318c7ec0b6abf029222eb4d98', '483bce5ef62dd455cc0f1749f8ccb8f81abbc92318c7ec0b6abf029222eb4d98'], 'fixture_sha256': 'd7375111eb87c320bbd2cf48823979b201d0904baa85b467cf1d44643974b7cd', 'full': [30, 263, 1070, 676], 'roll': [82, 325, 1066, 624], 'tolerance_px': 1, 'native_scale': 1, 'ordinary_hits': {'n3':[131,549],'n4':[193,464],'n5':[377,400],'Feel':[362,275]}}
+
 
 def require(ok, why):
     if not ok:
@@ -114,6 +117,8 @@ class X11:
     def __init__(self):
         self.d = None
         self.held = set()
+        self.buttons = set()
+        self.events = []
         self.errors = []
         require(C.sizeof(Attr)==136 and C.sizeof(C.c_long)==8 and Image.red.offset==56, 'unsupported LP64 ABI')
         self.x = C.CDLL('libX11.so.6')
@@ -129,13 +134,15 @@ class X11:
             'XResizeWindow':([P,U,C.c_uint,C.c_uint],I), 'XMoveWindow':([P,U,I,I],I),
             'XTranslateCoordinates':([P,U,U,I,I,IP,IP,UP],I),
             'XSetInputFocus':([P,U,I,U],I), 'XGetInputFocus':([P,UP,IP],I),
+            'XQueryPointer':([P,U,UP,UP,IP,IP,IP,IP,C.POINTER(C.c_uint)],I),
             'XQueryKeymap':([P,C.c_char_p],I), 'XKeysymToKeycode':([P,U],C.c_ubyte),
             'XGetKeyboardMapping':([P,C.c_ubyte,I,IP],UP),
             'XGetImage':([P,U,I,I,C.c_uint,C.c_uint,U,I],P),
             'XGetPixel':([P,I,I],U), 'XDestroyImage':([P],I)}
         for name,(args,ret) in specs.items():
             f=getattr(self.x,name); f.argtypes=args; f.restype=ret
-        for name,args in [('XTestQueryExtension',[P,IP,IP,IP,IP]),('XTestFakeKeyEvent',[P,C.c_uint,I,U])]:
+        for name,args in [('XTestQueryExtension',[P,IP,IP,IP,IP]),('XTestFakeKeyEvent',[P,C.c_uint,I,U]),
+                          ('XTestFakeMotionEvent',[P,I,I,I,U]),('XTestFakeButtonEvent',[P,C.c_uint,I,U])]:
             f=getattr(self.t,name); f.argtypes=args; f.restype=I
         self.callback = C.CFUNCTYPE(I,P,P)(lambda d,e: (self.errors.append('X protocol error') if len(self.errors)<16 else None) or 0)
         self.old = self.x.XSetErrorHandler(C.cast(self.callback,P))
@@ -149,6 +156,12 @@ class X11:
         keys = self.x.XGetKeyboardMapping(self.d,self.code,1,C.byref(count))
         try:
             require(self.code and keys and 0<count.value<=16 and keys[0]==0xffc4, 'F7 keymap')
+        finally:
+            if keys: self.x.XFree(keys)
+        self.shift = self.x.XKeysymToKeycode(self.d,0xffe1)  # XK_Shift_L
+        keys = self.x.XGetKeyboardMapping(self.d,self.shift,1,C.byref(count))
+        try:
+            require(self.shift and keys and 0<count.value<=16 and keys[0]==0xffe1, 'Shift keymap')
         finally:
             if keys: self.x.XFree(keys)
         self.sync()
@@ -199,17 +212,48 @@ class X11:
         state=C.create_string_buffer(32)
         self.x.XQueryKeymap(self.d,state); self.sync()
         require(not any(state.raw), 'preexisting held key')
+        self.events.append(['F7',1])
         self.held.add(self.code)
         require(self.t.XTestFakeKeyEvent(self.d,self.code,1,0), 'F7 press')
         self.sync()
         self.release()
-    def release(self):
-        for code in list(self.held):
-            require(self.t.XTestFakeKeyEvent(self.d,code,0,0), 'key release')
-            self.held.remove(code)
-        state=C.create_string_buffer(32); self.x.XQueryKeymap(self.d,state); self.sync()
-        require(not any(state.raw), 'held key after release')
+    def pointer(self):
+        root,child=C.c_ulong(),C.c_ulong()
+        rx,ry,wx,wy=C.c_int(),C.c_int(),C.c_int(),C.c_int(); mask=C.c_uint()
+        require(self.x.XQueryPointer(self.d,self.root,C.byref(root),C.byref(child),C.byref(rx),C.byref(ry),C.byref(wx),C.byref(wy),C.byref(mask)), 'query pointer')
         self.sync()
+        require(root.value==self.root, 'pointer root')
+        return mask.value & 0x1f00
+    def neutral(self):
+        state=C.create_string_buffer(32); self.x.XQueryKeymap(self.d,state); self.sync()
+        require(not any(state.raw) and self.pointer()==0 and not self.held and not self.buttons, 'held input at checkpoint')
+    def motion(self, x, y):
+        require(len(self.events)<16 and (x,y) in ((131,549),(193,464),(362,275)), 'unapproved motion/event cap')
+        self.events.append(['move',x,y])
+        require(self.t.XTestFakeMotionEvent(self.d,0,x,y,0), 'native motion'); self.sync()
+    def button(self, down):
+        require(len(self.events)<16 and down in (0,1), 'button/event cap')
+        self.events.append(['button',1,down])
+        if down: self.buttons.add(1)
+        ok=self.t.XTestFakeButtonEvent(self.d,1,down,0)
+        if ok and not down: self.buttons.discard(1)
+        require(ok, 'native button'); self.sync()
+    def shift_press(self):
+        require(len(self.events)<16, 'Shift event cap')
+        self.events.append(['key',self.shift,1]); self.held.add(self.shift)
+        require(self.t.XTestFakeKeyEvent(self.d,self.shift,1,0), 'native Shift'); self.sync()
+    def release(self):
+        errors=[]
+        for held,fn in ((self.buttons,self.t.XTestFakeButtonEvent),(self.held,self.t.XTestFakeKeyEvent)):
+            for code in list(held):
+                try:
+                    if len(self.events)<16: self.events.append(['release_button' if held is self.buttons else 'release_key',code])
+                    else: errors.append(RuntimeError('release event cap'))
+                    require(fn(self.d,code,0,0), 'input release')
+                    held.remove(code)
+                except BaseException as error: errors.append(error)
+        self.neutral()
+        require(not errors, 'input release failure')
     def capture(self, target):
         image=self.x.XGetImage(self.d,target,0,0,1100,700,C.c_ulong(-1).value,2)
         require(image, 'XGetImage')
@@ -238,7 +282,7 @@ def run():
     resource.setrlimit(resource.RLIMIT_FSIZE, (4*1048576,4*1048576))
     DEADLINE=time.monotonic()+180
     OUT.mkdir(exist_ok=True)
-    doc={'schema':1,'status':'STOP','acceptance':False,'case_A':'UNRUN','controls':'UNRUN','actions':[],'reads':[],'cleanup':[]}
+    doc={'schema':1,'status':'STOP','acceptance':False,'case_A':'UNRUN','controls':'UNRUN','stage':STAGE,'approval':APPROVAL,'native_calibration':True,'final_popup_bounds':None,'actions':[],'reads':[],'cleanup':[]}
     groups=[]; x=None; code=2
     guard=threading.Lock(); finished=threading.Event()
     registering=False; pending=None
@@ -291,6 +335,7 @@ def run():
             if isinstance(v,float): return int(v*10000+.5)/10000 if v>=0 else -int(-v*10000+.5)/10000
             if isinstance(v,list): return [cleaned(x) for x in v]
             return {k:cleaned(x) for k,x in v.items()} if isinstance(v,dict) else v
+        require(digest(fixture)==APPROVAL['fixture_sha256'], 'approved fixture bytes mismatch')
         original=cleaned(json.loads(bounded(fixture))); notes=original['patterns'][0]['clips']['k']
         playlist=original.get('playlist', [])
         require(len(original['tracks'])==len(original['patterns'])==1 and isinstance(playlist,list) and not playlist, 'fixture shape')
@@ -319,6 +364,7 @@ def run():
             raw=bounded(f'/proc/{studio.pid}/environ',65536).split(b'\0')
             require(b'DISPLAY='+env['DISPLAY'].encode() in raw and not any(v.startswith(b'BEATBOX_') for v in raw), 'display/selectors')
         x=X11.__new__(X11); x.__init__()
+        doc['native_event_attempts']=x.events
         ready=time.monotonic()+10; target=None
         for attempt in range(20):
             owned(); found=x.windows(studio.pid)
@@ -337,7 +383,8 @@ def run():
         prefix=None; boundary=0
         def read(name,args):
             nonlocal prefix,boundary
-            listener(); require(time.monotonic()<DEADLINE and len(doc['reads'])<16, 'read budget/deadline')
+            require((name,args) in [('get_project',{'detail':'full'}),('get_history',{'limit':500}),('transport',{'action':'status'})], 'observer allowlist')
+            listener(); require(time.monotonic()<DEADLINE and len(doc['reads'])<24, 'read budget/deadline')
             conn=http.client.HTTPConnection('127.0.0.1',port,timeout=2)
             try:
                 conn.request('POST','/call',json.dumps({'name':name,'arguments':args}),{'Content-Type':'application/json'})
@@ -365,28 +412,50 @@ def run():
         x.x.XMoveWindow(x.d,target,0,0); x.x.XResizeWindow(x.d,target,1100,700)
         x.x.XSetInputFocus(x.d,target,2,0); x.sync(); time.sleep(.25)
         geometry=x.geometry(studio.pid,target); x.focus(target); owned(); listener()
+        approved_sources={'src/gui/piano.rs': 'fb394cdab8d608b1564c4406347923d9f2bfc46cee17e4b0626b622242674a19', 'src/gui/shortcuts.rs': '52a1d53778b60aeda903345081597819fd2f95f555256c6c61392b9006c73911', 'src/gui/workspace.rs': '514ac4e773b919c2007abf03d24fbd8ef5bf518b698c42a3b56abde83665f37d', 'src/gui/mod.rs': '31b5565dc5eb8ca58568ed9d1b1ed33225ab99a4b24e4661c6b5556fd857e166'}
+        require(all(digest(ROOT/p)==h for p,h in approved_sources.items()), 'approved layout source mismatch')
         before=read('get_project',{'detail':'full'}); require(before==original, 'full live fixture mismatch')
         history=read('get_history',{'limit':500}); transport=read('transport',{'action':'status'})
         require(transport['studio_attached'] and not transport['playing'] and transport['pending']==0, 'transport prerequisite')
-        x.geometry(studio.pid,target); x.focus(target); owned(); x.f7(); doc['actions'].append('native F7 press/release only')
+        x.geometry(studio.pid,target); x.focus(target); owned(); listener(); x.neutral(); x.f7(); doc['actions'].append('native F7 press/release only')
         time.sleep(.5)
-        for i in range(2):
-            owned(); x.focus(target); require(x.geometry(studio.pid,target)==geometry, 'geometry drift')
-            image=x.capture(target); name=f'ordinary-notes-{i}.png'; (OUT/name).write_bytes(image)
+        def validate():
+            owned(); listener(); x.focus(target)
+            require(x.geometry(studio.pid,target)==geometry, 'geometry drift')
+            x.neutral()
+        def checkpoint(name):
+            validate()
+            image=x.capture(target); (OUT/name).write_bytes(image)
             doc.setdefault('captures',[]).append({'file':name,'sha256':hashlib.sha256(image).hexdigest(),'xid':target,'geometry':geometry,'monotonic':time.monotonic()})
             require(read('get_project',{'detail':'full'})==original, 'project mutation')
             now=read('get_history',{'limit':500}); t=read('transport',{'action':'status'})
             require(all(now[k]==history[k] for k in ('revision','undo_depth','redo_depth','snapshots')) and t==transport, 'history/transport drift')
-            time.sleep(.25)
-        require(doc['captures'][0]['sha256']==doc['captures'][1]['sha256'], 'unsettled framebuffer; no retry')
+        checkpoint('ordinary-baseline.png')
+        # Literal approved hits only. No target arguments, locator, controls or retry.
+        validate()
+        x.motion(131,549); x.button(1); x.button(0); x.release()
+        time.sleep(.25); checkpoint('selected-first.png')
+        validate()
+        x.shift_press()
+        x.motion(193,464); x.button(1); x.button(0); x.release()
+        time.sleep(.25); checkpoint('selected-second.png')
+        validate()
+        x.motion(362,275); x.button(1); x.button(0); x.release()
+        time.sleep(.25); checkpoint('selected-dialog.png')
+        time.sleep(.25); checkpoint('selected-dialog-steady.png')
+        require(doc['captures'][-2]['sha256']==doc['captures'][-1]['sha256'], 'unsettled final framebuffer; no retry')
         final=read('get_history',{'limit':500})
-        atomic('target-map.json',{'status':'CALIBRATION_REVIEW_REQUIRED','dock_bounds':None,'coordinates_approved':False,'source':'src/gui/piano.rs:436-448,1607-1685,2610-2638,2780-2829','pitch_span':[57,70],'steps':16,'notes':notes,'formula':{'toolbar':'[L+100,T+1,R-4,T+21]','velocity_height':'clamp((B-T)-44-16-48,16,48)','roll':'[L+52,T+62,R-4,B-velocity_height-4]','cell':'roll.width/16','row_h':'roll.height/14','note':'[roll.left+start*cell,roll.top+(70-pitch)*row_h+0.5,max(roll.left+(start+len)*cell,roll.left+start*cell+3),roll.top+(70-pitch+1)*row_h-0.5]'},'review':'Both reviewers must identify actual full-panel L,T,R,B and toolbar/Snap/three notes on these ordinary images. No numeric targets guessed; no clicks supported.'})
+        require(all(final[k]==history[k] for k in ('revision','undo_depth','redo_depth','snapshots')), 'terminal history drift')
+        require(len(x.events)==13, 'native event count: F7 pair + three motion/clicks + Shift pair')
+        require(len(doc['reads'])==19, 'observer ledger: initial3 + five checkpoints*3 + terminal1')
+        atomic('target-map.json',{'status':'CALIBRATION_REVIEW_REQUIRED','acceptance':False,'stage':STAGE,'approval':APPROVAL,'final_popup_bounds':None,'controls':'UNRUN','case_A':'UNRUN','coordinates_approved':'ordinary targets only','review':'Human must compare baseline to BOTH approved originals and inspect actual first/second selection and popup. Unexpected layout rejects attempt. No automated semantic selection/popup assertion.'})
         atomic('source-bindings.json',{str(p):digest(ROOT/p) for p in ['src/gui/piano.rs','src/gui/shortcuts.rs','src/gui/workspace.rs','src/gui/mod.rs','src/server.rs','src/tools.rs','src/tools_parity.rs','src/engine.rs']})
         doc.update(status='CALIBRATION_REVIEW_REQUIRED',binary_sha256=digest(binary),fixture_sha256=digest(fixture),helper_sha256=digest(Path(__file__)),display=env['DISPLAY'],xid=target,listener_port=port,final_history=final,terminal_read_own_entry_outside_snapshot=True)
         code=3  # Intentional non-success: acceptance pending, NOT runtime FAIL.
     except BaseException as error:
         doc['error']=type(error).__name__+': '+str(error)[:300]
     finally:
+        doc['native_event_attempts']=[] if x is None else x.events
         signal.alarm(0)
         for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP): signal.signal(sig,signal.SIG_IGN)
         try:
