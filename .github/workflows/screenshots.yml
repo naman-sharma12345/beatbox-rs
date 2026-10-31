@@ -529,6 +529,7 @@ jobs:
                           ('all-offsets','normal',1100,700),('boundary-blocked','boundary',1100,700)]
               feel_expected=[f'{case}_{w}x{h}_1x.png' for case,_,w,h in feel_cases]
               manifest={'schema':1,'expected':feel_expected,'cases':[],'missing':[],
+                        'project_contract':'rust-project-serde-json-to-string-v1',
                         'fixture_sha256':{},'preparation':'pending','checkout_sha':(shots/'build-sha.txt').read_text().strip(),
                         'checkout_tree':subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip(),
                         'binary_sha256':digest(binary),'rustc_sha256':digest(shots/'rustc.txt'),
@@ -548,6 +549,7 @@ jobs:
               selector_keys=['BEATBOX_AUDIO_SCENARIO','BEATBOX_AUDIO_SCALE','BEATBOX_ARRANGEMENT_CAPTURE',
                              'BEATBOX_ARRANGEMENT_CLIP_ID','BEATBOX_ARRANGEMENT_ACTION_HASH',
                              'BEATBOX_FEEL_CAPTURE','BEATBOX_FEEL_ACTION_HASH','BEATBOX_FEEL_FIXTURE_HASH',
+                             'BEATBOX_FEEL_FIXTURE_PATH','BEATBOX_FEEL_PROJECT_CONTRACT',
                              'BEATBOX_NARROW_SHOT']
               for key in selector_keys: fixture_env.pop(key,None)
               normal=[{'pitch':60,'start':0.3,'len':1,'vel':0.6,'offset':0.12},
@@ -599,7 +601,9 @@ jobs:
                   for path in (png,sidecar): path.unlink(missing_ok=True)
                   env=fixture_env.copy()
                   env.update(BEATBOX_FEEL_CAPTURE=case,BEATBOX_FEEL_ACTION_HASH=hashes[action_log.name],
-                             BEATBOX_FEEL_FIXTURE_HASH=hashes[project.name])
+                             BEATBOX_FEEL_FIXTURE_HASH=hashes[project.name],
+                             BEATBOX_FEEL_FIXTURE_PATH=str(project.resolve()),
+                             BEATBOX_FEEL_PROJECT_CONTRACT=manifest['project_contract'])
                   if w==1100: env['BEATBOX_NARROW_SHOT']='1'
                   command=['xvfb-run','-a','-s',f'-screen 0 {w}x{h}x24','timeout','110s',str(binary),
                            'call','screenshot',json.dumps({'view':'sequencer','out':str(png),'inline':False}),
@@ -624,6 +628,9 @@ jobs:
                       assert doc['render_revision']==doc['revision'] and doc['render_load_generation']==doc['load_generation']
                       assert doc['build_sha']==manifest['checkout_sha']
                       assert doc['fixture_sha256']==hashes[project.name] and doc['action_log_sha256']==hashes[action_log.name]
+                      assert doc['project_contract']==manifest['project_contract']
+                      assert doc['launcher_project_sha256']==doc['project_serialized_sha256']
+                      assert len(doc['launcher_project_sha256'])==64 and all(c in '0123456789abcdef' for c in doc['launcher_project_sha256'])
                       assert len(doc['project_serialized_sha256'])==64 and len(doc['full_log_sha256'])==64
                       assert doc['seek_origin']=='existing ordinary frame2 38%-duration seek'
                       assert doc['seek_revision']==doc['initial_seek_revision']+1
@@ -648,7 +655,9 @@ jobs:
                       assert all(digest(folder/n)==v for n,v in hashes.items()), 'feel fixture drift after capture'
                       assert digest(binary)==manifest['binary_sha256'], 'feel capture binary drift'
                       row.update(status='captured_uninspected',png_sha256=digest(png),sidecar_sha256=digest(sidecar),
-                                 log_sha256=digest(log),decoded_rgba_sha256=pixels)
+                                 log_sha256=digest(log),decoded_rgba_sha256=pixels,
+                                 project_contract=doc['project_contract'],fixture_sha256=doc['fixture_sha256'],
+                                 launcher_project_sha256=doc['launcher_project_sha256'])
                   except Exception as error:
                       row.update(status='missing_or_invalid',error=str(error)); manifest['missing'].append(filename)
                   if log.is_file(): row['log_sha256']=digest(log)

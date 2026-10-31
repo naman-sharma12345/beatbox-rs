@@ -626,6 +626,40 @@ struct FeelCapture {
 }
 
 impl FeelCapture {
+    // Exact screenshot-tool contract: typed Project -> serde_json::to_string.
+    // The saved Engine JSON is a separate immutable byte identity, not the
+    // temporary launcher file. No Value/Python numeric canonicalization here.
+    const PROJECT_CONTRACT: &str = "rust-project-serde-json-to-string-v1";
+
+    fn verify_project_provenance(
+        contract: &str,
+        fixture: &[u8],
+        fixture_hash: &str,
+        launcher: &[u8],
+        loaded: &Project,
+    ) -> anyhow::Result<Vec<u8>> {
+        anyhow::ensure!(
+            contract == Self::PROJECT_CONTRACT,
+            "Unknown feel project contract"
+        );
+        anyhow::ensure!(
+            fixture_hash.len() == 64 && fixture_hash.bytes().all(|b| b.is_ascii_hexdigit()),
+            "Invalid feel fixture hash"
+        );
+        anyhow::ensure!(
+            crate::palette::sha256_hex(fixture) == fixture_hash,
+            "Feel fixture hash mismatch"
+        );
+        let saved: Project = serde_json::from_slice(fixture)?;
+        let expected = serde_json::to_string(&saved)?.into_bytes();
+        anyhow::ensure!(launcher == expected, "Feel typed launcher project mismatch");
+        // Independently bind the actual loaded Studio Project to those bytes.
+        // Reject any load normalization/drift rather than silently rebasing.
+        let project_bytes = serde_json::to_vec(loaded)?;
+        anyhow::ensure!(project_bytes == launcher, "Feel loaded project mismatch");
+        Ok(project_bytes)
+    }
+
     fn validate_mode(
         case: &str,
         screenshot: bool,
@@ -685,10 +719,16 @@ impl FeelCapture {
         }
         let path =
             project.ok_or_else(|| anyhow::anyhow!("Feel capture requires loaded project file"))?;
-        anyhow::ensure!(
-            crate::palette::sha256_hex(&std::fs::read(path)?) == fixture_hash,
-            "Feel fixture hash mismatch"
-        );
+        let fixture_path = std::env::var_os("BEATBOX_FEEL_FIXTURE_PATH")
+            .ok_or_else(|| anyhow::anyhow!("Feel capture requires original fixture path"))?;
+        let contract = std::env::var("BEATBOX_FEEL_PROJECT_CONTRACT")?;
+        let project_bytes = Self::verify_project_provenance(
+            &contract,
+            &std::fs::read(std::path::Path::new(&fixture_path))?,
+            &fixture_hash,
+            &std::fs::read(path)?,
+            &e.project,
+        )?;
         anyhow::ensure!(
             !e.transport.attached && !e.transport.playing && e.transport.position_s == 0.0,
             "Non-fresh feel transport"
@@ -697,7 +737,7 @@ impl FeelCapture {
             case,
             action_hash,
             fixture_hash,
-            project_bytes: serde_json::to_vec(&e.project)?,
+            project_bytes,
             revision: e.revision,
             generation: e.project_load_generation,
             history: e.undo_depth(),
@@ -859,6 +899,8 @@ impl FeelCapture {
             "request_ready":true,"shot_requested":studio.shot_requested,
             "build_sha":option_env!("BEATBOX_BUILD_SHA").unwrap_or("unknown"),
             "fixture_sha256":self.fixture_hash,"action_log_sha256":self.action_hash,
+            "project_contract":Self::PROJECT_CONTRACT,
+            "launcher_project_sha256":crate::palette::sha256_hex(&self.project_bytes),
             "viewport_pixels":pixels,"logical_viewport":[logical.x,logical.y],"pixels_per_point":ctx.pixels_per_point(),
             "playing":false,"autoplay":false,"native_input":false,
             "seek_origin":"existing ordinary frame2 38%-duration seek","initial_seek_revision":self.seek_revision,
@@ -3948,5 +3990,143 @@ mod feel_capture_mode_tests {
                 FeelCapture::validate_mode(case, true, true, Some("sequencer"), false).is_err()
             );
         }
+    }
+
+    #[test]
+    fn engine_pretty_and_screenshot_typed_compact_provenance_roundtrip() {
+        use crate::{engine::Engine, palette::sha256_hex};
+        use serde_json::json;
+        let root = std::env::temp_dir().join(format!("feel_provenance_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let saved_path = root.join("engine.json");
+        let launcher_path = root.join("launcher.json");
+        let mut author = Engine::new(root.clone());
+        author
+            .call(
+                "new_project",
+                &json!({"bpm":120,"patterns":[{"name":"A","bars":1}]}),
+            )
+            .unwrap();
+        author.call("add_track", &json!({"name":"Feel keys","volume_db":-24,
+            "instrument":{"type":"synth","osc1":"sine","osc2":"sine","osc_mix":0.0,"unison":1,"noise_level":0.0}})).unwrap();
+        author
+            .call(
+                "add_notes",
+                &json!({"track":"Feel keys","pattern":"A","notes":[
+            {"pitch":60,"start":0.3,"len":1,"vel":0.6,"offset":0.12},
+            {"pitch":64,"start":1.3,"len":1,"vel":0.6,"offset":-0.1},
+            {"pitch":67,"start":4.3,"len":1,"vel":0.6,"offset":0}]}),
+            )
+            .unwrap();
+        author
+            .call("save_project", &json!({"path":saved_path}))
+            .unwrap();
+        let saved = std::fs::read(&saved_path).unwrap();
+        let saved_json: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        let notes = &saved_json["patterns"][0]["clips"]["feel keys"];
+        assert_eq!(notes[0]["start"], json!(0.3));
+        assert_eq!(notes[0]["vel"], json!(0.6));
+        for key in ["offset", "prob", "slide_to"] {
+            assert!(notes[2].get(key).is_none());
+        }
+        let mut tool = Engine::new(root.clone());
+        tool.call("load_project", &json!({"path":saved_path}))
+            .unwrap();
+        // Exact real tools_parity screenshot serialization, not Value JSON.
+        let launcher = serde_json::to_string(&tool.project).unwrap().into_bytes();
+        assert_ne!(saved, launcher);
+        assert_ne!(sha256_hex(&saved), sha256_hex(&launcher));
+        std::fs::write(&launcher_path, &launcher).unwrap();
+        let mut studio = Engine::new(root.clone());
+        studio
+            .call("load_project", &json!({"path":launcher_path}))
+            .unwrap();
+        let baseline = serde_json::to_vec(&studio.project).unwrap();
+        for fixture in [&saved, &launcher] {
+            assert_eq!(
+                FeelCapture::verify_project_provenance(
+                    FeelCapture::PROJECT_CONTRACT,
+                    fixture,
+                    &sha256_hex(fixture),
+                    &std::fs::read(&launcher_path).unwrap(),
+                    &studio.project
+                )
+                .unwrap(),
+                baseline
+            );
+        }
+        // The verified Project still reaches the actual initializer/observer.
+        for case in ["selected", "all-offsets"] {
+            let mut piano = super::piano::PianoState::default();
+            let stamp = (studio.revision, studio.project_load_generation);
+            let (ti, pi) = piano
+                .initialize_feel_capture(&studio.project, stamp, case)
+                .unwrap();
+            let observed = piano
+                .observe_feel_capture(&studio.project, stamp, (ti, pi, 0), case)
+                .unwrap();
+            assert_eq!(observed["source_notes"], *notes);
+            assert_eq!(serde_json::to_vec(&studio.project).unwrap(), baseline);
+        }
+        let hash = sha256_hex(&saved);
+        let check = |contract: &str,
+                     fixture: &[u8],
+                     hash: &str,
+                     bytes: &[u8],
+                     project: &crate::project::Project| {
+            FeelCapture::verify_project_provenance(contract, fixture, hash, bytes, project).is_err()
+        };
+        for contract in ["", "unknown", "rust-project-serde-json-to-string-v2"] {
+            assert!(check(contract, &saved, &hash, &launcher, &studio.project));
+        }
+        for wrong_hash in ["bad".to_string(), "0".repeat(64), sha256_hex(&launcher)] {
+            assert!(check(
+                FeelCapture::PROJECT_CONTRACT,
+                &saved,
+                &wrong_hash,
+                &launcher,
+                &studio.project
+            ));
+        }
+        assert!(check(
+            FeelCapture::PROJECT_CONTRACT,
+            &saved,
+            &hash,
+            &saved,
+            &studio.project
+        ));
+        let mut modified = studio.project.clone();
+        modified.bpm = 121.0;
+        let modified_launcher = serde_json::to_string(&modified).unwrap().into_bytes();
+        assert!(check(
+            FeelCapture::PROJECT_CONTRACT,
+            &saved,
+            &hash,
+            &modified_launcher,
+            &modified
+        ));
+        assert!(check(
+            FeelCapture::PROJECT_CONTRACT,
+            &saved,
+            &hash,
+            &launcher,
+            &modified
+        ));
+        assert!(check(
+            FeelCapture::PROJECT_CONTRACT,
+            &modified_launcher,
+            &hash,
+            &modified_launcher,
+            &modified
+        ));
+        assert!(check(
+            FeelCapture::PROJECT_CONTRACT,
+            b"not json",
+            &sha256_hex(b"not json"),
+            &launcher,
+            &studio.project
+        ));
+        std::fs::remove_file(saved_path).unwrap();
+        std::fs::remove_file(launcher_path).unwrap();
     }
 }
