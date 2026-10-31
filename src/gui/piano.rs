@@ -6650,6 +6650,7 @@ mod feel_capture_startup_tests {
             seek_revision: None,
             state: None,
             started: std::time::Instant::now(),
+            diagnostic: None,
         };
         let baseline = capture.project_bytes.clone();
         capture.freeze_initial_seek(1, 7);
