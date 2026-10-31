@@ -46,6 +46,52 @@ def identity(pid):
     return [int(fields[1]), int(fields[2]), int(fields[3]), int(fields[19])]
 
 
+def display_ready(p, r, write_fd, alive):
+    import select
+    started = time.monotonic()
+    budget = min(10, max(0, DEADLINE-started))
+    receipt = {'budget_seconds': budget, 'pipe_fd': r, 'child_write_fd': write_fd, 'pid': p.pid}
+    def observe():
+        fields = bounded(f'/proc/{p.pid}/stat', 4096).rsplit(b') ', 1)[1].split()
+        prior = os.waitid(os.P_PID, p.pid, os.WEXITED|os.WNOHANG|os.WNOWAIT)
+        return {'state': fields[0].decode(), 'ppid_pgid_sid_start': [int(fields[i]) for i in (1,2,3,19)],
+                'waitid': None if prior is None else {k: getattr(prior,k) for k in ('si_pid','si_code','si_status')},
+                'log_bytes': (OUT/'xvfb.log').stat().st_size}
+    try:
+        alive(p)
+        pipe = os.fstat(r)
+        receipt['pipe_identity'] = [pipe.st_dev, pipe.st_ino, pipe.st_mode]
+        receipt.update(before=observe(), outcome='waiting', elapsed_seconds=time.monotonic()-started)
+        atomic('readiness.json', receipt)
+        os.set_blocking(r, False)
+        number = b''
+        while True:
+            remaining = started+budget-time.monotonic()
+            require(remaining>0, 'display readiness timeout')
+            readable = select.select([r], [], [], remaining)[0]
+            alive(p)
+            require(readable and time.monotonic()<started+budget, 'display readiness timeout')
+            try: part = os.read(r, 32-len(number))
+            except BlockingIOError: continue
+            require(part, 'displayfd EOF')
+            number += part
+            if b'\n' in number: break
+            require(len(number)<32, 'displayfd response cap')
+        require(number.endswith(b'\n') and number[:-1].isdigit(), 'displayfd response')
+        alive(p)
+        require(time.monotonic()<started+budget, 'display readiness timeout')
+        receipt['outcome'] = 'ready'
+        return number[:-1]
+    except BaseException as error:
+        receipt.update(outcome='STOP', error=type(error).__name__+': '+str(error)[:300])
+        raise
+    finally:
+        receipt['elapsed_seconds'] = time.monotonic()-started
+        try: receipt['after'] = observe()
+        except (OSError,RuntimeError) as error: receipt['after_error'] = type(error).__name__+': '+str(error)[:300]
+        atomic('readiness.json', receipt)
+
+
 def png(w, h, rgb):
     require(0 < w <= 1100 and 0 < h <= 700 and len(rgb) == w*h*3, 'RGB shape')
     def chunk(kind, data):
@@ -259,10 +305,9 @@ def run():
         r,w=os.pipe()
         try:
             xv=launch(['/usr/bin/Xvfb','-displayfd',str(w),'-screen','0','1100x700x24','-nolisten','tcp','-dpi','96'],env,'xvfb',pass_fds=(w,))
+            write_fd=w
             os.close(w); w=-1
-            import select
-            require(select.select([r],[],[],2)[0], 'display readiness')
-            number=os.read(r,32).strip(); require(number.isdigit(), 'displayfd response')
+            number=display_ready(xv,r,write_fd,alive)
         finally:
             os.close(r)
             if w!=-1: os.close(w)
