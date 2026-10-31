@@ -1273,6 +1273,151 @@ pub struct PianoState {
     pub manual: bool,
 }
 
+// Finite appearance preparation only. All draft fields stay encapsulated here.
+// No Engine calls, synthetic input, project edits or lifecycle bypasses.
+impl PianoState {
+    pub(super) fn initialize_feel_capture(
+        &mut self,
+        p: &Project,
+        stamp: (u64, u64),
+        case: &str,
+    ) -> Result<(usize, usize), String> {
+        if self.feel.is_some() || self.drag.is_some() || self.band.is_some() {
+            return Err("Feel capture already initialized or gesture held".into());
+        }
+        if !matches!(case, "selected" | "all-offsets" | "boundary-blocked") {
+            return Err("Unknown feel selector".into());
+        }
+        let ti = p.track_index("Feel keys").map_err(|e| e.to_string())?;
+        let pi = p.pattern_index("A").map_err(|e| e.to_string())?;
+        if p.tracks[ti].name != "Feel keys"
+            || p.patterns[pi].name != "A"
+            || p.patterns[pi].steps() != 16
+        {
+            return Err("Wrong feel fixture source".into());
+        }
+        let notes = p.patterns[pi].notes(&p.tracks[ti].name);
+        let expected: &[(u8, f32, f32, f32, f32)] = if case == "boundary-blocked" {
+            &[(60, 15.8, 0.1, 0.6, 0.0)]
+        } else {
+            &[
+                (60, 0.3, 1.0, 0.6, 0.12),
+                (64, 1.3, 1.0, 0.6, -0.1),
+                (67, 4.3, 1.0, 0.6, 0.0),
+            ]
+        };
+        if notes.len() != expected.len()
+            || notes
+                .iter()
+                .zip(expected)
+                .any(|(n, x)| (n.pitch, n.start, n.len, n.vel, n.offset) != *x)
+        {
+            return Err("Wrong feel fixture notes".into());
+        }
+        let indices = if case == "selected" {
+            vec![0, 1]
+        } else {
+            vec![]
+        };
+        let selected = indices.iter().map(|i| notes[*i].id.clone()).collect();
+        // The real constructor MUST accept the valid default 50/0 preview first.
+        let mut draft = FeelDraft::new(p, stamp, (ti, pi, 0), selected, 2)?;
+        if case != "selected" {
+            draft.strength = 100;
+            draft.swing = if case == "all-offsets" { 50 } else { 0 };
+        }
+        // Use the same control-key cache path as the actual controls.
+        let _ = draft.control_preview();
+        self.owner = (pi, ti);
+        self.selected = indices;
+        self.note_ids = notes.iter().map(|n| n.id.clone()).collect();
+        self.snap = 2;
+        self.feel = Some(draft);
+        Ok((ti, pi))
+    }
+
+    pub(super) fn observe_feel_capture(
+        &self,
+        p: &Project,
+        stamp: (u64, u64),
+        owner: (usize, usize, usize),
+        case: &str,
+    ) -> Result<Value, String> {
+        let d = self
+            .feel
+            .as_ref()
+            .ok_or("Feel draft lost through lifecycle")?;
+        d.validate_source(p)?;
+        let notes = p.patterns[d.pattern].notes(&p.tracks[d.track].name);
+        let selected: Vec<String> = self
+            .selected
+            .iter()
+            .filter_map(|i| notes.get(*i))
+            .map(|n| n.id.clone())
+            .collect();
+        if selected.len() != self.selected.len()
+            || !d.context_matches(stamp.0, Some(stamp.1), owner, &selected)
+            || self.owner != (d.pattern, d.track)
+            || self.note_ids != notes.iter().map(|n| n.id.clone()).collect::<Vec<_>>()
+            || self.drag.is_some()
+            || self.band.is_some()
+            || self.reselect_ids.is_some()
+            || self.snap != 2
+        {
+            return Err("Feel capture owner/selection/stamp/gesture drift".into());
+        }
+        let controls = match case {
+            "selected" => (2, 50, 0),
+            "all-offsets" => (2, 100, 50),
+            "boundary-blocked" => (2, 100, 0),
+            _ => return Err("Unknown feel selector".into()),
+        };
+        if (d.grid, d.strength, d.swing) != controls {
+            return Err("Feel capture control drift".into());
+        }
+        let preview = d.preview();
+        if d.preview_cache.as_ref().is_none_or(|cache| {
+            cache.controls != controls
+                || match (&cache.result, &preview) {
+                    (Ok(a), Ok(b)) => {
+                        feel_bytes(&a.clip) != feel_bytes(&b.clip)
+                            || (a.starts, a.offsets, a.changed) != (b.starts, b.offsets, b.changed)
+                    }
+                    (Err(a), Err(b)) => a != b,
+                    _ => true,
+                }
+        }) {
+            return Err("Feel capture control cache drift".into());
+        }
+        let observed = match preview {
+            Ok(result) => {
+                let expected = if case == "selected" { (2, 0) } else { (3, 2) };
+                if case == "boundary-blocked"
+                    || (result.starts, result.offsets) != expected
+                    || !result.changed
+                {
+                    return Err("Unexpected actual feel preview counts".into());
+                }
+                json!({"starts":result.starts,"offsets":result.offsets,"error":null,"apply_eligible":true})
+            }
+            Err(error) => {
+                if case != "boundary-blocked" || !error.contains("pattern end") {
+                    return Err(format!("Unexpected actual feel preview error: {error}"));
+                }
+                json!({"starts":null,"offsets":null,"error":error,"apply_eligible":false})
+            }
+        };
+        Ok(
+            json!({"owner":{"track_index":d.track,"pattern_index":d.pattern,"track_id":d.track_id,
+            "pattern_id":d.pattern_id,"track_name":d.track_name,"pattern_name":d.pattern_name},
+            "view":owner.2,"selection_ids":selected,"frozen_scope_ids":d.ids,"source_notes":serde_json::from_slice::<Value>(&feel_bytes(&d.clip)).map_err(|e| e.to_string())?,
+            "source_steps":d.steps,"revision":d.revision,"load_generation":d.generation,
+            "grid_index":d.grid,"grid":SNAPS[d.grid].0,"strength":d.strength,"swing":d.swing,
+            "preview":observed}),
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NoteDrag {
     pub id: String,
@@ -6241,5 +6386,340 @@ mod feel_pure_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod feel_capture_tests {
+    use super::*;
+
+    fn prepared(boundary: bool) -> crate::engine::Engine {
+        let mut e = crate::engine::Engine::new(std::env::temp_dir().join(format!(
+            "feel_capture_{}_{}",
+            boundary,
+            std::process::id()
+        )));
+        e.call(
+            "new_project",
+            &json!({"name":"Authored quantize feel appearance","bpm":120,
+            "patterns":[{"name":"A","bars":1}]}),
+        )
+        .unwrap();
+        e.call("add_track", &json!({"name":"Feel keys","volume_db":-24,
+            "instrument":{"type":"synth","osc1":"sine","osc2":"sine","osc_mix":0.0,"unison":1,"noise_level":0.0}})).unwrap();
+        let notes = if boundary {
+            json!([{"pitch":60,"start":15.8,"len":0.1,"vel":0.6,"offset":0}])
+        } else {
+            json!([{"pitch":60,"start":0.3,"len":1,"vel":0.6,"offset":0.12},
+                {"pitch":64,"start":1.3,"len":1,"vel":0.6,"offset":-0.1},
+                {"pitch":67,"start":4.3,"len":1,"vel":0.6,"offset":0}])
+        };
+        e.call(
+            "add_notes",
+            &json!({"track":"Feel keys","pattern":"A","notes":notes}),
+        )
+        .unwrap();
+        e
+    }
+
+    fn engine_state(e: &crate::engine::Engine) -> Value {
+        json!({"project":e.project,"revision":e.revision,"generation":e.project_load_generation,
+            "history":e.undo_depth(),"full_log":format!("{:?}",e.log),"transport":format!("{:?}",e.transport)})
+    }
+
+    #[test]
+    fn real_preparation_and_production_preview_are_inert_for_three_fixed_states() {
+        for case in ["selected", "all-offsets", "boundary-blocked"] {
+            let e = prepared(case == "boundary-blocked");
+            let before = engine_state(&e);
+            let stamp = (e.revision, e.project_load_generation);
+            let mut state = PianoState::default();
+            let (ti, pi) = state
+                .initialize_feel_capture(&e.project, stamp, case)
+                .unwrap();
+            let actual = state
+                .observe_feel_capture(&e.project, stamp, (ti, pi, 0), case)
+                .unwrap();
+            assert_eq!(
+                actual["preview"]["apply_eligible"],
+                case != "boundary-blocked"
+            );
+            assert_eq!(
+                actual["source_notes"],
+                serde_json::from_slice::<Value>(&feel_bytes(
+                    e.project.patterns[pi].notes("Feel keys")
+                ))
+                .unwrap()
+            );
+            assert_eq!(actual["grid_index"], 2);
+            if case == "boundary-blocked" {
+                // Real constructor accepts 50/0, then real control preview rejects 100/0.
+                let d = FeelDraft::new(&e.project, stamp, (ti, pi, 0), vec![], 2).unwrap();
+                assert!(d.preview().is_ok());
+                assert!(actual["preview"]["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("pattern end"));
+            } else {
+                assert_eq!(
+                    actual["preview"]["starts"],
+                    if case == "selected" { 2 } else { 3 }
+                );
+                assert_eq!(
+                    actual["preview"]["offsets"],
+                    if case == "selected" { 0 } else { 2 }
+                );
+            }
+            assert!(state
+                .initialize_feel_capture(&e.project, stamp, case)
+                .is_err());
+            assert_eq!(engine_state(&e), before);
+        }
+    }
+
+    #[test]
+    fn observer_rejects_generation_owner_selection_controls_and_source_drift() {
+        let e = prepared(false);
+        let before = engine_state(&e);
+        let stamp = (e.revision, e.project_load_generation);
+        let mut state = PianoState::default();
+        let (ti, pi) = state
+            .initialize_feel_capture(&e.project, stamp, "selected")
+            .unwrap();
+        assert!(state
+            .observe_feel_capture(&e.project, (stamp.0, stamp.1 + 1), (ti, pi, 0), "selected")
+            .is_err());
+        assert!(state
+            .observe_feel_capture(&e.project, (stamp.0 + 1, stamp.1), (ti, pi, 0), "selected")
+            .is_err());
+        assert!(state
+            .observe_feel_capture(&e.project, stamp, (ti, pi, 1), "selected")
+            .is_err());
+        assert!(state
+            .observe_feel_capture(&e.project, stamp, (ti + 1, pi, 0), "selected")
+            .is_err());
+        assert!(state
+            .observe_feel_capture(&e.project, stamp, (ti, pi, 0), "unknown")
+            .is_err());
+        for mutate in [0, 1, 2, 3] {
+            let mut changed = state.clone();
+            match mutate {
+                0 => changed.selected.clear(),
+                1 => changed.feel.as_mut().unwrap().strength = 75,
+                2 => changed.feel.as_mut().unwrap().preview_cache = None,
+                _ => changed.feel = None,
+            }
+            assert!(changed
+                .observe_feel_capture(&e.project, stamp, (ti, pi, 0), "selected")
+                .is_err());
+        }
+        let mut wrong = e.project.clone();
+        wrong.patterns[pi].name = "Wrong source".into();
+        assert!(state
+            .observe_feel_capture(&wrong, stamp, (ti, pi, 0), "selected")
+            .is_err());
+        assert_eq!(engine_state(&e), before);
+    }
+
+    #[test]
+    fn initializer_rejects_unknown_wrong_fixture_and_held_gesture() {
+        let e = prepared(false);
+        let stamp = (e.revision, e.project_load_generation);
+        for case in ["unknown", "boundary-blocked"] {
+            let mut state = PianoState::default();
+            assert!(state
+                .initialize_feel_capture(&e.project, stamp, case)
+                .is_err());
+            assert!(state.feel.is_none());
+        }
+        let mut wrong = e.project.clone();
+        let pi = wrong.pattern_index("A").unwrap();
+        wrong.patterns[pi].name = "B".into();
+        assert!(PianoState::default()
+            .initialize_feel_capture(&wrong, stamp, "selected")
+            .is_err());
+        let mut state = PianoState {
+            band: Some(egui::Pos2::ZERO),
+            ..Default::default()
+        };
+        assert!(state
+            .initialize_feel_capture(&e.project, stamp, "selected")
+            .is_err());
+        assert!(state.feel.is_none());
+    }
+}
+
+#[cfg(test)]
+mod feel_capture_saved_json_tests {
+    use super::*;
+
+    #[test]
+    fn saved_engine_json_defaults_and_fractional_source_match_observer_exactly() {
+        let root = std::env::temp_dir().join(format!("feel_saved_json_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("source.json");
+        let mut e = crate::engine::Engine::new(root.clone());
+        e.call(
+            "new_project",
+            &json!({"bpm":120,"patterns":[{"name":"A","bars":1}]}),
+        )
+        .unwrap();
+        e.call("add_track", &json!({"name":"Feel keys","volume_db":-24,
+            "instrument":{"type":"synth","osc1":"sine","osc2":"sine","osc_mix":0.0,"unison":1,"noise_level":0.0}})).unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track":"Feel keys","pattern":"A","notes":[
+            {"pitch":60,"start":0.3,"len":1,"vel":0.6,"offset":0.12},
+            {"pitch":64,"start":1.3,"len":1,"vel":0.6,"offset":-0.1},
+            {"pitch":67,"start":4.3,"len":1,"vel":0.6,"offset":0}]}),
+        )
+        .unwrap();
+        e.call("save_project", &json!({"path":path})).unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let source = saved["patterns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "A")
+            .unwrap();
+        let notes = &source["clips"]["feel keys"];
+        assert!(notes[2].get("offset").is_none());
+        assert!(notes[2].get("prob").is_none());
+        assert!(notes[2].get("slide_to").is_none());
+        assert_eq!(notes[0]["start"], json!(0.3));
+        assert_eq!(notes[0]["vel"], json!(0.6));
+        let mut loaded = crate::engine::Engine::new(root.clone());
+        loaded.call("load_project", &json!({"path":path})).unwrap();
+        let stamp = (loaded.revision, loaded.project_load_generation);
+        let mut piano = PianoState::default();
+        let (ti, pi) = piano
+            .initialize_feel_capture(&loaded.project, stamp, "selected")
+            .unwrap();
+        assert_eq!(
+            loaded.project.patterns[pi].notes("Feel keys")[2].offset,
+            0.0
+        );
+        let observed = piano
+            .observe_feel_capture(&loaded.project, stamp, (ti, pi, 0), "selected")
+            .unwrap();
+        let sidecar = root.join("sidecar.json");
+        std::fs::write(&sidecar, serde_json::to_vec_pretty(&observed).unwrap()).unwrap();
+        let reread: Value = serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(&reread["source_notes"], notes); // Keys, IDs, order and payload, no rounding.
+        std::fs::remove_file(sidecar).unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod feel_capture_startup_tests {
+    use super::super::FeelCapture;
+    use super::*;
+
+    #[test]
+    fn real_pending_gate_waits_for_focus_and_coherent_frame_without_rebasing() {
+        let mut e = crate::engine::Engine::new(
+            std::env::temp_dir().join(format!("feel_startup_{}", std::process::id())),
+        );
+        e.call(
+            "new_project",
+            &json!({"bpm":120,"patterns":[{"name":"A","bars":1}]}),
+        )
+        .unwrap();
+        e.call("add_track", &json!({"name":"Feel keys","volume_db":-24,
+            "instrument":{"type":"synth","osc1":"sine","osc2":"sine","osc_mix":0.0,"unison":1,"noise_level":0.0}})).unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track":"Feel keys","pattern":"A","notes":[
+            {"pitch":60,"start":0.3,"len":1,"vel":0.6,"offset":0.12},
+            {"pitch":64,"start":1.3,"len":1,"vel":0.6,"offset":-0.1},
+            {"pitch":67,"start":4.3,"len":1,"vel":0.6,"offset":0}]}),
+        )
+        .unwrap();
+        let stamp = (e.revision, e.project_load_generation);
+        let mut capture = FeelCapture {
+            case: "selected".into(),
+            action_hash: "0".repeat(64),
+            fixture_hash: "0".repeat(64),
+            project_bytes: serde_json::to_vec(&e.project).unwrap(),
+            revision: stamp.0,
+            generation: stamp.1,
+            history: e.undo_depth(),
+            full_log: format!("{:?}", e.log),
+            transport: e.transport.clone(),
+            seek_revision: None,
+            state: None,
+            started: std::time::Instant::now(),
+        };
+        let baseline = capture.project_bytes.clone();
+        capture.freeze_initial_seek(1, 7);
+        let engine = std::sync::Mutex::new(e);
+        let ctx = egui::Context::default();
+        let mut piano = PianoState::default();
+        for (frame, focused, coherent) in [
+            (1, false, true),
+            (2, false, true),
+            (3, true, false),
+            (4, true, true),
+        ] {
+            // In-process input only, never OS-native focus acceptance.
+            let _ = ctx.run(
+                egui::RawInput {
+                    focused,
+                    ..Default::default()
+                },
+                |ctx| {
+                    let e = engine.lock().unwrap();
+                    let owner = capture
+                        .initialize_pending(
+                            &e,
+                            ctx,
+                            &mut piano,
+                            if coherent {
+                                stamp
+                            } else {
+                                (stamp.0.wrapping_add(1), stamp.1)
+                            },
+                        )
+                        .unwrap();
+                    assert_eq!(owner.is_some(), frame == 4);
+                    assert_eq!(capture.state.is_some(), frame == 4);
+                    assert_eq!(piano.feel.is_some(), frame == 4);
+                    if let Some((ti, pi)) = owner {
+                        let selected = piano
+                            .selected
+                            .iter()
+                            .map(|i| e.project.patterns[pi].notes("Feel keys")[*i].id.clone())
+                            .collect();
+                        let frame = FeelContext {
+                            revision: stamp.0,
+                            generation: Some(stamp.1),
+                            owner: (ti, pi, 0),
+                            selected,
+                            selection_valid: true,
+                            gesture_idle: true,
+                        };
+                        let project = e.project.clone();
+                        drop(e);
+                        assert!(
+                            feel_lifecycle(ctx, &project, frame, &mut piano.feel, &engine)
+                                .is_none()
+                        );
+                        assert!(piano.feel.is_some());
+                    }
+                },
+            );
+            // A later seek stamp must not replace the original, even before focus.
+            capture.freeze_initial_seek(frame, 8);
+            assert_eq!(capture.seek_revision, Some(7));
+            assert_eq!(capture.project_bytes, baseline);
+        }
+        let mut e = engine.lock().unwrap();
+        let rev = e.revision;
+        e.revision += 1;
+        assert!(capture.check_engine(&e).is_err());
+        e.revision = rev;
+        capture.started = std::time::Instant::now() - std::time::Duration::from_secs(90);
+        assert!(capture.check_engine(&e).is_err());
     }
 }

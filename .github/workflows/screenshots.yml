@@ -520,11 +520,156 @@ jobs:
           assert len(all_pngs)==40 and len(set(all_pngs))==40
           assert {str(p.relative_to(shots)) for p in shots.rglob('*.png')}==set(all_pngs), 'unexpected/stale PNG in shots tree'
           assert all((shots/name).is_file() for name in all_pngs), '33 existing + 7 arrangement PNGs required'
+          def feel_appearance():
+              # Fixed appearance inputs only, not a native-input acceptance driver.
+              folder=shots/'feel'
+              folder.mkdir(exist_ok=True)
+              # Exactly four rows, no generated state/size matrix.
+              feel_cases=[('selected','normal',1100,700),('selected','normal',1480,920),
+                          ('all-offsets','normal',1100,700),('boundary-blocked','boundary',1100,700)]
+              feel_expected=[f'{case}_{w}x{h}_1x.png' for case,_,w,h in feel_cases]
+              manifest={'schema':1,'expected':feel_expected,'cases':[],'missing':[],
+                        'fixture_sha256':{},'preparation':'pending','checkout_sha':(shots/'build-sha.txt').read_text().strip(),
+                        'checkout_tree':subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip(),
+                        'binary_sha256':digest(binary),'rustc_sha256':digest(shots/'rustc.txt'),
+                        'checkout_provenance_sha256':digest(shots/'checkout.json'),
+                        'state_origin':['engine_json_prepared','capture_initialized_view','no_native_input'],
+                        'native_input':False,'autoplay':False,'human_inspection':'outstanding',
+                        'unrun':['native toolbar/selection','pointer/keyboard controls','Apply/Cancel','Undo/Redo',
+                                 'Escape/Space/Enter','blur/focus','held gestures','hidden dock','post-close shortcuts',
+                                 'transport under native input','native2x','Wayland','Windows','macOS']}
+              def save_feel():
+                  (folder/'manifest.json').write_text(json.dumps(manifest,indent=2))
+              save_feel()  # Exists before the first attempt, including failures.
+              action_log=folder/'fixture-actions.log'
+              inputs=[]
+              fixture_env=os.environ.copy()
+              fixture_env['BEATBOX_NO_LISTEN']='1'
+              selector_keys=['BEATBOX_AUDIO_SCENARIO','BEATBOX_AUDIO_SCALE','BEATBOX_ARRANGEMENT_CAPTURE',
+                             'BEATBOX_ARRANGEMENT_CLIP_ID','BEATBOX_ARRANGEMENT_ACTION_HASH',
+                             'BEATBOX_FEEL_CAPTURE','BEATBOX_FEEL_ACTION_HASH','BEATBOX_FEEL_FIXTURE_HASH',
+                             'BEATBOX_NARROW_SHOT']
+              for key in selector_keys: fixture_env.pop(key,None)
+              normal=[{'pitch':60,'start':0.3,'len':1,'vel':0.6,'offset':0.12},
+                      {'pitch':64,'start':1.3,'len':1,'vel':0.6,'offset':-0.1},
+                      {'pitch':67,'start':4.3,'len':1,'vel':0.6,'offset':0}]
+              boundary=[{'pitch':60,'start':15.8,'len':0.1,'vel':0.6,'offset':0}]
+              with action_log.open('wb') as log:
+                  for fixture,notes in [('normal',normal),('boundary',boundary)]:
+                      project=folder/(fixture+'.json'); project.unlink(missing_ok=True)
+                      actions=[['new_project',{'name':'Authored quantize feel appearance','bpm':120,
+                                               'patterns':[{'name':'A','bars':1}]}],
+                               ['remove_effect',{'track':'master','index':0}],
+                               ['remove_effect',{'track':'master','index':0}],
+                               ['add_track',{'name':'Feel keys','volume_db':-24,
+                                             'instrument':{'type':'synth','osc1':'sine','osc2':'sine',
+                                                           'osc_mix':0.0,'unison':1,'noise_level':0.0}}],
+                               ['add_notes',{'track':'Feel keys','pattern':'A','notes':notes}],
+                               ['place_pattern',{'pattern':'A','start_bar':0,'bars':1,'lane':0}],
+                               ['place_pattern',{'pattern':'A','start_bar':2,'bars':1,'lane':0}]]
+                      for tool,args in actions:
+                          inputs.append({'fixture':fixture,'tool':tool,'args':args})
+                          (folder/'fixture-inputs.json').write_text(json.dumps(inputs,indent=2))
+                          command=[str(binary),'call',tool,json.dumps(args),'--project',str(project)]
+                          log.write((json.dumps(command)+'\n').encode()); log.flush()
+                          run=subprocess.run(command,env=fixture_env,capture_output=True,timeout=60)
+                          log.write(run.stdout+run.stderr); log.flush()
+                          assert run.returncode==0, f'feel fixture tool failed: {fixture} {tool}'
+                          json.loads(run.stdout)  # Require real Engine JSON receipt, retained unedited above.
+                      actual=json.loads(project.read_text())
+                      track=next(t for t in actual['tracks'] if t['name']=='Feel keys')
+                      source=next(p for p in actual['patterns'] if p['name']=='A')
+                      assert track['id'] and source['id'] and source['bars']==1
+                      stored=source['clips']['feel keys']
+                      assert len(stored)==len(notes)
+                      ids=[n['id'] for n in stored]
+                      assert all(ids) and len(set(ids))==len(ids)
+                      for found,expected_note in zip(stored,notes):
+                          assert all(abs((found.get(k,0) if k=='offset' else found[k])-v)<1e-6 for k,v in expected_note.items()), 'Engine fixture values changed'
+                      assert sum(c['pattern']=='A' for c in actual['playlist'])==2
+              hashes={p.name:digest(p) for p in [folder/'normal.json',folder/'boundary.json',
+                                                folder/'fixture-inputs.json',action_log]}
+              (folder/'fixture-sha256.json').write_text(json.dumps(hashes,indent=2))
+              manifest.update(fixture_sha256=hashes,preparation='complete')
+              save_feel()
+              assert digest(binary)==(shots/'binary-sha256.txt').read_text().split()[0]
+              for (case,fixture,w,h),filename in zip(feel_cases,feel_expected):
+                  png=folder/filename; sidecar=png.with_suffix('.json'); log=png.with_suffix('.log')
+                  project=folder/(fixture+'.json')
+                  for path in (png,sidecar): path.unlink(missing_ok=True)
+                  env=fixture_env.copy()
+                  env.update(BEATBOX_FEEL_CAPTURE=case,BEATBOX_FEEL_ACTION_HASH=hashes[action_log.name],
+                             BEATBOX_FEEL_FIXTURE_HASH=hashes[project.name])
+                  if w==1100: env['BEATBOX_NARROW_SHOT']='1'
+                  command=['xvfb-run','-a','-s',f'-screen 0 {w}x{h}x24','timeout','110s',str(binary),
+                           'call','screenshot',json.dumps({'view':'sequencer','out':str(png),'inline':False}),
+                           '--project',str(project)]
+                  row={'file':filename,'selector':case,'fixture':project.name,'command':command,
+                       'expected_pixels':[w,h],'scale':1,'native_input':False}
+                  try:
+                      assert all(digest(folder/n)==v for n,v in hashes.items()), 'feel fixture drift before capture'
+                      with log.open('wb') as out:
+                          run=subprocess.run(command,env=env,stdout=out,stderr=subprocess.STDOUT,timeout=120)
+                      row['exit_code']=run.returncode
+                      assert run.returncode==0 and png.is_file() and sidecar.is_file(), 'required feel capture failed'
+                      dimensions,pixels=png_stream(png); doc=json.loads(sidecar.read_text())
+                      assert dimensions==(w,h) and doc['viewport_pixels']==[w,h]
+                      assert abs(doc['pixels_per_point']-1)<0.01
+                      assert all(abs(a-b)<1.1 for a,b in zip(doc['logical_viewport'],[w,h]))
+                      assert doc['selector']==case and doc['initial_view_state']==doc['final_view_state']
+                      assert doc['state_origin']==manifest['state_origin']
+                      assert doc['playing'] is False and doc['autoplay'] is False and doc['native_input'] is False
+                      assert doc['request_ready'] is True and doc['shot_requested'] is True
+                      assert doc['status']=='captured_uninspected'
+                      assert doc['render_revision']==doc['revision'] and doc['render_load_generation']==doc['load_generation']
+                      assert doc['build_sha']==manifest['checkout_sha']
+                      assert doc['fixture_sha256']==hashes[project.name] and doc['action_log_sha256']==hashes[action_log.name]
+                      assert len(doc['project_serialized_sha256'])==64 and len(doc['full_log_sha256'])==64
+                      assert doc['seek_origin']=='existing ordinary frame2 38%-duration seek'
+                      assert doc['seek_revision']==doc['initial_seek_revision']+1
+                      state=doc['final_view_state']
+                      actual=json.loads(project.read_text())
+                      source=next(p for p in actual['patterns'] if p['name']=='A')
+                      track=next(t for t in actual['tracks'] if t['name']=='Feel keys')
+                      source_notes=source['clips']['feel keys']; ids=[n['id'] for n in source_notes]
+                      assert state['owner']['track_id']==track['id'] and state['owner']['pattern_id']==source['id']
+                      assert state['source_notes']==source_notes and state['source_steps']==16 and state['view']==0
+                      assert state['selection_ids']==(ids[:2] if case=='selected' else [])
+                      assert state['frozen_scope_ids']==(ids[:2] if case=='selected' else ids)
+                      assert state['grid_index']==2 and state['strength']==(50 if case=='selected' else 100)
+                      assert state['swing']==(50 if case=='all-offsets' else 0)
+                      preview=state['preview']
+                      if case=='boundary-blocked':
+                          assert preview['apply_eligible'] is False and 'pattern end' in preview['error']
+                          assert preview['starts'] is None and preview['offsets'] is None
+                      else:
+                          assert preview=={'starts':2 if case=='selected' else 3,
+                                           'offsets':0 if case=='selected' else 2,'error':None,'apply_eligible':True}
+                      assert all(digest(folder/n)==v for n,v in hashes.items()), 'feel fixture drift after capture'
+                      assert digest(binary)==manifest['binary_sha256'], 'feel capture binary drift'
+                      row.update(status='captured_uninspected',png_sha256=digest(png),sidecar_sha256=digest(sidecar),
+                                 log_sha256=digest(log),decoded_rgba_sha256=pixels)
+                  except Exception as error:
+                      row.update(status='missing_or_invalid',error=str(error)); manifest['missing'].append(filename)
+                  if log.is_file(): row['log_sha256']=digest(log)
+                  manifest['cases'].append(row); save_feel()
+              assert len(manifest['cases'])==4 and not manifest['missing'], 'all four feel cases required'
+              assert all(row['status']=='captured_uninspected' for row in manifest['cases'])
+              assert {p.name for p in folder.glob('*.png')}==set(feel_expected), 'unexpected/stale feel PNG'
+              assert all((folder/name.replace('.png',suffix)).is_file() and (folder/name.replace('.png',suffix)).stat().st_size>0
+                         for name in feel_expected for suffix in ['.png','.json','.log'])
+              return feel_expected
+          feel_expected=feel_appearance()
+          all_pngs += ['feel/'+name for name in feel_expected]
+          assert len(all_pngs)==44 and len(set(all_pngs))==44
+          assert {str(p.relative_to(shots)) for p in shots.rglob('*.png')}==set(all_pngs), 'unexpected/stale PNG in extended shots tree'
+          assert all((shots/name).is_file() for name in all_pngs), 'all 40 existing + 4 finite feel PNGs required'
           (shots/'evidence-manifest.json').write_text(json.dumps({
               'schema':1,'expected_pngs':all_pngs,'ordinary':ordinary,
               'audio_manifest':'native-results-manifest.json',
               'caption_manifest':'master-caption/manifest.json',
               'arrangement_manifest':'arrangement/manifest.json',
+              'feel_manifest':'feel/manifest.json',
               'checkout_sha':(shots/'build-sha.txt').read_text().strip(),
               'human_inspection':'outstanding'},indent=2))
           assert fixture_hashes=={str(p.relative_to(root)):digest(p) for p in (project,fixture)}, 'fixture changed'

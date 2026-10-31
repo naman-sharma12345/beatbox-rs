@@ -387,6 +387,7 @@ pub struct Studio {
     screenshot: Option<PathBuf>,
     native_capture: Option<audio_check::NativeCapture>,
     arrangement_capture: Option<ArrangementCapture>,
+    feel_capture: Option<FeelCapture>,
     frames: u64,
     shot_requested: bool,
     /// Performance mode: the pattern looping live, and a launch waiting for
@@ -608,6 +609,270 @@ impl ArrangementCapture {
     }
 }
 
+/// Four fixed appearance shots, sharing the ordinary screenshot receipt lifecycle.
+struct FeelCapture {
+    case: String,
+    action_hash: String,
+    fixture_hash: String,
+    project_bytes: Vec<u8>,
+    revision: u64,
+    generation: u64,
+    history: (usize, usize),
+    full_log: String,
+    transport: crate::engine::Transport,
+    seek_revision: Option<u64>,
+    state: Option<Value>,
+    started: std::time::Instant,
+}
+
+impl FeelCapture {
+    fn validate_mode(
+        case: &str,
+        screenshot: bool,
+        no_listen: bool,
+        view: Option<&str>,
+        mixed: bool,
+    ) -> Result<(), String> {
+        if !matches!(case, "selected" | "all-offsets" | "boundary-blocked") {
+            return Err("Unknown feel selector".into());
+        }
+        if !screenshot
+            || !no_listen
+            || view.is_none_or(|v| !v.eq_ignore_ascii_case("sequencer"))
+            || mixed
+        {
+            return Err("Feel capture requires screenshot, NO_LISTEN=1, explicit sequencer view and no mixed selectors".into());
+        }
+        Ok(())
+    }
+
+    fn from_environment(
+        screenshot: bool,
+        view: Option<&str>,
+        e: &Engine,
+        project: Option<&std::path::Path>,
+    ) -> anyhow::Result<Option<Self>> {
+        let Some(case) = std::env::var_os("BEATBOX_FEEL_CAPTURE") else {
+            return Ok(None);
+        };
+        let case = case
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("Non-UTF8 feel selector"))?;
+        let mixed = [
+            "BEATBOX_AUDIO_SCENARIO",
+            "BEATBOX_AUDIO_SCALE",
+            "BEATBOX_ARRANGEMENT_CAPTURE",
+            "BEATBOX_ARRANGEMENT_CLIP_ID",
+            "BEATBOX_ARRANGEMENT_ACTION_HASH",
+        ]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some());
+        Self::validate_mode(
+            &case,
+            screenshot,
+            std::env::var("BEATBOX_NO_LISTEN").as_deref() == Ok("1"),
+            view,
+            mixed,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+        let action_hash = std::env::var("BEATBOX_FEEL_ACTION_HASH")?;
+        let fixture_hash = std::env::var("BEATBOX_FEEL_FIXTURE_HASH")?;
+        for hash in [&action_hash, &fixture_hash] {
+            anyhow::ensure!(
+                hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
+                "Invalid feel provenance hash"
+            );
+        }
+        let path =
+            project.ok_or_else(|| anyhow::anyhow!("Feel capture requires loaded project file"))?;
+        anyhow::ensure!(
+            crate::palette::sha256_hex(&std::fs::read(path)?) == fixture_hash,
+            "Feel fixture hash mismatch"
+        );
+        anyhow::ensure!(
+            !e.transport.attached && !e.transport.playing && e.transport.position_s == 0.0,
+            "Non-fresh feel transport"
+        );
+        Ok(Some(Self {
+            case,
+            action_hash,
+            fixture_hash,
+            project_bytes: serde_json::to_vec(&e.project)?,
+            revision: e.revision,
+            generation: e.project_load_generation,
+            history: e.undo_depth(),
+            full_log: format!("{:?}", e.log),
+            transport: e.transport.clone(),
+            seek_revision: None,
+            state: None,
+            started: std::time::Instant::now(),
+        }))
+    }
+
+    fn check_engine(&self, e: &Engine) -> Result<(), String> {
+        if self.started.elapsed() >= std::time::Duration::from_secs(90) {
+            return Err("Feel capture timeout".into());
+        }
+        if e.revision != self.revision
+            || e.project_load_generation != self.generation
+            || e.undo_depth() != self.history
+            || format!("{:?}", e.log) != self.full_log
+            || serde_json::to_vec(&e.project).map_err(|e| e.to_string())? != self.project_bytes
+        {
+            return Err("Feel project/revision/generation/history/full-log drift".into());
+        }
+        Ok(())
+    }
+
+    // Called on the first update, before any transport processing or frame2 seek.
+    // Never refresh this original stamp when native focus arrives later.
+    fn freeze_initial_seek(&mut self, frame: u64, revision: u64) {
+        if frame == 1 && self.seek_revision.is_none() {
+            self.seek_revision = Some(revision);
+        }
+    }
+
+    fn initialize_pending(
+        &mut self,
+        e: &Engine,
+        ctx: &egui::Context,
+        piano: &mut piano::PianoState,
+        frame_stamp: (u64, u64),
+    ) -> Result<Option<(usize, usize)>, String> {
+        self.check_engine(e)?;
+        if self.state.is_some()
+            || !ctx.input(|i| i.focused)
+            || frame_stamp != (self.revision, self.generation)
+        {
+            return Ok(None);
+        }
+        if ctx.input(|i| i.pointer.any_down()) {
+            return Err("Feel initialization held pointer".into());
+        }
+        let owner = piano.initialize_feel_capture(
+            &e.project,
+            (self.revision, self.generation),
+            &self.case,
+        )?;
+        self.state = Some(piano.observe_feel_capture(
+            &e.project,
+            (self.revision, self.generation),
+            (owner.0, owner.1, 0),
+            &self.case,
+        )?);
+        Ok(Some(owner))
+    }
+
+    fn check(&self, studio: &Studio, ctx: &egui::Context) -> Result<Value, String> {
+        let e = studio.engine.lock().unwrap();
+        self.check_engine(&e)?;
+        let sought = studio.frames >= 2;
+        let seconds = if sought {
+            e.project.song_seconds() * 0.38
+        } else {
+            0.0
+        };
+        // Only ordinary GUI attachment and the existing frame2 seek may differ.
+        let mut expected_transport = self.transport.clone();
+        expected_transport.attached = true;
+        expected_transport.position_s = if studio.frames > 2 { seconds } else { 0.0 };
+        if format!("{:?}", e.transport) != format!("{:?}", expected_transport)
+            || studio.player.is_playing()
+            || studio.player.auditioning()
+            || studio.player.launch_pending()
+            || studio.perf.is_some()
+            || studio.perf_next.is_some()
+            || studio.perf_rec.is_some()
+            || !e.transport.pending.is_empty()
+            || e.transport.pending_audition.is_some()
+            || e.transport.pending_launch.is_some()
+            || !e.transport.pending_notes.is_empty()
+            || e.transport.perf_playing.is_some()
+            || e.transport.perf_queued.is_some()
+            || Some(studio.player.seek_revision)
+                != self.seek_revision.map(|r| r + u64::from(sought))
+            || !studio.player.position_secs().is_finite()
+            || (studio.player.position_secs() - seconds).abs() > 0.01
+            || studio.dragging
+            || ctx.input(|i| i.pointer.any_down())
+            || studio.view != 0
+            || (self.state.is_some() && studio.seen_project_load != self.generation)
+        {
+            return Err("Feel transport/view/gesture drift".into());
+        }
+        // Pending startup still checks every immutable/transport guard above.
+        // Only the draft observer waits for genuine focus and a coherent frame.
+        if self.state.is_none() {
+            return Ok(Value::Null);
+        }
+        let state = studio.piano.observe_feel_capture(
+            &e.project,
+            (self.revision, self.generation),
+            (studio.selected, studio.pattern, studio.view),
+            &self.case,
+        )?;
+        if self.state.as_ref() != Some(&state) {
+            return Err("Feel frozen draft/view/scope drift".into());
+        }
+        Ok(state)
+    }
+
+    fn manifest(
+        &self,
+        studio: &Studio,
+        ctx: &egui::Context,
+        path: &std::path::Path,
+        pixels: [usize; 2],
+    ) -> Result<(), String> {
+        let state = self.check(studio, ctx)?;
+        if self.state.is_none()
+            || !studio.shot_requested
+            || studio.frames <= 30
+            || studio
+                .rendered
+                .as_ref()
+                .is_none_or(|r| r.rev != self.revision || r.generation != self.generation)
+        {
+            return Err("Feel capture not requested/ready with frozen render identity".into());
+        }
+        let expected = if std::env::var_os("BEATBOX_NARROW_SHOT").is_some() {
+            [1100, 700]
+        } else {
+            [1480, 920]
+        };
+        let logical = ctx.screen_rect().size();
+        if pixels != expected
+            || (ctx.pixels_per_point() - 1.0).abs() > 0.01
+            || (logical.x - expected[0] as f32).abs() > 1.1
+            || (logical.y - expected[1] as f32).abs() > 1.1
+        {
+            return Err("Feel dimensions/ppp mismatch (native1x only)".into());
+        }
+        let doc = json!({"schema":1,"selector":self.case,
+            "state_origin":["engine_json_prepared","capture_initialized_view","no_native_input"],
+            "initial_view_state":self.state,"final_view_state":state,
+            "project_serialized_sha256":crate::palette::sha256_hex(&self.project_bytes),
+            "revision":self.revision,"load_generation":self.generation,"history_depth":self.history,
+            "full_log_sha256":crate::palette::sha256_hex(self.full_log.as_bytes()),
+            "transport_baseline":format!("{:?}",self.transport),"transport_final":format!("{:?}",studio.engine.lock().unwrap().transport),
+            "render_revision":studio.rendered.as_ref().map(|r|r.rev),"render_load_generation":studio.rendered.as_ref().map(|r|r.generation),
+            "request_ready":true,"shot_requested":studio.shot_requested,
+            "build_sha":option_env!("BEATBOX_BUILD_SHA").unwrap_or("unknown"),
+            "fixture_sha256":self.fixture_hash,"action_log_sha256":self.action_hash,
+            "viewport_pixels":pixels,"logical_viewport":[logical.x,logical.y],"pixels_per_point":ctx.pixels_per_point(),
+            "playing":false,"autoplay":false,"native_input":false,
+            "seek_origin":"existing ordinary frame2 38%-duration seek","initial_seek_revision":self.seek_revision,
+            "seek_revision":studio.player.seek_revision,"seconds":studio.player.position_secs(),
+            "status":"captured_uninspected",
+            "limitations":"Appearance only. Native toolbar, selection, controls, Apply/Cancel, Undo/Redo, keyboard/focus, held gestures, docking, ordinary Close, native2x/Wayland/Windows/macOS UNRUN. Bounds and legibility require human pixel inspection."});
+        std::fs::write(
+            path.with_extension("json"),
+            serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())
+    }
+}
+
 pub fn run(
     engine: Engine,
     listen: &str,
@@ -615,6 +880,12 @@ pub fn run(
     screenshot: Option<PathBuf>,
     view: Option<String>,
 ) -> anyhow::Result<()> {
+    let feel_capture = FeelCapture::from_environment(
+        screenshot.is_some(),
+        view.as_deref(),
+        &engine,
+        project.as_deref(),
+    )?;
     let arrangement_capture =
         ArrangementCapture::from_environment(screenshot.is_some(), view.as_deref(), &engine)?;
     let native_capture = audio_check::NativeCapture::from_environment(screenshot.is_some())
@@ -701,6 +972,7 @@ pub fn run(
                 screenshot,
                 native_capture,
                 arrangement_capture,
+                feel_capture,
                 frames: 0,
                 shot_requested: false,
                 perf: None,
@@ -2221,6 +2493,9 @@ impl eframe::App for Studio {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frames += 1;
+        if let Some(capture) = &mut self.feel_capture {
+            capture.freeze_initial_seek(self.frames, self.player.seek_revision);
+        }
         if self.native_capture.is_some() {
             self.audio_check.begin_native_frame();
         }
@@ -2415,6 +2690,22 @@ impl eframe::App for Studio {
                 }
                 capture.seek_revision = self.player.seek_revision;
                 capture.state = Some(state);
+            }
+        }
+
+        if let Some(capture) = &mut self.feel_capture {
+            let e = self.engine.lock().unwrap();
+            if self.dragging {
+                fail_screenshot("Feel initialization held Studio gesture");
+            }
+            if let Some((ti, pi)) = capture
+                .initialize_pending(&e, ctx, &mut self.piano, (rev, self.seen_project_load))
+                .unwrap_or_else(|e| fail_screenshot(&e))
+            {
+                self.selected = ti;
+                self.pattern = pi;
+                self.view = 0;
+                self.note_editor = true;
             }
         }
 
@@ -2693,7 +2984,21 @@ impl eframe::App for Studio {
                     fail_screenshot("Arrangement render generation mismatch");
                 }
             }
-            if ready && scenario_ready && self.frames > 30 && !self.shot_requested {
+            if let Some(capture) = &self.feel_capture {
+                capture
+                    .check(self, ctx)
+                    .unwrap_or_else(|e| fail_screenshot(&e));
+                if capture.state.is_some()
+                    && ready
+                    && self.rendered.as_ref().is_none_or(|r| {
+                        r.rev != capture.revision || r.generation != capture.generation
+                    })
+                {
+                    fail_screenshot("Feel render identity mismatch");
+                }
+            }
+            let feel_ready = self.feel_capture.as_ref().is_none_or(|c| c.state.is_some());
+            if ready && scenario_ready && feel_ready && self.frames > 30 && !self.shot_requested {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
                 self.shot_requested = true;
             }
@@ -2720,6 +3025,20 @@ impl eframe::App for Studio {
                         fail_screenshot("Arrangement capture not requested or render not ready");
                     }
                 }
+                if let Some(capture) = &self.feel_capture {
+                    capture
+                        .check(self, ctx)
+                        .unwrap_or_else(|e| fail_screenshot(&e));
+                    if capture.state.is_none()
+                        || !ready
+                        || !self.shot_requested
+                        || self.rendered.as_ref().is_none_or(|r| {
+                            r.rev != capture.revision || r.generation != capture.generation
+                        })
+                    {
+                        fail_screenshot("Feel screenshot request/readiness drift");
+                    }
+                }
                 let [w, h] = img.size;
                 let mut buf = Vec::with_capacity(w * h * 4);
                 for px in &img.pixels {
@@ -2734,6 +3053,8 @@ impl eframe::App for Studio {
                     || {
                         if let Some(capture) = &self.native_capture {
                             capture.manifest(&path, &self.audio_check, ctx, [w, h])
+                        } else if let Some(capture) = &self.feel_capture {
+                            capture.manifest(self, ctx, &path, [w, h])
                         } else if let Some(capture) = &self.arrangement_capture {
                             capture.manifest(self, ctx, &path, [w, h])
                         } else {
@@ -2745,7 +3066,7 @@ impl eframe::App for Studio {
                     Ok(receipt) => receipt,
                     Err(error) => {
                         let _ = std::fs::remove_file(&path);
-                        if self.arrangement_capture.is_some() {
+                        if self.arrangement_capture.is_some() || self.feel_capture.is_some() {
                             let _ = std::fs::remove_file(path.with_extension("json"));
                         }
                         fail_screenshot(&error);
@@ -3598,5 +3919,34 @@ mod checkpoint_comparison_tests {
             &json!({"facts":{"A":{"seconds":2.},"B":{"seconds":2.}},"loudness_matched":false})
         )
         .contains("not level matched"));
+    }
+}
+
+#[cfg(test)]
+mod feel_capture_mode_tests {
+    use super::FeelCapture;
+
+    #[test]
+    fn finite_capture_mode_rejects_unknown_missing_gate_and_mixed_selectors() {
+        for case in ["selected", "all-offsets", "boundary-blocked"] {
+            assert!(FeelCapture::validate_mode(case, true, true, Some("sequencer"), false).is_ok());
+            for (screenshot, no_listen, view, mixed) in [
+                (false, true, Some("sequencer"), false),
+                (true, false, Some("sequencer"), false),
+                (true, true, None, false),
+                (true, true, Some("mixer"), false),
+                (true, true, Some("playlist"), false),
+                (true, true, Some("sequencer"), true),
+            ] {
+                assert!(
+                    FeelCapture::validate_mode(case, screenshot, no_listen, view, mixed).is_err()
+                );
+            }
+        }
+        for case in ["", "unknown", "selected,all-offsets", "SELECTED"] {
+            assert!(
+                FeelCapture::validate_mode(case, true, true, Some("sequencer"), false).is_err()
+            );
+        }
     }
 }
