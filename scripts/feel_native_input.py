@@ -246,7 +246,8 @@ def run():
             if isinstance(v,list): return [cleaned(x) for x in v]
             return {k:cleaned(x) for k,x in v.items()} if isinstance(v,dict) else v
         original=cleaned(json.loads(bounded(fixture))); notes=original['patterns'][0]['clips']['k']
-        require(len(original['tracks'])==len(original['patterns'])==1 and not original['playlist'], 'fixture shape')
+        playlist=original.get('playlist', [])
+        require(len(original['tracks'])==len(original['patterns'])==1 and isinstance(playlist,list) and not playlist, 'fixture shape')
         require(original['tracks'][0]['name']=='K' and original['patterns'][0]['name']=='A' and original['patterns'][0]['bars']==1, 'fixture names')
         require(original['tracks'][0]['id'] and original['patterns'][0]['id'] and len(notes)==3 and len({n['id'] for n in notes})==3 and all(n['id'] for n in notes), 'fixture IDs')
         for n,p,s,o in zip(notes,[60,64,67],[.3,1.3,4.3],[.12,-.1,0]):
