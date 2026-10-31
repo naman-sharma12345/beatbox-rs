@@ -585,8 +585,646 @@ fn repeat_capacity(notes: &[Note], selected: &[usize], period: f32, steps: f32) 
     (count, fit.min((100_000 / count.max(1)).min(64) as u32))
 }
 
+// A local, transient frontend to the existing quantize tool. No preview mutations.
+#[derive(Debug, Clone)]
+struct FeelDraft {
+    revision: u64,
+    generation: u64,
+    track: usize,
+    pattern: usize,
+    track_id: String,
+    pattern_id: String,
+    track_name: String,
+    pattern_name: String,
+    view: usize,
+    selected: Vec<String>,
+    ids: Vec<String>,
+    clip: Vec<Note>,
+    steps: f32,
+    grid: usize,
+    strength: u32,
+    swing: u32,
+    preview_cache: Option<FeelCache>,
+}
+
+#[derive(Debug, Clone)]
+struct FeelCache {
+    controls: (usize, u32, u32),
+    result: Result<FeelPreview, String>,
+}
+
+#[derive(Debug, Clone)]
+struct FeelPreview {
+    clip: Vec<Note>,
+    starts: usize,
+    offsets: usize,
+    changed: bool,
+}
+
+fn feel_bytes(notes: &[Note]) -> Vec<u8> {
+    // Validation rejects nonfinite fields before serialization. Include IDs and order:
+    // Note::PartialEq intentionally excludes identity.
+    serde_json::to_vec(notes).expect("notes serialize")
+}
+
+fn feel_clip_valid(notes: &[Note], steps: f32) -> Result<(), String> {
+    let mut ids = std::collections::HashSet::new();
+    if !steps.is_finite() || steps <= 0.0 || notes.is_empty() {
+        return Err("No valid notes in this source. Reopen after choosing notes.".into());
+    }
+    for n in notes {
+        if n.id.trim().is_empty() || n.id.trim() != n.id || !ids.insert(&n.id) {
+            return Err("Ambiguous or missing note IDs. Cannot safely quantize.".into());
+        }
+        if ![n.start, n.len, n.vel, n.prob, n.offset]
+            .iter()
+            .all(|v| v.is_finite())
+            || n.start < 0.0
+            || n.len <= 0.0
+            || n.pitch > 127
+            || !(0.0..=1.0).contains(&n.vel)
+            || !(0.0..=1.0).contains(&n.prob)
+        {
+            return Err("Invalid note values. Cannot safely quantize.".into());
+        }
+        if n.start >= steps {
+            return Err("A note starts at or past the pattern end, including unselected notes. Review it before quantizing; no notes were trimmed.".into());
+        }
+    }
+    Ok(())
+}
+
+impl FeelDraft {
+    fn new(
+        p: &Project,
+        stamp: (u64, u64),
+        owner: (usize, usize, usize),
+        selected: Vec<String>,
+        grid: usize,
+    ) -> Result<Self, String> {
+        let (revision, generation) = stamp;
+        let (track, pattern, view) = owner;
+        let t = p.tracks.get(track).ok_or("Channel missing")?;
+        let pat = p.patterns.get(pattern).ok_or("Pattern missing")?;
+        let clip = pat.notes(&t.name).to_vec();
+        let ids = if selected.is_empty() {
+            clip.iter().map(|n| n.id.clone()).collect()
+        } else {
+            selected.clone()
+        };
+        let d = Self {
+            revision,
+            generation,
+            track,
+            pattern,
+            track_id: t.id.clone(),
+            pattern_id: pat.id.clone(),
+            track_name: t.name.clone(),
+            pattern_name: pat.name.clone(),
+            view,
+            selected,
+            ids,
+            clip,
+            steps: pat.steps() as f32,
+            grid,
+            strength: 50,
+            swing: 0,
+            preview_cache: None,
+        };
+        d.validate_source(p)?;
+        d.preview()?;
+        Ok(d)
+    }
+
+    fn validate_source(&self, p: &Project) -> Result<(), String> {
+        let t = p
+            .tracks
+            .get(self.track)
+            .ok_or("Channel changed. Reopen Quantize.")?;
+        let pat = p
+            .patterns
+            .get(self.pattern)
+            .ok_or("Pattern changed. Reopen Quantize.")?;
+        let key_ok = |id: &str| !id.trim().is_empty() && id.trim() == id;
+        if !key_ok(&self.track_id)
+            || !key_ok(&self.pattern_id)
+            || self.pattern_id.to_lowercase().starts_with("pl:")
+            || pat.name.to_lowercase().starts_with("pl:")
+            || t.id != self.track_id
+            || pat.id != self.pattern_id
+            || t.name != self.track_name
+            || pat.name != self.pattern_name
+            || p.tracks.iter().filter(|x| x.id == self.track_id).count() != 1
+            || p.patterns
+                .iter()
+                .filter(|x| x.id == self.pattern_id)
+                .count()
+                != 1
+            || p.tracks
+                .iter()
+                .filter(|x| x.name.to_lowercase() == t.name.to_lowercase())
+                .count()
+                != 1
+            || p.patterns
+                .iter()
+                .filter(|x| x.name.to_lowercase() == pat.name.to_lowercase())
+                .count()
+                != 1
+            || p.tracks
+                .iter()
+                .any(|x| x.name.trim().to_lowercase() == self.track_id.to_lowercase())
+            || p.patterns
+                .iter()
+                .any(|x| x.name.trim().to_lowercase() == self.pattern_id.to_lowercase())
+            || p.track_index(&self.track_id).ok() != Some(self.track)
+            || p.pattern_index(&self.pattern_id).ok() != Some(self.pattern)
+        {
+            return Err("Source identity is ambiguous, a playlist copy, or changed. Choose a unique source pattern and reopen Quantize.".into());
+        }
+        // Check the exact dispatch arguments through Engine's real normalizer,
+        // then the tool's real lookups. An ID may normalize to an ambiguous name.
+        self.normalized_args(p)?;
+        let notes = pat.notes(&t.name);
+        feel_clip_valid(notes, pat.steps() as f32)?;
+        // Dispatch normalizes IDs across the project before recompiling playlist
+        // copies. Prove these source identities win that exact existing pass.
+        let owners = crate::ids::owner_keys(p);
+        let note_owner = format!("note:{}/{}", pat.name.to_lowercase(), t.name.to_lowercase());
+        if owners.get(&t.id) != Some(&format!("track:{}", t.name.to_lowercase()))
+            || owners.get(&pat.id) != Some(&format!("pattern:{}", pat.name.to_lowercase()))
+            || notes.iter().any(|n| owners.get(&n.id) != Some(&note_owner))
+        {
+            return Err("Source identities would be reassigned. Reopen a unique source.".into());
+        }
+        let source_ids: std::collections::HashSet<&str> =
+            notes.iter().map(|n| n.id.as_str()).collect();
+        for (pi, other) in p.patterns.iter().enumerate() {
+            for (track, clip) in &other.clips {
+                if pi == self.pattern && track == &t.name.to_lowercase() {
+                    continue;
+                }
+                // Compiled copies normally follow all sources and intentionally
+                // mirror IDs. Earlier copies or another source are ambiguous.
+                if (pi <= self.pattern || !other.name.starts_with("pl:"))
+                    && clip.iter().any(|n| source_ids.contains(n.id.as_str()))
+                {
+                    return Err("Note identities are shared with another source. Choose unique source notes.".into());
+                }
+            }
+        }
+        if pat.steps() as f32 != self.steps || feel_bytes(notes) != feel_bytes(&self.clip) {
+            return Err("Source notes changed. Reopen Quantize.".into());
+        }
+        let expected_scope: Vec<String> = if self.selected.is_empty() {
+            self.clip.iter().map(|n| n.id.clone()).collect()
+        } else {
+            self.selected.clone()
+        };
+        let current_ids: std::collections::HashSet<&str> =
+            notes.iter().map(|n| n.id.as_str()).collect();
+        let mut ids = std::collections::HashSet::new();
+        if self.ids != expected_scope
+            || self.ids.is_empty()
+            || self
+                .ids
+                .iter()
+                .any(|id| !ids.insert(id) || !current_ids.contains(id.as_str()))
+        {
+            return Err("Frozen note scope is missing or ambiguous. Reopen Quantize.".into());
+        }
+        Ok(())
+    }
+
+    fn preview(&self) -> Result<FeelPreview, String> {
+        feel_clip_valid(&self.clip, self.steps)?;
+        let grid = SNAPS
+            .get(self.grid)
+            .and_then(|(_, g)| *g)
+            .map(|g| tick_to_step(g.ticks()))
+            .filter(|g| g.is_finite() && *g >= 0.0625)
+            .ok_or("Choose a quantize grid; Snap off cannot apply.")?;
+        if self.strength > 100 || self.swing > 100 || self.ids.is_empty() {
+            return Err("Invalid quantize controls or empty scope.".into());
+        }
+        let original_ids: std::collections::HashSet<&str> =
+            self.clip.iter().map(|n| n.id.as_str()).collect();
+        let mut seen = std::collections::HashSet::new();
+        if self
+            .ids
+            .iter()
+            .any(|id| !seen.insert(id.as_str()) || !original_ids.contains(id.as_str()))
+        {
+            return Err("Frozen note scope is missing or ambiguous.".into());
+        }
+        let mut clip = self.clip.clone();
+        crate::midi_ops::quantize(
+            &mut clip,
+            &crate::midi_ops::Selection {
+                ids: self.ids.clone(),
+                ..Default::default()
+            },
+            grid,
+            self.strength as f32 / 100.0,
+            self.swing as f32 / 100.0,
+            false,
+        );
+        feel_clip_valid(&clip, self.steps)?;
+        let result_by_id: std::collections::HashMap<&str, &Note> =
+            clip.iter().map(|n| (n.id.as_str(), n)).collect();
+        if clip.len() != self.clip.len()
+            || self
+                .clip
+                .iter()
+                .any(|n| !result_by_id.contains_key(n.id.as_str()))
+        {
+            return Err("Preview would lose or add note identities. No edit allowed.".into());
+        }
+        let mut starts = 0;
+        let mut offsets = 0;
+        for old in &self.clip {
+            let new = result_by_id
+                .get(old.id.as_str())
+                .copied()
+                .ok_or("Preview identity changed")?;
+            starts += usize::from(old.start != new.start);
+            offsets += usize::from(seen.contains(old.id.as_str()) && old.offset != new.offset);
+            let mut allowed = old.clone();
+            if seen.contains(old.id.as_str()) {
+                allowed.start = new.start;
+                allowed.offset = new.offset;
+            }
+            if feel_bytes(&[allowed]) != feel_bytes(std::slice::from_ref(new)) {
+                return Err("Preview changed a field outside the timing scope.".into());
+            }
+        }
+        let changed = feel_bytes(&clip) != feel_bytes(&self.clip);
+        // Signed-zero-only serialization changes do not create Engine history.
+        // Identity/payload safety above is still byte-based, never Note equality.
+        if changed && clip == self.clip {
+            return Err("No musical timing change. Apply disabled.".into());
+        }
+        Ok(FeelPreview {
+            clip,
+            starts,
+            offsets,
+            changed,
+        })
+    }
+
+    fn control_preview(&mut self) -> &Result<FeelPreview, String> {
+        let controls = (self.grid, self.strength, self.swing);
+        if self
+            .preview_cache
+            .as_ref()
+            .is_none_or(|cache| cache.controls != controls)
+        {
+            self.preview_cache = Some(FeelCache {
+                controls,
+                result: self.preview(),
+            });
+        }
+        &self.preview_cache.as_ref().expect("preview cached").result
+    }
+
+    fn context_matches(
+        &self,
+        revision: u64,
+        generation: Option<u64>,
+        owner: (usize, usize, usize),
+        selected: &[String],
+    ) -> bool {
+        revision == self.revision
+            && generation == Some(self.generation)
+            && owner == (self.track, self.pattern, self.view)
+            && selected == self.selected
+    }
+
+    fn normalized_args(&self, p: &Project) -> Result<Value, String> {
+        let args = self.args()?;
+        let normalized = crate::ids::resolve_id_refs(p, &args);
+        let track = normalized.get("track").and_then(Value::as_str);
+        let pattern = normalized.get("pattern").and_then(Value::as_str);
+        if track.and_then(|key| p.track_index(key).ok()) != Some(self.track)
+            || pattern.and_then(|key| p.pattern_index(key).ok()) != Some(self.pattern)
+        {
+            return Err(
+                "Normalized source selectors are ambiguous or changed. Reopen Quantize.".into(),
+            );
+        }
+        // Dispatch the original exact arguments; Engine performs this same pass.
+        Ok(args)
+    }
+
+    fn args(&self) -> Result<Value, String> {
+        let grid = SNAPS
+            .get(self.grid)
+            .and_then(|(_, g)| *g)
+            .ok_or("Snap off")?;
+        Ok(
+            json!({"track":self.track_id,"pattern":self.pattern_id,"ids":self.ids,
+            "grid":tick_to_step(grid.ticks()),"strength":self.strength as f32 / 100.0,
+            "swing":self.swing as f32 / 100.0,"ends":false}),
+        )
+    }
+}
+
+/// Called while the caller holds ONE Engine lock; never call Studio::call here.
+fn apply_feel(e: &mut crate::engine::Engine, d: &FeelDraft) -> Result<FeelPreview, String> {
+    if e.revision != d.revision || e.project_load_generation != d.generation {
+        return Err("Quantize expired after a project edit or reload. Reopen Quantize.".into());
+    }
+    d.validate_source(&e.project)?;
+    let preview = d.preview()?;
+    if d.strength == 0 || !preview.changed {
+        return Err("No change. Nothing applied.".into());
+    }
+    feel_clip_valid(&preview.clip, d.steps)?;
+    let args = d.normalized_args(&e.project)?;
+    e.call_from("quantize", &args, "you")
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(preview)
+}
+
+// Focus remains registered across frames so shortcuts::pressed (before workspace
+// rendering) sees keyboard ownership even when no numeric editor is active.
+pub(super) fn feel_frame_generation(
+    e: &crate::engine::Engine,
+    revision: u64,
+    seen: u64,
+) -> Option<u64> {
+    (e.revision == revision && e.project_load_generation == seen).then_some(seen)
+}
+
+fn feel_gesture_idle(dragging: bool, note_drag: bool, band: bool, held: bool) -> bool {
+    !dragging && !note_drag && !band && !held
+}
+
+fn feel_dismissed(ctx: &egui::Context) -> bool {
+    ctx.input(|i| !i.focused || i.key_pressed(egui::Key::Escape))
+}
+
+fn feel_focus_id() -> egui::Id {
+    egui::Id::new("quantize-feel-focus")
+}
+
+#[derive(Clone)]
+struct FeelInputOwner {
+    viewport: egui::ViewportId,
+    ids: [Option<egui::Id>; 10],
+}
+
+fn feel_owner_key() -> egui::Id {
+    egui::Id::new("quantize-feel-input-owner")
+}
+
+fn feel_owned_control(ctx: &egui::Context, role: usize, id: egui::Id) {
+    let viewport = ctx.viewport_id();
+    ctx.data_mut(|data| {
+        if let Some(mut owner) = data.get_temp::<FeelInputOwner>(feel_owner_key()) {
+            if owner.viewport == viewport {
+                owner.ids[role] = Some(id);
+                data.insert_temp(feel_owner_key(), owner);
+            }
+        }
+    });
+}
+
+fn feel_input_owner(ctx: &egui::Context, active: bool) {
+    if !active
+        && ctx
+            .data(|data| data.get_temp::<FeelInputOwner>(feel_owner_key()))
+            .is_none()
+    {
+        return;
+    }
+    let installed = egui::Id::new("quantize-feel-input-installed");
+    let viewport = ctx.viewport_id();
+    let needs_install = ctx.data_mut(|data| {
+        let install = !data.get_temp::<bool>(installed).unwrap_or(false);
+        data.insert_temp(installed, true);
+        if active && data.get_temp::<FeelInputOwner>(feel_owner_key()).is_none() {
+            data.insert_temp(
+                feel_owner_key(),
+                FeelInputOwner {
+                    viewport,
+                    // Sentinel, combo, two numeric editors, two buttons,
+                    // and four grid choices. No foreign/global focus IDs.
+                    ids: [
+                        Some(feel_focus_id()),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ],
+                },
+            );
+        }
+        install
+    });
+    if needs_install {
+        // Shortcuts run before workspace. egui clears Escape focus first, so
+        // restore only this panel's lease, only in its owning viewport.
+        ctx.on_begin_pass(
+            "quantize-feel-input",
+            std::sync::Arc::new(|ctx| {
+                let owner = ctx.data(|data| data.get_temp::<FeelInputOwner>(feel_owner_key()));
+                if owner.is_some_and(|owner| owner.viewport == ctx.viewport_id())
+                    && !ctx.wants_keyboard_input()
+                {
+                    ctx.memory_mut(|m| m.request_focus(feel_focus_id()));
+                }
+            }),
+        );
+    }
+    let owner = ctx.data(|data| data.get_temp::<FeelInputOwner>(feel_owner_key()));
+    if let Some(owner) = owner {
+        if owner.viewport == ctx.viewport_id() {
+            ctx.memory_mut(|m| {
+                if active && m.focused().is_none() {
+                    m.request_focus(feel_focus_id());
+                } else if !active {
+                    if let Some(id) = m.focused().filter(|id| owner.ids.contains(&Some(*id))) {
+                        m.surrender_focus(id);
+                    }
+                }
+            });
+            if !active {
+                ctx.data_mut(|data| data.remove::<FeelInputOwner>(feel_owner_key()));
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct FeelAction {
+    apply: bool,
+    cancel: bool,
+}
+
+fn feel_controls(ui: &mut egui::Ui, d: &mut FeelDraft) -> FeelAction {
+    feel_input_owner(ui.ctx(), true);
+    let mut action = FeelAction::default();
+    ui.set_max_width(350.0);
+    ui.label(format!("{} / {}", d.track_name, d.pattern_name));
+    ui.label(if d.selected.is_empty() {
+        format!("All {} notes in this channel/pattern", d.ids.len())
+    } else {
+        format!("{} selected notes (frozen scope)", d.ids.len())
+    });
+    ui.label("Starts only. Shared source edits affect all its placements.");
+    ui.label("Grid (independent of Snap)");
+    let grid = egui::ComboBox::from_id_salt("feel-grid")
+        .selected_text(SNAPS[d.grid.min(SNAPS.len() - 1)].0)
+        .show_ui(ui, |ui| {
+            for (i, (name, g)) in SNAPS.iter().enumerate() {
+                if g.is_some() {
+                    let choice = ui.selectable_value(&mut d.grid, i, *name);
+                    feel_owned_control(ui.ctx(), 6 + i, choice.id);
+                }
+            }
+        });
+    feel_owned_control(ui.ctx(), 1, grid.response.id);
+    let _strength = ui
+        .horizontal(|ui| {
+            ui.label("Strength %");
+            ui.add(egui::DragValue::new(&mut d.strength).range(0..=100))
+        })
+        .inner;
+    let _swing = ui
+        .horizontal(|ui| {
+            ui.label("Swing %");
+            ui.add(egui::DragValue::new(&mut d.swing).range(0..=100))
+        })
+        .inner;
+    feel_owned_control(ui.ctx(), 2, _strength.id);
+    feel_owned_control(ui.ctx(), 3, _swing.id);
+    #[cfg(test)]
+    {
+        feel_tests::record(ui, "Strength", &_strength);
+        feel_tests::record(ui, "Swing", &_swing);
+    }
+    ui.label("100% strength clears selected saved timing offsets. Partial strength retains them.");
+    ui.label("Quantize swing is separate from song swing, which stays unchanged and may add more playback swing.");
+    let strength = d.strength;
+    let preview = d.control_preview();
+    match preview {
+        Ok(p) => {
+            ui.label(format!(
+                "{} changed starts; {} saved offsets reset",
+                p.starts, p.offsets
+            ));
+            if !p.changed || strength == 0 {
+                ui.label("No change. Apply disabled.");
+            }
+        }
+        Err(e) => {
+            ui.colored_label(Color32::YELLOW, e);
+        }
+    }
+    ui.horizontal(|ui| {
+        let apply = ui.add_enabled(
+            strength > 0 && preview.as_ref().is_ok_and(|p| p.changed),
+            egui::Button::new("Apply"),
+        );
+        let cancel = ui.button("Cancel");
+        feel_owned_control(ui.ctx(), 4, apply.id);
+        feel_owned_control(ui.ctx(), 5, cancel.id);
+        #[cfg(test)]
+        {
+            feel_tests::record(ui, "Apply", &apply);
+            feel_tests::record(ui, "Cancel", &cancel);
+        }
+        action.apply = apply.clicked();
+        action.cancel = cancel.clicked();
+    });
+    ui.interact(
+        ui.min_rect(),
+        feel_focus_id(),
+        Sense::focusable_noninteractive(),
+    );
+    if !ui.ctx().wants_keyboard_input() {
+        ui.memory_mut(|m| m.request_focus(feel_focus_id()));
+    }
+    action
+}
+
+// This is the whole local dialog lifecycle, including pre-render expiry and
+// dismissal, real controls, held-gesture gating, cleanup and guarded dispatch.
+#[derive(Clone)]
+struct FeelContext {
+    revision: u64,
+    generation: Option<u64>,
+    owner: (usize, usize, usize),
+    selected: Vec<String>,
+    selection_valid: bool,
+    gesture_idle: bool,
+}
+
+enum FeelOutcome {
+    Applied(FeelPreview, Vec<String>),
+    Failed(String),
+    Expired,
+}
+
+fn feel_lifecycle(
+    ctx: &egui::Context,
+    p: &Project,
+    frame: FeelContext,
+    draft: &mut Option<FeelDraft>,
+    engine: &std::sync::Mutex<crate::engine::Engine>,
+) -> Option<FeelOutcome> {
+    let Some(mut d) = draft.take() else {
+        feel_input_owner(ctx, false);
+        return None;
+    };
+    let expired = !d.context_matches(
+        frame.revision,
+        frame.generation,
+        frame.owner,
+        &frame.selected,
+    ) || !frame.selection_valid
+        || d.validate_source(p).is_err();
+    if feel_dismissed(ctx) || expired {
+        feel_input_owner(ctx, false);
+        return expired.then_some(FeelOutcome::Expired);
+    }
+    let mut action = FeelAction::default();
+    egui::Window::new("Quantize with feel")
+        .id(egui::Id::new("quantize-feel-window"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height((ctx.screen_rect().height() - 100.0).max(120.0))
+                .show(ui, |ui| {
+                    action = feel_controls(ui, &mut d);
+                });
+        });
+    if action.cancel {
+        feel_input_owner(ctx, false);
+    } else if action.apply && frame.gesture_idle {
+        // The same Engine lock covers source revalidation and one dispatch.
+        let result = apply_feel(&mut engine.lock().unwrap(), &d);
+        feel_input_owner(ctx, false);
+        return Some(match result {
+            Ok(preview) => FeelOutcome::Applied(preview, d.selected),
+            Err(e) => FeelOutcome::Failed(e),
+        });
+    } else {
+        *draft = Some(d);
+    }
+    None
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PianoState {
+    feel: Option<FeelDraft>,
     pub euclidean: EuclideanControls,
     pub(super) rhythm_trial: Option<super::rhythm_trial::Trial>,
     pub(super) rhythm_trial_status: String,
@@ -664,6 +1302,63 @@ fn prepare_helper_args(id: &str, args: &mut Value, track: &str, pattern: &str, i
 }
 
 impl Studio {
+    pub(super) fn feel_open(&self) -> bool {
+        self.piano.feel.is_some()
+    }
+
+    /// Render outside the dock so a hidden/closed Notes pane cannot strand a draft.
+    pub(super) fn feel_ui(
+        &mut self,
+        ctx: &egui::Context,
+        p: &Project,
+        revision: u64,
+        generation: Option<u64>,
+    ) {
+        if self.piano.feel.is_none() {
+            feel_input_owner(ctx, false);
+            return;
+        }
+        let selected: Vec<String> = self
+            .piano
+            .selected
+            .iter()
+            .filter_map(|i| {
+                p.patterns
+                    .get(self.pattern)?
+                    .notes(&p.tracks.get(self.selected)?.name)
+                    .get(*i)
+            })
+            .map(|n| n.id.clone())
+            .collect();
+        let frame = FeelContext {
+            revision,
+            generation,
+            owner: (self.selected, self.pattern, self.view),
+            selection_valid: selected.len() == self.piano.selected.len(),
+            selected,
+            gesture_idle: feel_gesture_idle(
+                self.dragging,
+                self.piano.drag.is_some(),
+                self.piano.band.is_some(),
+                ctx.input(|i| i.pointer.any_down()),
+            ),
+        };
+        match feel_lifecycle(ctx, p, frame, &mut self.piano.feel, &self.engine) {
+            Some(FeelOutcome::Applied(preview, selected)) => {
+                self.piano.reselect_ids = Some(selected);
+                self.toast = Some((format!("Quantized: {} changed starts; {} saved offsets reset. Undo restores timing.", preview.starts, preview.offsets), 0.0, true));
+            }
+            Some(FeelOutcome::Failed(e)) => self.toast = Some((e, 0.0, false)),
+            Some(FeelOutcome::Expired) => self.toast = Some((
+                "Quantize expired: source, selection, view or project changed. Reopen Quantize."
+                    .into(),
+                0.0,
+                false,
+            )),
+            None => {}
+        }
+    }
+
     /// Commit only changed geometry by stable ID, preserving every other field.
     fn write_notes(&mut self, track: &str, pattern: &str, notes: &[Note], before: &[Note]) {
         let updates: Vec<Value> = notes
@@ -701,7 +1396,19 @@ impl Studio {
         }
     }
 
-    pub(super) fn piano_roll(&mut self, ui: &mut egui::Ui, p: &Project) {
+    pub(super) fn piano_roll(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: &Project,
+        revision: u64,
+        generation: Option<u64>,
+    ) {
+        if self.piano.feel.is_some() {
+            ui.label(
+                "Quantize with feel is open. Finish or cancel the timing preview to edit notes.",
+            );
+            return;
+        }
         let tk = Tokens::DARK;
         let (Some(t), Some(pat)) = (p.tracks.get(self.selected), p.patterns.get(self.pattern))
         else {
@@ -1416,26 +2123,61 @@ impl Studio {
                     ui.selectable_value(&mut self.piano.snap, i, *label);
                 }
             });
-        let quantize_enabled = !notes.is_empty()
+        let quantize_enabled = generation.is_some()
+            && !self.dragging
+            && self.piano.drag.is_none()
+            && self.piano.band.is_none()
+            && !notes.is_empty()
             && SNAPS
                 .get(self.piano.snap)
                 .is_some_and(|(_, grid)| grid.is_some());
         let quantize_hint = if notes.is_empty() {
             "No notes to quantize in this channel and pattern."
-        } else if !quantize_enabled {
+        } else if SNAPS.get(self.piano.snap).is_none_or(|(_, g)| g.is_none()) {
             "Choose a Snap value first. Snap off has no quantize grid."
+        } else if !quantize_enabled {
+            "Finish the held gesture and wait for a current project frame."
         } else if self.piano.selected.is_empty() {
             "Quantize all notes in this channel and pattern to the chosen Snap grid."
         } else {
             "Quantize only the selected notes to the chosen Snap grid."
         };
         if tb
-            .add_enabled(quantize_enabled, egui::Button::new("Quantize").small())
+            .add_enabled(quantize_enabled, egui::Button::new("Quantize feel").small())
             .on_hover_text(quantize_hint)
             .on_disabled_hover_text(quantize_hint)
             .clicked()
+            && feel_gesture_idle(
+                self.dragging,
+                self.piano.drag.is_some(),
+                self.piano.band.is_some(),
+                ui.input(|i| i.pointer.any_down()),
+            )
         {
-            op = Some(("quantize", json!({"grid":g,"strength":1.0})));
+            let selected = self
+                .piano
+                .selected
+                .iter()
+                .map(|i| notes[*i].id.clone())
+                .collect();
+            match FeelDraft::new(
+                p,
+                (
+                    revision,
+                    generation.expect("opening requires a frame stamp"),
+                ),
+                (self.selected, self.pattern, self.view),
+                selected,
+                self.piano.snap,
+            ) {
+                Ok(d) => {
+                    self.piano.feel = Some(d);
+                    feel_input_owner(ui.ctx(), true);
+                    ui.memory_mut(|m| m.request_focus(feel_focus_id()));
+                    return;
+                }
+                Err(e) => self.toast = Some((e, 0.0, false)),
+            }
         }
         tb.menu_button("View", |ui| {
             if ui
@@ -4058,6 +4800,1446 @@ mod geometry_reindex_history_tests {
             engine.call("undo", &json!({})).unwrap();
             assert_eq!(serde_json::to_value(&engine.project).unwrap(), before);
             std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod feel_tests {
+    use super::*;
+    use crate::engine::Engine;
+
+    fn engine(tag: &str) -> Engine {
+        let mut e =
+            Engine::new(std::env::temp_dir().join(format!("feel_{tag}_{}", std::process::id())));
+        e.call("add_track", &json!({"name":"keys","preset":"kick"}))
+            .unwrap();
+        e.call("add_pattern", &json!({"name":"phrase","bars":2}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track":"keys","pattern":"phrase","notes":[
+                {"start":0.3,"len":1.7,"pitch":60,"vel":0.7,"prob":0.6,"offset":0.12,"slide_to":67},
+                {"start":1.2,"len":2.1,"pitch":64,"vel":0.9,"prob":0.8,"offset":-0.1},
+                {"start":2.7,"len":1.1,"pitch":67,"vel":0.5,"prob":0.4,"offset":0.2}
+            ]}),
+        )
+        .unwrap();
+        e
+    }
+    fn draft(e: &Engine, selected: bool) -> FeelDraft {
+        let ti = e.project.track_index("keys").unwrap();
+        let pi = e.project.pattern_index("phrase").unwrap();
+        let ids = if selected {
+            vec![e.project.patterns[pi].notes("keys")[0].id.clone()]
+        } else {
+            vec![]
+        };
+        FeelDraft::new(
+            &e.project,
+            (e.revision, e.project_load_generation),
+            (ti, pi, 0),
+            ids,
+            2,
+        )
+        .unwrap()
+    }
+    fn state(e: &Engine) -> Value {
+        json!({"project":e.project,"revision":e.revision,"generation":e.project_load_generation,
+            "history":e.undo_depth(),"log":e.log.len(),
+            "log_entries":format!("{:?}", e.log),
+            "transport":format!("{:?}",e.transport)})
+    }
+    fn rejects_unchanged(e: &mut Engine, d: &FeelDraft) {
+        let before = state(e);
+        assert!(apply_feel(e, d).is_err());
+        assert_eq!(
+            state(e),
+            before,
+            "A rejection must not dispatch, mutate history, or touch transport"
+        );
+    }
+
+    #[test]
+    fn selected_preview_matches_real_dispatch_and_one_step_undo_redo() {
+        let mut e = engine("selected");
+        let d = draft(&e, true);
+        let before = serde_json::to_value(&e.project).unwrap();
+        let history = e.undo_depth();
+        let rev = e.revision;
+        let logs = e.log.len();
+        let transport = format!("{:?}", e.transport);
+        let predicted = d.preview().unwrap();
+        assert_eq!((predicted.starts, predicted.offsets), (1, 0));
+        assert!((predicted.clip[0].start - 0.15).abs() < 1e-6);
+        assert_eq!(feel_bytes(&predicted.clip[1..]), feel_bytes(&d.clip[1..]));
+        apply_feel(&mut e, &d).unwrap();
+        assert_eq!(
+            feel_bytes(e.project.patterns[d.pattern].notes("keys")),
+            feel_bytes(&predicted.clip)
+        );
+        assert_eq!(e.revision, rev + 1);
+        assert_eq!(e.undo_depth(), (history.0 + 1, 0));
+        assert_eq!(e.log.len(), logs + 1);
+        assert_eq!(format!("{:?}", e.transport), transport);
+        let after = serde_json::to_value(&e.project).unwrap();
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), after);
+    }
+
+    #[test]
+    fn all_explicit_ids_strength_swing_and_supported_grids_match_engine() {
+        for selected in [false, true] {
+            for strength in [0, 50, 100] {
+                for swing in [0, 50, 100] {
+                    for grid in 0..4 {
+                        let mut e = engine("matrix");
+                        let mut d = draft(&e, selected);
+                        d.strength = strength;
+                        d.swing = swing;
+                        d.grid = grid;
+                        assert!(!d.ids.is_empty());
+                        if !selected {
+                            assert_eq!(d.ids.len(), 3);
+                        }
+                        let p = d.preview().unwrap();
+                        if strength == 0 || !p.changed {
+                            rejects_unchanged(&mut e, &d);
+                            continue;
+                        }
+                        let song_swing = e.project.swing;
+                        let before = state(&e);
+                        apply_feel(&mut e, &d).unwrap();
+                        assert_eq!(
+                            feel_bytes(e.project.patterns[d.pattern].notes("keys")),
+                            feel_bytes(&p.clip)
+                        );
+                        assert_eq!(e.project.swing, song_swing);
+                        assert_eq!(e.revision, before["revision"].as_u64().unwrap() + 1);
+                        if strength == 100 {
+                            assert_eq!(p.offsets, if selected { 1 } else { 3 });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn swing_delays_odd_grid_only_and_full_strength_resets_offsets() {
+        let e = engine("swing");
+        let mut d = draft(&e, false);
+        d.strength = 100;
+        d.swing = 100;
+        let p = d.preview().unwrap();
+        for old in &d.clip {
+            let n = &p.clip[unique_note_index(&p.clip, &old.id).unwrap()];
+            let idx = old.start.round();
+            let expected = idx + if idx as i64 % 2 == 1 { 1.0 / 3.0 } else { 0.0 };
+            assert!((n.start - expected).abs() < 1e-6);
+            assert_eq!(n.offset, 0.0);
+            assert_eq!(
+                (n.len, n.pitch, n.vel, n.prob, n.slide_to),
+                (old.len, old.pitch, old.vel, old.prob, old.slide_to)
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_unselected_and_new_boundary_notes_are_blocked_without_dispatch() {
+        let mut e = engine("boundary");
+        let mut d = draft(&e, true);
+        let pi = d.pattern;
+        e.project.patterns[pi].notes_mut("keys")[2].start = d.steps;
+        d.clip = e.project.patterns[pi].notes("keys").to_vec();
+        assert!(d.preview().unwrap_err().contains("pattern end"));
+        rejects_unchanged(&mut e, &d);
+        let mut e = engine("result_boundary");
+        let mut d = draft(&e, true);
+        e.project.patterns[d.pattern].notes_mut("keys")[0].start = d.steps - 0.1;
+        d.clip = e.project.patterns[d.pattern].notes("keys").to_vec();
+        d.strength = 100;
+        assert!(d.preview().unwrap_err().contains("pattern end"));
+        rejects_unchanged(&mut e, &d);
+    }
+
+    #[test]
+    fn sustained_end_may_cross_boundary_but_nominal_start_must_not() {
+        let mut e = engine("sustain");
+        let mut d = draft(&e, true);
+        e.project.patterns[d.pattern].notes_mut("keys")[0].len = 100.0;
+        d.clip = e.project.patterns[d.pattern].notes("keys").to_vec();
+        let p = apply_feel(&mut e, &d).unwrap();
+        assert_eq!(p.clip[0].len, 100.0);
+    }
+
+    #[test]
+    fn no_op_empty_scope_snap_off_invalid_and_duplicate_ids_fail_closed() {
+        for change in [
+            "zero",
+            "off",
+            "duplicate",
+            "empty",
+            "nan",
+            "infinity",
+            "invalid-strength",
+            "missing-id",
+            "scope-missing",
+            "scope-duplicate",
+            "scope-replaced",
+            "already",
+        ] {
+            let mut e = engine(change);
+            let mut d = draft(&e, true);
+            match change {
+                "zero" => d.strength = 0,
+                "off" => d.grid = 4,
+                "duplicate" => d.clip[1].id = d.clip[0].id.clone(),
+                "empty" => d.ids.clear(),
+                "nan" => d.clip[1].start = f32::NAN,
+                "infinity" => d.clip[1].offset = f32::INFINITY,
+                "invalid-strength" => d.strength = 101,
+                "missing-id" => d.clip[0].id.clear(),
+                "scope-missing" => d.ids[0] = "gone".into(),
+                "scope-duplicate" => d.ids.push(d.ids[0].clone()),
+                "scope-replaced" => d.ids = vec![d.clip[1].id.clone()],
+                "already" => {
+                    let notes = e.project.patterns[d.pattern].notes_mut("keys");
+                    notes[0].start = 0.0;
+                    d.clip = notes.clone();
+                    assert!(!d.preview().unwrap().changed);
+                }
+                _ => unreachable!(),
+            }
+            rejects_unchanged(&mut e, &d);
+        }
+    }
+
+    #[test]
+    fn every_revision_undo_reload_and_generation_only_change_expire() {
+        for change in [
+            "edit",
+            "undo",
+            "redo",
+            "identical-reload",
+            "generation-only",
+        ] {
+            let mut e = engine(change);
+            let d = draft(&e, true);
+            match change {
+                "edit" => {
+                    e.call("set_tempo", &json!({"bpm":133})).unwrap();
+                }
+                "undo" => {
+                    e.call("undo", &json!({})).unwrap();
+                }
+                "redo" => {
+                    e.call("undo", &json!({})).unwrap();
+                    e.call("redo", &json!({})).unwrap();
+                }
+                "identical-reload" => e.replace_project(e.project.clone()),
+                "generation-only" => e.project_load_generation += 1,
+                _ => unreachable!(),
+            }
+            rejects_unchanged(&mut e, &d);
+            assert_eq!(feel_frame_generation(&e, d.revision, d.generation), None);
+        }
+    }
+
+    #[test]
+    fn owner_selector_and_whole_clip_drift_reject_even_without_revision_bump() {
+        for change in [
+            "track-replaced",
+            "pattern-replaced",
+            "track-rename",
+            "pattern-rename",
+            "track-shadow",
+            "pattern-shadow",
+            "duplicate-track",
+            "duplicate-pattern",
+            "generated-name",
+            "generated-id",
+            "reorder",
+            "delete",
+            "note-id",
+            "unselected-value",
+        ] {
+            let mut e = engine(change);
+            let d = draft(&e, true);
+            match change {
+                "track-replaced" => e.project.tracks[d.track].id = "replacement".into(),
+                "pattern-replaced" => e.project.patterns[d.pattern].id = "replacement".into(),
+                "track-rename" => e.project.tracks[d.track].name = "renamed".into(),
+                "pattern-rename" => e.project.patterns[d.pattern].name = "renamed".into(),
+                "track-shadow" => {
+                    let mut t = e.project.tracks[d.track].clone();
+                    t.id = "other".into();
+                    t.name = d.track_id.clone();
+                    e.project.tracks.push(t);
+                }
+                "pattern-shadow" => {
+                    let mut p = e.project.patterns[d.pattern].clone();
+                    p.id = "other".into();
+                    p.name = d.pattern_id.clone();
+                    e.project.patterns.push(p);
+                }
+                "duplicate-track" => e.project.tracks.push(e.project.tracks[d.track].clone()),
+                "duplicate-pattern" => e
+                    .project
+                    .patterns
+                    .push(e.project.patterns[d.pattern].clone()),
+                "generated-name" => e.project.patterns[d.pattern].name = "pl:0:phrase".into(),
+                "generated-id" => e.project.patterns[d.pattern].id = "pl:source".into(),
+                "reorder" => e.project.patterns[d.pattern].notes_mut("keys").swap(0, 1),
+                "delete" => {
+                    e.project.patterns[d.pattern].notes_mut("keys").pop();
+                }
+                "note-id" => {
+                    e.project.patterns[d.pattern].notes_mut("keys")[1].id = "replacement".into()
+                }
+                "unselected-value" => e.project.patterns[d.pattern].notes_mut("keys")[1].prob = 0.2,
+                _ => unreachable!(),
+            }
+            rejects_unchanged(&mut e, &d);
+        }
+    }
+
+    #[test]
+    fn foreign_source_duplicate_ids_and_earlier_compiled_owners_reject() {
+        for compiled in [false, true] {
+            let mut e = engine("foreign-ids");
+            let d = draft(&e, true);
+            let mut other = e.project.patterns[d.pattern].clone();
+            other.id = "foreign-pattern".into();
+            other.name = if compiled {
+                "pl:foreign"
+            } else {
+                "foreign-source"
+            }
+            .into();
+            if compiled {
+                // Even a generated copy is unsafe if it wins ID normalization.
+                e.project.patterns.insert(0, other);
+                let mut moved = d.clone();
+                moved.pattern += 1;
+                rejects_unchanged(&mut e, &moved);
+            } else {
+                e.project.patterns.push(other);
+                rejects_unchanged(&mut e, &d);
+            }
+        }
+    }
+
+    #[test]
+    fn generated_sources_cannot_open_and_id_name_shadow_is_ambiguous() {
+        let mut e = engine("generated");
+        let d = draft(&e, false);
+        e.project.patterns[d.pattern].name = "pl:0:phrase".into();
+        assert!(FeelDraft::new(
+            &e.project,
+            (e.revision, e.project_load_generation),
+            (d.track, d.pattern, 0),
+            vec![],
+            2
+        )
+        .is_err());
+        e.project.patterns[d.pattern].name = d.pattern_name.clone();
+        e.project.tracks[d.track].name = d.track_id.clone();
+        assert!(FeelDraft::new(
+            &e.project,
+            (e.revision, e.project_load_generation),
+            (d.track, d.pattern, 0),
+            vec![],
+            2
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn shared_source_dispatch_updates_compiled_copies_in_one_history_step() {
+        let mut e = engine("shared");
+        for start in [0, 4] {
+            e.call(
+                "place_pattern",
+                &json!({"pattern":"phrase","start_bar":start,"lane":0}),
+            )
+            .unwrap();
+        }
+        let d = draft(&e, false);
+        let before = serde_json::to_value(&e.project).unwrap();
+        let h = e.undo_depth();
+        let rev = e.revision;
+        let preview = apply_feel(&mut e, &d).unwrap();
+        assert_eq!(e.undo_depth(), (h.0 + 1, 0));
+        assert_eq!(e.revision, rev + 1);
+        assert_eq!(e.project.playlist.len(), 2);
+        let compiled: Vec<_> = e
+            .project
+            .patterns
+            .iter()
+            .filter(|p| p.name.starts_with("pl:") && !p.notes("keys").is_empty())
+            .collect();
+        assert_eq!(compiled.len(), 2);
+        for p in compiled {
+            assert_eq!(feel_bytes(p.notes("keys")), feel_bytes(&preview.clip));
+        }
+        let after = serde_json::to_value(&e.project).unwrap();
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before);
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), after);
+    }
+
+    #[test]
+    fn alternate_meter_and_sorted_whole_clip_preserve_frozen_ids() {
+        let mut e = engine("meter");
+        let d = draft(&e, true);
+        e.project.patterns[d.pattern].meter = Some((7, 8));
+        e.project.patterns[d.pattern].notes_mut("keys").reverse();
+        let mut d = draft(&e, false);
+        d.swing = 100;
+        let p = d.preview().unwrap();
+        assert_eq!(d.steps, 28.0);
+        let mut old: Vec<_> = d.clip.iter().map(|n| n.id.clone()).collect();
+        old.sort();
+        let mut new: Vec<_> = p.clip.iter().map(|n| n.id.clone()).collect();
+        new.sort();
+        assert_eq!(new, old);
+        apply_feel(&mut e, &d).unwrap();
+        assert_eq!(
+            feel_bytes(e.project.patterns[d.pattern].notes("keys")),
+            feel_bytes(&p.clip)
+        );
+    }
+
+    #[test]
+    fn context_owner_selection_view_frame_and_gesture_guards() {
+        let e = engine("context");
+        let d = draft(&e, true);
+        assert!(d.context_matches(
+            d.revision,
+            Some(d.generation),
+            (d.track, d.pattern, d.view),
+            &d.selected
+        ));
+        assert!(!d.context_matches(
+            d.revision,
+            Some(d.generation),
+            (d.track, d.pattern, d.view),
+            &[]
+        ));
+        for owner in [
+            (d.track + 1, d.pattern, d.view),
+            (d.track, d.pattern + 1, d.view),
+            (d.track, d.pattern, d.view + 1),
+        ] {
+            assert!(!d.context_matches(d.revision, Some(d.generation), owner, &d.selected));
+        }
+        assert!(!d.context_matches(
+            d.revision + 1,
+            Some(d.generation),
+            (d.track, d.pattern, d.view),
+            &d.selected
+        ));
+        assert!(!d.context_matches(d.revision, None, (d.track, d.pattern, d.view), &d.selected));
+        assert_eq!(
+            feel_frame_generation(&e, d.revision, d.generation),
+            Some(d.generation)
+        );
+        assert!(feel_gesture_idle(false, false, false, false));
+        for i in 0..4 {
+            let mut flags = [false; 4];
+            flags[i] = true;
+            assert!(!feel_gesture_idle(flags[0], flags[1], flags[2], flags[3]));
+        }
+    }
+
+    #[test]
+    fn actual_rename_unicode_collision_blocks_open_and_apply_without_wrong_clip_trim() {
+        let mut e = engine("unicode-rename");
+        e.call(
+            "rename_pattern",
+            &json!({"pattern":"phrase","new_name":"Ä"}),
+        )
+        .unwrap();
+        e.call("add_pattern", &json!({"name":"later","bars":2}))
+            .unwrap();
+        e.call(
+            "add_notes",
+            &json!({"track":"keys","pattern":"later","notes":[
+            {"start":0.3,"len":1.0,"pitch":72,"vel":0.8}]}),
+        )
+        .unwrap();
+        let ti = e.project.track_index("keys").unwrap();
+        let pi = e.project.pattern_index("later").unwrap();
+        let earlier = e.project.pattern_index("Ä").unwrap();
+        assert!(earlier < pi);
+        let mut d = FeelDraft::new(
+            &e.project,
+            (e.revision, e.project_load_generation),
+            (ti, pi, 0),
+            vec![],
+            2,
+        )
+        .unwrap();
+        // The real legacy wrapper would trim this unpreviewed earlier clip.
+        let end = e.project.patterns[earlier].steps() as f32;
+        e.project.patterns[earlier].notes_mut("keys")[0].start = end;
+        let wrong_clip = feel_bytes(e.project.patterns[earlier].notes("keys"));
+        e.call("rename_pattern", &json!({"pattern":"later","new_name":"ä"}))
+            .unwrap();
+        assert_ne!(e.project.patterns[earlier].id, e.project.patterns[pi].id);
+        assert!(e.project.patterns[earlier]
+            .notes("keys")
+            .iter()
+            .all(|a| e.project.patterns[pi]
+                .notes("keys")
+                .iter()
+                .all(|b| a.id != b.id)));
+        let args = crate::ids::resolve_id_refs(&e.project, &d.args().unwrap());
+        assert_eq!(e.project.pattern_index(&d.pattern_id).unwrap(), pi);
+        assert_eq!(args["pattern"], "ä");
+        assert_eq!(
+            e.project
+                .pattern_index(args["pattern"].as_str().unwrap())
+                .unwrap(),
+            earlier
+        );
+        let before = state(&e);
+        assert!(FeelDraft::new(
+            &e.project,
+            (e.revision, e.project_load_generation),
+            (ti, pi, 0),
+            vec![],
+            2
+        )
+        .is_err());
+        assert_eq!(state(&e), before);
+        rejects_unchanged(&mut e, &d);
+        // Isolate the identity guard too, rather than relying only on stale stamps.
+        d.revision = e.revision;
+        d.generation = e.project_load_generation;
+        d.pattern_name = "ä".into();
+        assert!(d.normalized_args(&e.project).is_err());
+        rejects_unchanged(&mut e, &d);
+        assert_eq!(
+            feel_bytes(e.project.patterns[earlier].notes("keys")),
+            wrong_clip
+        );
+    }
+
+    #[test]
+    fn actual_normalizer_names_whitespace_and_aliases_match_frozen_indices() {
+        for case in [
+            "ordinary",
+            "case-name",
+            "track-space",
+            "pattern-space",
+            "bus-alias",
+        ] {
+            let mut e = engine(case);
+            let mut d = draft(&e, true);
+            match case {
+                "case-name" => {
+                    e.project.tracks[d.track].name = "KEYS".into();
+                    e.project.patterns[d.pattern].name = "PHRASE".into();
+                    d.track_name = "KEYS".into();
+                    d.pattern_name = "PHRASE".into();
+                }
+                "track-space" => {
+                    e.project.tracks[d.track].name = " keys ".into();
+                    let clip = e.project.patterns[d.pattern].clips.remove("keys").unwrap();
+                    e.project.patterns[d.pattern]
+                        .clips
+                        .insert(" keys ".into(), clip);
+                    d.track_name = " keys ".into();
+                }
+                "pattern-space" => {
+                    e.project.patterns[d.pattern].name = " phrase ".into();
+                    d.pattern_name = " phrase ".into();
+                }
+                "bus-alias" => {
+                    // Existing/loaded alias state: add_bus itself refuses an
+                    // ID alias. Normalization still needs to handle that state.
+                    e.project.buses.push(crate::project::Bus::new(&d.track_id));
+                }
+                _ => {}
+            }
+            let args = d.args().unwrap();
+            let normalized = crate::ids::resolve_id_refs(&e.project, &args);
+            let ti = e
+                .project
+                .track_index(normalized["track"].as_str().unwrap())
+                .ok();
+            let pi = e
+                .project
+                .pattern_index(normalized["pattern"].as_str().unwrap())
+                .ok();
+            let safe = ti == Some(d.track) && pi == Some(d.pattern);
+            assert_eq!(safe, !case.ends_with("space"));
+            assert_eq!(d.normalized_args(&e.project).is_ok(), safe);
+            let before = state(&e);
+            let opened = FeelDraft::new(
+                &e.project,
+                (e.revision, e.project_load_generation),
+                (d.track, d.pattern, 0),
+                d.selected.clone(),
+                2,
+            );
+            assert_eq!(opened.is_ok(), safe);
+            assert_eq!(state(&e), before);
+            if safe {
+                let expected = d.preview().unwrap();
+                apply_feel(&mut e, &d).unwrap();
+                assert_eq!(
+                    feel_bytes(e.project.patterns[d.pattern].notes(&d.track_name)),
+                    feel_bytes(&expected.clip)
+                );
+            } else {
+                rejects_unchanged(&mut e, &d);
+            }
+        }
+    }
+
+    // Exact local production lifecycle, real Window/controls and the Engine it
+    // can mutate. No Studio constructor/native window/general driver required.
+    struct Lifecycle {
+        ctx: egui::Context,
+        engine: std::sync::Mutex<Engine>,
+        draft: Option<FeelDraft>,
+        frame: FeelContext,
+        gestures: [bool; 3],
+        targets: Vec<(String, Rect, bool, egui::Id)>,
+        shortcuts: usize,
+        outcome: Option<FeelOutcome>,
+        foreign_focus: Option<egui::Id>,
+    }
+    impl Lifecycle {
+        fn new() -> Self {
+            let e = engine("lifecycle");
+            let d = draft(&e, true);
+            let frame = FeelContext {
+                revision: d.revision,
+                generation: Some(d.generation),
+                owner: (d.track, d.pattern, d.view),
+                selected: d.selected.clone(),
+                selection_valid: true,
+                gesture_idle: true,
+            };
+            Self {
+                ctx: egui::Context::default(),
+                engine: std::sync::Mutex::new(e),
+                draft: Some(d),
+                frame,
+                gestures: [false; 3],
+                targets: vec![],
+                shortcuts: 0,
+                outcome: None,
+                foreign_focus: None,
+            }
+        }
+        fn state(&self) -> Value {
+            state(&self.engine.lock().unwrap())
+        }
+        fn frame(&mut self, events: Vec<egui::Event>, focused: bool) {
+            let p = self.engine.lock().unwrap().project.clone();
+            self.ctx.data_mut(|data| {
+                data.insert_temp(
+                    egui::Id::new(TARGETS),
+                    Vec::<(String, Rect, bool, egui::Id)>::new(),
+                )
+            });
+            let _ = self.ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1100.0, 700.0))),
+                    events,
+                    focused,
+                    ..Default::default()
+                },
+                |ctx| {
+                    // Same order as Studio: shortcuts, then workspace-level dialog.
+                    self.shortcuts = super::super::shortcuts::pressed(ctx).len();
+                    if let Some(id) = self.foreign_focus {
+                        egui::Area::new(egui::Id::new("foreign-dialog"))
+                            .fixed_pos(pos2(0.0, 0.0))
+                            .show(ctx, |ui| {
+                                ui.interact(
+                                    Rect::from_min_size(pos2(0.0, 0.0), vec2(10.0, 10.0)),
+                                    id,
+                                    Sense::focusable_noninteractive(),
+                                );
+                            });
+                        ctx.memory_mut(|m| m.request_focus(id));
+                    }
+                    let mut frame = self.frame.clone();
+                    frame.gesture_idle = feel_gesture_idle(
+                        self.gestures[0],
+                        self.gestures[1],
+                        self.gestures[2],
+                        ctx.input(|i| i.pointer.any_down()),
+                    );
+                    self.outcome = feel_lifecycle(ctx, &p, frame, &mut self.draft, &self.engine);
+                },
+            );
+            self.targets = self
+                .ctx
+                .data(|data| data.get_temp(egui::Id::new(TARGETS)).unwrap());
+        }
+        fn click(&mut self, label: &str) {
+            let matches: Vec<_> = self
+                .targets
+                .iter()
+                .filter(|(s, _, enabled, _)| s == label && *enabled)
+                .collect();
+            assert_eq!(matches.len(), 1, "Real control must be reachable: {label}");
+            let pos = matches[0].1.center();
+            self.frame(
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                true,
+            );
+            self.frame(
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                true,
+            );
+        }
+        fn ready(&mut self) {
+            self.frame(vec![], true);
+            self.frame(vec![], true);
+        }
+        fn assert_closed_inert(&mut self) {
+            assert!(self.draft.is_none());
+            assert!(self
+                .ctx
+                .data(|data| data.get_temp::<FeelInputOwner>(feel_owner_key()))
+                .is_none());
+            for _ in 0..3 {
+                self.frame(vec![], true);
+                assert!(
+                    self.targets.is_empty(),
+                    "Closed lifecycle must not render controls"
+                );
+                assert!(
+                    !self.ctx.memory(|m| m.has_focus(feel_focus_id())),
+                    "Persistent callback must not reacquire focus after close"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lifecycle_hidden_notes_apply_dispatches_once_and_exact_undo_redo() {
+        let mut f = Lifecycle::new();
+        let before = f.state();
+        let predicted = f.draft.as_ref().unwrap().preview().unwrap();
+        let pi = f.draft.as_ref().unwrap().pattern;
+        // No Notes pane rendered: the same workspace-level lifecycle still works.
+        f.ready();
+        assert_eq!(
+            f.state(),
+            before,
+            "Preview is inert on its reachable Engine"
+        );
+        f.click("Apply");
+        assert!(matches!(f.outcome, Some(FeelOutcome::Applied(_, _))));
+        let after = f.state();
+        assert_eq!(
+            after["revision"].as_u64().unwrap(),
+            before["revision"].as_u64().unwrap() + 1
+        );
+        assert_eq!(
+            after["log"].as_u64().unwrap(),
+            before["log"].as_u64().unwrap() + 1
+        );
+        assert_eq!(
+            after["history"][0].as_u64().unwrap(),
+            before["history"][0].as_u64().unwrap() + 1
+        );
+        assert_eq!(after["history"][1], 0);
+        assert_eq!(after["transport"], before["transport"]);
+        assert_eq!(after["generation"], before["generation"]);
+        assert_eq!(
+            feel_bytes(f.engine.lock().unwrap().project.patterns[pi].notes("keys")),
+            feel_bytes(&predicted.clip)
+        );
+        f.assert_closed_inert();
+        assert_eq!(f.state(), after);
+        let mut e = f.engine.lock().unwrap();
+        e.call("undo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), before["project"]);
+        assert_eq!(
+            format!("{:?}", e.transport),
+            before["transport"].as_str().unwrap()
+        );
+        e.call("redo", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&e.project).unwrap(), after["project"]);
+        assert_eq!(
+            format!("{:?}", e.transport),
+            before["transport"].as_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn lifecycle_cancel_escape_blur_expiry_and_postclose_passes_are_inert() {
+        for reason in [
+            "cancel",
+            "escape-combined",
+            "blur",
+            "owner",
+            "pattern-owner",
+            "view",
+            "selection",
+            "invalid-selection",
+            "revision",
+            "generation",
+            "source",
+        ] {
+            let mut f = Lifecycle::new();
+            f.ready();
+            let before = f.state();
+            match reason {
+                "cancel" => f.click("Cancel"),
+                "escape-combined" => {
+                    f.frame(
+                        [egui::Key::Escape, egui::Key::Space, egui::Key::Enter]
+                            .into_iter()
+                            .map(|key| egui::Event::Key {
+                                key,
+                                physical_key: None,
+                                pressed: true,
+                                repeat: false,
+                                modifiers: egui::Modifiers::NONE,
+                            })
+                            .collect(),
+                        true,
+                    );
+                    assert_eq!(
+                        f.shortcuts, 0,
+                        "Dismissal frame shortcuts must stay suppressed"
+                    );
+                }
+                "blur" => f.frame(vec![], false),
+                _ => {
+                    match reason {
+                        "owner" => f.frame.owner.0 += 1,
+                        "pattern-owner" => f.frame.owner.1 += 1,
+                        "view" => f.frame.owner.2 += 1,
+                        "selection" => f.frame.selected.clear(),
+                        "invalid-selection" => f.frame.selection_valid = false,
+                        "revision" => f.frame.revision += 1,
+                        "generation" => f.frame.generation = None,
+                        "source" => f.draft.as_mut().unwrap().clip[0].prob = 0.1,
+                        _ => unreachable!(),
+                    }
+                    f.frame(vec![], true);
+                    assert!(matches!(f.outcome, Some(FeelOutcome::Expired)));
+                    assert!(f.targets.is_empty(), "Expiry must happen before rendering");
+                }
+            }
+            assert_eq!(
+                f.state(),
+                before,
+                "{reason}: reachable Engine must remain unchanged"
+            );
+            f.assert_closed_inert();
+            assert_eq!(f.state(), before);
+        }
+    }
+
+    #[test]
+    fn lifecycle_held_gestures_preserve_draft_then_release_allows_real_apply() {
+        for held in 0..3 {
+            let mut f = Lifecycle::new();
+            f.ready();
+            let before = f.state();
+            f.gestures[held] = true;
+            f.click("Apply");
+            assert!(f.draft.is_some());
+            assert_eq!(f.state(), before);
+            f.gestures[held] = false;
+            f.click("Apply");
+            assert!(matches!(f.outcome, Some(FeelOutcome::Applied(_, _))));
+            assert_eq!(
+                f.state()["log"].as_u64().unwrap(),
+                before["log"].as_u64().unwrap() + 1
+            );
+            assert_eq!(f.state()["transport"], before["transport"]);
+            f.assert_closed_inert();
+        }
+        let mut f = Lifecycle::new();
+        f.ready();
+        let before = f.state();
+        let pos = f
+            .targets
+            .iter()
+            .find(|(s, _, _, _)| s == "Apply")
+            .unwrap()
+            .1
+            .center();
+        f.frame(
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            true,
+        );
+        assert!(f.draft.is_some());
+        assert_eq!(f.state(), before, "Pointer-down preview cannot commit");
+        f.frame(vec![], false);
+        f.assert_closed_inert();
+        assert_eq!(f.state(), before);
+    }
+
+    #[test]
+    fn lifecycle_numeric_input_and_preview_keyboard_events_do_not_dispatch() {
+        let mut f = Lifecycle::new();
+        f.ready();
+        let before = f.state();
+        f.click("Strength");
+        f.click("Strength");
+        let id = f
+            .targets
+            .iter()
+            .find(|(s, _, _, _)| s == "Strength")
+            .unwrap()
+            .3;
+        assert!(f.ctx.memory(|m| m.has_focus(id)));
+        let mods = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..Default::default()
+        };
+        for pressed in [true, false] {
+            f.frame(
+                vec![egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: mods,
+                }],
+                true,
+            );
+        }
+        f.frame(vec![egui::Event::Text("75".into())], true);
+        for key in [
+            egui::Key::Enter,
+            egui::Key::Space,
+            egui::Key::ArrowLeft,
+            egui::Key::ArrowRight,
+            egui::Key::ArrowUp,
+            egui::Key::ArrowDown,
+        ] {
+            for pressed in [true, false] {
+                f.frame(
+                    vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    true,
+                );
+                assert_eq!(f.shortcuts, 0);
+                assert!(f.draft.is_some());
+                assert_eq!(f.state(), before);
+            }
+        }
+        assert_eq!(f.draft.as_ref().unwrap().strength, 75);
+        f.click("Cancel");
+        f.assert_closed_inert();
+        assert_eq!(f.state(), before);
+    }
+
+    #[test]
+    fn lifecycle_apply_lock_rechecks_actual_engine_revision_and_generation() {
+        for reload in [false, true] {
+            let mut f = Lifecycle::new();
+            f.ready();
+            {
+                let mut e = f.engine.lock().unwrap();
+                if reload {
+                    let p = e.project.clone();
+                    e.replace_project(p);
+                } else {
+                    e.call("set_tempo", &json!({"bpm":133})).unwrap();
+                }
+            }
+            // Keep the old GUI frame stamps, as in a same-frame remote edit.
+            let before = f.state();
+            f.click("Apply");
+            assert!(matches!(f.outcome, Some(FeelOutcome::Failed(_))));
+            assert_eq!(f.state(), before);
+            f.assert_closed_inert();
+            assert_eq!(f.state(), before);
+        }
+    }
+
+    #[test]
+    fn lifecycle_owned_numeric_cleanup_foreign_focus_preservation_and_reopen() {
+        for reason in ["cancel", "escape", "blur", "expiry"] {
+            for foreign in [false, true] {
+                let mut f = Lifecycle::new();
+                for _ in 0..2 {
+                    f.ready();
+                    f.click("Strength");
+                    f.click("Strength");
+                    let numeric = f
+                        .targets
+                        .iter()
+                        .find(|(s, _, _, _)| s == "Strength")
+                        .unwrap()
+                        .3;
+                    assert!(f.ctx.memory(|m| m.has_focus(numeric)));
+                    let id = if foreign {
+                        egui::Id::new("unrelated-dialog-editor")
+                    } else {
+                        numeric
+                    };
+                    f.ctx.memory_mut(|m| m.request_focus(id));
+                    let before = f.state();
+                    // Expiry/blur/Escape return before rendering controls, just
+                    // as production does, while a foreign dialog owns focus.
+                    f.foreign_focus = foreign.then_some(id);
+                    match reason {
+                        "cancel" => f.click("Cancel"),
+                        "escape" => f.frame(
+                            vec![egui::Event::Key {
+                                key: egui::Key::Escape,
+                                physical_key: None,
+                                pressed: true,
+                                repeat: false,
+                                modifiers: egui::Modifiers::NONE,
+                            }],
+                            true,
+                        ),
+                        "blur" => f.frame(vec![], false),
+                        "expiry" => {
+                            f.frame.owner.2 += 1;
+                            f.frame(vec![], true);
+                        }
+                        _ => unreachable!(),
+                    }
+                    if foreign {
+                        assert!(
+                            f.ctx.memory(|m| m.has_focus(id)),
+                            "{reason}: actual lifecycle cleanup must preserve the foreign widget"
+                        );
+                    } else {
+                        assert!(!f.ctx.memory(|m| m.has_focus(numeric)));
+                    }
+                    assert_eq!(f.state(), before);
+                    f.assert_closed_inert();
+                    assert_eq!(f.state(), before);
+                    if foreign {
+                        assert!(f.ctx.memory(|m| m.has_focus(id)));
+                        f.ctx.memory_mut(|m| m.surrender_focus(id));
+                    }
+                    f.foreign_focus = None;
+                    let d = draft(&f.engine.lock().unwrap(), true);
+                    f.frame.owner = (d.track, d.pattern, d.view);
+                    f.draft = Some(d);
+                }
+            }
+        }
+    }
+
+    // Component-only controls and predicates below do not exercise the dialog lifecycle.
+    // Lifecycle regressions below use feel_lifecycle with its actual reachable Engine.
+    const TARGETS: &str = "feel-test-targets";
+    pub(super) fn record(ui: &egui::Ui, label: &str, r: &egui::Response) {
+        let rect = r.rect.intersect(ui.clip_rect());
+        ui.ctx().data_mut(|data| {
+            let mut v = data
+                .get_temp::<Vec<(String, Rect, bool, egui::Id)>>(egui::Id::new(TARGETS))
+                .unwrap_or_default();
+            v.push((label.into(), rect, r.enabled() && r.rect == rect, r.id));
+            data.insert_temp(egui::Id::new(TARGETS), v);
+        });
+    }
+    struct Form {
+        ctx: egui::Context,
+        d: FeelDraft,
+        targets: Vec<(String, Rect, bool, egui::Id)>,
+        shortcuts: usize,
+        action: FeelAction,
+        dismiss: bool,
+    }
+    impl Form {
+        fn new() -> Self {
+            let e = engine("form");
+            Self {
+                ctx: egui::Context::default(),
+                d: draft(&e, true),
+                targets: vec![],
+                shortcuts: 0,
+                action: FeelAction::default(),
+                dismiss: false,
+            }
+        }
+        fn frame(&mut self, events: Vec<egui::Event>, focused: bool) {
+            self.ctx.data_mut(|d| {
+                d.insert_temp(
+                    egui::Id::new(TARGETS),
+                    Vec::<(String, Rect, bool, egui::Id)>::new(),
+                )
+            });
+            let _ = self.ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(480.0, 700.0))),
+                    events,
+                    focused,
+                    ..Default::default()
+                },
+                |ctx| {
+                    self.shortcuts = super::super::shortcuts::pressed(ctx).len();
+                    self.dismiss = feel_dismissed(ctx);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        self.action = feel_controls(ui, &mut self.d);
+                    });
+                },
+            );
+            self.targets = self
+                .ctx
+                .data_mut(|d| d.get_temp(egui::Id::new(TARGETS)).unwrap());
+        }
+        fn click(&mut self, label: &str) {
+            let targets: Vec<_> = self
+                .targets
+                .iter()
+                .filter(|(s, _, enabled, _)| s == label && *enabled)
+                .collect();
+            assert_eq!(targets.len(), 1);
+            let p = targets[0].1.center();
+            self.frame(
+                vec![
+                    egui::Event::PointerMoved(p),
+                    egui::Event::PointerButton {
+                        pos: p,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                true,
+            );
+            self.frame(
+                vec![egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                true,
+            );
+        }
+        fn key(&mut self, key: egui::Key) {
+            self.frame(
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                true,
+            );
+            assert_eq!(
+                self.shortcuts, 0,
+                "Panel focus must suppress global transport and piano shortcuts"
+            );
+            self.frame(
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                true,
+            );
+        }
+    }
+    #[test]
+    fn component_controls_apply_cancel_and_keyboard_focus() {
+        let mut f = Form::new();
+        f.frame(vec![], true);
+        f.frame(vec![], true);
+        assert!(f.ctx.wants_keyboard_input());
+        for k in [
+            egui::Key::Space,
+            egui::Key::Enter,
+            egui::Key::ArrowLeft,
+            egui::Key::ArrowRight,
+            egui::Key::ArrowUp,
+            egui::Key::ArrowDown,
+        ] {
+            f.key(k);
+        }
+        f.click("Apply");
+        assert!(f.action.apply);
+        f.click("Cancel");
+        assert!(f.action.cancel);
+        f.click("Strength");
+        f.key(egui::Key::ArrowLeft);
+        assert!(f.ctx.wants_keyboard_input());
+        f.d.strength = 0;
+        f.frame(vec![], true);
+        assert!(
+            !f.targets
+                .iter()
+                .find(|(s, _, _, _)| s == "Apply")
+                .unwrap()
+                .2
+        );
+    }
+    #[test]
+    fn component_numeric_entry_and_shortcut_ownership() {
+        let mut f = Form::new();
+        f.frame(vec![], true);
+        f.frame(vec![], true);
+        f.click("Strength");
+        f.click("Strength");
+        let id = f
+            .targets
+            .iter()
+            .find(|(s, _, _, _)| s == "Strength")
+            .unwrap()
+            .3;
+        assert!(f.ctx.memory(|m| m.has_focus(id)));
+        let mods = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..Default::default()
+        };
+        for pressed in [true, false] {
+            f.frame(
+                vec![egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: mods,
+                }],
+                true,
+            );
+        }
+        f.frame(vec![egui::Event::Text("75".into())], true);
+        f.key(egui::Key::Enter);
+        assert_eq!(f.d.strength, 75);
+        assert!(!f.action.apply);
+        let events = [egui::Key::Escape, egui::Key::Space, egui::Key::Enter]
+            .into_iter()
+            .map(|key| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            })
+            .collect();
+        f.frame(events, true);
+        assert!(f.dismiss);
+        assert_eq!(f.shortcuts, 0);
+        // Closing releases ownership; the callback remains installed but inert.
+        feel_input_owner(&f.ctx, false);
+        assert!(!f.ctx.wants_keyboard_input());
+    }
+
+    #[test]
+    fn component_dismissal_predicates_with_unconnected_engine() {
+        let e = engine("dismiss");
+        let before = state(&e);
+        let mut f = Form::new();
+        f.frame(vec![], true);
+        f.frame(
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            true,
+        );
+        assert!(f.dismiss);
+        f.frame(vec![], false);
+        assert!(f.dismiss);
+        assert_eq!(state(&e), before);
+    }
+}
+
+#[cfg(test)]
+mod feel_pure_tests {
+    use super::*;
+    fn note(id: &str, start: f32) -> Note {
+        let mut n = Note::new(start, 1.7, 60, 0.7);
+        n.id = id.into();
+        n.prob = 0.6;
+        n.offset = 0.12;
+        n.slide_to = Some(67);
+        n
+    }
+    #[test]
+    fn exact_partial_quantize_keeps_unselected_payload_and_identity() {
+        let before = vec![note("a", 0.3), note("b", 1.2)];
+        let mut notes = before.clone();
+        let sel = crate::midi_ops::Selection {
+            ids: vec!["a".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::midi_ops::quantize(&mut notes, &sel, 1.0, 0.5, 0.0, false),
+            1
+        );
+        assert!((notes[0].start - 0.15).abs() < 1e-6);
+        let a = &notes[0];
+        let b = &before[0];
+        assert_eq!(
+            (&a.id, a.len, a.pitch, a.vel, a.prob, a.offset, a.slide_to),
+            (&b.id, b.len, b.pitch, b.vel, b.prob, b.offset, b.slide_to)
+        );
+        assert_eq!(format!("{:?}", notes[1]), format!("{:?}", before[1]));
+        assert!(feel_clip_valid(&notes, 32.0).is_ok());
+    }
+    #[test]
+    fn exact_quantizer_odd_swing_offsets_and_matched_count_are_not_change_count() {
+        let mut notes = vec![note("even", 2.0), note("odd", 1.0)];
+        let sel = crate::midi_ops::Selection {
+            ids: vec!["even".into(), "odd".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::midi_ops::quantize(&mut notes, &sel, 1.0, 1.0, 1.0, false),
+            2
+        );
+        assert!((notes[0].start - 4.0 / 3.0).abs() < 1e-6);
+        assert_eq!(notes[1].start, 2.0);
+        assert!(notes.iter().all(|n| n.offset == 0.0));
+        let mut exact = vec![note("exact", 0.0)];
+        let original = exact[0].start;
+        assert_eq!(
+            crate::midi_ops::quantize(&mut exact, &Default::default(), 1.0, 0.5, 0.0, false),
+            1
+        );
+        assert_eq!(exact[0].start, original);
+    }
+    #[test]
+    fn full_clip_boundary_guard_includes_unselected_and_result_notes() {
+        let original = vec![note("selected", 0.3), note("unselected", 32.0)];
+        assert!(feel_clip_valid(&original, 32.0)
+            .unwrap_err()
+            .contains("pattern end"));
+        let mut result = vec![note("a", 31.9)];
+        assert!(feel_clip_valid(&result, 32.0).is_ok());
+        crate::midi_ops::quantize(&mut result, &Default::default(), 1.0, 1.0, 0.0, false);
+        assert!(feel_clip_valid(&result, 32.0)
+            .unwrap_err()
+            .contains("pattern end"));
+        let mut sustain = vec![note("sustain", 31.0)];
+        sustain[0].len = 20.0;
+        assert!(feel_clip_valid(&sustain, 32.0).is_ok());
+    }
+    #[test]
+    fn malformed_and_nonfinite_clip_inputs_fail_closed() {
+        for case in 0..10 {
+            let mut notes = vec![note("a", 0.3), note("b", 1.0)];
+            match case {
+                0 => notes[1].id = "a".into(),
+                1 => notes[1].id.clear(),
+                2 => notes[1].start = f32::NAN,
+                3 => notes[1].len = f32::INFINITY,
+                4 => notes[1].vel = f32::NAN,
+                5 => notes[1].prob = f32::NAN,
+                6 => notes[1].offset = f32::NAN,
+                7 => notes[1].start = -1.0,
+                8 => notes[1].len = 0.0,
+                9 => notes[1].id = " b ".into(),
+                _ => unreachable!(),
+            }
+            assert!(feel_clip_valid(&notes, 32.0).is_err());
+        }
+        assert!(feel_clip_valid(&[], 32.0).is_err());
+        assert!(feel_clip_valid(&[note("a", 0.3)], f32::NAN).is_err());
+    }
+    #[test]
+    fn stable_note_lookup_and_each_held_gesture_guard_are_exact() {
+        let notes = vec![note("a", 0.3), note("b", 1.0)];
+        assert_eq!(unique_note_index(&notes, "a"), Some(0));
+        assert_eq!(unique_note_index(&notes, "missing"), None);
+        assert_eq!(
+            unique_note_index(&[note("a", 0.3), note("a", 1.0)], "a"),
+            None
+        );
+        assert!(feel_gesture_idle(false, false, false, false));
+        for flags in [
+            (true, false, false, false),
+            (false, true, false, false),
+            (false, false, true, false),
+            (false, false, false, true),
+        ] {
+            assert!(!feel_gesture_idle(flags.0, flags.1, flags.2, flags.3));
+        }
+    }
+    #[test]
+    fn unchanged_quantizer_fractional_grid_extremes_keep_all_fields_except_timing() {
+        // These exercise the unchanged backend function, NOT extra GUI grid choices.
+        for grid in [0.0625, 2.0 / 3.0, 0.5, 1.0, 2.0, 4.0] {
+            for strength in [0.0, 0.5, 1.0] {
+                for swing in [0.0, 1.0] {
+                    let old = vec![note("a", 0.3), note("b", 1.2), note("c", 2.7)];
+                    let mut now = old.clone();
+                    let sel = crate::midi_ops::Selection {
+                        ids: old.iter().map(|n| n.id.clone()).collect(),
+                        ..Default::default()
+                    };
+                    crate::midi_ops::quantize(&mut now, &sel, grid, strength, swing, false);
+                    assert!(feel_clip_valid(&now, 32.0).is_ok());
+                    for before in &old {
+                        let after = &now[unique_note_index(&now, &before.id).unwrap()];
+                        assert_eq!(
+                            (
+                                before.len,
+                                before.pitch,
+                                before.vel,
+                                before.prob,
+                                before.slide_to
+                            ),
+                            (
+                                after.len,
+                                after.pitch,
+                                after.vel,
+                                after.prob,
+                                after.slide_to
+                            )
+                        );
+                        assert_eq!(
+                            after.offset,
+                            if strength == 1.0 { 0.0 } else { before.offset }
+                        );
+                    }
+                }
+            }
         }
     }
 }
