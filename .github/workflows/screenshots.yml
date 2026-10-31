@@ -520,11 +520,268 @@ jobs:
           assert len(all_pngs)==40 and len(set(all_pngs))==40
           assert {str(p.relative_to(shots)) for p in shots.rglob('*.png')}==set(all_pngs), 'unexpected/stale PNG in shots tree'
           assert all((shots/name).is_file() for name in all_pngs), '33 existing + 7 arrangement PNGs required'
+          def feel_appearance():
+              # Fixed appearance inputs only, not a native-input acceptance driver.
+              # Private Feel-only supervision; other forty launch paths are unchanged.
+              feel_focus_helper="# Private Feel environment probe, not a native-input acceptance driver.\nimport ctypes as C\nimport hashlib, json, os, pathlib, signal, stat, subprocess, sys, time\n\nclass FocusFailure(Exception): pass\n\ndef require(ok, message):\n    if not ok: raise FocusFailure(message)\n\ndef bounded_read(path, cap):\n    with open(path, 'rb') as f: data=f.read(cap+1)\n    require(len(data)<=cap, 'proc/file cap')\n    return data\n\ndef proc_stat(data):\n    # comm may contain spaces and parentheses. Fields after final ')' start at state.\n    end=data.rfind(b')')\n    require(end>0 and data[end+1:end+2]==b' ', 'stat layout')\n    fields=data[end+2:].split()\n    require(len(fields)>=20, 'short stat')\n    return {'state':fields[0].decode('ascii'), 'ppid':int(fields[1]),\n            'pgid':int(fields[2]), 'sid':int(fields[3]), 'start':int(fields[19])}\n\ndef process(pid):\n    root=pathlib.Path('/proc')/str(pid)\n    info=proc_stat(bounded_read(root/'stat',4096))\n    require(info['state'] not in ('Z','X','x'), 'owner dead')\n    exe=(root/'exe').stat()\n    raw=bounded_read(root/'cmdline',8192)\n    require(raw.endswith(b'\\0'), 'cmdline termination')\n    argv=[os.fsdecode(v) for v in raw[:-1].split(b'\\0')]\n    require(len(argv)<=16 and all(len(a)<=4096 for a in argv), 'argv cap')\n    same_process(info,proc_stat(bounded_read(root/'stat',4096)))\n    info.update(pid=pid,exe=[exe.st_dev,exe.st_ino],argv=argv)\n    return info\n\ndef same_process(before, after):\n    require({k:v for k,v in before.items() if k!='state'}=={k:v for k,v in after.items() if k!='state'}, 'process identity drift')\n\ndef environment(pid, expected):\n    raw=bounded_read(f'/proc/{pid}/environ',65536)\n    require(raw.endswith(b'\\0'), 'environ termination')\n    # Never serialize the complete environment or auth values.\n    pairs=[v.split(b'=',1) for v in raw[:-1].split(b'\\0')]\n    keys={os.fsencode(k):os.fsencode(v) for k,v in expected.items()}\n    for key,value in keys.items():\n        found=[v for k,v in pairs if k==key]\n        require(found==[value], 'allowlisted environment mismatch')\n    for key in (b'WAYLAND_DISPLAY',b'WAYLAND_SOCKET'):\n        require(not any(k==key and v for k,v in pairs), 'Wayland endpoint')\n\ndef typed_path(path, caller_pid):\n    p=pathlib.Path(path)\n    require(p.is_absolute() and p.name==f'beatbox_shot_{caller_pid}.json', 'typed launcher pathname')\n    s=p.lstat()\n    require(stat.S_ISREG(s.st_mode) and s.st_uid==os.getuid(), 'typed launcher ownership')\n    fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW)\n    with os.fdopen(fd,'rb') as f:\n        actual=os.fstat(f.fileno())\n        require((actual.st_dev,actual.st_ino,actual.st_uid)==(s.st_dev,s.st_ino,s.st_uid)\n                and stat.S_ISREG(actual.st_mode),'typed launcher file drift')\n        data=f.read(1048577)\n        require(len(data)<=1048576,'typed launcher cap')\n    require(isinstance(json.loads(data),dict), 'typed launcher JSON')\n    return {'path':str(p),'device':s.st_dev,'inode':s.st_ino,'sha256':hashlib.sha256(data).hexdigest()}\n\nclass XWindowAttributes(C.Structure):\n    _fields_=[('x',C.c_int),('y',C.c_int),('width',C.c_int),('height',C.c_int),\n      ('border_width',C.c_int),('depth',C.c_int),('visual',C.c_void_p),('root',C.c_ulong),\n      ('class_',C.c_int),('bit_gravity',C.c_int),('win_gravity',C.c_int),('backing_store',C.c_int),\n      ('backing_planes',C.c_ulong),('backing_pixel',C.c_ulong),('save_under',C.c_int),\n      ('colormap',C.c_ulong),('map_installed',C.c_int),('map_state',C.c_int),\n      ('all_event_masks',C.c_long),('your_event_mask',C.c_long),('do_not_propagate_mask',C.c_long),\n      ('override_redirect',C.c_int),('screen',C.c_void_p)]\n\nclass XErrorEvent(C.Structure):\n    _fields_=[('type',C.c_int),('display',C.c_void_p),('resourceid',C.c_ulong),\n              ('serial',C.c_ulong),('error_code',C.c_ubyte),('request_code',C.c_ubyte),('minor_code',C.c_ubyte)]\n\ndef validate_abi():\n    layout={'pointer':C.sizeof(C.c_void_p),'long':C.sizeof(C.c_long),\n            'ulong':C.sizeof(C.c_ulong),'int':C.sizeof(C.c_int),\n            'attributes':C.sizeof(XWindowAttributes),'error_event':C.sizeof(XErrorEvent),\n            'screen_offset':XWindowAttributes.screen.offset,'error_code_offset':XErrorEvent.error_code.offset}\n    require(layout=={'pointer':8,'long':8,'ulong':8,'int':4,'attributes':136,'error_event':40,\n                     'screen_offset':128,'error_code_offset':32},'unsupported Xlib ABI')\n    return layout\n\nErrorHandler=C.CFUNCTYPE(C.c_int,C.c_void_p,C.POINTER(XErrorEvent))\n\ndef property_value(actual, fmt, count, after, pointer, expected, wanted_format, cap):\n    # Called while Xlib allocation is still owned, before XFree.\n    require(after==0 and count<=cap, 'property truncation/cap')\n    if actual==0:\n        require(fmt==0 and count==0, 'malformed missing property')\n        return None\n    require(actual==expected and fmt==wanted_format and bool(pointer), 'property type/format')\n    if fmt==32:\n        require(count==1, 'PID item count')\n        value=C.cast(pointer,C.POINTER(C.c_ulong))[0]\n        require(0<value<=0xffffffff, 'PID native-long range')\n        return int(value)\n    return C.string_at(pointer,count)\n\nclass X11:\n    def __init__(self):\n        self.lib=C.CDLL('libX11.so.6'); self.display=None; self.old=None\n        self.errors=[]; self.overflow=False; self.callback_failed=False\n        P=C.c_void_p; U=C.c_ulong; I=C.c_int; UP=C.POINTER(U)\n        specs={\n          'XOpenDisplay':([C.c_char_p],P),'XCloseDisplay':([P],I),\n          'XDefaultRootWindow':([P],U),'XQueryTree':([P,U,UP,UP,C.POINTER(UP),C.POINTER(C.c_uint)],I),\n          'XInternAtom':([P,C.c_char_p,I],U),\n          'XGetWindowProperty':([P,U,U,C.c_long,C.c_long,I,U,UP,C.POINTER(I),UP,UP,C.POINTER(C.POINTER(C.c_ubyte))],I),\n          'XGetWindowAttributes':([P,U,C.POINTER(XWindowAttributes)],I),\n          'XSetInputFocus':([P,U,I,U],I),'XGetInputFocus':([P,UP,C.POINTER(I)],I),\n          'XSync':([P,I],I),'XFree':([P],I),'XSetErrorHandler':([P],P)}\n        for name,(args,result) in specs.items():\n            f=getattr(self.lib,name); f.argtypes=args; f.restype=result\n        def handler(display,event):\n            try:\n                e=event.contents\n                if len(self.errors)<16:\n                    self.errors.append([int(e.error_code),int(e.request_code),int(e.minor_code),int(e.resourceid)])\n                else: self.overflow=True\n            except BaseException: self.callback_failed=True\n            return 0\n        self.callback=ErrorHandler(handler) # keep alive through close and restoration\n        self.old=self.lib.XSetErrorHandler(C.cast(self.callback,P))\n        self.display=self.lib.XOpenDisplay(None)\n        require(self.display, 'XOpenDisplay failed')\n        self.root=int(self.lib.XDefaultRootWindow(self.display)); require(self.root!=0,'root missing')\n        self.atoms={name:int(self.lib.XInternAtom(self.display,name.encode(),1))\n                    for name in ('_NET_WM_PID','_NET_WM_NAME','UTF8_STRING')}\n        self.sync()\n    def sync(self):\n        self.lib.XSync(self.display,0)\n        require(not self.errors and not self.overflow and not self.callback_failed, 'X protocol error')\n    def close(self):\n        try:\n            if self.display:\n                self.lib.XCloseDisplay(self.display); self.display=None\n                require(not self.errors and not self.overflow and not self.callback_failed,'X close error')\n        finally:\n            if self.callback is not None:\n                self.lib.XSetErrorHandler(self.old); self.callback=None\n    def prop(self,window,name,expected,fmt,cap):\n        if not self.atoms[name]: return None\n        pointer=C.POINTER(C.c_ubyte)(); actual=C.c_ulong(); form=C.c_int(); count=C.c_ulong(); after=C.c_ulong()\n        try:\n            result=self.lib.XGetWindowProperty(self.display,window,self.atoms[name],0,(cap+3)//4,\n                        0,0,C.byref(actual),C.byref(form),C.byref(count),C.byref(after),C.byref(pointer))\n            self.sync(); require(result==0,'property status')\n            return property_value(actual.value,form.value,count.value,after.value,pointer,expected,fmt,cap)\n        finally:\n            if pointer: self.lib.XFree(pointer)\n    def attrs(self,window):\n        a=XWindowAttributes()\n        result=self.lib.XGetWindowAttributes(self.display,window,C.byref(a))\n        self.sync(); require(result!=0,'attributes status')\n        return {'root':int(a.root),'class':a.class_,'map_state':a.map_state,\n                'geometry':[a.x,a.y,a.width,a.height,a.border_width,a.depth],\n                'override_redirect':bool(a.override_redirect)}\n    def tree(self):\n        result=[]; todo=[(self.root,0)]; seen={self.root}\n        while todo:\n            window,depth=todo.pop()\n            children=C.POINTER(C.c_ulong)(); root=C.c_ulong(); parent=C.c_ulong(); count=C.c_uint()\n            try:\n                ok=self.lib.XQueryTree(self.display,window,C.byref(root),C.byref(parent),C.byref(children),C.byref(count))\n                self.sync(); require(ok!=0 and root.value==self.root,'tree status/root')\n                require(count.value<=256-len(seen),'tree node cap')\n                require(not count.value or depth<8,'tree depth cap')\n                require(not count.value or bool(children),'null children')\n                for i in range(count.value):\n                    child=int(children[i]); require(child not in seen,'tree cycle')\n                    seen.add(child); result.append((child,window)); todo.append((child,depth+1))\n            finally:\n                if children: self.lib.XFree(children)\n        return result\n    def focus(self):\n        window=C.c_ulong(); revert=C.c_int()\n        self.lib.XGetInputFocus(self.display,C.byref(window),C.byref(revert)); self.sync()\n        return [int(window.value),int(revert.value)]\n\ndef choose(candidates):\n    require(len(candidates)<=1,'ambiguous clients')\n    return candidates[0] if candidates else None\n\ndef eligible(attrs,root,w,h):\n    return (attrs['root']==root and attrs['class']==1 and attrs['map_state']==2\n            and attrs['geometry'][2:4]==[w,h] and w>0 and h>0)\n\ndef focus_once(x,selected,revalidate,evidence=None):\n    revalidate()\n    before=x.focus(); issued=before[0]!=selected\n    if evidence is not None: evidence.update(focus_before=before,set_issued=issued)\n    if issued: x.lib.XSetInputFocus(x.display,selected,2,0)\n    x.sync(); after=x.focus()\n    if evidence is not None: evidence['focus_after']=after\n    require(after[0]==selected,'post-focus mismatch')\n    revalidate()\n    return before,after,issued\n\ndef run():\n    proof_path=pathlib.Path(sys.argv[1]); w,h=map(int,sys.argv[2:4]); command=sys.argv[4:]\n    started=time.monotonic(); stopped=[0]; caller=None; x=None; outcome=1\n    saved={s:signal.getsignal(s) for s in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP)}\n    def note(sig,frame):\n        if not stopped[0]: stopped[0]=sig\n    doc={'schema':1,'diagnostic_only':True,'acceptance':False,'native_input_acceptance':'UNRUN',\n         'status':'failed','helper_sha256':hashlib.sha256(bounded_read('/proc/self/cmdline',131072).split(b'\\0')[2]).hexdigest(),\n         'abi':None,'display':None,'root':None,'library':'libX11.so.6','group':None,'helper':None,'caller':None,\n         'studio':None,'launcher':None,'selector':None,'target':None,'title':None,'attributes':None,\n         'observations':0,'candidate_count':0,'focus_before':None,'focus_after':None,'set_issued':False,\n         'focus_us':None,'caller_exit':None,'x_errors':[],'error':None,'elapsed_us':None,\n         'cleanup_owner':'parent anchored xvfb group; direct caller reaped only on ordinary exit'}\n    try:\n        for sig in saved: signal.signal(sig,note)\n        require(not os.environ.get('WAYLAND_DISPLAY') and not os.environ.get('WAYLAND_SOCKET'),'Wayland endpoint')\n        display=os.environ.get('DISPLAY','')\n        require(display.startswith(':') and len(display)<=64 and all(c in ':0123456789.' for c in display),'private display syntax')\n        require(len(command)==6 and command[1:3]==['call','screenshot'] and command[4]=='--project','caller argv')\n        request=json.loads(command[3]); require(set(request)=={'view','out','inline'} and request['view']=='sequencer' and request['inline'] is False,'capture request')\n        binary=pathlib.Path(command[0]).resolve(); exe=binary.stat(); exe_id=[exe.st_dev,exe.st_ino]\n        group=os.getpgrp(); require(group==os.getsid(0) and group!=os.getpid(),'inherited anchored group')\n        me=proc_stat(bounded_read('/proc/self/stat',4096)); me['pid']=os.getpid(); doc.update(display=display,group=group,helper=me,selector=os.environ['BEATBOX_FEEL_CAPTURE'])\n        keys=['DISPLAY','BEATBOX_FEEL_CAPTURE','BEATBOX_FEEL_ACTION_HASH','BEATBOX_FEEL_FIXTURE_HASH',\n              'BEATBOX_FEEL_FIXTURE_PATH','BEATBOX_FEEL_PROJECT_CONTRACT']\n        expected={k:os.environ[k] for k in keys}\n        require(all(len(v)<=4096 for v in expected.values()),'environment value cap')\n        # Allocate before __init__ so failed initialization can still restore callback/display.\n        doc['abi']=validate_abi()\n        x=X11.__new__(X11); x.callback=None; x.display=None; x.old=None; x.errors=[]\n        x.__init__(); doc['root']=x.root\n        require(not stopped[0],'cancel before caller')\n        caller=subprocess.Popen(command) # inherited G/SID; never detach\n        caller_id=process(caller.pid)\n        require(caller_id['exe']==exe_id and caller_id['argv']==command and caller_id['ppid']==os.getpid()\n                and caller_id['pgid']==group and caller_id['sid']==group,'caller ownership')\n        environment(caller.pid,expected); doc['caller']=caller_id\n        selected=None; studio_id=None; launcher=None\n        def owned():\n            require(not stopped[0],'helper cancellation')\n            same_process(caller_id,process(caller.pid)); environment(caller.pid,expected)\n        def studio(pid):\n            info=process(pid)\n            require(info['ppid']==caller.pid and info['exe']==exe_id and info['pgid']==group and info['sid']==group,'Studio ancestry/group/exe')\n            args=info['argv']\n            require(len(args)==7 and pathlib.Path(args[0]).resolve()==binary and args[1]=='studio'\n                    and args[3:]==['--screenshot',request['out'],'--view','sequencer'],'Studio argv')\n            environment(pid,expected)\n            return info,typed_path(args[2],caller.pid)\n        def inspect():\n            owned()\n            x.atoms={name:int(x.lib.XInternAtom(x.display,name.encode(),1)) for name in x.atoms}\n            x.sync()\n            children=bounded_read(f'/proc/{caller.pid}/task/{caller.pid}/children',4096).split()\n            require(len(children)<=256,'process child cap')\n            owners={}\n            for child in children:\n                pid=int(child)\n                # Every direct child is fail-closed, not a name-search fallback.\n                info,path=studio(pid); owners[pid]=(info,path)\n            require(len(owners)<=1,'ambiguous Studio children')\n            candidates=[]; details={}; unknown_visible=[]\n            for window,parent in x.tree():\n                a=x.attrs(window)\n                pid=x.prop(window,'_NET_WM_PID',6,32,1)\n                if pid in owners:\n                    title=x.prop(window,'_NET_WM_NAME',x.atoms['UTF8_STRING'],8,1024)\n                    if title is None: continue # no legacy/title-only fallback\n                    require(title.decode('utf-8',errors='strict')=='Beatbox Studio','owner title mismatch')\n                    if eligible(a,x.root,w,h):\n                        candidates.append(window); details[window]=(owners[pid],a)\n                elif a['class']==1 and a['map_state']==2 and parent==x.root:\n                    if pid is None: unknown_visible.append(window)\n                    else: raise FocusFailure('competing visible non-owner client')\n            require(not candidates or not unknown_visible,'unidentified competing visible client')\n            target=choose(candidates)\n            doc['candidate_count']=len(candidates)\n            return target,details\n        for attempt in range(40):\n            require(caller.poll() is None,'caller exited before focus')\n            doc['observations']=attempt+1\n            selected,details=inspect()\n            if selected is not None:\n                (studio_id,launcher),attributes=details[selected]; break\n            if attempt<39: time.sleep(.025)\n        require(selected is not None,'appearance search exhausted')\n        def revalidate():\n            target,details=inspect(); require(target==selected,'window identity drift')\n            (now,path),attributes=details[selected]\n            same_process(studio_id,now); require(path==launcher,'launcher identity drift')\n        doc.update(studio=studio_id,launcher=launcher,target=selected,title='Beatbox Studio',attributes=attributes)\n        before,after,issued=focus_once(x,selected,revalidate,doc)\n        doc.update(studio=studio_id,launcher=launcher,target=selected,title='Beatbox Studio',attributes=attributes,\n                   focus_before=before,focus_after=after,set_issued=issued,focus_us=int((time.monotonic()-started)*1000000))\n        while True:\n            require(not stopped[0],'helper cancellation')\n            code=caller.poll()\n            if code is not None:\n                doc['caller_exit']=code; require(code==0,'caller failed')\n                # Original launcher waits for Studio; a live saved identity is not success.\n                try: live=process(studio_id['pid'])\n                except FileNotFoundError: live=None\n                require(live is None,'unexpected surviving Studio')\n                outcome=0; doc['status']='focus_confirmed_caller_exit0'; break\n            time.sleep(.01)\n    except BaseException as error:\n        doc['error']=type(error).__name__+': '+str(error)[:200]\n    finally:\n        try:\n            if x is not None:\n                try: x.close()\n                except BaseException as error:\n                    outcome=1; doc['status']='failed'; doc['error']='X close/restore failure: '+str(error)[:200]\n                doc['x_errors']=x.errors[:16]\n            if stopped[0]: outcome=1; doc['status']='failed'; doc['error']='helper signal '+str(stopped[0])\n            doc['elapsed_us']=int((time.monotonic()-started)*1000000)\n            encoded=json.dumps(doc,sort_keys=True).encode()\n            require(len(encoded)<=16384,'focus evidence cap')\n            proof_path.write_bytes(encoded)\n        finally:\n            for sig,handler in saved.items(): signal.signal(sig,handler)\n    return outcome\n\nif __name__=='__main__': sys.exit(run())\n"
+              def run_feel_owned(command, env, out, receipt_path):
+                  # Feel-only parent; never poll/wait/communicate the anchor before killpg.
+                  import signal, sys, time
+                  if not (sys.platform.startswith('linux') and all(hasattr(os,k) for k in ('waitid','WNOWAIT','WEXITED','WNOHANG','P_PID'))):
+                      raise RuntimeError('Feel requires Linux WNOWAIT')
+                  if signal.getsignal(signal.SIGCHLD) not in (signal.SIG_DFL,None):
+                      raise RuntimeError('Feel requires default SIGCHLD and sole direct-child waiter')
+                  signals=(signal.SIGTERM,signal.SIGINT,signal.SIGHUP)
+                  old={s:signal.getsignal(s) for s in signals}; cancel=0
+                  def note_signal(signum, frame):
+                      nonlocal cancel
+                      if not cancel: cancel=signum
+                  p=None; reason=None; error=None; cleanup_error=None; rc=None; observed=None
+                  started=time.monotonic(); deadline=started+120
+                  receipt={'schema':1,'diagnostic_only':True,'acceptance':False,'native_input_acceptance':'UNRUN',
+                           'anchor_pid':None,'expected_pgid':None,'expected_sid':None,'reason':None,
+                           'observed_exit':None,'killpg_calls':0,'group_absent':False,'direct_reaped':False,
+                           'exit_code':None,'cancel_signal':0,'cleanup_error':None,'elapsed_us':None,
+                           'file_cleanup':'not guaranteed after SIGKILL','grandchild_reaping':'not performed by parent'}
+                  try:
+                      for s in signals: signal.signal(s,note_signal)
+                      if cancel:
+                          reason='cancel'
+                      else:
+                          p=subprocess.Popen(command,env=env,stdout=out,stderr=subprocess.STDOUT,start_new_session=True)
+                          receipt.update(anchor_pid=p.pid,expected_pgid=p.pid,expected_sid=p.pid)
+                          while True:
+                              if cancel: reason='cancel'; break
+                              if time.monotonic()>=deadline: reason='timeout'; break
+                              observed=os.waitid(os.P_PID,p.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
+                              if observed is not None:
+                                  reason='exit'; receipt['observed_exit']=[observed.si_code,observed.si_status]; break
+                              time.sleep(min(.01,max(0,deadline-time.monotonic())))
+                  except BaseException as exc:
+                      error=exc; reason='exception'
+                  finally:
+                      try:
+                          if p is not None:
+                              # This strong Popen reference still owns its unreaped PID/session anchor.
+                              receipt['killpg_calls']=1
+                              try: os.killpg(p.pid,signal.SIGKILL)
+                              except ProcessLookupError: receipt['group_absent']=True
+                              except BaseException as exc:
+                                  cleanup_error=exc
+                                  try: os.kill(p.pid,signal.SIGKILL) # best-effort unreaped owned direct child only
+                                  except OSError: pass
+                              try:
+                                  if cleanup_error is None:
+                                      rc=p.wait(); receipt['direct_reaped']=True
+                                  else:
+                                      info=os.waitid(os.P_PID,p.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
+                                      if info is not None: rc=p.wait(); receipt['direct_reaped']=True
+                              except BaseException as exc:
+                                  cleanup_error=exc
+                      finally:
+                          for s,handler in old.items(): signal.signal(s,handler)
+                  # Ownership was released above. Never signal this numeric group again.
+                  receipt.update(reason=reason,exit_code=rc,cancel_signal=cancel,
+                                 cleanup_error=None if cleanup_error is None else type(cleanup_error).__name__,
+                                 elapsed_us=int((time.monotonic()-started)*1000000))
+                  try:
+                      encoded=json.dumps(receipt,sort_keys=True).encode()
+                      if len(encoded)>4096: raise RuntimeError('supervision evidence cap')
+                      receipt_path.write_bytes(encoded)
+                  except BaseException:
+                      if cancel: raise SystemExit(128+cancel)
+                      raise
+                  if cancel: raise SystemExit(128+cancel) # abort PYNATIVE, never continue next row
+                  if cleanup_error is not None: raise RuntimeError('Feel cleanup failed; direct_reaped='+str(receipt['direct_reaped'])) from cleanup_error
+                  if error is not None: raise error
+                  if reason=='timeout': raise subprocess.TimeoutExpired(command,120)
+                  if p is None or not receipt['direct_reaped']: raise RuntimeError('Feel capture not supervised')
+                  return subprocess.CompletedProcess(command,rc)
+              folder=shots/'feel'
+              folder.mkdir(exist_ok=True)
+              # Exactly four rows, no generated state/size matrix.
+              feel_cases=[('selected','normal',1100,700),('selected','normal',1480,920),
+                          ('all-offsets','normal',1100,700),('boundary-blocked','boundary',1100,700)]
+              feel_expected=[f'{case}_{w}x{h}_1x.png' for case,_,w,h in feel_cases]
+              manifest={'schema':1,'expected':feel_expected,'cases':[],'missing':[],
+                        'project_contract':'project_json_v1',
+                        'fixture_sha256':{},'preparation':'pending','checkout_sha':(shots/'build-sha.txt').read_text().strip(),
+                        'checkout_tree':subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip(),
+                        'binary_sha256':digest(binary),'rustc_sha256':digest(shots/'rustc.txt'),
+                        'checkout_provenance_sha256':digest(shots/'checkout.json'),
+                        'state_origin':['engine_json_prepared','capture_initialized_view','no_native_input'],
+                        'native_input':False,'autoplay':False,'human_inspection':'outstanding',
+                        'unrun':['native toolbar/selection','pointer/keyboard controls','Apply/Cancel','Undo/Redo',
+                                 'Escape/Space/Enter','blur/focus','held gestures','hidden dock','post-close shortcuts',
+                                 'transport under native input','native2x','Wayland','Windows','macOS']}
+              def save_feel():
+                  (folder/'manifest.json').write_text(json.dumps(manifest,indent=2))
+              save_feel()  # Exists before the first attempt, including failures.
+              action_log=folder/'fixture-actions.log'
+              inputs=[]
+              fixture_env=os.environ.copy()
+              fixture_env['BEATBOX_NO_LISTEN']='1'
+              selector_keys=['BEATBOX_AUDIO_SCENARIO','BEATBOX_AUDIO_SCALE','BEATBOX_ARRANGEMENT_CAPTURE',
+                             'BEATBOX_ARRANGEMENT_CLIP_ID','BEATBOX_ARRANGEMENT_ACTION_HASH',
+                             'BEATBOX_FEEL_CAPTURE','BEATBOX_FEEL_ACTION_HASH','BEATBOX_FEEL_FIXTURE_HASH',
+                             'BEATBOX_FEEL_FIXTURE_PATH','BEATBOX_FEEL_PROJECT_CONTRACT',
+                             'BEATBOX_NARROW_SHOT']
+              for key in selector_keys: fixture_env.pop(key,None)
+              normal=[{'pitch':60,'start':0.3,'len':1,'vel':0.6,'offset':0.12},
+                      {'pitch':64,'start':1.3,'len':1,'vel':0.6,'offset':-0.1},
+                      {'pitch':67,'start':4.3,'len':1,'vel':0.6,'offset':0}]
+              boundary=[{'pitch':60,'start':15.8,'len':0.1,'vel':0.6,'offset':0}]
+              with action_log.open('wb') as log:
+                  for fixture,notes in [('normal',normal),('boundary',boundary)]:
+                      project=folder/(fixture+'.json'); project.unlink(missing_ok=True)
+                      actions=[['new_project',{'name':'Authored quantize feel appearance','bpm':120,
+                                               'patterns':[{'name':'A','bars':1}]}],
+                               ['remove_effect',{'track':'master','index':0}],
+                               ['remove_effect',{'track':'master','index':0}],
+                               ['add_track',{'name':'Feel keys','volume_db':-24,
+                                             'instrument':{'type':'synth','osc1':'sine','osc2':'sine',
+                                                           'osc_mix':0.0,'unison':1,'noise_level':0.0}}],
+                               ['add_notes',{'track':'Feel keys','pattern':'A','notes':notes}],
+                               ['place_pattern',{'pattern':'A','start_bar':0,'bars':1,'lane':0}],
+                               ['place_pattern',{'pattern':'A','start_bar':2,'bars':1,'lane':0}]]
+                      for tool,args in actions:
+                          inputs.append({'fixture':fixture,'tool':tool,'args':args})
+                          (folder/'fixture-inputs.json').write_text(json.dumps(inputs,indent=2))
+                          command=[str(binary),'call',tool,json.dumps(args),'--project',str(project)]
+                          log.write((json.dumps(command)+'\n').encode()); log.flush()
+                          run=subprocess.run(command,env=fixture_env,capture_output=True,timeout=60)
+                          log.write(run.stdout+run.stderr); log.flush()
+                          assert run.returncode==0, f'feel fixture tool failed: {fixture} {tool}'
+                          json.loads(run.stdout)  # Require real Engine JSON receipt, retained unedited above.
+                      actual=json.loads(project.read_text())
+                      track=next(t for t in actual['tracks'] if t['name']=='Feel keys')
+                      source=next(p for p in actual['patterns'] if p['name']=='A')
+                      assert track['id'] and source['id'] and source['bars']==1
+                      stored=source['clips']['feel keys']
+                      assert len(stored)==len(notes)
+                      ids=[n['id'] for n in stored]
+                      assert all(ids) and len(set(ids))==len(ids)
+                      for found,expected_note in zip(stored,notes):
+                          assert all(abs((found.get(k,0) if k=='offset' else found[k])-v)<1e-6 for k,v in expected_note.items()), 'Engine fixture values changed'
+                      assert sum(c['pattern']=='A' for c in actual['playlist'])==2
+              hashes={p.name:digest(p) for p in [folder/'normal.json',folder/'boundary.json',
+                                                folder/'fixture-inputs.json',action_log]}
+              (folder/'fixture-sha256.json').write_text(json.dumps(hashes,indent=2))
+              manifest.update(fixture_sha256=hashes,preparation='complete')
+              save_feel()
+              assert digest(binary)==(shots/'binary-sha256.txt').read_text().split()[0]
+              for (case,fixture,w,h),filename in zip(feel_cases,feel_expected):
+                  png=folder/filename; sidecar=png.with_suffix('.json'); log=png.with_suffix('.log')
+                  project=folder/(fixture+'.json')
+                  for path in (png,sidecar): path.unlink(missing_ok=True)
+                  env=fixture_env.copy()
+                  env.update(BEATBOX_FEEL_CAPTURE=case,BEATBOX_FEEL_ACTION_HASH=hashes[action_log.name],
+                             BEATBOX_FEEL_FIXTURE_HASH=hashes[project.name],
+                             BEATBOX_FEEL_FIXTURE_PATH=str(project.resolve()),
+                             BEATBOX_FEEL_PROJECT_CONTRACT=manifest['project_contract'])
+                  if w==1100: env['BEATBOX_NARROW_SHOT']='1'
+                  focus_proof=png.with_suffix('.x11-focus.json')
+                  supervision_proof=png.with_suffix('.x11-supervision.json')
+                  for path in (focus_proof,supervision_proof): path.unlink(missing_ok=True)
+                  command=['xvfb-run','-a','-s',f'-screen 0 {w}x{h}x24','timeout','--foreground','110s',
+                           'python3','-c',feel_focus_helper,str(focus_proof),str(w),str(h),str(binary),
+                           'call','screenshot',json.dumps({'view':'sequencer','out':str(png),'inline':False}),
+                           '--project',str(project)]
+                  row={'file':filename,'selector':case,'fixture':project.name,'command':command,
+                       'expected_pixels':[w,h],'scale':1,'native_input':False}
+                  try:
+                      assert all(digest(folder/n)==v for n,v in hashes.items()), 'feel fixture drift before capture'
+                      with log.open('wb') as out:
+                          run=run_feel_owned(command,env,out,supervision_proof)
+                      row['exit_code']=run.returncode
+                      assert focus_proof.is_file() and supervision_proof.is_file(), 'Feel focus environment evidence required'
+                      assert focus_proof.stat().st_size<=16384 and supervision_proof.stat().st_size<=4096
+                      focus_doc=json.loads(focus_proof.read_text()); supervision_doc=json.loads(supervision_proof.read_text())
+                      assert focus_doc['schema']==supervision_doc['schema']==1
+                      assert set(focus_doc)==set(['schema', 'diagnostic_only', 'acceptance', 'native_input_acceptance', 'status', 'helper_sha256', 'abi', 'display', 'root', 'library', 'group', 'helper', 'caller', 'studio', 'launcher', 'selector', 'target', 'title', 'attributes', 'observations', 'candidate_count', 'focus_before', 'focus_after', 'set_issued', 'focus_us', 'caller_exit', 'x_errors', 'error', 'elapsed_us', 'cleanup_owner'])
+                      assert set(supervision_doc)==set(['schema', 'diagnostic_only', 'acceptance', 'native_input_acceptance', 'anchor_pid', 'expected_pgid', 'expected_sid', 'reason', 'observed_exit', 'killpg_calls', 'group_absent', 'direct_reaped', 'exit_code', 'cancel_signal', 'cleanup_error', 'elapsed_us', 'file_cleanup', 'grandchild_reaping'])
+                      assert focus_doc['diagnostic_only'] is True and focus_doc['acceptance'] is False
+                      assert supervision_doc['diagnostic_only'] is True and supervision_doc['acceptance'] is False
+                      assert focus_doc['native_input_acceptance']==supervision_doc['native_input_acceptance']=='UNRUN'
+                      assert focus_doc['status']=='focus_confirmed_caller_exit0' and focus_doc['caller_exit']==0
+                      assert focus_doc['helper_sha256']==hashlib.sha256(feel_focus_helper.encode()).hexdigest()
+                      assert focus_doc['selector']==case and focus_doc['focus_after'][0]==focus_doc['target']
+                      assert not focus_doc['x_errors'] and focus_doc['error'] is None
+                      assert focus_doc['group']==supervision_doc['expected_pgid']==supervision_doc['expected_sid']==supervision_doc['anchor_pid']
+                      assert all(focus_doc[role]['pgid']==focus_doc[role]['sid']==focus_doc['group'] for role in ['helper','caller','studio'])
+                      assert focus_doc['studio']['ppid']==focus_doc['caller']['pid']
+                      assert supervision_doc['reason']=='exit' and supervision_doc['exit_code']==0
+                      assert supervision_doc['direct_reaped'] is True and supervision_doc['killpg_calls']==1
+                      assert supervision_doc['cleanup_error'] is None and supervision_doc['cancel_signal']==0
+                      row.update(focus_environment_sha256=digest(focus_proof),supervision_sha256=digest(supervision_proof),
+                                 focus_environment_file=focus_proof.name,supervision_file=supervision_proof.name,
+                                 native_input_acceptance='UNRUN')
+                      assert run.returncode==0 and png.is_file() and sidecar.is_file(), 'required feel capture failed'
+                      dimensions,pixels=png_stream(png); doc=json.loads(sidecar.read_text())
+                      assert dimensions==(w,h) and doc['viewport_pixels']==[w,h]
+                      assert abs(doc['pixels_per_point']-1)<0.01
+                      assert all(abs(a-b)<1.1 for a,b in zip(doc['logical_viewport'],[w,h]))
+                      assert doc['selector']==case and doc['initial_view_state']==doc['final_view_state']
+                      assert doc['state_origin']==manifest['state_origin']
+                      assert doc['playing'] is False and doc['autoplay'] is False and doc['native_input'] is False
+                      assert doc['request_ready'] is True and doc['shot_requested'] is True
+                      assert doc['status']=='captured_uninspected'
+                      assert doc['render_revision']==doc['revision'] and doc['render_load_generation']==doc['load_generation']
+                      assert doc['build_sha']==manifest['checkout_sha']
+                      assert doc['fixture_sha256']==hashes[project.name] and doc['action_log_sha256']==hashes[action_log.name]
+                      assert doc['project_contract']==manifest['project_contract']
+                      assert doc['launcher_project_sha256']==doc['project_serialized_sha256']
+                      assert len(doc['launcher_project_sha256'])==64 and all(c in '0123456789abcdef' for c in doc['launcher_project_sha256'])
+                      assert len(doc['project_serialized_sha256'])==64 and len(doc['full_log_sha256'])==64
+                      assert doc['seek_origin']=='existing ordinary frame2 38%-duration seek'
+                      assert doc['seek_revision']==doc['initial_seek_revision']+1
+                      state=doc['final_view_state']
+                      actual=json.loads(project.read_text())
+                      source=next(p for p in actual['patterns'] if p['name']=='A')
+                      track=next(t for t in actual['tracks'] if t['name']=='Feel keys')
+                      source_notes=source['clips']['feel keys']; ids=[n['id'] for n in source_notes]
+                      assert state['owner']['track_id']==track['id'] and state['owner']['pattern_id']==source['id']
+                      assert state['source_notes']==source_notes and state['source_steps']==16 and state['view']==0
+                      assert state['selection_ids']==(ids[:2] if case=='selected' else [])
+                      assert state['frozen_scope_ids']==(ids[:2] if case=='selected' else ids)
+                      assert state['grid_index']==2 and state['strength']==(50 if case=='selected' else 100)
+                      assert state['swing']==(50 if case=='all-offsets' else 0)
+                      preview=state['preview']
+                      if case=='boundary-blocked':
+                          assert preview['apply_eligible'] is False and 'pattern end' in preview['error']
+                          assert preview['starts'] is None and preview['offsets'] is None
+                      else:
+                          assert preview=={'starts':2 if case=='selected' else 3,
+                                           'offsets':0 if case=='selected' else 2,'error':None,'apply_eligible':True}
+                      assert all(digest(folder/n)==v for n,v in hashes.items()), 'feel fixture drift after capture'
+                      assert digest(binary)==manifest['binary_sha256'], 'feel capture binary drift'
+                      row.update(status='captured_uninspected',png_sha256=digest(png),sidecar_sha256=digest(sidecar),
+                                 log_sha256=digest(log),decoded_rgba_sha256=pixels,
+                                 project_contract=doc['project_contract'],fixture_sha256=doc['fixture_sha256'],
+                                 launcher_project_sha256=doc['launcher_project_sha256'])
+                  except Exception as error:
+                      row.update(status='missing_or_invalid',error=str(error)); manifest['missing'].append(filename)
+                  for evidence in (focus_proof,supervision_proof):
+                      if evidence.is_file(): row[evidence.suffixes[-2][1:]+'_sha256']=digest(evidence)
+                  if log.is_file(): row['log_sha256']=digest(log)
+                  manifest['cases'].append(row); save_feel()
+              assert len(manifest['cases'])==4 and not manifest['missing'], 'all four feel cases required'
+              assert all(row['status']=='captured_uninspected' for row in manifest['cases'])
+              assert {p.name for p in folder.glob('*.png')}==set(feel_expected), 'unexpected/stale feel PNG'
+              assert all((folder/name.replace('.png',suffix)).is_file() and (folder/name.replace('.png',suffix)).stat().st_size>0
+                         for name in feel_expected for suffix in ['.png','.json','.log'])
+              return feel_expected
+          feel_expected=feel_appearance()
+          all_pngs += ['feel/'+name for name in feel_expected]
+          assert len(all_pngs)==44 and len(set(all_pngs))==44
+          assert {str(p.relative_to(shots)) for p in shots.rglob('*.png')}==set(all_pngs), 'unexpected/stale PNG in extended shots tree'
+          assert all((shots/name).is_file() for name in all_pngs), 'all 40 existing + 4 finite feel PNGs required'
           (shots/'evidence-manifest.json').write_text(json.dumps({
               'schema':1,'expected_pngs':all_pngs,'ordinary':ordinary,
               'audio_manifest':'native-results-manifest.json',
               'caption_manifest':'master-caption/manifest.json',
               'arrangement_manifest':'arrangement/manifest.json',
+              'feel_manifest':'feel/manifest.json',
               'checkout_sha':(shots/'build-sha.txt').read_text().strip(),
               'human_inspection':'outstanding'},indent=2))
           assert fixture_hashes=={str(p.relative_to(root)):digest(p) for p in (project,fixture)}, 'fixture changed'

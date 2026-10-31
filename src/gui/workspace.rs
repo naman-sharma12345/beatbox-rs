@@ -295,6 +295,7 @@ struct Viewer<'a> {
     studio: &'a mut Studio,
     p: &'a Project,
     rev: u64,
+    generation: Option<u64>,
     log: &'a (Vec<String>, Vec<String>),
     undo: (usize, usize),
     request: Option<Pane>,
@@ -318,6 +319,9 @@ impl TabViewer for Viewer<'_> {
         [true, true]
     }
     fn ui(&mut self, ui: &mut egui::Ui, pane: &mut Pane) {
+        if self.studio.feel_open() {
+            ui.disable();
+        }
         ui.set_min_size(match pane {
             Pane::Transport => Vec2::new(420.0, 78.0),
             Pane::Console => Vec2::new(420.0, 230.0),
@@ -343,7 +347,7 @@ impl TabViewer for Viewer<'_> {
             Pane::Library => s.browser(ui, p),
             Pane::Inspector => s.inspector(ui, p, self.rev, self.log),
             Pane::Console => s.console_dock(ui, p),
-            Pane::Notes => s.piano_roll(ui, p),
+            Pane::Notes => s.piano_roll(ui, p, self.rev, self.generation),
             Pane::Analysis => {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -441,6 +445,12 @@ impl Studio {
         log: &(Vec<String>, Vec<String>),
         undo: (usize, usize),
     ) {
+        // seen_project_load was captured before this Project snapshot. Pair it
+        // only with a still-current frame revision under lock, never a newer load.
+        let generation = {
+            let e = self.engine.lock().unwrap();
+            super::piano::feel_frame_generation(&e, rev, self.seen_project_load)
+        };
         let mut ws = std::mem::replace(
             &mut self.workspace,
             Workspace {
@@ -473,6 +483,7 @@ impl Studio {
                     .inner_margin(egui::Margin::symmetric(18.0, 10.0)),
             )
             .show(ctx, |ui| {
+                if self.feel_open() { ui.disable(); }
                 ui.horizontal(|ui| {
                     if self.brand.is_none() {
                         if let Ok(im) = image::load_from_memory(include_bytes!(
@@ -665,6 +676,7 @@ impl Studio {
                     studio: self,
                     p,
                     rev,
+                    generation,
                     log,
                     undo,
                     request: None,
@@ -687,6 +699,7 @@ impl Studio {
         }
         ws.persist(ctx.input(|i| i.time));
         self.workspace = ws;
+        self.feel_ui(ctx, p, rev, generation);
     }
 }
 
