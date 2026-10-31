@@ -529,7 +529,7 @@ jobs:
                           ('all-offsets','normal',1100,700),('boundary-blocked','boundary',1100,700)]
               feel_expected=[f'{case}_{w}x{h}_1x.png' for case,_,w,h in feel_cases]
               manifest={'schema':1,'expected':feel_expected,'cases':[],'missing':[],
-                        'project_contract':'rust-project-serde-json-to-string-v1',
+                        'project_contract':'project_json_v1',
                         'fixture_sha256':{},'preparation':'pending','checkout_sha':(shots/'build-sha.txt').read_text().strip(),
                         'checkout_tree':subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip(),
                         'binary_sha256':digest(binary),'rustc_sha256':digest(shots/'rustc.txt'),

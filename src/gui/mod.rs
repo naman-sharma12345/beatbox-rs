@@ -629,7 +629,7 @@ impl FeelCapture {
     // Exact screenshot-tool contract: typed Project -> serde_json::to_string.
     // The saved Engine JSON is a separate immutable byte identity, not the
     // temporary launcher file. No Value/Python numeric canonicalization here.
-    const PROJECT_CONTRACT: &str = "rust-project-serde-json-to-string-v1";
+    const PROJECT_CONTRACT: &str = "project_json_v1";
 
     fn verify_project_provenance(
         contract: &str,
@@ -4076,7 +4076,7 @@ mod feel_capture_mode_tests {
                      project: &crate::project::Project| {
             FeelCapture::verify_project_provenance(contract, fixture, hash, bytes, project).is_err()
         };
-        for contract in ["", "unknown", "rust-project-serde-json-to-string-v2"] {
+        for contract in ["", "unknown", "project_json_v2"] {
             assert!(check(contract, &saved, &hash, &launcher, &studio.project));
         }
         for wrong_hash in ["bad".to_string(), "0".repeat(64), sha256_hex(&launcher)] {
