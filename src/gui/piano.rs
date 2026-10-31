@@ -587,7 +587,7 @@ fn repeat_capacity(notes: &[Note], selected: &[usize], period: f32, steps: f32) 
 
 // A local, transient frontend to the existing quantize tool. No preview mutations.
 #[derive(Debug, Clone)]
-struct FeelDraft {
+pub(super) struct FeelDraft {
     revision: u64,
     generation: u64,
     track: usize,
@@ -1224,7 +1224,7 @@ fn feel_lifecycle(
 
 #[derive(Debug, Clone, Default)]
 pub struct PianoState {
-    feel: Option<FeelDraft>,
+    pub(super) feel: Option<FeelDraft>,
     pub euclidean: EuclideanControls,
     pub(super) rhythm_trial: Option<super::rhythm_trial::Trial>,
     pub(super) rhythm_trial_status: String,
