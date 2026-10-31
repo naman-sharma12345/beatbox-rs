@@ -4,6 +4,12 @@ name: screenshots
 # `beatbox studio --screenshot` under xvfb-run when there is no display.
 on:
   workflow_dispatch:
+    inputs:
+      native_calibration:
+        description: 'Ordinary Notes calibration only; review required, not native acceptance'
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [main]
 env:
@@ -40,6 +46,7 @@ jobs:
               'run_id': os.environ.get('GITHUB_RUN_ID')},indent=2))
           PYPROV
       - name: produce demo beats (rich projects)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.native_calibration == true) }}
         run: |
           mkdir -p demo
           ./target/release/beatbox call produce_track '{"brief":"dark desi hip-hop with vocal chops, dark plucks and a sliding 808, for a gully rap verse","genre":"desi_hiphop","bpm":92,"seed":21,"max_iterations":2,"out_dir":"demo/desi"}' > demo/desi.result.json
@@ -51,6 +58,7 @@ jobs:
           done
           ls -la demo
       - name: screenshots via the screenshot tool
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.native_calibration == true) }}
         run: |
           mkdir -p shots
           ok=0
@@ -78,6 +86,7 @@ jobs:
             test -s "shots/${SHOT_TAG}_${suffix}_melodic.png"
           done
       - name: tiny authored audio project (no additional producer run)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.native_calibration == true) }}
         run: |
           mkdir -p shots/native-fixture
           python3 - <<'PYFIX'
@@ -101,6 +110,7 @@ jobs:
           call add_audio_clip '{"track":"Diagnostic signal","sample":"impulses","start_beat":0,"length_s":4}'
           sha256sum shots/native-fixture/* > shots/fixture-sha256.txt
       - name: tiny authored master-caption projects (existing JSON tools only)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.native_calibration == true) }}
         run: |
           python3 - <<'PYCAPTIONFIX'
           import hashlib, json, os, subprocess
@@ -147,6 +157,7 @@ jobs:
           (folder/'fixture-sha256.json').write_text(json.dumps(hashes,indent=2))
           PYCAPTIONFIX
       - name: real native audio-check scenarios and exact manifest
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.native_calibration == true) }}
         run: |
           python3 - <<'PYNATIVE'
           import hashlib, json, os, shutil, struct, subprocess, wave, zlib
@@ -789,6 +800,40 @@ jobs:
           assert all(p.is_file() and p.stat().st_size>0 for p in required), 'exact required-file set incomplete'
           assert not failures, f'Native scenarios missing or invalid: {failures}'
           PYNATIVE
+      - name: ordinary native calibration only (intentional review-required exit)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.native_calibration == true }}
+        timeout-minutes: 6
+        run: |
+          set -eu
+          mkdir native-calibration
+          trap 'printf "%s\n" "Calibration step exit; inspect manifest. Exit 3 means deliberate review required, not runtime FAIL." > native-calibration/step-status.txt' EXIT
+          python3 - <<'PYINIT'
+          import json
+          from pathlib import Path
+          Path('native-calibration/manifest.json').write_text(json.dumps({
+              'schema':1,'status':'STOP','acceptance':False,
+              'reason':'fixture setup/helper not yet completed','case_A':'UNRUN'}))
+          PYINIT
+          export BEATBOX_NO_LISTEN=1
+          project="$GITHUB_WORKSPACE/native-calibration/project.json"
+          call() {
+            printf '%s %s\n' "$1" "$2" >> native-calibration/fixture-inputs.log
+            timeout 15s ./target/release/beatbox call "$1" "$2" --project "$project" >> native-calibration/fixture-actions.log 2>&1
+          }
+          call new_project '{"name":"Ordinary Notes calibration","bpm":120,"patterns":[{"name":"A","bars":1}]}'
+          call add_track '{"name":"K","volume_db":-24,"instrument":{"type":"synth","osc1":"sine","osc2":"sine","osc_mix":0.0,"unison":1,"noise_level":0.0}}'
+          call add_notes '{"track":"K","pattern":"A","notes":[{"pitch":60,"start":0.3,"len":1,"vel":0.6,"offset":0.12},{"pitch":64,"start":1.3,"len":1,"vel":0.6,"offset":-0.1},{"pitch":67,"start":4.3,"len":1,"vel":0.6,"offset":0}]}'
+          sha256sum native-calibration/project.json > native-calibration/fixture-sha256.txt
+          cp shots/build-sha.txt shots/binary-sha256.txt shots/rustc.txt shots/checkout.json native-calibration/
+          unset BEATBOX_NO_LISTEN
+          python3 scripts/feel_native_input.py
+      - name: upload calibration evidence even on STOP or pending review
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.native_calibration == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ordinary-notes-calibration-review-required
+          path: native-calibration/
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
         with:
