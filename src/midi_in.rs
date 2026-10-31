@@ -157,6 +157,32 @@ fn check_target(e: &Engine, t: &str) -> Result<String> {
     bail!("unknown target '{t}': volume:<track|master>, pan:<track>, launch:<pattern>, song, play, stop, toggle or record")
 }
 
+/// Bind track controls to stable identity so deletion/name reuse cannot
+/// transfer an old hardware mapping to an unrelated replacement track.
+fn bind_target(e: &Engine, target: &str) -> Result<String> {
+    let target = check_target(e, target)?;
+    if let Some((kind, owner)) = target.split_once(':') {
+        if matches!(kind, "volume" | "pan") && !owner.eq_ignore_ascii_case("master") {
+            let track = &e.project.tracks[e.project.track_index(owner)?];
+            if !track.id.is_empty() {
+                return Ok(format!("{kind}:{}", track.id));
+            }
+        }
+    }
+    Ok(target)
+}
+
+pub(crate) fn display_target(e: &Engine, target: &str) -> String {
+    if let Some((kind, owner)) = target.split_once(':') {
+        if matches!(kind, "volume" | "pan") && !owner.eq_ignore_ascii_case("master") {
+            if let Ok(i) = e.project.track_index(owner) {
+                return format!("{kind}:{}", e.project.tracks[i].name);
+            }
+        }
+    }
+    target.to_string()
+}
+
 /// Pattern and step under a play-head time: the pattern looping in
 /// performance mode, else the song section at that time.
 fn locate(e: &Engine, at_s: f32) -> Option<(usize, f32)> {
@@ -465,7 +491,7 @@ pub fn restore(e: &mut Engine, s: Option<&crate::project::MidiSetup>) -> (usize,
     let mut links = Vec::new();
     let mut skipped = Vec::new();
     for l in &s.links {
-        match Control::parse(&l.control).and_then(|c| check_target(e, &l.target).map(|t| (c, t))) {
+        match Control::parse(&l.control).and_then(|c| bind_target(e, &l.target).map(|t| (c, t))) {
             Ok((control, target)) => {
                 links.retain(|x: &Link| x.control != control);
                 links.push(Link { control, target });
@@ -524,8 +550,8 @@ fn state(e: &Engine) -> Value {
     json!({
         "connected": e.midi.port, "track": if e.midi.track.is_empty() { e.project.tracks.first().map(|t| t.name.clone()).unwrap_or_default() } else { e.midi.track.clone() },
         "record": e.midi.record, "quantize": e.midi.quantize, "gate_s": e.midi.gate_s,
-        "learning": e.midi.learn,
-        "links": e.midi.links.iter().map(|l| json!({"control": l.control.label(), "target": l.target})).collect::<Vec<_>>(),
+        "learning": e.midi.learn.as_ref().map(|t| display_target(e, t)),
+        "links": e.midi.links.iter().map(|l| json!({"control": l.control.label(), "target": display_target(e, &l.target)})).collect::<Vec<_>>(),
         "recent": e.midi.recent.iter().collect::<Vec<_>>(),
     })
 }
@@ -731,12 +757,12 @@ pub fn tools() -> Vec<Tool> {
                     }
                     "link" => {
                         let c = Control::parse(&s_opt(a, "control").ok_or_else(|| anyhow!("link needs control, e.g. 'cc 7'"))?)?;
-                        let t = check_target(e, &s_opt(a, "target").ok_or_else(|| anyhow!("link needs target"))?)?;
+                        let t = bind_target(e, &s_opt(a, "target").ok_or_else(|| anyhow!("link needs target"))?)?;
                         e.midi.links.retain(|l| l.control != c);
                         e.midi.links.push(Link { control: c, target: t });
                     }
                     "learn" => {
-                        let t = check_target(e, &s_opt(a, "target").ok_or_else(|| anyhow!("learn needs target"))?)?;
+                        let t = bind_target(e, &s_opt(a, "target").ok_or_else(|| anyhow!("learn needs target"))?)?;
                         e.midi.learn = Some(t);
                     }
                     "unlink" => {
@@ -746,7 +772,9 @@ pub fn tools() -> Vec<Tool> {
                             e.midi.links.retain(|l| l.control != c);
                         } else if let Some(t) = s_opt(a, "target") {
                             let t = t.trim().to_lowercase();
-                            e.midi.links.retain(|l| l.target.to_lowercase() != t);
+                            let keep: Vec<bool> = e.midi.links.iter().map(|l| l.target.to_lowercase() != t && display_target(e, &l.target).to_lowercase() != t).collect();
+                            let mut i = 0;
+                            e.midi.links.retain(|_| { let yes = keep[i]; i += 1; yes });
                         } else {
                             bail!("unlink needs control or target");
                         }

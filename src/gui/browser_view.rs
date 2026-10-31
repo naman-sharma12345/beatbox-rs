@@ -744,7 +744,10 @@ impl Studio {
                 (
                     e.midi.port.clone(),
                     e.midi.record,
-                    e.midi.learn.clone(),
+                    e.midi
+                        .learn
+                        .as_ref()
+                        .map(|t| crate::midi_in::display_target(&e, t)),
                     e.midi.links.len(),
                     if e.midi.track.is_empty() {
                         p.tracks.first().map(|t| t.name.clone()).unwrap_or_default()
