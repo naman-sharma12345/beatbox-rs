@@ -1376,9 +1376,16 @@ mod tests {
     #[test]
     fn legacy_preferences_default_to_docked_transport_and_roundtrip_exactly() {
         let w = workspace();
-        let old = json!({"version":1, "dock": w.dock});
+        // Use the real save path to normalize unrendered dock geometry to finite values.
+        w.flush().unwrap();
+        let mut old: Value = serde_json::from_slice(&std::fs::read(&w.path).unwrap()).unwrap();
+        std::fs::remove_dir_all(w.path.parent().unwrap()).unwrap();
+        let fields = old.as_object_mut().unwrap();
+        fields.remove("pinned_transport");
+        fields.remove("mode");
         let saved: Saved = serde_json::from_value(old.clone()).unwrap();
         assert!(!saved.pinned_transport);
+        assert_eq!(saved.mode, 0);
         assert_eq!(serde_json::to_value(&saved.dock).unwrap(), old["dock"]);
         let new = Saved {
             version: 1,
