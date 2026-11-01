@@ -1,63 +1,66 @@
-name: ci
+name: Midnight Glass isolated render
 on:
-  push:
-  pull_request:
   workflow_dispatch:
-env:
-  CARGO_TERM_COLOR: always
+permissions:
+  contents: read
 jobs:
-  check:
-    # runner size: ubuntu-24.04 is 4 vCPU / 16 GB RAM, and the 16 GB is
-    # required - the 107k-line lib test target OOMs below ~2 GB RSS during
-    # codegen/link (proven on a 1.9 GB box, SIGKILL even at opt-level=0 -j1).
-    # Do not move this job to a smaller runner class.
+  render:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CARGO_TERM_COLOR: always
+      RAYON_NUM_THREADS: '2'
     steps:
       - uses: actions/checkout@v4
-      # keep in step with rust-toolchain.toml
-      - uses: dtolnay/rust-toolchain@1.99.0
         with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - name: system deps (GUI build)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libxkbcommon-dev libwayland-dev libx11-dev ffmpeg
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
-      - name: clippy (default features, public errors)
+          ref: ${{ github.sha }}
+          path: delivery
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: f554d15f8ed978188bda0de4fcdf84244518e75c
+          path: engine
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - name: Install delivery encoder only
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Build pinned headless engine
+        working-directory: engine
+        shell: bash
         run: |
-          set +o pipefail
-          cargo clippy --locked --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.txt
-          status=${PIPESTATUS[0]}
-          grep -E "(error|warning)" clippy.txt | head -50 | while read -r line; do echo "::error::$line"; done
-          exit $status
-      - run: cargo test --locked --no-default-features
-      - name: tests (default features)
-        run: cargo test --locked
-      - name: rust-toolchain.toml matches the CI toolchain
-        run: grep -q 'channel = "1.99.0"' rust-toolchain.toml
-  beats:
-    # runner size: same 16 GB / 4 vCPU requirement as check - release codegen
-    # of the crate does not fit in small runners.
-    # prove the producer: render the reference beats with produce_track
-    # (fresh seeds), compare them with the previous sprint, build a blind A/B
-    runs-on: ubuntu-24.04
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.99.0
-      - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: cargo build --release --no-default-features --locked
-      - name: previous sprint's beats (s8, main ee0a526) for the novelty comparison
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh run download 38017732891 -n beats -D prev_beats -R ${{ github.repository }} && ls prev_beats
-      - name: produce beats
-        run: bash scripts/produce_beats.sh target/release/beatbox beats s9 prev_beats
-      - uses: actions/upload-artifact@v4
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/delivery/artifacts/midnight-glass/ci-logs"
+          git rev-parse HEAD | tee "$GITHUB_WORKSPACE/delivery/artifacts/midnight-glass/ci-logs/engine-commit.txt"
+          cargo build --release --no-default-features --locked --bin beatbox -j 2 2>&1 | tee "$GITHUB_WORKSPACE/delivery/artifacts/midnight-glass/ci-logs/build.log"
+          sha256sum target/release/beatbox > "$GITHUB_WORKSPACE/delivery/artifacts/midnight-glass/ci-logs/engine-sha256.txt"
+      - name: Native load check then real render and technical QC
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd delivery
+          binary="$GITHUB_WORKSPACE/engine/target/release/beatbox"
+          root=artifacts/midnight-glass
+          python3 "$root/validate_native.py" "$binary" 2>&1 | tee "$root/ci-logs/native-load.log"
+          python3 "$root/render_with_beatbox.py" "$binary" 2>&1 | tee "$root/ci-logs/render-qc.log"
+          cp -a .openclaw/tmp/midnight-glass-render "$root/ci-logs/render-details"
+          python3 "$root/validate_delivery.py" 2>&1 | tee "$root/ci-logs/delivery-gate.log"
+      - name: Upload audio, exact project and receipts
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: beats
-          path: beats/
+          name: midnight-glass-render
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            delivery/artifacts/midnight-glass/
+            delivery/.openclaw/tmp/midnight-glass-render/
+      - name: Upload reusable headless CLI and source receipt
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: midnight-glass-headless-cli-linux-x64
+          retention-days: 7
+          path: |
+            engine/target/release/beatbox
+            delivery/artifacts/midnight-glass/ci-logs/engine-commit.txt
+            delivery/artifacts/midnight-glass/ci-logs/engine-sha256.txt
