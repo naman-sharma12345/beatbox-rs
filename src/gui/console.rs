@@ -39,12 +39,17 @@ pub fn text_toggle(
         fill,
         Stroke::new(1.0_f32, t.button_border),
     );
+    if resp.has_focus() {
+        ui.painter()
+            .rect_stroke(r.shrink(1.0), 2.0, Stroke::new(2.0, t.text));
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
     let col = if on { t.text_dark } else { t.text };
     ui.painter().text(
         r.center(),
         Align2::CENTER_CENTER,
         text,
-        bold((size.y * 0.62).clamp(8.0, 13.0)),
+        bold((size.y * 0.62).clamp(12.0, 13.0)),
         col,
     );
     resp.on_hover_text(tip)
@@ -76,7 +81,7 @@ pub fn selector_box(ui: &mut Ui, width: f32, height: f32, text: &str, color: Col
         t.text_dim,
         Stroke::NONE,
     ));
-    let font = regular((height * 0.62).clamp(8.0, 12.0));
+    let font = regular(12.0);
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
     let avail = (width - height * 0.9).max(10.0);
     let x = r.min.x + ((avail - galley.size().x) * 0.5).max(3.0);

@@ -411,7 +411,6 @@ pub struct Studio {
     tempo_edit_bpm: f32,
     tempo_edit_ramp: bool,
     rail_search: String,
-    brand: Option<egui::TextureHandle>,
     note_editor: bool,
     workspace: workspace::Workspace,
 }
@@ -720,7 +719,6 @@ pub fn run(
                 tempo_edit_bpm: 120.0,
                 tempo_edit_ramp: false,
                 rail_search: String::new(),
-                brand: None,
                 note_editor: false,
                 workspace,
             }))
@@ -1412,6 +1410,17 @@ impl Studio {
 
     // ---------------- top bar ----------------
     fn top_bar(&mut self, ui: &mut egui::Ui, p: &Project, undo: (usize, usize)) {
+        self.transport_controls(ui, p, undo, false);
+    }
+
+    // One command path for the pinned strip and legacy docked transport.
+    fn transport_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: &Project,
+        undo: (usize, usize),
+        compact: bool,
+    ) {
         ui.horizontal_wrapped(|ui| {
             // Use the dock panel width, not the screen: the transport can float
             // or share a window with another panel. Controls wrap when needed.
@@ -1433,6 +1442,10 @@ impl Studio {
                     self.player.play();
                 }
             }
+            if compact {
+                ui.label(RichText::new(if playing { "Playing" } else { "Stopped" }).size(12.0).color(DIM));
+                ui.separator();
+            }
             // record: start/stop a take from the default input; the take is
             // placed on the "rec" track where recording started
             let rec = crate::recorder::recording_seconds();
@@ -1452,6 +1465,9 @@ impl Studio {
                         self.call("stop_recording", json!({"track": "rec", "start_beat": start_beat}));
                     }
                 }
+            }
+            if compact {
+                ui.label(RichText::new(if rec.is_some() { "Recording audio" } else { "Audio in" }).size(12.0).color(if rec.is_some() { HOT } else { DIM }));
             }
             if rec.is_some() {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
@@ -1477,17 +1493,19 @@ impl Studio {
                     FrameRate::Fps30,
                     0,
                 );
-                let (r, _) = ui.allocate_exact_size(Vec2::new(244.0, 34.0), Sense::hover());
+                let (r, _) = ui.allocate_exact_size(Vec2::new(if compact { 126.0 } else { 244.0 }, 34.0), Sense::hover());
                 let pt = ui.painter();
                 let main = Rect::from_min_size(r.min, Vec2::new(122.0, 34.0));
-                console::counter_box(pt, main, &bb, 17.0);
+                console::counter_box(pt, main, "", 15.0);
+                pt.text(main.center() + Vec2::new(0.0, 7.0), Align2::CENTER_CENTER, &bb, FontId::monospace(14.0), TEXT);
                 pt.text(
                     main.left_top() + Vec2::new(5.0, 2.0),
                     Align2::LEFT_TOP,
-                    "BARS|BEATS",
-                    FontId::monospace(9.0),
+                    "BAR : BEAT",
+                    FontId::monospace(12.0),
                     DIM,
                 );
+                if !compact {
                 let sub = Rect::from_min_size(
                     Pos2::new(main.right() + 4.0, r.top()),
                     Vec2::new(118.0, 34.0),
@@ -1500,11 +1518,12 @@ impl Studio {
                     FontId::monospace(9.0),
                     DIM,
                 );
+                }
 
             }
             ui.add_space(10.0);
             let mut bpm = p.bpm;
-            ui.label(RichText::new("BPM").size(11.0).color(DIM));
+            ui.label(RichText::new("BPM").size(12.0).color(DIM));
             let r = ui.add(
                 egui::DragValue::new(&mut bpm)
                     .range(40.0..=300.0)
@@ -1514,8 +1533,16 @@ impl Studio {
             if r.drag_stopped() || (r.changed() && !r.dragged()) {
                 self.call("set_tempo", json!({"bpm": bpm}));
             }
+            if compact {
+                let scope = self.perf.as_deref().map(|name| format!("Pattern: {name}")).unwrap_or_else(|| "Song".into());
+                ui.allocate_ui(Vec2::new(110.0, 24.0), |ui| {
+                    ui.add(egui::Label::new(RichText::new(&scope).size(12.0).color(ACCENT)).truncate())
+                        .on_hover_text(format!("Playback scope: {scope}. Pattern launches remain in Song's PERFORM strip."));
+                });
+            }
+            let mut musical_options = |ui: &mut egui::Ui| {
             let mut swing = p.swing;
-            ui.label(RichText::new("SWING").size(11.0).color(DIM));
+            ui.label(RichText::new("SWING").size(12.0).color(DIM));
             let r = ui.add(egui::Slider::new(&mut swing, 0.0..=1.0).show_value(false));
             if r.drag_stopped() {
                 self.call("set_tempo", json!({"swing": swing}));
@@ -1552,6 +1579,15 @@ impl Studio {
             }
             if root != p.key_root || scale != p.scale {
                 self.call("set_key", json!({"root": root, "scale": scale}));
+            }
+            };
+            if compact {
+                ui.menu_button("Timing / key", musical_options);
+            } else {
+                musical_options(ui);
+            }
+            if compact && ui.button("Export...").clicked() {
+                self.export.open = true;
             }
             // Undo and Redo stay in reach; everything else lives under File.
             let mut tail = |ui: &mut egui::Ui, right_to_left: bool| {

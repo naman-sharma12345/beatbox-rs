@@ -6,9 +6,9 @@ use eframe::egui::{
 use std::f32::consts::PI;
 
 // The studio palette, mapped onto the ported SoundCraft design tokens (see theme.rs):
-// warm charcoal surfaces, signal red and cream counters.
+// graphite surfaces, cyan selection and readable neutral counters.
 use super::theme::Tokens;
-pub const BG: Color32 = Color32::from_rgb(20, 17, 13);
+pub const BG: Color32 = Color32::from_rgb(17, 21, 27);
 pub const PANEL: Color32 = Tokens::DARK.panel_bg;
 pub const PANEL2: Color32 = Tokens::DARK.panel_bg2;
 pub const LINE: Color32 = Tokens::DARK.border;
@@ -83,7 +83,7 @@ pub fn section_label(ui: &mut Ui, text: &str) {
     ui.add_space(4.0);
     ui.label(
         egui::RichText::new(text)
-            .size(11.0)
+            .size(12.0)
             .color(DIM)
             .strong()
             .extra_letter_spacing(1.2),
@@ -157,14 +157,14 @@ pub fn knob(
         c,
         r - 3.0,
         if hover {
-            Color32::from_rgb(62, 51, 37)
+            Tokens::DARK.button_hi
         } else {
-            Color32::from_rgb(36, 30, 23)
+            PANEL2
         },
     );
     painter.add(Shape::line(
         arc(a0, a1, r),
-        Stroke::new(3.5_f32, Color32::from_rgb(72, 59, 43)),
+        Stroke::new(3.5_f32, Tokens::DARK.border_light),
     ));
     if t > 0.001 {
         painter.add(Shape::line(
@@ -240,23 +240,20 @@ fn short(label: &str) -> String {
 pub fn transport_button(ui: &mut Ui, playing: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::click());
     let c = rect.center();
-    let col = if playing { HOT } else { ACCENT };
+    let col = ACCENT;
     let fill = if resp.hovered() {
         col
     } else {
         col.gamma_multiply(0.85)
     };
     ui.painter().circle_filled(c, 18.0, fill);
-    ui.painter().circle_stroke(
-        c,
-        18.0,
-        Stroke::new(1.0_f32, Color32::WHITE.gamma_multiply(0.25)),
-    );
+    ui.painter()
+        .circle_stroke(c, 18.0, Stroke::new(1.0_f32, Tokens::DARK.text_dark));
     if playing {
         ui.painter().rect_filled(
             Rect::from_center_size(c, Vec2::splat(12.0)),
             2.0,
-            Color32::WHITE,
+            Tokens::DARK.text_dark,
         );
     } else {
         let p = vec![
@@ -264,9 +261,23 @@ pub fn transport_button(ui: &mut Ui, playing: bool) -> Response {
             Pos2::new(c.x - 5.0, c.y + 8.0),
             Pos2::new(c.x + 9.0, c.y),
         ];
-        ui.painter()
-            .add(Shape::convex_polygon(p, Color32::WHITE, Stroke::NONE));
+        ui.painter().add(Shape::convex_polygon(
+            p,
+            Tokens::DARK.text_dark,
+            Stroke::NONE,
+        ));
     }
+    if resp.has_focus() {
+        ui.painter()
+            .rect_stroke(rect.shrink(1.0), 4.0, Stroke::new(2.0, TEXT));
+    }
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            if playing { "Stop playback" } else { "Play" },
+        )
+    });
     resp
 }
 
@@ -444,9 +455,9 @@ pub fn keys_button(ui: &mut Ui, rect: Rect, id: egui::Id, on: bool, color: Color
     let bg = if on {
         color.gamma_multiply(0.45)
     } else if resp.hovered() {
-        Color32::from_rgb(62, 51, 37)
+        Tokens::DARK.button_hi
     } else {
-        Color32::from_rgb(36, 30, 23)
+        PANEL2
     };
     p.rect_filled(rect, 3.0, bg);
     let inner = rect.shrink2(Vec2::new(3.0, 4.0));

@@ -53,43 +53,43 @@ pub struct Tokens {
 
 impl Tokens {
     pub const DARK: Tokens = Tokens {
-        panel_bg: Color32::from_rgb(29, 25, 20),
-        panel_bg2: Color32::from_rgb(36, 31, 25),
-        border: Color32::from_rgb(48, 41, 32),
-        border_light: Color32::from_rgb(89, 77, 58),
-        text: Color32::from_rgb(241, 234, 217),
-        text_dim: Color32::from_rgb(185, 174, 152),
-        text_dark: Color32::from_rgb(24, 20, 16),
-        header_text: Color32::from_rgb(216, 204, 181),
-        counter_bg: Color32::from_rgb(19, 16, 12),
-        counter_text: Color32::from_rgb(241, 234, 217),
-        accent: Color32::from_rgb(232, 68, 46),
-        accent_dark: Color32::from_rgb(126, 42, 29),
-        button: Color32::from_rgb(43, 36, 27),
-        button_hi: Color32::from_rgb(62, 51, 37),
-        button_border: Color32::from_rgb(67, 55, 40),
-        name_field: Color32::from_rgb(42, 35, 26),
-        name_field_sel: Color32::from_rgb(83, 58, 33),
-        ruler_bg: Color32::from_rgb(31, 26, 20),
-        ruler_text: Color32::from_rgb(185, 174, 152),
-        ruler_tick: Color32::from_rgb(97, 81, 59),
-        tempo_ruler: Color32::from_rgb(179, 132, 57),
-        playlist_bg: Color32::from_rgb(21, 18, 14),
-        playlist_alt: Color32::from_rgb(26, 22, 17),
-        grid_line: Color32::from_rgb(44, 37, 28),
-        bar_line: Color32::from_rgb(66, 54, 39),
-        playhead: Color32::from_rgb(232, 68, 46),
-        solo: Color32::from_rgb(232, 163, 61),
-        mute: Color32::from_rgb(232, 163, 61),
-        rec: Color32::from_rgb(232, 68, 46),
-        auto_read: Color32::from_rgb(79, 162, 150),
-        meter_green: Color32::from_rgb(207, 194, 156),
-        meter_yellow: Color32::from_rgb(232, 163, 61),
-        meter_red: Color32::from_rgb(232, 68, 46),
-        fader_track: Color32::from_rgb(16, 14, 11),
-        strip_bg: Color32::from_rgb(28, 24, 19),
-        strip_section: Color32::from_rgb(23, 20, 16),
-        slot_bg: Color32::from_rgb(20, 17, 13),
+        panel_bg: Color32::from_rgb(26, 32, 41),
+        panel_bg2: Color32::from_rgb(37, 46, 58),
+        border: Color32::from_rgb(52, 65, 83),
+        border_light: Color32::from_rgb(135, 150, 170),
+        text: Color32::from_rgb(242, 245, 250),
+        text_dim: Color32::from_rgb(181, 193, 209),
+        text_dark: Color32::from_rgb(17, 21, 27),
+        header_text: Color32::from_rgb(242, 245, 250),
+        counter_bg: Color32::from_rgb(17, 21, 27),
+        counter_text: Color32::from_rgb(242, 245, 250),
+        accent: Color32::from_rgb(97, 213, 238),
+        accent_dark: Color32::from_rgb(38, 63, 74),
+        button: Color32::from_rgb(37, 46, 58),
+        button_hi: Color32::from_rgb(52, 65, 83),
+        button_border: Color32::from_rgb(135, 150, 170),
+        name_field: Color32::from_rgb(37, 46, 58),
+        name_field_sel: Color32::from_rgb(38, 63, 74),
+        ruler_bg: Color32::from_rgb(26, 32, 41),
+        ruler_text: Color32::from_rgb(181, 193, 209),
+        ruler_tick: Color32::from_rgb(135, 150, 170),
+        tempo_ruler: Color32::from_rgb(255, 196, 107),
+        playlist_bg: Color32::from_rgb(17, 21, 27),
+        playlist_alt: Color32::from_rgb(26, 32, 41),
+        grid_line: Color32::from_rgb(37, 46, 58),
+        bar_line: Color32::from_rgb(52, 65, 83),
+        playhead: Color32::from_rgb(242, 245, 250),
+        solo: Color32::from_rgb(255, 196, 107),
+        mute: Color32::from_rgb(255, 196, 107),
+        rec: Color32::from_rgb(255, 101, 116),
+        auto_read: Color32::from_rgb(97, 213, 238),
+        meter_green: Color32::from_rgb(121, 221, 180),
+        meter_yellow: Color32::from_rgb(255, 196, 107),
+        meter_red: Color32::from_rgb(255, 101, 116),
+        fader_track: Color32::from_rgb(17, 21, 27),
+        strip_bg: Color32::from_rgb(26, 32, 41),
+        strip_section: Color32::from_rgb(17, 21, 27),
+        slot_bg: Color32::from_rgb(17, 21, 27),
     };
 }
 
@@ -152,7 +152,7 @@ pub fn apply(ctx: &egui::Context) {
     v.extreme_bg_color = t.slot_bg;
     v.faint_bg_color = t.panel_bg2;
     v.override_text_color = Some(t.text);
-    v.selection.bg_fill = t.accent;
+    v.selection.bg_fill = t.accent_dark;
     v.selection.stroke = Stroke::new(1.0_f32, t.accent);
     v.window_rounding = egui::Rounding::same(8.0);
     v.menu_rounding = egui::Rounding::same(4.0);
@@ -176,16 +176,20 @@ pub fn apply(ctx: &egui::Context) {
     v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, t.border_light);
     v.widgets.active.bg_fill = t.accent_dark;
     v.widgets.active.weak_bg_fill = t.accent_dark;
+    v.widgets.active.fg_stroke = Stroke::new(1.0, t.text);
+    v.widgets.active.bg_stroke = Stroke::new(1.5, t.accent);
+    v.widgets.open.bg_fill = t.button_hi;
     v.widgets.open.weak_bg_fill = t.button_hi;
     ctx.set_visuals(v);
     let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = Vec2::new(6.0, 4.0);
-    style.spacing.button_padding = Vec2::new(8.0, 3.0);
+    style.spacing.item_spacing = Vec2::new(8.0, 4.0);
+    style.spacing.button_padding = Vec2::new(8.0, 4.0);
+    style.spacing.interact_size.y = 24.0;
     style.interaction.tooltip_delay = 0.4;
     for (ts, size) in [
         (egui::TextStyle::Body, 13.0),
-        (egui::TextStyle::Button, 12.5),
-        (egui::TextStyle::Small, 11.5),
+        (egui::TextStyle::Button, 13.0),
+        (egui::TextStyle::Small, 12.0),
         (egui::TextStyle::Heading, 17.0),
     ] {
         style.text_styles.insert(ts, regular(size));
@@ -194,4 +198,44 @@ pub fn apply(ctx: &egui::Context) {
         .text_styles
         .insert(egui::TextStyle::Monospace, mono(12.0));
     ctx.set_style(style);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let luminance = |c: Color32| {
+            let linear = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(c.r()) + 0.7152 * linear(c.g()) + 0.0722 * linear(c.b())
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+    #[test]
+    fn graphite_text_and_action_contrast() {
+        let t = Tokens::DARK;
+        for bg in [
+            t.counter_bg,
+            t.panel_bg,
+            t.panel_bg2,
+            t.button_hi,
+            t.accent_dark,
+        ] {
+            for fg in [t.text, t.text_dim] {
+                assert!(contrast(fg, bg) >= 4.5);
+            }
+        }
+        for fg in [t.accent, t.rec, t.solo] {
+            assert!(contrast(fg, t.panel_bg) >= 3.0);
+            assert!(contrast(t.text_dark, fg) >= 4.5);
+        }
+        assert!(contrast(t.button_border, t.button) >= 3.0);
+    }
 }

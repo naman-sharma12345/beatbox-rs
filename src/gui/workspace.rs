@@ -1,6 +1,6 @@
 //! Movable studio panels. Layout data is separate from the musical project.
 use super::*;
-use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
+use egui_dock::{DockArea, DockState, NodeIndex, Style, SurfaceIndex, TabViewer};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -66,6 +66,19 @@ impl Pane {
             _ => None,
         }
     }
+    /// Musical editing surfaces, not the sound-source column or utility panels.
+    fn is_central_editor(self) -> bool {
+        matches!(
+            self,
+            Self::Sequencer
+                | Self::Playlist
+                | Self::Mixer
+                | Self::Notes
+                | Self::Automation
+                | Self::Vocal
+                | Self::Rack
+        )
+    }
     fn view(self) -> Option<usize> {
         Self::ALL[..7].iter().position(|p| *p == self)
     }
@@ -74,6 +87,11 @@ impl Pane {
 struct Saved {
     version: u32,
     dock: DockState<Pane>,
+    // Missing in v1 preferences: retain the user's legacy docked transport.
+    #[serde(default)]
+    pinned_transport: bool,
+    #[serde(default)]
+    mode: u8,
 }
 pub struct Workspace {
     dock: DockState<Pane>,
@@ -83,10 +101,26 @@ pub struct Workspace {
     requested: Option<Pane>,
     /// No saved layout yet: rebuild the default once the real window size is known.
     fresh: bool,
-    /// Last workflow tab picked in the header: 0 none, 1 Beat, 2 Arrange, 3 Mix.
+    pinned_transport: bool,
+    /// Last workflow tab picked in the header: 0 custom, 1 Pattern, 2 Song, 3 Mix.
     mode: u8,
     /// Ctrl+Shift+H: put the windows back to the default arrangement.
     reset: bool,
+}
+/// Fractions describe the left/top share in egui_dock 0.14's rendered tree.
+/// Keep the compact fallback bounded, even before the first real viewport arrives.
+fn studio_regions(width: f32, height: f32, pattern: bool) -> (Option<f32>, Option<f32>) {
+    if !width.is_finite() || !height.is_finite() || width < 1000.0 || height < 1.0 {
+        return (None, None);
+    }
+    let library = if width < 1300.0 { 216.0 } else { 240.0 };
+    let bottom = if pattern && height >= 650.0 {
+        let pixels = if height < 800.0 { 240.0 } else { 310.0 };
+        Some(1.0 - pixels / (height - 88.0))
+    } else {
+        None
+    };
+    (Some(library / width), bottom)
 }
 impl Workspace {
     fn default_dock(view: usize, screen_h: f32) -> DockState<Pane> {
@@ -126,15 +160,51 @@ impl Workspace {
             .split_right(NodeIndex(2), 0.73, vec![Pane::Inspector, Pane::Analysis]);
         d
     }
+    /// New presentation only. No project, selection, history or playback access.
+    fn studio_dock(view: usize, width: f32, height: f32) -> DockState<Pane> {
+        let mut d = DockState::new(vec![Pane::ALL[view.min(6)]]);
+        let (library, bottom) = studio_regions(width, height, view == 0);
+        let Some(library) = library else {
+            return d;
+        };
+        let [editor, _] = d.main_surface_mut().split_left(
+            NodeIndex::root(),
+            library,
+            vec![Pane::Library, Pane::Browser],
+        );
+        if let Some(bottom) = bottom {
+            d.main_surface_mut()
+                .split_below(editor, bottom, vec![Pane::Notes]);
+        }
+        d
+    }
+    fn select_mode(&mut self, mode: u8, size: Vec2) {
+        self.mode = mode;
+        let view = match mode {
+            1 => 0,
+            2 => 3,
+            _ => 1,
+        };
+        self.dock = if self.pinned_transport {
+            Self::studio_dock(view, size.x, size.y)
+        } else {
+            match mode {
+                1 => Self::beat_dock(size.y),
+                2 => Self::arrange_dock(size.y),
+                _ => Self::mix_dock(size.y),
+            }
+        };
+    }
     /// Automated captures never restore or save a person's interactive layout.
     pub fn capture(ctx: &egui::Context, view: usize) -> Self {
         Self {
-            dock: Self::default_dock(view, ctx.screen_rect().height()),
+            dock: Self::studio_dock(view, ctx.screen_rect().width(), ctx.screen_rect().height()),
             saved: String::new(),
             changed_at: 0.0,
             path: PathBuf::new(),
             requested: None,
             fresh: true,
+            pinned_transport: true,
             mode: 0,
             reset: false,
         }
@@ -147,6 +217,12 @@ impl Workspace {
         let path = base.join("beatbox/studio-layout-v1.json");
         let text = std::fs::read_to_string(&path).ok();
         let fresh = text.is_none();
+        let pinned_transport = fresh
+            || text
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Saved>(s).ok())
+                .filter(|s| s.version == 1)
+                .is_some_and(|s| s.pinned_transport);
         let dock = Self::restore(text.as_deref(), view, ctx.screen_rect().shrink(12.0));
         Self {
             dock,
@@ -155,7 +231,15 @@ impl Workspace {
             path,
             requested: None,
             fresh,
-            mode: if fresh && view == 3 { 2 } else { 0 },
+            pinned_transport,
+            mode: if fresh {
+                1
+            } else {
+                text.as_deref()
+                    .and_then(|s| serde_json::from_str::<Saved>(s).ok())
+                    .filter(|s| s.version == 1 && s.mode <= 3)
+                    .map_or(0, |s| s.mode)
+            },
             reset: false,
         }
     }
@@ -207,11 +291,157 @@ impl Workspace {
     pub fn request_reset(&mut self) {
         self.reset = true;
     }
+    /// Recompute roles after every close/move: node indices are not persistent anchors.
+    /// Prefer the preset's primary on the main surface, then a focused/editor leaf.
+    /// Floating secondary views never become the default destination of a new panel.
+    fn central_leaf(&self) -> Option<NodeIndex> {
+        let main = self.dock.main_surface();
+        let usable = |n: NodeIndex| {
+            n.0 < main.len()
+                && main[n].tabs().is_some_and(|tabs| {
+                    !tabs.is_empty()
+                        && !tabs
+                            .iter()
+                            .any(|p| matches!(p, Pane::Library | Pane::Browser | Pane::Transport))
+                })
+        };
+        let preferred = match self.mode {
+            1 => Some(Pane::Sequencer),
+            2 => Some(Pane::Playlist),
+            3 => Some(Pane::Mixer),
+            _ => None,
+        };
+        if let Some((n, _)) = preferred.and_then(|p| self.dock.find_main_surface_tab(&p)) {
+            if usable(n) {
+                return Some(n);
+            }
+        }
+        if let Some((s, n)) = self.dock.focused_leaf() {
+            if s == SurfaceIndex::main()
+                && usable(n)
+                && main[n]
+                    .tabs()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p.is_central_editor())
+            {
+                return Some(n);
+            }
+        }
+        for pane in [
+            Pane::Sequencer,
+            Pane::Playlist,
+            Pane::Mixer,
+            Pane::Notes,
+            Pane::Automation,
+            Pane::Vocal,
+            Pane::Rack,
+        ] {
+            if let Some((n, _)) = self.dock.find_main_surface_tab(&pane) {
+                if usable(n) {
+                    return Some(n);
+                }
+            }
+        }
+        // The last editor may have closed, leaving a central utility leaf. Reuse it,
+        // but never the library, transport or a floating window, even if focused.
+        main.iter()
+            .enumerate()
+            .find_map(|(i, _)| usable(NodeIndex(i)).then_some(NodeIndex(i)))
+    }
+    /// Largest editor-only ancestor of this leaf. In Pattern this is the full
+    /// rack/piano stack. Stop at any library or utility sibling in a custom layout:
+    /// do not reposition user panels just to recreate the preset's silhouette.
+    fn central_region(&self, leaf: NodeIndex) -> NodeIndex {
+        let mut region = leaf;
+        while let Some(parent) = region.parent() {
+            let mut any = false;
+            let only_editors = self
+                .dock
+                .main_surface()
+                .iter()
+                .enumerate()
+                .all(|(i, node)| {
+                    let mut ancestor = Some(NodeIndex(i));
+                    while let Some(n) = ancestor {
+                        if n == parent {
+                            return node.tabs().is_none_or(|tabs| {
+                                any |= !tabs.is_empty();
+                                tabs.iter().all(|p| p.is_central_editor())
+                            });
+                        }
+                        ancestor = n.parent();
+                    }
+                    true
+                });
+            if !any || !only_editors {
+                break;
+            }
+            region = parent;
+        }
+        region
+    }
+    fn open_pinned(&mut self, p: Pane) {
+        // A deserialized zero-surface dock has nothing to preserve or index.
+        if self.dock.surfaces_count() == 0 {
+            self.dock = DockState::new(vec![p]);
+            self.dock
+                .set_focused_node_and_surface((SurfaceIndex::main(), NodeIndex::root()));
+            return;
+        }
+        let main = SurfaceIndex::main();
+        // Explicitly seed an empty main tree; do not push through stale floating focus.
+        if self
+            .dock
+            .main_surface()
+            .iter()
+            .all(|node| node.tabs().is_none_or(|tabs| tabs.is_empty()))
+        {
+            self.dock.main_surface_mut().push_to_first_leaf(p);
+        } else if matches!(p, Pane::Library | Pane::Browser) {
+            let library = self
+                .dock
+                .find_main_surface_tab(&Pane::Library)
+                .or_else(|| self.dock.find_main_surface_tab(&Pane::Browser));
+            if let Some((n, _)) = library {
+                self.dock.main_surface_mut()[n].append_tab(p);
+            } else {
+                self.dock
+                    .main_surface_mut()
+                    .split_left(NodeIndex::root(), 0.22, vec![p]);
+            }
+        } else if let Some(leaf) = self.central_leaf() {
+            if p == Pane::Inspector {
+                let region = self.central_region(leaf);
+                // 32% of the centre leaves a usable inspector at both desktop sizes.
+                // Tree::split_right supports parent nodes and preserves their subtree.
+                self.dock
+                    .main_surface_mut()
+                    .split_right(region, 0.68, vec![p]);
+            } else {
+                self.dock.main_surface_mut()[leaf].append_tab(p);
+            }
+        } else {
+            // Only Library/Browser/Transport remain. Keep them intact on the left,
+            // restoring a central region without cloning or rebuilding other panes.
+            self.dock
+                .main_surface_mut()
+                .split_right(NodeIndex::root(), 0.22, vec![p]);
+        }
+        if let Some((s, n, t)) = self.dock.find_tab(&p) {
+            debug_assert_eq!(s, main);
+            self.dock[s].set_active_tab(n, t);
+            self.dock.set_focused_node_and_surface((s, n));
+        }
+    }
     fn open(&mut self, p: Pane) {
         if let Some((s, n, t)) = self.dock.find_tab(&p) {
             self.dock[s].set_active_tab(n, t);
             self.dock.set_focused_node_and_surface((s, n));
+        } else if self.pinned_transport {
+            self.open_pinned(p);
         } else {
+            // Legacy/custom v1 behavior is deliberately unchanged.
             // Reopening an editor must not bury it in the short Transport strip.
             let target = self
                 .dock
@@ -246,6 +476,8 @@ impl Workspace {
         let mut value = serde_json::to_value(Saved {
             version: 1,
             dock: self.dock.clone(),
+            pinned_transport: self.pinned_transport,
+            mode: self.mode,
         })?;
         fn finite(v: &mut Value) {
             match v {
@@ -276,6 +508,8 @@ impl Workspace {
         if let Ok(s) = serde_json::to_string(&Saved {
             version: 1,
             dock: self.dock.clone(),
+            pinned_transport: self.pinned_transport,
+            mode: self.mode,
         }) {
             if s != self.saved {
                 self.saved = s;
@@ -298,6 +532,7 @@ struct Viewer<'a> {
     log: &'a (Vec<String>, Vec<String>),
     undo: (usize, usize),
     request: Option<Pane>,
+    pinned_transport: bool,
 }
 impl TabViewer for Viewer<'_> {
     type Tab = Pane;
@@ -320,10 +555,11 @@ impl TabViewer for Viewer<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, pane: &mut Pane) {
         ui.set_min_size(match pane {
             Pane::Transport => Vec2::new(420.0, 78.0),
+            Pane::Notes if self.pinned_transport => Vec2::new(420.0, 200.0),
+            Pane::Sequencer if self.pinned_transport => Vec2::new(420.0, 220.0),
             Pane::Console => Vec2::new(420.0, 230.0),
-            Pane::Inspector | Pane::Library | Pane::Browser | Pane::Analysis | Pane::History => {
-                Vec2::new(250.0, 220.0)
-            }
+            Pane::Library | Pane::Browser => Vec2::new(184.0, 220.0),
+            Pane::Inspector | Pane::Analysis | Pane::History => Vec2::new(250.0, 220.0),
             _ => Vec2::new(420.0, 320.0),
         });
         let p = self.p;
@@ -334,6 +570,10 @@ impl TabViewer for Viewer<'_> {
             }
         }
         ui.push_id(*pane, |ui| match pane {
+            Pane::Transport if self.pinned_transport => {
+                ui.label("Transport is pinned above the workspace.");
+                ui.label("Use Layout > Legacy transport layout for a movable transport.");
+            }
             Pane::Transport => {
                 egui::ScrollArea::both()
                     .id_salt("transport")
@@ -380,16 +620,11 @@ impl TabViewer for Viewer<'_> {
                 if p.tracks.is_empty()
                     && !matches!(pane, Pane::Browser | Pane::Automation | Pane::Vocal)
                 {
-                    ui.add_space(28.0);
-                    ui.label(
-                        RichText::new("Make room for your next idea.")
-                            .size(28.0)
-                            .strong(),
-                    );
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Start a pattern").size(17.0).strong());
                     ui.add_space(8.0);
                     ui.label(
-                        RichText::new("Start with a sound. Shape the workspace as you go.")
-                            .color(DIM),
+                        RichText::new("Add a sound, then write drums or notes below.").color(DIM),
                     );
                     ui.add_space(18.0);
                     ui.horizontal_wrapped(|ui| {
@@ -405,7 +640,7 @@ impl TabViewer for Viewer<'_> {
                             self.request = Some(Pane::Browser);
                         }
                     });
-                    ui.add_space(28.0);
+                    ui.add_space(12.0);
                 }
                 match pane {
                     Pane::Sequencer => {
@@ -450,88 +685,83 @@ impl Studio {
                 path: PathBuf::new(),
                 requested: None,
                 fresh: false,
+                pinned_transport: false,
                 mode: 0,
                 reset: false,
             },
         );
         let bounds = ctx.screen_rect().shrink(12.0);
         if std::mem::take(&mut ws.fresh) {
-            ws.dock = Workspace::default_dock(self.view, ctx.screen_rect().height());
+            if ws.path.as_os_str().is_empty() {
+                // Capture's requested editor survives the first real viewport.
+                ws.dock = Workspace::studio_dock(
+                    self.view,
+                    ctx.screen_rect().width(),
+                    ctx.screen_rect().height(),
+                );
+                ws.mode = match self.view {
+                    0 => 1,
+                    3 => 2,
+                    1 => 3,
+                    _ => 0,
+                };
+            } else {
+                ws.select_mode(1, ctx.screen_rect().size());
+            }
         }
         if std::mem::take(&mut ws.reset) {
-            ws.mode = 0;
-            ws.dock = Workspace::default_dock(self.view, ctx.screen_rect().height());
+            if ws.pinned_transport {
+                ws.select_mode(1, ctx.screen_rect().size());
+            } else {
+                ws.mode = 0;
+                ws.dock = Workspace::default_dock(self.view, ctx.screen_rect().height());
+            }
         }
         if let Some(p) = ws.requested.take() {
             ws.open(p);
         }
         egui::TopBottomPanel::top("workspace_header")
-            .exact_height(54.0)
+            .exact_height(36.0)
             .frame(
                 egui::Frame::none()
                     .fill(BG)
-                    .inner_margin(egui::Margin::symmetric(18.0, 10.0)),
+                    .inner_margin(egui::Margin::symmetric(12.0, 4.0)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if self.brand.is_none() {
-                        if let Ok(im) = image::load_from_memory(include_bytes!(
-                            "../../assets/reel/logo/mark.png"
-                        )) {
-                            let im = im.to_rgba8();
-                            self.brand = Some(ctx.load_texture(
-                                "wound",
-                                egui::ColorImage::from_rgba_unmultiplied(
-                                    [im.width() as usize, im.height() as usize],
-                                    im.as_raw(),
-                                ),
-                                egui::TextureOptions::LINEAR,
-                            ));
-                        }
-                    }
-                    if let Some(mark) = &self.brand {
-                        ui.image((mark.id(), Vec2::splat(28.0)));
-                    }
-                    ui.label(
-                        RichText::new("beatbox")
-                            .font(FontId::new(19.0, egui::FontFamily::Name("brand".into()))),
-                    );
-                    ui.label(RichText::new("rs").color(ACCENT));
-                    ui.add_space(20.0);
+                    ui.label(RichText::new("beatbox").size(14.0).strong());
+                    ui.separator();
                     let h = ui.ctx().screen_rect().height();
                     for (m, name, tip) in [
                         (
                             1u8,
-                            "Beat",
+                            "Pattern",
                             "Write drums and melodies: step sequencer and piano roll",
                         ),
-                        (2u8, "Arrange", "Lay patterns out into a song"),
+                        (2u8, "Song", "Lay patterns out into a song"),
                         (3u8, "Mix", "Balance levels, effects and the master"),
                     ] {
                         let on = ws.mode == m;
                         let label = RichText::new(name).size(14.0).color(if on {
-                            egui::Color32::from_rgb(244, 232, 214)
+                            TEXT
                         } else {
                             DIM
                         });
                         let mut btn = egui::Button::new(label);
                         btn = if on {
-                            btn.fill(egui::Color32::from_rgb(74, 30, 24))
+                            btn.fill(theme::Tokens::DARK.accent_dark)
                                 .stroke(egui::Stroke::new(1.0_f32, ACCENT))
                         } else {
                             btn.frame(false)
                         };
                         if ui.add(btn).on_hover_text(tip).clicked() {
-                            ws.mode = m;
-                            ws.dock = match m {
-                                1 => Workspace::beat_dock(h),
-                                2 => Workspace::arrange_dock(h),
-                                _ => Workspace::mix_dock(h),
-                            };
+                            ws.select_mode(m, ctx.screen_rect().size());
                         }
                     }
-                    ui.add_space(14.0);
+                    if ws.mode == 0 { ui.label(RichText::new("Custom layout").size(12.0).color(DIM)); }
+                    ui.add_space(12.0);
                     ui.menu_button("Panels", |ui| {
+                        let pinned_transport = ws.pinned_transport;
                         let mut toggle = |ui: &mut egui::Ui, pane: Pane| {
                             let open = ws.dock.find_tab(&pane).is_some();
                             let mut visible = open;
@@ -567,16 +797,27 @@ impl Studio {
                         }
                         ui.menu_button("More panels", |ui| {
                             for pane in Pane::ALL {
-                                if !main.contains(&pane) {
+                                if !main.contains(&pane) && !(pinned_transport && pane == Pane::Transport) {
                                     toggle(ui, pane);
                                 }
                             }
                         });
                     });
                     ui.menu_button("Layout", |ui| {
-                        if ui.button("Reset workspace").clicked() {
+                        if ui.button("Graphite workspace (Pattern)").on_hover_text("Replace only this UI layout. Music and history are unchanged.").clicked() {
+                            ws.pinned_transport = true;
+                            ws.select_mode(1, ctx.screen_rect().size());
+                            ui.close_menu();
+                        }
+                        if ui.button("Legacy transport layout").clicked() {
+                            ws.pinned_transport = false;
                             ws.mode = 0;
                             ws.dock = Workspace::default_dock(self.view, h);
+                            ui.close_menu();
+                        }
+                        if ui.button("Reset workspace").clicked() {
+                            if ws.pinned_transport { ws.select_mode(1, ctx.screen_rect().size()); }
+                            else { ws.mode = 0; ws.dock = Workspace::default_dock(self.view, h); }
                             ui.close_menu();
                         }
                         if ui.button("Focus on one panel").clicked() {
@@ -586,18 +827,18 @@ impl Studio {
                         }
                         ui.separator();
                         ui.label(
-                            RichText::new("Drag tabs to split, group or float panels.").size(11.0),
+                            RichText::new("Drag tabs to split, group or float panels.").size(12.0),
                         );
                         ui.label(
                             RichText::new("Drag dividers to resize. Layout saves automatically.")
-                                .size(11.0),
+                                .size(12.0),
                         );
                     });
                     ui.menu_button("Help", |ui| {
                         ui.set_max_width(420.0);
                         ui.heading("Studio guide");
-                        ui.label("Beat: write drums in the channel rack and melodies in the piano roll.");
-                        ui.label("Arrange: place patterns and edit clips on the song timeline.");
+                        ui.label("Pattern: write drums in the channel rack and melodies in the piano roll.");
+                        ui.label("Song: place patterns and edit clips on the song timeline.");
                         ui.label("Mix: balance tracks, add effects and check the master.");
                         ui.separator();
                         ui.menu_button("Patterns, song and recording", |ui| {
@@ -624,7 +865,7 @@ impl Studio {
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let state = save_state(self.project_path.is_some(), rev, self.saved_rev);
-                        ui.label(RichText::new(state).color(if state == "Saved" { DIM } else { ACCENT }).size(11.0))
+                        ui.label(RichText::new(state).color(if state == "Saved" { DIM } else { ACCENT }).size(12.0))
                             .on_hover_text(self.save_tooltip());
                         ui.add(egui::Label::new(RichText::new(&p.name).color(DIM).size(12.0)).truncate())
                             .on_hover_text(&p.name);
@@ -634,23 +875,37 @@ impl Studio {
                     });
                 });
             });
+        if ws.pinned_transport {
+            egui::TopBottomPanel::top("pinned_transport")
+                .frame(
+                    egui::Frame::none()
+                        .fill(PANEL)
+                        .inner_margin(egui::Margin::symmetric(12.0, 4.0)),
+                )
+                .show(ctx, |ui| {
+                    // Wrap on small windows rather than clipping Stop or Save.
+                    self.transport_controls(ui, p, undo, true);
+                });
+        }
         let active_before = self.view;
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
                     .fill(BG)
-                    .inner_margin(egui::Margin::symmetric(14.0, 8.0)),
+                    .inner_margin(egui::Margin::symmetric(8.0, 4.0)),
             )
             .show(ctx, |ui| {
-                Workspace::keep_transport_visible(&mut ws.dock, ui.available_height());
+                if !ws.pinned_transport {
+                    Workspace::keep_transport_visible(&mut ws.dock, ui.available_height());
+                }
                 let mut style = Style::from_egui(ui.style());
-                style.tab_bar.height = 30.0;
+                style.tab_bar.height = 28.0;
                 style.separator.extra = 48.0;
                 style.tab_bar.bg_fill = BG;
                 style.tab_bar.hline_color = LINE;
-                style.tab.tab_body.inner_margin = egui::Margin::same(16.0);
-                style.tab.tab_body.bg_fill = BG;
-                style.separator.width = 6.0;
+                style.tab.tab_body.inner_margin = egui::Margin::same(8.0);
+                style.tab.tab_body.bg_fill = PANEL;
+                style.separator.width = 4.0;
                 style.separator.color_idle = BG;
                 style.separator.color_hovered = ACCENT;
                 style.separator.color_dragged = ACCENT;
@@ -668,6 +923,7 @@ impl Studio {
                     log,
                     undo,
                     request: None,
+                    pinned_transport: ws.pinned_transport,
                 };
                 DockArea::new(&mut ws.dock)
                     .style(style)
@@ -692,14 +948,382 @@ impl Studio {
 
 #[cfg(test)]
 mod tests {
+    // These exercise the real Workspace and egui_dock types in feature-enabled CI.
+    // Fraction checks below are nominal layout geometry, not painted GUI evidence.
+    fn descendant(mut node: NodeIndex, ancestor: NodeIndex) -> bool {
+        loop {
+            if node == ancestor {
+                return true;
+            }
+            let Some(parent) = node.parent() else {
+                return false;
+            };
+            node = parent;
+        }
+    }
+    fn unique(w: &Workspace, pane: Pane) {
+        assert_eq!(
+            w.dock.iter_all_tabs().filter(|(_, p)| **p == pane).count(),
+            1
+        );
+    }
+    #[test]
+    fn r1_inspector_is_right_of_entire_central_region_at_both_desktop_sizes() {
+        for (width, height, library_width) in [(1100.0, 700.0, 216.0), (1440.0, 900.0, 240.0)] {
+            for (mode, primary) in [(1, Pane::Sequencer), (2, Pane::Playlist), (3, Pane::Mixer)] {
+                let mut w = workspace();
+                w.pinned_transport = true;
+                w.select_mode(mode, Vec2::new(width, height));
+                let (library, _) = w.dock.find_main_surface_tab(&Pane::Library).unwrap();
+                let before_library = serde_json::to_value(&w.dock.main_surface()[library]).unwrap();
+                let before_root =
+                    serde_json::to_value(&w.dock.main_surface()[NodeIndex::root()]).unwrap();
+                let (leaf, _) = w.dock.find_main_surface_tab(&primary).unwrap();
+                let region = w.central_region(leaf);
+                assert!(!descendant(library, region));
+                w.open(Pane::Inspector);
+                let (s, inspector, _) = w.dock.find_tab(&Pane::Inspector).unwrap();
+                assert_eq!(s, SurfaceIndex::main());
+                assert_eq!(inspector.parent(), Some(region));
+                assert_eq!(inspector, region.right());
+                let egui_dock::Node::Horizontal { fraction, .. } = w.dock.main_surface()[region]
+                else {
+                    panic!("Inspector requires a right split");
+                };
+                assert!(((width - library_width) * (1.0 - fraction)) >= 270.0);
+                assert!(((width - library_width) * fraction) >= 570.0);
+                let (primary_leaf, _) = w.dock.find_main_surface_tab(&primary).unwrap();
+                assert!(descendant(primary_leaf, region.left()));
+                if mode == 1 {
+                    let (notes, _) = w.dock.find_main_surface_tab(&Pane::Notes).unwrap();
+                    assert!(descendant(notes, region.left()));
+                    assert_ne!(notes, primary_leaf);
+                    assert!(matches!(
+                        w.dock.main_surface()[region.left()],
+                        egui_dock::Node::Vertical { .. }
+                    ));
+                }
+                assert_eq!(
+                    before_library,
+                    serde_json::to_value(&w.dock.main_surface()[library]).unwrap()
+                );
+                assert_eq!(
+                    before_root,
+                    serde_json::to_value(&w.dock.main_surface()[NodeIndex::root()]).unwrap()
+                );
+                let after = serde_json::to_value(&w.dock).unwrap();
+                w.open(Pane::Inspector);
+                unique(&w, Pane::Inspector);
+                assert_eq!(after, serde_json::to_value(&w.dock).unwrap());
+            }
+        }
+    }
+    #[test]
+    fn r1_removed_primary_and_notes_reopen_outside_library_in_every_preset() {
+        for size in [Vec2::new(1100.0, 700.0), Vec2::new(1440.0, 900.0)] {
+            for (mode, primary) in [(1, Pane::Sequencer), (2, Pane::Playlist), (3, Pane::Mixer)] {
+                for pane in [primary, Pane::Notes] {
+                    let mut w = workspace();
+                    w.pinned_transport = true;
+                    w.select_mode(mode, size);
+                    if let Some(loc) = w.dock.find_tab(&pane) {
+                        w.dock.remove_tab(loc);
+                    }
+                    // Library can become the root when the last editor closes.
+                    w.open(pane);
+                    w.open(pane);
+                    unique(&w, pane);
+                    let (s, n, _) = w.dock.find_tab(&pane).unwrap();
+                    let (ls, ln, _) = w.dock.find_tab(&Pane::Library).unwrap();
+                    assert_eq!(s, SurfaceIndex::main());
+                    assert_eq!(ls, s);
+                    assert_ne!(ln, n);
+                    assert_eq!(
+                        w.dock[s][ln].tabs().unwrap(),
+                        &[Pane::Library, Pane::Browser]
+                    );
+                }
+                let mut w = workspace();
+                w.pinned_transport = true;
+                w.select_mode(mode, size);
+                for pane in [primary, Pane::Notes] {
+                    if let Some(loc) = w.dock.find_tab(&pane) {
+                        w.dock.remove_tab(loc);
+                    }
+                }
+                w.open(Pane::Inspector);
+                w.open(primary);
+                assert_ne!(
+                    w.dock.find_tab(&primary).unwrap().1,
+                    w.dock.find_tab(&Pane::Library).unwrap().1
+                );
+                unique(&w, Pane::Inspector);
+            }
+        }
+    }
+    #[test]
+    fn r1_mode_primary_wins_over_node_order_and_floating_focus() {
+        let mut w = workspace();
+        w.pinned_transport = true;
+        w.mode = 2;
+        w.dock = DockState::new(vec![Pane::Mixer]);
+        w.dock
+            .main_surface_mut()
+            .split_right(NodeIndex::root(), 0.5, vec![Pane::Playlist]);
+        let float = w.dock.add_window(vec![Pane::Notes, Pane::Analysis]);
+        w.dock
+            .set_focused_node_and_surface((float, NodeIndex::root()));
+        let before = serde_json::to_value(&w.dock[float]).unwrap();
+        w.open(Pane::Automation);
+        assert_eq!(
+            w.dock.find_tab(&Pane::Automation).unwrap().1,
+            w.dock.find_tab(&Pane::Playlist).unwrap().1
+        );
+        assert_ne!(
+            w.dock.find_tab(&Pane::Automation).unwrap().1,
+            w.dock.find_tab(&Pane::Mixer).unwrap().1
+        );
+        w.open(Pane::Inspector);
+        assert_eq!(
+            w.dock.find_tab(&Pane::Inspector).unwrap().0,
+            SurfaceIndex::main()
+        );
+        assert_eq!(before, serde_json::to_value(&w.dock[float]).unwrap());
+    }
+    #[test]
+    fn r1_compact_and_emptied_main_create_safe_central_targets() {
+        let mut w = workspace();
+        w.pinned_transport = true;
+        w.select_mode(1, Vec2::new(800.0, 600.0));
+        w.open(Pane::Inspector);
+        assert_eq!(
+            w.dock.find_tab(&Pane::Inspector).unwrap().1,
+            NodeIndex::root().right()
+        );
+        w.open(Pane::Notes);
+        assert_eq!(
+            w.dock.find_tab(&Pane::Notes).unwrap().1,
+            w.dock.find_tab(&Pane::Sequencer).unwrap().1
+        );
+        for initially_empty_leaf in [false, true] {
+            w.dock = DockState::new(vec![]);
+            if !initially_empty_leaf {
+                w.dock
+                    .main_surface_mut()
+                    .push_to_first_leaf(Pane::Sequencer);
+                w.dock
+                    .remove_tab(w.dock.find_tab(&Pane::Sequencer).unwrap());
+                assert!(w.dock.main_surface().is_empty());
+            }
+            let floating = w.dock.add_window(vec![Pane::Browser]);
+            w.dock
+                .set_focused_node_and_surface((floating, NodeIndex::root()));
+            let before = serde_json::to_value(&w.dock[floating]).unwrap();
+            w.open(Pane::Inspector);
+            w.open(Pane::Sequencer);
+            w.open(Pane::Inspector);
+            assert_eq!(
+                w.dock.find_tab(&Pane::Inspector).unwrap().0,
+                SurfaceIndex::main()
+            );
+            assert_eq!(
+                w.dock.find_tab(&Pane::Sequencer).unwrap().0,
+                SurfaceIndex::main()
+            );
+            unique(&w, Pane::Inspector);
+            assert_eq!(before, serde_json::to_value(&w.dock[floating]).unwrap());
+        }
+        let mut empty = serde_json::to_value(&w.dock).unwrap();
+        empty["surfaces"] = json!([]);
+        empty["focused_surface"] = Value::Null;
+        w.dock = serde_json::from_value(empty).unwrap();
+        assert_eq!(w.dock.surfaces_count(), 0);
+        w.open(Pane::Inspector);
+        assert_eq!(w.dock.surfaces_count(), 1);
+        unique(&w, Pane::Inspector);
+    }
+    #[test]
+    fn r1_custom_utility_sibling_limits_branch_and_preserves_user_state() {
+        let mut w = workspace();
+        w.pinned_transport = true;
+        w.mode = 1;
+        w.dock = DockState::new(vec![Pane::Sequencer]);
+        let [editor, utility] =
+            w.dock
+                .main_surface_mut()
+                .split_below(NodeIndex::root(), 0.6, vec![Pane::Console]);
+        let root = serde_json::to_value(&w.dock.main_surface()[NodeIndex::root()]).unwrap();
+        let console = serde_json::to_value(&w.dock.main_surface()[utility]).unwrap();
+        assert_eq!(w.central_region(editor), editor);
+        w.open(Pane::Inspector);
+        assert_eq!(
+            w.dock.find_tab(&Pane::Inspector).unwrap().1.parent(),
+            Some(editor)
+        );
+        assert_eq!(
+            root,
+            serde_json::to_value(&w.dock.main_surface()[NodeIndex::root()]).unwrap()
+        );
+        assert_eq!(
+            console,
+            serde_json::to_value(&w.dock.main_surface()[utility]).unwrap()
+        );
+    }
+    #[test]
+    fn r1_library_only_main_does_not_split_floating_secondary_or_duplicate_inspector() {
+        let mut w = workspace();
+        w.pinned_transport = true;
+        w.mode = 2;
+        w.dock = DockState::new(vec![Pane::Library, Pane::Browser]);
+        let float = w.dock.add_window(vec![Pane::Notes]);
+        w.dock
+            .set_focused_node_and_surface((float, NodeIndex::root()));
+        let before = serde_json::to_value(&w.dock[float]).unwrap();
+        w.open(Pane::Playlist);
+        let (library, _) = w.dock.find_main_surface_tab(&Pane::Library).unwrap();
+        let (playlist, _) = w.dock.find_main_surface_tab(&Pane::Playlist).unwrap();
+        assert_eq!(library, NodeIndex::root().left());
+        assert_eq!(playlist, NodeIndex::root().right());
+        assert!(
+            matches!(w.dock.main_surface()[NodeIndex::root()], egui_dock::Node::Horizontal { fraction, .. } if (fraction - 0.22).abs() < 0.001)
+        );
+        w.open(Pane::Inspector);
+        assert_eq!(before, serde_json::to_value(&w.dock[float]).unwrap());
+        let loc = w.dock.find_tab(&Pane::Inspector).unwrap();
+        w.dock.remove_tab(loc);
+        let inspector_float = w.dock.add_window(vec![Pane::Inspector]);
+        let before: Vec<_> = w
+            .dock
+            .iter_all_nodes()
+            .map(|(s, n)| (s.0, serde_json::to_value(n).unwrap()))
+            .collect();
+        w.open(Pane::Inspector);
+        w.open(Pane::Inspector);
+        unique(&w, Pane::Inspector);
+        assert_eq!(
+            w.dock.find_tab(&Pane::Inspector).unwrap().0,
+            inspector_float
+        );
+        // Focus changes are permitted; no pane or tree geometry may change.
+        let after: Vec<_> = w
+            .dock
+            .iter_all_nodes()
+            .map(|(s, n)| (s.0, serde_json::to_value(n).unwrap()))
+            .collect();
+        assert_eq!(before, after);
+    }
+    #[test]
+    fn r1_custom_mixed_library_leaf_is_not_a_central_anchor() {
+        let mut w = workspace();
+        w.pinned_transport = true;
+        w.mode = 2;
+        w.dock = DockState::new(vec![Pane::Library, Pane::Browser, Pane::Playlist]);
+        w.open(Pane::Notes);
+        assert_ne!(
+            w.dock.find_tab(&Pane::Notes).unwrap().1,
+            w.dock.find_tab(&Pane::Library).unwrap().1
+        );
+        assert_eq!(w.dock.iter_all_tabs().count(), 4);
+        w.open(Pane::Inspector);
+        unique(&w, Pane::Playlist);
+    }
+    #[test]
+    fn r1_custom_focus_and_last_utility_leaf_are_reused() {
+        let mut w = workspace();
+        w.pinned_transport = true;
+        w.mode = 0;
+        w.dock = DockState::new(vec![Pane::Sequencer]);
+        let [_, notes] =
+            w.dock
+                .main_surface_mut()
+                .split_below(NodeIndex::root(), 0.5, vec![Pane::Notes]);
+        w.dock
+            .set_focused_node_and_surface((SurfaceIndex::main(), notes));
+        w.open(Pane::Vocal);
+        assert_eq!(w.dock.find_tab(&Pane::Vocal).unwrap().1, notes);
+        w.dock = DockState::new(vec![Pane::Console]);
+        w.open(Pane::Playlist);
+        assert_eq!(
+            w.dock.find_tab(&Pane::Playlist).unwrap().1,
+            NodeIndex::root()
+        );
+        assert_eq!(
+            w.dock.find_tab(&Pane::Console).unwrap().1,
+            NodeIndex::root()
+        );
+    }
+    #[test]
+    fn r1_legacy_custom_floating_open_policy_is_unchanged() {
+        let mut w = workspace();
+        w.dock = DockState::new(vec![Pane::Browser]);
+        let float = w.dock.add_window(vec![Pane::Playlist]);
+        w.dock
+            .set_focused_node_and_surface((float, NodeIndex::root()));
+        w.open(Pane::Inspector);
+        // This is intentionally the old policy, not the pinned-shell policy.
+        assert_eq!(
+            w.dock.find_tab(&Pane::Inspector).unwrap().0,
+            SurfaceIndex::main()
+        );
+        assert_eq!(
+            w.dock.find_tab(&Pane::Inspector).unwrap().1,
+            w.dock.find_tab(&Pane::Browser).unwrap().1
+        );
+        w.open(Pane::Inspector);
+        unique(&w, Pane::Inspector);
+        assert!(w.dock[float][NodeIndex::root()]
+            .tabs()
+            .unwrap()
+            .contains(&Pane::Playlist));
+    }
+
+    #[test]
+    fn studio_regions_small_and_uninitialized() {
+        for (w, h) in [
+            (800.0, 600.0),
+            (0.0, 0.0),
+            (f32::NAN, 700.0),
+            (1100.0, f32::INFINITY),
+        ] {
+            assert_eq!(studio_regions(w, h, true), (None, None));
+        }
+    }
+    #[test]
+    fn studio_regions_desktop_sizes() {
+        for (w, h, l, b) in [(1100.0, 700.0, 216.0, 240.0), (1440.0, 900.0, 240.0, 310.0)] {
+            let (left, top) = studio_regions(w, h, true);
+            assert!((left.unwrap() * w - l).abs() < 0.01);
+            assert!(((1.0 - top.unwrap()) * (h - 88.0) - b).abs() < 0.01);
+            assert_eq!(studio_regions(w, h, false).1, None);
+        }
+    }
+    #[test]
+    fn studio_regions_boundaries() {
+        assert_eq!(studio_regions(999.0, 700.0, true), (None, None));
+        assert!(studio_regions(1000.0, 700.0, true).0.is_some());
+        assert_eq!(studio_regions(1100.0, 649.0, true).1, None);
+        assert!(studio_regions(1100.0, 650.0, true).1.is_some());
+    }
+    #[test]
+    fn studio_regions_keep_fraction_bounds() {
+        for w in [1000.0, 1100.0, 1299.0, 1300.0, 1440.0, 3840.0] {
+            for h in [1.0, 600.0, 650.0, 700.0, 799.0, 800.0, 900.0, 2160.0] {
+                let (left, top) = studio_regions(w, h, true);
+                for f in [left, top].into_iter().flatten() {
+                    assert!(f.is_finite() && f > 0.0 && f < 1.0);
+                }
+            }
+        }
+    }
+
     #[test]
     fn captures_use_requested_panel_without_layout_persistence() {
         let ctx = egui::Context::default();
         for view in 0..7 {
             let mut capture = Workspace::capture(&ctx, view);
             assert!(capture.dock.find_tab(&Pane::ALL[view]).is_some());
-            assert!(capture.dock.find_tab(&Pane::Transport).is_some());
-            assert_eq!(capture.dock.iter_all_tabs().count(), 2);
+            assert!(capture.pinned_transport);
+            assert!(capture.dock.find_tab(&Pane::Transport).is_none());
             assert!(capture.path.as_os_str().is_empty());
             assert_eq!(capture.mode, 0);
             capture.flush().unwrap();
@@ -707,6 +1331,64 @@ mod tests {
             capture.persist(2.0);
             assert_eq!(capture.changed_at, 0.0);
         }
+    }
+    #[test]
+    fn graphite_presets_keep_real_editors_and_no_duplicate_transport() {
+        for (width, height) in [(1100.0, 700.0), (1440.0, 900.0)] {
+            let mut w = workspace();
+            w.pinned_transport = true;
+            for (mode, pane) in [(1, Pane::Sequencer), (2, Pane::Playlist), (3, Pane::Mixer)] {
+                w.select_mode(mode, Vec2::new(width, height));
+                assert_eq!(w.mode, mode);
+                assert!(w.dock.find_tab(&pane).is_some());
+                assert!(w.dock.find_tab(&Pane::Library).is_some());
+                assert!(w.dock.find_tab(&Pane::Browser).is_some());
+                assert!(w.dock.find_tab(&Pane::Transport).is_none());
+                let egui_dock::Node::Horizontal { fraction, .. } =
+                    w.dock.main_surface()[NodeIndex::root()]
+                else {
+                    panic!("Library must be a column")
+                };
+                let library_pixels = if width < 1300.0 { 216.0 } else { 240.0 };
+                assert!((fraction * width - library_pixels).abs() < 0.01);
+                assert!(w.dock.main_surface()[NodeIndex(1)]
+                    .tabs()
+                    .unwrap()
+                    .contains(&Pane::Library));
+                assert_eq!(w.dock.find_tab(&Pane::Notes).is_some(), mode == 1);
+                let tabs: Vec<_> = w.dock.iter_all_tabs().map(|(_, p)| *p).collect();
+                let unique: std::collections::HashSet<_> = tabs.iter().collect();
+                assert_eq!(tabs.len(), unique.len());
+            }
+        }
+    }
+    #[test]
+    fn compact_preset_has_one_editor_and_all_panels_can_reopen() {
+        let mut w = workspace();
+        w.pinned_transport = true;
+        w.select_mode(1, Vec2::new(800.0, 600.0));
+        assert_eq!(w.dock.iter_all_tabs().count(), 1);
+        for pane in Pane::ALL {
+            w.open(pane);
+            assert!(w.dock.find_tab(&pane).is_some());
+        }
+    }
+    #[test]
+    fn legacy_preferences_default_to_docked_transport_and_roundtrip_exactly() {
+        let w = workspace();
+        let old = json!({"version":1, "dock": w.dock});
+        let saved: Saved = serde_json::from_value(old.clone()).unwrap();
+        assert!(!saved.pinned_transport);
+        assert_eq!(serde_json::to_value(&saved.dock).unwrap(), old["dock"]);
+        let new = Saved {
+            version: 1,
+            dock: saved.dock,
+            pinned_transport: true,
+            mode: 2,
+        };
+        let roundtrip: Saved = serde_json::from_str(&serde_json::to_string(&new).unwrap()).unwrap();
+        assert!(roundtrip.pinned_transport);
+        assert_eq!(roundtrip.mode, 2);
     }
     #[test]
     fn standard_transport_keeps_152_points_after_resize() {
@@ -752,6 +1434,7 @@ mod tests {
                 .join("layout.json"),
             requested: None,
             fresh: false,
+            pinned_transport: false,
             mode: 0,
             reset: false,
         }
