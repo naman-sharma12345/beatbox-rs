@@ -122,6 +122,23 @@ fn studio_regions(width: f32, height: f32, pattern: bool) -> (Option<f32>, Optio
     };
     (Some(library / width), bottom)
 }
+/// Prefer independent native viewport metadata. Some backends cannot report
+/// an inner position/rect: after the initial pass, an explicitly supplied raw
+/// screen rect is sufficient. Never use InputState's retained default rectangle
+/// or the first pass's pending-zoom override as that fallback.
+fn initial_viewport_size(ctx: &egui::Context) -> Option<Vec2> {
+    let past_initial_pass = ctx.cumulative_pass_nr() > 0;
+    ctx.input(|i| {
+        if let Some(rect) = i.viewport().inner_rect {
+            Some(rect.size())
+        } else if past_initial_pass {
+            i.raw.screen_rect.map(|r| r.size())
+        } else {
+            None
+        }
+    })
+}
+
 impl Workspace {
     fn default_dock(view: usize, screen_h: f32) -> DockState<Pane> {
         // Leave room for wrapped transport controls as well as the tab header.
@@ -209,6 +226,28 @@ impl Workspace {
             reset: false,
         }
     }
+    /// egui applies pending zoom at begin_pass and may substitute the previous
+    /// (initially 10000-point) screen rect. Do not freeze that synthetic size into
+    /// dock fractions. Native inner_rect is supplied independently by egui-winit.
+    /// Only a fresh, unsaved layout is eligible; later resizes never rebuild it.
+    fn initialize_viewport(&mut self, view: usize, screen: Vec2, inner: Option<Vec2>) -> bool {
+        if !self.fresh || !screen.is_finite() || screen.x <= 0.0 || screen.y <= 0.0 {
+            return false;
+        }
+        let Some(inner) = inner.filter(|v| v.is_finite() && v.x > 0.0 && v.y > 0.0) else {
+            return false;
+        };
+        if (screen - inner).abs().max_elem() > 1.0 {
+            return false;
+        }
+        self.fresh = false;
+        if self.path.as_os_str().is_empty() {
+            self.rebuild_capture(view, screen);
+        } else {
+            self.select_mode(1, screen);
+        }
+        true
+    }
     fn rebuild_capture(&mut self, view: usize, size: Vec2) {
         self.dock = Self::studio_dock(view, size.x, size.y);
         self.mode = match view {
@@ -238,6 +277,16 @@ impl Workspace {
                 rect.is_finite() && rect.is_positive(),
                 "invalid observed pane rectangle"
             );
+            if surface == SurfaceIndex::main() {
+                anyhow::ensure!(
+                    *pane != Pane::Library || rect.width() >= 200.0,
+                    "capture Library is below its useful desktop width"
+                );
+                anyhow::ensure!(
+                    *pane != Pane::Notes || self.mode != 1 || rect.height() >= 220.0,
+                    "capture Notes is below its useful Pattern height"
+                );
+            }
             if pane.is_central_editor() && surface == SurfaceIndex::main() {
                 central = central.union(rect);
             }
@@ -714,7 +763,7 @@ impl TabViewer for Viewer<'_> {
                     }
                     Pane::Mixer => s.mixer(ui, p),
                     Pane::Rack => s.rack_view(ui, p, self.rev),
-                    Pane::Playlist => s.playlist_view(ui, p, self.rev),
+                    Pane::Playlist => s.playlist_view(ui, p, self.rev, self.pinned_transport),
                     Pane::Automation | Pane::Vocal | Pane::Browser => {
                         egui::ScrollArea::vertical()
                             .id_salt("content")
@@ -755,18 +804,15 @@ impl Studio {
             },
         );
         let bounds = ctx.screen_rect().shrink(12.0);
-        if std::mem::take(&mut ws.fresh) {
-            if ws.path.as_os_str().is_empty() {
-                // Capture's requested editor survives the first real viewport.
-                ws.rebuild_capture(self.view, ctx.screen_rect().size());
-                if let Some(capture) = &mut self.p0a_capture {
-                    if !capture.seeded {
-                        ws.seed_capture_presentation(capture.config.inspector);
-                        capture.seeded = true;
-                    }
+        let inner_size = initial_viewport_size(ctx);
+        if ws.initialize_viewport(self.view, ctx.screen_rect().size(), inner_size)
+            && ws.path.as_os_str().is_empty()
+        {
+            if let Some(capture) = &mut self.p0a_capture {
+                if !capture.seeded {
+                    ws.seed_capture_presentation(capture.config.inspector);
+                    capture.seeded = true;
                 }
-            } else {
-                ws.select_mode(1, ctx.screen_rect().size());
             }
         }
         if std::mem::take(&mut ws.reset) {
@@ -1001,7 +1047,10 @@ impl Studio {
             ws.open(Pane::Notes);
             self.note_editor = false;
         }
-        ws.persist(ctx.input(|i| i.time));
+        // Never save a placeholder while the native viewport/zoom is settling.
+        if !ws.fresh {
+            ws.persist(ctx.input(|i| i.time));
+        }
         self.workspace = ws;
     }
 }
@@ -1027,6 +1076,205 @@ mod tests {
             1
         );
     }
+    #[test]
+    fn refinement_fresh_waits_for_positive_matching_native_viewport_once() {
+        let mut w = workspace();
+        w.fresh = true;
+        w.pinned_transport = true;
+        let before = serde_json::to_value(&w.dock).unwrap();
+        for (screen, inner) in [
+            (Vec2::ZERO, Some(Vec2::ZERO)),
+            (Vec2::new(f32::NAN, 700.0), Some(Vec2::new(1100.0, 700.0))),
+            (Vec2::new(1100.0, 700.0), None),
+            (Vec2::new(5000.0, 5000.0), Some(Vec2::new(2200.0, 1400.0))),
+            (
+                Vec2::new(1100.0, 700.0),
+                Some(Vec2::new(f32::INFINITY, 700.0)),
+            ),
+        ] {
+            assert!(!w.initialize_viewport(0, screen, inner));
+            assert!(w.fresh);
+            assert_eq!(before, serde_json::to_value(&w.dock).unwrap());
+        }
+        let size = Vec2::new(1100.0, 700.0);
+        assert!(w.initialize_viewport(0, size, Some(size)));
+        assert!(!w.fresh);
+        assert_eq!(w.mode, 1);
+        let after = serde_json::to_value(&w.dock).unwrap();
+        assert!(!w.initialize_viewport(
+            3,
+            Vec2::new(1440.0, 900.0),
+            Some(Vec2::new(1440.0, 900.0))
+        ));
+        assert_eq!(after, serde_json::to_value(&w.dock).unwrap());
+    }
+
+    #[test]
+    fn refinement_real_dock_first_viewport_geometry_at_1x_and_2x() {
+        struct GeometryViewer;
+        impl TabViewer for GeometryViewer {
+            type Tab = Pane;
+            fn title(&mut self, pane: &mut Pane) -> egui::WidgetText {
+                pane.title().into()
+            }
+            fn ui(&mut self, ui: &mut egui::Ui, _: &mut Pane) {
+                ui.label("geometry only");
+            }
+        }
+        for scale in [1.0, 2.0] {
+            for size in [Vec2::new(1100.0, 700.0), Vec2::new(1440.0, 900.0)] {
+                for view in [0, 3, 1] {
+                    let ctx = egui::Context::default();
+                    ctx.set_pixels_per_point(scale);
+                    let mut w = Workspace::capture(&ctx, view);
+                    for frame in 0..3 {
+                        let native_size = if frame == 0 { size * scale } else { size };
+                        let mut input = egui::RawInput {
+                            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, native_size)),
+                            ..Default::default()
+                        };
+                        let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+                        viewport.inner_rect = Some(Rect::from_min_size(Pos2::ZERO, native_size));
+                        viewport.native_pixels_per_point = Some(1.0);
+                        let _ = ctx.run(input, |ctx| {
+                            let initialized = w.initialize_viewport(
+                                view,
+                                ctx.screen_rect().size(),
+                                initial_viewport_size(ctx),
+                            );
+                            if frame == 0 && scale == 2.0 {
+                                // Pinned egui's pending zoom overrides the incoming screen
+                                // with its default 10000-point rectangle scaled to 5000.
+                                assert_eq!(ctx.screen_rect().size(), Vec2::splat(5000.0));
+                                assert!(!initialized);
+                                assert!(w.fresh);
+                            }
+                            egui::TopBottomPanel::top("chrome")
+                                .exact_height(82.0)
+                                .show(ctx, |_| {});
+                            egui::CentralPanel::default()
+                                .frame(
+                                    egui::Frame::none()
+                                        .inner_margin(egui::Margin::symmetric(8.0, 4.0)),
+                                )
+                                .show(ctx, |ui| {
+                                    let mut style = Style::from_egui(ui.style());
+                                    style.separator.width = 4.0;
+                                    style.tab_bar.height = 28.0;
+                                    DockArea::new(&mut w.dock)
+                                        .style(style)
+                                        .show_inside(ui, &mut GeometryViewer);
+                                });
+                        });
+                    }
+                    assert!(!w.fresh);
+                    let (n, _) = w.dock.find_main_surface_tab(&Pane::Library).unwrap();
+                    let library = w.dock.main_surface()[n].rect().unwrap();
+                    let expected_library = if size.x < 1300.0 { 216.0 } else { 240.0 };
+                    assert!(
+                        (library.width() - (expected_library * (size.x - 16.0) / size.x - 2.0))
+                            .abs()
+                            < 1.1
+                    );
+                    assert!(library.width() >= 210.0);
+                    if view == 0 {
+                        let (n, _) = w.dock.find_main_surface_tab(&Pane::Notes).unwrap();
+                        let notes = w.dock.main_surface()[n].rect().unwrap();
+                        let expected_notes = if size.y < 800.0 { 240.0 } else { 310.0 };
+                        assert!(
+                            (notes.height()
+                                - (expected_notes * (size.y - 90.0) / (size.y - 88.0) - 2.0))
+                                .abs()
+                                < 1.1
+                        );
+                        assert!(notes.height() > 230.0);
+                    }
+                    w.capture_presentation(false).unwrap();
+                    let (library_node, _) = w.dock.find_main_surface_tab(&Pane::Library).unwrap();
+                    w.dock.main_surface_mut()[library_node].set_rect(Rect::from_min_size(
+                        library.min,
+                        Vec2::new(50.0, library.height()),
+                    ));
+                    assert!(w.capture_presentation(false).is_err());
+                    w.dock.main_surface_mut()[library_node].set_rect(library);
+                    if view == 0 {
+                        let (notes_node, _) = w.dock.find_main_surface_tab(&Pane::Notes).unwrap();
+                        let notes = w.dock.main_surface()[notes_node].rect().unwrap();
+                        w.dock.main_surface_mut()[notes_node].set_rect(Rect::from_min_size(
+                            notes.min,
+                            Vec2::new(notes.width(), 36.5),
+                        ));
+                        assert!(w.capture_presentation(false).is_err());
+                        w.dock.main_surface_mut()[notes_node].set_rect(notes);
+                    }
+                    let before = serde_json::to_value(&w.dock).unwrap();
+                    let resized = size + Vec2::new(200.0, 100.0);
+                    assert!(!w.initialize_viewport(view, resized, Some(resized)));
+                    assert_eq!(before, serde_json::to_value(&w.dock).unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn refinement_missing_inner_rect_uses_explicit_screen_only_after_first_pass() {
+        let ctx = egui::Context::default();
+        ctx.set_pixels_per_point(2.0);
+        let mut w = Workspace::capture(&ctx, 0);
+        for frame in 0..2 {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 700.0))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    let initialized = w.initialize_viewport(
+                        0,
+                        ctx.screen_rect().size(),
+                        initial_viewport_size(ctx),
+                    );
+                    assert_eq!(initialized, frame == 1);
+                },
+            );
+        }
+        assert!(!w.fresh);
+    }
+
+    #[test]
+    fn refinement_saved_custom_floating_layout_never_reinitializes() {
+        let mut w = workspace();
+        w.pinned_transport = true;
+        w.mode = 0;
+        w.dock = DockState::new(vec![Pane::Playlist, Pane::Console]);
+        let float = w.dock.add_window(vec![Pane::Notes]);
+        w.dock.main_surface_mut()[NodeIndex::root()]
+            .set_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 700.0)));
+        w.dock[float][NodeIndex::root()].set_rect(Rect::from_min_size(
+            Pos2::new(300.0, 180.0),
+            Vec2::new(500.0, 400.0),
+        ));
+        w.flush().unwrap();
+        let saved = std::fs::read_to_string(&w.path).unwrap();
+        std::fs::remove_file(&w.path).unwrap();
+        let bounds = Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 700.0));
+        w.dock = Workspace::restore(Some(&saved), 3, bounds);
+        let before = serde_json::to_value(&w.dock).unwrap();
+        for size in [
+            Vec2::ZERO,
+            Vec2::new(1100.0, 700.0),
+            Vec2::new(1440.0, 900.0),
+        ] {
+            assert!(!w.initialize_viewport(0, size, Some(size)));
+            assert_eq!(before, serde_json::to_value(&w.dock).unwrap());
+        }
+        assert_eq!(w.mode, 0);
+        unique(&w, Pane::Notes);
+        assert_ne!(
+            w.dock.find_tab(&Pane::Notes).unwrap().0,
+            SurfaceIndex::main()
+        );
+    }
+
     #[test]
     fn p0a_seed_preserves_real_workspace_mode_and_is_idempotent() {
         for size in [Vec2::new(1100.0, 700.0), Vec2::new(1440.0, 900.0)] {

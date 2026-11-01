@@ -877,6 +877,7 @@ fn param_editor(
                 let mut sel = cur.clone();
                 egui::ComboBox::from_id_salt(format!("{id}-{k}"))
                     .width(96.0)
+                    .wrap()
                     .selected_text(
                         RichText::new(format!("{}: {}", k.replace('_', " "), sel)).size(12.0),
                     )
@@ -898,31 +899,60 @@ fn param_editor(
             }
         }
     });
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        for k in &keys {
-            if k == "type" {
-                continue;
+    // Stateless rows use the card's current width, not egui Grid's cached
+    // previous-column widths. Each child is keyed by parameter, never row index,
+    // so reflow does not change a knob's identity or its release-only commit.
+    let (columns, cell_width) = parameter_columns(ui.available_width());
+    let origin = ui.cursor().min;
+    let mut top = origin.y;
+    let mut bottom = top;
+    let mut column = 0;
+    for k in &keys {
+        if k == "type" {
+            continue;
+        }
+        if let Some(x) = obj[k].as_f64() {
+            let mut f = x as f32;
+            let (lo, hi, log) = param_range(kind, k, f);
+            let mut cell = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt((id, k))
+                    .max_rect(Rect::from_min_max(
+                        Pos2::new(origin.x + column as f32 * (cell_width + 8.0), top),
+                        Pos2::new(
+                            origin.x + column as f32 * (cell_width + 8.0) + cell_width,
+                            ui.max_rect().bottom(),
+                        ),
+                    ))
+                    .layout(egui::Layout::top_down(egui::Align::Center)),
+            );
+            let done = parameter_knob(&mut cell, k, &mut f, lo, hi, log, color, cell_width);
+            bottom = bottom.max(cell.min_rect().bottom());
+            if (f as f64 - x).abs() > 1e-9 {
+                *dragging = true;
+                let val = if k == "unison" || k == "downsample" || k == "root" {
+                    json!(f.round() as i64)
+                } else {
+                    json!(f)
+                };
+                obj.insert(k.clone(), val);
             }
-            if let Some(x) = obj[k].as_f64() {
-                let mut f = x as f32;
-                let (lo, hi, log) = param_range(kind, k, f);
-                let (_, done) = knob(ui, k, &mut f, lo, hi, log, color);
-                if (f as f64 - x).abs() > 1e-9 {
-                    *dragging = true;
-                    let val = if k == "unison" || k == "downsample" || k == "root" {
-                        json!(f.round() as i64)
-                    } else {
-                        json!(f)
-                    };
-                    obj.insert(k.clone(), val);
-                }
-                if done {
-                    committed = true;
-                }
+            if done {
+                committed = true;
+            }
+            column += 1;
+            if column == columns {
+                top = bottom + 8.0;
+                column = 0;
             }
         }
-    });
+    }
+    if bottom > origin.y {
+        ui.advance_cursor_after_rect(Rect::from_min_max(
+            origin,
+            Pos2::new(origin.x + ui.available_width(), bottom),
+        ));
+    }
     for k in &keys {
         if obj[k].is_object() {
             ui.label(
@@ -3691,5 +3721,93 @@ mod p0a_persistence_tests {
         assert!(!close.approve_completed_capture(true, saved.ok()));
         assert!(close.incoming_close(true, true));
         std::fs::remove_dir(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod refinement_parameter_tests {
+    use super::*;
+
+    fn labels(shape: &egui::Shape, out: &mut Vec<egui::epaint::TextShape>) {
+        match shape {
+            egui::Shape::Text(text) => out.push(text.clone()),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    labels(shape, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn refinement_real_parameter_editor_preserves_all_presets_and_label_bounds() {
+        for &(preset, _) in instruments::PRESETS {
+            let instrument = instruments::preset(preset).unwrap();
+            let original = serde_json::to_value(&instrument).unwrap();
+            let numeric_labels: Vec<_> = original
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, value)| *key != "type" && value.is_number())
+                .map(|(key, _)| key.replace('_', " "))
+                .collect();
+            for scale in [1.0, 2.0] {
+                let ctx = egui::Context::default();
+                ctx.set_pixels_per_point(scale);
+                // Reflow the SAME editor, including narrowing after a wider frame.
+                for width in [244.0, 332.0, 212.0, 244.0] {
+                    let mut value = original.clone();
+                    let mut dragging = false;
+                    let mut body = Rect::NOTHING;
+                    let output = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(Rect::from_min_size(
+                                Pos2::ZERO,
+                                Vec2::new(width + 16.0, 3000.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                // Force the production card's logical content budget;
+                                // this is an egui paint test, not OS input/native proof.
+                                ui.set_width(width);
+                                body = ui.max_rect();
+                                assert!(!param_editor(
+                                    ui,
+                                    "inst",
+                                    instrument.kind_name(),
+                                    &mut value,
+                                    ACCENT,
+                                    &mut dragging
+                                ));
+                            });
+                        },
+                    );
+                    assert!(!dragging);
+                    assert_eq!(value, original);
+                    let mut text = Vec::new();
+                    for shape in &output.shapes {
+                        labels(&shape.shape, &mut text);
+                    }
+                    for label in &numeric_labels {
+                        let painted = text
+                            .iter()
+                            .find(|t| t.galley.job.text == *label)
+                            .unwrap_or_else(|| panic!("missing {preset} parameter {label}"));
+                        let rect = painted.galley.rect.translate(painted.pos.to_vec2());
+                        assert!(rect.left() >= body.left() - 0.1, "{preset} {label}");
+                        assert!(rect.right() <= body.right() + 0.1, "{preset} {label}");
+                        assert!(painted
+                            .galley
+                            .job
+                            .sections
+                            .iter()
+                            .all(|s| s.format.font_id.size >= 12.0));
+                    }
+                }
+            }
+        }
     }
 }

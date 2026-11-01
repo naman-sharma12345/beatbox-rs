@@ -243,6 +243,19 @@ impl StripMeter {
 // used here under MIT). See THIRD_PARTY_NOTICES.md.
 const STRIP_W: f32 = 96.0;
 const MASTER_W: f32 = 150.0;
+
+/// Fixed master at the right; channel paint and scroll share the left budget.
+/// Below one master width, the enclosing dock's horizontal scroll owns recovery.
+fn mixer_regions(row: Rect) -> (Rect, Rect) {
+    let master_left = (row.right() - MASTER_W).max(row.left());
+    (
+        Rect::from_min_max(
+            row.min,
+            Pos2::new((master_left - 8.0).max(row.left()), row.bottom()),
+        ),
+        Rect::from_min_max(Pos2::new(master_left, row.top()), row.max),
+    )
+}
 // Caption text is the serialized effect type, in processing order. No elision,
 // label substitution or tooltip-only disclosure: even a long token can wrap.
 fn master_caption_text(p: &Project) -> String {
@@ -1023,30 +1036,42 @@ impl Studio {
         // render cannot make the master fader escape the compact strip.
         let min_h = master_strip_min_height(ui, p, true);
         let h = (ui.available_height() - 18.0).clamp(min_h, 500.0);
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let scroll_w = ui.available_width() - MASTER_W - 8.0;
-            let strip_w = ((scroll_w - strips.len().saturating_sub(1) as f32)
-                / strips.len().max(1) as f32)
-                .clamp(STRIP_W, STRIP_W * 1.5);
-            ui.allocate_ui(Vec2::new(scroll_w, h + 18.0), |ui| {
-                ui.style_mut().spacing.scroll.floating = false;
-                egui::ScrollArea::horizontal()
-                    .max_height(h + 18.0)
-                    .id_salt("mixer")
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.horizontal_top(|ui| {
-                            ui.spacing_mut().item_spacing.x = 1.0;
-                            for s in &strips {
-                                self.strip(ui, p, h, s, &bus_names, pos, strip_w);
-                            }
-                        });
-                    });
+        let (row, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), h + 18.0), Sense::hover());
+        let (channels, master) = mixer_regions(row);
+        // Reserve the master before rendering channels. A child's requested
+        // minimum must not advance the parent or paint across this boundary.
+        let mut channel_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("mixer_channels")
+                .max_rect(channels),
+        );
+        channel_ui.set_clip_rect(channels.intersect(ui.clip_rect()));
+        channel_ui.style_mut().spacing.scroll.floating = false;
+        let strip_w = ((channels.width() - strips.len().saturating_sub(1) as f32)
+            / strips.len().max(1) as f32)
+            .clamp(STRIP_W, STRIP_W * 1.5);
+        egui::ScrollArea::horizontal()
+            .max_width(channels.width())
+            .max_height(channels.height())
+            .id_salt("mixer")
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            .auto_shrink([false, false])
+            .show(&mut channel_ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 1.0;
+                    for s in &strips {
+                        self.strip(ui, p, h, s, &bus_names, pos, strip_w);
+                    }
+                });
             });
-            self.master_strip(ui, p, h, pos);
-        });
+        let mut master_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("mixer_master")
+                .max_rect(master),
+        );
+        master_ui.set_clip_rect(master.intersect(ui.clip_rect()));
+        self.master_strip(&mut master_ui, p, h, pos);
     }
 
     fn strip_meter_levels(&self, name: &str, pos: Option<f32>) -> ((f32, f32), f32) {
@@ -2051,6 +2076,25 @@ fn automation_playhead_beat(p: &Project, seconds: f32) -> f32 {
 #[cfg(test)]
 mod automation_cursor_tests {
     use super::*;
+    #[test]
+    fn refinement_mixer_master_reservation_and_channel_clip_are_disjoint() {
+        for width in [0.0, 100.0, 420.0, 560.0, 820.0, 1180.0] {
+            let row = Rect::from_min_size(Pos2::new(231.0, 180.0), Vec2::new(width, 500.0));
+            let (channels, master) = mixer_regions(row);
+            assert!(channels.width() >= 0.0);
+            assert!(master.width() >= 0.0);
+            assert!(channels.right() <= master.left());
+            assert!(row.contains_rect(channels));
+            assert!(row.contains_rect(master));
+            assert_eq!(master.right(), row.right());
+            if width >= MASTER_W + 8.0 {
+                assert_eq!(master.width(), MASTER_W);
+                assert_eq!(master.left() - channels.right(), 8.0);
+                assert_eq!(channels.width(), width - MASTER_W - 8.0);
+            }
+        }
+    }
+
     // These exercise the same production painter/widgets used by master_strip,
     // not a parallel arithmetic model. No Studio, renderer, device or GUI launch.
     fn caption_project(count: usize, lift: bool) -> Project {

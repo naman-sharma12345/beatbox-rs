@@ -208,6 +208,52 @@ pub fn knob(
     (resp, committed)
 }
 
+/// Width budget for full-label parameter cells. The narrow fallback is one
+/// column, never smaller type or omitted controls. Vertical scrolling is owned
+/// by the Inspector. At desktop widths this fits two or three readable columns.
+pub(super) fn parameter_columns(width: f32) -> (usize, f32) {
+    let width = if width.is_finite() {
+        width.max(64.0)
+    } else {
+        100.0
+    };
+    let columns = ((width + 8.0) / 108.0).floor().max(1.0) as usize;
+    (
+        columns,
+        (width - 8.0 * (columns - 1) as f32) / columns as f32,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn parameter_knob(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut f32,
+    min: f32,
+    max: f32,
+    log: bool,
+    color: Color32,
+    width: f32,
+) -> bool {
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, 0.0),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            ui.set_width(width);
+            // The rotary gesture, range, value formatting and release-only commit
+            // remain the existing control. Its abbreviated caption is replaced by
+            // a full, wrapped label, not clipped or shrunk text.
+            let (response, committed) = knob(ui, "", value, min, max, log, color);
+            response.on_hover_text(format!("{label}: {}", format_value(*value)));
+            ui.add(
+                egui::Label::new(egui::RichText::new(label.replace('_', " ")).size(12.0)).wrap(),
+            );
+            committed
+        },
+    )
+    .inner
+}
+
 pub fn format_value(v: f32) -> String {
     let a = v.abs();
     if a >= 1000.0 {
@@ -494,6 +540,21 @@ pub fn keys_button(ui: &mut Ui, rect: Rect, id: egui::Id, on: bool, color: Color
 mod pointer_tests {
     use super::*;
     use eframe::egui::{Event, Modifiers, PointerButton, RawInput};
+
+    #[test]
+    fn refinement_parameter_columns_fit_readable_cells() {
+        for width in [64.0, 100.0, 180.0, 212.0, 244.0, 276.0, 332.0, 380.0] {
+            let (count, cell) = parameter_columns(width);
+            assert!(count >= 1);
+            assert!(cell >= 64.0);
+            assert!((count as f32 * cell + (count - 1) as f32 * 8.0 - width).abs() < 0.001);
+            if count > 1 {
+                assert!(cell >= 100.0);
+            }
+        }
+        assert_eq!(parameter_columns(244.0).0, 2);
+        assert_eq!(parameter_columns(332.0).0, 3);
+    }
 
     /// Drive mini_knob with real pointer events (what a mouse produces after
     /// the windowing layer has mapped pixels to points) and return its result.
