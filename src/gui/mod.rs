@@ -855,21 +855,6 @@ const ENUMS: &[(&str, &[&str])] = &[
     ),
 ];
 
-// Test-only observations from the production editor, not a parallel layout model.
-#[cfg(test)]
-#[derive(Clone, Debug)]
-struct ParameterLayoutTrace {
-    entry: Rect,
-    choices: Vec<(String, Rect)>,
-    choice_ids: Vec<egui::Id>,
-    first_numeric_id: Option<egui::Id>,
-    choice_min_height: f32,
-    choice_padding: f32,
-    numeric_origin: Pos2,
-    first_numeric: Option<Rect>,
-    spacing: f32,
-}
-
 /// Generic parameter editor over a JSON object. Returns true when an edit was committed.
 fn param_editor(
     ui: &mut egui::Ui,
@@ -2944,6 +2929,21 @@ fn project_has_nothing_to_render(p: &crate::project::Project) -> bool {
         && p.vocal_map.is_none()
 }
 
+// Test-only observations from the production editor, not a parallel layout model.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct ParameterLayoutTrace {
+    entry: Rect,
+    choices: Vec<(String, Rect)>,
+    choice_ids: Vec<egui::Id>,
+    first_numeric_id: Option<egui::Id>,
+    choice_min_height: f32,
+    choice_padding: f32,
+    numeric_origin: Pos2,
+    first_numeric: Option<Rect>,
+    spacing: f32,
+}
+
 #[cfg(test)]
 mod capture_shutdown_tests {
     use super::{persist_screenshot, QuitCloseState};
@@ -3895,31 +3895,39 @@ mod refinement_parameter_tests {
         width: f32,
         scale: f32,
     ) -> ParameterLayoutTrace {
-        ctx.set_pixels_per_point(scale);
         let mut value = original.clone();
         let mut dragging = false;
-        let output = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(
-                    Pos2::ZERO,
-                    Vec2::new(width + 16.0, 6000.0),
-                )),
-                ..Default::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.set_width(width);
-                    assert!(!param_editor(
-                        ui,
-                        "inst",
-                        kind,
-                        &mut value,
-                        ACCENT,
-                        &mut dragging
-                    ));
-                });
-            },
-        );
+        let screen_rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width + 16.0, 6000.0));
+        let mut input = egui::RawInput {
+            screen_rect: Some(screen_rect),
+            ..Default::default()
+        };
+        // Model native DPI in the input. set_pixels_per_point queues zoom and
+        // replaces this pass's supplied screen rect with a scaled previous one.
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .expect("root viewport input")
+            .native_pixels_per_point = Some(scale);
+        let output = ctx.run(input, |ctx| {
+            assert_eq!(ctx.pixels_per_point(), scale, "actual native DPI: {case}");
+            assert_eq!(
+                ctx.input(|i| i.screen_rect),
+                screen_rect,
+                "actual viewport: {case}"
+            );
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_width(width);
+                assert!(!param_editor(
+                    ui,
+                    "inst",
+                    kind,
+                    &mut value,
+                    ACCENT,
+                    &mut dragging
+                ));
+            });
+        });
         assert_eq!(&value, original, "idle mutation: {case}");
         assert!(!dragging, "idle drag: {case}");
         let trace = ctx.data(|data| {
