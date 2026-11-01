@@ -855,6 +855,21 @@ const ENUMS: &[(&str, &[&str])] = &[
     ),
 ];
 
+// Test-only observations from the production editor, not a parallel layout model.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct ParameterLayoutTrace {
+    entry: Rect,
+    choices: Vec<(String, Rect)>,
+    choice_ids: Vec<egui::Id>,
+    first_numeric_id: Option<egui::Id>,
+    choice_min_height: f32,
+    choice_padding: f32,
+    numeric_origin: Pos2,
+    first_numeric: Option<Rect>,
+    spacing: f32,
+}
+
 /// Generic parameter editor over a JSON object. Returns true when an edit was committed.
 fn param_editor(
     ui: &mut egui::Ui,
@@ -872,41 +887,68 @@ fn param_editor(
     // Freeze the card budget before content-expandable enum controls render.
     // A growing child must not move numeric cells beyond the entry rectangle.
     let numeric_bounds = ui.available_rect_before_wrap();
-    // enums & bools first, then knobs, then envelopes
-    ui.horizontal_wrapped(|ui| {
-        for k in &keys {
-            if let Some((_, opts)) = ENUMS.iter().find(|(n, _)| n == k) {
-                let cur = obj[k].as_str().unwrap_or("").to_string();
-                let mut sel = cur.clone();
-                egui::ComboBox::from_id_salt(format!("{id}-{k}"))
-                    .width(96.0)
-                    .wrap()
-                    .selected_text(
-                        RichText::new(format!("{}: {}", k.replace('_', " "), sel)).size(12.0),
-                    )
-                    .show_ui(ui, |ui| {
-                        for o in opts.iter() {
-                            ui.selectable_value(&mut sel, o.to_string(), *o);
-                        }
-                    });
-                if sel != cur {
-                    obj.insert(k.clone(), json!(sel));
-                    committed = true;
-                }
-            } else if let Some(b) = obj[k].as_bool() {
-                let mut bb = b;
-                if ui.checkbox(&mut bb, k.replace('_', " ")).changed() {
-                    obj.insert(k.clone(), json!(bb));
-                    committed = true;
-                }
+    // Each choice gets a fresh full-width top-down cell. In a wrapped horizontal
+    // row ComboBox measures its text BEFORE wrapping the button to the next row;
+    // the remaining sliver can turn the last selection into a very tall galley.
+    // Advance only by measured content, never the cell's remaining height.
+    #[cfg(test)]
+    let mut choice_rects = Vec::new();
+    #[cfg(test)]
+    let mut choice_ids = Vec::new();
+    for k in &keys {
+        if !ENUMS.iter().any(|(name, _)| name == k) && !obj[k].is_boolean() {
+            continue;
+        }
+        let mut cell = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt((id, "choice", k))
+                .max_rect(Rect::from_min_max(
+                    Pos2::new(numeric_bounds.left(), ui.cursor().top()),
+                    Pos2::new(numeric_bounds.right(), ui.max_rect().bottom()),
+                ))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        if let Some((_, opts)) = ENUMS.iter().find(|(n, _)| n == k) {
+            let cur = obj[k].as_str().unwrap_or("").to_string();
+            let mut sel = cur.clone();
+            egui::ComboBox::from_id_salt(format!("{id}-{k}"))
+                .width(numeric_bounds.width())
+                .wrap()
+                .selected_text(
+                    RichText::new(format!("{}: {}", k.replace('_', " "), sel)).size(12.0),
+                )
+                .show_ui(&mut cell, |ui| {
+                    for o in opts.iter() {
+                        ui.selectable_value(&mut sel, o.to_string(), *o);
+                    }
+                });
+            if sel != cur {
+                obj.insert(k.clone(), json!(sel));
+                committed = true;
+            }
+        } else if let Some(b) = obj[k].as_bool() {
+            let mut bb = b;
+            if cell.checkbox(&mut bb, k.replace('_', " ")).changed() {
+                obj.insert(k.clone(), json!(bb));
+                committed = true;
             }
         }
-    });
+        #[cfg(test)]
+        {
+            choice_rects.push((k.clone(), cell.min_rect()));
+            choice_ids.push(cell.id());
+        }
+        ui.advance_cursor_after_rect(cell.min_rect());
+    }
     // Stateless rows use the card's current width, not egui Grid's cached
     // previous-column widths. Each child is keyed by parameter, never row index,
     // so reflow does not change a knob's identity or its release-only commit.
     let (columns, cell_width) = parameter_columns(numeric_bounds.width());
     let origin = Pos2::new(numeric_bounds.left(), ui.cursor().top());
+    #[cfg(test)]
+    let mut first_numeric_rect = None;
+    #[cfg(test)]
+    let mut first_numeric_id = None;
     let mut top = origin.y;
     let mut bottom = top;
     let mut column = 0;
@@ -930,6 +972,11 @@ fn param_editor(
                     .layout(egui::Layout::top_down(egui::Align::Center)),
             );
             let done = parameter_knob(&mut cell, k, &mut f, lo, hi, log, color, cell_width);
+            #[cfg(test)]
+            if first_numeric_rect.is_none() {
+                first_numeric_rect = Some(cell.min_rect());
+                first_numeric_id = Some(cell.id());
+            }
             bottom = bottom.max(cell.min_rect().bottom());
             if (f as f64 - x).abs() > 1e-9 {
                 *dragging = true;
@@ -956,6 +1003,24 @@ fn param_editor(
             Pos2::new(numeric_bounds.right(), bottom),
         ));
     }
+    #[cfg(test)]
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new(("parameter-layout", id)),
+            ParameterLayoutTrace {
+                entry: numeric_bounds,
+                choices: choice_rects,
+                choice_ids,
+                first_numeric_id,
+                choice_min_height: (ui.spacing().icon_width + 2.0 * ui.spacing().button_padding.y)
+                    .max(ui.spacing().interact_size.y),
+                choice_padding: 2.0 * ui.spacing().button_padding.y,
+                numeric_origin: origin,
+                first_numeric: first_numeric_rect,
+                spacing: ui.spacing().item_spacing.y,
+            },
+        );
+    });
     for k in &keys {
         if obj[k].is_object() {
             ui.label(
@@ -3816,6 +3881,264 @@ mod refinement_parameter_tests {
                             .sections
                             .iter()
                             .all(|s| s.format.font_id.size >= 12.0));
+                    }
+                }
+            }
+        }
+    }
+
+    fn assert_choice_layout(
+        ctx: &egui::Context,
+        original: &Value,
+        kind: &str,
+        case: &str,
+        width: f32,
+        scale: f32,
+    ) -> ParameterLayoutTrace {
+        ctx.set_pixels_per_point(scale);
+        let mut value = original.clone();
+        let mut dragging = false;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    Pos2::ZERO,
+                    Vec2::new(width + 16.0, 6000.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.set_width(width);
+                    assert!(!param_editor(
+                        ui,
+                        "inst",
+                        kind,
+                        &mut value,
+                        ACCENT,
+                        &mut dragging
+                    ));
+                });
+            },
+        );
+        assert_eq!(&value, original, "idle mutation: {case}");
+        assert!(!dragging, "idle drag: {case}");
+        let trace = ctx.data(|data| {
+            data.get_temp::<ParameterLayoutTrace>(egui::Id::new(("parameter-layout", "inst")))
+                .expect("production editor trace")
+        });
+        let diagnostic = format!("{case} width={width} scale={scale} actual={trace:?}");
+        let mut text = Vec::new();
+        for shape in &output.shapes {
+            labels(&shape.shape, &mut text);
+        }
+        let choices: Vec<_> = original
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(key, value)| {
+                ENUMS.iter().any(|(name, _)| *name == key.as_str()) || value.is_boolean()
+            })
+            .collect();
+        assert_eq!(trace.choices.len(), choices.len(), "{diagnostic}");
+        let mut last_bottom = trace.entry.top() - trace.spacing;
+        for ((key, value), (rendered_key, bounds)) in choices.iter().zip(&trace.choices) {
+            assert_eq!(*key, rendered_key, "{diagnostic}");
+            assert!(bounds.is_finite() && bounds.height() > 0.0, "{diagnostic}");
+            assert!(
+                bounds.left() >= trace.entry.left() - 0.1
+                    && bounds.right() <= trace.entry.right() + 0.1,
+                "{diagnostic}"
+            );
+            assert!(
+                (bounds.top() - (last_bottom + trace.spacing)).abs() <= 0.1,
+                "{diagnostic}"
+            );
+            let expected = if let Some(selected) = value.as_str() {
+                format!("{}: {selected}", key.replace('_', " "))
+            } else {
+                key.replace('_', " ")
+            };
+            let painted = text
+                .iter()
+                .find(|t| t.galley.job.text == expected)
+                .unwrap_or_else(|| panic!("missing full choice {expected:?}: {diagnostic}"));
+            let rect = painted.galley.rect.translate(painted.pos.to_vec2());
+            assert!(
+                rect.left() >= bounds.left() - 0.1
+                    && rect.right() <= bounds.right() + 0.1
+                    && rect.top() >= bounds.top() - 0.1
+                    && rect.bottom() <= bounds.bottom() + 0.1,
+                "choice={expected:?} painted={rect:?}: {diagnostic}"
+            );
+            // A cell must consume its text, button chrome and at most normal
+            // interaction height, not the enclosing scroll viewport's height.
+            assert!(
+                bounds.height()
+                    <= (painted.galley.size().y + trace.choice_padding)
+                        .max(trace.choice_min_height)
+                        + 0.1,
+                "unexplained choice height for {expected:?}: {diagnostic}"
+            );
+            if value.is_string() {
+                assert!(
+                    painted
+                        .galley
+                        .job
+                        .sections
+                        .iter()
+                        .all(|section| section.format.font_id.size >= 12.0),
+                    "{diagnostic}"
+                );
+            }
+            last_bottom = bounds.bottom();
+        }
+        let expected_top = if choices.is_empty() {
+            trace.entry.top()
+        } else {
+            last_bottom + trace.spacing
+        };
+        assert!(
+            (trace.numeric_origin.y - expected_top).abs() <= 0.1,
+            "numeric cursor gap: expected_top={expected_top}: {diagnostic}"
+        );
+        if original.as_object().unwrap().values().any(Value::is_number) {
+            let first = trace.first_numeric.expect("actual first numeric cell");
+            assert!(
+                (first.top() - expected_top).abs() <= 0.1,
+                "actual numeric top drift: first={first:?}: {diagnostic}"
+            );
+            let (columns, _) = parameter_columns(trace.entry.width());
+            for (key, _) in original
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, value)| *key != "type" && value.is_number())
+                .take(columns)
+            {
+                let label = key.replace('_', " ");
+                let painted = text
+                    .iter()
+                    .find(|t| t.galley.job.text == label)
+                    .unwrap_or_else(|| panic!("missing first-row numeric {label}: {diagnostic}"));
+                let rect = painted.galley.rect.translate(painted.pos.to_vec2());
+                // The unchanged production knob allocates 84 points vertically,
+                // then parameter_knob adds one ordinary spacing before its label.
+                // Inspect actual paint too: an empty min_rect seed is not proof.
+                assert!(
+                    rect.top() >= expected_top - 0.1
+                        && rect.top() <= expected_top + 84.0 + trace.spacing + 0.1,
+                    "first-row label={label} painted={rect:?}: {diagnostic}"
+                );
+            }
+        }
+        trace
+    }
+
+    fn all_presets_choice_layout(width: f32, scale: f32) {
+        for &(preset, _) in instruments::PRESETS {
+            let instrument = instruments::preset(preset).unwrap();
+            let original = serde_json::to_value(&instrument).unwrap();
+            let ctx = egui::Context::default();
+            // First layout and cached layout must both obey the same bounds.
+            for _ in 0..2 {
+                assert_choice_layout(
+                    &ctx,
+                    &original,
+                    instrument.kind_name(),
+                    preset,
+                    width,
+                    scale,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inspector_choices_and_numeric_top_212_1x() {
+        all_presets_choice_layout(212.0, 1.0);
+    }
+    #[test]
+    fn inspector_choices_and_numeric_top_244_1x() {
+        all_presets_choice_layout(244.0, 1.0);
+    }
+    #[test]
+    fn inspector_choices_and_numeric_top_332_1x() {
+        all_presets_choice_layout(332.0, 1.0);
+    }
+    #[test]
+    fn inspector_choices_and_numeric_top_212_2x() {
+        all_presets_choice_layout(212.0, 2.0);
+    }
+    #[test]
+    fn inspector_choices_and_numeric_top_244_2x() {
+        all_presets_choice_layout(244.0, 2.0);
+    }
+    #[test]
+    fn inspector_choices_and_numeric_top_332_2x() {
+        all_presets_choice_layout(332.0, 2.0);
+    }
+
+    #[test]
+    fn inspector_choices_reflow_same_context_without_cursor_debt() {
+        for &(preset, _) in instruments::PRESETS {
+            let instrument = instruments::preset(preset).unwrap();
+            let original = serde_json::to_value(&instrument).unwrap();
+            let ctx = egui::Context::default();
+            let mut stable_ids = None;
+            for scale in [1.0, 2.0, 1.0] {
+                for width in [332.0, 212.0, 244.0, 332.0, 212.0] {
+                    let trace = assert_choice_layout(
+                        &ctx,
+                        &original,
+                        instrument.kind_name(),
+                        preset,
+                        width,
+                        scale,
+                    );
+                    let ids = (trace.choice_ids, trace.first_numeric_id);
+                    if let Some(expected) = &stable_ids {
+                        assert_eq!(&ids, expected, "parameter identity changed: {preset}");
+                    } else {
+                        stable_ids = Some(ids);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inspector_long_selected_text_and_boolean_are_not_clamped_or_hidden() {
+        // Deliberately preserve legal serialized selection text, even if not in
+        // the current options, rather than ellipsizing it to make layout pass.
+        let original = json!({
+            "type": "synth", "cutoff": 700.0, "drift_cents": 5.0,
+            "filter_mode": "lowpass with a long descriptive selected filter response",
+            "osc1": "triangle with a long descriptive selected oscillator waveform",
+            "osc2": "square with a long descriptive selected oscillator waveform",
+            "sync_enabled": true
+        });
+        let ctx = egui::Context::default();
+        for scale in [1.0, 2.0] {
+            for width in [212.0, 244.0, 332.0] {
+                assert_choice_layout(
+                    &ctx,
+                    &original,
+                    "synth",
+                    "long selections and bool",
+                    width,
+                    scale,
+                );
+            }
+        }
+        // Include every legitimate option, not just the selections present in
+        // factory presets, at both scales and each requested content budget.
+        for &(key, options) in ENUMS {
+            for &selected in options {
+                let mut value = json!({"cutoff": 700.0});
+                value[key] = json!(selected);
+                for scale in [1.0, 2.0] {
+                    for width in [212.0, 244.0, 332.0] {
+                        assert_choice_layout(&ctx, &value, "synth", selected, width, scale);
                     }
                 }
             }
