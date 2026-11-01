@@ -269,7 +269,7 @@ pub fn transport_button(ui: &mut Ui, playing: bool) -> Response {
     }
     if resp.has_focus() {
         ui.painter()
-            .rect_stroke(rect.shrink(1.0), 4.0, Stroke::new(2.0, TEXT));
+            .rect_stroke(rect.shrink(1.0), 4.0, Stroke::new(2.0_f32, TEXT));
     }
     resp.widget_info(|| {
         egui::WidgetInfo::labeled(

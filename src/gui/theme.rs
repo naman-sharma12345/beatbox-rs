@@ -176,8 +176,8 @@ pub fn apply(ctx: &egui::Context) {
     v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, t.border_light);
     v.widgets.active.bg_fill = t.accent_dark;
     v.widgets.active.weak_bg_fill = t.accent_dark;
-    v.widgets.active.fg_stroke = Stroke::new(1.0, t.text);
-    v.widgets.active.bg_stroke = Stroke::new(1.5, t.accent);
+    v.widgets.active.fg_stroke = Stroke::new(1.0_f32, t.text);
+    v.widgets.active.bg_stroke = Stroke::new(1.5_f32, t.accent);
     v.widgets.open.bg_fill = t.button_hi;
     v.widgets.open.weak_bg_fill = t.button_hi;
     ctx.set_visuals(v);

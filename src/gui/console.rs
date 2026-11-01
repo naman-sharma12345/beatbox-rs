@@ -41,7 +41,7 @@ pub fn text_toggle(
     );
     if resp.has_focus() {
         ui.painter()
-            .rect_stroke(r.shrink(1.0), 2.0, Stroke::new(2.0, t.text));
+            .rect_stroke(r.shrink(1.0), 2.0, Stroke::new(2.0_f32, t.text));
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
     let col = if on { t.text_dark } else { t.text };
