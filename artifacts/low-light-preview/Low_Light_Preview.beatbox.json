@@ -1,0 +1,1478 @@
+{
+  "name": "Low Light Preview",
+  "bpm": 92,
+  "swing": 0,
+  "key_root": "D",
+  "scale": "minor",
+  "tracks": [
+    {
+      "name": "kick",
+      "instrument": {
+        "type": "drum",
+        "kind": "kick",
+        "tune": 0,
+        "decay": 0.45,
+        "tone": -0.3,
+        "drive": 0.05
+      },
+      "volume_db": -9,
+      "pan": 0,
+      "effects": [],
+      "output": "drums"
+    },
+    {
+      "name": "snare",
+      "instrument": {
+        "type": "drum",
+        "kind": "snare",
+        "tune": 0,
+        "decay": 0.5,
+        "tone": -0.25,
+        "drive": 0.03
+      },
+      "volume_db": -15,
+      "pan": 0,
+      "effects": [],
+      "output": "drums",
+      "sends": [
+        {
+          "bus": "room",
+          "db": -28
+        }
+      ]
+    },
+    {
+      "name": "closed_hat",
+      "instrument": {
+        "type": "drum",
+        "kind": "closed_hat",
+        "tune": 0,
+        "decay": 0.35,
+        "tone": -0.45,
+        "drive": 0
+      },
+      "volume_db": -24,
+      "pan": 0.12,
+      "effects": [],
+      "output": "drums"
+    },
+    {
+      "name": "open_hat",
+      "instrument": {
+        "type": "drum",
+        "kind": "open_hat",
+        "tune": 0,
+        "decay": 0.32,
+        "tone": -0.4,
+        "drive": 0
+      },
+      "volume_db": -29,
+      "pan": -0.12,
+      "effects": [],
+      "output": "drums"
+    },
+    {
+      "name": "rim",
+      "instrument": {
+        "type": "drum",
+        "kind": "rim",
+        "tune": 0,
+        "decay": 0.45,
+        "tone": -0.3,
+        "drive": 0
+      },
+      "volume_db": -27,
+      "pan": -0.18,
+      "effects": [],
+      "output": "drums"
+    },
+    {
+      "name": "bass",
+      "instrument": {
+        "type": "synth",
+        "osc1": "sine",
+        "osc2": "triangle",
+        "osc2_semitones": 0,
+        "osc2_cents": 0,
+        "osc_mix": 0.15,
+        "unison": 1,
+        "unison_spread_cents": 0,
+        "sub_level": 0,
+        "noise_level": 0,
+        "filter_mode": "lowpass",
+        "cutoff": 650,
+        "resonance": 0.05,
+        "filter_env_amount": 0,
+        "filter_env": {
+          "attack": 0.005,
+          "decay": 0.3,
+          "sustain": 0,
+          "release": 0.2
+        },
+        "amp_env": {
+          "attack": 0.008,
+          "decay": 0.12,
+          "sustain": 0.72,
+          "release": 0.07
+        },
+        "lfo_rate": 0,
+        "lfo_to_cutoff": 0,
+        "lfo_to_pitch": 0,
+        "pitch_env_semitones": 0,
+        "pitch_env_time": 0.05,
+        "drive": 0,
+        "gain": 0.45,
+        "glide_ms": 0,
+        "stereo_spread": 0,
+        "drift_cents": 0,
+        "vel_to_cutoff": 0
+      },
+      "volume_db": -14,
+      "pan": 0,
+      "effects": [
+        {
+          "type": "parametric_eq",
+          "bands": [
+            {
+              "kind": "low_cut",
+              "freq": 28,
+              "q": 0.707,
+              "stages": 1
+            }
+          ]
+        },
+        {
+          "type": "sidechain",
+          "source": "kick",
+          "amount": 0.3,
+          "attack_ms": 3,
+          "release_ms": 90
+        }
+      ],
+      "output": "music"
+    },
+    {
+      "name": "chords",
+      "instrument": {
+        "type": "synth",
+        "osc1": "triangle",
+        "osc2": "saw",
+        "osc2_semitones": 0,
+        "osc2_cents": 0,
+        "osc_mix": 0.18,
+        "unison": 1,
+        "unison_spread_cents": 0,
+        "sub_level": 0,
+        "noise_level": 0,
+        "filter_mode": "lowpass",
+        "cutoff": 1200,
+        "resonance": 0.08,
+        "filter_env_amount": 0,
+        "filter_env": {
+          "attack": 0.005,
+          "decay": 0.3,
+          "sustain": 0,
+          "release": 0.2
+        },
+        "amp_env": {
+          "attack": 0.018,
+          "decay": 0.32,
+          "sustain": 0.3,
+          "release": 0.18
+        },
+        "lfo_rate": 0,
+        "lfo_to_cutoff": 0,
+        "lfo_to_pitch": 0,
+        "pitch_env_semitones": 0,
+        "pitch_env_time": 0.05,
+        "drive": 0,
+        "gain": 0.28,
+        "glide_ms": 0,
+        "stereo_spread": 0,
+        "drift_cents": 0,
+        "vel_to_cutoff": 0
+      },
+      "volume_db": -21,
+      "pan": -0.08,
+      "effects": [
+        {
+          "type": "parametric_eq",
+          "bands": [
+            {
+              "kind": "low_cut",
+              "freq": 180,
+              "q": 0.707,
+              "stages": 1
+            }
+          ]
+        }
+      ],
+      "output": "music",
+      "sends": [
+        {
+          "bus": "room",
+          "db": -24
+        }
+      ]
+    },
+    {
+      "name": "motif",
+      "instrument": {
+        "type": "synth",
+        "osc1": "triangle",
+        "osc2": "sine",
+        "osc2_semitones": 0,
+        "osc2_cents": 0,
+        "osc_mix": 0.25,
+        "unison": 1,
+        "unison_spread_cents": 0,
+        "sub_level": 0,
+        "noise_level": 0,
+        "filter_mode": "lowpass",
+        "cutoff": 1900,
+        "resonance": 0.06,
+        "filter_env_amount": 0,
+        "filter_env": {
+          "attack": 0.005,
+          "decay": 0.3,
+          "sustain": 0,
+          "release": 0.2
+        },
+        "amp_env": {
+          "attack": 0.008,
+          "decay": 0.22,
+          "sustain": 0.25,
+          "release": 0.12
+        },
+        "lfo_rate": 0,
+        "lfo_to_cutoff": 0,
+        "lfo_to_pitch": 0,
+        "pitch_env_semitones": 0,
+        "pitch_env_time": 0.05,
+        "drive": 0,
+        "gain": 0.32,
+        "glide_ms": 0,
+        "stereo_spread": 0,
+        "drift_cents": 0,
+        "vel_to_cutoff": 0
+      },
+      "volume_db": -18,
+      "pan": 0.05,
+      "effects": [
+        {
+          "type": "parametric_eq",
+          "bands": [
+            {
+              "kind": "low_cut",
+              "freq": 300,
+              "q": 0.707,
+              "stages": 1
+            }
+          ]
+        }
+      ],
+      "output": "music",
+      "sends": [
+        {
+          "bus": "room",
+          "db": -22
+        }
+      ]
+    }
+  ],
+  "patterns": [
+    {
+      "name": "hook_1",
+      "bars": 1,
+      "clips": {
+        "chords": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 53,
+            "vel": 0.5,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 57,
+            "vel": 0.46,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 60,
+            "vel": 0.48,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "bass": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 38,
+            "vel": 0.72,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 3,
+            "pitch": 38,
+            "vel": 0.58,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "motif": [
+          {
+            "start": 2,
+            "len": 1.5,
+            "pitch": 69,
+            "vel": 0.72,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 5,
+            "len": 1,
+            "pitch": 72,
+            "vel": 0.58,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 8,
+            "len": 3,
+            "pitch": 74,
+            "vel": 0.78,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "kick": [
+          {
+            "start": 0,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.9,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 6,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.66,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 11,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.77,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "snare": [
+          {
+            "start": 4,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.74,
+            "prob": 1,
+            "offset": 0.06
+          },
+          {
+            "start": 12,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.78,
+            "prob": 1,
+            "offset": 0.06
+          }
+        ],
+        "closed_hat": [
+          {
+            "start": 0,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.43,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 3,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.27,
+            "prob": 1,
+            "offset": 0.1
+          },
+          {
+            "start": 6,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.36,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.3,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 14,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.38,
+            "prob": 1,
+            "offset": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "hook_2",
+      "bars": 1,
+      "clips": {
+        "chords": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 53,
+            "vel": 0.5,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 58,
+            "vel": 0.46,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 62,
+            "vel": 0.48,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "bass": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 46,
+            "vel": 0.72,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 3,
+            "pitch": 46,
+            "vel": 0.58,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "motif": [
+          {
+            "start": 2,
+            "len": 1.5,
+            "pitch": 74,
+            "vel": 0.65,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 6,
+            "len": 2,
+            "pitch": 77,
+            "vel": 0.73,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 2,
+            "pitch": 74,
+            "vel": 0.57,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "kick": [
+          {
+            "start": 0,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.9,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 7,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.62,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.74,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "snare": [
+          {
+            "start": 4,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.74,
+            "prob": 1,
+            "offset": 0.06
+          },
+          {
+            "start": 12,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.78,
+            "prob": 1,
+            "offset": 0.06
+          }
+        ],
+        "closed_hat": [
+          {
+            "start": 0,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.42,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 2,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.25,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 6,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.35,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 11,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.28,
+            "prob": 1,
+            "offset": 0.1
+          }
+        ],
+        "open_hat": [
+          {
+            "start": 14,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.32,
+            "prob": 1,
+            "offset": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "hook_3",
+      "bars": 1,
+      "clips": {
+        "chords": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 53,
+            "vel": 0.5,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 57,
+            "vel": 0.46,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 60,
+            "vel": 0.48,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "bass": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 41,
+            "vel": 0.72,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 3,
+            "pitch": 41,
+            "vel": 0.58,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "motif": [
+          {
+            "start": 2,
+            "len": 2,
+            "pitch": 72,
+            "vel": 0.69,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 8,
+            "len": 3,
+            "pitch": 69,
+            "vel": 0.61,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "kick": [
+          {
+            "start": 0,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.9,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 6,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.66,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 11,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.77,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "snare": [
+          {
+            "start": 4,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.74,
+            "prob": 1,
+            "offset": 0.06
+          },
+          {
+            "start": 12,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.78,
+            "prob": 1,
+            "offset": 0.06
+          }
+        ],
+        "closed_hat": [
+          {
+            "start": 0,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.43,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 3,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.27,
+            "prob": 1,
+            "offset": 0.1
+          },
+          {
+            "start": 6,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.36,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.3,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 14,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.38,
+            "prob": 1,
+            "offset": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "hook_4",
+      "bars": 1,
+      "clips": {
+        "chords": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 55,
+            "vel": 0.5,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 60,
+            "vel": 0.46,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 64,
+            "vel": 0.48,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "bass": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 48,
+            "vel": 0.72,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 3,
+            "pitch": 48,
+            "vel": 0.58,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "motif": [
+          {
+            "start": 2,
+            "len": 1.5,
+            "pitch": 67,
+            "vel": 0.64,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 6,
+            "len": 1,
+            "pitch": 76,
+            "vel": 0.66,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 8,
+            "len": 3,
+            "pitch": 72,
+            "vel": 0.57,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "kick": [
+          {
+            "start": 0,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.9,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 7,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.62,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.74,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "snare": [
+          {
+            "start": 4,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.74,
+            "prob": 1,
+            "offset": 0.06
+          },
+          {
+            "start": 12,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.78,
+            "prob": 1,
+            "offset": 0.06
+          }
+        ],
+        "closed_hat": [
+          {
+            "start": 0,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.42,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 2,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.25,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 6,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.35,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 11,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.28,
+            "prob": 1,
+            "offset": 0.1
+          },
+          {
+            "start": 14,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.36,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "rim": [
+          {
+            "start": 13,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.28,
+            "prob": 1,
+            "offset": 0.04
+          }
+        ]
+      }
+    },
+    {
+      "name": "response_1",
+      "bars": 1,
+      "clips": {
+        "chords": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 53,
+            "vel": 0.5,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 57,
+            "vel": 0.46,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 60,
+            "vel": 0.48,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "bass": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 38,
+            "vel": 0.72,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "kick": [
+          {
+            "start": 0,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.9,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.66,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "snare": [
+          {
+            "start": 4,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.74,
+            "prob": 1,
+            "offset": 0.06
+          },
+          {
+            "start": 12,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.78,
+            "prob": 1,
+            "offset": 0.06
+          }
+        ],
+        "closed_hat": [
+          {
+            "start": 2,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.28,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 6,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.34,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 14,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.26,
+            "prob": 1,
+            "offset": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "response_2",
+      "bars": 1,
+      "clips": {
+        "chords": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 53,
+            "vel": 0.5,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 58,
+            "vel": 0.46,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 62,
+            "vel": 0.48,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "bass": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 46,
+            "vel": 0.72,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "motif": [
+          {
+            "start": 2,
+            "len": 1.5,
+            "pitch": 69,
+            "vel": 0.72,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 5,
+            "len": 1,
+            "pitch": 72,
+            "vel": 0.58,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "kick": [
+          {
+            "start": 0,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.9,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.66,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "snare": [
+          {
+            "start": 4,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.74,
+            "prob": 1,
+            "offset": 0.06
+          },
+          {
+            "start": 12,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.78,
+            "prob": 1,
+            "offset": 0.06
+          }
+        ],
+        "closed_hat": [
+          {
+            "start": 2,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.28,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 6,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.34,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 14,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.26,
+            "prob": 1,
+            "offset": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "response_3",
+      "bars": 1,
+      "clips": {
+        "chords": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 53,
+            "vel": 0.5,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 57,
+            "vel": 0.46,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 60,
+            "vel": 0.48,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "bass": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 41,
+            "vel": 0.72,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "kick": [
+          {
+            "start": 0,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.9,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.66,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "snare": [
+          {
+            "start": 4,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.74,
+            "prob": 1,
+            "offset": 0.06
+          },
+          {
+            "start": 12,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.78,
+            "prob": 1,
+            "offset": 0.06
+          }
+        ],
+        "closed_hat": [
+          {
+            "start": 2,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.28,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 6,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.34,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 14,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.26,
+            "prob": 1,
+            "offset": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "response_4",
+      "bars": 1,
+      "clips": {
+        "chords": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 55,
+            "vel": 0.5,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 60,
+            "vel": 0.46,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 64,
+            "vel": 0.48,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "bass": [
+          {
+            "start": 0,
+            "len": 5.5,
+            "pitch": 48,
+            "vel": 0.72,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "motif": [
+          {
+            "start": 2,
+            "len": 2,
+            "pitch": 72,
+            "vel": 0.69,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 8,
+            "len": 3,
+            "pitch": 69,
+            "vel": 0.61,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "kick": [
+          {
+            "start": 0,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.9,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 10,
+            "len": 0.6,
+            "pitch": 60,
+            "vel": 0.66,
+            "prob": 1,
+            "offset": 0
+          }
+        ],
+        "snare": [
+          {
+            "start": 4,
+            "len": 0.5,
+            "pitch": 60,
+            "vel": 0.74,
+            "prob": 1,
+            "offset": 0.06
+          }
+        ],
+        "closed_hat": [
+          {
+            "start": 2,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.28,
+            "prob": 1,
+            "offset": 0
+          },
+          {
+            "start": 6,
+            "len": 0.3,
+            "pitch": 60,
+            "vel": 0.34,
+            "prob": 1,
+            "offset": 0
+          }
+        ]
+      }
+    }
+  ],
+  "arrangement": [
+    {
+      "pattern": "hook_1",
+      "repeats": 1
+    },
+    {
+      "pattern": "hook_2",
+      "repeats": 1
+    },
+    {
+      "pattern": "hook_3",
+      "repeats": 1
+    },
+    {
+      "pattern": "hook_4",
+      "repeats": 1
+    },
+    {
+      "pattern": "response_1",
+      "repeats": 1
+    },
+    {
+      "pattern": "response_2",
+      "repeats": 1
+    },
+    {
+      "pattern": "response_3",
+      "repeats": 1
+    },
+    {
+      "pattern": "response_4",
+      "repeats": 1
+    }
+  ],
+  "master_volume_db": -6,
+  "master_effects": [
+    {
+      "type": "limiter",
+      "ceiling_db": -2.5,
+      "release_ms": 100,
+      "true_peak": true
+    }
+  ],
+  "buses": [
+    {
+      "name": "drums",
+      "volume_db": 0,
+      "effects": []
+    },
+    {
+      "name": "music",
+      "volume_db": 0,
+      "effects": []
+    },
+    {
+      "name": "room",
+      "volume_db": -6,
+      "effects": [
+        {
+          "type": "reverb",
+          "mode": "fdn_plate",
+          "mix": 1,
+          "decay_s": 0.65,
+          "predelay_ms": 12,
+          "damping": 0.75,
+          "low_cut_hz": 350,
+          "width": 0.6
+        }
+      ]
+    }
+  ],
+  "automation": [
+    {
+      "target": "master",
+      "param": "volume",
+      "enabled": true,
+      "points": [
+        {
+          "beat": 0,
+          "value": -6,
+          "curve": "step"
+        },
+        {
+          "beat": 31.25,
+          "value": -6,
+          "curve": "smooth"
+        },
+        {
+          "beat": 32,
+          "value": -18,
+          "curve": "step"
+        }
+      ]
+    }
+  ],
+  "markers": [
+    {
+      "name": "Hook: A B C D",
+      "beat": 0
+    },
+    {
+      "name": "Sparse response",
+      "beat": 16
+    }
+  ]
+}
