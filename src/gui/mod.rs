@@ -16,6 +16,7 @@ pub use export_view::apply_section_range as section_export_range;
 pub use export_view::range_preview as export_range_preview;
 mod fl_automation;
 mod fl_playlist;
+mod p0a_capture;
 mod piano;
 mod player;
 mod playlist;
@@ -171,6 +172,14 @@ fn persist_screenshot(
     write_png()?;
     write_manifest()?;
     Ok(ScreenshotPersisted)
+}
+
+/// Remove only capture-owned products; a failed sidecar grants no close receipt.
+fn discard_capture_products(path: &std::path::Path, sidecar: bool) {
+    let _ = std::fs::remove_file(path);
+    if sidecar {
+        let _ = std::fs::remove_file(path.with_extension("json"));
+    }
 }
 
 /// Capture failures must not request a guarded Close or report successful exit.
@@ -387,6 +396,7 @@ pub struct Studio {
     screenshot: Option<PathBuf>,
     native_capture: Option<audio_check::NativeCapture>,
     arrangement_capture: Option<ArrangementCapture>,
+    p0a_capture: Option<p0a_capture::Capture>,
     frames: u64,
     shot_requested: bool,
     /// Performance mode: the pattern looping live, and a launch waiting for
@@ -614,11 +624,23 @@ pub fn run(
     screenshot: Option<PathBuf>,
     view: Option<String>,
 ) -> anyhow::Result<()> {
+    // Validate before any listener bind or legacy selector interpretation.
+    let p0a_config = p0a_capture::Config::environment(screenshot.is_some(), view.as_deref())?;
+    anyhow::ensure!(
+        p0a_config.is_none() || project.is_some(),
+        "P0A requires an explicit loaded project"
+    );
+    let p0a_capture = p0a_config
+        .map(|c| p0a_capture::Capture::new(c, &engine))
+        .transpose()?;
     let arrangement_capture =
         ArrangementCapture::from_environment(screenshot.is_some(), view.as_deref(), &engine)?;
     let native_capture = audio_check::NativeCapture::from_environment(screenshot.is_some())
         .map_err(|e| anyhow::anyhow!(e))?;
-    let native_scale = native_capture.as_ref().map_or(1.0, |c| c.scale);
+    let native_scale = p0a_capture.as_ref().map_or_else(
+        || native_capture.as_ref().map_or(1.0, |c| c.scale),
+        |c| c.config.scale as f32,
+    );
     let view = if native_capture.is_some() {
         Some("mixer".to_string())
     } else {
@@ -635,13 +657,16 @@ pub fn run(
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Beatbox Studio")
-            .with_inner_size(
-                if screenshot.is_some() && std::env::var_os("BEATBOX_NARROW_SHOT").is_some() {
-                    [1100.0 * native_scale, 700.0 * native_scale]
-                } else {
-                    [1480.0 * native_scale, 920.0 * native_scale]
-                },
-            )
+            .with_inner_size(if let Some(c) = &p0a_capture {
+                [
+                    c.config.size[0] as f32 * native_scale,
+                    c.config.size[1] as f32 * native_scale,
+                ]
+            } else if screenshot.is_some() && std::env::var_os("BEATBOX_NARROW_SHOT").is_some() {
+                [1100.0 * native_scale, 700.0 * native_scale]
+            } else {
+                [1480.0 * native_scale, 920.0 * native_scale]
+            })
             .with_min_inner_size([1100.0, 700.0]),
         ..Default::default()
     };
@@ -653,6 +678,9 @@ pub fn run(
             apply_theme(&cc.egui_ctx);
             if let Some(capture) = &native_capture {
                 capture.activate(&cc.egui_ctx);
+            }
+            if p0a_capture.is_some() {
+                cc.egui_ctx.set_pixels_per_point(native_scale);
             }
             let saved_rev = engine.lock().unwrap().revision;
             let seen_project_load = engine.lock().unwrap().project_load_generation;
@@ -700,6 +728,7 @@ pub fn run(
                 screenshot,
                 native_capture,
                 arrangement_capture,
+                p0a_capture,
                 frames: 0,
                 shot_requested: false,
                 perf: None,
@@ -2768,7 +2797,9 @@ impl eframe::App for Studio {
                         im.save(&path).map_err(|e| e.to_string())
                     },
                     || {
-                        if let Some(capture) = &self.native_capture {
+                        if let Some(capture) = &self.p0a_capture {
+                            capture.manifest(self, ctx, &path, [w, h])
+                        } else if let Some(capture) = &self.native_capture {
                             capture.manifest(&path, &self.audio_check, ctx, [w, h])
                         } else if let Some(capture) = &self.arrangement_capture {
                             capture.manifest(self, ctx, &path, [w, h])
@@ -2780,10 +2811,10 @@ impl eframe::App for Studio {
                 let receipt = match saved {
                     Ok(receipt) => receipt,
                     Err(error) => {
-                        let _ = std::fs::remove_file(&path);
-                        if self.arrangement_capture.is_some() {
-                            let _ = std::fs::remove_file(path.with_extension("json"));
-                        }
+                        discard_capture_products(
+                            &path,
+                            self.arrangement_capture.is_some() || self.p0a_capture.is_some(),
+                        );
                         fail_screenshot(&error);
                     }
                 };
@@ -3634,5 +3665,31 @@ mod checkpoint_comparison_tests {
             &json!({"facts":{"A":{"seconds":2.},"B":{"seconds":2.}},"loudness_matched":false})
         )
         .contains("not level matched"));
+    }
+}
+
+#[cfg(test)]
+mod p0a_persistence_tests {
+    use super::*;
+    #[test]
+    fn failed_sidecar_removes_both_products_without_close_receipt() {
+        let dir =
+            std::env::temp_dir().join(format!("beatbox-p0a-persistence-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("owned.png");
+        let saved = persist_screenshot(
+            || std::fs::write(&path, b"png").map_err(|e| e.to_string()),
+            || {
+                std::fs::write(path.with_extension("json"), b"partial").unwrap();
+                Err("sidecar failed".into())
+            },
+        );
+        assert!(saved.is_err());
+        discard_capture_products(&path, true);
+        assert!(!path.exists() && !path.with_extension("json").exists());
+        let mut close = QuitCloseState::default();
+        assert!(!close.approve_completed_capture(true, saved.ok()));
+        assert!(close.incoming_close(true, true));
+        std::fs::remove_dir(dir).unwrap();
     }
 }

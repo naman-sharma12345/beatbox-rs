@@ -209,6 +209,70 @@ impl Workspace {
             reset: false,
         }
     }
+    fn rebuild_capture(&mut self, view: usize, size: Vec2) {
+        self.dock = Self::studio_dock(view, size.x, size.y);
+        self.mode = match view {
+            0 => 1,
+            3 => 2,
+            1 => 3,
+            _ => 0,
+        };
+    }
+    /// Presentation only, after capture's first real viewport rebuild.
+    fn seed_capture_presentation(&mut self, inspector: bool) {
+        if inspector {
+            self.open(Pane::Inspector);
+        }
+    }
+    /// Rectangles are populated by DockArea, never reconstructed from fractions.
+    pub(super) fn capture_presentation(&self, inspector: bool) -> anyhow::Result<Value> {
+        let mut panes = Vec::new();
+        let mut central = Rect::NOTHING;
+        let mut channel = None;
+        let mut count = 0;
+        for ((surface, node), pane) in self.dock.iter_all_tabs() {
+            let rect = self.dock[surface][node]
+                .rect()
+                .ok_or_else(|| anyhow::anyhow!("missing pane rectangle"))?;
+            anyhow::ensure!(
+                rect.is_finite() && rect.is_positive(),
+                "invalid observed pane rectangle"
+            );
+            if pane.is_central_editor() && surface == SurfaceIndex::main() {
+                central = central.union(rect);
+            }
+            if *pane == Pane::Inspector {
+                count += 1;
+                channel = Some((surface, rect));
+            }
+            panes.push(json!({"pane":format!("{pane:?}"),"label":pane.title(),
+                "main_surface":surface==SurfaceIndex::main(),
+                "rect":[rect.min.x,rect.min.y,rect.max.x,rect.max.y]}));
+        }
+        anyhow::ensure!(
+            self.pinned_transport && self.mode != 0 && central.is_finite() && central.is_positive(),
+            "invalid capture workspace"
+        );
+        let right = channel.is_some_and(|(surface, r)| {
+            surface == SurfaceIndex::main()
+                && r.min.x >= central.max.x
+                && r.min.y <= central.min.y + 1.1
+                && r.max.y >= central.max.y - 1.1
+        });
+        anyhow::ensure!(
+            if inspector {
+                count == 1 && right
+            } else {
+                count == 0
+            },
+            "Inspector must be unique and right of entire central subtree"
+        );
+        Ok(
+            json!({"mode":self.mode,"pinned_transport":self.pinned_transport,"panes":panes,
+            "central_rect":[central.min.x,central.min.y,central.max.x,central.max.y],
+            "inspector_count":count,"inspector_right_of_entire_central":right}),
+        )
+    }
     pub fn load(ctx: &egui::Context, view: usize) -> Self {
         let base = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
@@ -694,17 +758,13 @@ impl Studio {
         if std::mem::take(&mut ws.fresh) {
             if ws.path.as_os_str().is_empty() {
                 // Capture's requested editor survives the first real viewport.
-                ws.dock = Workspace::studio_dock(
-                    self.view,
-                    ctx.screen_rect().width(),
-                    ctx.screen_rect().height(),
-                );
-                ws.mode = match self.view {
-                    0 => 1,
-                    3 => 2,
-                    1 => 3,
-                    _ => 0,
-                };
+                ws.rebuild_capture(self.view, ctx.screen_rect().size());
+                if let Some(capture) = &mut self.p0a_capture {
+                    if !capture.seeded {
+                        ws.seed_capture_presentation(capture.config.inspector);
+                        capture.seeded = true;
+                    }
+                }
             } else {
                 ws.select_mode(1, ctx.screen_rect().size());
             }
@@ -966,6 +1026,34 @@ mod tests {
             w.dock.iter_all_tabs().filter(|(_, p)| **p == pane).count(),
             1
         );
+    }
+    #[test]
+    fn p0a_seed_preserves_real_workspace_mode_and_is_idempotent() {
+        for size in [Vec2::new(1100.0, 700.0), Vec2::new(1440.0, 900.0)] {
+            for (mode, primary) in [(1, Pane::Sequencer), (2, Pane::Playlist), (3, Pane::Mixer)] {
+                for inspector in [false, true] {
+                    let ctx = egui::Context::default();
+                    let view = primary.view().unwrap();
+                    let mut w = Workspace::capture(&ctx, view);
+                    assert!(std::mem::take(&mut w.fresh));
+                    assert!(w.path.as_os_str().is_empty());
+                    w.rebuild_capture(view, size);
+                    w.seed_capture_presentation(inspector);
+                    assert_eq!(w.mode, mode);
+                    unique(&w, primary);
+                    assert_eq!(
+                        w.dock
+                            .iter_all_tabs()
+                            .filter(|(_, p)| **p == Pane::Inspector)
+                            .count(),
+                        usize::from(inspector)
+                    );
+                    let before = serde_json::to_value(&w.dock).unwrap();
+                    w.seed_capture_presentation(inspector);
+                    assert_eq!(before, serde_json::to_value(&w.dock).unwrap());
+                }
+            }
+        }
     }
     #[test]
     fn r1_inspector_is_right_of_entire_central_region_at_both_desktop_sizes() {
