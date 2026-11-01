@@ -315,7 +315,25 @@ def run():
         item=next(g for g in groups if g[0] is p)
         require(identity(p.pid)==item[1] and os.waitid(os.P_PID,p.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is None, 'owner identity/exit')
         require(os.path.samefile(f'/proc/{p.pid}/exe',item[2][0]), 'executable identity')
-        require(bounded(f'/proc/{p.pid}/cmdline',8192).split(b'\0')[:-1]==[os.fsencode(a) for a in item[2]], 'argv drift')
+        raw=bounded(f'/proc/{p.pid}/cmdline',8192)
+        parsed=raw.split(b'\0')[:-1]
+        expected=[os.fsencode(a) for a in item[2]]
+        if parsed!=expected:
+            try:
+                stat=bounded(f'/proc/{p.pid}/stat',4096)
+                atomic('argv-mismatch.json',{
+                    'pid':p.pid, 'monotonic':time.monotonic(), 'stage':STAGE,
+                    'raw_hex':raw.hex(), 'raw_length':len(raw), 'raw_sha256':hashlib.sha256(raw).hexdigest(),
+                    'parsed_argv_hex':[a.hex() for a in parsed], 'expected_argv_hex':[a.hex() for a in expected],
+                    'expected_argv':item[2], 'retained_identity':item[1],
+                    'stat_hex':stat.hex(), 'stat_sha256':hashlib.sha256(stat).hexdigest(),
+                    'identity_at_diagnostic':identity(p.pid),
+                    'exe_samefile_at_diagnostic':os.path.samefile(f'/proc/{p.pid}/exe',item[2][0]),
+                    'precheck_identity_exit_exe_passed':True,
+                    'scope':'sequential mismatch observations, not an atomic process snapshot'})
+            except Exception:
+                pass  # Evidence failure must not replace or bypass the original guard.
+        require(parsed==expected, 'argv drift')
     def expire():
         if not finished.wait(max(0,DEADLINE-time.monotonic())):
             with guard:
