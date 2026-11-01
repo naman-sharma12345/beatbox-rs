@@ -698,7 +698,46 @@ fn screenshot_shutdown_requires_completed_writes_and_capture_specific_approval()
     assert!(!capture.contains("QuitChoice::Discard"));
     assert!(!capture.contains("saved_rev ="));
     assert!(!capture.contains("project_path ="));
-    assert_eq!(capture.matches("fail_screenshot(").count(), 6);
+    assert_eq!(capture.matches("fail_screenshot(").count(), 10);
+    // Both feel guards must fail closed before requesting or persisting a shot.
+    // Ignore formatting, not predicates, branch ownership, or execution order.
+    let compact: String = capture.chars().filter(|c| !c.is_whitespace()).collect();
+    let request_guard = compact
+        .find(concat!(
+            "ifletSome(capture)=&self.feel_capture{",
+            "capture.check(self,ctx).unwrap_or_else(|e|fail_screenshot(&e));",
+            "ifcapture.state.is_some()&&ready&&self.rendered.as_ref().is_none_or(|r|{",
+            "r.rev!=capture.revision||r.generation!=capture.generation}){",
+            "fail_screenshot(\"Feelrenderidentitymismatch\");}}"
+        ))
+        .unwrap();
+    let readiness = compact
+        .find("letfeel_ready=self.feel_capture.as_ref().is_none_or(|c|c.state.is_some());")
+        .unwrap();
+    let request = compact
+        .find(concat!(
+            "ifready&&scenario_ready&&feel_ready&&self.frames>30&&!self.shot_requested{",
+            "ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);",
+            "self.shot_requested=true;}"
+        ))
+        .unwrap();
+    let event = compact.find("ifletSome(img)=shot{").unwrap();
+    let event_guard = compact
+        .find(concat!(
+            "ifletSome(capture)=&self.feel_capture{",
+            "capture.check(self,ctx).unwrap_or_else(|e|fail_screenshot(&e));",
+            "ifcapture.state.is_none()||!ready||!self.shot_requested",
+            "||self.rendered.as_ref().is_none_or(|r|{",
+            "r.rev!=capture.revision||r.generation!=capture.generation}){",
+            "fail_screenshot(\"Feelscreenshotrequest/readinessdrift\");}}"
+        ))
+        .unwrap();
+    let persist = compact.find("letsaved=persist_screenshot(").unwrap();
+    assert!(request_guard < readiness);
+    assert!(readiness < request);
+    assert!(request < event);
+    assert!(event < event_guard);
+    assert!(event_guard < persist);
     assert!(capture.contains(
         ".check(self, ctx)\n                    .unwrap_or_else(|e| fail_screenshot(&e))"
     ));
