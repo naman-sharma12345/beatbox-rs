@@ -869,6 +869,9 @@ fn param_editor(
         return false;
     };
     let keys: Vec<String> = obj.keys().cloned().collect();
+    // Freeze the card budget before content-expandable enum controls render.
+    // A growing child must not move numeric cells beyond the entry rectangle.
+    let numeric_bounds = ui.available_rect_before_wrap();
     // enums & bools first, then knobs, then envelopes
     ui.horizontal_wrapped(|ui| {
         for k in &keys {
@@ -902,8 +905,8 @@ fn param_editor(
     // Stateless rows use the card's current width, not egui Grid's cached
     // previous-column widths. Each child is keyed by parameter, never row index,
     // so reflow does not change a knob's identity or its release-only commit.
-    let (columns, cell_width) = parameter_columns(ui.available_width());
-    let origin = ui.cursor().min;
+    let (columns, cell_width) = parameter_columns(numeric_bounds.width());
+    let origin = Pos2::new(numeric_bounds.left(), ui.cursor().top());
     let mut top = origin.y;
     let mut bottom = top;
     let mut column = 0;
@@ -950,7 +953,7 @@ fn param_editor(
     if bottom > origin.y {
         ui.advance_cursor_after_rect(Rect::from_min_max(
             origin,
-            Pos2::new(origin.x + ui.available_width(), bottom),
+            Pos2::new(numeric_bounds.right(), bottom),
         ));
     }
     for k in &keys {
@@ -3797,8 +3800,16 @@ mod refinement_parameter_tests {
                             .find(|t| t.galley.job.text == *label)
                             .unwrap_or_else(|| panic!("missing {preset} parameter {label}"));
                         let rect = painted.galley.rect.translate(painted.pos.to_vec2());
-                        assert!(rect.left() >= body.left() - 0.1, "{preset} {label}");
-                        assert!(rect.right() <= body.right() + 0.1, "{preset} {label}");
+                        assert!(
+                            rect.left() >= body.left() - 0.1,
+                            "{preset} {label}: scale={scale} width={width} body={body:?} painted={rect:?} galley={:?} pos={:?}",
+                            painted.galley.rect, painted.pos
+                        );
+                        assert!(
+                            rect.right() <= body.right() + 0.1,
+                            "{preset} {label}: scale={scale} width={width} body={body:?} painted={rect:?} galley={:?} pos={:?}",
+                            painted.galley.rect, painted.pos
+                        );
                         assert!(painted
                             .galley
                             .job
