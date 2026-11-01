@@ -2082,16 +2082,9 @@ impl Studio {
             for (tool, args) in actions {
                 self.call(tool, args);
             }
-            if p.tracks.is_empty() {
-                ui.add_space(40.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new("Add a track from Panels > Library, or browse Sounds.")
-                            .size(16.0)
-                            .color(DIM),
-                    );
-                });
-            }
+            // Empty projects already have visible Add/Browse onboarding above.
+            // Do not append a duplicate instruction below this finite rack:
+            // even a wrapped label can be clipped at its lower viewport edge.
         });
     }
 

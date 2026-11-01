@@ -256,6 +256,33 @@ fn mixer_regions(row: Rect) -> (Rect, Rect) {
         Rect::from_min_max(Pos2::new(master_left, row.top()), row.max),
     )
 }
+// Compact onboarding belongs to the empty CHANNEL region, not above the
+// whole mixer. MASTER keeps exactly the same independent reservation/clip.
+fn empty_mix_onboarding(ui: &mut egui::Ui) -> egui::Response {
+    ui.label(RichText::new("Mix your tracks").size(17.0).strong());
+    ui.add(
+        egui::Label::new(
+            RichText::new(
+                "Add a sound to create a channel. Balance levels here; MASTER controls the output.",
+            )
+            .color(DIM),
+        )
+        .wrap(),
+    );
+    // Keep the full standard active/hovered border inside the channel clip.
+    // The frameless child inherits that clip; only its content moves inward.
+    let add_rect = ui
+        .available_rect_before_wrap()
+        .shrink2(Vec2::new(1.75, 0.0));
+    let add = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(add_rect), |ui| {
+            ui.button("Add synth")
+        })
+        .inner;
+    ui.add(egui::Label::new(RichText::new("More sounds: Panels > Library.").color(DIM)).wrap());
+    add
+}
+
 // Caption text is the serialized effect type, in processing order. No elision,
 // label substitution or tooltip-only disclosure: even a long token can wrap.
 fn master_caption_text(p: &Project) -> String {
@@ -1048,23 +1075,30 @@ impl Studio {
         );
         channel_ui.set_clip_rect(channels.intersect(ui.clip_rect()));
         channel_ui.style_mut().spacing.scroll.floating = false;
-        let strip_w = ((channels.width() - strips.len().saturating_sub(1) as f32)
-            / strips.len().max(1) as f32)
-            .clamp(STRIP_W, STRIP_W * 1.5);
-        egui::ScrollArea::horizontal()
-            .max_width(channels.width())
-            .max_height(channels.height())
-            .id_salt("mixer")
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-            .auto_shrink([false, false])
-            .show(&mut channel_ui, |ui| {
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 1.0;
-                    for s in &strips {
-                        self.strip(ui, p, h, s, &bus_names, pos, strip_w);
-                    }
+        if strips.is_empty() {
+            // No channel content means no horizontal scroll area or scrollbar.
+            if empty_mix_onboarding(&mut channel_ui).clicked() {
+                self.call("add_track", json!({"name":"synth","preset":"supersaw"}));
+            }
+        } else {
+            let strip_w = ((channels.width() - strips.len().saturating_sub(1) as f32)
+                / strips.len().max(1) as f32)
+                .clamp(STRIP_W, STRIP_W * 1.5);
+            egui::ScrollArea::horizontal()
+                .max_width(channels.width())
+                .max_height(channels.height())
+                .id_salt("mixer")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                .auto_shrink([false, false])
+                .show(&mut channel_ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 1.0;
+                        for s in &strips {
+                            self.strip(ui, p, h, s, &bus_names, pos, strip_w);
+                        }
+                    });
                 });
-            });
+        }
         let mut master_ui = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("mixer_master")
@@ -2683,5 +2717,121 @@ mod vocal_room_tests {
         assert_eq!(e.undo_depth(), undo);
         assert!(e.transport.pending.is_empty());
         assert!(e.transport.pending_audition.is_none());
+    }
+}
+
+#[cfg(test)]
+mod empty_mix_containment_tests {
+    use super::*;
+
+    fn paint_leaves<'a>(
+        shape: &'a egui::Shape,
+        clip: Rect,
+        out: &mut Vec<(Rect, &'a egui::Shape)>,
+    ) {
+        if let egui::Shape::Vec(children) = shape {
+            for child in children {
+                paint_leaves(child, clip, out);
+            }
+        } else {
+            out.push((clip, shape));
+        }
+    }
+
+    #[test]
+    fn production_empty_mix_onboarding_fits_channel_region_without_master_paint() {
+        for scale in [1.0, 2.0] {
+            for width in [420.0, 560.0, 820.0, 1180.0] {
+                let ctx = egui::Context::default();
+                apply_theme(&ctx);
+                ctx.set_pixels_per_point(scale);
+                let mut channel_clip = Rect::NOTHING;
+                let mut master_rect = Rect::NOTHING;
+                let mut add = None;
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            Pos2::ZERO,
+                            Vec2::new(1440.0, 900.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            let row =
+                                Rect::from_min_size(Pos2::new(20.0, 80.0), Vec2::new(width, 320.0));
+                            let (channels, master) = mixer_regions(row);
+                            channel_clip = channels.intersect(ui.clip_rect());
+                            master_rect = master;
+                            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(channels));
+                            child.set_clip_rect(channel_clip);
+                            add = Some(empty_mix_onboarding(&mut child));
+                        });
+                    },
+                );
+                let add = add.expect("production add action");
+                assert!(!add.clicked());
+                assert!(channel_clip.contains_rect(add.rect));
+                assert!(add.rect.right() < master_rect.left());
+                let mut leaves = Vec::new();
+                for clipped in &output.shapes {
+                    paint_leaves(&clipped.shape, clipped.clip_rect, &mut leaves);
+                }
+                for (clip, shape) in &leaves {
+                    if let egui::Shape::Text(text) = shape {
+                        assert_eq!(*clip, channel_clip, "onboarding text has unexpected clip");
+                        assert!(!text.galley.elided);
+                        let ink = text.visual_bounding_rect();
+                        assert_eq!(ink, text.galley.mesh_bounds.translate(text.pos.to_vec2()));
+                        assert!(ink.is_finite() && ink.is_positive());
+                        assert!(channel_clip.contains_rect(ink));
+                        assert!(ink.right() < master_rect.left());
+                    }
+                }
+                let frames: Vec<_> = leaves
+                    .iter()
+                    .filter(|(_, shape)| {
+                        matches!(shape, egui::Shape::Rect(paint)
+                        if paint.rect.center() == add.rect.center()
+                            && paint.rect.contains_rect(add.rect))
+                    })
+                    .collect();
+                assert_eq!(frames.len(), 1, "must observe Add synth painted frame");
+                let (clip, frame) = frames[0];
+                assert_eq!(*clip, channel_clip, "Add synth frame has unexpected clip");
+                // Button's emitted rect already includes visuals.expansion;
+                // visual_bounding_rect additionally includes stroke/blur extent.
+                let frame_bounds = frame.visual_bounding_rect();
+                assert!(frame_bounds.is_finite() && frame_bounds.is_positive());
+                assert!(channel_clip.contains_rect(frame_bounds));
+                assert!(frame_bounds.right() < master_rect.left());
+                let mut labels = Vec::new();
+                for shape in &output.shapes {
+                    if shape.clip_rect != channel_clip {
+                        continue;
+                    }
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        assert!(!text.galley.elided);
+                        let painted = text.galley.rect.translate(text.pos.to_vec2());
+                        assert!(channel_clip.contains_rect(painted));
+                        assert!(painted.right() < master_rect.left());
+                        labels.push(text.galley.job.text.as_str());
+                    }
+                }
+                for label in [
+                    "Mix your tracks",
+                    "Add a sound to create a channel. Balance levels here; MASTER controls the output.",
+                    "Add synth",
+                    "More sounds: Panels > Library.",
+                ] {
+                    assert!(
+                        labels.contains(&label),
+                        "missing complete painted label {label}"
+                    );
+                }
+                assert!(!labels.contains(&"Start a pattern"));
+                assert!((ctx.pixels_per_point() - scale).abs() < 0.01);
+            }
+        }
     }
 }

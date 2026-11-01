@@ -434,6 +434,9 @@ fn note_arrow_shortcut(events: &[egui::Event], grid: f32, bar: f32) -> (i32, f32
 }
 
 const KEY_W: f32 = 52.0;
+// Historical compact-lane arithmetic is retained by its original regression.
+// Live layout below uses the active egui style, never this old row budget.
+#[cfg(test)]
 const HEADER_H: f32 = 22.0;
 const PIANO_RULER_H: f32 = 16.0;
 
@@ -444,8 +447,145 @@ fn horizontal_nudge(left: bool, right: bool, shift: bool, grid: f32, bar_steps: 
     (f32::from(u8::from(right)) - f32::from(u8::from(left))) * if shift { bar_steps } else { grid }
 }
 const VEL_H: f32 = 48.0;
+#[cfg(test)]
 fn velocity_lane_height(panel_height: f32) -> f32 {
-    (panel_height - HEADER_H * 2.0 - PIANO_RULER_H - 48.0).clamp(16.0, VEL_H)
+    velocity_lane_height_below_ruler(panel_height - HEADER_H * 2.0 - PIANO_RULER_H)
+}
+
+fn velocity_lane_height_below_ruler(available: f32) -> f32 {
+    (available - 48.0).clamp(16.0, VEL_H)
+}
+
+// Menu buttons and ComboBox use Button text, the small Quantize button uses
+// Body text. Include their real font row height and padding, plus a small
+// paint gutter on BOTH sides. Do not shrink fonts to fit a fixed row.
+fn piano_command_row_height(ui: &egui::Ui) -> f32 {
+    let text_height = ui
+        .text_style_height(&egui::TextStyle::Button)
+        .max(ui.text_style_height(&egui::TextStyle::Body))
+        .max(ui.fonts(|f| f.row_height(&egui::FontSelection::Default.resolve(ui.style()))))
+        .max(ui.spacing().icon_width)
+        .max(ui.fonts(|f| f.row_height(&FontId::proportional(11.0))));
+    (text_height + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y) + 4.0
+}
+
+fn piano_command_row(ui: &mut egui::Ui, rect: Rect) -> egui::Ui {
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(vec2(0.0, 2.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    // A row may clip horizontally, but may not wrap into its neighbour.
+    child.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+    child.set_clip_rect(rect.intersect(ui.clip_rect()));
+    child
+}
+
+// One style measurement and one feasibility predicate serve selection AND layout.
+// The useful-space floors are not pane minima and do not change dock sizing.
+#[derive(Clone, Copy)]
+struct PianoMetrics {
+    row_h: f32,
+    ruler_h: f32,
+}
+
+impl PianoMetrics {
+    fn new(ui: &egui::Ui) -> Self {
+        Self {
+            row_h: piano_command_row_height(ui),
+            ruler_h: PIANO_RULER_H.max(ui.fonts(|f| f.row_height(&FontId::monospace(10.0))) + 2.0),
+        }
+    }
+}
+
+struct PianoLayout {
+    header: Rect,
+    commands: Rect,
+    helpers: Rect,
+    ruler: Rect,
+    roll: Rect,
+    keys: Rect,
+    velocity: Rect,
+}
+
+impl PianoLayout {
+    // A genuinely insufficient clip keeps the feasible allocated canvas for
+    // the existing dock scrolling. Invalid/insufficient allocations produce no
+    // editor geometry, rather than inverted rectangles or smaller controls.
+    fn for_panel(ui: &egui::Ui, allocated: Rect, clip: Rect) -> Option<(Rect, Self)> {
+        if !allocated.is_finite() || !allocated.is_positive() {
+            return None;
+        }
+        let metrics = PianoMetrics::new(ui);
+        if clip.is_finite() && clip.is_positive() {
+            let visible = allocated.intersect(clip);
+            if let Some(layout) = Self::try_with_metrics(metrics, visible) {
+                return Some((visible, layout));
+            }
+        }
+        Self::try_with_metrics(metrics, allocated).map(|layout| (allocated, layout))
+    }
+
+    // Judge the actual rectangles built by the live allocator. Selection has
+    // no parallel threshold or hard-coded ruler measurement to drift from it.
+    fn try_with_metrics(metrics: PianoMetrics, full: Rect) -> Option<Self> {
+        if !full.is_finite() || full.width() <= 120.0 {
+            return None;
+        }
+        let layout = Self::with_metrics(metrics, full);
+        let usable = layout.roll.height() >= 38.0
+            && layout.velocity.height() >= 14.0
+            && [
+                layout.header,
+                layout.commands,
+                layout.helpers,
+                layout.ruler,
+                layout.roll,
+                layout.keys,
+                layout.velocity,
+            ]
+            .into_iter()
+            .all(|rect| rect.is_finite() && rect.is_positive() && full.contains_rect(rect));
+        usable.then_some(layout)
+    }
+
+    fn with_metrics(metrics: PianoMetrics, full: Rect) -> Self {
+        let row_h = metrics.row_h;
+        let header = Rect::from_min_size(full.min, vec2(full.width(), row_h * 2.0));
+        let commands = Rect::from_min_max(
+            pos2(header.left() + 100.0, header.top()),
+            pos2(header.right() - 4.0, header.top() + row_h),
+        );
+        let helpers = Rect::from_min_max(
+            pos2(header.left() + 6.0, commands.bottom()),
+            pos2(header.right() - 4.0, header.bottom()),
+        );
+        let ruler_h = metrics.ruler_h;
+        let velocity_h =
+            velocity_lane_height_below_ruler(full.bottom() - header.bottom() - ruler_h);
+        let roll = Rect::from_min_max(
+            pos2(full.left() + KEY_W, header.bottom() + ruler_h + 2.0),
+            pos2(full.right() - 4.0, full.bottom() - velocity_h - 4.0),
+        );
+        Self {
+            header,
+            commands,
+            helpers,
+            roll,
+            keys: Rect::from_min_max(
+                pos2(full.left(), roll.top()),
+                pos2(roll.left(), roll.bottom()),
+            ),
+            ruler: Rect::from_min_max(
+                pos2(roll.left(), header.bottom() + 2.0),
+                pos2(roll.right(), roll.top()),
+            ),
+            velocity: Rect::from_min_max(
+                pos2(roll.left(), roll.bottom() + 4.0),
+                pos2(roll.right(), full.bottom() - 2.0),
+            ),
+        }
+    }
 }
 
 /// Snap choices: label and grid in steps (None = off).
@@ -799,35 +939,24 @@ impl Studio {
             (lo, hi)
         };
         // never draw past the visible panel (the velocity lane sat under its edge)
-        let vis = full.intersect(ui.clip_rect());
-        let full = if vis.width() > 120.0 && vis.height() > HEADER_H + VEL_H + 40.0 {
-            vis
-        } else {
-            full
+        let Some((full, layout)) = PianoLayout::for_panel(ui, full, ui.clip_rect()) else {
+            // No finite canvas can hold the unchanged controls and useful lanes.
+            return;
         };
         let painter = ui.painter_at(full);
         painter.rect_filled(full, 0.0, tk.panel_bg);
-        // ---- header: title, hint, snap selector, ops ----
-        // title row plus three rows of helper buttons
-        let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER_H * 2.0));
+        // Both command rows own their full style-dependent height. All editor
+        // geometry starts after this header, not after a parallel fixed budget.
+        let header = layout.header;
         painter.rect_filled(header, 0.0, tk.panel_bg2);
         painter.text(
-            pos2(header.min.x + 8.0, header.min.y + HEADER_H / 2.0),
+            pos2(header.min.x + 8.0, layout.commands.center().y),
             Align2::LEFT_CENTER,
             "PIANO ROLL",
             FontId::proportional(10.5),
             tk.header_text,
         );
-        let bar = Rect::from_min_max(
-            pos2(header.min.x + 100.0, header.min.y + 1.0),
-            pos2(header.max.x - 4.0, header.min.y + HEADER_H - 1.0),
-        );
-        let mut tb = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(bar)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        );
-        tb.set_clip_rect(bar);
+        let mut tb = piano_command_row(ui, layout.commands);
         let mut op: Option<(&str, Value)> = None;
         let mut delete_selection = false;
         let g = snap_steps(self.piano.snap);
@@ -1492,9 +1621,8 @@ impl Studio {
                     ui.label(summary);
                 }
             });
-        // ---- helper rows under the title row: gen helpers, then edit helpers
-        // split across two rows. Fixed rows, each clipped to its own strip, so
-        // every button stays inside the panel at any window size ----
+        // The second full-height row groups helpers without overlapping the
+        // command row or ruler. Popups retain their own normal menu layout.
         let gen_items: [(&str, &str, Value, &str); 7] = [
             (
                 "Euclidean 5/16",
@@ -1605,16 +1733,8 @@ impl Studio {
                 "velocity rising from35% to100%; only velocities change",
             ),
         ];
-        let helpers = Rect::from_min_max(
-            pos2(header.left() + 6.0, header.top() + HEADER_H),
-            pos2(header.right() - 4.0, header.bottom()),
-        );
         let mut try_rhythm = false;
-        let mut tr = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(helpers)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        );
+        let mut tr = piano_command_row(ui, layout.helpers);
         for (label, items) in [
             ("Compose", &gen_items[..]),
             ("Timing & expression", &edit_a[..]),
@@ -1720,25 +1840,15 @@ impl Studio {
             self.piano.selected.clear();
         }
         // ---- geometry ----
-        let velocity_height = velocity_lane_height(full.height());
-        let roll = Rect::from_min_max(
-            pos2(full.min.x + KEY_W, header.max.y + PIANO_RULER_H + 2.0),
-            pos2(full.max.x - 4.0, full.max.y - velocity_height - 4.0),
-        );
-        let keys = Rect::from_min_max(pos2(full.min.x, roll.min.y), pos2(roll.min.x, roll.max.y));
-        let vel = Rect::from_min_max(
-            pos2(roll.min.x, roll.max.y + 4.0),
-            pos2(roll.max.x, full.max.y - 2.0),
-        );
+        let roll = layout.roll;
+        let keys = layout.keys;
+        let vel = layout.velocity;
         let rows = f32::from(hi - lo + 1);
         let row_h = roll.height() / rows;
         let cell = roll.width() / steps.max(1.0);
         let x_of = |s: f32| roll.min.x + s * cell;
         let y_of = |pitch: i32| roll.min.y + (i32::from(hi) - pitch) as f32 * row_h;
-        let ruler = Rect::from_min_max(
-            pos2(roll.left(), header.bottom() + 2.0),
-            pos2(roll.right(), roll.top()),
-        );
+        let ruler = layout.ruler;
         painter.rect_filled(ruler, 0.0, tk.panel_bg2);
         let rp = painter.with_clip_rect(ruler);
         let bar_steps = pat.steps_per_bar().max(1) as f32;
@@ -4058,6 +4168,322 @@ mod geometry_reindex_history_tests {
             engine.call("undo", &json!({})).unwrap();
             assert_eq!(serde_json::to_value(&engine.project).unwrap(), before);
             std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod toolbar_containment_tests {
+    use super::*;
+
+    fn paint_leaves<'a>(
+        shape: &'a egui::Shape,
+        clip: Rect,
+        out: &mut Vec<(Rect, &'a egui::Shape)>,
+    ) {
+        if let egui::Shape::Vec(children) = shape {
+            for child in children {
+                paint_leaves(child, clip, out);
+            }
+        } else {
+            out.push((clip, shape));
+        }
+    }
+
+    #[test]
+    fn production_selection_keeps_feasible_clipped_lanes_and_safe_fallbacks() {
+        for scale in [1.0, 2.0] {
+            for enlarged in [false, true] {
+                let ctx = egui::Context::default();
+                apply_theme(&ctx);
+                ctx.set_pixels_per_point(scale);
+                let mut style = (*ctx.style()).clone();
+                if enlarged {
+                    style
+                        .text_styles
+                        .insert(egui::TextStyle::Button, FontId::proportional(22.0));
+                    style
+                        .text_styles
+                        .insert(egui::TextStyle::Body, FontId::proportional(20.0));
+                    style.spacing.button_padding.y = 7.0;
+                    style.spacing.interact_size.y = 32.0;
+                    style.spacing.icon_width = 34.0;
+                }
+                ctx.set_style(style);
+                let mut observed = false;
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            observed = true;
+                            let metrics = PianoMetrics::new(ui);
+                            assert_eq!(
+                                metrics.ruler_h,
+                                PIANO_RULER_H.max(
+                                    ui.fonts(|f| f.row_height(&FontId::monospace(10.0))) + 2.0
+                                )
+                            );
+                            let threshold = metrics.row_h * 2.0 + metrics.ruler_h + 60.0;
+                            let allocated = Rect::from_min_size(
+                                pos2(20.0, 30.0),
+                                vec2(820.0, threshold + 100.0),
+                            );
+                            // Both dimensions and an offset clip challenge intersection selection.
+                            for top_offset in [0.0, 12.0] {
+                                for delta in [-1.0, -0.25, 0.0, 0.25, 1.0, 3.0, 4.0, 5.0] {
+                                    let clip = Rect::from_min_size(
+                                        allocated.min + vec2(8.0, top_offset),
+                                        vec2(800.0, threshold + delta),
+                                    );
+                                    let visible = allocated.intersect(clip);
+                                    let (selected, layout) =
+                                        PianoLayout::for_panel(ui, allocated, clip)
+                                            .expect("feasible allocated fallback");
+                                    if delta >= 0.0 {
+                                        assert_eq!(
+                                            selected, visible,
+                                            "production must select feasible clip"
+                                        );
+                                        assert!(visible.contains_rect(layout.roll));
+                                        assert!(visible.contains_rect(layout.velocity));
+                                        assert!(layout.roll.height() >= 38.0);
+                                        assert!(layout.velocity.height() >= 14.0);
+                                    } else {
+                                        assert_eq!(
+                                            selected, allocated,
+                                            "genuinely insufficient clip retains scroll canvas"
+                                        );
+                                    }
+                                    for rect in [
+                                        layout.header,
+                                        layout.commands,
+                                        layout.helpers,
+                                        layout.ruler,
+                                        layout.roll,
+                                        layout.keys,
+                                        layout.velocity,
+                                    ] {
+                                        assert!(rect.is_finite() && rect.is_positive());
+                                        assert!(selected.contains_rect(rect));
+                                    }
+                                }
+                            }
+                            let short =
+                                Rect::from_min_size(allocated.min, vec2(820.0, threshold - 1.0));
+                            assert!(PianoLayout::for_panel(ui, short, short).is_none());
+                            for invalid in [
+                                Rect::NOTHING,
+                                Rect::from_min_max(pos2(20.0, 30.0), pos2(19.0, 29.0)),
+                                Rect::from_min_size(pos2(f32::NAN, 0.0), vec2(820.0, 300.0)),
+                            ] {
+                                assert!(PianoLayout::for_panel(ui, invalid, invalid).is_none());
+                            }
+                            for invalid_clip in [
+                                Rect::NOTHING,
+                                Rect::EVERYTHING,
+                                Rect::from_min_size(pos2(f32::NAN, 0.0), vec2(820.0, 300.0)),
+                            ] {
+                                let (selected, layout) =
+                                    PianoLayout::for_panel(ui, allocated, invalid_clip)
+                                        .expect("invalid clip keeps valid allocated canvas");
+                                assert_eq!(selected, allocated);
+                                assert!(layout.roll.is_positive() && layout.velocity.is_positive());
+                            }
+                            let narrow =
+                                Rect::from_min_size(allocated.min, vec2(120.0, allocated.height()));
+                            let (selected, _) = PianoLayout::for_panel(ui, allocated, narrow)
+                                .expect("narrow clip fallback");
+                            assert_eq!(selected, allocated);
+                        });
+                    },
+                );
+                assert!(observed, "selection assertions must run");
+            }
+        }
+    }
+
+    // Real egui widgets, fonts and paint output through the production row
+    // constructor and layout. Not an arithmetic copy of the sizing formula.
+    // Menus are closed; this does not claim full Studio or native-input coverage.
+    #[test]
+    fn actual_command_widgets_and_paint_fit_style_sized_rows() {
+        for scale in [1.0, 2.0] {
+            for enlarged in [false, true] {
+                for width in [560.0, 820.0, 1180.0] {
+                    for height in [200.0, 237.0, 307.0] {
+                        let ctx = egui::Context::default();
+                        apply_theme(&ctx);
+                        ctx.set_pixels_per_point(scale);
+                        if enlarged {
+                            let mut style = (*ctx.style()).clone();
+                            style
+                                .text_styles
+                                .insert(egui::TextStyle::Button, FontId::proportional(22.0));
+                            style
+                                .text_styles
+                                .insert(egui::TextStyle::Body, FontId::proportional(20.0));
+                            style.spacing.button_padding.y = 7.0;
+                            style.spacing.interact_size.y = 32.0;
+                            style.spacing.icon_width = 34.0;
+                            ctx.set_style(style);
+                        }
+                        let mut rows = Vec::new();
+                        let mut responses = Vec::new();
+                        let output = ctx.run(
+                            egui::RawInput {
+                                screen_rect: Some(Rect::from_min_size(
+                                    Pos2::ZERO,
+                                    vec2(1440.0, 900.0),
+                                )),
+                                ..Default::default()
+                            },
+                            |ctx| {
+                                egui::CentralPanel::default().show(ctx, |ui| {
+                                    let full =
+                                        Rect::from_min_size(pos2(20.0, 30.0), vec2(width, height));
+                                    let (selected, layout) = PianoLayout::for_panel(ui, full, full)
+                                        .expect("fully visible production layout");
+                                    assert_eq!(selected, full);
+                                    assert!(full.contains_rect(layout.header));
+                                    assert!(full.contains_rect(layout.ruler));
+                                    assert!(full.contains_rect(layout.roll));
+                                    assert!(full.contains_rect(layout.keys));
+                                    assert!(full.contains_rect(layout.velocity));
+                                    assert!(layout.commands.bottom() <= layout.helpers.top());
+                                    assert!(layout.header.bottom() < layout.ruler.top());
+                                    assert!(layout.ruler.bottom() <= layout.roll.top());
+                                    assert!(layout.roll.bottom() < layout.velocity.top());
+                                    assert!(
+                                        layout.roll.height() >= 38.0,
+                                        "retain useful note space"
+                                    );
+                                    assert!(layout.velocity.height() >= 14.0);
+                                    rows = vec![layout.commands, layout.helpers];
+                                    let mut top = piano_command_row(ui, layout.commands);
+                                    responses
+                                        .push((0, top.menu_button("Edit notes", |_| {}).response));
+                                    responses.push((
+                                        0,
+                                        egui::ComboBox::from_id_salt("regression-snap")
+                                            .width(64.0)
+                                            .selected_text("Snap 1/16")
+                                            .show_ui(&mut top, |_| {})
+                                            .response,
+                                    ));
+                                    responses
+                                        .push((0, top.add(egui::Button::new("Quantize").small())));
+                                    responses.push((0, top.menu_button("View", |_| {}).response));
+                                    // Long names must not force a second text line into helpers.
+                                    top.label(
+                                        RichText::new(
+                                            "A long channel name / pattern name / 10000 notes",
+                                        )
+                                        .size(11.0),
+                                    );
+                                    let mut helpers = piano_command_row(ui, layout.helpers);
+                                    for label in
+                                        ["Compose", "Timing & expression", "Pitch & velocity"]
+                                    {
+                                        responses
+                                            .push((1, helpers.menu_button(label, |_| {}).response));
+                                    }
+                                });
+                            },
+                        );
+                        let mut leaves = Vec::new();
+                        for clipped in &output.shapes {
+                            paint_leaves(&clipped.shape, clipped.clip_rect, &mut leaves);
+                        }
+                        for (clip, shape) in &leaves {
+                            if let egui::Shape::Text(text) = shape {
+                                assert!(rows.contains(clip), "text emitted with unexpected clip");
+                                assert!(!text.galley.elided);
+                                let ink = text.visual_bounding_rect();
+                                assert_eq!(
+                                    ink,
+                                    text.galley.mesh_bounds.translate(text.pos.to_vec2())
+                                );
+                                assert!(ink.is_finite() && ink.is_positive());
+                                assert!(ink.top() >= clip.top());
+                                assert!(ink.bottom() <= clip.bottom());
+                            }
+                        }
+                        for (row, response) in &responses {
+                            let frames: Vec<_> = leaves
+                                .iter()
+                                .filter(|(_, shape)| {
+                                    matches!(shape, egui::Shape::Rect(paint)
+                                    if paint.rect.center() == response.rect.center()
+                                        && paint.rect.contains_rect(response.rect))
+                                })
+                                .collect();
+                            assert_eq!(frames.len(), 1, "missing/ambiguous real control frame");
+                            let (clip, frame) = frames[0];
+                            assert_eq!(*clip, rows[*row], "control frame has unexpected clip");
+                            let painted = frame.visual_bounding_rect();
+                            assert!(painted.is_finite() && painted.is_positive());
+                            assert!(painted.top() >= clip.top());
+                            assert!(painted.bottom() <= clip.bottom());
+                        }
+                        assert_eq!(responses.len(), 7);
+                        for (row, response) in responses {
+                            assert!(response.rect.top() >= rows[row].top());
+                            assert!(response.rect.bottom() <= rows[row].bottom());
+                        }
+                        let mut labels = Vec::new();
+                        for clipped in &output.shapes {
+                            // The row constructors set these clips in production too.
+                            if !rows.contains(&clipped.clip_rect) {
+                                continue;
+                            }
+                            match &clipped.shape {
+                                egui::Shape::Rect(paint) => {
+                                    assert!(
+                                        paint.rect.top() - paint.stroke.width * 0.5
+                                            >= clipped.clip_rect.top()
+                                    );
+                                    assert!(
+                                        paint.rect.bottom() + paint.stroke.width * 0.5
+                                            <= clipped.clip_rect.bottom()
+                                    );
+                                }
+                                egui::Shape::Text(text) => {
+                                    assert!(!text.galley.elided);
+                                    assert!(
+                                        text.pos.y + text.galley.rect.top()
+                                            >= clipped.clip_rect.top()
+                                    );
+                                    assert!(
+                                        text.pos.y + text.galley.rect.bottom()
+                                            <= clipped.clip_rect.bottom()
+                                    );
+                                    labels.push(text.galley.job.text.as_str());
+                                }
+                                _ => {}
+                            }
+                        }
+                        for label in [
+                            "Edit notes",
+                            "Snap 1/16",
+                            "Quantize",
+                            "View",
+                            "Compose",
+                            "Timing & expression",
+                            "Pitch & velocity",
+                            "A long channel name / pattern name / 10000 notes",
+                        ] {
+                            assert!(
+                                labels.contains(&label),
+                                "missing real painted label {label}"
+                            );
+                        }
+                        assert!((ctx.pixels_per_point() - scale).abs() < 0.01);
+                    }
+                }
+            }
         }
     }
 }

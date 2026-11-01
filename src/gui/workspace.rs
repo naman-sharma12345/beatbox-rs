@@ -731,7 +731,10 @@ impl TabViewer for Viewer<'_> {
             }
             _ => {
                 if p.tracks.is_empty()
-                    && !matches!(pane, Pane::Browser | Pane::Automation | Pane::Vocal)
+                    && !matches!(
+                        pane,
+                        Pane::Browser | Pane::Automation | Pane::Vocal | Pane::Mixer
+                    )
                 {
                     ui.add_space(8.0);
                     ui.label(RichText::new("Start a pattern").size(17.0).strong());
