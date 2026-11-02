@@ -4190,6 +4190,60 @@ mod toolbar_containment_tests {
         }
     }
 
+    // The selector must keep its exact floors. A nominal H = 2r + R + 60
+    // need not produce a 38-point roll after f32 coordinate arithmetic.
+    // Locate adjacent representable endpoints using the actual lane rectangles,
+    // independently of try_with_metrics/for_panel's selection predicate.
+    fn lane_floors_met(metrics: PianoMetrics, full: Rect) -> bool {
+        let layout = PianoLayout::with_metrics(metrics, full);
+        layout.roll.height() >= 38.0 && layout.velocity.height() >= 14.0
+    }
+
+    fn first_feasible_bottom(metrics: PianoMetrics, origin: Pos2, nominal: f32) -> f32 {
+        let rect = |bottom| Rect::from_min_max(origin, pos2(origin.x + 800.0, bottom));
+        let mut bottom = nominal;
+        for _ in 0..64 {
+            if !lane_floors_met(metrics, rect(bottom)) {
+                bottom = bottom.next_up();
+            } else if lane_floors_met(metrics, rect(bottom.next_down())) {
+                bottom = bottom.next_down();
+            } else {
+                break;
+            }
+        }
+        assert!(lane_floors_met(metrics, rect(bottom)));
+        assert!(!lane_floors_met(metrics, rect(bottom.next_down())));
+        bottom
+    }
+
+    #[test]
+    fn representable_lane_boundary_keeps_exact_production_floors() {
+        // Source-derived f32 example from Space Grotesk's 13-point metrics.
+        // This test executes no font approximation: it fixes the input bits
+        // and challenges the production allocator at adjacent endpoints.
+        let metrics = PianoMetrics {
+            row_h: f32::from_bits(0x41e4b43a),
+            ruler_h: 16.0,
+        };
+        let threshold = metrics.row_h * 2.0 + metrics.ruler_h + 60.0;
+        for top in [30.0, 42.0] {
+            let origin = pos2(28.0, top);
+            let nominal = Rect::from_min_size(origin, vec2(800.0, threshold));
+            let raw = PianoLayout::with_metrics(metrics, nominal);
+            assert!(raw.roll.height() < 38.0);
+            assert!(PianoLayout::try_with_metrics(metrics, nominal).is_none());
+            let bottom = first_feasible_bottom(metrics, origin, nominal.bottom());
+            assert_eq!(bottom, nominal.bottom().next_up());
+            let feasible = Rect::from_min_max(origin, pos2(828.0, bottom));
+            let layout = PianoLayout::try_with_metrics(metrics, feasible)
+                .expect("first representable feasible endpoint must retain exact floors");
+            assert!(layout.roll.height() >= 38.0);
+            assert!(layout.velocity.height() >= 14.0);
+            assert!(feasible.contains_rect(layout.roll));
+            assert!(feasible.contains_rect(layout.velocity));
+        }
+    }
+
     #[test]
     fn production_selection_keeps_feasible_clipped_lanes_and_safe_fallbacks() {
         for scale in [1.0, 2.0] {
@@ -4233,19 +4287,51 @@ mod toolbar_containment_tests {
                             );
                             // Both dimensions and an offset clip challenge intersection selection.
                             for top_offset in [0.0, 12.0] {
-                                for delta in [-1.0, -0.25, 0.0, 0.25, 1.0, 3.0, 4.0, 5.0] {
-                                    let clip = Rect::from_min_size(
-                                        allocated.min + vec2(8.0, top_offset),
-                                        vec2(800.0, threshold + delta),
+                                let origin = allocated.min + vec2(8.0, top_offset);
+                                let boundary = first_feasible_bottom(
+                                    metrics,
+                                    origin,
+                                    origin.y + threshold,
+                                );
+                                // Keep all former coarse cases, and add the immediate
+                                // predecessor to catch even a one-ULP floor relaxation.
+                                for (bottom, feasible) in [
+                                    (boundary - 1.0, false),
+                                    (boundary - 0.25, false),
+                                    (boundary.next_down(), false),
+                                    (boundary, true),
+                                    (boundary + 0.25, true),
+                                    (boundary + 1.0, true),
+                                    (boundary + 3.0, true),
+                                    (boundary + 4.0, true),
+                                    (boundary + 5.0, true),
+                                ] {
+                                    let clip = Rect::from_min_max(
+                                        origin,
+                                        pos2(origin.x + 800.0, bottom),
                                     );
                                     let visible = allocated.intersect(clip);
                                     let (selected, layout) =
                                         PianoLayout::for_panel(ui, allocated, clip)
                                             .expect("feasible allocated fallback");
-                                    if delta >= 0.0 {
+                                    let visible_layout = PianoLayout::with_metrics(metrics, visible);
+                                    let case = format!(
+                                        "scale={scale} enlarged={enlarged} top_offset={top_offset} \
+                                         row_h={:?}/{:08x} ruler_h={:?}/{:08x} \
+                                         boundary={boundary:?}/{:08x} bottom={bottom:?}/{:08x} \
+                                         visible={visible:?} selected={selected:?} \
+                                         roll={:?} roll_h={:?} velocity={:?} velocity_h={:?}",
+                                        metrics.row_h, metrics.row_h.to_bits(),
+                                        metrics.ruler_h, metrics.ruler_h.to_bits(),
+                                        boundary.to_bits(), bottom.to_bits(),
+                                        visible_layout.roll, visible_layout.roll.height(),
+                                        visible_layout.velocity, visible_layout.velocity.height(),
+                                    );
+                                    assert_eq!(lane_floors_met(metrics, visible), feasible, "{case}");
+                                    if feasible {
                                         assert_eq!(
                                             selected, visible,
-                                            "production must select feasible clip"
+                                            "production must select feasible clip: {case}"
                                         );
                                         assert!(visible.contains_rect(layout.roll));
                                         assert!(visible.contains_rect(layout.velocity));
@@ -4254,7 +4340,7 @@ mod toolbar_containment_tests {
                                     } else {
                                         assert_eq!(
                                             selected, allocated,
-                                            "genuinely insufficient clip retains scroll canvas"
+                                            "genuinely insufficient clip retains scroll canvas: {case}"
                                         );
                                     }
                                     for rect in [
@@ -4362,6 +4448,23 @@ mod toolbar_containment_tests {
                                     );
                                     assert!(layout.velocity.height() >= 14.0);
                                     rows = vec![layout.commands, layout.helpers];
+                                    let metrics = PianoMetrics::new(ui);
+                                    eprintln!(
+                                        "toolbar case scale={scale} actual_scale={} enlarged={enlarged} \
+                                         width={width} height={height} row_h={:?}/{:08x} \
+                                         ruler_h={:?}/{:08x} rows={rows:?} padding={:?} \
+                                         interact={:?} icon={} button_font={:?} body_font={:?} \
+                                         default_font={:?} raw_font_heights={:?}",
+                                        ctx.pixels_per_point(), metrics.row_h, metrics.row_h.to_bits(),
+                                        metrics.ruler_h, metrics.ruler_h.to_bits(),
+                                        ui.spacing().button_padding, ui.spacing().interact_size,
+                                        ui.spacing().icon_width,
+                                        egui::TextStyle::Button.resolve(ui.style()),
+                                        egui::TextStyle::Body.resolve(ui.style()),
+                                        egui::FontSelection::Default.resolve(ui.style()),
+                                        [ui.text_style_height(&egui::TextStyle::Button),
+                                         ui.text_style_height(&egui::TextStyle::Body)],
+                                    );
                                     let mut top = piano_command_row(ui, layout.commands);
                                     responses
                                         .push((0, top.menu_button("Edit notes", |_| {}).response));
@@ -4397,6 +4500,35 @@ mod toolbar_containment_tests {
                         for clipped in &output.shapes {
                             paint_leaves(&clipped.shape, clipped.clip_rect, &mut leaves);
                         }
+                        let case = format!(
+                            "scale={scale} actual_scale={} enlarged={enlarged} width={width} \
+                             height={height} rows={rows:?}",
+                            ctx.pixels_per_point(),
+                        );
+                        // Print before assertions: a failure must retain its exact
+                        // case, fonts, owning clip, frame, glyph ink and response.
+                        for (clip, shape) in &leaves {
+                            match shape {
+                                egui::Shape::Text(text) => eprintln!(
+                                    "text {:?} pos={:?} logical={:?} mesh={:?} ink={:?} clip={clip:?} \
+                                     row_heights={:?} fonts={:?}",
+                                    text.galley.job.text, text.pos, text.galley.rect,
+                                    text.galley.mesh_bounds, text.visual_bounding_rect(),
+                                    text.galley.rows.iter().map(|r| r.rect.height()).collect::<Vec<_>>(),
+                                    text.galley.job.sections.iter().map(|s| &s.format.font_id).collect::<Vec<_>>(),
+                                ),
+                                egui::Shape::Rect(paint) => eprintln!(
+                                    "frame rect={:?} stroke={:?} blur={} visual={:?} clip={clip:?}",
+                                    paint.rect, paint.stroke, paint.blur_width,
+                                    paint.visual_bounding_rect(),
+                                ),
+                                _ => {}
+                            }
+                        }
+                        for (index, (row, response)) in responses.iter().enumerate() {
+                            eprintln!("control index={index} row={row} response={:?} id={:?} hovered={} down={}",
+                                response.rect, response.id, response.hovered(), response.is_pointer_button_down_on());
+                        }
                         for (clip, shape) in &leaves {
                             if let egui::Shape::Text(text) = shape {
                                 assert!(rows.contains(clip), "text emitted with unexpected clip");
@@ -4407,8 +4539,16 @@ mod toolbar_containment_tests {
                                     text.galley.mesh_bounds.translate(text.pos.to_vec2())
                                 );
                                 assert!(ink.is_finite() && ink.is_positive());
-                                assert!(ink.top() >= clip.top());
-                                assert!(ink.bottom() <= clip.bottom());
+                                assert!(
+                                    ink.top() >= clip.top(),
+                                    "text top: {case}; label={:?} ink={ink:?} clip={clip:?}",
+                                    text.galley.job.text
+                                );
+                                assert!(
+                                    ink.bottom() <= clip.bottom(),
+                                    "text bottom: {case}; label={:?} ink={ink:?} clip={clip:?}",
+                                    text.galley.job.text
+                                );
                             }
                         }
                         for (row, response) in &responses {
@@ -4425,8 +4565,10 @@ mod toolbar_containment_tests {
                             assert_eq!(*clip, rows[*row], "control frame has unexpected clip");
                             let painted = frame.visual_bounding_rect();
                             assert!(painted.is_finite() && painted.is_positive());
-                            assert!(painted.top() >= clip.top());
-                            assert!(painted.bottom() <= clip.bottom());
+                            assert!(painted.top() >= clip.top(),
+                                "frame top: {case}; row={row} response={:?} frame={frame:?} painted={painted:?} clip={clip:?}", response.rect);
+                            assert!(painted.bottom() <= clip.bottom(),
+                                "frame bottom: {case}; row={row} response={:?} frame={frame:?} painted={painted:?} clip={clip:?}", response.rect);
                         }
                         assert_eq!(responses.len(), 7);
                         for (row, response) in responses {
