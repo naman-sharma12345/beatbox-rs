@@ -472,10 +472,10 @@ fn piano_command_row_height(ui: &egui::Ui) -> f32 {
 fn piano_command_row(ui: &mut egui::Ui, rect: Rect) -> egui::Ui {
     let mut child = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(rect.shrink2(vec2(0.0, 2.0)))
+            .max_rect(rect.shrink2(vec2(2.0, 2.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    // A row may clip horizontally, but may not wrap into its neighbour.
+    // Commands stay on one row; the separate measured context strip may wrap.
     child.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
     child
@@ -523,17 +523,72 @@ fn piano_snap_combo<R>(
     result
 }
 
+// Title and context use their original compact fonts, never the command cursor.
+// Measure BOTH logical allocation and glyph ink from the exact galleys we paint.
+// Wrapping is confined to this strip; no truncation or expanded clip is used.
+struct PianoContextStrip {
+    title: std::sync::Arc<egui::Galley>,
+    context: std::sync::Arc<egui::Galley>,
+    title_bounds: Rect,
+    context_bounds: Rect,
+    context_x: f32,
+    height: f32,
+}
+
+impl PianoContextStrip {
+    fn new(ui: &egui::Ui, width: f32, text: &str) -> Self {
+        let title = ui.painter().layout_no_wrap(
+            "PIANO ROLL".to_owned(),
+            FontId::proportional(10.5),
+            Color32::PLACEHOLDER,
+        );
+        let title_bounds = title.rect.union(title.mesh_bounds);
+        let context_x = 6.0 + title_bounds.width() + 8.0;
+        let context = ui.painter().layout(
+            text.to_owned(),
+            FontId::proportional(11.0),
+            Color32::PLACEHOLDER,
+            (width - context_x - 6.0).max(1.0),
+        );
+        let context_bounds = context.rect.union(context.mesh_bounds);
+        let height = title_bounds.height().max(context_bounds.height()) + 4.0;
+        Self {
+            title,
+            context,
+            title_bounds,
+            context_bounds,
+            context_x,
+            height,
+        }
+    }
+
+    fn paint(&self, ui: &mut egui::Ui, rect: Rect, tk: Tokens) -> egui::Response {
+        let painter = ui.painter_at(rect);
+        let title_pos = rect.min + vec2(6.0, 2.0) - self.title_bounds.min.to_vec2();
+        let context_pos = rect.min + vec2(self.context_x, 2.0) - self.context_bounds.min.to_vec2();
+        painter.galley(title_pos, self.title.clone(), tk.header_text);
+        painter.galley(context_pos, self.context.clone(), tk.text_dim);
+        ui.interact(
+            self.context_bounds.translate(context_pos.to_vec2()),
+            ui.id().with("piano_context"),
+            Sense::hover(),
+        )
+    }
+}
+
 // One style measurement and one feasibility predicate serve selection AND layout.
 // The useful-space floors are not pane minima and do not change dock sizing.
 #[derive(Clone, Copy)]
 struct PianoMetrics {
     row_h: f32,
     ruler_h: f32,
+    context_h: f32,
 }
 
 impl PianoMetrics {
-    fn new(ui: &egui::Ui) -> Self {
+    fn new(ui: &egui::Ui, width: f32, context: &str) -> Self {
         Self {
+            context_h: PianoContextStrip::new(ui, width, context).height,
             row_h: piano_command_row_height(ui),
             ruler_h: PIANO_RULER_H.max(ui.fonts(|f| f.row_height(&FontId::monospace(10.0))) + 2.0),
         }
@@ -544,6 +599,7 @@ struct PianoLayout {
     header: Rect,
     commands: Rect,
     helpers: Rect,
+    context: Rect,
     ruler: Rect,
     roll: Rect,
     keys: Rect,
@@ -554,18 +610,25 @@ impl PianoLayout {
     // A genuinely insufficient clip keeps the feasible allocated canvas for
     // the existing dock scrolling. Invalid/insufficient allocations produce no
     // editor geometry, rather than inverted rectangles or smaller controls.
-    fn for_panel(ui: &egui::Ui, allocated: Rect, clip: Rect) -> Option<(Rect, Self)> {
+    fn for_panel(
+        ui: &egui::Ui,
+        allocated: Rect,
+        clip: Rect,
+        context: &str,
+    ) -> Option<(Rect, Self)> {
         if !allocated.is_finite() || !allocated.is_positive() {
             return None;
         }
-        let metrics = PianoMetrics::new(ui);
         if clip.is_finite() && clip.is_positive() {
             let visible = allocated.intersect(clip);
-            if let Some(layout) = Self::try_with_metrics(metrics, visible) {
+            if let Some(layout) =
+                Self::try_with_metrics(PianoMetrics::new(ui, visible.width(), context), visible)
+            {
                 return Some((visible, layout));
             }
         }
-        Self::try_with_metrics(metrics, allocated).map(|layout| (allocated, layout))
+        Self::try_with_metrics(PianoMetrics::new(ui, allocated.width(), context), allocated)
+            .map(|layout| (allocated, layout))
     }
 
     // Judge the actual rectangles built by the live allocator. Selection has
@@ -581,6 +644,7 @@ impl PianoLayout {
                 layout.header,
                 layout.commands,
                 layout.helpers,
+                layout.context,
                 layout.ruler,
                 layout.roll,
                 layout.keys,
@@ -593,15 +657,19 @@ impl PianoLayout {
 
     fn with_metrics(metrics: PianoMetrics, full: Rect) -> Self {
         let row_h = metrics.row_h;
-        let header = Rect::from_min_size(full.min, vec2(full.width(), row_h * 2.0));
+        let header = Rect::from_min_size(
+            full.min,
+            vec2(full.width(), row_h * 2.0 + metrics.context_h),
+        );
         let commands = Rect::from_min_max(
-            pos2(header.left() + 100.0, header.top()),
+            pos2(header.left() + 6.0, header.top()),
             pos2(header.right() - 4.0, header.top() + row_h),
         );
         let helpers = Rect::from_min_max(
             pos2(header.left() + 6.0, commands.bottom()),
-            pos2(header.right() - 4.0, header.bottom()),
+            pos2(header.right() - 4.0, commands.bottom() + row_h),
         );
+        let context = Rect::from_min_max(pos2(header.left(), helpers.bottom()), header.max);
         let ruler_h = metrics.ruler_h;
         let velocity_h =
             velocity_lane_height_below_ruler(full.bottom() - header.bottom() - ruler_h);
@@ -613,6 +681,7 @@ impl PianoLayout {
             header,
             commands,
             helpers,
+            context,
             roll,
             keys: Rect::from_min_max(
                 pos2(full.left(), roll.top()),
@@ -980,8 +1049,15 @@ impl Studio {
         } else {
             (lo, hi)
         };
+        let selection_count = self.piano.selected.len();
+        let note_context = if selection_count == 0 {
+            format!("{} / {} / {} notes", t.name, pat.name, notes.len())
+        } else {
+            format!("{} selected / {} / {}", selection_count, t.name, pat.name)
+        };
         // never draw past the visible panel (the velocity lane sat under its edge)
-        let Some((full, layout)) = PianoLayout::for_panel(ui, full, ui.clip_rect()) else {
+        let Some((full, layout)) = PianoLayout::for_panel(ui, full, ui.clip_rect(), &note_context)
+        else {
             // No finite canvas can hold the unchanged controls and useful lanes.
             return;
         };
@@ -991,13 +1067,6 @@ impl Studio {
         // geometry starts after this header, not after a parallel fixed budget.
         let header = layout.header;
         painter.rect_filled(header, 0.0, tk.panel_bg2);
-        painter.text(
-            pos2(header.min.x + 8.0, layout.commands.center().y),
-            Align2::LEFT_CENTER,
-            "PIANO ROLL",
-            FontId::proportional(10.5),
-            tk.header_text,
-        );
         let mut tb = piano_command_row(ui, layout.commands);
         let mut op: Option<(&str, Value)> = None;
         let mut delete_selection = false;
@@ -1641,13 +1710,8 @@ impl Studio {
             ui.label("Switching away from the app also cancels the preview.");
             ui.label("Note shortcuts wait until the mouse hold is over.");
         });
-        let selection_count = self.piano.selected.len();
-        let note_context = if selection_count == 0 {
-            format!("{} / {} / {} notes", t.name, pat.name, notes.len())
-        } else {
-            format!("{} selected / {} / {}", selection_count, t.name, pat.name)
-        };
-        tb.label(RichText::new(note_context).size(11.0).color(tk.text_dim))
+        PianoContextStrip::new(ui, full.width(), &note_context)
+            .paint(ui, layout.context, tk)
             .on_hover_ui(|ui| {
                 ui.set_width(280.0);
                 ui.label(format!(
@@ -4231,7 +4295,7 @@ mod toolbar_containment_tests {
         }
     }
 
-    // The selector must keep its exact floors. A nominal H = 2r + R + 60
+    // The selector must keep its exact floors. A nominal H = 2r + C + R + 60
     // need not produce a 38-point roll after f32 coordinate arithmetic.
     // Locate adjacent representable endpoints using the actual lane rectangles,
     // independently of try_with_metrics/for_panel's selection predicate.
@@ -4259,15 +4323,27 @@ mod toolbar_containment_tests {
 
     #[test]
     fn representable_lane_boundary_keeps_exact_production_floors() {
-        // Source-derived f32 example from Space Grotesk's 13-point metrics.
-        // This test executes no font approximation: it fixes the input bits
-        // and challenges the production allocator at adjacent endpoints.
-        let metrics = PianoMetrics {
-            row_h: f32::from_bits(0x41e4b43a),
-            ruler_h: 16.0,
-        };
-        let threshold = metrics.row_h * 2.0 + metrics.ruler_h + 60.0;
-        for top in [30.0, 42.0] {
+        // Keep the witnessed normal-font row bits, but derive the new context
+        // budget from the production strip with the full required text.
+        let ctx = egui::Context::default();
+        apply_theme(&ctx);
+        ctx.set_pixels_per_point(1.0);
+        let mut measured = None;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                measured = Some(PianoMetrics::new(
+                    ui,
+                    800.0,
+                    "A long channel name / pattern name / 10000 notes",
+                ));
+            });
+        });
+        let metrics = measured.expect("real production strip metrics were measured");
+        assert_eq!(metrics.row_h.to_bits(), 0x41e4b43a);
+        // The added strip shifts the old top=42 witness; top=34 retains
+        // strict rejection followed by the immediately adjacent accepted f32.
+        let threshold = metrics.row_h * 2.0 + metrics.context_h + metrics.ruler_h + 60.0;
+        for top in [30.0, 34.0] {
             let origin = pos2(28.0, top);
             let nominal = Rect::from_min_size(origin, vec2(800.0, threshold));
             let raw = PianoLayout::with_metrics(metrics, nominal);
@@ -4314,14 +4390,14 @@ mod toolbar_containment_tests {
                     |ctx| {
                         egui::CentralPanel::default().show(ctx, |ui| {
                             observed = true;
-                            let metrics = PianoMetrics::new(ui);
+                            let metrics = PianoMetrics::new(ui, 800.0, "A long channel name / pattern name / 10000 notes");
                             assert_eq!(
                                 metrics.ruler_h,
                                 PIANO_RULER_H.max(
                                     ui.fonts(|f| f.row_height(&FontId::monospace(10.0))) + 2.0
                                 )
                             );
-                            let threshold = metrics.row_h * 2.0 + metrics.ruler_h + 60.0;
+                            let threshold = metrics.row_h * 2.0 + metrics.context_h + metrics.ruler_h + 60.0;
                             let allocated = Rect::from_min_size(
                                 pos2(20.0, 30.0),
                                 vec2(820.0, threshold + 100.0),
@@ -4353,7 +4429,7 @@ mod toolbar_containment_tests {
                                     );
                                     let visible = allocated.intersect(clip);
                                     let (selected, layout) =
-                                        PianoLayout::for_panel(ui, allocated, clip)
+                                        PianoLayout::for_panel(ui, allocated, clip, "A long channel name / pattern name / 10000 notes")
                                             .expect("feasible allocated fallback");
                                     let visible_layout = PianoLayout::with_metrics(metrics, visible);
                                     let case = format!(
@@ -4400,13 +4476,13 @@ mod toolbar_containment_tests {
                             }
                             let short =
                                 Rect::from_min_size(allocated.min, vec2(820.0, threshold - 1.0));
-                            assert!(PianoLayout::for_panel(ui, short, short).is_none());
+                            assert!(PianoLayout::for_panel(ui, short, short, "A long channel name / pattern name / 10000 notes").is_none());
                             for invalid in [
                                 Rect::NOTHING,
                                 Rect::from_min_max(pos2(20.0, 30.0), pos2(19.0, 29.0)),
                                 Rect::from_min_size(pos2(f32::NAN, 0.0), vec2(820.0, 300.0)),
                             ] {
-                                assert!(PianoLayout::for_panel(ui, invalid, invalid).is_none());
+                                assert!(PianoLayout::for_panel(ui, invalid, invalid, "A long channel name / pattern name / 10000 notes").is_none());
                             }
                             for invalid_clip in [
                                 Rect::NOTHING,
@@ -4414,14 +4490,14 @@ mod toolbar_containment_tests {
                                 Rect::from_min_size(pos2(f32::NAN, 0.0), vec2(820.0, 300.0)),
                             ] {
                                 let (selected, layout) =
-                                    PianoLayout::for_panel(ui, allocated, invalid_clip)
+                                    PianoLayout::for_panel(ui, allocated, invalid_clip, "A long channel name / pattern name / 10000 notes")
                                         .expect("invalid clip keeps valid allocated canvas");
                                 assert_eq!(selected, allocated);
                                 assert!(layout.roll.is_positive() && layout.velocity.is_positive());
                             }
                             let narrow =
                                 Rect::from_min_size(allocated.min, vec2(120.0, allocated.height()));
-                            let (selected, _) = PianoLayout::for_panel(ui, allocated, narrow)
+                            let (selected, _) = PianoLayout::for_panel(ui, allocated, narrow, "A long channel name / pattern name / 10000 notes")
                                 .expect("narrow clip fallback");
                             assert_eq!(selected, allocated);
                         });
@@ -4458,12 +4534,16 @@ mod toolbar_containment_tests {
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let full = Rect::from_min_size(pos2(20.0, 30.0), vec2(560.0, 200.0));
-                        let (_, layout) = PianoLayout::for_panel(ui, full, full).unwrap();
+                        let (_, layout) = PianoLayout::for_panel(ui, full, full, "").unwrap();
                         let mut row = piano_command_row(ui, layout.commands);
                         let before = row.menu_button("Edit notes", |_| {}).response;
                         let snap = piano_snap_combo(&mut row, "focused-snap", "Snap 1/16", |_| {})
                             .response;
+                        let quantize = row.add(egui::Button::new("Quantize").small());
                         let after = row.menu_button("View", |_| {}).response;
+                        assert!(layout.commands.contains_rect(before.rect));
+                        assert!(layout.commands.contains_rect(quantize.rect));
+                        assert!(layout.commands.contains_rect(after.rect));
                         assert_eq!(snap.rect.center().y, layout.commands.center().y);
                         assert_eq!(snap.rect.height(), 48.0);
                         assert!(before.rect.right() < snap.rect.left());
@@ -4488,6 +4568,7 @@ mod toolbar_containment_tests {
             let visual = frame.visual_bounding_rect();
             assert!(visual.top() >= row.top());
             assert!(visual.bottom() <= row.bottom());
+            assert!(row.contains_rect(visual));
             let labels: Vec<_> = leaves
                 .iter()
                 .filter_map(|(clip, shape)| {
@@ -4505,6 +4586,47 @@ mod toolbar_containment_tests {
                 })
                 .collect();
             assert_eq!(labels.len(), 1);
+        }
+    }
+
+    #[test]
+    fn shared_context_strip_wraps_full_text_without_command_cursor_or_elision() {
+        for scale in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+            apply_theme(&ctx);
+            ctx.set_pixels_per_point(scale);
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    for text in [
+                        "",
+                        "keys / pattern / 0 notes",
+                        "A long channel name / pattern name / 10000 notes",
+                    ] {
+                        let wide = PianoContextStrip::new(ui, 560.0, text);
+                        let narrow = PianoContextStrip::new(ui, 160.0, text);
+                        assert_eq!(wide.context.job.text, text);
+                        assert_eq!(narrow.context.job.text, text);
+                        assert!(!wide.context.elided && !narrow.context.elided);
+                        assert!(narrow.height >= wide.height);
+                        if !text.is_empty() {
+                            assert!(narrow.context.rows.len() > wide.context.rows.len());
+                        }
+                        let rect =
+                            Rect::from_min_size(pos2(20.0, 30.0), vec2(160.0, narrow.height));
+                        let response = narrow.paint(ui, rect, Tokens::DARK);
+                        assert!(rect.contains_rect(response.rect));
+                        assert!(narrow.context_x > 6.0 + narrow.title_bounds.width());
+                        assert_eq!(
+                            wide.title.job.sections[0].format.font_id,
+                            FontId::proportional(10.5)
+                        );
+                        assert_eq!(
+                            wide.context.job.sections[0].format.font_id,
+                            FontId::proportional(11.0)
+                        );
+                    }
+                });
+            });
         }
     }
 
@@ -4547,7 +4669,7 @@ mod toolbar_containment_tests {
                                 egui::CentralPanel::default().show(ctx, |ui| {
                                     let full =
                                         Rect::from_min_size(pos2(20.0, 30.0), vec2(width, height));
-                                    let (selected, layout) = PianoLayout::for_panel(ui, full, full)
+                                    let (selected, layout) = PianoLayout::for_panel(ui, full, full, "A long channel name / pattern name / 10000 notes")
                                         .expect("fully visible production layout");
                                     assert_eq!(selected, full);
                                     assert!(full.contains_rect(layout.header));
@@ -4564,8 +4686,8 @@ mod toolbar_containment_tests {
                                         "retain useful note space"
                                     );
                                     assert!(layout.velocity.height() >= 14.0);
-                                    rows = vec![layout.commands, layout.helpers];
-                                    let metrics = PianoMetrics::new(ui);
+                                    rows = vec![layout.commands, layout.helpers, layout.context];
+                                    let metrics = PianoMetrics::new(ui, full.width(), "A long channel name / pattern name / 10000 notes");
                                     eprintln!(
                                         "toolbar case scale={scale} actual_scale={} enlarged={enlarged} \
                                          width={width} height={height} row_h={:?}/{:08x} \
@@ -4593,13 +4715,16 @@ mod toolbar_containment_tests {
                                     responses
                                         .push((0, top.add(egui::Button::new("Quantize").small())));
                                     responses.push((0, top.menu_button("View", |_| {}).response));
-                                    // Long names must not force a second text line into helpers.
-                                    top.label(
-                                        RichText::new(
-                                            "A long channel name / pattern name / 10000 notes",
-                                        )
-                                        .size(11.0),
+                                    let strip = PianoContextStrip::new(
+                                        ui, full.width(), "A long channel name / pattern name / 10000 notes",
                                     );
+                                    let context_response = strip.paint(ui, layout.context, Tokens::DARK);
+                                    assert!(layout.context.contains_rect(context_response.rect));
+                                    assert!(layout.context.height() >= strip.height);
+                                    assert!(layout.helpers.bottom() <= layout.context.top());
+                                    assert!(full.contains_rect(layout.context));
+                                    let title_right = layout.context.left() + 6.0 + strip.title_bounds.width();
+                                    assert!(title_right < context_response.rect.left());
                                     let mut helpers = piano_command_row(ui, layout.helpers);
                                     for label in
                                         ["Compose", "Timing & expression", "Pitch & velocity"]
@@ -4646,6 +4771,16 @@ mod toolbar_containment_tests {
                         for (clip, shape) in &leaves {
                             if let egui::Shape::Text(text) = shape {
                                 assert!(rows.contains(clip), "text emitted with unexpected clip");
+                                let expected_row = match text.galley.job.text.as_str() {
+                                    "PIANO ROLL"
+                                    | "A long channel name / pattern name / 10000 notes" => 2,
+                                    "Compose" | "Timing & expression" | "Pitch & velocity" => 1,
+                                    _ => 0,
+                                };
+                                assert_eq!(
+                                    *clip, rows[expected_row],
+                                    "text has wrong owning strip"
+                                );
                                 assert!(!text.galley.elided);
                                 let ink = text.visual_bounding_rect();
                                 assert_eq!(
@@ -4663,6 +4798,8 @@ mod toolbar_containment_tests {
                                     "text bottom: {case}; label={:?} ink={ink:?} clip={clip:?}",
                                     text.galley.job.text
                                 );
+                                assert!(ink.left() >= clip.left(), "text left: {case}");
+                                assert!(ink.right() <= clip.right(), "text right: {case}");
                             }
                         }
                         for (row, response) in &responses {
@@ -4684,10 +4821,23 @@ mod toolbar_containment_tests {
                             assert!(painted.bottom() <= clip.bottom(),
                                 "frame bottom: {case}; row={row} response={:?} frame={frame:?} painted={painted:?} clip={clip:?}", response.rect);
                         }
+                        for (row, response) in &responses {
+                            assert!(rows[*row].contains_rect(response.rect));
+                            let (_, frame) = leaves
+                                .iter()
+                                .find(|(_, shape)| {
+                                    matches!(shape, egui::Shape::Rect(paint)
+                                    if paint.rect.center() == response.rect.center()
+                                        && paint.rect.contains_rect(response.rect))
+                                })
+                                .expect("original owning-frame oracle above");
+                            assert!(rows[*row].contains_rect(frame.visual_bounding_rect()));
+                        }
                         assert_eq!(responses.len(), 7);
                         for (row, response) in responses {
                             assert!(response.rect.top() >= rows[row].top());
                             assert!(response.rect.bottom() <= rows[row].bottom());
+                            assert!(rows[row].contains_rect(response.rect));
                         }
                         let mut labels = Vec::new();
                         for clipped in &output.shapes {
@@ -4708,6 +4858,9 @@ mod toolbar_containment_tests {
                                 }
                                 egui::Shape::Text(text) => {
                                     assert!(!text.galley.elided);
+                                    assert!(clipped.clip_rect.contains_rect(
+                                        text.galley.rect.translate(text.pos.to_vec2())
+                                    ));
                                     assert!(
                                         text.pos.y + text.galley.rect.top()
                                             >= clipped.clip_rect.top()
@@ -4729,6 +4882,7 @@ mod toolbar_containment_tests {
                             "Compose",
                             "Timing & expression",
                             "Pitch & velocity",
+                            "PIANO ROLL",
                             "A long channel name / pattern name / 10000 notes",
                         ] {
                             assert!(
