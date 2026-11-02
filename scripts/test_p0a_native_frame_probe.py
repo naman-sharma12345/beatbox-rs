@@ -1472,5 +1472,228 @@ class DisplayObservation(unittest.TestCase):
         self.assertEqual((diag['failure_stage'],diag['failure_code']),('display_ready','display_ready_timeout'))
         p.checked_diagnostic(diag)
 
+
+
+class DisplayRecord(unittest.TestCase):
+    # Deterministic pure schedules, not native Xvfb or hosted timing evidence.
+    def parse(self, chunks, times=None, selections=None, deadline=3):
+        with patch.object(p.time,'monotonic',side_effect=times,
+                          return_value=0) as clock, \
+             patch.object(p.os,'read',side_effect=chunks) as read, \
+             patch.object(p.select,'select',side_effect=selections,
+                          return_value=([42],[],[])) as selected:
+            result=p.read_display_record(42,deadline)
+        self.assertLessEqual(read.call_count,32)
+        self.assertLessEqual(selected.call_count,31)
+        return result,read,selected,clock
+
+    def test_all_splits_and_all_compositions_of_valid_records(self):
+        # Every ordered partition, including digits / newline and byte-at-a-time.
+        for record in (b'0\n',b'77\n',b'65535\n',b'00000\n'):
+            for mask in range(1 << (len(record)-1)):
+                ends=[i+1 for i in range(len(record)-1) if mask & (1 << i)]+[len(record)]
+                starts=[0]+ends[:-1]
+                chunks=[record[a:b] for a,b in zip(starts,ends)]
+                with self.subTest(record=record,mask=mask):
+                    number,read,selected,_=self.parse(chunks)
+                    self.assertEqual(number,int(record))
+                    self.assertEqual(read.call_count,len(chunks))
+                    self.assertEqual(selected.call_count,len(chunks)-1)
+                    consumed=0
+                    for call,chunk in zip(read.call_args_list,chunks):
+                        self.assertEqual(call.args,(42,32-consumed))
+                        consumed+=len(chunk)
+                    self.assertTrue(all(0<c.args[3]<=3 for c in selected.call_args_list))
+
+    def test_complete_one_read_has_no_extra_wait_or_eof_read(self):
+        number,read,selected,_=self.parse([b'65535\n',AssertionError('extra EOF read')])
+        self.assertEqual(number,65535);read.assert_called_once_with(42,32)
+        selected.assert_not_called()
+
+    def test_strict_rejections_eof_ascii_crlf_trailing_and_numeric_range(self):
+        for chunks in ([b''],[b'7',b''],[b'\n'],[b' 7\n'],[b'+7\n'],[b'-1\n'],
+                       [b'7\r\n'],[b'7',b'\r',b'\n'],[b'7\n8\n'],[b'7\nx'],
+                       [b'\xff'],[b'\xc2\xb2\n'],[b'65536\n'],[b'123456\n'],
+                       [b'12345',b'6'],[b'1'*32],[b'1'*33], [None],['7\n']):
+            with self.subTest(chunks=chunks),self.assertRaises(RuntimeError):
+                self.parse(chunks)
+
+    def test_exact_cap_is_bounded_and_never_requests_more_bytes(self):
+        for chunks in ([b'1'*32],[b'1',b'2'*31],[b'1'*33]):
+            with patch.object(p.time,'monotonic',return_value=0), \
+                 patch.object(p.os,'read',side_effect=chunks) as read, \
+                 patch.object(p.select,'select',return_value=([42],[],[])) as selected:
+                with self.assertRaises(RuntimeError):p.read_display_record(42,3)
+            self.assertLessEqual(read.call_count,2)
+            self.assertLessEqual(selected.call_count,1)
+            self.assertEqual(read.call_args_list[0].args,(42,32))
+            if read.call_count==2:self.assertEqual(read.call_args_list[1].args,(42,31))
+
+    def test_read_errors_eintr_eagain_fail_closed_without_busyspin(self):
+        for error in (OSError('PRIVATE-RECORD-SENTINEL'),InterruptedError(),BlockingIOError()):
+            for after in (False,True):
+                with self.subTest(error=type(error).__name__,after=after), \
+                     patch.object(p.time,'monotonic',return_value=0), \
+                     patch.object(p.os,'read',side_effect=([b'7'] if after else [])+[error,b'7\n']) as read, \
+                     patch.object(p.select,'select',return_value=([42],[],[])) as selected:
+                    with self.assertRaises(type(error)):p.read_display_record(42,3)
+                self.assertEqual(read.call_count,2 if after else 1)
+                self.assertEqual(selected.call_count,1 if after else 0)
+
+    def test_select_error_or_empty_fragment_wait_is_not_initial_timeout(self):
+        for error in (OSError('PRIVATE-RECORD-SENTINEL'),InterruptedError(),BlockingIOError()):
+            with self.subTest(error=type(error).__name__), \
+                 patch.object(p.time,'monotonic',return_value=0), \
+                 patch.object(p.os,'read',return_value=b'7') as read, \
+                 patch.object(p.select,'select',side_effect=error) as selected:
+                with self.assertRaises(type(error)):p.read_display_record(42,3)
+            read.assert_called_once();selected.assert_called_once()
+        with self.assertRaises(TimeoutError):self.parse([b'7'],selections=[([],[],[])])
+
+    def test_each_monotonic_boundary_exhaustion_prevents_next_operation(self):
+        # [pre-read, post-read, pre-select, timeout-computation, post-select,
+        #  pre-read, post-read, pre-return] for two chunks.
+        counts=[(0,0),(1,0),(1,0),(1,0),(1,1),(1,1),(2,1),(2,1)]
+        for boundary,(reads,selects) in enumerate(counts):
+            for exhausted in (3,4):
+                with self.subTest(boundary=boundary,exhausted=exhausted), \
+                     patch.object(p.time,'monotonic',side_effect=[0]*boundary+[exhausted]) as clock, \
+                     patch.object(p.os,'read',side_effect=[b'7',b'\n']) as read, \
+                     patch.object(p.select,'select',return_value=([42],[],[])) as selected:
+                    with self.assertRaises(TimeoutError):p.read_display_record(42,3)
+                self.assertEqual((read.call_count,selected.call_count),(reads,selects))
+                self.assertEqual(clock.call_count,boundary+1)
+
+    def test_remaining_waits_shrink_and_never_reset_original_deadline(self):
+        # A successful two-fragment wait consumes almost all the original 3s.
+        times=[0,.1,.2,.3,.4,.5,.6,.7,2.8,2.9,2.95,2.96,2.97]
+        number,read,selected,_=self.parse([b'6',b'5',b'\n'],times=times)
+        self.assertEqual(number,65)
+        self.assertEqual([c.args[3] for c in selected.call_args_list],[2.7,.20000000000000018])
+        self.assertEqual([c.args[1] for c in read.call_args_list],[32,31,30])
+        # A campaign-limited allowance is passed unchanged, not raised to 3s.
+        _,_,selected,_=self.parse([b'7',b'\n'],times=[0,.1,.2,.25,.3,.4,.5,.6],deadline=1)
+        self.assertEqual(selected.call_args.args[3],.75)
+
+    def test_baseexception_not_swallowed_by_parser(self):
+        for error in (KeyboardInterrupt(),SystemExit(7)):
+            with patch.object(p.time,'monotonic',return_value=0), \
+                 patch.object(p.os,'read',side_effect=error),patch.object(p.select,'select') as selected:
+                with self.assertRaises(type(error)):p.read_display_record(42,3)
+            selected.assert_not_called()
+
+    def capture_record(self, chunks, selections=None, error=None, cleanup_error=False,
+                       receipt_error=False, close_error=False, allowance=3):
+        def observe(out,binary,binding,sup,capture):
+            start=sup.start.side_effect;put=p.put;close=p.close_descriptors
+            def started(label,*a,**kw):
+                result=start(label,*a,**kw)
+                if label=='xvfb':sup.diagnostic['xvfb_startup']='identified'
+                return result
+            def persisted(path,value,*a):
+                if receipt_error and path.name=='receipt.json':raise OSError('PRIVATE-RECORD-SENTINEL')
+                return put(path,value,*a)
+            def closed(fds):
+                close(fds)
+                if close_error:raise OSError('PRIVATE-RECORD-SENTINEL')
+            if cleanup_error:sup.cleanup.side_effect=OSError('PRIVATE-RECORD-SENTINEL')
+            sup.remaining.side_effect=lambda maximum=3:min(allowance,maximum)
+            with patch.object(sup.start,'side_effect',started), \
+                 patch.object(p.os,'read',side_effect=chunks) as read, \
+                 patch.object(p.select,'select',side_effect=selections,
+                              return_value=([42],[],[])) as selected, \
+                 patch.object(p,'xvfb_liveness_after_timeout') as liveness, \
+                 patch.object(p,'put',side_effect=persisted), \
+                 patch.object(p,'close_descriptors',side_effect=closed) as descriptors:
+                if error is None:self.assertTrue(capture(out,binary,binding))
+                else:self.assertFalse(capture(out,binary,binding))
+            sup.cleanup.assert_called_once();descriptors.assert_called_once()
+            liveness.assert_not_called()
+            diag=p.strict((out/('receipt-finalization-failure.json' if receipt_error else 'receipt.json')).read_bytes())['diagnostic']
+            if error is not None:
+                self.assertEqual((diag['failure_stage'],diag['failure_operation'],diag['failure_code']),
+                                 ('display_record','xvfb',error))
+                self.assertEqual(sup.start.call_count,1)
+                self.assertEqual(diag['studio_startup'],'not_started')
+                public=DiagnosticSuccessor().stage_copy(out,'failure')
+                self.assertEqual(public['status'],'failed');self.assertIsNone(public['linkage'])
+                self.assertEqual(public['diagnostic']['failure_stage'],'display_record')
+                self.assertEqual(public['diagnostic']['failure_code'],error)
+                self.assertEqual(public['diagnostic']['xvfb_liveness'],'not_observed')
+                self.assertEqual(public['diagnostic']['cleanup'],'unknown' if cleanup_error else 'reaped')
+                self.assertEqual(public['diagnostic']['finalization'],'failed' if receipt_error else 'unknown')
+                self.assertNotIn('PRIVATE-RECORD-SENTINEL',json.dumps(public))
+                self.assertLessEqual(len(json.dumps(public).encode()),p.RECEIPT_CAP)
+                for key in ('pid','path','env','argv','cookie','detail','error','state'):
+                    self.assertNotIn(key,public['diagnostic'])
+                upload=out.parent/'stage-failure/upload'
+                self.assertEqual({f.name for f in upload.iterdir()},{'manifest.json','public-receipt.json'})
+            self.assertEqual(selected.call_args_list[0].args[3],allowance)
+            self.assertLessEqual(read.call_count,32);self.assertLessEqual(selected.call_count,32)
+        DiagnosticSuccessor().observe_full_capture(observe)
+
+    def test_fragment_success_runs_unchanged_owned_capture_and_seven_read_flow(self):
+        self.capture_record([b'7',b'7',b'\n'])
+        self.capture_record([b'77\n'],allowance=1)
+
+    def test_fragment_failure_classification_and_first_error_cleanup_privacy(self):
+        for chunks,selections,code in (
+                ([b'7'],[([42],[],[]),([],[],[])],'timeout'),
+                ([b'7',b''],None,'operation_failed'),
+                ([b'7\nx'],None,'operation_failed'),
+                ([b'7',OSError('PRIVATE-RECORD-SENTINEL')],None,'io_error'),
+                ([b'7',InterruptedError('PRIVATE-RECORD-SENTINEL')],None,'unknown_exception'),
+                ([b'7',BlockingIOError('PRIVATE-RECORD-SENTINEL')],None,'unknown_exception'),
+                ([b'7'],[([42],[],[]),InterruptedError('PRIVATE-RECORD-SENTINEL')],'unknown_exception'),
+                ([b'7'],[([42],[],[]),BlockingIOError('PRIVATE-RECORD-SENTINEL')],'unknown_exception'),
+                ([b'7'],[([42],[],[]),OSError('PRIVATE-RECORD-SENTINEL')],'io_error')):
+            for cleanup,receipt,closed in ((False,False,False),(True,True,True)):
+                with self.subTest(code=code,cleanup=cleanup):
+                    self.capture_record(chunks,selections,code,cleanup,receipt,closed)
+
+    def test_initial_empty_wait_and_liveness_remain_exact_once(self):
+        # Existing assertions exercise the actual first empty branch unchanged.
+        DisplayObservation().timeout_capture(('S','S'),cleanup_error=True,receipt_error=True)
+        with patch.object(p.os,'read') as read:
+            DisplayReadiness().branch('empty','display_ready','display_ready_timeout')
+        read.assert_not_called()
+
+    def test_capture_uses_original_absolute_allowance_after_initial_wait(self):
+        for end in (2.5,3):
+            def observe(out,binary,binding,sup,capture):
+                now=[0];timeouts=[];start=sup.start.side_effect
+                def started(label,*a,**kw):
+                    result=start(label,*a,**kw)
+                    if label=='xvfb':sup.diagnostic['xvfb_startup']='identified'
+                    return result
+                def selected(*a):
+                    timeouts.append(a[3]);now[0]=end if len(timeouts)==1 else 2.75
+                    return ([a[0][0]],[],[])
+                with patch.object(sup.start,'side_effect',started), \
+                     patch.object(p.time,'monotonic',side_effect=lambda:now[0]), \
+                     patch.object(p.select,'select',side_effect=selected), \
+                     patch.object(p.os,'read',side_effect=[b'7',b'7\n']) as read, \
+                     patch.object(p,'xvfb_liveness_after_timeout') as liveness:
+                    self.assertEqual(capture(out,binary,binding),end<3)
+                self.assertEqual(timeouts,[3,.5] if end<3 else [3])
+                self.assertEqual(read.call_count,2 if end<3 else 0)
+                liveness.assert_not_called();sup.cleanup.assert_called_once()
+                diag=p.strict((out/'receipt.json').read_bytes())['diagnostic']
+                if end==3:
+                    self.assertEqual((diag['failure_stage'],diag['failure_code']),('display_record','timeout'))
+            DiagnosticSuccessor().observe_full_capture(observe)
+
+    def test_source_binding_schemas_caps_and_protocol_assumption_unchanged(self):
+        self.assertEqual((p.CAMPAIGN_SECONDS,p.CHILD_SECONDS,p.CLEANUP_SECONDS),(90,3,5))
+        self.assertEqual((p.RECEIPT_CAP,p.READ_CAP,p.FRAME_CAP),(65536,8*1024*1024,32*1024*1024))
+        self.assertEqual((p.PUBLIC_SCHEMA,p.DIAGNOSTIC_SCHEMA),
+                         ('beatbox.native-frame-probe.public.v3','beatbox.native-frame-probe.diagnostic.v2'))
+        self.assertEqual(len(p.UPLOAD_FILES),9);self.assertEqual(len(p.READS),7)
+        Pure().test_binding_requires_exact_new_head_tree_clean_checkout()
+        # Trusted-owned protocol assumption: later writes are not read after a
+        # newline. This is disclosed, NOT evidence that later trailing data is absent.
+        number,read,selected,_=self.parse([b'7\n',b'bad later trailing bytes'])
+        self.assertEqual(number,7);read.assert_called_once();selected.assert_not_called()
+
 if __name__=='__main__':
     unittest.main(verbosity=2)

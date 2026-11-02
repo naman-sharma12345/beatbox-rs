@@ -256,6 +256,47 @@ fn mixer_regions(row: Rect) -> (Rect, Rect) {
         Rect::from_min_max(Pos2::new(master_left, row.top()), row.max),
     )
 }
+/// Decoration only: the existing channel/MASTER gap owns all divider paint.
+fn paint_mixer_divider(painter: &egui::Painter, row: Rect, strip_height: f32, populated: bool) {
+    let parent_clip = painter.clip_rect();
+    if !populated
+        || !row.is_finite()
+        || !row.is_positive()
+        || !parent_clip.is_finite()
+        || !parent_clip.is_positive()
+        || !strip_height.is_finite()
+        || strip_height < 1.0
+        || strip_height > row.height() - 18.0
+    {
+        return;
+    }
+    let (channels, master) = mixer_regions(row);
+    if channels.width() < 1.0 || master.left() - channels.right() != 8.0 {
+        return;
+    }
+    let gap = Rect::from_min_max(
+        Pos2::new(channels.right(), row.top()),
+        Pos2::new(master.left(), row.top() + strip_height),
+    );
+    let clip = gap.intersect(parent_clip);
+    let x = gap.center().x;
+    // Include the stroke's half-width at both ends, without entering the scrollbar.
+    if !clip.is_positive()
+        || clip.height() <= 1.0
+        || x - 0.5 < clip.left()
+        || x + 0.5 > clip.right()
+    {
+        return;
+    }
+    painter.with_clip_rect(clip).line_segment(
+        [
+            Pos2::new(x, clip.top() + 0.5),
+            Pos2::new(x, clip.bottom() - 0.5),
+        ],
+        Stroke::new(1.0, Tokens::DARK.border_light),
+    );
+}
+
 // Compact onboarding belongs to the empty CHANNEL region, not above the
 // whole mixer. MASTER keeps exactly the same independent reservation/clip.
 fn empty_mix_onboarding(ui: &mut egui::Ui) -> egui::Response {
@@ -1066,6 +1107,7 @@ impl Studio {
         let (row, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), h + 18.0), Sense::hover());
         let (channels, master) = mixer_regions(row);
+        paint_mixer_divider(ui.painter(), row, h, !strips.is_empty());
         // Reserve the master before rendering channels. A child's requested
         // minimum must not advance the parent or paint across this boundary.
         let mut channel_ui = ui.new_child(
@@ -2831,6 +2873,166 @@ mod empty_mix_containment_tests {
                 }
                 assert!(!labels.contains(&"Start a pattern"));
                 assert!((ctx.pixels_per_point() - scale).abs() < 0.01);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod mix_divider_tests {
+    use super::*;
+
+    // Exercise the live paint helper, then compare the next real widget against
+    // a frame with no helper call. No Studio, device, renderer or native launch.
+    fn frame(
+        row: Rect,
+        height: f32,
+        clip: Rect,
+        populated: bool,
+        scale: f32,
+        paint: bool,
+    ) -> (egui::FullOutput, egui::Id, Rect) {
+        let ctx = egui::Context::default();
+        apply_theme(&ctx);
+        ctx.set_pixels_per_point(scale);
+        let mut sentinel = None;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0))),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let before = (ui.cursor(), ui.min_rect(), ui.available_rect_before_wrap());
+                    let next_id = ui.next_auto_id();
+                    if paint {
+                        paint_mixer_divider(
+                            &ui.painter().with_clip_rect(clip),
+                            row,
+                            height,
+                            populated,
+                        );
+                    }
+                    assert_eq!(ui.next_auto_id(), next_id, "paint allocated an auto ID");
+                    assert_eq!(
+                        (ui.cursor(), ui.min_rect(), ui.available_rect_before_wrap()),
+                        before,
+                        "paint changed layout or scroll budget"
+                    );
+                    let response = ui.allocate_response(Vec2::new(12.0, 12.0), Sense::hover());
+                    assert!(!response.hovered() && !response.clicked() && !response.dragged());
+                    sentinel = Some((response.id, response.rect));
+                });
+            },
+        );
+        assert!((ctx.pixels_per_point() - scale).abs() < 0.01);
+        let (id, rect) = sentinel.unwrap();
+        (output, id, rect)
+    }
+
+    #[test]
+    fn production_mix_divider_emits_only_contained_gap_stroke_at_both_scales() {
+        for scale in [1.0, 2.0] {
+            for width in [0.0, 100.0, 150.0, 158.0, 420.0, 560.0, 820.0, 1180.0] {
+                let row = Rect::from_min_size(Pos2::new(20.0, 80.0), Vec2::new(width, 218.0));
+                let regions = mixer_regions(row);
+                let (channels, master) = regions;
+                let gap = Rect::from_min_max(
+                    Pos2::new(channels.right(), row.top()),
+                    Pos2::new(master.left(), row.top() + 200.0),
+                );
+                for (clip, visible) in [
+                    (row, true),
+                    (Rect::from_min_max(Pos2::new(20.0, 100.0), row.max), true),
+                    (
+                        Rect::from_min_max(row.min, Pos2::new(row.right(), 260.0)),
+                        true,
+                    ),
+                    (
+                        Rect::from_min_size(Pos2::new(1.0, 1.0), Vec2::splat(5.0)),
+                        false,
+                    ),
+                    (Rect::from_min_size(gap.min, Vec2::new(2.0, 200.0)), false),
+                    (Rect::from_min_size(gap.min, Vec2::new(8.0, 0.5)), false),
+                ] {
+                    for populated in [false, true] {
+                        let (output, id, rect) = frame(row, 200.0, clip, populated, scale, true);
+                        let (_, baseline_id, baseline_rect) =
+                            frame(row, 200.0, clip, populated, scale, false);
+                        assert_eq!((id, rect), (baseline_id, baseline_rect));
+                        assert_eq!(mixer_regions(row), regions);
+                        let strokes: Vec<_> = output
+                            .shapes
+                            .iter()
+                            .filter(|s| matches!(s.shape, egui::Shape::LineSegment { .. }))
+                            .collect();
+                        let expected = populated && width > 158.0 && visible;
+                        assert_eq!(strokes.len(), usize::from(expected));
+                        for emitted in strokes {
+                            let egui::Shape::LineSegment { points, stroke } = &emitted.shape else {
+                                unreachable!();
+                            };
+                            assert_eq!(stroke.width, 1.0);
+                            assert_eq!(
+                                stroke.color,
+                                egui::epaint::ColorMode::Solid(Tokens::DARK.border_light)
+                            );
+                            assert_eq!(points[0].x, gap.center().x);
+                            assert_eq!(points[1].x, points[0].x);
+                            assert!(points[1].y > points[0].y);
+                            let bounds = Rect::from_min_max(points[0], points[1]).expand(0.5);
+                            assert!(bounds.is_finite() && bounds.is_positive());
+                            assert!(gap.contains_rect(bounds));
+                            assert!(clip.contains_rect(bounds));
+                            assert!(emitted.clip_rect.contains_rect(bounds));
+                            assert!(gap.contains_rect(emitted.clip_rect));
+                            assert!(clip.contains_rect(emitted.clip_rect));
+                            assert!(bounds.left() > channels.right());
+                            assert!(bounds.right() < master.left());
+                            assert!(bounds.bottom() <= row.bottom() - 18.0);
+                            assert_eq!(points[0].y, emitted.clip_rect.top() + 0.5);
+                            assert_eq!(points[1].y, emitted.clip_rect.bottom() - 0.5);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn production_mix_divider_skips_invalid_tiny_and_offscreen_allocations() {
+        let row = Rect::from_min_size(Pos2::new(20.0, 80.0), Vec2::new(560.0, 218.0));
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0));
+        for scale in [1.0, 2.0] {
+            for (invalid_row, height) in [
+                (row, f32::NAN),
+                (row, f32::INFINITY),
+                (row, -1.0),
+                (row, 0.0),
+                (row, 0.5),
+                (row, 1.0),
+                (row, 201.0),
+                (Rect::NOTHING, 200.0),
+                (Rect::from_min_size(row.min, Vec2::new(158.5, 218.0)), 200.0),
+                (Rect::from_min_max(row.max, row.min), 200.0),
+                (
+                    Rect::from_min_size(row.min, Vec2::new(f32::NAN, 218.0)),
+                    200.0,
+                ),
+                (
+                    Rect::from_min_size(row.min, Vec2::new(f32::INFINITY, 218.0)),
+                    200.0,
+                ),
+                (row.translate(Vec2::new(2000.0, 0.0)), 200.0),
+            ] {
+                let (output, id, rect) = frame(invalid_row, height, screen, true, scale, true);
+                let (_, baseline_id, baseline_rect) =
+                    frame(invalid_row, height, screen, true, scale, false);
+                assert_eq!((id, rect), (baseline_id, baseline_rect));
+                assert!(!output
+                    .shapes
+                    .iter()
+                    .any(|s| { matches!(s.shape, egui::Shape::LineSegment { .. }) }));
             }
         }
     }

@@ -717,6 +717,46 @@ def close_descriptors(fds):
     require(not failed, 'descriptor close failed')
 
 
+
+def read_display_record(rfd, deadline):
+    # Called only after the original readiness wait succeeds. The owned server
+    # protocol writes digits then newline separately. Assemble only this record,
+    # within the SAME absolute wait allowance; never restart a child timeout.
+    # No EOF wait: as in the original parser, later trailing writes cannot be
+    # excluded once a complete record has been accepted from this trusted pipe.
+    cap = 32
+    data = b''
+    def budget():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('displayfd record deadline')
+    for _ in range(cap):
+        budget()
+        chunk = os.read(rfd, cap - len(data))
+        budget()
+        require(type(chunk) is bytes and 0 < len(chunk) <= cap - len(data),
+                'displayfd bounded nonempty read')
+        data += chunk
+        if b'\n' in data:
+            require(re.fullmatch(rb'[0-9]{1,5}\n', data) is not None,
+                    'displayfd exact record')
+            number = integer(int(data), 0, 65535)
+            budget()
+            return number
+        require(re.fullmatch(rb'[0-9]{1,5}', data) is not None and len(data) < cap,
+                'displayfd incomplete record')
+        budget()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('displayfd record deadline')
+        ready = select.select([rfd], [], [], remaining)[0]
+        budget()
+        if not ready:
+            raise TimeoutError('displayfd fragment deadline')
+        # EINTR/EAGAIN and all other I/O errors propagate without a retry. Only
+        # a successful nonempty read can advance the finite byte/operation bound.
+    raise RuntimeError('displayfd record operation cap')
+
+
 def clean_environment(home):
     # Deliberate allowlist; no inherited DISPLAY, auth, app capture selectors, proxies or user state.
     return {'PATH':os.environ.get('PATH','/usr/bin:/bin'),'LANG':'C.UTF-8','HOME':str(home),
@@ -785,7 +825,10 @@ def capture(out, binary, binding, diagnostic=None):
             checkpoint(diagnostic, 'display_close')
             os.close(wfd); wfd=-1
             checkpoint(diagnostic, 'display_budget')
+            display_started=time.monotonic()
             display_timeout=supervisor.remaining()
+            display_deadline=display_started+display_timeout
+            require(time.monotonic()<display_deadline,'X displayfd budget')
             checkpoint(diagnostic, 'display_ready')
             ready=select.select([rfd],[],[],display_timeout)[0]
             # Empty readiness is not proof of process exit or its internal cause.
@@ -800,9 +843,7 @@ def capture(out, binary, binding, diagnostic=None):
                     pass  # Timeout stays first; all existing finally cleanup still runs.
             require(ready,'X displayfd deadline')
             checkpoint(diagnostic, 'display_record')
-            number_data=os.read(rfd,32)
-            require(re.fullmatch(rb'[0-9]{1,5}\n',number_data) is not None,'displayfd exact record')
-            number=integer(int(number_data),0,65535)
+            number=read_display_record(rfd,display_deadline)
         except Exception as error:
             diagnostic_failure(diagnostic, error)
             raise
