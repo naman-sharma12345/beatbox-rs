@@ -24,7 +24,6 @@ jobs:
     env:
       REVIEWED_HEAD: ${{ inputs.reviewed_head }}
       REVIEWED_TREE: ${{ inputs.reviewed_tree }}
-      PROBE_OUT: ${{ runner.temp }}/p0a-native-frame-probe
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,17 +37,24 @@ jobs:
             xvfb xauth libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcursor1 libxrandr2 libxi6 python3
       - name: Installed facilities and exact reviewed checkout only
         timeout-minutes: 1
+        env:
+          PROBE_OUT: ${{ runner.temp }}/p0a-native-frame-probe
         run: python3 scripts/p0a_native_frame_probe.py facilities "$PROBE_OUT"
       - name: Build with exact real compiler after approved hosted preparation
         timeout-minutes: 11
+        env:
+          PROBE_OUT: ${{ runner.temp }}/p0a-native-frame-probe
         run: python3 scripts/p0a_native_frame_probe.py build "$PROBE_OUT"
       - name: One owned ordinary Studio, one genuine current client frame, seven existing reads
         id: capture
         timeout-minutes: 2
+        env:
+          PROBE_OUT: ${{ runner.temp }}/p0a-native-frame-probe
         run: python3 scripts/p0a_native_frame_probe.py capture "$PROBE_OUT" target/release/beatbox
       - name: Stage exact finite nonsecret evidence set
         id: stage
         env:
+          PROBE_OUT: ${{ runner.temp }}/p0a-native-frame-probe
           CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
         if: ${{ always() }}
         run: python3 scripts/p0a_native_frame_probe.py stage "$PROBE_OUT"
