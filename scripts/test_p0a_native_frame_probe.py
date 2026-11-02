@@ -1147,5 +1147,330 @@ class DiagnosticSuccessor(unittest.TestCase):
             self.assertNotIn('SECRET-DIAGNOSTIC-SENTINEL',json.dumps(public))
         self.observe_full_capture(observe)
 
+
+class DisplayReadiness(unittest.TestCase):
+    def branch(self, kind, stage, code):
+        def observe(out,binary,binding,sup,capture):
+            original_start=sup.start.side_effect
+            def start(label,*args,**kwargs):
+                result=original_start(label,*args,**kwargs)
+                if label=='xvfb': sup.diagnostic['xvfb_startup']='identified'
+                p.checkpoint(sup.diagnostic,'child_group')
+                return result
+            original_remaining=sup.remaining.side_effect
+            def remaining(maximum=p.CHILD_SECONDS):
+                if kind=='budget': raise RuntimeError('PRIVATE-SENTINEL')
+                return original_remaining(maximum)
+            def selected(*args):
+                if kind=='io': raise OSError('PRIVATE-SENTINEL')
+                if kind=='exception': raise RuntimeError('PRIVATE-SENTINEL')
+                return ([],[],[]) if kind=='empty' else ([args[0][0]],[],[])
+            with patch.object(sup.start,'side_effect',start), \
+                 patch.object(sup.remaining,'side_effect',remaining), \
+                 patch.object(p.select,'select',side_effect=selected) as select_call:
+                self.assertFalse(capture(out,binary,binding))
+            row=p.strict((out/'receipt.json').read_bytes())
+            diag=row['diagnostic']
+            self.assertEqual((diag['failure_stage'],diag['failure_operation'],diag['failure_code']),
+                             (stage,'xvfb',code))
+            self.assertEqual(diag['cleanup'],'reaped')
+            self.assertEqual(diag['xvfb_startup'],'identified')
+            self.assertEqual(diag['studio_startup'],'not_started')
+            self.assertEqual(row['status'],'failed')
+            self.assertIsNone(row['app']); self.assertEqual(row['reads'],[])
+            self.assertIsNone(row['frame'])
+            self.assertEqual(sup.start.call_count,1)
+            self.assertEqual(sup.start.call_args.args[0],'xvfb')
+            sup.cleanup.assert_called_once()
+            self.assertEqual(select_call.call_count,0 if kind=='budget' else 1)
+            if kind!='budget': self.assertEqual(select_call.call_args.args[3],3)
+            public=DiagnosticSuccessor().stage_copy(out,'failure')
+            self.assertEqual(public['diagnostic']['failure_stage'],stage)
+            self.assertEqual(public['diagnostic']['failure_code'],code)
+            self.assertIsNone(public['linkage'])
+            self.assertEqual(public['status'],'failed')
+            self.assertEqual(public['diagnostic']['finalization'],'unknown')
+            self.assertNotIn('PRIVATE-SENTINEL',json.dumps(public))
+        DiagnosticSuccessor().observe_full_capture(observe)
+
+    def test_empty_wait_is_only_display_ready_timeout_not_process_exit(self):
+        self.branch('empty','display_ready','display_ready_timeout')
+
+    def test_expired_budget_never_enters_select(self):
+        self.branch('budget','display_budget','operation_failed')
+
+    def test_select_oserror_is_not_reported_as_timeout(self):
+        self.branch('io','display_ready','io_error')
+
+    def test_select_runtimeerror_is_not_reported_as_empty_result(self):
+        self.branch('exception','display_ready','operation_failed')
+
+    def test_remaining_caps_campaign_and_child_without_extension(self):
+        with patch.object(p.time,'monotonic',return_value=100): sup=p.Supervisor(Path('/mock'))
+        self.assertEqual(sup.deadline,190)
+        for now,expected in ((100,3),(188.75,1.25)):
+            with patch.object(p.time,'monotonic',return_value=now):
+                self.assertEqual(sup.remaining(),expected)
+        for now in (190,191):
+            with patch.object(p.time,'monotonic',return_value=now):
+                with self.assertRaises(RuntimeError): sup.remaining()
+
+    def test_new_enums_remain_closed_and_first_failure_is_retained(self):
+        diag=p.new_diagnostic(); p.checkpoint(diag,'display_ready')
+        p.diagnostic_failure(diag,code='display_ready_timeout')
+        for where in ('display_close','cleanup','final_receipt'):
+            p.checkpoint(diag,where);p.diagnostic_failure(diag,OSError('PRIVATE-SENTINEL'))
+        self.assertEqual(diag['failure_code'],'display_ready_timeout')
+        self.assertEqual(diag['failure_stage'],'display_ready')
+        for key,value in (('failure_code','process_exited'),('stage','arbitrary_detail')):
+            bad=copy.deepcopy(diag);bad[key]=value
+            with self.assertRaises(RuntimeError): p.checked_diagnostic(bad)
+
+    def test_preexec_restores_only_saved_mask_then_limits_and_keeps_fd(self):
+        with Diagnostics().temp() as t:
+            sup=p.Supervisor(Path(t)); events=[]
+            saved={p.signal.SIGUSR1}
+            def mask(how,values):
+                events.append(('mask',how,set(values)))
+                return saved
+            fake=unittest.mock.Mock(pid=321)
+            ident={'pid':321,'start_ticks':99,'pgrp':321,'state':'S'}
+            with patch.object(p.subprocess,'Popen',return_value=fake) as popen, \
+                 patch.object(p.signal,'pthread_sigmask',side_effect=mask), \
+                 patch.object(p.signal,'signal') as disposition, \
+                 patch.object(p,'limits',side_effect=lambda:events.append(('limits',))), \
+                 patch.object(p.os,'pidfd_open',return_value=7), \
+                 patch.object(p,'birth',return_value=ident):
+                sup.start('xvfb',['NEVER EXECUTED'],{'PATH':'/mock'},(42,))
+                self.assertEqual(popen.call_args.kwargs['pass_fds'],(42,))
+                self.assertTrue(popen.call_args.kwargs['start_new_session'])
+                popen.call_args.kwargs['preexec_fn']()
+            self.assertEqual(events,[('mask',p.signal.SIG_BLOCK,{p.signal.SIGINT,p.signal.SIGTERM}),
+                                     ('mask',p.signal.SIG_SETMASK,saved),
+                                     ('mask',p.signal.SIG_SETMASK,saved),('limits',)])
+            disposition.assert_not_called()
+
+
+class DisplayObservation(unittest.TestCase):
+    def owned(self):
+        sup=p.Supervisor(Path('/mock'))
+        ident={'pid':322,'start_ticks':100,'pgrp':322,'state':'S'}
+        child=unittest.mock.Mock(pid=322,returncode=None)
+        row={'p':child,'birth':ident,'label':'xvfb','reaped':False,'pidfd':7}
+        sup.children=[row]
+        return sup,child,ident,row
+
+    def samples(self, values, expected):
+        sup,child,ident,row=self.owned()
+        with patch.object(p,'birth',side_effect=values) as read:
+            result=p.xvfb_liveness_after_timeout(sup,child,ident)
+        self.assertEqual(result,expected)
+        self.assertLessEqual(read.call_count,2)
+        self.assertTrue(all(call.args==(322,) for call in read.call_args_list))
+        child.poll.assert_not_called();child.wait.assert_not_called()
+        self.assertIsNone(child.returncode);self.assertFalse(row['reaped'])
+        return read.call_count
+
+    def test_alive_samples_include_blocked_and_stopped_without_cause_claim(self):
+        _,_,ident,_=self.owned()
+        for state in ('R','S','D','T','t','I'):
+            with self.subTest(state=state):
+                self.assertEqual(self.samples([{**ident,'state':state},{**ident,'state':'S'}],'alive_owned'),2)
+
+    def test_two_matching_zombies_are_exited_but_unreaped(self):
+        _,_,ident,_=self.owned()
+        self.assertEqual(self.samples([{**ident,'state':'Z'},{**ident,'state':'Z'}],'exited_owned'),2)
+
+    def test_mixed_alive_zombie_dead_or_unknown_states_are_unknown(self):
+        _,_,ident,_=self.owned()
+        for states in (('R','Z'),('Z','R'),('X','X'),('x','x'),('W','W'),('P','P'),('?','S')):
+            with self.subTest(states=states):
+                self.samples([{**ident,'state':s} for s in states],'unknown')
+
+    def test_missing_first_proc_record_is_identity_unavailable_not_exit(self):
+        self.assertEqual(self.samples([FileNotFoundError('PRIVATE-SENTINEL')],'identity_unavailable'),1)
+
+    def test_missing_second_proc_record_is_identity_unavailable_not_exit(self):
+        _,_,ident,_=self.owned()
+        self.assertEqual(self.samples([ident,FileNotFoundError('PRIVATE-SENTINEL')],'identity_unavailable'),2)
+
+    def test_permission_parse_and_hostile_read_errors_return_unknown_without_formatting(self):
+        class Hostile(Exception):
+            def __str__(self): raise AssertionError('formatted')
+            def __repr__(self): raise AssertionError('represented')
+        _,_,ident,_=self.owned()
+        for error in (PermissionError('PRIVATE-SENTINEL'),OSError('PRIVATE-SENTINEL'),
+                      ValueError('PRIVATE-SENTINEL'),RuntimeError('PRIVATE-SENTINEL'),Hostile()):
+            for second in (False,True):
+                with self.subTest(kind=type(error).__name__,second=second):
+                    self.samples(([ident] if second else [])+[error],'unknown')
+
+    def test_pid_reuse_birth_and_group_mismatch_never_promoted(self):
+        _,_,ident,_=self.owned()
+        for key,value in (('pid',999),('start_ticks',101),('pgrp',999)):
+            for second in (False,True):
+                values=([ident] if second else [])+[{**ident,key:value}]
+                with self.subTest(key=key,second=second):self.samples(values,'identity_unavailable')
+
+    def test_unregistered_partial_reaped_known_return_and_missing_pidfd_skip_proc(self):
+        for kind in ('unregistered','not_list','duplicate','reaped','returncode','pidfd','label','birth','pid'):
+            sup,child,ident,row=self.owned()
+            if kind=='unregistered':sup.children=[]
+            if kind=='not_list':sup.children=object()
+            if kind=='duplicate':sup.children=[row,row]
+            if kind=='reaped':row['reaped']=True
+            if kind=='returncode':child.returncode=0
+            if kind=='pidfd':row['pidfd']=None
+            if kind=='label':row['label']='studio'
+            if kind=='birth':row['birth']={**ident,'start_ticks':101}
+            if kind=='pid':child.pid=999
+            with self.subTest(kind=kind),patch.object(p,'birth') as read:
+                self.assertEqual(p.xvfb_liveness_after_timeout(sup,child,ident),'identity_unavailable')
+                read.assert_not_called();child.poll.assert_not_called();child.wait.assert_not_called()
+
+    def test_malformed_identity_and_samples_are_unknown_not_known_state(self):
+        _,_,ident,_=self.owned()
+        for bad in ({}, {**ident,'pid':True},{**ident,'start_ticks':100.0},
+                    {**ident,'state':True},{**ident,'extra':'PRIVATE-SENTINEL'},[],None):
+            with self.subTest(bad=bad):self.samples([bad,ident],'unknown')
+        sup,child,ident,row=self.owned()
+        with patch.object(p,'birth') as read:
+            self.assertEqual(p.xvfb_liveness_after_timeout(sup,child,{}),'unknown')
+            read.assert_not_called()
+
+    def test_exhausted_campaign_before_first_read_is_unknown_without_extension(self):
+        sup,child,ident,row=self.owned();deadline=sup.deadline
+        with patch.object(p.time,'monotonic',return_value=deadline),patch.object(p,'birth') as read:
+            self.assertEqual(p.xvfb_liveness_after_timeout(sup,child,ident),'unknown')
+        read.assert_not_called();self.assertEqual(sup.deadline,deadline)
+
+    def test_campaign_exhaustion_between_reads_or_after_second_withholds_known_state(self):
+        for times,count in (([0,10],1),([0,0,10],2)):
+            sup,child,ident,row=self.owned();sup.deadline=10
+            with patch.object(p.time,'monotonic',side_effect=times),patch.object(p,'birth',return_value=ident) as read:
+                self.assertEqual(p.xvfb_liveness_after_timeout(sup,child,ident),'unknown')
+            self.assertEqual(read.call_count,count);self.assertEqual(sup.deadline,10)
+
+    def test_versioned_field_and_all_closed_values_validate_only_with_timeout(self):
+        self.assertEqual(p.PUBLIC_SCHEMA,'beatbox.native-frame-probe.public.v3')
+        self.assertEqual(p.DIAGNOSTIC_SCHEMA,'beatbox.native-frame-probe.diagnostic.v2')
+        value=p.new_diagnostic();self.assertEqual(value['xvfb_liveness'],'not_observed')
+        for state in p.XVFB_LIVENESS:
+            diag=p.new_diagnostic();diag['xvfb_liveness']=state
+            if state!='not_observed':
+                p.checkpoint(diag,'display_ready');diag['xvfb_startup']='identified'
+                p.diagnostic_failure(diag,code='display_ready_timeout')
+            p.checked_diagnostic(diag)
+        for bad in (None,False,0,{},[], 'Z','PRIVATE-SENTINEL','reaped','process_exited'):
+            diag=p.new_diagnostic();diag['xvfb_liveness']=bad
+            with self.assertRaises(RuntimeError):p.checked_diagnostic(diag)
+
+    def test_old_versions_missing_field_extras_and_contradictory_states_rejected(self):
+        value=p.new_diagnostic()
+        bads=[]
+        old=copy.deepcopy(value);old['schema']='beatbox.native-frame-probe.diagnostic.v1';bads.append(old)
+        missing=copy.deepcopy(value);del missing['xvfb_liveness'];bads.append(missing)
+        for key in ('pid','start_ticks','state','path','argv','env','cookie','detail'):
+            bad=copy.deepcopy(value);bad[key]='PRIVATE-SENTINEL';bads.append(bad)
+        for state in p.XVFB_LIVENESS[1:]:
+            bad=copy.deepcopy(value);bad['xvfb_liveness']=state;bads.append(bad)
+        for bad in bads:
+            with self.assertRaises(RuntimeError):p.checked_diagnostic(bad)
+        row=Diagnostics().public();row['schema']='beatbox.native-frame-probe.public.v2'
+        with self.assertRaises(RuntimeError):p.checked_public(row)
+        for state in ('alive_owned','exited_owned'):
+            diag=p.new_diagnostic();p.checkpoint(diag,'display_ready')
+            p.diagnostic_failure(diag,code='display_ready_timeout');diag['xvfb_liveness']=state
+            with self.assertRaises(RuntimeError):p.checked_diagnostic(diag)
+
+    def timeout_capture(self, states=None, helper_error=None, helper_value=None, cleanup_error=False, receipt_error=False):
+        def observe(out,binary,binding,sup,capture):
+            original_start=sup.start.side_effect; original_put=p.put
+            child=unittest.mock.Mock(pid=322,returncode=None);sup.children=[]
+            sup.deadline=p.time.monotonic()+90
+            def start(label,*a,**kw):
+                result=original_start(label,*a,**kw)
+                self.assertEqual(label,'xvfb')
+                ident=result[1];sup.diagnostic['xvfb_startup']='identified'
+                sup.children.append({'p':child,'birth':ident,'label':'xvfb','reaped':False,'pidfd':7})
+                p.checkpoint(sup.diagnostic,'child_group')
+                return child,ident
+            def put(path,value,*a):
+                if receipt_error and path.name=='receipt.json':raise OSError('PRIVATE-SENTINEL')
+                return original_put(path,value,*a)
+            if cleanup_error:sup.cleanup.side_effect=OSError('PRIVATE-SENTINEL')
+            samples=[{'pid':322,'start_ticks':100,'pgrp':322,'state':s} for s in (states or ('S','S'))]
+            helper=p.xvfb_liveness_after_timeout
+            def observed(*a):
+                if helper_error is not None:raise helper_error
+                if helper_value is not None:return helper_value
+                return helper(*a)
+            with patch.object(sup.start,'side_effect',start),patch.object(p.select,'select',return_value=([],[],[])) as selected, \
+                 patch.object(p,'birth',side_effect=samples) as reads,patch.object(p,'xvfb_liveness_after_timeout',side_effect=observed) as once, \
+                 patch.object(p,'put',side_effect=put):
+                self.assertFalse(capture(out,binary,binding))
+            once.assert_called_once();selected.assert_called_once()
+            self.assertEqual(reads.call_count,0 if helper_error is not None or helper_value is not None else 2)
+            sup.cleanup.assert_called_once();self.assertEqual(sup.start.call_count,1)
+            child.poll.assert_not_called();child.wait.assert_not_called();self.assertIsNone(child.returncode)
+            self.assertFalse(sup.children[0]['reaped'])
+            file=out/('receipt-finalization-failure.json' if receipt_error else 'receipt.json')
+            row=p.strict(file.read_bytes());diag=row['diagnostic']
+            self.assertEqual((diag['failure_stage'],diag['failure_operation'],diag['failure_code']),
+                             ('display_ready','xvfb','display_ready_timeout'))
+            expected='unknown' if helper_error is not None or helper_value is not None else ('exited_owned' if states==('Z','Z') else 'alive_owned')
+            self.assertEqual(diag['xvfb_liveness'],expected)
+            self.assertEqual(diag['cleanup'],'unknown' if cleanup_error else 'reaped')
+            public=DiagnosticSuccessor().stage_copy(out,'failure')
+            self.assertEqual(public['schema'],p.PUBLIC_SCHEMA)
+            self.assertEqual(public['diagnostic']['xvfb_liveness'],expected)
+            self.assertEqual(public['diagnostic']['failure_code'],'display_ready_timeout')
+            self.assertEqual(public['status'],'failed');self.assertIsNone(public['linkage'])
+            self.assertEqual(public['diagnostic']['finalization'],'failed' if receipt_error else 'unknown')
+            self.assertNotIn('PRIVATE-SENTINEL',json.dumps(public))
+            for key in ('pid','start_ticks','pgrp','state','path','detail','error','env','argv'):
+                self.assertNotIn(key,public['diagnostic'])
+            self.assertEqual(set(f.name for f in (out.parent/'stage-failure/upload').iterdir()),{'manifest.json','public-receipt.json'})
+        DiagnosticSuccessor().observe_full_capture(observe)
+
+    def test_actual_empty_path_observes_once_persists_owned_alive_without_public_identity(self):
+        self.timeout_capture(('D','S'))
+
+    def test_actual_empty_path_observes_zombie_without_reaping_or_success(self):
+        self.timeout_capture(('Z','Z'))
+
+    def test_helper_throw_cannot_replace_timeout_or_skip_cleanup(self):
+        class Hostile(Exception):
+            def __str__(self):raise AssertionError('formatted')
+            def __repr__(self):raise AssertionError('represented')
+        for error in (OSError('PRIVATE-SENTINEL'),RuntimeError('PRIVATE-SENTINEL'),Hostile()):
+            with self.subTest(kind=type(error).__name__):self.timeout_capture(helper_error=error)
+
+    def test_invalid_helper_return_is_unknown_not_arbitrary_public_data(self):
+        for value in ('PRIVATE-SENTINEL',{'pid':322},False,'not_observed'):
+            with self.subTest(value=value):self.timeout_capture(helper_value=value)
+
+    def test_observation_and_timeout_survive_cleanup_and_receipt_failures(self):
+        for cleanup,receipt in ((True,False),(False,True),(True,True)):
+            with self.subTest(cleanup=cleanup,receipt=receipt):
+                self.timeout_capture(('S','S'),cleanup_error=cleanup,receipt_error=receipt)
+
+    def test_no_observation_on_ready_success_budget_error_or_select_exception(self):
+        with patch.object(p,'xvfb_liveness_after_timeout') as observe:
+            Pure().mock_capture(False)
+            for kind,stage,code in (('budget','display_budget','operation_failed'),
+                                    ('io','display_ready','io_error'),('exception','display_ready','operation_failed')):
+                DisplayReadiness().branch(kind,stage,code)
+        observe.assert_not_called()
+
+    def test_known_liveness_never_erases_first_failure_during_staging(self):
+        diag=p.new_diagnostic();diag['xvfb_startup']='identified';p.checkpoint(diag,'display_ready')
+        p.diagnostic_failure(diag,code='display_ready_timeout');diag['xvfb_liveness']='exited_owned'
+        for stage in ('display_close','cleanup','final_receipt','public_linkage','capture_outcome'):
+            p.checkpoint(diag,stage);p.diagnostic_failure(diag,OSError('PRIVATE-SENTINEL'))
+        self.assertEqual(diag['xvfb_liveness'],'exited_owned')
+        self.assertEqual((diag['failure_stage'],diag['failure_code']),('display_ready','display_ready_timeout'))
+        p.checked_diagnostic(diag)
+
 if __name__=='__main__':
     unittest.main(verbosity=2)

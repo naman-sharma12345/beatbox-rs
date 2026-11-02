@@ -44,13 +44,13 @@ CASES = ['focus', 'filter_mode', 'osc1', 'osc2', 'inspector_scroll',
 
 
 # Public observability is closed vocabulary, never exception text or worker stdout.
-PUBLIC_SCHEMA = 'beatbox.native-frame-probe.public.v2'
-DIAGNOSTIC_SCHEMA = 'beatbox.native-frame-probe.diagnostic.v1'
+PUBLIC_SCHEMA = 'beatbox.native-frame-probe.public.v3'
+DIAGNOSTIC_SCHEMA = 'beatbox.native-frame-probe.diagnostic.v2'
 STAGES = ('unavailable', 'capture_entry', 'handler_install', 'capture_arguments',
           'output_guard', 'source_binding', 'source_record', 'binary_guard',
           'campaign_directory', 'build_copy', 'supervisor_init', 'build_binding',
           'scratch_setup', 'facilities', 'facilities_validation', 'read_validation', 'fixture_copy', 'auth_setup', 'display_pipe',
-          'xvfb_start', 'display_ready', 'display_record', 'display_close',
+          'xvfb_start', 'display_budget', 'display_ready', 'display_record', 'display_close',
           'display_ownership', 'studio_start', 'app_ready', 'app_ownership',
           'listener_ownership', 'frame_ownership', 'frame_worker', 'frame_validation',
           'read_0', 'read_1', 'read_2', 'read_3', 'read_4', 'read_5', 'read_6',
@@ -61,10 +61,12 @@ STAGES = ('unavailable', 'capture_entry', 'handler_install', 'capture_arguments'
           ('attempt', 'mask_block', 'log_open', 'log_close', 'spawn', 'mask_restore', 'pidfd', 'birth',
            'group', 'worker_spec', 'worker_wait', 'worker_result'))
 FAILURE_CODES = ('operation_failed', 'io_error', 'timeout', 'invalid_value',
-                 'unknown_exception', 'capture_unsuccessful', 'finalization_failed')
+                 'unknown_exception', 'capture_unsuccessful', 'finalization_failed',
+                 'display_ready_timeout')
 OPERATIONS = ('capture', 'facilities', 'xvfb', 'studio', 'frame') + tuple('read_' + str(i) for i in range(7))
 OUTCOMES = ('not_attempted', 'unknown', 'failed', 'reaped')
 STARTUP = ('unknown', 'not_started', 'registered', 'identified')
+XVFB_LIVENESS = ('not_observed', 'alive_owned', 'exited_owned', 'identity_unavailable', 'unknown')
 
 
 def new_diagnostic():
@@ -72,12 +74,13 @@ def new_diagnostic():
             'failure_stage': None, 'failure_code': None,
             'operation': 'capture', 'failure_operation': None,
             'xvfb_startup': 'unknown', 'studio_startup': 'unknown',
-            'cleanup': 'not_attempted', 'finalization': 'not_attempted'}
+            'cleanup': 'not_attempted', 'finalization': 'not_attempted',
+            'xvfb_liveness': 'not_observed'}
 
 
 def checked_diagnostic(value):
     exact(value, ('schema', 'stage', 'failure_stage', 'failure_code', 'operation', 'failure_operation', 'xvfb_startup',
-                  'studio_startup', 'cleanup', 'finalization'))
+                  'studio_startup', 'cleanup', 'finalization', 'xvfb_liveness'))
     require(value['schema'] == DIAGNOSTIC_SCHEMA, 'diagnostic version')
     require(type(value['stage']) is str and value['stage'] in STAGES, 'diagnostic stage')
     require(value['failure_stage'] is None or
@@ -94,6 +97,13 @@ def checked_diagnostic(value):
     require(type(value['cleanup']) is str and value['cleanup'] in OUTCOMES, 'cleanup enum')
     require(type(value['finalization']) is str and value['finalization'] in
             ('not_attempted', 'unknown', 'failed', 'written'), 'finalization enum')
+    require(type(value['xvfb_liveness']) is str and value['xvfb_liveness'] in XVFB_LIVENESS,
+            'Xvfb liveness enum')
+    if value['xvfb_liveness'] != 'not_observed':
+        require((value['failure_stage'], value['failure_operation'], value['failure_code']) ==
+                ('display_ready', 'xvfb', 'display_ready_timeout'), 'liveness requires actual timeout')
+    if value['xvfb_liveness'] in ('alive_owned', 'exited_owned'):
+        require(value['xvfb_startup'] == 'identified', 'liveness requires identified startup')
     return value
 
 
@@ -104,7 +114,7 @@ def checkpoint(value, stage):
     if not stage.startswith('child_') and stage != 'read_validation':
         value['operation'] = {
             'facilities':'facilities', 'facilities_validation':'facilities',
-            'xvfb_start':'xvfb', 'display_ready':'xvfb', 'display_record':'xvfb',
+            'xvfb_start':'xvfb', 'display_budget':'xvfb', 'display_ready':'xvfb', 'display_record':'xvfb',
             'display_close':'xvfb', 'display_ownership':'xvfb',
             'studio_start':'studio', 'app_ready':'studio', 'app_ownership':'studio',
             'listener_ownership':'studio', 'frame_ownership':'frame',
@@ -403,6 +413,48 @@ class Supervisor:
             try: put(self.out / 'cleanup-finalization-failure.json', result)
             except Exception: pass
         return result['status'] == 'reaped'
+
+
+def xvfb_liveness_after_timeout(supervisor, child, expected):
+    # One observation, at most two non-reaping stat reads, never a wait/retry.
+    # This is a pair of finite state samples, not continuous liveness or cause.
+    try:
+        exact(expected, ('pid', 'start_ticks', 'state', 'pgrp'))
+        for key in ('pid', 'start_ticks', 'pgrp'): integer(expected[key], 1, 2**63-1)
+        if expected['pgrp'] != expected['pid'] or type(child.pid) is not int or child.pid != expected['pid']:
+            return 'identity_unavailable'
+        rows = supervisor.children
+        if type(rows) is not list: return 'identity_unavailable'
+        owned = [row for row in rows if row['p'] is child]
+        if len(owned) != 1: return 'identity_unavailable'
+        row = owned[0]
+        # Plain stored attributes only. No poll/wait/waitpid, signal or pidfd read.
+        if (row['label'] != 'xvfb' or row['birth'] != expected or row['reaped'] is not False or
+                type(row['pidfd']) is not int or row['pidfd'] < 0 or child.returncode is not None):
+            return 'identity_unavailable'
+        states = []
+        for _ in range(2):
+            if time.monotonic() >= supervisor.deadline: return 'unknown'
+            try:
+                sample = birth(expected['pid'])
+            except FileNotFoundError:
+                # Absent /proc is not proof of exited/reaped or permission to signal.
+                return 'identity_unavailable'
+            exact(sample, ('pid', 'start_ticks', 'state', 'pgrp'))
+            for key in ('pid', 'start_ticks', 'pgrp'): integer(sample[key], 1, 2**63-1)
+            if any(sample[key] != expected[key] for key in ('pid', 'start_ticks', 'pgrp')):
+                return 'identity_unavailable'
+            require(type(sample['state']) is str, 'process state type')
+            states.append(sample['state'])
+        if time.monotonic() >= supervisor.deadline: return 'unknown'
+        # Z is exited but UNREAPED. X/unknown states are deliberately not promoted.
+        if states == ['Z', 'Z']: return 'exited_owned'
+        if all(type(state) is str and state in ('R', 'S', 'D', 'T', 't', 'I') for state in states):
+            return 'alive_owned'
+    except Exception:
+        # Ordinary read/parse/permission/stop failures never replace the timeout.
+        pass
+    return 'unknown'
 
 
 def encode_frame(raw, width, height, stride):
@@ -732,8 +784,20 @@ def capture(out, binary, binding, diagnostic=None):
                 '-noreset'],env,(wfd,))
             checkpoint(diagnostic, 'display_close')
             os.close(wfd); wfd=-1
+            checkpoint(diagnostic, 'display_budget')
+            display_timeout=supervisor.remaining()
             checkpoint(diagnostic, 'display_ready')
-            ready=select.select([rfd],[],[],supervisor.remaining())[0]
+            ready=select.select([rfd],[],[],display_timeout)[0]
+            # Empty readiness is not proof of process exit or its internal cause.
+            if not ready:
+                diagnostic_failure(diagnostic, code='display_ready_timeout')
+                diagnostic['xvfb_liveness']='unknown'
+                try:
+                    observation=xvfb_liveness_after_timeout(supervisor,xvfb,xid)
+                    if type(observation) is str and observation in XVFB_LIVENESS[1:]:
+                        diagnostic['xvfb_liveness']=observation
+                except Exception:
+                    pass  # Timeout stays first; all existing finally cleanup still runs.
             require(ready,'X displayfd deadline')
             checkpoint(diagnostic, 'display_record')
             number_data=os.read(rfd,32)
