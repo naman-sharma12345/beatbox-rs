@@ -293,7 +293,7 @@ fn paint_mixer_divider(painter: &egui::Painter, row: Rect, strip_height: f32, po
             Pos2::new(x, clip.top() + 0.5),
             Pos2::new(x, clip.bottom() - 0.5),
         ],
-        Stroke::new(1.0, Tokens::DARK.border_light),
+        Stroke::new(1.0_f32, Tokens::DARK.border_light),
     );
 }
 
