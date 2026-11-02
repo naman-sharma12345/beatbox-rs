@@ -2025,8 +2025,10 @@ impl Studio {
             .filter(|(pi, _)| *pi == self.pattern)
             .map(|(_, s)| s);
         let rack_steps = p.patterns[self.pattern].steps() as usize;
-        if channel_rack::rack_content_width(ui.available_width(), rack_steps) > ui.available_width()
-        {
+        let available = ui.available_width();
+        let requested_width =
+            (!p.tracks.is_empty()).then(|| channel_rack::rack_content_width(available, rack_steps));
+        if requested_width.is_some_and(|width| width > available) {
             ui.label(
                 RichText::new("More steps to the right: scroll horizontally or Shift+wheel.")
                     .size(11.0)
@@ -2057,13 +2059,19 @@ impl Studio {
         if grew {
             ui.ctx().request_repaint();
         }
-        if pending {
+        if requested_width.is_none() {
+            // Reset both axes before egui creates the content UI: its final
+            // clamp happens after layout and cannot fix the first empty ruler.
+            seq_scroll = seq_scroll.scroll_offset(Vec2::ZERO);
+        } else if pending {
             seq_scroll = seq_scroll.vertical_scroll_offset(1.0e6);
         }
-        let steps = p.patterns[self.pattern].steps() as usize;
-        let content_width = channel_rack::rack_content_width(ui.available_width(), steps);
-        seq_scroll.show(ui, |ui| {
-            ui.set_min_width(content_width);
+        #[cfg(test)]
+        let mut observed_rack = None;
+        let _rack_output = seq_scroll.show(ui, |ui| {
+            if let Some(width) = requested_width {
+                ui.set_min_width(width);
+            }
             let mut clip = ui.clip_rect();
             clip.min.y = clip.min.y.max(seq_top + 2.0);
             ui.set_clip_rect(clip);
@@ -2074,7 +2082,18 @@ impl Studio {
                 rows: Vec::new(),
                 open_editor: false,
             };
+            #[cfg(test)]
+            let rack_origin = ui.next_widget_position();
             let actions = channel_rack::channel_rack(ui, p, self.pattern, &mut sel, playing_here);
+            #[cfg(test)]
+            {
+                observed_rack = Some((
+                    rack_origin,
+                    ui.next_widget_position(),
+                    clip,
+                    sel.rows.clone(),
+                ));
+            }
             self.selected = sel.selected;
             if sel.open_editor {
                 self.note_editor = true;
@@ -2086,6 +2105,15 @@ impl Studio {
             // Do not append a duplicate instruction below this finite rack:
             // even a wrapped label can be clipped at its lower viewport edge.
         });
+        #[cfg(test)]
+        empty_pattern_tests::observe(
+            ui.ctx(),
+            &_rack_output,
+            observed_rack.unwrap(),
+            requested_width,
+            grew,
+            pending,
+        );
     }
 
     // ---------------- master section ----------------
@@ -4143,6 +4171,437 @@ mod refinement_parameter_tests {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod empty_pattern_tests {
+    use super::*;
+
+    // Observations come only from sequencer's actual ScrollArea and RackSel.
+    // No second allocator or replacement rack is used.
+    #[derive(Clone)]
+    pub(super) struct Observation {
+        id: egui::Id,
+        content: Vec2,
+        viewport: Rect,
+        offset: Vec2,
+        origin: Pos2,
+        end: Pos2,
+        clip: Rect,
+        rows: Vec<channel_rack::RackRow>,
+        requested: Option<f32>,
+        grew: bool,
+        pending: bool,
+    }
+
+    fn key() -> egui::Id {
+        egui::Id::new("empty-pattern-production-observation")
+    }
+
+    pub(super) fn observe(
+        ctx: &egui::Context,
+        output: &egui::scroll_area::ScrollAreaOutput<()>,
+        rack: (Pos2, Pos2, Rect, Vec<channel_rack::RackRow>),
+        requested: Option<f32>,
+        grew: bool,
+        pending: bool,
+    ) {
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                key(),
+                Some(Observation {
+                    id: output.id,
+                    content: output.content_size,
+                    viewport: output.inner_rect,
+                    offset: output.state.offset,
+                    origin: rack.0,
+                    end: rack.1,
+                    clip: rack.2,
+                    rows: rack.3,
+                    requested,
+                    grew,
+                    pending,
+                }),
+            );
+        });
+    }
+
+    fn studio(ctx: &egui::Context, bars: u32, tracks: usize) -> Studio {
+        let mut engine = Engine::new(std::env::temp_dir().join(format!(
+            "beatbox-empty-pattern-fixture-{}",
+            std::process::id()
+        )));
+        engine
+            .call(
+                "new_project",
+                &json!({"patterns":[{"name":"A","bars":bars}]}),
+            )
+            .unwrap();
+        for i in 0..tracks {
+            engine.call("add_track", &json!({"name":format!("row{i}"),"preset":if i % 2 == 0 {"kick"} else {"pluck_lead"}})).unwrap();
+        }
+        // Future execution may open/start idle audio output via Player::new.
+        // Setup add_track may render calibration notes in memory on cache miss.
+        // Passive frames must preserve project/transport/player state below;
+        // they do not issue play, seek, audition, poll or launch Studio.
+        Studio {
+            saved_rev: 0,
+            seen_project_load: 0,
+            confirm_new: false,
+            quit_close: QuitCloseState::default(),
+            mixer_routing: false,
+            open_list: false,
+            pending_open: None,
+            engine: Arc::new(Mutex::new(engine)),
+            player: Player::new(),
+            project_path: None,
+            listen: String::new(),
+            server_ok: false,
+            show_about: false,
+            export: Default::default(),
+            pattern: 0,
+            selected: 0,
+            rendered: None,
+            rendering: None,
+            render_state: Default::default(),
+            live: None,
+            live_applied: false,
+            inspector: None,
+            dragging: false,
+            toast: None,
+            render_job: None,
+            // The existing header uses this flag only for its initial open
+            // default. Remove the empty opener next frame; no report is injected.
+            mix_readout: None,
+            mix_job: None,
+            mix_readout_revision: None,
+            audio_check: audio_check::State::default(),
+            mix_comparison: None,
+            mix_comparison_job: None,
+            comparison_start_s: 0.0,
+            comparison_length_s: 8.0,
+            screenshot: None,
+            native_capture: None,
+            arrangement_capture: None,
+            p0a_capture: None,
+            frames: 0,
+            shot_requested: false,
+            perf: None,
+            perf_next: None,
+            perf_rec: None,
+            view: 0,
+            auto_sel: None,
+            piano: piano::PianoState {
+                snap: 2,
+                ..Default::default()
+            },
+            vocal_wave: None,
+            browser: Default::default(),
+            analyze: Default::default(),
+            clip_sel: None,
+            marker_name: String::new(),
+            tempo_edit_bpm: 120.0,
+            tempo_edit_ramp: false,
+            rail_search: String::new(),
+            note_editor: false,
+            workspace: workspace::Workspace::capture(ctx, 0),
+        }
+    }
+
+    fn passive_state(studio: &Studio) -> Value {
+        let e = studio.engine.lock().unwrap();
+        json!({
+            "project":serde_json::to_value(&e.project).unwrap(),
+            "revision":e.revision,
+            "generation":e.project_load_generation,
+            "history":e.history(),
+            "log":e.log.iter().map(|v| (&v.tool,&v.summary,v.ok,&v.source)).collect::<Vec<_>>(),
+            "transport":format!("{:?}", e.transport),
+            "player_seek":studio.player.seek_revision,
+            "player_position":studio.player.position_secs(),
+            "player_playing":studio.player.is_playing(),
+        })
+    }
+
+    fn frame(
+        ctx: &egui::Context,
+        studio: &mut Studio,
+        width: f32,
+        height: f32,
+        scale: f32,
+    ) -> (Observation, egui::FullOutput) {
+        let before = passive_state(studio);
+        let p = studio.engine.lock().unwrap().project.clone();
+        ctx.data_mut(|d| d.insert_temp(key(), Option::<Observation>::None));
+        let screen_rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height));
+        let mut input = egui::RawInput {
+            screen_rect: Some(screen_rect),
+            ..Default::default()
+        };
+        // Match the existing Inspector fixture: native DPI does not queue zoom
+        // or replace the first measured pass's supplied logical viewport.
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .expect("root viewport input")
+            .native_pixels_per_point = Some(scale);
+        let output = ctx.run(input, |ctx| {
+            assert_eq!(ctx.pixels_per_point(), scale, "actual native DPI");
+            assert_eq!(ctx.screen_rect(), screen_rect, "actual logical viewport");
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none())
+                .show(ctx, |ui| {
+                    ui.push_id("live-sequencer", |ui| studio.sequencer(ui, &p));
+                });
+        });
+        assert_eq!(
+            passive_state(studio),
+            before,
+            "passive sequencer emitted an edit or transport effect"
+        );
+        let observed = ctx
+            .data(|d| d.get_temp::<Option<Observation>>(key()))
+            .flatten()
+            .unwrap();
+        (observed, output)
+    }
+
+    fn text_shapes(shape: &egui::Shape, found: &mut Vec<egui::epaint::TextShape>) {
+        match shape {
+            egui::Shape::Text(text) => found.push(text.clone()),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    text_shapes(shape, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn has_hint(output: &egui::FullOutput) -> bool {
+        output.shapes.iter().any(|shape| {
+            let mut text = Vec::new();
+            text_shapes(&shape.shape, &mut text);
+            text.iter()
+                .any(|t| t.galley.text().contains("More steps to the right"))
+        })
+    }
+
+    fn assert_empty(o: &Observation, output: &egui::FullOutput, scale: f32) {
+        let tolerance = 1.0 / scale;
+        assert_eq!(o.requested, None);
+        assert!(!has_hint(output));
+        assert!(o.rows.is_empty());
+        assert!((o.content.x - o.viewport.width()).max(0.0) <= tolerance);
+        assert!(o.offset.x.abs() <= tolerance && o.offset.y.abs() <= tolerance);
+        assert!((o.content.y - channel_rack::RACK_RULER_H).abs() <= tolerance);
+        assert!(o.end.y >= o.origin.y + channel_rack::RACK_RULER_H);
+        // First-frame placement matters independently of the post-show offset.
+        assert!(
+            (o.origin.x - o.viewport.left()).abs() <= tolerance,
+            "ruler painted with stale horizontal offset before end-of-show clamp"
+        );
+        assert!(
+            (o.origin.y - o.viewport.top()).abs() <= tolerance,
+            "ruler painted with stale vertical offset before end-of-show clamp"
+        );
+        assert!(o.clip.intersect(o.viewport).is_positive());
+    }
+
+    #[test]
+    fn live_empty_rack_uses_negotiated_viewport_at_scales_styles_and_lengths() {
+        for scale in [1.0, 2.0] {
+            for enlarged in [false, true] {
+                for bars in [1, 4, 64] {
+                    let ctx = egui::Context::default();
+
+                    if enlarged {
+                        let mut style = (*ctx.style()).clone();
+                        style
+                            .text_styles
+                            .insert(egui::TextStyle::Body, FontId::proportional(20.0));
+                        style
+                            .text_styles
+                            .insert(egui::TextStyle::Button, FontId::proportional(22.0));
+                        style.spacing.button_padding = Vec2::new(7.0, 7.0);
+                        style.spacing.interact_size.y = 32.0;
+                        ctx.set_style(style);
+                    }
+                    let mut studio = studio(&ctx, bars, 0);
+                    assert_eq!(
+                        studio.engine.lock().unwrap().project.patterns[0].steps(),
+                        bars * 16
+                    );
+                    for width in [420.0, 560.0, 820.0, 1180.0] {
+                        for _ in 0..3 {
+                            let (o, output) = frame(&ctx, &mut studio, width, 600.0, scale);
+                            assert_empty(&o, &output, scale);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn live_populated_rows_keep_old_width_and_last_step_geometry() {
+        for scale in [1.0, 2.0] {
+            for bars in [1, 4, 64] {
+                let ctx = egui::Context::default();
+
+                let mut studio = studio(&ctx, bars, 2);
+                for width in [420.0, 560.0, 820.0, 1180.0] {
+                    let (o, output) = frame(&ctx, &mut studio, width, 600.0, scale);
+                    let steps = (bars * 16) as usize;
+                    assert_eq!(
+                        o.requested,
+                        Some(channel_rack::rack_content_width(width, steps))
+                    );
+                    assert_eq!(has_hint(&output), o.requested.unwrap() > width);
+                    assert_eq!(o.rows.len(), 2);
+                    for row in &o.rows {
+                        assert!(row.cell >= 12.0);
+                        assert_eq!(
+                            *row,
+                            channel_rack::RackRow::layout(row.row, row.cell, steps)
+                        );
+                        assert!(row.step_rect(steps - 1).right() <= row.steps.right());
+                    }
+                    let mut state = egui::scroll_area::State::load(&ctx, o.id).unwrap();
+                    state.offset.x = (o.content.x - o.viewport.width()).max(0.0);
+                    state.store(&ctx, o.id);
+                    let (right, _) = frame(&ctx, &mut studio, width, 600.0, scale);
+                    assert_eq!(right.id, o.id);
+                    let last = right.rows[0].step_rect(steps - 1);
+                    assert!(right.viewport.contains(last.center()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn live_same_context_first_empty_snapshot_must_not_paint_shifted_ruler() {
+        for scale in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+
+            let mut studio = studio(&ctx, 64, 0);
+            let (empty, output) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert_empty(&empty, &output, scale);
+            studio
+                .engine
+                .lock()
+                .unwrap()
+                .call("add_track", &json!({"name":"first","preset":"kick"}))
+                .unwrap();
+            let (first, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert_eq!(first.id, empty.id);
+            assert!(first.requested.is_some() && first.grew && !first.pending);
+            assert!(first.rows[0].cell >= 12.0);
+            let mut state = egui::scroll_area::State::load(&ctx, first.id).unwrap();
+            state.offset.x = first.content.x - first.viewport.width();
+            assert!(state.offset.x > 1000.0);
+            state.store(&ctx, first.id);
+            studio
+                .engine
+                .lock()
+                .unwrap()
+                .call("remove_track", &json!({"track":"first"}))
+                .unwrap();
+            let (removed, output) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert_eq!(removed.id, first.id);
+            assert!(removed.pending && !removed.grew);
+            assert_empty(&removed, &output, scale);
+            let (settled, output) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert!(!settled.pending);
+            assert_empty(&settled, &output, scale);
+        }
+    }
+
+    #[test]
+    fn live_empty_transition_resets_both_axes_with_and_without_pending() {
+        for scale in [1.0, 2.0] {
+            for consume_pending in [false, true] {
+                for retained in [Vec2::ZERO, Vec2::new(4096.0, 2048.0)] {
+                    let ctx = egui::Context::default();
+
+                    let mut studio = studio(&ctx, 64, 0);
+                    let (empty, output) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+                    assert_empty(&empty, &output, scale);
+                    studio
+                        .engine
+                        .lock()
+                        .unwrap()
+                        .call("add_track", &json!({"name":"first","preset":"kick"}))
+                        .unwrap();
+                    let (mut first, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+                    assert!(first.grew && !first.pending);
+                    assert_eq!(first.id, empty.id);
+                    if consume_pending {
+                        let (consumed, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+                        assert!(consumed.pending && !consumed.grew);
+                        first = consumed;
+                    }
+                    let mut state = egui::scroll_area::State::load(&ctx, first.id).unwrap();
+                    state.offset = retained;
+                    state.store(&ctx, first.id);
+                    studio
+                        .engine
+                        .lock()
+                        .unwrap()
+                        .call("remove_track", &json!({"track":"first"}))
+                        .unwrap();
+                    let (removed, output) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+                    assert_eq!(removed.id, empty.id);
+                    assert_eq!(removed.pending, !consume_pending);
+                    assert!(!removed.grew);
+                    assert_empty(&removed, &output, scale);
+                    let (settled, output) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+                    assert_eq!(settled.id, empty.id);
+                    assert!(!settled.pending && !settled.grew);
+                    assert_empty(&settled, &output, scale);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn live_populated_pending_keeps_pre_layout_end_request_and_final_clamp() {
+        for scale in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+
+            let mut studio = studio(&ctx, 64, 24);
+            let (before, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            studio
+                .engine
+                .lock()
+                .unwrap()
+                .call("add_track", &json!({"name":"last","preset":"kick"}))
+                .unwrap();
+            let (grew, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert!(grew.grew && !grew.pending);
+            let mut state = egui::scroll_area::State::load(&ctx, grew.id).unwrap();
+            state.offset.x = 123.0;
+            state.store(&ctx, grew.id);
+            let (pending, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert_eq!(pending.id, before.id);
+            assert!(pending.pending && !pending.grew);
+            assert_eq!(pending.rows.len(), 25);
+            assert_eq!(pending.requested, grew.requested);
+            let tolerance = 1.0 / scale;
+            assert!((pending.origin.x - (pending.viewport.left() - 123.0)).abs() <= tolerance);
+            assert!((pending.origin.y - (pending.viewport.top() - 1.0e6)).abs() <= tolerance);
+            let end = (pending.content.y - pending.viewport.height()).max(0.0);
+            assert!(end > 0.0);
+            assert!((pending.offset.y - end).abs() <= tolerance);
+            assert!((pending.offset.x - 123.0).abs() <= tolerance);
+            let (settled, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert!(!settled.pending && !settled.grew);
+            assert_eq!(settled.id, before.id);
+            assert!(
+                (settled.origin.y - (settled.viewport.top() - settled.offset.y)).abs() <= tolerance
+            );
         }
     }
 }
