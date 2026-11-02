@@ -481,6 +481,48 @@ fn piano_command_row(ui: &mut egui::Ui, rect: Rect) -> egui::Ui {
     child
 }
 
+// ComboBox rebuilds its padded frame from an inheriting child Ui. A centered
+// horizontal child can grow downwards when the icon is taller than its available
+// content area. Place this one control independently, using the actual galley
+// and icon height, and give its internal horizontal wrapper that full height.
+fn piano_snap_combo<R>(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash,
+    selected_text: impl Into<egui::WidgetText>,
+    menu_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let galley = selected_text.into().into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let height = (galley.size().y.max(ui.spacing().icon_width)
+        + 2.0 * ui.spacing().button_padding.y)
+        .max(ui.spacing().interact_size.y);
+    let available = ui.available_rect_before_wrap();
+    // Use the immutable row bounds, not the next widget's inherited Y cursor.
+    let top = ui.max_rect().center().y - height * 0.5;
+    let rect = Rect::from_min_size(pos2(available.left(), top), vec2(available.width(), height));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Min)),
+    );
+    // show_ui creates a centered horizontal wrapper initially only interact_size
+    // high. Give that wrapper the measured padded height before it shrinks for
+    // content, so the larger icon cannot grow it downwards from a short cursor.
+    // This is local to Snap: no row, clip, font or other control is resized.
+    child.spacing_mut().interact_size.y = height;
+    // Keep the original row clip, popup and full selected label.
+    let result = egui::ComboBox::from_id_salt(id_salt)
+        .width(64.0)
+        .selected_text(galley)
+        .show_ui(&mut child, menu_contents);
+    ui.advance_cursor_after_rect(result.response.rect);
+    result
+}
+
 // One style measurement and one feasibility predicate serve selection AND layout.
 // The useful-space floors are not pane minima and do not change dock sizing.
 #[derive(Clone, Copy)]
@@ -1534,17 +1576,16 @@ impl Studio {
             if group.header_response.clicked() {clicked_group=Some("Cleanup");}
             if let Some(group)=clicked_group {ui.ctx().data_mut(|d|d.insert_temp(group_id,if active_group==group {String::new()} else {group.to_string()}));}
         });
-        egui::ComboBox::from_id_salt(("snap", self.selected))
-            .width(64.0)
-            .selected_text(format!(
-                "Snap {}",
-                SNAPS[self.piano.snap.min(SNAPS.len() - 1)].0
-            ))
-            .show_ui(&mut tb, |ui| {
+        piano_snap_combo(
+            &mut tb,
+            ("snap", self.selected),
+            format!("Snap {}", SNAPS[self.piano.snap.min(SNAPS.len() - 1)].0),
+            |ui| {
                 for (i, (label, _)) in SNAPS.iter().enumerate() {
                     ui.selectable_value(&mut self.piano.snap, i, *label);
                 }
-            });
+            },
+        );
         let quantize_enabled = !notes.is_empty()
             && SNAPS
                 .get(self.piano.snap)
@@ -4391,6 +4432,82 @@ mod toolbar_containment_tests {
         }
     }
 
+    #[test]
+    fn enlarged_snap_placement_keeps_row_center_after_preceding_menu() {
+        for scale in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+            apply_theme(&ctx);
+            ctx.set_pixels_per_point(scale);
+            let mut style = (*ctx.style()).clone();
+            style
+                .text_styles
+                .insert(egui::TextStyle::Button, FontId::proportional(22.0));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Body, FontId::proportional(20.0));
+            style.spacing.button_padding.y = 7.0;
+            style.spacing.interact_size.y = 32.0;
+            style.spacing.icon_width = 34.0;
+            ctx.set_style(style);
+            let mut observed = None;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let full = Rect::from_min_size(pos2(20.0, 30.0), vec2(560.0, 200.0));
+                        let (_, layout) = PianoLayout::for_panel(ui, full, full).unwrap();
+                        let mut row = piano_command_row(ui, layout.commands);
+                        let before = row.menu_button("Edit notes", |_| {}).response;
+                        let snap = piano_snap_combo(&mut row, "focused-snap", "Snap 1/16", |_| {})
+                            .response;
+                        let after = row.menu_button("View", |_| {}).response;
+                        assert_eq!(snap.rect.center().y, layout.commands.center().y);
+                        assert_eq!(snap.rect.height(), 48.0);
+                        assert!(before.rect.right() < snap.rect.left());
+                        assert!(snap.rect.right() < after.rect.left());
+                        assert!(layout.roll.height() >= 38.0);
+                        assert!(layout.velocity.height() >= 14.0);
+                        observed = Some((layout.commands, snap.rect));
+                    });
+                },
+            );
+            let (row, response) = observed.expect("Snap was constructed");
+            let mut leaves = Vec::new();
+            for clipped in &output.shapes {
+                paint_leaves(&clipped.shape, clipped.clip_rect, &mut leaves);
+            }
+            let frames: Vec<_> = leaves.iter().filter(|(_, shape)| {
+                matches!(shape, egui::Shape::Rect(paint) if paint.rect == response)
+            }).collect();
+            assert_eq!(frames.len(), 1);
+            let (clip, frame) = frames[0];
+            assert_eq!(*clip, row);
+            let visual = frame.visual_bounding_rect();
+            assert!(visual.top() >= row.top());
+            assert!(visual.bottom() <= row.bottom());
+            let labels: Vec<_> = leaves
+                .iter()
+                .filter_map(|(clip, shape)| {
+                    if let egui::Shape::Text(text) = shape {
+                        if text.galley.job.text == "Snap 1/16" {
+                            assert_eq!(*clip, row);
+                            assert!(!text.galley.elided);
+                            let ink = text.visual_bounding_rect();
+                            assert!(ink.top() >= row.top());
+                            assert!(ink.bottom() <= row.bottom());
+                            return Some(text);
+                        }
+                    }
+                    None
+                })
+                .collect();
+            assert_eq!(labels.len(), 1);
+        }
+    }
+
     // Real egui widgets, fonts and paint output through the production row
     // constructor and layout. Not an arithmetic copy of the sizing formula.
     // Menus are closed; this does not claim full Studio or native-input coverage.
@@ -4470,10 +4587,7 @@ mod toolbar_containment_tests {
                                         .push((0, top.menu_button("Edit notes", |_| {}).response));
                                     responses.push((
                                         0,
-                                        egui::ComboBox::from_id_salt("regression-snap")
-                                            .width(64.0)
-                                            .selected_text("Snap 1/16")
-                                            .show_ui(&mut top, |_| {})
+                                        piano_snap_combo(&mut top, "regression-snap", "Snap 1/16", |_| {})
                                             .response,
                                     ));
                                     responses
