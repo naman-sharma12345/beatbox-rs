@@ -4317,7 +4317,7 @@ mod empty_pattern_tests {
             "revision":e.revision,
             "generation":e.project_load_generation,
             "history":e.history(),
-            "log":e.log.iter().map(|v| (&v.tool,&v.summary,v.ok,&v.source)).collect::<Vec<_>>(),
+            "log":e.log.iter().map(|crate::engine::LogEntry { tool, summary, ok, source, .. }| (tool, summary, *ok, source)).collect::<Vec<_>>(),
             "transport":format!("{:?}", e.transport),
             "player_seek":studio.player.seek_revision,
             "player_position":studio.player.position_secs(),
