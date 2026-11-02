@@ -1,0 +1,72 @@
+name: P0A separate native frame facility probe
+# Manual-only LOCAL candidate. Parent must review/publish and separately authorize dispatch.
+# No strict24 reuse or input; hosted preparation is exact existing screenshots.yml preparation.
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_head:
+        description: Exact reviewed NEW implementation commit SHA (40 lowercase hex)
+        required: true
+        type: string
+      reviewed_tree:
+        description: Exact reviewed NEW implementation Git tree (40 lowercase hex)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: p0a-native-frame-probe
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      REVIEWED_HEAD: ${{ inputs.reviewed_head }}
+      REVIEWED_TREE: ${{ inputs.reviewed_tree }}
+      PROBE_OUT: ${{ runner.temp }}/p0a-native-frame-probe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: system deps (GUI build + headless X)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config libxkbcommon-dev libwayland-dev libx11-dev \
+            xvfb xauth libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcursor1 libxrandr2 libxi6 python3
+      - name: Installed facilities and exact reviewed checkout only
+        timeout-minutes: 1
+        run: python3 scripts/p0a_native_frame_probe.py facilities "$PROBE_OUT"
+      - name: Build with exact real compiler after approved hosted preparation
+        timeout-minutes: 11
+        run: python3 scripts/p0a_native_frame_probe.py build "$PROBE_OUT"
+      - name: One owned ordinary Studio, one genuine current client frame, seven existing reads
+        id: capture
+        timeout-minutes: 2
+        run: python3 scripts/p0a_native_frame_probe.py capture "$PROBE_OUT" target/release/beatbox
+      - name: Stage exact finite nonsecret evidence set
+        id: stage
+        env:
+          CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
+        if: ${{ always() }}
+        run: python3 scripts/p0a_native_frame_probe.py stage "$PROBE_OUT"
+      - name: Separate evidence only, never cookies or scratch HOME
+        if: ${{ always() && steps.stage.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0a-native-frame-probe
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/p0a-native-frame-probe/upload/manifest.json
+            ${{ runner.temp }}/p0a-native-frame-probe/upload/public-receipt.json
+            ${{ runner.temp }}/p0a-native-frame-probe/upload/current-client.png
+            ${{ runner.temp }}/p0a-native-frame-probe/upload/read-0.json
+            ${{ runner.temp }}/p0a-native-frame-probe/upload/read-1.json
+            ${{ runner.temp }}/p0a-native-frame-probe/upload/read-2.json
+            ${{ runner.temp }}/p0a-native-frame-probe/upload/read-3.json
+            ${{ runner.temp }}/p0a-native-frame-probe/upload/read-4.json
+            ${{ runner.temp }}/p0a-native-frame-probe/upload/read-5.json
+            ${{ runner.temp }}/p0a-native-frame-probe/upload/read-6.json
