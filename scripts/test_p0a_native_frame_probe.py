@@ -145,13 +145,13 @@ class Pure(unittest.TestCase):
 
     def test_fsynced_exclusive_evidence(self):
         # Pure local file test only, always under caller's workspace scratch directory.
-        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp')) as t:
+        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp')) as t:
             path=Path(t)/'receipt.json'; p.put(path,{'a':1})
             self.assertEqual(p.strict(path.read_bytes()),{'a':1})
             with self.assertRaises(FileExistsError): p.put(path,{'a':2})
 
     def test_put_cap(self):
-        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp')) as t:
+        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp')) as t:
             path=Path(t)/'receipt.json'
             self.reject(p.put,path,{'huge':'x'*100},10)
             self.assertFalse(path.exists())
@@ -207,7 +207,7 @@ class Pure(unittest.TestCase):
     def test_frame_receipt_source_hash_geometry_and_review(self):
         app={'pid':123,'start_ticks':10,'pgrp':123,'state':'S'}
         geom={'x':0,'y':0,'width':1480,'height':920,'border':0,'depth':24,'root':1}
-        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp')) as t:
+        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp')) as t:
             image=Path(t)/'mock.png'; image.write_bytes(b'mock, not a native frame')
             row={'schema':p.SCHEMA,'kind':'same_window_frame','window':2,'title':'Beatbox Studio',
                  'app':app,'geometry_before':geom,'geometry_after':copy.deepcopy(geom),
@@ -228,7 +228,7 @@ class Pure(unittest.TestCase):
     def test_final_receipt_cannot_claim_semantic_pass(self):
         row={'schema':p.SCHEMA,'status':'failed','source':{},'visual_status':'UNRUN',
              'native_gestures':'UNRUN','cases':{case:'UNRUN' for case in p.CASES},
-             'semantic_pass':False,'error':'mock failed preflight','bounds':{
+             'semantic_pass':False,'error':'mock failed preflight','diagnostic':p.new_diagnostic(),'bounds':{
                 'campaign_seconds':90,'child_seconds':3,'cleanup_seconds':5,'http_calls':7,
                 'frames':1,'native_gestures':0},'build':None,'facilities':None,'fixture':None,
              'display':None,'listener':None,'app':None,'xvfb':None,'frame':None,'reads':[],
@@ -243,7 +243,7 @@ class Pure(unittest.TestCase):
 
 
     def test_pidfd_failure_registered_before_unwind(self):
-        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp')) as t:
+        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp')) as t:
             sup=p.Supervisor(Path(t)); fake=unittest.mock.Mock(pid=321)
             ident={'pid':321,'start_ticks':99,'pgrp':321,'state':'S'}
             with patch.object(p.subprocess,'Popen',return_value=fake), \
@@ -272,9 +272,9 @@ class Pure(unittest.TestCase):
     def test_failed_ledger_preserves_executed_unreviewed_frame(self):
         self.mock_capture(True)
 
-    def mock_capture(self, corrupt):
+    def mock_capture(self, corrupt, fault=None, cleanup_mode=None, finalization_error=False):
         # Every native, HTTP and process dependency is mocked; only local files/PNG encoder run.
-        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp')) as t:
+        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp')) as t:
             root=Path(t).resolve(); out=root/'out'; out.mkdir()
             binary=root/'beatbox'; binary.write_bytes(b'mock, never executable')
             fixture=root/'fixture.json'; fixture.write_text('{"tracks":[]}')
@@ -327,6 +327,19 @@ class Pure(unittest.TestCase):
                         'visual_status':'executed_unreviewed','native_gestures':'UNRUN',
                         'pixel_source':'XGetImage exact ordinary app client, not screenshot-tool Studio'}
             sup.worker.side_effect=worker
+            if cleanup_mode=='unknown': sup.cleanup.side_effect=OSError('SECRET-DIAGNOSTIC-SENTINEL')
+            if cleanup_mode=='failed': sup.cleanup.side_effect=None; sup.cleanup.return_value=False
+            original_checkpoint=p.checkpoint; triggered=[]
+            def checkpoint(value, stage):
+                original_checkpoint(value,stage)
+                if stage==fault and not triggered:
+                    triggered.append(stage)
+                    raise RuntimeError('SECRET-DIAGNOSTIC-SENTINEL')
+            original_put=p.put
+            def put(path, value, *args):
+                if finalization_error and path.name=='receipt.json':
+                    raise OSError('SECRET-DIAGNOSTIC-SENTINEL')
+                return original_put(path,value,*args)
             original_digest=p.digest; original_resolve=Path.resolve; original_stat=Path.stat
             def fake_digest(path):
                 if str(path)=='/proc/321/exe': return build['binary_sha256']
@@ -345,9 +358,32 @@ class Pure(unittest.TestCase):
                  patch.object(p,'listener',return_value=listen),patch.object(p.time,'sleep'), \
                  patch.object(p,'digest',side_effect=fake_digest), \
                  patch.object(Path,'resolve',fake_resolve),patch.object(Path,'stat',fake_stat), \
-                 patch.object(Path,'read_bytes',fake_read):
+                 patch.object(Path,'read_bytes',fake_read), \
+                 patch.object(p,'checkpoint',side_effect=checkpoint),patch.object(p,'put',side_effect=put):
                 result=p.capture(out,binary,bind)
-                self.assertEqual(result,not corrupt,(out/'receipt.json').read_text())
+                if fault or cleanup_mode or finalization_error:
+                    self.assertFalse(result)
+                else:
+                    self.assertEqual(result,not corrupt,(out/'receipt.json').read_text())
+            if fault or cleanup_mode or finalization_error:
+                import shutil
+                failure=out/('receipt.json' if (out/'receipt.json').exists() else 'receipt-finalization-failure.json')
+                receipt=p.strict(failure.read_bytes()); diag=receipt['diagnostic']
+                expected=fault or ('cleanup' if cleanup_mode else 'final_receipt')
+                self.assertEqual(diag['failure_stage'],expected)
+                self.assertEqual(diag['cleanup'],cleanup_mode or 'reaped')
+                if finalization_error: self.assertEqual(diag['finalization'],'failed')
+                for f in out.rglob('*'):
+                    if f.is_file(): self.assertNotIn(b'SECRET-DIAGNOSTIC-SENTINEL',f.read_bytes())
+                parent=root/'stage-failure'; parent.mkdir()
+                (parent/'source.json').write_bytes((out/'source.json').read_bytes())
+                shutil.copytree(out,parent/'campaign')
+                with patch.dict(p.os.environ,{'CAPTURE_OUTCOME':'failure'}): p.stage_evidence(parent)
+                public=p.strict((parent/'upload/public-receipt.json').read_bytes())
+                self.assertEqual(public['diagnostic']['failure_stage'],expected)
+                self.assertEqual(public['status'],'failed')
+                p.checked_public(public)
+                return
             receipt=p.strict((out/'receipt.json').read_bytes())
             self.assertEqual(receipt['status'],'failed' if corrupt else 'probe_complete_not_semantic_pass')
             self.assertEqual(receipt['visual_status'],'executed_unreviewed')
@@ -362,7 +398,15 @@ class Pure(unittest.TestCase):
             with patch.dict(p.os.environ,{'CAPTURE_OUTCOME':'success'}): p.stage_evidence(parent)
             public=p.strict((parent/'upload/public-receipt.json').read_bytes())
             self.assertEqual(public['status'],'failed' if corrupt else 'probe_complete_not_semantic_pass')
+            p.checked_public(public)
             if not corrupt:
+                for key in ('path','env','argv','cookie','hostname','error','detail'):
+                    for route in ((),('build',),('app',),('frame',),('frame','geometry_before'),
+                                  ('display',),('listener',),('ledger',),('facility_libraries_loadable',)):
+                        bad=copy.deepcopy(public); target=bad['linkage']
+                        for name in route: target=target[name]
+                        target[key]='SECRET-DIAGNOSTIC-SENTINEL'
+                        with self.assertRaises(RuntimeError): p.checked_public(bad)
                 self.assertEqual(public['linkage']['app'],aid)
                 self.assertEqual(public['linkage']['frame']['frame_sha256'],receipt['frame']['frame_sha256'])
                 self.assertEqual(public['linkage']['ledger']['observed_appended_reads'],6)
@@ -415,7 +459,7 @@ class ReviewFix(unittest.TestCase):
         self.assertIn('not recursively observed',p.validate_ledger(d)['final_get_history_append'])
 
     def partial_start(self, failure):
-        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp')) as t:
+        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp')) as t:
             sup=p.Supervisor(Path(t)); fake=unittest.mock.Mock(pid=321,returncode=0)
             events=[]; ident={'pid':321,'start_ticks':99,'pgrp':321,'state':'S'}
             def mask(how,values):
@@ -462,7 +506,7 @@ class ReviewFix(unittest.TestCase):
         self.assertFalse(put.call_args.args[1]['children'][0]['reaped'])
 
     def test_popen_failure_restores_mask_without_phantom_child(self):
-        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp')) as t:
+        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp')) as t:
             sup=p.Supervisor(Path(t))
             with patch.object(p.subprocess,'Popen',side_effect=OSError('mock')), \
                  patch.object(p.signal,'pthread_sigmask',return_value=set()) as mask:
@@ -493,7 +537,7 @@ class ReviewFix(unittest.TestCase):
         self.assertEqual(close.call_args_list,[unittest.mock.call(3),unittest.mock.call(4)])
 
     def test_capture_finalization_failure_has_best_effort_failure(self):
-        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp')) as t:
+        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp')) as t:
             out=Path(t); sup=unittest.mock.Mock(); sup.cleanup.side_effect=OSError('mock')
             original=p.put
             def put(path,row,*args):
@@ -502,11 +546,11 @@ class ReviewFix(unittest.TestCase):
             with patch.object(p,'Supervisor',return_value=sup),patch.object(p,'put',side_effect=put):
                 self.assertFalse(p.capture(out,Path('/never-executed'),{}))
             evidence=p.strict((out/'receipt-finalization-failure.json').read_bytes())
-            self.assertEqual(evidence['status'],'failed'); self.assertEqual(evidence['cleanup'],'failed')
+            self.assertEqual(evidence['status'],'failed'); self.assertEqual(evidence['cleanup'],'unknown')
             self.assertFalse(evidence['semantic_pass'])
 
     def test_main_restores_original_handlers_on_campaign_exception(self):
-        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp')) as t:
+        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp')) as t:
             out=Path(t); (out/'source.json').write_text('{}')
             binary=out/'mock'; binary.write_text('not executable, access mocked')
             (out/'build.json').write_text('{}')
@@ -514,12 +558,12 @@ class ReviewFix(unittest.TestCase):
                  patch.object(p,'binding',return_value={}),patch.object(p.os,'access',return_value=True), \
                  patch.object(p.signal,'signal',return_value='original') as handlers, \
                  patch.object(p,'capture',side_effect=RuntimeError('mock')):
-                with self.assertRaises(RuntimeError): p.main()
+                self.assertEqual(p.main(),1)
             self.assertEqual(handlers.call_args_list[-2:],[unittest.mock.call(p.signal.SIGTERM,'original'),
                                                            unittest.mock.call(p.signal.SIGINT,'original')])
 
     def test_toolchain_missing_and_symlink_proxies_rejected_without_execution(self):
-        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp')) as t:
+        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp')) as t:
             home=Path(t)/'.rustup'; bin=home/'toolchains/1.99.0-x86_64-unknown-linux-gnu/bin'
             with self.assertRaises(RuntimeError): p.real_toolchain(home)
             bin.mkdir(parents=True)
@@ -532,7 +576,7 @@ class ReviewFix(unittest.TestCase):
 
     def test_hosted_build_exact_real_tools_bounds_compiler_and_no_fallback(self):
         for bad_version in (False,True):
-            with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp')) as t:
+            with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp')) as t:
                 out=Path(t); source={'head':'a'*40,'tree':'b'*40}; p.put(out/'source.json',source)
                 tools={n:'/installed/bin/'+n for n in ('rustc','cargo','rustdoc')}
                 calls=[]
@@ -556,7 +600,7 @@ class ReviewFix(unittest.TestCase):
                     self.assertTrue((out/'build.json').exists())
 
     def test_exact_upload_manifest_excludes_logs_args_cookies_and_unexpected_json(self):
-        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp')) as t:
+        with tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp')) as t:
             out=Path(t); campaign=out/'campaign'; campaign.mkdir()
             for name in ['secret.log','unexpected.json','anything.txt','01-http.args.json']:
                 (campaign/name).write_text('RAW SECRET MOCK')
@@ -591,6 +635,517 @@ class ReviewFix(unittest.TestCase):
         self.assertEqual(len(uploads),10)
         self.assertTrue(all('*' not in line and 'upload/' in line for line in uploads))
         self.assertNotIn('--offline',workflow.read_text())
+
+
+class Diagnostics(unittest.TestCase):
+    SENTINEL='SECRET-DIAGNOSTIC-SENTINEL'
+
+    def temp(self):
+        return tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-proof/test-tmp'))
+
+    def public(self):
+        with self.temp() as t:
+            out=Path(t)
+            p.stage_evidence(out)
+            return p.strict((out/'upload/public-receipt.json').read_bytes())
+
+    def test_each_stage_has_closed_validated_mapping(self):
+        self.assertEqual(len(p.STAGES),len(set(p.STAGES)))
+        for stage in p.STAGES:
+            with self.subTest(stage=stage):
+                value=p.new_diagnostic(); p.checkpoint(value,stage)
+                p.diagnostic_failure(value,RuntimeError(self.SENTINEL))
+                self.assertEqual(value['failure_stage'],stage)
+                self.assertEqual(value['failure_code'],'operation_failed')
+                self.assertEqual(p.checked_diagnostic(value),value)
+                self.assertNotIn(self.SENTINEL,json.dumps(value))
+                self.assertLess(len(json.dumps(value)),1024)
+
+    def test_known_and_unknown_exceptions_never_formatted(self):
+        class Unknown(Exception):
+            def __str__(self): raise AssertionError('exception formatted')
+            def __repr__(self): raise AssertionError('exception represented')
+        for error,code in [(RuntimeError(self.SENTINEL),'operation_failed'),
+                           (OSError(self.SENTINEL),'io_error'),
+                           (ValueError(self.SENTINEL),'invalid_value'),
+                           (p.subprocess.TimeoutExpired(self.SENTINEL,3),'timeout'),
+                           (Unknown(self.SENTINEL),'unknown_exception')]:
+            value=p.new_diagnostic(); p.diagnostic_failure(value,error)
+            self.assertEqual(value['failure_code'],code)
+            self.assertNotIn(self.SENTINEL,json.dumps(value))
+
+    def test_first_failure_survives_cleanup_and_finalization_errors(self):
+        value=p.new_diagnostic(); p.checkpoint(value,'frame_worker')
+        p.diagnostic_failure(value,OSError(self.SENTINEL))
+        for stage in ('cleanup','final_receipt','public_source','public_linkage'):
+            p.checkpoint(value,stage); p.diagnostic_failure(value,ValueError(self.SENTINEL))
+        self.assertEqual(value['failure_stage'],'frame_worker')
+        self.assertEqual(value['failure_operation'],'frame')
+        self.assertEqual(value['failure_code'],'io_error')
+
+    def test_unknown_and_prohibited_diagnostic_fields_rejected(self):
+        for key in ('error','path','env','argv','cookie','hostname','stdout','traceback','detail','unknown'):
+            value=p.new_diagnostic(); value[key]=self.SENTINEL
+            with self.assertRaises(RuntimeError): p.checked_diagnostic(value)
+        for key in ('stage','failure_stage','failure_code','operation','failure_operation',
+                    'xvfb_startup','studio_startup','cleanup','finalization'):
+            value=p.new_diagnostic(); value[key]=self.SENTINEL
+            with self.assertRaises(RuntimeError): p.checked_diagnostic(value)
+        for key in ('stage','cleanup','finalization','xvfb_startup','studio_startup'):
+            value=p.new_diagnostic(); value[key]=True
+            with self.assertRaises(RuntimeError): p.checked_diagnostic(value)
+
+    def test_actual_public_validator_version_fields_and_payload_cap(self):
+        row=self.public(); self.assertEqual(row['schema'],p.PUBLIC_SCHEMA)
+        p.checked_public(row)
+        for key in ('path','env','argv','cookie','hostname','stdout','error','detail','unknown'):
+            value=copy.deepcopy(row); value[key]=self.SENTINEL
+            with self.assertRaises(RuntimeError): p.checked_public(value)
+        for key,value in [('schema',p.SCHEMA),('status','PASS'),('visual_status','accepted'),
+                          ('semantic_pass',True),('native_gestures','PASS'),('head',self.SENTINEL)]:
+            bad=copy.deepcopy(row); bad[key]=value
+            with self.assertRaises(RuntimeError): p.checked_public(bad)
+        bad=copy.deepcopy(row);bad['diagnostic']['detail']='x'*p.RECEIPT_CAP
+        with self.assertRaises(RuntimeError): p.checked_public(bad)
+        self.assertLess(len(json.dumps(row)),4096)
+        self.assertEqual(len(p.UPLOAD_FILES),9)
+
+    def test_nullable_failure_requires_consistent_pairs(self):
+        value=p.new_diagnostic();p.checked_diagnostic(value)
+        for key,val in [('failure_stage','capture_entry'),('failure_code','io_error'),
+                        ('failure_operation','capture')]:
+            bad=copy.deepcopy(value);bad[key]=val
+            with self.assertRaises(RuntimeError): p.checked_diagnostic(bad)
+
+    def test_no_receipt_means_unknown_startup_not_cleanup_success(self):
+        row=self.public(); diag=row['diagnostic']
+        self.assertEqual(row['status'],'failed')
+        self.assertEqual(diag['xvfb_startup'],'unknown')
+        self.assertEqual(diag['studio_startup'],'unknown')
+        self.assertEqual(diag['cleanup'],'unknown')
+        self.assertIsNone(row['linkage'])
+
+    def test_capture_constructor_failure_safe_and_no_cleanup_claim(self):
+        with self.temp() as t:
+            out=Path(t)
+            with patch.object(p,'Supervisor',side_effect=OSError(self.SENTINEL)):
+                self.assertFalse(p.capture(out,Path('/not-executed'),{}))
+            row=p.strict((out/'receipt.json').read_bytes())
+            self.assertEqual(row['diagnostic']['failure_stage'],'supervisor_init')
+            self.assertEqual(row['diagnostic']['cleanup'],'not_attempted')
+            self.assertEqual(row['diagnostic']['xvfb_startup'],'unknown')
+            self.assertNotIn(self.SENTINEL,(out/'receipt.json').read_text())
+
+    def test_full_mock_operation_checkpoint_faults(self):
+        stages=('build_binding','scratch_setup','facilities','fixture_copy','auth_setup',
+                'display_pipe','xvfb_start','display_ready','display_record','display_close',
+                'facilities_validation','read_validation','display_ownership','studio_start','app_ready','app_ownership','listener_ownership',
+                'frame_ownership','frame_worker','frame_validation','ledger_validation',
+                'final_binding','final_ownership','campaign_budget','final_clock',
+                'final_validation','final_receipt') + tuple('read_'+str(i) for i in range(7))
+        for stage in stages:
+            with self.subTest(stage=stage): Pure().mock_capture(False,fault=stage)
+
+    def test_cleanup_raised_is_unknown_not_reaped_or_known_failed(self):
+        Pure().mock_capture(False,cleanup_mode='unknown')
+
+    def test_cleanup_false_is_known_failed(self):
+        Pure().mock_capture(False,cleanup_mode='failed')
+
+    def test_capture_failure_preserved_when_receipt_write_also_fails(self):
+        Pure().mock_capture(False,fault='facilities',finalization_error=True)
+
+    def test_success_body_but_receipt_write_failure_cannot_pass(self):
+        Pure().mock_capture(False,finalization_error=True)
+
+    def test_partial_startup_stage_and_unknown_cleanup_remain_honest(self):
+        for fail,expected in [('spawn','child_spawn'),('mask','child_mask_restore'),
+                              ('pidfd','child_pidfd'),('birth','child_birth'),('group','child_group')]:
+            with self.subTest(fail=fail),self.temp() as t:
+                sup=p.Supervisor(Path(t)); sup.diagnostic=p.new_diagnostic()
+                sup.diagnostic['xvfb_startup']='not_started'
+                fake=unittest.mock.Mock(pid=321,returncode=None)
+                def mask(how,values):
+                    if fail=='mask' and how==p.signal.SIG_SETMASK: raise RuntimeError(self.SENTINEL)
+                    return set()
+                with patch.object(p.signal,'pthread_sigmask',side_effect=mask), \
+                     patch.object(p.subprocess,'Popen',side_effect=OSError(self.SENTINEL) if fail=='spawn' else None,return_value=fake), \
+                     patch.object(p.os,'pidfd_open',side_effect=OSError(self.SENTINEL) if fail=='pidfd' else None,return_value=7), \
+                     patch.object(p,'birth',side_effect=OSError(self.SENTINEL) if fail=='birth' else None,
+                         return_value={'pid':321,'start_ticks':1,'pgrp':999 if fail=='group' else 321,'state':'S'}):
+                    try: sup.start('xvfb',['NEVER EXECUTED'])
+                    except Exception as error: p.diagnostic_failure(sup.diagnostic,error)
+                    else: self.fail('mock failure did not fail')
+                self.assertEqual(sup.diagnostic['failure_stage'],expected)
+                self.assertEqual(sup.diagnostic['xvfb_startup'],'unknown' if fail=='spawn' else 'registered')
+                self.assertEqual(len(sup.children),0 if fail=='spawn' else 1)
+                self.assertNotIn(self.SENTINEL,json.dumps(sup.diagnostic))
+
+    def test_pre_capture_source_failure_and_safe_marker_staging(self):
+        import contextlib,io
+        with self.temp() as t:
+            out=Path(t); stdout=io.StringIO();stderr=io.StringIO()
+            with patch.object(p.sys,'argv',['probe','capture',str(out),'not-executed']), \
+                 patch.object(p.signal,'signal'),patch.object(p,'binding',side_effect=OSError(self.SENTINEL)), \
+                 contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr):
+                self.assertEqual(p.main(),1)
+            self.assertEqual(stdout.getvalue()+stderr.getvalue(),'')
+            marker=p.strict((out/'receipt-finalization-failure.json').read_bytes())
+            self.assertEqual(marker['diagnostic']['failure_stage'],'source_binding')
+            self.assertEqual(marker['diagnostic']['cleanup'],'not_attempted')
+            p.stage_evidence(out)
+            public=p.strict((out/'upload/public-receipt.json').read_bytes())
+            self.assertEqual(public['diagnostic']['failure_stage'],'source_binding')
+            self.assertNotIn(self.SENTINEL,json.dumps(public))
+
+    def test_source_hash_exception_has_explicit_stage(self):
+        value=p.new_diagnostic()
+        with patch.dict(p.os.environ,{'REVIEWED_HEAD':'a'*40,'REVIEWED_TREE':'b'*40}), \
+             patch.object(p.subprocess,'check_output',side_effect=[b'a'*40,b'b'*40,b'']), \
+             patch.object(p,'digest',side_effect=OSError(self.SENTINEL)):
+            try: p.binding(value)
+            except Exception as error: p.diagnostic_failure(value,error)
+        self.assertEqual(value['failure_stage'],'source_hash')
+
+    def test_worker_wait_keeps_read_operation(self):
+        with self.temp() as t:
+            sup=p.Supervisor(Path(t));sup.diagnostic=p.new_diagnostic()
+            p.checkpoint(sup.diagnostic,'read_5')
+            with patch.object(sup,'start',return_value=(object(),{})), \
+                 patch.object(sup,'wait',side_effect=p.subprocess.TimeoutExpired(self.SENTINEL,3)):
+                try: sup.worker('http',{})
+                except Exception as error: p.diagnostic_failure(sup.diagnostic,error)
+            self.assertEqual(sup.diagnostic['failure_stage'],'child_worker_wait')
+            self.assertEqual(sup.diagnostic['failure_operation'],'read_5')
+            self.assertEqual(sup.diagnostic['failure_code'],'timeout')
+
+    def test_malformed_failure_markers_never_publish_fields(self):
+        for marker in ({'diagnostic':{'detail':self.SENTINEL}},
+                       {'schema':p.SCHEMA,'status':'failed','cleanup':'reaped','semantic_pass':False,
+                        'native_gestures':'UNRUN','diagnostic':{**p.new_diagnostic(),'path':self.SENTINEL}}):
+            with self.temp() as t:
+                out=Path(t);p.put(out/'receipt-finalization-failure.json',marker)
+                p.stage_evidence(out)
+                public=p.strict((out/'upload/public-receipt.json').read_bytes())
+                p.checked_public(public)
+                self.assertEqual(public['status'],'failed')
+                self.assertNotIn(self.SENTINEL,json.dumps(public))
+
+
+class DiagnosticEntry(unittest.TestCase):
+    def test_pre_capture_checkpoint_boundaries_and_handler_restore(self):
+        stages=('handler_install','capture_arguments','output_guard','source_binding',
+                'source_record','binary_guard','campaign_directory','build_copy','handler_restore')
+        for stage in stages:
+            with self.subTest(stage=stage),Diagnostics().temp() as t:
+                out=Path(t);p.put(out/'source.json',{});p.put(out/'build.json',{})
+                binary=out/'mock';binary.write_bytes(b'NEVER EXECUTED')
+                original=p.checkpoint;triggered=[]
+                def checkpoint(value,where):
+                    original(value,where)
+                    if where==stage and not triggered:
+                        triggered.append(where);raise OSError(Diagnostics.SENTINEL)
+                with patch.object(p.sys,'argv',['probe','capture',str(out),str(binary)]), \
+                     patch.object(p,'binding',return_value={}),patch.object(p.os,'access',return_value=True), \
+                     patch.object(p.signal,'signal'),patch.object(p,'checkpoint',side_effect=checkpoint), \
+                     patch.object(p,'capture',return_value=True):
+                    self.assertEqual(p.main(),1)
+                marker=p.strict((out/'receipt-finalization-failure.json').read_bytes())
+                self.assertEqual(marker['diagnostic']['failure_stage'],stage)
+                self.assertNotIn(Diagnostics.SENTINEL,json.dumps(marker))
+                p.stage_evidence(out)
+                public=p.strict((out/'upload/public-receipt.json').read_bytes())
+                self.assertEqual(public['status'],'failed')
+                self.assertEqual(public['diagnostic']['failure_stage'],stage)
+
+    def test_primary_entry_failure_preserved_if_restore_also_fails(self):
+        with Diagnostics().temp() as t:
+            out=Path(t)
+            def handler(sig,value):
+                if value=='original': raise OSError(Diagnostics.SENTINEL)
+                return 'original'
+            with patch.object(p.sys,'argv',['probe','capture',str(out),'not-executed']), \
+                 patch.object(p.signal,'signal',side_effect=handler) as restore, \
+                 patch.object(p,'binding',side_effect=ValueError(Diagnostics.SENTINEL)):
+                self.assertEqual(p.main(),1)
+            self.assertEqual(restore.call_count,4)
+            marker=p.strict((out/'receipt-finalization-failure.json').read_bytes())
+            self.assertEqual(marker['diagnostic']['failure_stage'],'source_binding')
+            self.assertEqual(marker['diagnostic']['failure_code'],'invalid_value')
+            self.assertEqual(marker['diagnostic']['finalization'],'failed')
+
+    def test_staging_itself_rejects_unrecognized_constructed_public_fields(self):
+        with Diagnostics().temp() as t:
+            out=Path(t); original=p.checked_public
+            def validator(value):
+                value['env']=Diagnostics.SENTINEL
+                return original(value)
+            with patch.object(p,'checked_public',side_effect=validator):
+                with self.assertRaises(RuntimeError): p.stage_evidence(out)
+            self.assertFalse((out/'upload/public-receipt.json').exists())
+            self.assertFalse((out/'upload/manifest.json').exists())
+
+class DiagnosticSuccessor(unittest.TestCase):
+    # New tests only; the 77 rejected-candidate methods remain unchanged.
+    def temp(self):
+        return tempfile.TemporaryDirectory(dir=str(Path.cwd()/'.openclaw/tmp/beatbox-p0a-frame-diagnostic-fixed-proof/test-tmp'))
+
+    def stage_copy(self, out, outcome):
+        import shutil
+        parent=out.parent/('stage-'+outcome); parent.mkdir()
+        shutil.copytree(out,parent/'campaign')
+        p.put(parent/'source.json',{'head':'a'*40,'tree':'b'*40,
+                                  'runner_sha256':'c'*64,'workflow_sha256':'d'*64})
+        with patch.dict(p.os.environ,{'CAPTURE_OUTCOME':outcome}): p.stage_evidence(parent)
+        public=p.strict((parent/'upload/public-receipt.json').read_bytes())
+        p.checked_public(public)
+        return public
+
+    def observe_full_capture(self, observer):
+        original=p.capture
+        class Observed(Exception): pass
+        def capture(out,binary,binding,*a,**kw):
+            observer(out,binary,binding,p.Supervisor.return_value,original)
+            raise Observed()
+        with patch.object(p,'capture',side_effect=capture):
+            with self.assertRaises(Observed): Pure().mock_capture(False)
+
+    def test_receipt_serialization_file_and_parent_fsync_failures_never_promise_written(self):
+        # Actual scratch serialization/write/fsync, failing after bytes were
+        # emitted or at either fsync; the failure marker cannot be written.
+        for boundary in ('serialized','file_fsync','parent_fsync'):
+            with self.subTest(boundary=boundary),self.temp() as t:
+                out=Path(t)/'capture';out.mkdir()
+                sup=unittest.mock.Mock();sup.cleanup.return_value=True
+                diagnostic=p.new_diagnostic();real_put=p.put;real_open=Path.open
+                real_fsync=p.os.fsync;calls=[]
+                class FailedWrite:
+                    def __init__(self, file): self.file=file
+                    def __enter__(self): self.file.__enter__(); return self
+                    def __exit__(self,*args): return self.file.__exit__(*args)
+                    def write(self,data):
+                        self.file.write(data)
+                        raise OSError('SECRET-DIAGNOSTIC-SENTINEL')
+                def opened(path,*a,**kw):
+                    file=real_open(path,*a,**kw)
+                    return FailedWrite(file) if path.name=='receipt.json' and a==('xb',) else file
+                def fsync(fd):
+                    calls.append(fd)
+                    if len(calls)==(1 if boundary=='file_fsync' else 2):
+                        raise OSError('SECRET-DIAGNOSTIC-SENTINEL')
+                    return real_fsync(fd)
+                def put(path,value,*args):
+                    if path.name=='receipt-finalization-failure.json': raise PermissionError('SECRET-DIAGNOSTIC-SENTINEL')
+                    self.assertEqual(value['diagnostic']['finalization'],'unknown')
+                    if boundary=='serialized':
+                        with patch.object(Path,'open',opened): return real_put(path,value,*args)
+                    with patch.object(p.os,'fsync',side_effect=fsync): return real_put(path,value,*args)
+                with patch.object(p,'Supervisor',return_value=sup),patch.object(p,'put',side_effect=put):
+                    self.assertFalse(p.capture(out,Path('/never-executed'),{},diagnostic))
+                self.assertEqual(diagnostic['finalization'],'failed')
+                self.assertEqual(diagnostic['failure_stage'],'build_binding')
+                row=p.strict((out/'receipt.json').read_bytes())
+                self.assertEqual(row['diagnostic']['finalization'],'unknown')
+                self.assertFalse((out/'receipt-finalization-failure.json').exists())
+                public=self.stage_copy(out,'failure')
+                self.assertEqual(public['status'],'failed')
+                self.assertEqual(public['diagnostic']['finalization'],'unknown')
+                self.assertNotIn('SECRET-DIAGNOSTIC-SENTINEL',json.dumps(public))
+                if boundary!='serialized': self.assertEqual(len(calls),1 if boundary=='file_fsync' else 2)
+
+    def test_failed_body_successfully_persisted_is_not_persist_failure(self):
+        with self.temp() as t:
+            out=Path(t)/'capture';out.mkdir();sup=unittest.mock.Mock();sup.cleanup.return_value=True
+            diagnostic=p.new_diagnostic();seen=[];real_put=p.put
+            def put(path,value,*args):
+                seen.append(copy.deepcopy(value))
+                return real_put(path,value,*args)
+            with patch.object(p,'Supervisor',return_value=sup),patch.object(p,'put',side_effect=put):
+                self.assertFalse(p.capture(out,Path('/never-executed'),{},diagnostic))
+            self.assertEqual(seen[0]['diagnostic']['finalization'],'unknown')
+            self.assertEqual(diagnostic['finalization'],'written')
+            self.assertEqual(diagnostic['failure_stage'],'build_binding')
+            self.assertFalse((out/'receipt-finalization-failure.json').exists())
+            public=self.stage_copy(out,'failure')
+            self.assertEqual(public['status'],'failed')
+            self.assertEqual(public['diagnostic']['finalization'],'unknown')
+
+    def test_stale_written_downgraded_without_trusted_completion(self):
+        with self.temp() as t:
+            out=Path(t)/'capture';out.mkdir();sup=unittest.mock.Mock();sup.cleanup.return_value=True
+            with patch.object(p,'Supervisor',return_value=sup): p.capture(out,Path('/never-executed'),{})
+            row=p.strict((out/'receipt.json').read_bytes());row['diagnostic']['finalization']='written'
+            # A legacy positive in otherwise validated failure-body bytes is
+            # not trusted completion, even with a contradictory success outcome.
+            (out/'receipt.json').unlink();p.put(out/'receipt.json',row)
+            for outcome in ('failure','success'):
+                public=self.stage_copy(out,outcome)
+                self.assertEqual(public['status'],'failed')
+                self.assertEqual(public['diagnostic']['finalization'],'unknown')
+
+    def test_explicit_malformed_and_unreadable_markers_downgrade_stale_positive(self):
+        for location in ('campaign','outer'):
+            for kind in ('explicit','malformed','unreadable','directory'):
+                with self.subTest(location=location,kind=kind),self.temp() as t:
+                    out=Path(t);campaign=out/'campaign';campaign.mkdir()
+                    diagnostic=p.new_diagnostic();diagnostic['finalization']='written'
+                    row={'diagnostic':diagnostic}
+                    path=(campaign if location=='campaign' else out)/'receipt-finalization-failure.json'
+                    if kind=='explicit': p.failure_receipt(path,diagnostic)
+                    elif kind=='directory': path.mkdir()
+                    else: path.write_bytes(b'{')
+                    original=Path.read_bytes
+                    def read(file):
+                        if kind=='unreadable' and file==path: raise PermissionError('SECRET-DIAGNOSTIC-SENTINEL')
+                        return original(file)
+                    with patch.object(Path,'read_bytes',read):
+                        staged=p.staged_diagnostic(out,campaign,row)
+                    self.assertEqual(staged['finalization'],'failed')
+                    self.assertNotIn('SECRET-DIAGNOSTIC-SENTINEL',json.dumps(staged))
+
+    def test_normal_success_trusted_outcome_and_validated_receipt_still_stage(self):
+        def observe(out,binary,binding,sup,capture):
+            diagnostic=p.new_diagnostic()
+            self.assertTrue(capture(out,binary,binding,diagnostic))
+            self.assertEqual(diagnostic['finalization'],'written')
+            self.assertEqual(p.strict((out/'receipt.json').read_bytes())['diagnostic']['finalization'],'unknown')
+            public=self.stage_copy(out,'success')
+            self.assertEqual(public['status'],'probe_complete_not_semantic_pass')
+            self.assertEqual(public['diagnostic']['finalization'],'written')
+            self.assertIsNotNone(public['linkage'])
+            failed=self.stage_copy(out,'failure')
+            self.assertEqual(failed['status'],'failed')
+            self.assertEqual(failed['diagnostic']['finalization'],'unknown')
+        self.observe_full_capture(observe)
+
+    def test_success_shaped_stale_receipt_with_bad_markers_fails_finalization(self):
+        def observe(out,binary,binding,sup,capture):
+            self.assertTrue(capture(out,binary,binding))
+            original=p.strict((out/'receipt.json').read_bytes())
+            original['diagnostic']['finalization']='written'
+            (out/'receipt.json').unlink();p.put(out/'receipt.json',original)
+            for name in ('receipt-finalization-failure.json','cleanup-finalization-failure.json'):
+                (out/name).write_bytes(b'{')
+                # stage_copy needs a distinct root for each case.
+                import shutil
+                dest=out.parent/name;shutil.copytree(out,dest)
+                public=self.stage_copy(dest,'success')
+                self.assertEqual(public['status'],'failed')
+                self.assertEqual(public['diagnostic']['finalization'],'failed')
+                (out/name).unlink()
+                (dest.parent/'stage-success').rename(dest.parent/('result-'+name))
+        self.observe_full_capture(observe)
+
+    def test_success_body_parent_fsync_failure_with_or_without_failure_marker(self):
+        for marker_writable in (False,True):
+            def observe(out,binary,binding,sup,capture):
+                real_put=p.put;real_fsync=p.os.fsync;calls=[];diagnostic=p.new_diagnostic()
+                def fsync(fd):
+                    calls.append(fd)
+                    if len(calls)==2: raise OSError('SECRET-DIAGNOSTIC-SENTINEL')
+                    return real_fsync(fd)
+                def put(path,value,*args):
+                    if path.name=='receipt-finalization-failure.json' and not marker_writable:
+                        raise PermissionError('SECRET-DIAGNOSTIC-SENTINEL')
+                    if path.name=='receipt.json':
+                        self.assertEqual(value['status'],'probe_complete_not_semantic_pass')
+                        self.assertEqual(value['diagnostic']['finalization'],'unknown')
+                        with patch.object(p.os,'fsync',side_effect=fsync): return real_put(path,value,*args)
+                    return real_put(path,value,*args)
+                with patch.object(p,'put',side_effect=put):
+                    self.assertFalse(capture(out,binary,binding,diagnostic))
+                self.assertEqual(len(calls),2)
+                self.assertEqual(diagnostic['failure_stage'],'final_receipt')
+                self.assertEqual(diagnostic['finalization'],'failed')
+                row=p.strict((out/'receipt.json').read_bytes())
+                self.assertEqual(row['status'],'probe_complete_not_semantic_pass')
+                self.assertEqual(row['diagnostic']['finalization'],'unknown')
+                public=self.stage_copy(out,'failure')
+                self.assertIsNotNone(public['linkage'])
+                self.assertEqual(public['status'],'failed')
+                self.assertEqual(public['diagnostic']['finalization'],'failed' if marker_writable else 'unknown')
+                self.assertEqual((out/'receipt-finalization-failure.json').exists(),marker_writable)
+            with self.subTest(marker_writable=marker_writable): self.observe_full_capture(observe)
+
+    def test_unreadable_marker_staging_downgrades_success_shaped_written(self):
+        def observe(out,binary,binding,sup,capture):
+            self.assertTrue(capture(out,binary,binding))
+            row=p.strict((out/'receipt.json').read_bytes());row['diagnostic']['finalization']='written'
+            (out/'receipt.json').unlink();p.put(out/'receipt.json',row)
+            (out/'receipt-finalization-failure.json').write_bytes(b'{}')
+            read=Path.read_bytes
+            def unreadable(path):
+                if path.name=='receipt-finalization-failure.json': raise PermissionError('SECRET-DIAGNOSTIC-SENTINEL')
+                return read(path)
+            with patch.object(Path,'read_bytes',unreadable): public=self.stage_copy(out,'success')
+            self.assertEqual(public['status'],'failed')
+            self.assertEqual(public['diagnostic']['finalization'],'failed')
+            self.assertNotIn('SECRET-DIAGNOSTIC-SENTINEL',json.dumps(public))
+        self.observe_full_capture(observe)
+
+    def test_spawn_and_log_close_two_error_first_failure(self):
+        class Unknown(Exception):
+            def __str__(self): raise AssertionError('formatted')
+            def __repr__(self): raise AssertionError('represented')
+        for first,second,code in ((ValueError(),OSError(),'invalid_value'),
+                                  (Unknown(),OSError(),'unknown_exception'),
+                                  (ValueError(),Unknown(),'invalid_value'),
+                                  (Unknown(),Unknown(),'unknown_exception')):
+            with self.subTest(code=code),self.temp() as t:
+                sup=p.Supervisor(Path(t));sup.diagnostic=p.new_diagnostic();p.checkpoint(sup.diagnostic,'xvfb_start')
+                class BadClose:
+                    def __enter__(self): return object()
+                    def __exit__(self,*a): raise second
+                with patch.object(p,'put'),patch.object(Path,'open',return_value=BadClose()), \
+                     patch.object(p.signal,'pthread_sigmask',return_value=set()) as mask, \
+                     patch.object(p.subprocess,'Popen',side_effect=first):
+                    with self.assertRaises(type(second)): sup.start('xvfb',['NEVER EXECUTED'])
+                self.assertEqual(sup.diagnostic['failure_stage'],'child_spawn')
+                self.assertEqual(sup.diagnostic['failure_operation'],'xvfb')
+                self.assertEqual(sup.diagnostic['failure_code'],code)
+                self.assertEqual(sup.children,[])
+                self.assertEqual([c.args[0] for c in mask.call_args_list],[p.signal.SIG_BLOCK,p.signal.SIG_SETMASK])
+
+    def test_log_close_only_retains_registered_handle_and_close_stage(self):
+        with self.temp() as t:
+            sup=p.Supervisor(Path(t));sup.diagnostic=p.new_diagnostic();p.checkpoint(sup.diagnostic,'xvfb_start')
+            fake=unittest.mock.Mock(pid=321)
+            class BadClose:
+                def __enter__(self): return object()
+                def __exit__(self,*a): raise OSError()
+            with patch.object(p,'put'),patch.object(Path,'open',return_value=BadClose()), \
+                 patch.object(p.signal,'pthread_sigmask',return_value=set()), \
+                 patch.object(p.subprocess,'Popen',return_value=fake):
+                with self.assertRaises(OSError): sup.start('xvfb',['NEVER EXECUTED'])
+            self.assertIs(sup.children[0]['p'],fake)
+            self.assertEqual(sup.diagnostic['xvfb_startup'],'registered')
+            self.assertEqual(sup.diagnostic['failure_stage'],'child_log_close')
+            self.assertEqual(sup.diagnostic['failure_operation'],'xvfb')
+            self.assertEqual(sup.diagnostic['failure_code'],'io_error')
+
+    def test_actual_writer_close_after_child_group_checkpoint_is_display_close(self):
+        def observe(out,binary,binding,sup,capture):
+            start=sup.start.side_effect;real_close=p.os.close;target=[];failed=[]
+            def started(label,argv,env=None,pass_fds=()):
+                result=start(label,argv,env,pass_fds)
+                if label=='xvfb': target.append(pass_fds[0])
+                p.checkpoint(sup.diagnostic,'child_group')
+                return result
+            def close(fd):
+                if target and fd==target[0] and not failed:
+                    failed.append(fd);raise OSError('SECRET-DIAGNOSTIC-SENTINEL')
+                return real_close(fd)
+            with patch.object(sup.start,'side_effect',started),patch.object(p.os,'close',side_effect=close):
+                self.assertFalse(capture(out,binary,binding))
+            self.assertEqual(len(failed),1)
+            diag=p.strict((out/'receipt.json').read_bytes())['diagnostic']
+            self.assertEqual(diag['failure_stage'],'display_close')
+            self.assertEqual(diag['failure_operation'],'xvfb')
+            self.assertEqual(diag['failure_code'],'io_error')
+            public=self.stage_copy(out,'failure')
+            self.assertEqual(public['diagnostic']['failure_stage'],'display_close')
+            self.assertNotIn('SECRET-DIAGNOSTIC-SENTINEL',json.dumps(public))
+        self.observe_full_capture(observe)
 
 if __name__=='__main__':
     unittest.main(verbosity=2)
