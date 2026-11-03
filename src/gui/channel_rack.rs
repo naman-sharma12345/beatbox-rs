@@ -763,9 +763,12 @@ pub fn compact_pattern_bar(
     #[cfg(test)]
     compact_pattern_tests::begin_responses(ui.ctx());
     let row = ui.horizontal_wrapped(|ui| {
-        // width() is only a minimum in egui 0.29.1. The finite child and
-        // truncate() together bound the closed selector, even for long names.
+        // width() is only a minimum in egui 0.29.1. Retain the finite child
+        // and truncated text; diagnostics observe actual widget/wrapper growth.
         let picker_width = width.min(100.0);
+        #[cfg(test)]
+        compact_pattern_tests::trace_budget(ui, "selector", vec2(picker_width, 0.0),
+            p.patterns.get(*current).map(|q| q.name.as_str()).unwrap_or("Choose pattern"), true);
         let picker = ui.allocate_ui_with_layout(
             vec2(picker_width, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 let picker_enabled = ui.is_enabled();
@@ -790,9 +793,14 @@ pub fn compact_pattern_bar(
                         }
                     }).response
             },
-        ).inner;
+        );
+        #[cfg(test)]
+        compact_pattern_tests::trace_wrapper(ui, "selector-wrapper", &picker.response);
+        let picker = picker.inner;
         #[cfg(test)]
         compact_pattern_tests::record(ui.ctx(), "selector", picker.rect);
+        #[cfg(test)]
+        compact_pattern_tests::record_response(ui.ctx(), "selector", &picker);
         if let Some(selected) = p.patterns.get(*current) {
             picker.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), format!("Pattern: {}", selected.name)));
             picker.on_hover_text(format!("{}\nPattern ID: {}\nChoose from all editable patterns", selected.name, selected.id));
@@ -805,17 +813,32 @@ pub fn compact_pattern_bar(
                 .on_hover_text(if shrink_blocked { "The last bar has notes. Clear them first (nothing is deleted for you)." } else { "Shorter pattern" });
             #[cfg(test)]
             compact_pattern_tests::record(ui.ctx(), "minus", minus.rect);
+            #[cfg(test)]
+            compact_pattern_tests::record_response(ui.ctx(), "minus", &minus);
             if minus.clicked() {
                 result.actions.push(("set_pattern_length", json!({"pattern":cur.name,"bars":bars-1})));
             }
-            let length = ui.add(egui::Label::new(format!("{bars} bar{}", if bars == 1 { "" } else { "s" })).wrap());
+            // Pre-layout against the FULL row, not its trailing sliver. Passing
+            // this same galley to Label selects its normal atomic allocation:
+            // the parent wraps the whole widget before Label paints any glyphs.
+            let length_text = format!("{bars} bar{}", if bars == 1 { "" } else { "s" });
+            let length_galley = egui::WidgetText::from(length_text.as_str()).into_galley(
+                ui, Some(egui::TextWrapMode::Wrap), width, egui::TextStyle::Body,
+            );
+            #[cfg(test)]
+            compact_pattern_tests::trace_length(ui, &length_text, &length_galley);
+            let length = ui.add(egui::Label::new(length_galley));
             #[cfg(test)]
             compact_pattern_tests::record(ui.ctx(), "bars", length.rect);
+            #[cfg(test)]
+            compact_pattern_tests::record_response(ui.ctx(), "bars", &length);
             let _ = length;
             let plus = ui.add_enabled(bars < 64, egui::Button::new("+"))
                 .on_hover_text("Longer pattern: more steps to fill, and a longer loop");
             #[cfg(test)]
             compact_pattern_tests::record(ui.ctx(), "plus", plus.rect);
+            #[cfg(test)]
+            compact_pattern_tests::record_response(ui.ctx(), "plus", &plus);
             if plus.clicked() {
                 result.actions.push(("set_pattern_length", json!({"pattern":cur.name,"bars":bars+1})));
             }
@@ -823,6 +846,8 @@ pub fn compact_pattern_bar(
         let add = ui.add(egui::Button::new("New").wrap()).on_hover_text("New empty pattern, as long as the selected pattern");
         #[cfg(test)]
         compact_pattern_tests::record(ui.ctx(), "new", add.rect);
+        #[cfg(test)]
+        compact_pattern_tests::record_response(ui.ctx(), "new", &add);
         if add.clicked() {
             let bars = p.patterns.get(*current).map(|q| q.bars).unwrap_or(1).max(1);
             result.actions.push(("add_pattern", json!({"name":new_pattern_name(p),"bars":bars})));
@@ -832,6 +857,8 @@ pub fn compact_pattern_bar(
         let send = ui.add_enabled(selected.is_some(), egui::Button::new("Send to song").wrap());
         #[cfg(test)]
         compact_pattern_tests::record(ui.ctx(), "send", send.rect);
+        #[cfg(test)]
+        compact_pattern_tests::record_response(ui.ctx(), "send", &send);
         if let Some(pat) = selected {
             let (lane, bar) = drop_spot(p, pat.bars, target);
             if send.on_hover_text(format!("place {} on playlist track {} at bar {}", pat.name, lane+1, bar+1)).clicked() {
@@ -842,6 +869,8 @@ pub fn compact_pattern_bar(
                 *pattern_rename = Some((identity, pat.name.clone()));
             }
         }
+        #[cfg(test)]
+        compact_pattern_tests::trace_menu_budget(ui, width);
         // Negotiate an atomic finite budget with the outer wrapping placer
         // before a child scope can inherit only the trailing row sliver.
         let menu_width = (egui::WidgetText::from("Pattern actions").into_galley(
@@ -884,9 +913,14 @@ pub fn compact_pattern_bar(
                     result.duplicate = duplicate.clicked();
                 }
             }).response
-        }).inner;
+        });
+        #[cfg(test)]
+        compact_pattern_tests::trace_wrapper(ui, "manage-wrapper", &menu.response);
+        let menu = menu.inner;
         #[cfg(test)]
         compact_pattern_tests::record(ui.ctx(), "manage", menu.rect);
+        #[cfg(test)]
+        compact_pattern_tests::record_response(ui.ctx(), "manage", &menu);
         let _ = menu;
     });
     #[cfg(test)]
@@ -1538,11 +1572,19 @@ mod compact_pattern_tests {
                 .frame(egui::Frame::none())
                 .show(ctx, |ui| {
                     result = compact_pattern_bar(ui, p, &mut state.current, None, &mut state.draft);
+                    trace_current_pass(ctx, width, scale);
                 });
         });
         let observed = ctx
             .data(|d| d.get_temp::<Observation>(observation_key()))
             .unwrap();
+        for shape in &output.shapes {
+            if let egui::Shape::Text(text) = &shape.shape {
+                eprintln!("compact paint width={width} dpi={scale} text={:?} pos={:?} size={:?} mesh_bound={:?} clip={:?} elided={}",
+                    text.galley.text(), text.pos, text.galley.size(),
+                    text.galley.mesh_bounds.translate(text.pos.to_vec2()), shape.clip_rect, text.galley.elided);
+            }
+        }
         (result, observed, output)
     }
 
@@ -1761,6 +1803,116 @@ mod compact_pattern_tests {
             vec![("add_pattern", json!({"name":"Pattern 1","bars":4}))]
         );
         assert_eq!(fresh.current, p.patterns.len());
+    }
+
+    // Diagnostic-only probes: no allocation, painting, response substitution,
+    // or wrapper insertion into the independent-control observation list.
+    pub(super) fn trace_budget(
+        ui: &egui::Ui,
+        name: &str,
+        requested: egui::Vec2,
+        text: &str,
+        selector: bool,
+    ) {
+        let natural = egui::WidgetText::from(text).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Button,
+        );
+        eprintln!("compact budget pass={} name={name} requested={requested:?} parent_cursor={:?} parent_max={:?} available_before={:?} clip={:?} natural_text_size={:?} icon_width={} icon_spacing={} button_padding={:?} selector={selector}; requested is not a hard cap; internal ComboBox content min_rect is not observed here",
+            ui.ctx().cumulative_pass_nr(), ui.cursor(), ui.max_rect(), ui.available_rect_before_wrap(), ui.clip_rect(),
+            natural.size(), ui.spacing().icon_width, ui.spacing().icon_spacing, ui.spacing().button_padding);
+    }
+
+    pub(super) fn trace_menu_budget(ui: &egui::Ui, width: f32) {
+        let measured = egui::WidgetText::from("Pattern actions").into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Button,
+        );
+        let requested = (measured.size().x + 2.0 * ui.spacing().button_padding.x).min(width);
+        trace_budget(
+            ui,
+            "manage",
+            vec2(requested, ui.spacing().interact_size.y),
+            "Pattern actions",
+            false,
+        );
+    }
+
+    pub(super) fn trace_wrapper(ui: &egui::Ui, tag: &str, response: &egui::Response) {
+        eprintln!("compact wrapper-only pass={} tag={tag} rect={:?} interact_rect={:?} clip={:?}; NOT an independent control",
+            ui.ctx().cumulative_pass_nr(), response.rect, response.interact_rect, ui.clip_rect());
+    }
+
+    pub(super) fn trace_length(ui: &egui::Ui, text: &str, atomic: &egui::Galley) {
+        // Reconstruct the old inline layout JOB only, from archive-bound Label
+        // source. This is a counterfactual probe, not an old real Response.
+        let mut old_job = egui::WidgetText::from(text).into_layout_job(
+            ui.style(),
+            egui::FontSelection::Default,
+            ui.text_valign(),
+        );
+        old_job.wrap.max_width = ui.available_width();
+        old_job.first_row_min_height = ui.cursor().height();
+        old_job.halign = egui::Align::Min;
+        old_job.justify = false;
+        if let Some(section) = old_job.sections.first_mut() {
+            section.leading_space = ui.available_width() - ui.available_size_before_wrap().x;
+        }
+        let old = ui.fonts(|fonts| fonts.layout_job(old_job));
+        let old_pos = pos2(ui.max_rect().left(), ui.cursor().top());
+        eprintln!("compact length-before pass={} cursor={:?} max={:?} available_before={:?} full_budget={} clip={:?} Body={:?}",
+            ui.ctx().cumulative_pass_nr(), ui.cursor(), ui.max_rect(), ui.available_rect_before_wrap(),
+            atomic.job.wrap.max_width, ui.clip_rect(), ui.style().text_styles.get(&egui::TextStyle::Body));
+        for (index, row) in old.rows.iter().enumerate() {
+            eprintln!("compact old-inline-JOB-PROBE row={index} rect={:?} mesh_bound={:?} origin={old_pos:?}; NO allocation or actual old response",
+                row.rect.translate(old_pos.to_vec2()), row.visuals.mesh_bounds.translate(old_pos.to_vec2()));
+        }
+        for (index, row) in atomic.rows.iter().enumerate() {
+            eprintln!("compact new-atomic-SAME-galley row={index} local_rect={:?} local_mesh_bound={:?} size={:?} elided={}; actual paint position follows in paint log",
+                row.rect, row.visuals.mesh_bounds, atomic.size(), atomic.elided);
+        }
+    }
+
+    fn trace_current_pass(ctx: &egui::Context, width: f32, scale: f32) {
+        let pass = ctx.cumulative_pass_nr();
+        let style = ctx.style();
+        let enlarged = style.text_styles.get(&egui::TextStyle::Body)
+            == Some(&FontId::proportional(20.0))
+            && style.text_styles.get(&egui::TextStyle::Button) == Some(&FontId::proportional(22.0));
+        let rows = ctx
+            .data(|d| d.get_temp::<Vec<(u64, String, egui::Response)>>(responses_key()))
+            .unwrap();
+        let observation = ctx
+            .data(|d| d.get_temp::<Observation>(observation_key()))
+            .unwrap();
+        eprintln!("compact case width={width} dpi={scale} enlarged={enlarged} pass={pass} row={:?} Body={:?} Button={:?} padding={:?}",
+            observation.row, style.text_styles.get(&egui::TextStyle::Body), style.text_styles.get(&egui::TextStyle::Button), style.spacing.button_padding);
+        for (stamp, name, response) in &rows {
+            eprintln!("compact real-response case=({width},{scale},{enlarged}) pass={pass} stamp={stamp} name={name} rect={:?} interact_rect={:?} id={:?} enabled={}",
+                response.rect, response.interact_rect, response.id, response.enabled());
+            assert_eq!(
+                *stamp, pass,
+                "diagnostic primary/popup response must belong to this ctx.run pass"
+            );
+        }
+        for (name, _) in &observation.controls {
+            assert!(
+                rows.iter().any(|(_, n, _)| n == name),
+                "missing real primary response {name}"
+            );
+        }
+        // Log every named/indexed pair before the untouched old assertions.
+        // No intersection, shrink, clipping, or substitution is done here.
+        for (i, (name, rect)) in observation.controls.iter().enumerate() {
+            eprintln!("compact control width={width} dpi={scale} enlarged={enlarged} pass={pass} index={i} name={name} rect={rect:?} row={:?}", observation.row);
+            for (j, (other_name, other)) in observation.controls.iter().enumerate().skip(i + 1) {
+                eprintln!("compact pair width={width} dpi={scale} enlarged={enlarged} pass={pass} i={i} name={name} rect={rect:?} j={j} other_name={other_name} other={other:?} row={:?}", observation.row);
+            }
+        }
     }
 
     fn responses_key() -> egui::Id {
