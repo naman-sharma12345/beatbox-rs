@@ -766,11 +766,24 @@ pub fn compact_pattern_bar(
         // width() is only a minimum in egui 0.29.1. Retain the finite child
         // and truncated text; diagnostics observe actual widget/wrapper growth.
         let picker_width = width.min(100.0);
+        // Match ComboBox's content + padding and interaction minimum before
+        // the centered wrapping row allocates the selector's outer child.
+        let picker_spacing = ui.spacing();
+        let picker_text_width = picker_width
+            - 2.0 * picker_spacing.button_padding.x
+            - picker_spacing.icon_spacing
+            - picker_spacing.icon_width;
+        let picker_galley = egui::WidgetText::from(
+            p.patterns.get(*current).map(|q| q.name.as_str()).unwrap_or("Choose pattern"),
+        ).into_galley(ui, Some(egui::TextWrapMode::Truncate), picker_text_width, egui::TextStyle::Button);
+        let picker_height = (picker_galley.size().y.max(picker_spacing.icon_width)
+            + 2.0 * picker_spacing.button_padding.y)
+            .max(picker_spacing.interact_size.y);
         #[cfg(test)]
-        compact_pattern_tests::trace_budget(ui, "selector", vec2(picker_width, 0.0),
+        compact_pattern_tests::trace_budget(ui, "selector", vec2(picker_width, picker_height),
             p.patterns.get(*current).map(|q| q.name.as_str()).unwrap_or("Choose pattern"), true);
         let picker = ui.allocate_ui_with_layout(
-            vec2(picker_width, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            vec2(picker_width, picker_height), egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 let picker_enabled = ui.is_enabled();
                 egui::ComboBox::from_id_salt("all-rack-patterns")
                     .width(picker_width)
