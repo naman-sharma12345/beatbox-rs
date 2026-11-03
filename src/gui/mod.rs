@@ -4840,7 +4840,7 @@ mod empty_pattern_tests {
         response.clone()
     }
     fn velocity_studio(ctx: &egui::Context) -> Studio {
-        let mut s = studio(ctx, 4, 0);
+        let s = studio(ctx, 4, 0);
         s.engine.lock().unwrap().project = step_velocity::tests::project();
         s
     }
