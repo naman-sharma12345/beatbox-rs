@@ -4304,6 +4304,7 @@ mod empty_pattern_tests {
     // No second allocator or replacement rack is used.
     #[derive(Clone)]
     pub(super) struct Observation {
+        pass: u64,
         id: egui::Id,
         content: Vec2,
         viewport: Rect,
@@ -4329,10 +4330,12 @@ mod empty_pattern_tests {
         grew: bool,
         pending: bool,
     ) {
+        let pass = ctx.cumulative_pass_nr();
         ctx.data_mut(|d| {
             d.insert_temp(
                 key(),
                 Some(Observation {
+                    pass,
                     id: output.id,
                     content: output.content_size,
                     viewport: output.inner_rect,
@@ -4833,6 +4836,83 @@ mod empty_pattern_tests {
         });
         (actions, output)
     }
+    fn velocity_frame_at(
+        ctx: &egui::Context,
+        studio: &mut Studio,
+        size: Vec2,
+        dpi: f32,
+        events: Vec<egui::Event>,
+        now: f64,
+        case: &str,
+    ) -> (Vec<shortcuts::Action>, egui::FullOutput) {
+        assert!(
+            now.is_finite() && now > ctx.input(|i| i.time),
+            "case={case} nonmonotonic time={now}"
+        );
+        let expected = step_velocity::tests::expected_keys(ctx, &events);
+        let supplied = events.clone();
+        let first_pass = ctx.cumulative_pass_nr();
+        let p = studio.engine.lock().unwrap().project.clone();
+        let mut raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            events,
+            time: Some(now),
+            ..Default::default()
+        };
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(dpi);
+        let mut actions = Vec::new();
+        let output = ctx.run(raw, |ctx| {
+            step_velocity::tests::input_trace(ctx, case, "before-shortcuts", ctx.cumulative_pass_nr());
+            assert_eq!(ctx.input(|i| i.time), now, "case={case}");
+            if ctx.cumulative_pass_nr() == first_pass {
+                let normalized = step_velocity::tests::normalized_keys(ctx);
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new("velocity-lifecycle-normalized"), normalized.clone()));
+                assert_eq!(normalized, expected, "case={case} supplied={supplied:?}");
+            }
+            let active = studio.step_velocity.draft.is_some();
+            let pass_actions = studio.step_velocity_shortcuts(ctx, active);
+            step_velocity::tests::input_trace(ctx, case, "after-shortcuts", ctx.cumulative_pass_nr());
+            eprintln!("case={case} pass={} time={now} active_at_start={active} draft_present={} actions={pass_actions:?} seek_revision={}", ctx.cumulative_pass_nr(), studio.step_velocity.draft.is_some(), studio.player.seek_revision);
+            for action in &pass_actions {
+                studio.shortcut(*action, &p);
+            }
+            actions.extend(pass_actions);
+            egui::CentralPanel::default().show(ctx, |ui| studio.sequencer(ui, &p));
+            let e = studio.engine.lock().unwrap();
+            studio
+                .step_velocity
+                .validate(&e, studio.selected, studio.pattern);
+        });
+        eprintln!(
+            "case={case} time={now} completed_passes={} cumulative_pass={}",
+            output.platform_output.num_completed_passes,
+            ctx.cumulative_pass_nr()
+        );
+        (actions, output)
+    }
+    fn velocity_normalized_keys(ctx: &egui::Context) -> Vec<(egui::Key, bool, bool)> {
+        ctx.data(|d| d.get_temp(egui::Id::new("velocity-lifecycle-normalized")))
+            .unwrap()
+    }
+    fn velocity_reveal_trace(ctx: &egui::Context, case: &str, phase: &str) {
+        step_velocity::tests::reveal_trace(ctx, case, phase, "entry");
+        let observed = ctx
+            .data(|d| d.get_temp::<Option<Observation>>(key()))
+            .flatten()
+            .unwrap();
+        assert_eq!(
+            observed.pass,
+            ctx.cumulative_pass_nr() - 1,
+            "case={case} phase={phase} stale rack output"
+        );
+        let scroll = egui::scroll_area::State::load(ctx, observed.id).unwrap();
+        eprintln!("case={case} phase={phase} pass={} time={} rack_id={:?} offset={:?} stored_offset={:?} content_size={:?} inner_rect={:?} clip={:?}",
+            ctx.cumulative_pass_nr() - 1, ctx.input(|i| i.time), observed.id, observed.offset,
+            scroll.offset, observed.content, observed.viewport, observed.clip);
+    }
     fn velocity_response(ctx: &egui::Context, name: &str) -> egui::Response {
         let rows = step_velocity::tests::responses(ctx);
         let (pass, _, response) = rows.iter().rev().find(|(_, n, _)| n == name).expect(name);
@@ -4851,23 +4931,35 @@ mod empty_pattern_tests {
                 let ctx = egui::Context::default();
                 let mut s = velocity_studio(&ctx);
                 let size = Vec2::new(620.0, 680.0);
-                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
-                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                let case = format!("Home lifecycle dpi={dpi} activation={key:?}");
+                let d = f64::from(egui::RawInput::default().predicted_dt);
+                velocity_frame_at(&ctx, &mut s, size, dpi, vec![], d, &case);
+                velocity_frame_at(&ctx, &mut s, size, dpi, vec![], 2.0 * d, &case);
                 let entry = velocity_response(&ctx, "entry");
                 ctx.memory_mut(|m| m.request_focus(entry.id));
                 let before = velocity_passive_state(&s);
-                let (actions, _) = velocity_frame(
+                let (actions, _) = velocity_frame_at(
                     &ctx,
                     &mut s,
                     size,
                     dpi,
                     vec![step_velocity::tests::key(key, egui::Modifiers::NONE)],
+                    3.0 * d,
+                    &case,
                 );
                 assert!(actions.is_empty());
                 assert!(s.step_velocity.draft.is_some());
                 assert_eq!(velocity_passive_state(&s), before);
-                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
-                let (actions, _) = velocity_frame(
+                velocity_frame_at(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key_up(key)],
+                    4.0 * d,
+                    &case,
+                );
+                let (actions, _) = velocity_frame_at(
                     &ctx,
                     &mut s,
                     size,
@@ -4876,6 +4968,8 @@ mod empty_pattern_tests {
                         step_velocity::tests::key(egui::Key::Escape, egui::Modifiers::NONE),
                         step_velocity::tests::key(egui::Key::Home, egui::Modifiers::NONE),
                     ],
+                    5.0 * d,
+                    &case,
                 );
                 assert!(actions.is_empty());
                 assert!(s.step_velocity.draft.is_none());
@@ -4883,7 +4977,8 @@ mod empty_pattern_tests {
                 // Next frame, outside the editor, the ordinary seek binding still works.
                 ctx.memory_mut(|m| m.surrender_focus(entry.id));
                 let seek = s.player.seek_revision;
-                let (actions, _) = velocity_frame(
+                assert!(ctx.input(|i| i.key_down(egui::Key::Home)));
+                let (held_actions, _) = velocity_frame_at(
                     &ctx,
                     &mut s,
                     size,
@@ -4892,7 +4987,27 @@ mod empty_pattern_tests {
                         egui::Key::Home,
                         egui::Modifiers::NONE,
                     )],
+                    6.0 * d,
+                    &format!("{case} held Home"),
                 );
+                assert!(velocity_normalized_keys(&ctx).contains(&(egui::Key::Home, true, true)));
+                assert!(!held_actions.contains(&shortcuts::Action::SeekStart));
+                assert_eq!(s.player.seek_revision, seek);
+                let (actions, _) = velocity_frame_at(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![
+                        step_velocity::tests::key_up(egui::Key::Escape),
+                        step_velocity::tests::key_up(egui::Key::Home),
+                        step_velocity::tests::key(egui::Key::Home, egui::Modifiers::NONE),
+                    ],
+                    7.0 * d,
+                    &format!("{case} released then fresh Home"),
+                );
+                assert!(velocity_normalized_keys(&ctx).contains(&(egui::Key::Home, false, false)));
+                assert!(velocity_normalized_keys(&ctx).contains(&(egui::Key::Home, true, false)));
                 assert!(actions.contains(&shortcuts::Action::SeekStart));
                 assert_eq!(s.player.seek_revision, seek + 1);
             }
@@ -5138,8 +5253,11 @@ mod empty_pattern_tests {
                 }
                 let mut s = studio(&ctx, 64, 80);
                 let size = Vec2::new(460.0, 360.0);
-                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
-                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                let case = format!("footer dpi={dpi} enlarged={enlarged}");
+                let d = f64::from(egui::RawInput::default().predicted_dt);
+                let duration = step_velocity::tests::reveal_duration(&ctx);
+                velocity_frame_at(&ctx, &mut s, size, dpi, vec![], 1.0 * d, &case);
+                velocity_frame_at(&ctx, &mut s, size, dpi, vec![], 2.0 * d, &case);
                 let rows = step_velocity::tests::responses(&ctx);
                 let (_, _, entry) = rows.iter().rev().find(|(_, n, _)| n == "entry").unwrap();
                 let observed = ctx
@@ -5149,12 +5267,12 @@ mod empty_pattern_tests {
                 let mut scroll = egui::scroll_area::State::load(&ctx, observed.id).unwrap();
                 scroll.offset.x = 900.0;
                 scroll.store(&ctx, observed.id);
-                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                velocity_frame_at(&ctx, &mut s, size, dpi, vec![], 3.0 * d, &case);
                 // Keys precede the actual melodic lane on row 79. Traverse both.
                 let keys = velocity_response(&ctx, "rack-keys-79");
                 let entry_id = entry.id;
                 ctx.memory_mut(|m| m.request_focus(keys.id));
-                velocity_frame(
+                velocity_frame_at(
                     &ctx,
                     &mut s,
                     size,
@@ -5163,6 +5281,8 @@ mod empty_pattern_tests {
                         egui::Key::Tab,
                         egui::Modifiers::NONE,
                     )],
+                    4.0 * d,
+                    &case,
                 );
                 let lane = velocity_response(&ctx, "rack-lane-79");
                 assert!(lane.enabled());
@@ -5176,29 +5296,58 @@ mod empty_pattern_tests {
                     .flatten()
                     .unwrap();
                 assert_eq!(lane.rect, current.rows[79].steps);
-                velocity_frame(
+                velocity_frame_at(
                     &ctx,
                     &mut s,
                     size,
                     dpi,
-                    vec![step_velocity::tests::key(
-                        egui::Key::Tab,
-                        egui::Modifiers::NONE,
-                    )],
+                    vec![
+                        step_velocity::tests::key_up(egui::Key::Tab),
+                        step_velocity::tests::key(egui::Key::Tab, egui::Modifiers::NONE),
+                    ],
+                    5.0 * d,
+                    &case,
                 );
                 assert_eq!(ctx.memory(|m| m.focused()), Some(entry_id));
-                for _ in 0..4 {
-                    velocity_frame(&ctx, &mut s, size, dpi, vec![]);
-                }
+                let t0 = 5.0 * d;
+                velocity_reveal_trace(&ctx, &case, "initiating");
+                let deadline = t0 + duration;
+                velocity_frame_at(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key_up(egui::Key::Tab)],
+                    deadline,
+                    &case,
+                );
+                velocity_reveal_trace(&ctx, &case, "configured deadline");
+                let deadline_offset = ctx
+                    .data(|d| d.get_temp::<Option<Observation>>(key()))
+                    .flatten()
+                    .unwrap()
+                    .offset;
+                let fresh_layout = deadline + d;
+                let (_, output) =
+                    velocity_frame_at(&ctx, &mut s, size, dpi, vec![], fresh_layout, &case);
+                velocity_reveal_trace(&ctx, &case, "fresh layout");
+                let fresh_offset = ctx
+                    .data(|d| d.get_temp::<Option<Observation>>(key()))
+                    .flatten()
+                    .unwrap()
+                    .offset;
+                assert_eq!(
+                    fresh_offset, deadline_offset,
+                    "case={case} offset changed after configured deadline; do not extend wait"
+                );
                 let entry = velocity_response(&ctx, "entry");
                 assert!(entry.has_focus());
                 assert!(entry.interact_rect.contains_rect(entry.rect));
-                let (_, output) = velocity_frame(&ctx, &mut s, size, dpi, vec![]);
                 assert!(output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()=="Step velocity..." && shape.clip_rect.expand(1.0/dpi).contains_rect(Rect::from_min_size(t.pos,t.galley.size())))));
                 let p = s.engine.lock().unwrap().project.clone();
                 s.engine.lock().unwrap().project.tracks.clear();
                 let pass = ctx.cumulative_pass_nr();
-                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                velocity_frame_at(&ctx, &mut s, size, dpi, vec![], fresh_layout + d, &case);
                 assert!(!step_velocity::tests::responses(&ctx)
                     .iter()
                     .any(|(stamp, n, _)| *stamp >= pass && n == "entry"));

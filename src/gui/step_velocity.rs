@@ -1608,6 +1608,82 @@ pub(super) mod tests {
             modifiers,
         }
     }
+    // Local lifecycle helpers; key() remains a key-down event for all old callers.
+    pub(crate) fn key_up(key: Key) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }
+    }
+    pub(crate) fn reveal_duration(ctx: &egui::Context) -> f64 {
+        let animation = ctx.style().scroll_animation;
+        assert_eq!(animation, egui::style::ScrollAnimation::default());
+        assert!(animation.duration.max.is_finite() && animation.duration.max > 0.0);
+        f64::from(animation.duration.max)
+    }
+    pub(crate) fn expected_keys(ctx: &egui::Context, events: &[Event]) -> Vec<(Key, bool, bool)> {
+        let mut down = Vec::new();
+        let mut expected = Vec::new();
+        for event in events {
+            if let Event::Key { key, pressed, .. } = event {
+                let held = down
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map_or_else(|| ctx.input(|i| i.key_down(*key)), |(_, held)| *held);
+                expected.push((*key, *pressed, *pressed && held));
+                down.retain(|(k, _)| k != key);
+                down.push((*key, *pressed));
+            }
+        }
+        expected
+    }
+    pub(crate) fn normalized_keys(ctx: &egui::Context) -> Vec<(Key, bool, bool)> {
+        ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|event| {
+                    if let Event::Key {
+                        key,
+                        pressed,
+                        repeat,
+                        ..
+                    } = event
+                    {
+                        Some((*key, *pressed, *repeat))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+    }
+    pub(crate) fn input_trace(ctx: &egui::Context, case: &str, phase: &str, pass: u64) {
+        let focus = ctx.memory(|m| m.focused());
+        ctx.input(|i| eprintln!(
+            "case={case} phase={phase} pass={} time={:?} stable_dt={:?} predicted_dt={:?} focus={focus:?} wants_keyboard={} events={:?} Home_down={} Tab_down={} ArrowDown_down={}",
+            pass, i.time, i.stable_dt, i.predicted_dt,
+            focus.is_some(), i.events, i.key_down(Key::Home), i.key_down(Key::Tab), i.key_down(Key::ArrowDown)
+        ));
+    }
+    pub(crate) fn reveal_trace(ctx: &egui::Context, case: &str, phase: &str, name: &str) {
+        input_trace(ctx, case, phase, ctx.cumulative_pass_nr() - 1);
+        let rows = responses(ctx);
+        let (pass, _, r) = rows
+            .iter()
+            .rev()
+            .find(|(_, n, _)| n == name)
+            .unwrap_or_else(|| panic!("case={case} phase={phase} missing current response {name}"));
+        eprintln!("case={case} phase={phase} response={name} pass={pass} id={:?} rect={:?} interact_rect={:?} size={:?} focus={:?} animation={:?}; exact UI clip and editor scroll outputs unavailable at existing test seam",
+            r.id, r.rect, r.interact_rect, r.rect.size(), ctx.memory(|m| m.focused()), ctx.style().scroll_animation);
+        assert_eq!(
+            *pass,
+            ctx.cumulative_pass_nr() - 1,
+            "case={case} phase={phase} stale {name}"
+        );
+    }
     pub(crate) fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<Event> {
         vec![
             Event::PointerMoved(pos),
@@ -1641,6 +1717,72 @@ pub(super) mod tests {
             assert_eq!(ctx.pixels_per_point(), dpi);
             intent = show(ctx, state);
         });
+        (intent, output)
+    }
+    fn ui_frame_at(
+        ctx: &egui::Context,
+        state: &mut EditorState,
+        size: egui::Vec2,
+        dpi: f32,
+        events: Vec<Event>,
+        now: f64,
+        case: &str,
+    ) -> (Option<Intent>, egui::FullOutput) {
+        assert!(
+            now.is_finite() && now > ctx.input(|i| i.time),
+            "case={case} nonmonotonic time={now}"
+        );
+        let expected = expected_keys(ctx, &events);
+        let supplied = events.clone();
+        let first_pass = ctx.cumulative_pass_nr();
+        let mut input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events,
+            time: Some(now),
+            ..Default::default()
+        };
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(dpi);
+        let mut intents = Vec::new();
+        let output = ctx.run(input, |ctx| {
+            input_trace(ctx, case, "before-show", ctx.cumulative_pass_nr());
+            assert_eq!(ctx.input(|i| i.time), now, "case={case}");
+            if ctx.cumulative_pass_nr() == first_pass {
+                assert_eq!(
+                    normalized_keys(ctx),
+                    expected,
+                    "case={case} supplied={supplied:?}"
+                );
+            }
+            assert_eq!(ctx.pixels_per_point(), dpi);
+            let pass = ctx.cumulative_pass_nr();
+            let pass_intent = show(ctx, state);
+            if let Some(intent) = pass_intent {
+                intents.push((pass, intent));
+            }
+            input_trace(ctx, case, "after-show", ctx.cumulative_pass_nr());
+            eprintln!(
+                "case={case} pass={} time={now} intent={pass_intent:?} draft={:?}",
+                ctx.cumulative_pass_nr(),
+                state
+                    .draft
+                    .as_ref()
+                    .map(|d| (d.serial, d.cell_serial, d.cell))
+            );
+        });
+        eprintln!(
+            "case={case} time={now} completed_passes={} cumulative_pass={}",
+            output.platform_output.num_completed_passes,
+            ctx.cumulative_pass_nr()
+        );
+        assert!(
+            intents.len() <= 1,
+            "case={case} multiple non-None Intents in one call: pass/intent={intents:?}"
+        );
+        let intent = intents.pop().map(|(_, intent)| intent);
         (intent, output)
     }
     fn painted(output: &egui::FullOutput, label: &str, dpi: f32) -> bool {
@@ -2133,44 +2275,122 @@ pub(super) mod tests {
                 let mut state = EditorState::default();
                 state.open(owner(&p)).unwrap();
                 let size = vec2(460.0, 380.0);
-                ui_frame(&ctx, &mut state, size, dpi, vec![]);
-                ui_frame(&ctx, &mut state, size, dpi, vec![]);
+                let case = format!("last-cell dpi={dpi} enlarged={enlarged}");
+                let d = f64::from(egui::RawInput::default().predicted_dt);
+                let duration = reveal_duration(&ctx);
+                let mut now = d;
+                ui_frame_at(&ctx, &mut state, size, dpi, vec![], now, &case);
+                now += d;
+                ui_frame_at(&ctx, &mut state, size, dpi, vec![], now, &case);
+                now += d;
                 let first = response(&ctx, "cell-0");
                 ctx.memory_mut(|m| m.request_focus(first.id));
-                let (intent, _) = ui_frame(
+                let (intent, _) = ui_frame_at(
                     &ctx,
                     &mut state,
                     size,
                     dpi,
                     vec![key(Key::ArrowDown, Modifiers::NONE)],
+                    now,
+                    &case,
                 );
                 assert_eq!(intent, None);
                 assert_eq!(state.draft.as_ref().unwrap().cell, 1);
                 let last = response(&ctx, "cell-1023");
                 ctx.memory_mut(|m| m.request_focus(last.id));
-                for _ in 0..5 {
-                    ui_frame(&ctx, &mut state, size, dpi, vec![]);
-                }
+                let t0 = now + d;
+                ui_frame_at(
+                    &ctx,
+                    &mut state,
+                    size,
+                    dpi,
+                    vec![key_up(Key::ArrowDown)],
+                    t0,
+                    &case,
+                );
+                reveal_trace(&ctx, &case, "last-cell initiating", "cell-1023");
+                let deadline = t0 + duration;
+                ui_frame_at(&ctx, &mut state, size, dpi, vec![], deadline, &case);
+                reveal_trace(&ctx, &case, "last-cell configured deadline", "cell-1023");
+                let fresh_layout = deadline + d;
+                ui_frame_at(&ctx, &mut state, size, dpi, vec![], fresh_layout, &case);
+                reveal_trace(&ctx, &case, "last-cell fresh layout", "cell-1023");
+                now = fresh_layout + d;
+                assert_eq!(ctx.memory(|m| m.focused()), Some(last.id), "case={case}");
                 let last = response(&ctx, "cell-1023");
                 assert!(last.interact_rect.contains_rect(last.rect));
-                let (intent, _) = ui_frame(
+                let (intent, _) = ui_frame_at(
                     &ctx,
                     &mut state,
                     size,
                     dpi,
                     vec![key(Key::Space, Modifiers::NONE)],
+                    now,
+                    &case,
                 );
                 assert_eq!(intent, None);
                 assert_eq!(state.draft.as_ref().unwrap().cell, 1023);
                 for name in ["apply", "cancel"] {
                     let action = response(&ctx, name);
                     ctx.memory_mut(|m| m.request_focus(action.id));
-                    for _ in 0..5 {
-                        ui_frame(&ctx, &mut state, size, dpi, vec![]);
-                    }
+                    let action_case = format!("{case} action={name}");
+                    let t0 = now + d;
+                    ui_frame_at(
+                        &ctx,
+                        &mut state,
+                        size,
+                        dpi,
+                        vec![key_up(Key::Space)],
+                        t0,
+                        &action_case,
+                    );
+                    reveal_trace(&ctx, &action_case, "initiating", name);
+                    let deadline = t0 + duration;
+                    ui_frame_at(&ctx, &mut state, size, dpi, vec![], deadline, &action_case);
+                    reveal_trace(&ctx, &action_case, "configured deadline", name);
+                    let fresh_layout = deadline + d;
+                    ui_frame_at(
+                        &ctx,
+                        &mut state,
+                        size,
+                        dpi,
+                        vec![],
+                        fresh_layout,
+                        &action_case,
+                    );
+                    reveal_trace(&ctx, &action_case, "fresh layout", name);
+                    now = fresh_layout + d;
                     let action = response(&ctx, name);
+                    assert_eq!(
+                        ctx.memory(|m| m.focused()),
+                        Some(action.id),
+                        "case={action_case}"
+                    );
                     assert!(action.enabled());
                     assert!(action.interact_rect.contains_rect(action.rect));
+                    // Exercise the real focused button, not a synthetic Intent.
+                    let (intent, _) = ui_frame_at(
+                        &ctx,
+                        &mut state,
+                        size,
+                        dpi,
+                        vec![key(Key::Space, Modifiers::NONE)],
+                        now,
+                        &action_case,
+                    );
+                    if name == "apply" {
+                        let draft = state.draft.as_ref().unwrap();
+                        assert_eq!(
+                            intent,
+                            Some(Intent::Apply {
+                                serial: draft.serial,
+                                cell_serial: draft.cell_serial,
+                                value: draft.value().unwrap(),
+                            })
+                        );
+                    } else {
+                        assert_eq!(intent, Some(Intent::Cancel));
+                    }
                 }
             }
         }
