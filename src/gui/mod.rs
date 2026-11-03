@@ -24,6 +24,7 @@ mod rack_view;
 mod render_job;
 mod rhythm_trial;
 mod shortcuts;
+mod step_velocity;
 mod theme;
 mod views;
 mod vocal_view;
@@ -369,6 +370,7 @@ pub struct Studio {
     // view state
     pattern: usize,
     selected: usize,
+    step_velocity: step_velocity::EditorState,
     // render pipeline
     rendered: Option<Rendered>,
     rendering: Option<(RenderKey, Receiver<RenderMessage<Rendered>>)>,
@@ -706,6 +708,7 @@ pub fn run(
                 export: Default::default(),
                 pattern: 0,
                 selected: 0,
+                step_velocity: Default::default(),
                 rendered: None,
                 rendering: None,
                 render_state: Default::default(),
@@ -1104,6 +1107,56 @@ impl Studio {
         if let Err(e) = r {
             self.toast = Some((format!("{e:#}"), 0.0, false));
         }
+    }
+
+    fn open_step_velocity(&mut self, visible: &Project, row: usize) {
+        self.step_velocity.draft = None;
+        match step_velocity::capture(&self.engine, visible, row, self.pattern)
+            .and_then(|owner| self.step_velocity.open(owner))
+        {
+            Ok(()) => {}
+            Err(error) => self.toast = Some((error, 0.0, false)),
+        }
+    }
+
+    fn step_velocity_shortcuts(
+        &mut self,
+        ctx: &egui::Context,
+        active_at_start: bool,
+    ) -> Vec<shortcuts::Action> {
+        let active_at_start = active_at_start || self.step_velocity.draft.is_some();
+        let consumed = self.step_velocity_frame(ctx);
+        step_velocity::global_actions(ctx, &self.step_velocity, active_at_start, consumed)
+    }
+
+    fn step_velocity_frame(&mut self, ctx: &egui::Context) -> bool {
+        let expired = {
+            let e = self.engine.lock().unwrap();
+            self.step_velocity.validate(&e, self.selected, self.pattern)
+        };
+        if expired {
+            self.toast = Some((
+                "Step edit expired. Reopen Step velocity to continue.".into(),
+                0.0,
+                false,
+            ));
+        }
+        let intent = step_velocity::show(ctx, &mut self.step_velocity);
+        if let Some(intent) = intent {
+            // The adapter validates and dispatches while this single guard is held.
+            let result = {
+                let mut e = self.engine.lock().unwrap();
+                self.step_velocity
+                    .finish(&mut e, intent, self.selected, self.pattern)
+            };
+            if let Err(error) = result {
+                self.toast = Some((error, 0.0, false));
+            }
+        }
+        if self.step_velocity.draft.is_none() {
+            self.step_velocity.release_focus(ctx);
+        }
+        expired || intent.is_some()
     }
 
     fn snapshot(&self) -> (Project, u64, (Vec<String>, Vec<String>), (usize, usize)) {
@@ -2102,12 +2155,28 @@ impl Studio {
                 selected: self.selected,
                 rows: Vec::new(),
                 open_editor: false,
+                ..Default::default()
             };
             #[cfg(test)]
             let rack_origin = ui.next_widget_position();
             let actions = channel_rack::channel_rack(ui, p, self.pattern, &mut sel, playing_here);
             #[cfg(test)]
             {
+                // Read only melodic lanes just registered by this rack call.
+                // Copy their actual current-pass Responses, not replacement widgets.
+                for ti in 0..sel.rows.len() {
+                    if !step_velocity::drum(&p.tracks[ti]) {
+                        let lane = ui
+                            .ctx()
+                            .read_response(ui.id().with(("rack-lane", ti)))
+                            .unwrap();
+                        step_velocity::tests::observe(
+                            ui.ctx().clone(),
+                            &format!("rack-lane-{ti}"),
+                            &lane,
+                        );
+                    }
+                }
                 observed_rack = Some((
                     rack_origin,
                     ui.next_widget_position(),
@@ -2116,6 +2185,16 @@ impl Studio {
                 ));
             }
             self.selected = sel.selected;
+            for response in &sel.step_velocity_entries {
+                step_velocity::remember_entry(&mut self.step_velocity, response);
+            }
+            let footer_open = step_velocity::footer(ui, p, self.selected, &mut self.step_velocity);
+            if let Some(row) = sel
+                .open_step_velocity
+                .or(footer_open.then_some(self.selected))
+            {
+                self.open_step_velocity(p, row);
+            }
             if sel.open_editor {
                 self.note_editor = true;
             }
@@ -2588,6 +2667,17 @@ impl eframe::App for Studio {
             self.toast = None;
         }
         let (p, rev, log, undo) = self.snapshot();
+        let velocity_active_at_start = self.step_velocity.draft.is_some();
+        {
+            let e = self.engine.lock().unwrap();
+            if self.step_velocity.validate(&e, self.selected, self.pattern) {
+                self.toast = Some((
+                    "Step edit expired. Reopen Step velocity to continue.".into(),
+                    0.0,
+                    false,
+                ));
+            }
+        }
         if let Some(capture) = &mut self.arrangement_capture {
             if capture.state.is_none() {
                 let e = self.engine.lock().unwrap();
@@ -2800,12 +2890,17 @@ impl eframe::App for Studio {
         self.render_recovery_ui(ctx);
         self.poll_render_job(ctx);
 
+        // Existing drafts render before raw global shortcuts, including closing frames.
         // keyboard shortcuts (ported table: shortcuts.rs)
-        for a in shortcuts::pressed(ctx) {
+        for a in self.step_velocity_shortcuts(ctx, velocity_active_at_start) {
             self.shortcut(a, &p);
         }
 
         self.workspace_ui(ctx, &p, rev, &log, undo);
+        {
+            let e = self.engine.lock().unwrap();
+            self.step_velocity.validate(&e, self.selected, self.pattern);
+        }
 
         self.export_window(ctx);
         self.rhythm_trial_ui(ctx);
@@ -4289,6 +4384,7 @@ mod empty_pattern_tests {
             export: Default::default(),
             pattern: 0,
             selected: 0,
+            step_velocity: Default::default(),
             rendered: None,
             rendering: None,
             render_state: Default::default(),
@@ -4690,6 +4786,479 @@ mod empty_pattern_tests {
                     }
                 }
             }
+        }
+    }
+
+    fn velocity_passive_state(studio: &Studio) -> Value {
+        let mut value = passive_state(studio);
+        value["player_audition"] = json!(studio.player.auditioning());
+        value["player_launch_pending"] = json!(studio.player.launch_pending());
+        value["player_has_audio"] = json!(studio.player.has_audio());
+        value["render_pending"] = json!(
+            studio.rendering.is_some() || studio.render_job.is_some() || studio.live.is_some()
+        );
+        value
+    }
+
+    // These drive the same production seam as update, without ordinary render/audio polling.
+    fn velocity_frame(
+        ctx: &egui::Context,
+        studio: &mut Studio,
+        size: Vec2,
+        dpi: f32,
+        events: Vec<egui::Event>,
+    ) -> (Vec<shortcuts::Action>, egui::FullOutput) {
+        let p = studio.engine.lock().unwrap().project.clone();
+        let mut raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        };
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(dpi);
+        let mut actions = Vec::new();
+        let output = ctx.run(raw, |ctx| {
+            let active = studio.step_velocity.draft.is_some();
+            actions = studio.step_velocity_shortcuts(ctx, active);
+            for action in &actions {
+                studio.shortcut(*action, &p);
+            }
+            egui::CentralPanel::default().show(ctx, |ui| studio.sequencer(ui, &p));
+            let e = studio.engine.lock().unwrap();
+            studio
+                .step_velocity
+                .validate(&e, studio.selected, studio.pattern);
+        });
+        (actions, output)
+    }
+    fn velocity_response(ctx: &egui::Context, name: &str) -> egui::Response {
+        let rows = step_velocity::tests::responses(ctx);
+        let (pass, _, response) = rows.iter().rev().find(|(_, n, _)| n == name).expect(name);
+        assert_eq!(*pass, ctx.cumulative_pass_nr() - 1);
+        response.clone()
+    }
+    fn velocity_studio(ctx: &egui::Context) -> Studio {
+        let mut s = studio(ctx, 4, 0);
+        s.engine.lock().unwrap().project = step_velocity::tests::project();
+        s
+    }
+    #[test]
+    fn velocity_production_first_entry_activation_and_closing_shortcut_frames() {
+        for dpi in [1.0, 2.0] {
+            for key in [egui::Key::Space, egui::Key::Enter] {
+                let ctx = egui::Context::default();
+                let mut s = velocity_studio(&ctx);
+                let size = Vec2::new(620.0, 680.0);
+                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                let entry = velocity_response(&ctx, "entry");
+                ctx.memory_mut(|m| m.request_focus(entry.id));
+                let before = velocity_passive_state(&s);
+                let (actions, _) = velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key(key, egui::Modifiers::NONE)],
+                );
+                assert!(actions.is_empty());
+                assert!(s.step_velocity.draft.is_some());
+                assert_eq!(velocity_passive_state(&s), before);
+                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                let (actions, _) = velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![
+                        step_velocity::tests::key(egui::Key::Escape, egui::Modifiers::NONE),
+                        step_velocity::tests::key(egui::Key::Home, egui::Modifiers::NONE),
+                    ],
+                );
+                assert!(actions.is_empty());
+                assert!(s.step_velocity.draft.is_none());
+                assert_eq!(velocity_passive_state(&s), before);
+                // Next frame, outside the editor, the ordinary seek binding still works.
+                ctx.memory_mut(|m| m.surrender_focus(entry.id));
+                let seek = s.player.seek_revision;
+                let (actions, _) = velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key(
+                        egui::Key::Home,
+                        egui::Modifiers::NONE,
+                    )],
+                );
+                assert!(actions.contains(&shortcuts::Action::SeekStart));
+                assert_eq!(s.player.seek_revision, seek + 1);
+            }
+        }
+    }
+    #[test]
+    fn velocity_production_pointer_open_type_enter_tab_apply_and_one_edit() {
+        for dpi in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+            let mut s = velocity_studio(&ctx);
+            let size = Vec2::new(620.0, 680.0);
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            let pos = velocity_response(&ctx, "entry").rect.center();
+            let before = velocity_passive_state(&s);
+            velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                dpi,
+                step_velocity::tests::pointer(pos, true),
+            );
+            velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                dpi,
+                step_velocity::tests::pointer(pos, false),
+            );
+            assert!(s.step_velocity.draft.is_some());
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            let (actions, _) = velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                dpi,
+                vec![
+                    egui::Event::Text("25".into()),
+                    step_velocity::tests::key(egui::Key::Enter, egui::Modifiers::NONE),
+                ],
+            );
+            assert!(actions.is_empty());
+            assert_eq!(velocity_passive_state(&s), before);
+            assert!(s.step_velocity.draft.is_some());
+            let (actions, _) = velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                dpi,
+                vec![step_velocity::tests::key(
+                    egui::Key::Tab,
+                    egui::Modifiers::NONE,
+                )],
+            );
+            assert!(actions.is_empty());
+            assert_eq!(velocity_passive_state(&s), before);
+            assert!(s.step_velocity.draft.is_some());
+            let apply = velocity_response(&ctx, "apply");
+            assert!(apply.enabled());
+            ctx.memory_mut(|m| m.request_focus(apply.id));
+            let revision = s.engine.lock().unwrap().revision;
+            let (actions, _) = velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                dpi,
+                vec![step_velocity::tests::key(
+                    egui::Key::Space,
+                    egui::Modifiers::NONE,
+                )],
+            );
+            assert!(actions.is_empty());
+            assert!(s.step_velocity.draft.is_none());
+            assert_eq!(s.engine.lock().unwrap().revision, revision + 1);
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            assert_eq!(s.engine.lock().unwrap().revision, revision + 1);
+            assert_eq!(
+                s.player.seek_revision,
+                before["player_seek"].as_u64().unwrap()
+            );
+            assert!(!s.player.auditioning());
+        }
+    }
+    #[test]
+    fn velocity_production_passive_keyboard_set_blur_and_selection_expiry() {
+        let ctx = egui::Context::default();
+        let mut s = velocity_studio(&ctx);
+        let size = Vec2::new(620.0, 680.0);
+        let p = s.engine.lock().unwrap().project.clone();
+        s.open_step_velocity(&p, 0);
+        velocity_frame(&ctx, &mut s, size, 1.0, vec![]);
+        let before = velocity_passive_state(&s);
+        for (key, mods) in [
+            (egui::Key::Space, egui::Modifiers::NONE),
+            (egui::Key::Home, egui::Modifiers::NONE),
+            (egui::Key::Delete, egui::Modifiers::NONE),
+            (egui::Key::Z, egui::Modifiers::CTRL),
+            (
+                egui::Key::Z,
+                egui::Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            (egui::Key::M, egui::Modifiers::NONE),
+            (egui::Key::S, egui::Modifiers::NONE),
+            (egui::Key::OpenBracket, egui::Modifiers::NONE),
+            (egui::Key::CloseBracket, egui::Modifiers::NONE),
+            (egui::Key::R, egui::Modifiers::COMMAND),
+        ] {
+            let (actions, _) = velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                1.0,
+                vec![step_velocity::tests::key(key, mods)],
+            );
+            assert!(actions.is_empty());
+            assert_eq!(velocity_passive_state(&s), before);
+        }
+        let (actions, _) = velocity_frame(
+            &ctx,
+            &mut s,
+            size,
+            1.0,
+            step_velocity::tests::pointer(egui::pos2(610.0, 670.0), true),
+        );
+        assert!(actions.is_empty());
+        assert!(s.step_velocity.draft.is_none());
+        assert_eq!(velocity_passive_state(&s), before);
+        s.open_step_velocity(&p, 0);
+        s.pattern = usize::MAX;
+        let _ = velocity_frame(&ctx, &mut s, size, 1.0, vec![]);
+        assert!(s.step_velocity.draft.is_none());
+    }
+    #[test]
+    fn velocity_production_disabled_apply_tab_reverse_and_cancel_shortcut_gate() {
+        for dpi in [1.0, 2.0] {
+            for text in ["", "invalid", "101"] {
+                let ctx = egui::Context::default();
+                let mut s = velocity_studio(&ctx);
+                let size = Vec2::new(620.0, 680.0);
+                let p = s.engine.lock().unwrap().project.clone();
+                s.open_step_velocity(&p, 0);
+                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                let before = velocity_passive_state(&s);
+                assert!(velocity_response(&ctx, "text").has_focus());
+                let (actions, _) = velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![
+                        egui::Event::Text(text.into()),
+                        step_velocity::tests::key(egui::Key::Enter, egui::Modifiers::NONE),
+                    ],
+                );
+                assert!(actions.is_empty());
+                assert!(s.step_velocity.draft.is_some());
+                assert!(!velocity_response(&ctx, "apply").enabled());
+                assert!(velocity_response(&ctx, "text").has_focus());
+                assert_eq!(velocity_passive_state(&s), before);
+                for _ in 0..2 {
+                    let (actions, _) = velocity_frame(
+                        &ctx,
+                        &mut s,
+                        size,
+                        dpi,
+                        vec![step_velocity::tests::key(
+                            egui::Key::Tab,
+                            egui::Modifiers::NONE,
+                        )],
+                    );
+                    assert!(actions.is_empty());
+                    assert!(s.step_velocity.draft.is_some());
+                    assert!(!velocity_response(&ctx, "apply").enabled());
+                    assert!(velocity_response(&ctx, "cancel").enabled());
+                    assert!(velocity_response(&ctx, "cancel").has_focus());
+                    assert_eq!(velocity_passive_state(&s), before);
+                    let (actions, _) = velocity_frame(
+                        &ctx,
+                        &mut s,
+                        size,
+                        dpi,
+                        vec![step_velocity::tests::key(
+                            egui::Key::Tab,
+                            egui::Modifiers::SHIFT,
+                        )],
+                    );
+                    assert!(actions.is_empty());
+                    assert!(s.step_velocity.draft.is_some());
+                    for _ in 0..2 {
+                        let (actions, _) = velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                        assert!(actions.is_empty());
+                        assert!(s.step_velocity.draft.is_some());
+                        assert!(velocity_response(&ctx, "text").has_focus());
+                        assert_eq!(velocity_passive_state(&s), before);
+                    }
+                }
+                let (actions, _) = velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key(
+                        egui::Key::Tab,
+                        egui::Modifiers::NONE,
+                    )],
+                );
+                assert!(actions.is_empty());
+                assert!(s.step_velocity.draft.is_some());
+                assert!(velocity_response(&ctx, "cancel").has_focus());
+                let (actions, _) = velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![
+                        step_velocity::tests::key(egui::Key::Space, egui::Modifiers::NONE),
+                        step_velocity::tests::key(egui::Key::Home, egui::Modifiers::NONE),
+                    ],
+                );
+                assert!(actions.is_empty());
+                assert!(s.step_velocity.draft.is_none());
+                assert_eq!(velocity_passive_state(&s), before);
+            }
+        }
+    }
+
+    #[test]
+    fn velocity_footer_real_focus_reveals_both_axes_long_rack_and_trackless_omission() {
+        for dpi in [1.0, 2.0] {
+            for enlarged in [false, true] {
+                let ctx = egui::Context::default();
+                if enlarged {
+                    let mut style = (*ctx.style()).clone();
+                    for f in style.text_styles.values_mut() {
+                        f.size *= 1.3;
+                    }
+                    ctx.set_style(style);
+                }
+                let mut s = studio(&ctx, 64, 80);
+                let size = Vec2::new(460.0, 360.0);
+                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                let rows = step_velocity::tests::responses(&ctx);
+                let (_, _, entry) = rows.iter().rev().find(|(_, n, _)| n == "entry").unwrap();
+                let observed = ctx
+                    .data(|d| d.get_temp::<Option<Observation>>(key()))
+                    .flatten()
+                    .unwrap();
+                let mut scroll = egui::scroll_area::State::load(&ctx, observed.id).unwrap();
+                scroll.offset.x = 900.0;
+                scroll.store(&ctx, observed.id);
+                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                // Keys precede the actual melodic lane on row 79. Traverse both.
+                let keys = velocity_response(&ctx, "rack-keys-79");
+                let entry_id = entry.id;
+                ctx.memory_mut(|m| m.request_focus(keys.id));
+                velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key(
+                        egui::Key::Tab,
+                        egui::Modifiers::NONE,
+                    )],
+                );
+                let lane = velocity_response(&ctx, "rack-lane-79");
+                assert!(lane.enabled());
+                assert!(lane.sense.click && lane.sense.focusable);
+                assert_ne!(lane.id, keys.id);
+                assert_ne!(lane.id, entry_id);
+                assert!(lane.has_focus());
+                assert_eq!(ctx.memory(|m| m.focused()), Some(lane.id));
+                let current = ctx
+                    .data(|d| d.get_temp::<Option<Observation>>(key()))
+                    .flatten()
+                    .unwrap();
+                assert_eq!(lane.rect, current.rows[79].steps);
+                velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key(
+                        egui::Key::Tab,
+                        egui::Modifiers::NONE,
+                    )],
+                );
+                assert_eq!(ctx.memory(|m| m.focused()), Some(entry_id));
+                for _ in 0..4 {
+                    velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                }
+                let entry = velocity_response(&ctx, "entry");
+                assert!(entry.has_focus());
+                assert!(entry.interact_rect.contains_rect(entry.rect));
+                let (_, output) = velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                assert!(output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()=="Step velocity..." && shape.clip_rect.expand(1.0/dpi).contains_rect(Rect::from_min_size(t.pos,t.galley.size())))));
+                let p = s.engine.lock().unwrap().project.clone();
+                s.engine.lock().unwrap().project.tracks.clear();
+                let pass = ctx.cumulative_pass_nr();
+                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                assert!(!step_velocity::tests::responses(&ctx)
+                    .iter()
+                    .any(|(stamp, n, _)| *stamp >= pass && n == "entry"));
+                assert!(!p.tracks.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn velocity_context_menu_keyboard_open_is_gated_on_its_first_activation_frame() {
+        for dpi in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+            let mut s = velocity_studio(&ctx);
+            let size = Vec2::new(800.0, 680.0);
+            {
+                let mut e = s.engine.lock().unwrap();
+                let mut t = e.project.tracks[0].clone();
+                t.name = "Menu owner".into();
+                t.id.clear();
+                e.project.tracks.push(t);
+                e.project.ensure_fx_ids();
+            }
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            let pos = velocity_response(&ctx, "rack-name-1").rect.center();
+            for pressed in [true, false] {
+                velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Secondary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            let menu = velocity_response(&ctx, "velocity-menu-1");
+            ctx.memory_mut(|m| m.request_focus(menu.id));
+            let before = velocity_passive_state(&s);
+            let (actions, _) = velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                dpi,
+                vec![step_velocity::tests::key(
+                    egui::Key::Space,
+                    egui::Modifiers::NONE,
+                )],
+            );
+            assert!(actions.is_empty());
+            assert_eq!(s.selected, 1);
+            assert!(s.step_velocity.draft.is_some());
+            assert_eq!(velocity_passive_state(&s), before);
         }
     }
 }

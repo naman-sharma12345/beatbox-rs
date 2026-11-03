@@ -89,6 +89,8 @@ impl RackRow {
 pub struct RackSel {
     pub selected: usize,
     pub open_editor: bool,
+    pub open_step_velocity: Option<usize>,
+    pub step_velocity_entries: Vec<egui::Response>,
     pub rows: Vec<RackRow>,
 }
 
@@ -108,6 +110,8 @@ pub fn channel_rack(
 ) -> Vec<(&'static str, Value)> {
     let mut actions: Vec<(&'static str, Value)> = Vec::new();
     sel.rows.clear();
+    sel.open_step_velocity = None;
+    sel.step_velocity_entries.clear();
     let Some(pat) = p.patterns.get(pattern) else {
         return actions;
     };
@@ -285,8 +289,26 @@ pub fn channel_rack(
         if nr.clicked() {
             sel.selected = ti;
         }
+        #[cfg(test)]
+        super::step_velocity::tests::observe(ui.ctx().clone(), &format!("rack-name-{ti}"), &nr);
         let mut start_rename = nr.double_clicked();
         nr.context_menu(|ui| {
+            let response = ui.add_enabled(drum, egui::Button::new("Edit step velocity..."));
+            #[cfg(test)]
+            super::step_velocity::tests::observe(
+                ui.ctx().clone(),
+                &format!("velocity-menu-{ti}"),
+                &response,
+            );
+            sel.step_velocity_entries.push(response.clone());
+            if response.clicked() {
+                sel.selected = ti;
+                sel.open_step_velocity = Some(ti);
+                ui.close_menu();
+            }
+            if !drum {
+                ui.label(super::step_velocity::DRUM_ONLY);
+            }
             if ui.button("Rename").clicked() {
                 start_rename = true;
                 ui.close_menu();
@@ -295,7 +317,14 @@ pub fn channel_rack(
         if start_rename {
             ui.data_mut(|d| d.insert_temp(rid, (t.name.clone(), t.name.clone(), true)));
         }
-        if keys_button(ui, g.keys, keys_id, selected, color).clicked() {
+        let keys_response = keys_button(ui, g.keys, keys_id, selected, color);
+        #[cfg(test)]
+        super::step_velocity::tests::observe(
+            ui.ctx().clone(),
+            &format!("rack-keys-{ti}"),
+            &keys_response,
+        );
+        if keys_response.clicked() {
             sel.selected = ti;
             sel.open_editor = true;
         }
@@ -2318,5 +2347,132 @@ mod compact_pattern_tests {
             .contains("RESUMED_HELD_DRAG"));
         assert_ne!(state.draft, intended);
         assert_eq!(state.current, 0);
+    }
+}
+
+#[cfg(test)]
+mod velocity_menu_tests {
+    use super::super::step_velocity::tests::{key, pointer, project, responses};
+    use super::*;
+    fn run(
+        ctx: &egui::Context,
+        p: &Project,
+        sel: &mut RackSel,
+        dpi: f32,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(960.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(dpi);
+        ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let actions = channel_rack(ui, p, 0, sel, None);
+                assert!(actions.is_empty());
+            });
+        })
+    }
+    fn real(ctx: &egui::Context, name: &str) -> egui::Response {
+        let rows = responses(ctx);
+        let (pass, _, r) = rows.iter().rev().find(|(_, n, _)| n == name).unwrap();
+        assert_eq!(*pass, ctx.cumulative_pass_nr() - 1);
+        r.clone()
+    }
+    #[test]
+    fn menu_is_row_specific_and_uses_exact_drum_or_one_shot_predicate() {
+        for dpi in [1.0, 2.0] {
+            for mode in 0..3 {
+                let ctx = egui::Context::default();
+                let mut p = project();
+                let mut t = p.tracks[0].clone();
+                t.name = "Clicked row".into();
+                t.id = "t9999".into();
+                if mode == 1 {
+                    t.instrument = crate::instruments::Instrument::Sampler(Default::default());
+                }
+                if mode == 2 {
+                    t.instrument = crate::instruments::preset("epiano").unwrap();
+                }
+                p.tracks.push(t);
+                let mut sel = RackSel::default();
+                run(&ctx, &p, &mut sel, dpi, vec![]);
+                run(&ctx, &p, &mut sel, dpi, vec![]);
+                let name = real(&ctx, "rack-name-1");
+                let pos = name.rect.center();
+                let secondary = |pressed| {
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Secondary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]
+                };
+                run(&ctx, &p, &mut sel, dpi, secondary(true));
+                run(&ctx, &p, &mut sel, dpi, secondary(false));
+                run(&ctx, &p, &mut sel, dpi, vec![]);
+                let item = sel.step_velocity_entries.last().unwrap().clone();
+                assert_eq!(item.enabled(), mode != 2);
+                if mode != 2 {
+                    run(&ctx, &p, &mut sel, dpi, pointer(item.rect.center(), true));
+                    run(&ctx, &p, &mut sel, dpi, pointer(item.rect.center(), false));
+                    assert_eq!(sel.open_step_velocity, Some(1));
+                    assert_eq!(sel.selected, 1);
+                    assert!(!sel.open_editor);
+                } else {
+                    let output = run(&ctx, &p, &mut sel, dpi, vec![]);
+                    assert!(output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()==super::super::step_velocity::DRUM_ONLY)));
+                    assert!(sel.open_step_velocity.is_none());
+                }
+            }
+        }
+    }
+    #[test]
+    fn context_item_keyboard_activation_preserves_rename_and_no_piano_request() {
+        let ctx = egui::Context::default();
+        let p = project();
+        let mut sel = RackSel::default();
+        run(&ctx, &p, &mut sel, 1.0, vec![]);
+        let pos = real(&ctx, "rack-name-0").rect.center();
+        for pressed in [true, false] {
+            run(
+                &ctx,
+                &p,
+                &mut sel,
+                1.0,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        run(&ctx, &p, &mut sel, 1.0, vec![]);
+        let item = sel.step_velocity_entries.last().unwrap().clone();
+        ctx.memory_mut(|m| m.request_focus(item.id));
+        let output = run(
+            &ctx,
+            &p,
+            &mut sel,
+            1.0,
+            vec![key(egui::Key::Space, egui::Modifiers::NONE)],
+        );
+        assert_eq!(sel.open_step_velocity, Some(0));
+        assert!(!sel.open_editor);
+        assert!(output
+            .shapes
+            .iter()
+            .any(|shape| matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()=="Rename")));
     }
 }
