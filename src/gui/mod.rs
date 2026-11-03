@@ -2047,7 +2047,12 @@ impl Studio {
         let pending = ui.data(|d| d.get_temp::<bool>(pend_key)).unwrap_or(false);
         ui.data_mut(|d| d.insert_temp(pend_key, grew));
         let mut seq_scroll = egui::ScrollArea::both()
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            // Trackless racks keep their ruler and scroll state, but need no bars.
+            .scroll_bar_visibility(if p.tracks.is_empty() {
+                egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+            } else {
+                egui::scroll_area::ScrollBarVisibility::AlwaysVisible
+            })
             .auto_shrink([false, false])
             .id_salt("seq");
         // never taller than what the pane shows, or rows past its bottom edge
@@ -2105,6 +2110,11 @@ impl Studio {
             // Do not append a duplicate instruction below this finite rack:
             // even a wrapped label can be clipped at its lower viewport edge.
         });
+        if p.tracks.is_empty() {
+            // Hidden bars skip egui's per-bar velocity clamp. Retire momentum
+            // and targets so a later populated rack cannot inherit them.
+            egui::scroll_area::State::default().store(ui.ctx(), _rack_output.id);
+        }
         #[cfg(test)]
         empty_pattern_tests::observe(
             ui.ctx(),
@@ -4602,6 +4612,68 @@ mod empty_pattern_tests {
             assert!(
                 (settled.origin.y - (settled.viewport.top() - settled.offset.y)).abs() <= tolerance
             );
+        }
+    }
+
+    #[test]
+    fn live_rack_bars_are_absent_only_when_trackless_on_the_first_pass() {
+        for scale in [1.0, 2.0] {
+            for scroll in [
+                egui::style::ScrollStyle::floating(),
+                egui::style::ScrollStyle::solid(),
+                egui::style::ScrollStyle::thin(),
+            ] {
+                for bars in [1, 4, 64] {
+                    for tracks in [0, 2] {
+                        let ctx = egui::Context::default();
+                        let mut style = (*ctx.style()).clone();
+                        style.spacing.scroll = scroll;
+                        ctx.set_style(style);
+                        let mut studio = studio(&ctx, bars, tracks);
+                        // First supplied viewport is measured, then resized.
+                        for width in [420.0, 820.0] {
+                            let (o, output) = frame(&ctx, &mut studio, width, 600.0, scale);
+                            for axis in [0_usize, 1] {
+                                assert_eq!(
+                                    ctx.read_response(o.id.with(axis)).is_some(),
+                                    tracks != 0,
+                                    "bar response at scale {scale}, bars {bars}, tracks {tracks}, width {width}"
+                                );
+                            }
+                            if tracks == 0 {
+                                assert_empty(&o, &output, scale);
+                                let stored = egui::scroll_area::State::load(&ctx, o.id).unwrap();
+                                assert_eq!(stored.offset, Vec2::ZERO);
+                                assert_eq!(stored.velocity(), Vec2::ZERO);
+                                if bars == 4 && width == 820.0 {
+                                    for label in ["1", "2", "3", "4"] {
+                                        assert!(output.shapes.iter().any(|shape| {
+                                            let egui::Shape::Text(text) = &shape.shape else {
+                                                return false;
+                                            };
+                                            text.galley.text() == label
+                                                && text.pos.y >= o.origin.y
+                                                && text.pos.y < o.end.y
+                                                && text.pos.x >= o.viewport.left()
+                                                && text.pos.x + text.galley.size().x
+                                                    <= o.viewport.right()
+                                        }));
+                                    }
+                                }
+                            } else {
+                                assert_eq!(o.rows.len(), tracks);
+                                assert_eq!(
+                                    o.requested,
+                                    Some(channel_rack::rack_content_width(
+                                        width,
+                                        (bars * 16) as usize
+                                    ))
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
