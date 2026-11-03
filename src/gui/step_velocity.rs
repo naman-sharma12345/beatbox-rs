@@ -829,12 +829,37 @@ pub(super) mod tests {
         });
     }
     pub(crate) fn window_open(ctx: &egui::Context, open: bool) {
+        let pass = ctx.cumulative_pass_nr();
         ctx.data_mut(|d| {
-            d.insert_temp(
-                egui::Id::new("velocity-window-open"),
-                (ctx.cumulative_pass_nr(), open),
-            )
+            d.insert_temp(egui::Id::new("velocity-window-open"), (pass, open));
         });
+    }
+
+    #[test]
+    fn window_open_records_actual_pass_and_replaces_true_with_false_without_reentry() {
+        let ctx = egui::Context::default();
+        let key = egui::Id::new("velocity-window-open");
+        let mut records = Vec::new();
+        for open in [true, false] {
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                let pass = ctx.cumulative_pass_nr();
+                window_open(ctx, open);
+                let stored = ctx.data(|d| d.get_temp::<(u64, bool)>(key));
+                assert_eq!(stored, Some((pass, open)));
+            });
+            drop(output);
+            let completed_pass = ctx.cumulative_pass_nr() - 1;
+            let stored = ctx.data(|d| d.get_temp::<(u64, bool)>(key));
+            assert_eq!(stored, Some((completed_pass, open)));
+            records.push(stored.unwrap());
+        }
+        assert_eq!(records.len(), 2);
+        assert!(records[0].1);
+        assert!(!records[1].1);
+        assert_eq!(records[1].0, records[0].0 + 1);
+        let stored = ctx.data(|d| d.get_temp::<(u64, bool)>(key));
+        assert_eq!(stored, Some(records[1]));
+        assert_ne!(stored, Some(records[0]));
     }
 
     pub(crate) fn responses(ctx: &egui::Context) -> Vec<(u64, String, egui::Response)> {
