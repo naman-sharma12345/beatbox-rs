@@ -1973,7 +1973,23 @@ impl Studio {
             .as_ref()
             .and_then(|id| p.playlist.iter().find(|c| &c.id == id))
             .map(|c| (c.lane, c.start_bar));
-        let picks = channel_rack::pattern_bar(ui, p, &mut pat, target, &mut pgeo);
+        let compact = !p.tracks.is_empty();
+        let mut rename = None;
+        let mut duplicate = false;
+        let picks = if compact {
+            let result = channel_rack::compact_pattern_bar(
+                ui,
+                p,
+                &mut pat,
+                target,
+                &mut self.browser.pattern_rename,
+            );
+            rename = result.rename;
+            duplicate = result.duplicate;
+            result.actions
+        } else {
+            channel_rack::pattern_bar(ui, p, &mut pat, target, &mut pgeo)
+        };
         self.pattern = pat;
         for (tool, args) in picks {
             self.call(tool, args);
@@ -1995,9 +2011,8 @@ impl Studio {
             {
                 self.browser.pattern_rename = Some((identity, selected.name.clone()));
             }
-            let mut rename = None;
-            let mut duplicate = false;
-            ui.horizontal_wrapped(|ui| {
+            if !compact {
+                ui.horizontal_wrapped(|ui| {
                 ui.label("Pattern name");
                 let draft=&mut self.browser.pattern_rename.as_mut().unwrap().1;
                 ui.add(egui::TextEdit::singleline(draft).desired_width(180.0));
@@ -2006,6 +2021,7 @@ impl Studio {
                 }
                 duplicate = ui.button("Duplicate pattern").on_hover_text("Make an independent copy with the same notes and meter. Selects the copy for editing, without placing it in the song. Undo removes it.").clicked();
             });
+            }
             if let Some(name) = rename {
                 self.call(
                     "rename_pattern",
