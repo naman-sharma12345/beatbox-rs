@@ -8842,7 +8842,7 @@ mod tests {
                     click_label(&ctx, &mut s, "Step velocity...");
                 } else {
                     let f = wf(&ctx, &mut s, vec![]);
-                    let rotation = f.frame.entry.unwrap();
+                    let rotation = f.frame.entry.as_ref().unwrap();
                     let velocity = label_control(&f, "Step velocity...");
                     wf(&ctx, &mut s, pointer(velocity.rect.center(), true));
                     ctx.memory_mut(|m| m.request_focus(rotation.id));
