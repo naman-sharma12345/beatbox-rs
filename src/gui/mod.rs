@@ -20,6 +20,7 @@ mod p0a_capture;
 mod piano;
 mod player;
 mod playlist;
+mod rack_rotate;
 mod rack_view;
 mod render_job;
 mod rhythm_trial;
@@ -1119,6 +1120,83 @@ impl Studio {
         }
     }
 
+    fn rotation_shortcuts(
+        &mut self,
+        ctx: &egui::Context,
+        velocity_active_at_start: bool,
+        rotation_active_at_start: bool,
+    ) -> Vec<shortcuts::Action> {
+        let handle = rack_rotate::rotation_state(ctx);
+        if velocity_active_at_start || self.step_velocity.draft.is_some() {
+            handle.lock().unwrap().cancel(ctx);
+            return self.step_velocity_shortcuts(ctx, velocity_active_at_start);
+        }
+        let (owned, entry) = {
+            let mut rotation = handle.lock().unwrap();
+            let owned = rotation_active_at_start || rotation.owns_frame(ctx);
+            if owned {
+                rotation.own_frame(ctx);
+            }
+            let entry = rotation.entry_focused(ctx);
+            if owned {
+                let e = self.engine.lock().unwrap();
+                if let Some(error) = rotation.prepare(ctx, &e, self.selected, self.pattern) {
+                    self.toast = Some((error.into(), 0.0, false));
+                }
+            }
+            (owned, entry)
+        };
+        if owned {
+            return Vec::new();
+        }
+        if !entry {
+            return self.step_velocity_shortcuts(ctx, velocity_active_at_start);
+        }
+        // Only normalized activation keys of the recorded real entry are masked.
+        // Leave other event consumption intact; never restore raw/stale events.
+        let masked = ctx.input_mut(|i| {
+            let mut masked = Vec::new();
+            let mut index = 0;
+            i.events.retain(|event| {
+                let mask = matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Space | egui::Key::Enter,
+                        ..
+                    }
+                );
+                if mask {
+                    masked.push((index, event.clone()));
+                }
+                index += 1;
+                !mask
+            });
+            masked
+        });
+        let activating = masked.iter().any(|(_, event)| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    pressed: true,
+                    repeat: false,
+                    ..
+                }
+            )
+        });
+        let actions = self.step_velocity_shortcuts(ctx, velocity_active_at_start);
+        ctx.input_mut(|i| {
+            for (index, event) in masked {
+                i.events.insert(index.min(i.events.len()), event);
+            }
+        });
+        if activating {
+            handle.lock().unwrap().own_frame(ctx);
+            Vec::new()
+        } else {
+            actions
+        }
+    }
+
     fn step_velocity_shortcuts(
         &mut self,
         ctx: &egui::Context,
@@ -1434,6 +1512,124 @@ impl Studio {
                     0.0,
                     false,
                 ))
+            }
+        }
+    }
+
+    // Same production project-action UI in update and the dock acceptance harness.
+    fn project_lifecycle_ui(&mut self, ctx: &egui::Context) {
+        if self.open_list {
+            let files = self.saved_projects();
+            let mut open = true;
+            let mut pick: Option<PathBuf> = None;
+            egui::Window::new("Open a project")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    if files.is_empty() {
+                        ui.label("No saved beats in this folder yet. Press Save first.");
+                    }
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            for f in &files {
+                                let name = f.to_string_lossy().replace(".beatbox.json", "");
+                                if ui.button(name).clicked() {
+                                    pick = Some(f.clone());
+                                }
+                            }
+                        });
+                });
+            if !open {
+                self.open_list = false;
+            }
+            if let Some(f) = pick {
+                self.open_list = false;
+                if self.needs_leave_warning() {
+                    self.pending_open = Some(f);
+                } else {
+                    self.open_project_file(f);
+                }
+            }
+        }
+        if let Some(target) = self.pending_open.clone() {
+            let mut action = 0; // 1 save first, 2 discard, 3 cancel
+            egui::Window::new("Open another project?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("This project has changes that are not saved.");
+                    ui.label("Undo history is lost when you open another project.");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save, then open").clicked() {
+                            action = 1;
+                        }
+                        if ui.button("Discard changes").clicked() {
+                            action = 2;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            action = 3;
+                        }
+                    });
+                });
+            match action {
+                1 => {
+                    let saved = self.save_before_leave();
+                    self.pending_open = None;
+                    if saved {
+                        self.open_project_file(target);
+                    }
+                }
+                2 => {
+                    self.pending_open = None;
+                    self.open_project_file(target);
+                }
+                3 => self.pending_open = None,
+                _ => {}
+            }
+        }
+        if self.confirm_new {
+            let mut action = 0; // 1 save first, 2 discard, 3 cancel
+            egui::Window::new("Start a new project?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("This project has changes that are not saved.");
+                    ui.label("Undo only works until you close the app.");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save, then start new").clicked() {
+                            action = 1;
+                        }
+                        if ui.button("Discard changes").clicked() {
+                            action = 2;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            action = 3;
+                        }
+                    });
+                });
+            match action {
+                1 => {
+                    // Only continue after this save succeeds with no later edit.
+                    if self.save_before_leave() {
+                        self.confirm_new = false;
+                        self.start_new_project();
+                    } else {
+                        self.confirm_new = false;
+                    }
+                }
+                2 => {
+                    self.confirm_new = false;
+                    self.start_new_project();
+                }
+                3 => self.confirm_new = false,
+                _ => {}
             }
         }
     }
@@ -2193,7 +2389,26 @@ impl Studio {
                 .open_step_velocity
                 .or(footer_open.then_some(self.selected))
             {
+                rack_rotate::rotation_state(ui.ctx())
+                    .lock()
+                    .unwrap()
+                    .cancel(ui.ctx());
                 self.open_step_velocity(p, row);
+            }
+            {
+                let handle = rack_rotate::rotation_state(ui.ctx());
+                let mut rotation = handle.lock().unwrap();
+                if rotation.footer(ui, p, self.selected, self.pattern) {
+                    self.step_velocity.draft = None;
+                    self.step_velocity.release_focus(ui.ctx());
+                    let result = {
+                        let e = self.engine.lock().unwrap();
+                        rotation.open(ui.ctx(), &e, p, self.selected, self.pattern)
+                    };
+                    if let Err(error) = result {
+                        self.toast = Some((error.into(), 0.0, false));
+                    }
+                }
             }
             if sel.open_editor {
                 self.note_editor = true;
@@ -2494,6 +2709,7 @@ impl eframe::App for Studio {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let rotation_active_at_start = rack_rotate::rotation_state(ctx).lock().unwrap().active();
         self.frames += 1;
         if self.native_capture.is_some() {
             self.audio_check.begin_native_frame();
@@ -2746,120 +2962,7 @@ impl eframe::App for Studio {
                 }
             }
         }
-        if self.open_list {
-            let files = self.saved_projects();
-            let mut open = true;
-            let mut pick: Option<PathBuf> = None;
-            egui::Window::new("Open a project")
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    if files.is_empty() {
-                        ui.label("No saved beats in this folder yet. Press Save first.");
-                    }
-                    egui::ScrollArea::vertical()
-                        .max_height(260.0)
-                        .show(ui, |ui| {
-                            for f in &files {
-                                let name = f.to_string_lossy().replace(".beatbox.json", "");
-                                if ui.button(name).clicked() {
-                                    pick = Some(f.clone());
-                                }
-                            }
-                        });
-                });
-            if !open {
-                self.open_list = false;
-            }
-            if let Some(f) = pick {
-                self.open_list = false;
-                if self.needs_leave_warning() {
-                    self.pending_open = Some(f);
-                } else {
-                    self.open_project_file(f);
-                }
-            }
-        }
-        if let Some(target) = self.pending_open.clone() {
-            let mut action = 0; // 1 save first, 2 discard, 3 cancel
-            egui::Window::new("Open another project?")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label("This project has changes that are not saved.");
-                    ui.label("Undo history is lost when you open another project.");
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Save, then open").clicked() {
-                            action = 1;
-                        }
-                        if ui.button("Discard changes").clicked() {
-                            action = 2;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            action = 3;
-                        }
-                    });
-                });
-            match action {
-                1 => {
-                    let saved = self.save_before_leave();
-                    self.pending_open = None;
-                    if saved {
-                        self.open_project_file(target);
-                    }
-                }
-                2 => {
-                    self.pending_open = None;
-                    self.open_project_file(target);
-                }
-                3 => self.pending_open = None,
-                _ => {}
-            }
-        }
-        if self.confirm_new {
-            let mut action = 0; // 1 save first, 2 discard, 3 cancel
-            egui::Window::new("Start a new project?")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label("This project has changes that are not saved.");
-                    ui.label("Undo only works until you close the app.");
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Save, then start new").clicked() {
-                            action = 1;
-                        }
-                        if ui.button("Discard changes").clicked() {
-                            action = 2;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            action = 3;
-                        }
-                    });
-                });
-            match action {
-                1 => {
-                    // Only continue after this save succeeds with no later edit.
-                    if self.save_before_leave() {
-                        self.confirm_new = false;
-                        self.start_new_project();
-                    } else {
-                        self.confirm_new = false;
-                    }
-                }
-                2 => {
-                    self.confirm_new = false;
-                    self.start_new_project();
-                }
-                3 => self.confirm_new = false,
-                _ => {}
-            }
-        }
+        self.project_lifecycle_ui(ctx);
         if self.show_about {
             let mut open = true;
             egui::Window::new("About Beatbox Studio")
@@ -2892,11 +2995,22 @@ impl eframe::App for Studio {
 
         // Existing drafts render before raw global shortcuts, including closing frames.
         // keyboard shortcuts (ported table: shortcuts.rs)
-        for a in self.step_velocity_shortcuts(ctx, velocity_active_at_start) {
+        for a in self.rotation_shortcuts(ctx, velocity_active_at_start, rotation_active_at_start) {
             self.shortcut(a, &p);
         }
 
         self.workspace_ui(ctx, &p, rev, &log, undo);
+        {
+            let handle = rack_rotate::rotation_state(ctx);
+            let mut rotation = handle.lock().unwrap();
+            let result = {
+                let mut e = self.engine.lock().unwrap();
+                rotation.after_workspace(ctx, &mut e, self.selected, self.pattern)
+            };
+            if let Err(error) = result {
+                self.toast = Some((error, 0.0, false));
+            }
+        }
         {
             let e = self.engine.lock().unwrap();
             self.step_velocity.validate(&e, self.selected, self.pattern);
