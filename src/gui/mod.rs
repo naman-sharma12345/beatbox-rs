@@ -2384,7 +2384,8 @@ impl Studio {
             for response in &sel.step_velocity_entries {
                 step_velocity::remember_entry(&mut self.step_velocity, response);
             }
-            let footer_open = step_velocity::footer(ui, p, self.selected, &mut self.step_velocity);
+            let (footer_open, velocity_footer) =
+                step_velocity::footer(ui, p, self.selected, &mut self.step_velocity);
             if let Some(row) = sel
                 .open_step_velocity
                 .or(footer_open.then_some(self.selected))
@@ -2408,6 +2409,16 @@ impl Studio {
                     if let Err(error) = result {
                         self.toast = Some((error.into(), 0.0, false));
                     }
+                }
+            }
+            // Use the button created in this pass, not a cached ID lookup.
+            // Explicit alignment keeps the target independent of the offset
+            // advanced by ScrollArea::begin after its content UI was created.
+            // The trailing Rotate row must not make the legacy reveal retarget
+            // on the first fresh layout after the configured animation ends.
+            if let Some(response) = velocity_footer {
+                if response.has_focus() {
+                    response.scroll_to_me(Some(egui::Align::BOTTOM));
                 }
             }
             if sel.open_editor {

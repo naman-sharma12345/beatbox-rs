@@ -547,11 +547,17 @@ impl EditorState {
     }
 }
 
-pub(super) fn footer(ui: &mut egui::Ui, p: &Project, ti: usize, state: &mut EditorState) -> bool {
+pub(super) fn footer(
+    ui: &mut egui::Ui,
+    p: &Project,
+    ti: usize,
+    state: &mut EditorState,
+) -> (bool, Option<egui::Response>) {
     if p.tracks.is_empty() {
-        return false;
+        return (false, None);
     }
     let mut open = false;
+    let mut entry = None;
     // The steps may be thousands of points wide. Wrap the footer to the actual
     // viewport instead of stretching its description along that virtual row.
     let width = ui.clip_rect().width();
@@ -566,6 +572,7 @@ pub(super) fn footer(ui: &mut egui::Ui, p: &Project, ti: usize, state: &mut Edit
                 response.scroll_to_me(None);
             }
             open = response.clicked();
+            entry = Some(response);
             let description = track
                 .map(|t| format!("Selected channel: {}", t.name))
                 .unwrap_or_else(|| "No channel selected".into());
@@ -575,7 +582,7 @@ pub(super) fn footer(ui: &mut egui::Ui, p: &Project, ti: usize, state: &mut Edit
             }
         });
     });
-    open
+    (open, entry)
 }
 
 pub(super) fn show(ctx: &egui::Context, state: &mut EditorState) -> Option<Intent> {

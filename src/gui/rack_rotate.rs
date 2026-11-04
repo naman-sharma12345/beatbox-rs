@@ -6290,14 +6290,19 @@ mod tests {
                 assert_eq!(affected, 1);
                 assert_eq!(eligible_project(&expected), Ok(()));
                 assert_eq!(before, expected);
-                assert_eq!(
-                    history_gate(&before, &expected),
-                    if start.to_bits() == 0 {
-                        HistoryGate::NoChange
-                    } else {
-                        HistoryGate::ContentEqualExactDifferent
+                // Literal four-case oracle, independent of history_gate and
+                // the exact comparator. The real helper above is the witness.
+                let (expected_bits, expected_gate) = match (start.to_bits(), shift.to_bits()) {
+                    (0x0000_0000, 0xbf80_0000) => (0x0000_0000, HistoryGate::NoChange),
+                    (0x0000_0000, 0x3f80_0000) => (0x0000_0000, HistoryGate::NoChange),
+                    (0x8000_0000, 0xbf80_0000) => (0x8000_0000, HistoryGate::NoChange),
+                    (0x8000_0000, 0x3f80_0000) => {
+                        (0x0000_0000, HistoryGate::ContentEqualExactDifferent)
                     }
-                );
+                    _ => unreachable!(),
+                };
+                assert_eq!(note(&mut expected).start.to_bits(), expected_bits);
+                assert_eq!(history_gate(&before, &expected), expected_gate);
                 // Pure helper has no Engine/history handle to consume a retained redo.
                 // Full adapter must verify retained redo against the real Engine later.
             }
@@ -6798,6 +6803,31 @@ mod tests {
                 let mut p = rotation_fixture();
                 p.patterns[0].meter = Some((1, 16));
                 note(&mut p).start = start;
+                // Independent four-case oracle for the actual helper, not the
+                // adapter's history gate or its Direction::shift implementation.
+                let (shift, expected_start_bits, noncommittable) =
+                    match (start.to_bits(), direction) {
+                        (0x0000_0000, Direction::Earlier) => (-1.0, 0x0000_0000, false),
+                        (0x0000_0000, Direction::Later) => (1.0, 0x0000_0000, false),
+                        (0x8000_0000, Direction::Earlier) => (-1.0, 0x8000_0000, false),
+                        (0x8000_0000, Direction::Later) => (1.0, 0x0000_0000, true),
+                        _ => unreachable!(),
+                    };
+                let mut witness = p.clone();
+                assert_eq!(
+                    crate::midi_ops::rotate_rhythm(
+                        witness.patterns[0].clips.get_mut("drums").unwrap(),
+                        &crate::midi_ops::Selection {
+                            ids: vec!["n5".into()],
+                            ..Default::default()
+                        },
+                        shift,
+                        1.0,
+                    )
+                    .unwrap(),
+                    1
+                );
+                assert_eq!(note(&mut witness).start.to_bits(), expected_start_bits);
                 let mut e = rotation_engine(p.clone());
                 e.call_from(
                     "set_note_velocity",
@@ -6811,12 +6841,13 @@ mod tests {
                 let before = rotation_unchanged(&e);
                 let capture = RotationCapture::open(&e, &p, 0, 0).unwrap();
                 let result = rotation_commit(&mut e, &capture, 0, 0, direction);
-                if start.to_bits() == 0 {
-                    assert!(result.is_ok());
-                } else {
+                if noncommittable {
                     assert_eq!(result.unwrap_err(), ROTATE_EQUAL);
+                } else {
+                    assert!(result.is_ok());
                 }
                 assert_rotation_unchanged(&e, &before);
+                assert_eq!(e.log.iter().filter(|l| l.tool == "rotate_notes").count(), 0);
             }
         }
     }
@@ -8885,8 +8916,9 @@ mod tests {
                 std::fs::remove_dir_all(&dir).unwrap();
                 assert!(
                     String::from_utf8_lossy(&output.stdout).contains("1 passed"),
-                    "worker must execute the exact acceptance test: {}",
-                    String::from_utf8_lossy(&output.stdout)
+                    "worker must execute the exact acceptance test:\nstdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
                 );
                 assert!(
                     output.status.success(),
@@ -9097,8 +9129,12 @@ mod tests {
                             .iter()
                             .any(|t| t == ROTATE_EMPTY));
                     } else {
+                        assert_eq!(f.frame.controls.len(), 3);
                         assert!(f.frame.controls[0].enabled());
-                        assert!(f.frame.controls[1..].iter().all(|r| !r.enabled()));
+                        // Earlier preserves -0 exactly: a valid zero-call no-op.
+                        // Later produces +0: Engine-equal, noncommittable.
+                        assert!(f.frame.controls[1].enabled());
+                        assert!(!f.frame.controls[2].enabled());
                         assert!(painted_texts(&f.frame.output, 1.0)
                             .iter()
                             .any(|t| t.contains(ROTATE_EQUAL)));
