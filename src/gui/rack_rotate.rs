@@ -7919,14 +7919,13 @@ mod tests {
         // egui 0.29.1 registers WidgetInfo only with debug assertions and this
         // opt-in. Non-debug builds must fail explicitly, never skip acceptance.
         fn widget_metadata(ctx: &egui::Context, enabled: bool) {
-            assert!(
-                cfg!(debug_assertions),
-                "Rotate UI acceptance requires egui debug_assertions for real WidgetInfo"
-            );
             #[cfg(debug_assertions)]
             ctx.style_mut(|style| style.debug.show_interactive_widgets = enabled);
             #[cfg(not(debug_assertions))]
-            let _ = (ctx, enabled);
+            {
+                let _ = (ctx, enabled);
+                panic!("Rotate UI acceptance requires egui debug_assertions for real WidgetInfo");
+            }
         }
         fn setup(dpi: f32) -> (egui::Context, super::super::super::Studio) {
             let ctx = egui::Context::default();
