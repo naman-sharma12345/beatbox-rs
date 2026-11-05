@@ -8256,14 +8256,31 @@ mod tests {
             );
             let path = root.join("beatbox/studio-layout-v1.json");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(
-                &path,
-                serde_json::to_vec(
-                    &json!({"version":1,"dock":dock,"pinned_transport":true,"mode":0}),
-                )
-                .unwrap(),
-            )
-            .unwrap();
+            // Every caller, including direct fresh docks, crosses this boundary.
+            // Normalize only nonfinite fixture geometry on an owned clone; keep
+            // finite geometry and all topology/window state exactly as requested.
+            let mut dock = dock.clone();
+            for (surface, node) in dock.iter_all_nodes_mut() {
+                let rect = if surface == egui_dock::SurfaceIndex::main() {
+                    Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 1100.0))
+                } else {
+                    Rect::from_min_size(Pos2::new(350.0, 400.0), Vec2::new(850.0, 550.0))
+                };
+                if node.rect().is_some_and(|rect| !rect.is_finite()) {
+                    node.set_rect(rect);
+                }
+                if let egui_dock::Node::Leaf { viewport, .. } = node {
+                    if !viewport.is_finite() {
+                        *viewport = rect;
+                    }
+                }
+            }
+            let value = json!({"version":1,"dock":dock,"pinned_transport":true,"mode":0});
+            let restored: egui_dock::DockState<workspace::Pane> =
+                serde_json::from_value(value["dock"].clone())
+                    .expect("saved fixture dock must deserialize before Workspace::load");
+            assert_eq!(serde_json::to_value(&restored).unwrap(), value["dock"]);
+            std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
             path
         }
         fn dock_for(case: usize) -> egui_dock::DockState<workspace::Pane> {
@@ -8281,6 +8298,22 @@ mod tests {
                     .unwrap()
                     .set_position(Pos2::new(350.0, 400.0))
                     .set_size(Vec2::new(850.0, 550.0));
+            }
+            // A constructed dock still has Rect::NOTHING in its nodes. JSON
+            // serializes those infinities as null, so Workspace::restore would
+            // silently select its default dock instead of this saved topology.
+            // Seed finite fixture geometry; DockArea computes real pane bounds.
+            // Keep the floating window's requested position and full size.
+            for (surface, node) in dock.iter_all_nodes_mut() {
+                let rect = if surface == egui_dock::SurfaceIndex::main() {
+                    Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 1100.0))
+                } else {
+                    Rect::from_min_size(Pos2::new(350.0, 400.0), Vec2::new(850.0, 550.0))
+                };
+                node.set_rect(rect);
+                if let egui_dock::Node::Leaf { viewport, .. } = node {
+                    *viewport = rect;
+                }
             }
             dock
         }
@@ -8304,6 +8337,36 @@ mod tests {
                 for _ in 0..3 {
                     wf(&ctx, &mut s, vec![]);
                 }
+            }
+            if case != 0 {
+                // Inspect what the real workspace actually restored and saved,
+                // not merely the input file, before crediting any topology case.
+                s.workspace.flush().unwrap();
+                let path = std::path::PathBuf::from(
+                    std::env::var_os("BEATBOX_ROTATE_LAYOUT_SANDBOX").unwrap(),
+                )
+                .join("beatbox/studio-layout-v1.json");
+                let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                let actual: egui_dock::DockState<workspace::Pane> =
+                    serde_json::from_value(saved["dock"].clone()).unwrap();
+                let leaves = |dock: &egui_dock::DockState<workspace::Pane>| {
+                    dock.iter_all_nodes()
+                        .filter_map(|(surface, node)| match node {
+                            egui_dock::Node::Leaf { tabs, active, .. } => {
+                                Some((surface, tabs.clone(), *active))
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    leaves(&actual),
+                    leaves(&dock_for(case)),
+                    "saved topology {case}"
+                );
+                assert_eq!(saved["version"], json!(1));
+                assert_eq!(saved["pinned_transport"], json!(true));
+                assert_eq!(saved["mode"], json!(0));
             }
             (ctx, s)
         }
