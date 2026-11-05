@@ -633,7 +633,9 @@ fn root_close_routes_through_tested_state_and_explicit_quit_approval() {
         .split("let close_requested = ctx.input")
         .nth(1)
         .unwrap();
-    let route = route.split("if self.open_list {").next().unwrap();
+    let (route, _) = route
+        .split_once("self.project_lifecycle_ui(ctx);")
+        .expect("quit route ends at the real project lifecycle UI call");
     assert!(route.contains("i.viewport().close_requested()"));
     assert!(route.contains("let needs_warning = self.needs_leave_warning()"));
     let compact: String = route.chars().filter(|c| !c.is_whitespace()).collect();
