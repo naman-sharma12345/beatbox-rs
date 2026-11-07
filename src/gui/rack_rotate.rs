@@ -8079,6 +8079,69 @@ mod tests {
             widgets: Vec<(egui::Response, Option<egui::WidgetInfo>)>,
             finish_errors: Vec<String>,
         }
+        // UNRUN diagnostic only: observe this_pass/in-progress widget rectangles and
+        // the real interaction snapshot without read_response. In egui 0.29.1,
+        // read_response -> get_response may surrender focus on a pointer press.
+        // Do not add such reads while diagnosing the existing capture loop.
+        fn trace_workspace_pointer(
+            ctx: &egui::Context,
+            state: &std::sync::Arc<std::sync::Mutex<RotationState>>,
+            phase: &str,
+        ) {
+            let edge = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::PointerButton { .. }))
+            });
+            if !edge {
+                return;
+            }
+            let point = ctx.input(|i| i.pointer.interact_pos());
+            let focus = ctx.memory(|m| m.focused());
+            let (clicked, dragged, hovered, contains) = ctx.interaction_snapshot(|i| {
+                (
+                    i.clicked,
+                    i.dragged,
+                    i.hovered.clone(),
+                    i.contains_pointer.clone(),
+                )
+            });
+            let (rows, focus_used, clicked_used) = ctx.viewport(|v| {
+                let focus_used = focus.map(|id| (id, v.this_pass.used_ids.get(&id).copied()));
+                let clicked_used = clicked.map(|id| (id, v.this_pass.used_ids.get(&id).copied()));
+                let rows = v
+                    .this_pass
+                    .widgets
+                    .layers()
+                    .flat_map(|(_, ws)| ws.iter())
+                    .filter(|w| {
+                        v.this_pass
+                            .widgets
+                            .info(w.id)
+                            .is_some_and(|info| info.typ == egui::WidgetType::TextEdit)
+                            || Some(w.id) == focus
+                            || Some(w.id) == clicked
+                            || point.is_some_and(|p| w.interact_rect.contains(p))
+                    })
+                    .map(|w| (w, v.this_pass.widgets.info(w.id)))
+                    .map(|(w, info)| {
+                        let used = v.this_pass.used_ids.get(&w.id);
+                        format!("widget={w:?} info={info:?} this_pass_used_id_rect={used:?}")
+                    })
+                    .collect::<Vec<_>>();
+                (rows, focus_used, clicked_used)
+            });
+            // Every Context closure has returned before the captured Arc is locked.
+            let pass = ctx.cumulative_pass_nr();
+            let viewport = ctx.viewport_id();
+            let time_bits = ctx.input(|i| i.time.to_bits());
+            let top_layer = point.and_then(|p| ctx.layer_id_at(p));
+            let state = state.lock().unwrap();
+            eprintln!(
+                "ROTATE_POINTER_DIAGNOSTIC phase={phase} buffer=this_pass/in-progress completed_passes_before_this_pass={pass} viewport={viewport:?} time_bits={time_bits} point={point:?} top_layer={top_layer:?} focus={focus:?} active={} controls={:?} window_layer={:?} clicked={clicked:?} dragged={dragged:?} hovered={hovered:?} contains={contains:?} this_pass_in_progress_rows={rows:?} this_pass_focus_used_id_rect={focus_used:?} this_pass_clicked_used_id_rect={clicked_used:?}",
+                state.active(), state.controls, state.window_layer,
+            );
+        }
         fn workspace_frame(
             ctx: &egui::Context,
             s: &mut super::super::super::Studio,
@@ -8088,6 +8151,9 @@ mod tests {
             focused: bool,
             discard: bool,
         ) -> WorkspaceFrame {
+            let pointer_edge = events
+                .iter()
+                .any(|event| matches!(event, egui::Event::PointerButton { .. }));
             let first = ctx.cumulative_pass_nr();
             let time = ctx.input(|i| i.time) + 1.0 / 30.0;
             let mut raw = egui::RawInput {
@@ -8128,13 +8194,16 @@ mod tests {
                     time.to_bits(),
                     "discard must retain the explicit real-cycle timestamp"
                 );
+                trace_workspace_pointer(ctx, &state, "before_lifecycle_prepare");
                 s.project_lifecycle_ui(ctx);
                 let current = s.rotation_shortcuts(ctx, velocity, active);
+                trace_workspace_pointer(ctx, &state, "after_prepare");
                 for action in &current {
                     s.shortcut(*action, &p);
                 }
                 actions.extend(current);
                 s.workspace_ui(ctx, &p, rev, &log, undo);
+                trace_workspace_pointer(ctx, &state, "after_workspace_before_response_capture");
                 {
                     let state = state.lock().unwrap();
                     entry = state
@@ -8175,11 +8244,15 @@ mod tests {
                         "real Rotate entry/control must populate Button metadata"
                     );
                 }
+                trace_workspace_pointer(ctx, &state, "after_response_capture_before_finish");
                 let mut rotation = state.lock().unwrap();
                 let mut e = s.engine.lock().unwrap();
                 if let Err(error) = rotation.after_workspace(ctx, &mut e, s.selected, s.pattern) {
                     finish_errors.push(error);
                 }
+                drop(e);
+                drop(rotation);
+                trace_workspace_pointer(ctx, &state, "after_finish");
                 if discard && ctx.cumulative_pass_nr() == first {
                     ctx.request_discard("Rotate explicit-time workspace acceptance");
                 }
@@ -8188,6 +8261,16 @@ mod tests {
                 // collection before rendering. Never credit overlay label text.
                 widget_metadata(ctx, false);
             });
+            // ROOT-only harness observation, not a general post-run viewport observer.
+            // after_finish -> here includes metadata/discards/plugins and end-pass;
+            // no buffer/row query here can stand in for completed-pass used_ids.
+            if pointer_edge {
+                eprintln!(
+                    "ROTATE_ROOT_HARNESS_POSTRUN_FOCUS_ONLY harness_viewport=ROOT completed_passes_after_run={} focus={:?}",
+                    ctx.cumulative_pass_nr_for(egui::ViewportId::ROOT),
+                    ctx.memory(|m| m.focused()),
+                );
+            }
             WorkspaceFrame {
                 frame: Frame {
                     actions,
@@ -8224,6 +8307,11 @@ mod tests {
         ) -> WorkspaceFrame {
             assert!(r.interact_rect.is_positive());
             let point = r.interact_rect.center();
+            eprintln!(
+                "ROTATE_POINTER_TARGET completed_pass={} id={:?} layer={:?} rect={:?} interact_rect={:?} enabled={} sense={:?} point={point:?} top_layer={:?}",
+                ctx.cumulative_pass_nr(), r.id, r.layer_id, r.rect, r.interact_rect,
+                r.enabled(), r.sense, ctx.layer_id_at(point),
+            );
             wf(ctx, s, pointer(point, true));
             wf(ctx, s, pointer(point, false))
         }
@@ -8318,6 +8406,7 @@ mod tests {
             dock
         }
         fn workspace_setup(case: usize) -> (egui::Context, super::super::super::Studio) {
+            eprintln!("ROTATE_WORKSPACE_CASE case={case}");
             let (ctx, mut s) = setup(1.0);
             s.engine.lock().unwrap().workdir = std::path::PathBuf::from(
                 std::env::var_os("BEATBOX_ROTATE_LAYOUT_SANDBOX").unwrap(),
