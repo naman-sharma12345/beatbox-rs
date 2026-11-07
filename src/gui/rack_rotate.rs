@@ -7959,7 +7959,12 @@ mod tests {
             }
         }
         fn setup(dpi: f32) -> (egui::Context, super::super::super::Studio) {
-            let ctx = egui::Context::default();
+            setup_with_context(egui::Context::default(), dpi)
+        }
+        fn setup_with_context(
+            ctx: egui::Context,
+            dpi: f32,
+        ) -> (egui::Context, super::super::super::Studio) {
             widget_metadata(&ctx, true);
             let mut s = rotation_studio(&ctx, 2, 0);
             s.engine = Arc::new(Mutex::new(rotation_engine(rotation_fixture())));
@@ -8151,6 +8156,18 @@ mod tests {
             focused: bool,
             discard: bool,
         ) -> WorkspaceFrame {
+            workspace_frame_with_target(ctx, s, size, dpi, events, (focused, discard), None)
+        }
+        fn workspace_frame_with_target(
+            ctx: &egui::Context,
+            s: &mut super::super::super::Studio,
+            size: Vec2,
+            dpi: f32,
+            events: Vec<egui::Event>,
+            focus_and_discard: (bool, bool),
+            intended: Option<&egui::Response>,
+        ) -> WorkspaceFrame {
+            let (focused, discard) = focus_and_discard;
             let pointer_edge = events
                 .iter()
                 .any(|event| matches!(event, egui::Event::PointerButton { .. }));
@@ -8244,6 +8261,9 @@ mod tests {
                         "real Rotate entry/control must populate Button metadata"
                     );
                 }
+                if let Some(intended) = intended {
+                    assert_workspace_press_target(ctx, &state, &widgets, intended);
+                }
                 trace_workspace_pointer(ctx, &state, "after_response_capture_before_finish");
                 let mut rotation = state.lock().unwrap();
                 let mut e = s.engine.lock().unwrap();
@@ -8300,6 +8320,55 @@ mod tests {
                 .map(|(r, _)| r.clone())
                 .unwrap_or_else(|| panic!("missing actual enabled control {label}"))
         }
+        // The completed-pass Response names only the intended target. Prove
+        // its liveness and geometry again from this pass before finish runs.
+        fn assert_workspace_press_target(
+            ctx: &egui::Context,
+            state: &std::sync::Arc<std::sync::Mutex<RotationState>>,
+            widgets: &[(egui::Response, Option<egui::WidgetInfo>)],
+            intended: &egui::Response,
+        ) {
+            let point = intended.interact_rect.center();
+            assert!(ctx.input(|i| i.pointer.any_pressed()));
+            assert_eq!(ctx.input(|i| i.pointer.interact_pos()), Some(point));
+            let (actual, info) = widgets
+                .iter()
+                .find(|(r, _)| r.id == intended.id)
+                .expect("intended press target must exist in this actual pass");
+            assert!(actual.enabled());
+            assert!(actual.rect.is_positive() && actual.interact_rect.is_positive());
+            assert!(ctx.screen_rect().contains(point));
+            assert!(actual.interact_rect.contains(point));
+            assert_eq!(actual.layer_id, intended.layer_id);
+            assert_eq!(ctx.layer_id_at(point), Some(actual.layer_id));
+            let used = ctx.viewport(|v| v.this_pass.used_ids.get(&actual.id).copied());
+            assert_eq!(used, Some(actual.rect), "current-pass target used_ids");
+            let dialog = {
+                let state = state.lock().unwrap();
+                state.panel.as_ref().and_then(|panel| {
+                    state
+                        .window_layer
+                        .filter(|layer| *layer != actual.layer_id)
+                        .map(|_| egui::Id::new(("rack-rotate-dialog", panel.serial)))
+                })
+            };
+            if let Some(dialog) = dialog {
+                let bounds = egui::AreaState::load(ctx, dialog)
+                    .expect("active real dialog area must have been stored this pass")
+                    .rect();
+                assert!(bounds.is_positive());
+                assert!(
+                    !bounds.contains(point),
+                    "foreign press must be outside Rotate"
+                );
+                if info
+                    .as_ref()
+                    .is_some_and(|i| i.typ == egui::WidgetType::TextEdit)
+                {
+                    assert_eq!(actual.interact_rect.center(), point);
+                }
+            }
+        }
         fn click_response(
             ctx: &egui::Context,
             s: &mut super::super::super::Studio,
@@ -8312,7 +8381,15 @@ mod tests {
                 ctx.cumulative_pass_nr(), r.id, r.layer_id, r.rect, r.interact_rect,
                 r.enabled(), r.sense, ctx.layer_id_at(point),
             );
-            wf(ctx, s, pointer(point, true));
+            workspace_frame_with_target(
+                ctx,
+                s,
+                Vec2::new(1400.0, 1100.0),
+                1.0,
+                pointer(point, true),
+                (true, false),
+                Some(r),
+            );
             wf(ctx, s, pointer(point, false))
         }
         fn click_label(
@@ -8407,7 +8484,34 @@ mod tests {
         }
         fn workspace_setup(case: usize) -> (egui::Context, super::super::super::Studio) {
             eprintln!("ROTATE_WORKSPACE_CASE case={case}");
-            let (ctx, mut s) = setup(1.0);
+            let ctx = egui::Context::default();
+            if case == 1 || case == 2 {
+                // Persisted egui window-layout INPUT, before any existing pass.
+                // These are the two real opens in the foreign-Library scenario,
+                // not drawn windows, synthetic Responses or a focus override.
+                // Keep the genuine left split and its saved/restored topology.
+                let mut areas = serde_json::Map::new();
+                for serial in [1_u64, 2_u64] {
+                    let id = egui::Id::new(("rack-rotate-dialog", serial));
+                    let mut area = egui::AreaState::default();
+                    area.set_left_top_pos(Pos2::new(600.0, 80.0));
+                    areas.insert(id.value().to_string(), serde_json::to_value(area).unwrap());
+                }
+                // Areas has public serde restoration but its direct set_state
+                // is crate-private in pinned egui 0.29.1. Restore only into the
+                // fresh context: no live area sizes/order/focus are roundtripped.
+                ctx.memory_mut(|m| {
+                    *m.areas_mut() = serde_json::from_value(json!({"areas": areas})).unwrap();
+                });
+                for serial in [1_u64, 2_u64] {
+                    let area =
+                        egui::AreaState::load(&ctx, egui::Id::new(("rack-rotate-dialog", serial)))
+                            .expect("fixture dialog position must restore via real Areas serde");
+                    assert_eq!(area.left_top_pos(), Pos2::new(600.0, 80.0));
+                    assert!(area.size.is_none(), "real window must compute its own size");
+                }
+            }
+            let (ctx, mut s) = setup_with_context(ctx, 1.0);
             s.engine.lock().unwrap().workdir = std::path::PathBuf::from(
                 std::env::var_os("BEATBOX_ROTATE_LAYOUT_SANDBOX").unwrap(),
             );
