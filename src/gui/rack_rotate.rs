@@ -8165,7 +8165,7 @@ mod tests {
             dpi: f32,
             events: Vec<egui::Event>,
             focus_and_discard: (bool, bool),
-            intended: Option<&egui::Response>,
+            intended: Option<(&egui::Response, Option<&WorkspaceMoveState>)>,
         ) -> WorkspaceFrame {
             let (focused, discard) = focus_and_discard;
             let pointer_edge = events
@@ -8204,7 +8204,16 @@ mod tests {
             let mut controls = Vec::new();
             let mut widgets = Vec::new();
             let mut finish_errors = Vec::new();
+            let mut placement_callbacks = 0_usize;
             let output = ctx.run(raw, |ctx| {
+                if let Some((_, Some(_))) = intended {
+                    assert_eq!(
+                        ctx.cumulative_pass_nr() - first,
+                        placement_callbacks as u64,
+                        "placement callbacks must follow actual completed passes"
+                    );
+                    placement_callbacks += 1;
+                }
                 widget_metadata(ctx, true);
                 assert_eq!(
                     ctx.input(|i| i.time).to_bits(),
@@ -8261,8 +8270,24 @@ mod tests {
                         "real Rotate entry/control must populate Button metadata"
                     );
                 }
-                if let Some(intended) = intended {
-                    assert_workspace_press_target(ctx, &state, &widgets, intended);
+                if let Some((intended, moving)) = intended {
+                    if let Some(before) = moving {
+                        assert_workspace_move_target(
+                            ctx,
+                            &state,
+                            &widgets,
+                            intended,
+                            ctx.cumulative_pass_nr() == first,
+                        );
+                        assert!(
+                            actions.is_empty(),
+                            "placement cannot consume global actions"
+                        );
+                        assert_workspace_move_state(ctx, s, before, true);
+                    } else {
+                        assert_workspace_press_target(ctx, &state, &widgets, intended);
+                        assert_eq!(ctx.input(|i| i.pointer.delta()), Vec2::ZERO);
+                    }
                 }
                 trace_workspace_pointer(ctx, &state, "after_response_capture_before_finish");
                 let mut rotation = state.lock().unwrap();
@@ -8273,6 +8298,13 @@ mod tests {
                 drop(e);
                 drop(rotation);
                 trace_workspace_pointer(ctx, &state, "after_finish");
+                if let Some((_, Some(before))) = intended {
+                    assert!(
+                        finish_errors.is_empty(),
+                        "placement finish error: {finish_errors:?}"
+                    );
+                    assert_workspace_move_state(ctx, s, before, true);
+                }
                 if discard && ctx.cumulative_pass_nr() == first {
                     ctx.request_discard("Rotate explicit-time workspace acceptance");
                 }
@@ -8281,6 +8313,23 @@ mod tests {
                 // collection before rendering. Never credit overlay label text.
                 widget_metadata(ctx, false);
             });
+            if let Some((_, Some(before))) = intended {
+                assert!(placement_callbacks > 0, "placement must handle its input");
+                assert_eq!(
+                    placement_callbacks,
+                    output.platform_output.num_completed_passes
+                );
+                assert_eq!(ctx.cumulative_pass_nr() - first, placement_callbacks as u64);
+                assert!(
+                    actions.is_empty(),
+                    "placement cannot consume global actions"
+                );
+                assert!(
+                    finish_errors.is_empty(),
+                    "placement finish error: {finish_errors:?}"
+                );
+                assert_workspace_move_state(ctx, s, before, false);
+            }
             // ROOT-only harness observation, not a general post-run viewport observer.
             // after_finish -> here includes metadata/discards/plugins and end-pass;
             // no buffer/row query here can stand in for completed-pass used_ids.
@@ -8328,14 +8377,59 @@ mod tests {
             widgets: &[(egui::Response, Option<egui::WidgetInfo>)],
             intended: &egui::Response,
         ) {
-            let point = intended.interact_rect.center();
             assert!(ctx.input(|i| i.pointer.any_pressed()));
+            assert_workspace_fixed_target(ctx, state, widgets, intended);
+        }
+        fn assert_workspace_move_target(
+            ctx: &egui::Context,
+            state: &std::sync::Arc<std::sync::Mutex<RotationState>>,
+            widgets: &[(egui::Response, Option<egui::WidgetInfo>)],
+            intended: &egui::Response,
+            first_input_pass: bool,
+        ) {
+            let point = intended.interact_rect.center();
+            ctx.input(|i| {
+                assert!(!i.pointer.any_down());
+                assert!(!i.pointer.any_pressed());
+                assert_eq!(i.pointer.latest_pos(), Some(point));
+                // RawInput::take consumes events on the first callback, not replays.
+                if first_input_pass {
+                    assert!(
+                        matches!(i.events.as_slice(), [egui::Event::PointerMoved(p)] if *p == point)
+                    );
+                } else {
+                    assert!(
+                        i.events.is_empty(),
+                        "placement replay must have no new events"
+                    );
+                }
+            });
+            assert!(
+                ctx.dragged_id().is_none(),
+                "placement cannot own an active drag"
+            );
+            assert_workspace_fixed_target(ctx, state, widgets, intended);
+        }
+        fn assert_workspace_fixed_target(
+            ctx: &egui::Context,
+            state: &std::sync::Arc<std::sync::Mutex<RotationState>>,
+            widgets: &[(egui::Response, Option<egui::WidgetInfo>)],
+            intended: &egui::Response,
+        ) {
+            let point = intended.interact_rect.center();
             assert_eq!(ctx.input(|i| i.pointer.interact_pos()), Some(point));
             let (actual, info) = widgets
                 .iter()
                 .find(|(r, _)| r.id == intended.id)
                 .expect("intended press target must exist in this actual pass");
-            assert!(actual.enabled());
+            assert_eq!(actual.id, intended.id);
+            assert_eq!(actual.rect, intended.rect, "fixed original target rect");
+            assert_eq!(
+                actual.interact_rect, intended.interact_rect,
+                "fixed original interact rect"
+            );
+            assert!(actual.enabled() && actual.sense.click);
+            assert!(actual.rect.is_finite() && actual.interact_rect.is_finite());
             assert!(actual.rect.is_positive() && actual.interact_rect.is_positive());
             assert!(ctx.screen_rect().contains(point));
             assert!(actual.interact_rect.contains(point));
@@ -8356,7 +8450,7 @@ mod tests {
                 let bounds = egui::AreaState::load(ctx, dialog)
                     .expect("active real dialog area must have been stored this pass")
                     .rect();
-                assert!(bounds.is_positive());
+                assert!(bounds.is_finite() && bounds.is_positive());
                 assert!(
                     !bounds.contains(point),
                     "foreign press must be outside Rotate"
@@ -8369,13 +8463,179 @@ mod tests {
                 }
             }
         }
+        // A read-only semantic snapshot, not a replacement target or a focus probe.
+        // Prior-pass widget records are used ONLY to freeze existing menu/editor
+        // structure. Target proof always uses the existing current capture above.
+        struct WorkspaceMoveState {
+            engine: RotationObservation,
+            player: (bool, u64, f64, f32, bool, String),
+            rotation: Value,
+            capture: Option<RotationCapture>,
+            lifecycle: Value,
+            focus: Option<egui::Id>,
+            windows: Vec<egui::WidgetRect>,
+            panels: Vec<(egui::Id, egui::LayerId)>,
+        }
+        fn workspace_move_panels(
+            ctx: &egui::Context,
+            current: bool,
+        ) -> Vec<(egui::Id, egui::LayerId)> {
+            let mut panels = ctx.viewport(|v| {
+                let pass = if current { &v.this_pass } else { &v.prev_pass };
+                pass.widgets
+                    .layers()
+                    .flat_map(|(_, ws)| ws.iter())
+                    .filter(|w| w.layer_id.order == egui::Order::Background)
+                    .map(|w| (w.id, w.layer_id))
+                    .collect::<Vec<_>>()
+            });
+            panels.sort_by_key(|(id, layer)| (layer.id.value(), id.value()));
+            panels
+        }
+        fn workspace_move_windows(ctx: &egui::Context, current: bool) -> Vec<egui::WidgetRect> {
+            let mut windows = ctx.viewport(|v| {
+                let pass = if current { &v.this_pass } else { &v.prev_pass };
+                pass.widgets
+                    .layers()
+                    .flat_map(|(_, ws)| ws.iter())
+                    .filter(|w| {
+                        matches!(
+                            w.layer_id.order,
+                            egui::Order::Middle | egui::Order::Foreground
+                        )
+                    })
+                    .copied()
+                    .collect::<Vec<_>>()
+            });
+            windows.sort_by_key(|w| (w.layer_id.order, w.layer_id.id.value(), w.id.value()));
+            windows
+        }
+        fn workspace_move_state(
+            ctx: &egui::Context,
+            s: &super::super::super::Studio,
+            current: bool,
+        ) -> WorkspaceMoveState {
+            let state = rotation_state(ctx);
+            // No Context callback or Engine lock while the rotation mutex is held.
+            let (rotation, capture) = {
+                let state = state.lock().unwrap();
+                assert!(
+                    state.pending.is_none(),
+                    "placement cannot consume a pending intent"
+                );
+                (
+                    json!({
+                        "serial": state.serial,
+                        "panel": state.panel.as_ref().map(|p| json!({
+                            "serial": p.serial, "armed": p.armed, "error": p.error,
+                            "initial_focus": p.initial_focus, "keys_released": p.keys_released,
+                            "revision": p.capture.revision, "generation": p.capture.generation,
+                            "ti": p.capture.ti, "pi": p.capture.pi,
+                        })),
+                        "controls": state.controls, "window_layer": state.window_layer,
+                    }),
+                    state.panel.as_ref().map(|p| p.capture.clone()),
+                )
+            };
+            let engine = rotation_unchanged(&s.engine.lock().unwrap());
+            let player = player_snapshot(s);
+            let lifecycle = json!({
+                "path": s.project_path, "saved": s.saved_rev, "seen": s.seen_project_load,
+                "confirm_new": s.confirm_new, "open_list": s.open_list,
+                "pending_open": s.pending_open, "quit_pending": s.quit_close.pending,
+                "quit_approved": s.quit_close.approved_once, "selected": s.selected,
+                "pattern": s.pattern, "view": s.view,
+                "velocity_active": s.step_velocity.draft.is_some(),
+                "popup_open": ctx.memory(|m| m.any_popup_open()),
+            });
+            WorkspaceMoveState {
+                engine,
+                player,
+                rotation,
+                capture,
+                lifecycle,
+                focus: ctx.memory(|m| m.focused()),
+                windows: workspace_move_windows(ctx, current),
+                panels: workspace_move_panels(ctx, current),
+            }
+        }
+        fn assert_workspace_move_state(
+            ctx: &egui::Context,
+            s: &super::super::super::Studio,
+            before: &WorkspaceMoveState,
+            current: bool,
+        ) {
+            let after = workspace_move_state(ctx, s, current);
+            assert_eq!(
+                after.rotation, before.rotation,
+                "placement changed Rotate identity/intent"
+            );
+            match (&before.capture, &after.capture) {
+                (Some(a), Some(b)) => assert!(exact_project(&a.project, &b.project)),
+                (None, None) => {}
+                _ => panic!("placement replaced the active editor"),
+            }
+            assert_eq!(
+                after.lifecycle, before.lifecycle,
+                "placement changed lifecycle/editor"
+            );
+            assert_eq!(
+                after.focus, before.focus,
+                "placement changed required focus"
+            );
+            assert_eq!(
+                after.windows, before.windows,
+                "placement changed menu/window structure"
+            );
+            assert_eq!(
+                after.panels, before.panels,
+                "placement changed background panel identity"
+            );
+            assert_rotation_unchanged(&s.engine.lock().unwrap(), &before.engine);
+            assert_player_editor_inert(s, &before.player);
+        }
         fn click_response(
             ctx: &egui::Context,
             s: &mut super::super::super::Studio,
             r: &egui::Response,
         ) -> WorkspaceFrame {
-            assert!(r.interact_rect.is_positive());
+            // Freeze the originally selected real Response before any new input.
+            let original = r.clone();
+            let r = &original;
+            assert!(r.enabled() && r.sense.click);
+            assert!(r.rect.is_finite() && r.interact_rect.is_finite());
+            assert!(r.rect.is_positive() && r.interact_rect.is_positive());
             let point = r.interact_rect.center();
+            assert!(ctx.screen_rect().contains(point));
+            assert!(
+                !ctx.input(|i| i.pointer.any_down()),
+                "click requires released buttons"
+            );
+            assert!(
+                ctx.dragged_id().is_none(),
+                "click cannot repair an active drag"
+            );
+            if ctx.input(|i| i.pointer.latest_pos()) != Some(point) {
+                let before = workspace_move_state(ctx, s, false);
+                let moved = workspace_frame_with_target(
+                    ctx,
+                    s,
+                    Vec2::new(1400.0, 1100.0),
+                    1.0,
+                    vec![egui::Event::PointerMoved(point)],
+                    (true, false),
+                    Some((r, Some(&before))),
+                );
+                assert!(moved.frame.actions.is_empty());
+                assert!(
+                    moved.finish_errors.is_empty(),
+                    "placement finish error: {:?}",
+                    moved.finish_errors
+                );
+                assert_workspace_move_state(ctx, s, &before, false);
+            }
+            assert_eq!(ctx.input(|i| i.pointer.latest_pos()), Some(point));
+            assert!(!ctx.input(|i| i.pointer.any_down()));
             eprintln!(
                 "ROTATE_POINTER_TARGET completed_pass={} id={:?} layer={:?} rect={:?} interact_rect={:?} enabled={} sense={:?} point={point:?} top_layer={:?}",
                 ctx.cumulative_pass_nr(), r.id, r.layer_id, r.rect, r.interact_rect,
@@ -8388,7 +8648,7 @@ mod tests {
                 1.0,
                 pointer(point, true),
                 (true, false),
-                Some(r),
+                Some((r, None)),
             );
             wf(ctx, s, pointer(point, false))
         }
