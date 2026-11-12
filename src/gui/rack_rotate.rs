@@ -8719,6 +8719,7 @@ mod tests {
             if case == 3 || case == 4 {
                 dock = DockState::new(vec![Pane::Library]);
                 let float = dock.add_window(vec![Pane::Sequencer]);
+                dock[float].split_right(NodeIndex::root(), 0.625, vec![Pane::Inspector]);
                 dock.get_window_state_mut(float)
                     .unwrap()
                     .set_position(Pos2::new(350.0, 400.0))
