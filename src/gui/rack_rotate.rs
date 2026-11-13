@@ -8267,7 +8267,33 @@ mod tests {
                             && info.as_ref().is_some_and(
                                 |i| i.typ == egui::WidgetType::Button && i.label.is_some()
                             )),
-                        "real Rotate entry/control must populate Button metadata"
+                        "real Rotate entry/control must populate Button metadata; response={response:?} pass={} viewport={:?} role={:?} events={:?} state={} registration={}",
+                        ctx.cumulative_pass_nr(),
+                        ctx.viewport_id(),
+                        (
+                            entry.as_ref().is_some_and(|r| r.id == response.id),
+                            controls.iter().position(|r| r.id == response.id),
+                        ),
+                        ctx.input(|i| i.events.clone()),
+                        {
+                            let state = state.lock().unwrap();
+                            format!("active={} entry={:?} controls={:?} window_layer={:?}",
+                                state.active(),
+                                state.entry.as_ref().map(|e|
+                                    (e.pass, e.viewport, e.id, e.visible, e.enabled)),
+                                state.controls, state.window_layer)
+                        },
+                        ctx.viewport(|v| format!(
+                            "this_rect={:?} this_info={:?} prev_rect={:?} prev_info={:?} current_rows={:?}",
+                            v.this_pass.widgets.get(response.id),
+                            v.this_pass.widgets.info(response.id),
+                            v.prev_pass.widgets.get(response.id),
+                            v.prev_pass.widgets.info(response.id),
+                            v.this_pass.widgets.layers()
+                                .flat_map(|(_, ws)| ws.iter())
+                                .filter(|w| w.id == response.id)
+                                .collect::<Vec<_>>()
+                        )),
                     );
                 }
                 if let Some((intended, moving)) = intended {
