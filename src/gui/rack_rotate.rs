@@ -8147,6 +8147,243 @@ mod tests {
                 state.active(), state.controls, state.window_layer,
             );
         }
+        // confirmed-close helpers begin
+        // Callback-local actual ownership witness, never stored in Context/state.
+        struct ConfirmedCloseCandidate {
+            pass: u64,
+            viewport: egui::ViewportId,
+            time_bits: u64,
+            panel_serial: u64,
+            state_serial: u64,
+            capture: RotationCapture,
+            retained_ids: Vec<egui::Id>,
+            layer: egui::LayerId,
+            expected_count: usize,
+        }
+        struct ProvenConfirmedClose {
+            retained_ids: Vec<egui::Id>,
+        }
+        fn maybe_confirmed_close_candidate(
+            ctx: &egui::Context,
+            s: &super::super::super::Studio,
+            state: &std::sync::Arc<std::sync::Mutex<RotationState>>,
+            velocity_at_cycle_start: bool,
+        ) -> Option<ConfirmedCloseCandidate> {
+            let pass = ctx.cumulative_pass_nr();
+            let viewport = ctx.viewport_id();
+            let (time_bits, eligible_input) = ctx.input(|i| {
+                let exact_events = matches!(i.events.as_slice(), [
+                    egui::Event::Key {
+                        key: egui::Key::Escape, physical_key: None,
+                        pressed: true, repeat: false, modifiers: a,
+                    },
+                    egui::Event::Key {
+                        key: egui::Key::Home, physical_key: None,
+                        pressed: true, repeat: false, modifiers: b,
+                    },
+                ] if *a == egui::Modifiers::NONE && *b == egui::Modifiers::NONE);
+                (
+                    i.time.to_bits(),
+                    exact_events
+                        && i.key_pressed(egui::Key::Escape)
+                        && i.key_pressed(egui::Key::Home)
+                        && i.focused
+                        && i.viewport().focused != Some(false)
+                        && !i.viewport().close_requested(),
+                )
+            });
+            if !eligible_input
+                || viewport != egui::ViewportId::ROOT
+                || velocity_at_cycle_start
+                || s.step_velocity.draft.is_some()
+            {
+                return None;
+            }
+            // All Context closures finished. Follow existing state-then-engine order.
+            let state = state.lock().unwrap();
+            let panel = state.panel.as_ref()?;
+            let engine = s.engine.lock().unwrap();
+            if panel.initial_focus || !panel.capture.current(&engine, s.selected, s.pattern) {
+                return None;
+            }
+            let layer = state.window_layer?;
+            let owner = &panel.capture;
+            let expected_count = if owner.project.patterns[owner.pi]
+                .notes(&owner.project.tracks[owner.ti].name)
+                .is_empty()
+            {
+                1
+            } else {
+                3
+            };
+            if state.controls.len() != expected_count
+                || state
+                    .controls
+                    .iter()
+                    .enumerate()
+                    .any(|(index, id)| *id == layer.id || state.controls[..index].contains(id))
+            {
+                return None;
+            }
+            Some(ConfirmedCloseCandidate {
+                pass,
+                viewport,
+                time_bits,
+                panel_serial: panel.serial,
+                state_serial: state.serial,
+                capture: panel.capture.clone(),
+                retained_ids: state.controls.clone(),
+                layer,
+                expected_count,
+            })
+        }
+        fn assert_same_pending_close(
+            ctx: &egui::Context,
+            state: &std::sync::Arc<std::sync::Mutex<RotationState>>,
+            w: &ConfirmedCloseCandidate,
+        ) {
+            let pass = ctx.cumulative_pass_nr();
+            let viewport = ctx.viewport_id();
+            let time_bits = ctx.input(|i| i.time.to_bits());
+            assert_eq!(pass, w.pass, "confirmed close pass changed");
+            assert_eq!(viewport, w.viewport, "confirmed close viewport changed");
+            assert_eq!(viewport, egui::ViewportId::ROOT);
+            assert_eq!(time_bits, w.time_bits, "confirmed close time changed");
+            let state = state.lock().unwrap();
+            assert!(
+                state.active(),
+                "confirmed close lost active ownership before finish"
+            );
+            let panel = state
+                .panel
+                .as_ref()
+                .expect("confirmed close panel disappeared");
+            assert_eq!(panel.serial, w.panel_serial);
+            assert_eq!(state.serial, w.state_serial);
+            assert!(!panel.initial_focus);
+            assert_eq!(panel.capture.revision, w.capture.revision);
+            assert_eq!(panel.capture.generation, w.capture.generation);
+            assert_eq!(panel.capture.ti, w.capture.ti);
+            assert_eq!(panel.capture.pi, w.capture.pi);
+            assert!(exact_project(&panel.capture.project, &w.capture.project));
+            assert_eq!(state.controls, w.retained_ids);
+            assert_eq!(state.controls.len(), w.expected_count);
+            assert_eq!(state.window_layer, Some(w.layer));
+            assert!(
+                matches!(state.pending, Some(RotationIntent::Cancel)),
+                "confirmed close must retain pending Cancel until finish"
+            );
+        }
+        fn prove_confirmed_close_before_finish(
+            ctx: &egui::Context,
+            s: &super::super::super::Studio,
+            state: &std::sync::Arc<std::sync::Mutex<RotationState>>,
+            w: &ConfirmedCloseCandidate,
+            entry: Option<&egui::Response>,
+            widgets: &[(egui::Response, Option<egui::WidgetInfo>)],
+        ) -> ProvenConfirmedClose {
+            assert_same_pending_close(ctx, state, w);
+            let entry_id = {
+                let state = state.lock().unwrap();
+                let engine = s.engine.lock().unwrap();
+                let panel = state.panel.as_ref().expect("confirmed close panel missing");
+                assert!(
+                    panel.capture.current(&engine, s.selected, s.pattern),
+                    "confirmed close capture invalid before finish"
+                );
+                let current = state
+                    .entry
+                    .as_ref()
+                    .expect("confirmed close requires current entry");
+                assert_eq!(current.pass, w.pass);
+                assert_eq!(current.viewport, w.viewport);
+                assert_eq!(current.viewport, egui::ViewportId::ROOT);
+                assert!(current.visible && current.enabled);
+                assert!(
+                    !w.retained_ids.contains(&current.id) && current.id != w.layer.id,
+                    "confirmed close entry aliases retained dialog ownership"
+                );
+                current.id
+            };
+            let entry = entry.expect("confirmed close requires captured current entry Response");
+            assert_eq!(entry.id, entry_id);
+            assert!(entry.enabled);
+            // Raw this-pass observations only: no Response read or focus mutation.
+            ctx.viewport(|v| {
+                for (layer, rows) in v.this_pass.widgets.layers() {
+                    for row in rows {
+                        assert!(
+                            *layer != w.layer && row.layer_id != w.layer,
+                            "confirmed close registered dialog layer/chrome: {row:?}"
+                        );
+                        assert!(
+                            !w.retained_ids.contains(&row.id) && row.id != w.layer.id,
+                            "confirmed close registered retained ownership on some layer: {row:?}"
+                        );
+                    }
+                }
+                for id in w
+                    .retained_ids
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(w.layer.id))
+                {
+                    assert!(
+                        v.this_pass.widgets.get(id).is_none(),
+                        "confirmed close has indexed current dialog registration: {id:?}"
+                    );
+                    assert!(
+                        v.this_pass.widgets.info(id).is_none(),
+                        "confirmed close has current dialog metadata: {id:?}"
+                    );
+                }
+                let indexed = v
+                    .this_pass
+                    .widgets
+                    .get(entry_id)
+                    .expect("confirmed close entry has no current indexed geometry");
+                assert_ne!(indexed.layer_id, w.layer);
+                assert_eq!(indexed.id, entry.id);
+                assert_eq!(indexed.layer_id, entry.layer_id);
+                assert_eq!(indexed.rect, entry.rect);
+                assert_eq!(indexed.interact_rect, entry.interact_rect);
+                assert_eq!(indexed.sense, entry.sense);
+                assert_eq!(indexed.enabled, entry.enabled);
+                assert!(indexed.enabled);
+                let mut found = false;
+                for (layer, rows) in v.this_pass.widgets.layers() {
+                    for row in rows.iter().filter(|row| row.id == entry_id) {
+                        found = true;
+                        assert_ne!(*layer, w.layer);
+                        assert_eq!(*layer, row.layer_id);
+                        assert_eq!(
+                            row, indexed,
+                            "confirmed close entry indexed/layer geometry differs"
+                        );
+                    }
+                }
+                assert!(found, "confirmed close entry has no current layer row");
+            });
+            let (current_response, info) = widgets
+                .iter()
+                .find(|(r, _)| r.id == entry_id)
+                .expect("confirmed close entry absent from original current widgets capture");
+            assert_eq!(current_response.layer_id, entry.layer_id);
+            assert_eq!(current_response.rect, entry.rect);
+            assert_eq!(current_response.interact_rect, entry.interact_rect);
+            assert_eq!(current_response.sense, entry.sense);
+            assert_eq!(current_response.enabled, entry.enabled);
+            assert!(
+                info.as_ref()
+                    .is_some_and(|i| i.typ == egui::WidgetType::Button && i.label.is_some()),
+                "confirmed close requires original current labeled Button entry metadata"
+            );
+            // Construct only after every fatal continuity/absence/current-entry proof.
+            ProvenConfirmedClose {
+                retained_ids: w.retained_ids.clone(),
+            }
+        }
+        // confirmed-close helpers end
         fn workspace_frame(
             ctx: &egui::Context,
             s: &mut super::super::super::Studio,
@@ -8222,7 +8459,16 @@ mod tests {
                 );
                 trace_workspace_pointer(ctx, &state, "before_lifecycle_prepare");
                 s.project_lifecycle_ui(ctx);
+                // confirmed-close candidate begin
+                let close_candidate = maybe_confirmed_close_candidate(ctx, s, &state, velocity);
+                // confirmed-close candidate end
                 let current = s.rotation_shortcuts(ctx, velocity, active);
+                // confirmed-close prepared begin
+                if let Some(w) = &close_candidate {
+                    assert_same_pending_close(ctx, &state, w);
+                    assert!(current.is_empty(), "confirmed close cannot dispatch globals");
+                }
+                // confirmed-close prepared end
                 trace_workspace_pointer(ctx, &state, "after_prepare");
                 for action in &current {
                     s.shortcut(*action, &p);
@@ -8261,7 +8507,21 @@ mod tests {
                         .is_some_and(|i| i.typ == egui::WidgetType::Button && i.label.is_some())),
                     "real workspace must populate labeled Button metadata"
                 );
+                // confirmed-close proof begin
+                let proven_close = close_candidate.as_ref().map(|w| {
+                    prove_confirmed_close_before_finish(ctx, s, &state, w, entry.as_ref(), &widgets)
+                });
+                // confirmed-close proof end
                 for response in entry.iter().chain(controls.iter()) {
+                    // confirmed-close skip begin
+                    // controls retain their original Response/Frame ownership provenance.
+                    if let Some(proven) = &proven_close {
+                        if controls.iter().any(|r| r.id == response.id)
+                            && proven.retained_ids.contains(&response.id) {
+                            continue;
+                        }
+                    }
+                    // confirmed-close skip end
                     assert!(
                         widgets.iter().any(|(r, info)| r.id == response.id
                             && info.as_ref().is_some_and(
@@ -8316,6 +8576,9 @@ mod tests {
                     }
                 }
                 trace_workspace_pointer(ctx, &state, "after_response_capture_before_finish");
+                // confirmed-close finish-count begin
+                let finish_error_count_before = finish_errors.len();
+                // confirmed-close finish-count end
                 let mut rotation = state.lock().unwrap();
                 let mut e = s.engine.lock().unwrap();
                 if let Err(error) = rotation.after_workspace(ctx, &mut e, s.selected, s.pattern) {
@@ -8323,6 +8586,16 @@ mod tests {
                 }
                 drop(e);
                 drop(rotation);
+                // confirmed-close finished begin
+                if proven_close.is_some() {
+                    assert_eq!(finish_errors.len(), finish_error_count_before);
+                    let state = state.lock().unwrap();
+                    assert!(!state.active(), "confirmed close must finish inactive");
+                    assert!(state.pending.is_none());
+                    assert!(state.controls.is_empty());
+                    assert!(state.window_layer.is_none());
+                }
+                // confirmed-close finished end
                 trace_workspace_pointer(ctx, &state, "after_finish");
                 if let Some((_, Some(before))) = intended {
                     assert!(
