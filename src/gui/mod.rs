@@ -16,13 +16,16 @@ pub use export_view::apply_section_range as section_export_range;
 pub use export_view::range_preview as export_range_preview;
 mod fl_automation;
 mod fl_playlist;
+mod p0a_capture;
 mod piano;
 mod player;
 mod playlist;
+mod rack_rotate;
 mod rack_view;
 mod render_job;
 mod rhythm_trial;
 mod shortcuts;
+mod step_velocity;
 mod theme;
 mod views;
 mod vocal_view;
@@ -171,6 +174,14 @@ fn persist_screenshot(
     write_png()?;
     write_manifest()?;
     Ok(ScreenshotPersisted)
+}
+
+/// Remove only capture-owned products; a failed sidecar grants no close receipt.
+fn discard_capture_products(path: &std::path::Path, sidecar: bool) {
+    let _ = std::fs::remove_file(path);
+    if sidecar {
+        let _ = std::fs::remove_file(path.with_extension("json"));
+    }
 }
 
 /// Capture failures must not request a guarded Close or report successful exit.
@@ -360,6 +371,7 @@ pub struct Studio {
     // view state
     pattern: usize,
     selected: usize,
+    step_velocity: step_velocity::EditorState,
     // render pipeline
     rendered: Option<Rendered>,
     rendering: Option<(RenderKey, Receiver<RenderMessage<Rendered>>)>,
@@ -387,6 +399,7 @@ pub struct Studio {
     screenshot: Option<PathBuf>,
     native_capture: Option<audio_check::NativeCapture>,
     arrangement_capture: Option<ArrangementCapture>,
+    p0a_capture: Option<p0a_capture::Capture>,
     frames: u64,
     shot_requested: bool,
     /// Performance mode: the pattern looping live, and a launch waiting for
@@ -411,7 +424,6 @@ pub struct Studio {
     tempo_edit_bpm: f32,
     tempo_edit_ramp: bool,
     rail_search: String,
-    brand: Option<egui::TextureHandle>,
     note_editor: bool,
     workspace: workspace::Workspace,
 }
@@ -615,11 +627,23 @@ pub fn run(
     screenshot: Option<PathBuf>,
     view: Option<String>,
 ) -> anyhow::Result<()> {
+    // Validate before any listener bind or legacy selector interpretation.
+    let p0a_config = p0a_capture::Config::environment(screenshot.is_some(), view.as_deref())?;
+    anyhow::ensure!(
+        p0a_config.is_none() || project.is_some(),
+        "P0A requires an explicit loaded project"
+    );
+    let p0a_capture = p0a_config
+        .map(|c| p0a_capture::Capture::new(c, &engine))
+        .transpose()?;
     let arrangement_capture =
         ArrangementCapture::from_environment(screenshot.is_some(), view.as_deref(), &engine)?;
     let native_capture = audio_check::NativeCapture::from_environment(screenshot.is_some())
         .map_err(|e| anyhow::anyhow!(e))?;
-    let native_scale = native_capture.as_ref().map_or(1.0, |c| c.scale);
+    let native_scale = p0a_capture.as_ref().map_or_else(
+        || native_capture.as_ref().map_or(1.0, |c| c.scale),
+        |c| c.config.scale as f32,
+    );
     let view = if native_capture.is_some() {
         Some("mixer".to_string())
     } else {
@@ -636,13 +660,16 @@ pub fn run(
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Beatbox Studio")
-            .with_inner_size(
-                if screenshot.is_some() && std::env::var_os("BEATBOX_NARROW_SHOT").is_some() {
-                    [1100.0 * native_scale, 700.0 * native_scale]
-                } else {
-                    [1480.0 * native_scale, 920.0 * native_scale]
-                },
-            )
+            .with_inner_size(if let Some(c) = &p0a_capture {
+                [
+                    c.config.size[0] as f32 * native_scale,
+                    c.config.size[1] as f32 * native_scale,
+                ]
+            } else if screenshot.is_some() && std::env::var_os("BEATBOX_NARROW_SHOT").is_some() {
+                [1100.0 * native_scale, 700.0 * native_scale]
+            } else {
+                [1480.0 * native_scale, 920.0 * native_scale]
+            })
             .with_min_inner_size([1100.0, 700.0]),
         ..Default::default()
     };
@@ -654,6 +681,9 @@ pub fn run(
             apply_theme(&cc.egui_ctx);
             if let Some(capture) = &native_capture {
                 capture.activate(&cc.egui_ctx);
+            }
+            if p0a_capture.is_some() {
+                cc.egui_ctx.set_pixels_per_point(native_scale);
             }
             let saved_rev = engine.lock().unwrap().revision;
             let seen_project_load = engine.lock().unwrap().project_load_generation;
@@ -679,6 +709,7 @@ pub fn run(
                 export: Default::default(),
                 pattern: 0,
                 selected: 0,
+                step_velocity: Default::default(),
                 rendered: None,
                 rendering: None,
                 render_state: Default::default(),
@@ -701,6 +732,7 @@ pub fn run(
                 screenshot,
                 native_capture,
                 arrangement_capture,
+                p0a_capture,
                 frames: 0,
                 shot_requested: false,
                 perf: None,
@@ -720,7 +752,6 @@ pub fn run(
                 tempo_edit_bpm: 120.0,
                 tempo_edit_ramp: false,
                 rail_search: String::new(),
-                brand: None,
                 note_editor: false,
                 workspace,
             }))
@@ -842,59 +873,142 @@ fn param_editor(
         return false;
     };
     let keys: Vec<String> = obj.keys().cloned().collect();
-    // enums & bools first, then knobs, then envelopes
-    ui.horizontal_wrapped(|ui| {
-        for k in &keys {
-            if let Some((_, opts)) = ENUMS.iter().find(|(n, _)| n == k) {
-                let cur = obj[k].as_str().unwrap_or("").to_string();
-                let mut sel = cur.clone();
-                egui::ComboBox::from_id_salt(format!("{id}-{k}"))
-                    .width(96.0)
-                    .selected_text(
-                        RichText::new(format!("{}: {}", k.replace('_', " "), sel)).size(12.0),
-                    )
-                    .show_ui(ui, |ui| {
-                        for o in opts.iter() {
-                            ui.selectable_value(&mut sel, o.to_string(), *o);
-                        }
-                    });
-                if sel != cur {
-                    obj.insert(k.clone(), json!(sel));
-                    committed = true;
-                }
-            } else if let Some(b) = obj[k].as_bool() {
-                let mut bb = b;
-                if ui.checkbox(&mut bb, k.replace('_', " ")).changed() {
-                    obj.insert(k.clone(), json!(bb));
-                    committed = true;
-                }
+    // Freeze the card budget before content-expandable enum controls render.
+    // A growing child must not move numeric cells beyond the entry rectangle.
+    let numeric_bounds = ui.available_rect_before_wrap();
+    // Each choice gets a fresh full-width top-down cell. In a wrapped horizontal
+    // row ComboBox measures its text BEFORE wrapping the button to the next row;
+    // the remaining sliver can turn the last selection into a very tall galley.
+    // Advance only by measured content, never the cell's remaining height.
+    #[cfg(test)]
+    let mut choice_rects = Vec::new();
+    #[cfg(test)]
+    let mut choice_ids = Vec::new();
+    for k in &keys {
+        if !ENUMS.iter().any(|(name, _)| name == k) && !obj[k].is_boolean() {
+            continue;
+        }
+        let mut cell = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt((id, "choice", k))
+                .max_rect(Rect::from_min_max(
+                    Pos2::new(numeric_bounds.left(), ui.cursor().top()),
+                    Pos2::new(numeric_bounds.right(), ui.max_rect().bottom()),
+                ))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        if let Some((_, opts)) = ENUMS.iter().find(|(n, _)| n == k) {
+            let cur = obj[k].as_str().unwrap_or("").to_string();
+            let mut sel = cur.clone();
+            egui::ComboBox::from_id_salt(format!("{id}-{k}"))
+                .width(numeric_bounds.width())
+                .wrap()
+                .selected_text(
+                    RichText::new(format!("{}: {}", k.replace('_', " "), sel)).size(12.0),
+                )
+                .show_ui(&mut cell, |ui| {
+                    for o in opts.iter() {
+                        ui.selectable_value(&mut sel, o.to_string(), *o);
+                    }
+                });
+            if sel != cur {
+                obj.insert(k.clone(), json!(sel));
+                committed = true;
+            }
+        } else if let Some(b) = obj[k].as_bool() {
+            let mut bb = b;
+            if cell.checkbox(&mut bb, k.replace('_', " ")).changed() {
+                obj.insert(k.clone(), json!(bb));
+                committed = true;
             }
         }
-    });
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        for k in &keys {
-            if k == "type" {
-                continue;
+        #[cfg(test)]
+        {
+            choice_rects.push((k.clone(), cell.min_rect()));
+            choice_ids.push(cell.id());
+        }
+        ui.advance_cursor_after_rect(cell.min_rect());
+    }
+    // Stateless rows use the card's current width, not egui Grid's cached
+    // previous-column widths. Each child is keyed by parameter, never row index,
+    // so reflow does not change a knob's identity or its release-only commit.
+    let (columns, cell_width) = parameter_columns(numeric_bounds.width());
+    let origin = Pos2::new(numeric_bounds.left(), ui.cursor().top());
+    #[cfg(test)]
+    let mut first_numeric_rect = None;
+    #[cfg(test)]
+    let mut first_numeric_id = None;
+    let mut top = origin.y;
+    let mut bottom = top;
+    let mut column = 0;
+    for k in &keys {
+        if k == "type" {
+            continue;
+        }
+        if let Some(x) = obj[k].as_f64() {
+            let mut f = x as f32;
+            let (lo, hi, log) = param_range(kind, k, f);
+            let mut cell = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt((id, k))
+                    .max_rect(Rect::from_min_max(
+                        Pos2::new(origin.x + column as f32 * (cell_width + 8.0), top),
+                        Pos2::new(
+                            origin.x + column as f32 * (cell_width + 8.0) + cell_width,
+                            ui.max_rect().bottom(),
+                        ),
+                    ))
+                    .layout(egui::Layout::top_down(egui::Align::Center)),
+            );
+            let done = parameter_knob(&mut cell, k, &mut f, lo, hi, log, color, cell_width);
+            #[cfg(test)]
+            if first_numeric_rect.is_none() {
+                first_numeric_rect = Some(cell.min_rect());
+                first_numeric_id = Some(cell.id());
             }
-            if let Some(x) = obj[k].as_f64() {
-                let mut f = x as f32;
-                let (lo, hi, log) = param_range(kind, k, f);
-                let (_, done) = knob(ui, k, &mut f, lo, hi, log, color);
-                if (f as f64 - x).abs() > 1e-9 {
-                    *dragging = true;
-                    let val = if k == "unison" || k == "downsample" || k == "root" {
-                        json!(f.round() as i64)
-                    } else {
-                        json!(f)
-                    };
-                    obj.insert(k.clone(), val);
-                }
-                if done {
-                    committed = true;
-                }
+            bottom = bottom.max(cell.min_rect().bottom());
+            if (f as f64 - x).abs() > 1e-9 {
+                *dragging = true;
+                let val = if k == "unison" || k == "downsample" || k == "root" {
+                    json!(f.round() as i64)
+                } else {
+                    json!(f)
+                };
+                obj.insert(k.clone(), val);
+            }
+            if done {
+                committed = true;
+            }
+            column += 1;
+            if column == columns {
+                top = bottom + 8.0;
+                column = 0;
             }
         }
+    }
+    if bottom > origin.y {
+        ui.advance_cursor_after_rect(Rect::from_min_max(
+            origin,
+            Pos2::new(numeric_bounds.right(), bottom),
+        ));
+    }
+    #[cfg(test)]
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new(("parameter-layout", id)),
+            ParameterLayoutTrace {
+                entry: numeric_bounds,
+                choices: choice_rects,
+                choice_ids,
+                first_numeric_id,
+                choice_min_height: (ui.spacing().icon_width + 2.0 * ui.spacing().button_padding.y)
+                    .max(ui.spacing().interact_size.y),
+                choice_padding: 2.0 * ui.spacing().button_padding.y,
+                numeric_origin: origin,
+                first_numeric: first_numeric_rect,
+                spacing: ui.spacing().item_spacing.y,
+            },
+        );
     });
     for k in &keys {
         if obj[k].is_object() {
@@ -994,6 +1108,133 @@ impl Studio {
         if let Err(e) = r {
             self.toast = Some((format!("{e:#}"), 0.0, false));
         }
+    }
+
+    fn open_step_velocity(&mut self, visible: &Project, row: usize) {
+        self.step_velocity.draft = None;
+        match step_velocity::capture(&self.engine, visible, row, self.pattern)
+            .and_then(|owner| self.step_velocity.open(owner))
+        {
+            Ok(()) => {}
+            Err(error) => self.toast = Some((error, 0.0, false)),
+        }
+    }
+
+    fn rotation_shortcuts(
+        &mut self,
+        ctx: &egui::Context,
+        velocity_active_at_start: bool,
+        rotation_active_at_start: bool,
+    ) -> Vec<shortcuts::Action> {
+        let handle = rack_rotate::rotation_state(ctx);
+        if velocity_active_at_start || self.step_velocity.draft.is_some() {
+            handle.lock().unwrap().cancel(ctx);
+            return self.step_velocity_shortcuts(ctx, velocity_active_at_start);
+        }
+        let (owned, entry) = {
+            let mut rotation = handle.lock().unwrap();
+            let owned = rotation_active_at_start || rotation.owns_frame(ctx);
+            if owned {
+                rotation.own_frame(ctx);
+            }
+            let entry = rotation.entry_focused(ctx);
+            if owned {
+                let e = self.engine.lock().unwrap();
+                if let Some(error) = rotation.prepare(ctx, &e, self.selected, self.pattern) {
+                    self.toast = Some((error.into(), 0.0, false));
+                }
+            }
+            (owned, entry)
+        };
+        if owned {
+            return Vec::new();
+        }
+        if !entry {
+            return self.step_velocity_shortcuts(ctx, velocity_active_at_start);
+        }
+        // Only normalized activation keys of the recorded real entry are masked.
+        // Leave other event consumption intact; never restore raw/stale events.
+        let masked = ctx.input_mut(|i| {
+            let mut masked = Vec::new();
+            let mut index = 0;
+            i.events.retain(|event| {
+                let mask = matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Space | egui::Key::Enter,
+                        ..
+                    }
+                );
+                if mask {
+                    masked.push((index, event.clone()));
+                }
+                index += 1;
+                !mask
+            });
+            masked
+        });
+        let activating = masked.iter().any(|(_, event)| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    pressed: true,
+                    repeat: false,
+                    ..
+                }
+            )
+        });
+        let actions = self.step_velocity_shortcuts(ctx, velocity_active_at_start);
+        ctx.input_mut(|i| {
+            for (index, event) in masked {
+                i.events.insert(index.min(i.events.len()), event);
+            }
+        });
+        if activating {
+            handle.lock().unwrap().own_frame(ctx);
+            Vec::new()
+        } else {
+            actions
+        }
+    }
+
+    fn step_velocity_shortcuts(
+        &mut self,
+        ctx: &egui::Context,
+        active_at_start: bool,
+    ) -> Vec<shortcuts::Action> {
+        let active_at_start = active_at_start || self.step_velocity.draft.is_some();
+        let consumed = self.step_velocity_frame(ctx);
+        step_velocity::global_actions(ctx, &self.step_velocity, active_at_start, consumed)
+    }
+
+    fn step_velocity_frame(&mut self, ctx: &egui::Context) -> bool {
+        let expired = {
+            let e = self.engine.lock().unwrap();
+            self.step_velocity.validate(&e, self.selected, self.pattern)
+        };
+        if expired {
+            self.toast = Some((
+                "Step edit expired. Reopen Step velocity to continue.".into(),
+                0.0,
+                false,
+            ));
+        }
+        let intent = step_velocity::show(ctx, &mut self.step_velocity);
+        if let Some(intent) = intent {
+            // The adapter validates and dispatches while this single guard is held.
+            let result = {
+                let mut e = self.engine.lock().unwrap();
+                self.step_velocity
+                    .finish(&mut e, intent, self.selected, self.pattern)
+            };
+            if let Err(error) = result {
+                self.toast = Some((error, 0.0, false));
+            }
+        }
+        if self.step_velocity.draft.is_none() {
+            self.step_velocity.release_focus(ctx);
+        }
+        expired || intent.is_some()
     }
 
     fn snapshot(&self) -> (Project, u64, (Vec<String>, Vec<String>), (usize, usize)) {
@@ -1275,6 +1516,124 @@ impl Studio {
         }
     }
 
+    // Same production project-action UI in update and the dock acceptance harness.
+    fn project_lifecycle_ui(&mut self, ctx: &egui::Context) {
+        if self.open_list {
+            let files = self.saved_projects();
+            let mut open = true;
+            let mut pick: Option<PathBuf> = None;
+            egui::Window::new("Open a project")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    if files.is_empty() {
+                        ui.label("No saved beats in this folder yet. Press Save first.");
+                    }
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            for f in &files {
+                                let name = f.to_string_lossy().replace(".beatbox.json", "");
+                                if ui.button(name).clicked() {
+                                    pick = Some(f.clone());
+                                }
+                            }
+                        });
+                });
+            if !open {
+                self.open_list = false;
+            }
+            if let Some(f) = pick {
+                self.open_list = false;
+                if self.needs_leave_warning() {
+                    self.pending_open = Some(f);
+                } else {
+                    self.open_project_file(f);
+                }
+            }
+        }
+        if let Some(target) = self.pending_open.clone() {
+            let mut action = 0; // 1 save first, 2 discard, 3 cancel
+            egui::Window::new("Open another project?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("This project has changes that are not saved.");
+                    ui.label("Undo history is lost when you open another project.");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save, then open").clicked() {
+                            action = 1;
+                        }
+                        if ui.button("Discard changes").clicked() {
+                            action = 2;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            action = 3;
+                        }
+                    });
+                });
+            match action {
+                1 => {
+                    let saved = self.save_before_leave();
+                    self.pending_open = None;
+                    if saved {
+                        self.open_project_file(target);
+                    }
+                }
+                2 => {
+                    self.pending_open = None;
+                    self.open_project_file(target);
+                }
+                3 => self.pending_open = None,
+                _ => {}
+            }
+        }
+        if self.confirm_new {
+            let mut action = 0; // 1 save first, 2 discard, 3 cancel
+            egui::Window::new("Start a new project?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("This project has changes that are not saved.");
+                    ui.label("Undo only works until you close the app.");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save, then start new").clicked() {
+                            action = 1;
+                        }
+                        if ui.button("Discard changes").clicked() {
+                            action = 2;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            action = 3;
+                        }
+                    });
+                });
+            match action {
+                1 => {
+                    // Only continue after this save succeeds with no later edit.
+                    if self.save_before_leave() {
+                        self.confirm_new = false;
+                        self.start_new_project();
+                    } else {
+                        self.confirm_new = false;
+                    }
+                }
+                2 => {
+                    self.confirm_new = false;
+                    self.start_new_project();
+                }
+                3 => self.confirm_new = false,
+                _ => {}
+            }
+        }
+    }
+
     fn saved_projects(&self) -> Vec<PathBuf> {
         let dir = self.engine.lock().unwrap().workdir.clone();
         let mut v: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&dir)
@@ -1412,6 +1771,17 @@ impl Studio {
 
     // ---------------- top bar ----------------
     fn top_bar(&mut self, ui: &mut egui::Ui, p: &Project, undo: (usize, usize)) {
+        self.transport_controls(ui, p, undo, false);
+    }
+
+    // One command path for the pinned strip and legacy docked transport.
+    fn transport_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: &Project,
+        undo: (usize, usize),
+        compact: bool,
+    ) {
         ui.horizontal_wrapped(|ui| {
             // Use the dock panel width, not the screen: the transport can float
             // or share a window with another panel. Controls wrap when needed.
@@ -1433,6 +1803,10 @@ impl Studio {
                     self.player.play();
                 }
             }
+            if compact {
+                ui.label(RichText::new(if playing { "Playing" } else { "Stopped" }).size(12.0).color(DIM));
+                ui.separator();
+            }
             // record: start/stop a take from the default input; the take is
             // placed on the "rec" track where recording started
             let rec = crate::recorder::recording_seconds();
@@ -1452,6 +1826,9 @@ impl Studio {
                         self.call("stop_recording", json!({"track": "rec", "start_beat": start_beat}));
                     }
                 }
+            }
+            if compact {
+                ui.label(RichText::new(if rec.is_some() { "Recording audio" } else { "Audio in" }).size(12.0).color(if rec.is_some() { HOT } else { DIM }));
             }
             if rec.is_some() {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
@@ -1477,17 +1854,19 @@ impl Studio {
                     FrameRate::Fps30,
                     0,
                 );
-                let (r, _) = ui.allocate_exact_size(Vec2::new(244.0, 34.0), Sense::hover());
+                let (r, _) = ui.allocate_exact_size(Vec2::new(if compact { 126.0 } else { 244.0 }, 34.0), Sense::hover());
                 let pt = ui.painter();
                 let main = Rect::from_min_size(r.min, Vec2::new(122.0, 34.0));
-                console::counter_box(pt, main, &bb, 17.0);
+                console::counter_box(pt, main, "", 15.0);
+                pt.text(main.center() + Vec2::new(0.0, 7.0), Align2::CENTER_CENTER, &bb, FontId::monospace(14.0), TEXT);
                 pt.text(
                     main.left_top() + Vec2::new(5.0, 2.0),
                     Align2::LEFT_TOP,
-                    "BARS|BEATS",
-                    FontId::monospace(9.0),
+                    "BAR : BEAT",
+                    FontId::monospace(12.0),
                     DIM,
                 );
+                if !compact {
                 let sub = Rect::from_min_size(
                     Pos2::new(main.right() + 4.0, r.top()),
                     Vec2::new(118.0, 34.0),
@@ -1500,11 +1879,12 @@ impl Studio {
                     FontId::monospace(9.0),
                     DIM,
                 );
+                }
 
             }
             ui.add_space(10.0);
             let mut bpm = p.bpm;
-            ui.label(RichText::new("BPM").size(11.0).color(DIM));
+            ui.label(RichText::new("BPM").size(12.0).color(DIM));
             let r = ui.add(
                 egui::DragValue::new(&mut bpm)
                     .range(40.0..=300.0)
@@ -1514,8 +1894,16 @@ impl Studio {
             if r.drag_stopped() || (r.changed() && !r.dragged()) {
                 self.call("set_tempo", json!({"bpm": bpm}));
             }
+            if compact {
+                let scope = self.perf.as_deref().map(|name| format!("Pattern: {name}")).unwrap_or_else(|| "Song".into());
+                ui.allocate_ui(Vec2::new(110.0, 24.0), |ui| {
+                    ui.add(egui::Label::new(RichText::new(&scope).size(12.0).color(ACCENT)).truncate())
+                        .on_hover_text(format!("Playback scope: {scope}. Pattern launches remain in Song's PERFORM strip."));
+                });
+            }
+            let mut musical_options = |ui: &mut egui::Ui| {
             let mut swing = p.swing;
-            ui.label(RichText::new("SWING").size(11.0).color(DIM));
+            ui.label(RichText::new("SWING").size(12.0).color(DIM));
             let r = ui.add(egui::Slider::new(&mut swing, 0.0..=1.0).show_value(false));
             if r.drag_stopped() {
                 self.call("set_tempo", json!({"swing": swing}));
@@ -1552,6 +1940,15 @@ impl Studio {
             }
             if root != p.key_root || scale != p.scale {
                 self.call("set_key", json!({"root": root, "scale": scale}));
+            }
+            };
+            if compact {
+                ui.menu_button("Timing / key", musical_options);
+            } else {
+                musical_options(ui);
+            }
+            if compact && ui.button("Export...").clicked() {
+                self.export.open = true;
             }
             // Undo and Redo stay in reach; everything else lives under File.
             let mut tail = |ui: &mut egui::Ui, right_to_left: bool| {
@@ -1825,7 +2222,23 @@ impl Studio {
             .as_ref()
             .and_then(|id| p.playlist.iter().find(|c| &c.id == id))
             .map(|c| (c.lane, c.start_bar));
-        let picks = channel_rack::pattern_bar(ui, p, &mut pat, target, &mut pgeo);
+        let compact = !p.tracks.is_empty();
+        let mut rename = None;
+        let mut duplicate = false;
+        let picks = if compact {
+            let result = channel_rack::compact_pattern_bar(
+                ui,
+                p,
+                &mut pat,
+                target,
+                &mut self.browser.pattern_rename,
+            );
+            rename = result.rename;
+            duplicate = result.duplicate;
+            result.actions
+        } else {
+            channel_rack::pattern_bar(ui, p, &mut pat, target, &mut pgeo)
+        };
         self.pattern = pat;
         for (tool, args) in picks {
             self.call(tool, args);
@@ -1847,9 +2260,8 @@ impl Studio {
             {
                 self.browser.pattern_rename = Some((identity, selected.name.clone()));
             }
-            let mut rename = None;
-            let mut duplicate = false;
-            ui.horizontal_wrapped(|ui| {
+            if !compact {
+                ui.horizontal_wrapped(|ui| {
                 ui.label("Pattern name");
                 let draft=&mut self.browser.pattern_rename.as_mut().unwrap().1;
                 ui.add(egui::TextEdit::singleline(draft).desired_width(180.0));
@@ -1858,6 +2270,7 @@ impl Studio {
                 }
                 duplicate = ui.button("Duplicate pattern").on_hover_text("Make an independent copy with the same notes and meter. Selects the copy for editing, without placing it in the song. Undo removes it.").clicked();
             });
+            }
             if let Some(name) = rename {
                 self.call(
                     "rename_pattern",
@@ -1877,8 +2290,10 @@ impl Studio {
             .filter(|(pi, _)| *pi == self.pattern)
             .map(|(_, s)| s);
         let rack_steps = p.patterns[self.pattern].steps() as usize;
-        if channel_rack::rack_content_width(ui.available_width(), rack_steps) > ui.available_width()
-        {
+        let available = ui.available_width();
+        let requested_width =
+            (!p.tracks.is_empty()).then(|| channel_rack::rack_content_width(available, rack_steps));
+        if requested_width.is_some_and(|width| width > available) {
             ui.label(
                 RichText::new("More steps to the right: scroll horizontally or Shift+wheel.")
                     .size(11.0)
@@ -1897,7 +2312,12 @@ impl Studio {
         let pending = ui.data(|d| d.get_temp::<bool>(pend_key)).unwrap_or(false);
         ui.data_mut(|d| d.insert_temp(pend_key, grew));
         let mut seq_scroll = egui::ScrollArea::both()
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            // Trackless racks keep their ruler and scroll state, but need no bars.
+            .scroll_bar_visibility(if p.tracks.is_empty() {
+                egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+            } else {
+                egui::scroll_area::ScrollBarVisibility::AlwaysVisible
+            })
             .auto_shrink([false, false])
             .id_salt("seq");
         // never taller than what the pane shows, or rows past its bottom edge
@@ -1909,13 +2329,19 @@ impl Studio {
         if grew {
             ui.ctx().request_repaint();
         }
-        if pending {
+        if requested_width.is_none() {
+            // Reset both axes before egui creates the content UI: its final
+            // clamp happens after layout and cannot fix the first empty ruler.
+            seq_scroll = seq_scroll.scroll_offset(Vec2::ZERO);
+        } else if pending {
             seq_scroll = seq_scroll.vertical_scroll_offset(1.0e6);
         }
-        let steps = p.patterns[self.pattern].steps() as usize;
-        let content_width = channel_rack::rack_content_width(ui.available_width(), steps);
-        seq_scroll.show(ui, |ui| {
-            ui.set_min_width(content_width);
+        #[cfg(test)]
+        let mut observed_rack = None;
+        let _rack_output = seq_scroll.show(ui, |ui| {
+            if let Some(width) = requested_width {
+                ui.set_min_width(width);
+            }
             let mut clip = ui.clip_rect();
             clip.min.y = clip.min.y.max(seq_top + 2.0);
             ui.set_clip_rect(clip);
@@ -1925,26 +2351,100 @@ impl Studio {
                 selected: self.selected,
                 rows: Vec::new(),
                 open_editor: false,
+                ..Default::default()
             };
+            #[cfg(test)]
+            let rack_origin = ui.next_widget_position();
             let actions = channel_rack::channel_rack(ui, p, self.pattern, &mut sel, playing_here);
+            #[cfg(test)]
+            {
+                // Read only melodic lanes just registered by this rack call.
+                // Copy their actual current-pass Responses, not replacement widgets.
+                for ti in 0..sel.rows.len() {
+                    if !step_velocity::drum(&p.tracks[ti]) {
+                        let lane = ui
+                            .ctx()
+                            .read_response(ui.id().with(("rack-lane", ti)))
+                            .unwrap();
+                        step_velocity::tests::observe(
+                            ui.ctx().clone(),
+                            &format!("rack-lane-{ti}"),
+                            &lane,
+                        );
+                    }
+                }
+                observed_rack = Some((
+                    rack_origin,
+                    ui.next_widget_position(),
+                    clip,
+                    sel.rows.clone(),
+                ));
+            }
             self.selected = sel.selected;
+            for response in &sel.step_velocity_entries {
+                step_velocity::remember_entry(&mut self.step_velocity, response);
+            }
+            let (footer_open, velocity_footer) =
+                step_velocity::footer(ui, p, self.selected, &mut self.step_velocity);
+            if let Some(row) = sel
+                .open_step_velocity
+                .or(footer_open.then_some(self.selected))
+            {
+                rack_rotate::rotation_state(ui.ctx())
+                    .lock()
+                    .unwrap()
+                    .cancel(ui.ctx());
+                self.open_step_velocity(p, row);
+            }
+            {
+                let handle = rack_rotate::rotation_state(ui.ctx());
+                let mut rotation = handle.lock().unwrap();
+                if rotation.footer(ui, p, self.selected, self.pattern) {
+                    self.step_velocity.draft = None;
+                    self.step_velocity.release_focus(ui.ctx());
+                    let result = {
+                        let e = self.engine.lock().unwrap();
+                        rotation.open(ui.ctx(), &e, p, self.selected, self.pattern)
+                    };
+                    if let Err(error) = result {
+                        self.toast = Some((error.into(), 0.0, false));
+                    }
+                }
+            }
+            // Use the button created in this pass, not a cached ID lookup.
+            // Explicit alignment keeps the target independent of the offset
+            // advanced by ScrollArea::begin after its content UI was created.
+            // The trailing Rotate row must not make the legacy reveal retarget
+            // on the first fresh layout after the configured animation ends.
+            if let Some(response) = velocity_footer {
+                if response.has_focus() {
+                    response.scroll_to_me(Some(egui::Align::BOTTOM));
+                }
+            }
             if sel.open_editor {
                 self.note_editor = true;
             }
             for (tool, args) in actions {
                 self.call(tool, args);
             }
-            if p.tracks.is_empty() {
-                ui.add_space(40.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new("Add a track from Panels > Library, or browse Sounds.")
-                            .size(16.0)
-                            .color(DIM),
-                    );
-                });
-            }
+            // Empty projects already have visible Add/Browse onboarding above.
+            // Do not append a duplicate instruction below this finite rack:
+            // even a wrapped label can be clipped at its lower viewport edge.
         });
+        if p.tracks.is_empty() {
+            // Hidden bars skip egui's per-bar velocity clamp. Retire momentum
+            // and targets so a later populated rack cannot inherit them.
+            egui::scroll_area::State::default().store(ui.ctx(), _rack_output.id);
+        }
+        #[cfg(test)]
+        empty_pattern_tests::observe(
+            ui.ctx(),
+            &_rack_output,
+            observed_rack.unwrap(),
+            requested_width,
+            grew,
+            pending,
+        );
     }
 
     // ---------------- master section ----------------
@@ -2220,6 +2720,7 @@ impl eframe::App for Studio {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let rotation_active_at_start = rack_rotate::rotation_state(ctx).lock().unwrap().active();
         self.frames += 1;
         if self.native_capture.is_some() {
             self.audio_check.begin_native_frame();
@@ -2393,6 +2894,17 @@ impl eframe::App for Studio {
             self.toast = None;
         }
         let (p, rev, log, undo) = self.snapshot();
+        let velocity_active_at_start = self.step_velocity.draft.is_some();
+        {
+            let e = self.engine.lock().unwrap();
+            if self.step_velocity.validate(&e, self.selected, self.pattern) {
+                self.toast = Some((
+                    "Step edit expired. Reopen Step velocity to continue.".into(),
+                    0.0,
+                    false,
+                ));
+            }
+        }
         if let Some(capture) = &mut self.arrangement_capture {
             if capture.state.is_none() {
                 let e = self.engine.lock().unwrap();
@@ -2461,120 +2973,7 @@ impl eframe::App for Studio {
                 }
             }
         }
-        if self.open_list {
-            let files = self.saved_projects();
-            let mut open = true;
-            let mut pick: Option<PathBuf> = None;
-            egui::Window::new("Open a project")
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    if files.is_empty() {
-                        ui.label("No saved beats in this folder yet. Press Save first.");
-                    }
-                    egui::ScrollArea::vertical()
-                        .max_height(260.0)
-                        .show(ui, |ui| {
-                            for f in &files {
-                                let name = f.to_string_lossy().replace(".beatbox.json", "");
-                                if ui.button(name).clicked() {
-                                    pick = Some(f.clone());
-                                }
-                            }
-                        });
-                });
-            if !open {
-                self.open_list = false;
-            }
-            if let Some(f) = pick {
-                self.open_list = false;
-                if self.needs_leave_warning() {
-                    self.pending_open = Some(f);
-                } else {
-                    self.open_project_file(f);
-                }
-            }
-        }
-        if let Some(target) = self.pending_open.clone() {
-            let mut action = 0; // 1 save first, 2 discard, 3 cancel
-            egui::Window::new("Open another project?")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label("This project has changes that are not saved.");
-                    ui.label("Undo history is lost when you open another project.");
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Save, then open").clicked() {
-                            action = 1;
-                        }
-                        if ui.button("Discard changes").clicked() {
-                            action = 2;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            action = 3;
-                        }
-                    });
-                });
-            match action {
-                1 => {
-                    let saved = self.save_before_leave();
-                    self.pending_open = None;
-                    if saved {
-                        self.open_project_file(target);
-                    }
-                }
-                2 => {
-                    self.pending_open = None;
-                    self.open_project_file(target);
-                }
-                3 => self.pending_open = None,
-                _ => {}
-            }
-        }
-        if self.confirm_new {
-            let mut action = 0; // 1 save first, 2 discard, 3 cancel
-            egui::Window::new("Start a new project?")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    ui.label("This project has changes that are not saved.");
-                    ui.label("Undo only works until you close the app.");
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Save, then start new").clicked() {
-                            action = 1;
-                        }
-                        if ui.button("Discard changes").clicked() {
-                            action = 2;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            action = 3;
-                        }
-                    });
-                });
-            match action {
-                1 => {
-                    // Only continue after this save succeeds with no later edit.
-                    if self.save_before_leave() {
-                        self.confirm_new = false;
-                        self.start_new_project();
-                    } else {
-                        self.confirm_new = false;
-                    }
-                }
-                2 => {
-                    self.confirm_new = false;
-                    self.start_new_project();
-                }
-                3 => self.confirm_new = false,
-                _ => {}
-            }
-        }
+        self.project_lifecycle_ui(ctx);
         if self.show_about {
             let mut open = true;
             egui::Window::new("About Beatbox Studio")
@@ -2605,12 +3004,28 @@ impl eframe::App for Studio {
         self.render_recovery_ui(ctx);
         self.poll_render_job(ctx);
 
+        // Existing drafts render before raw global shortcuts, including closing frames.
         // keyboard shortcuts (ported table: shortcuts.rs)
-        for a in shortcuts::pressed(ctx) {
+        for a in self.rotation_shortcuts(ctx, velocity_active_at_start, rotation_active_at_start) {
             self.shortcut(a, &p);
         }
 
         self.workspace_ui(ctx, &p, rev, &log, undo);
+        {
+            let handle = rack_rotate::rotation_state(ctx);
+            let mut rotation = handle.lock().unwrap();
+            let result = {
+                let mut e = self.engine.lock().unwrap();
+                rotation.after_workspace(ctx, &mut e, self.selected, self.pattern)
+            };
+            if let Err(error) = result {
+                self.toast = Some((error, 0.0, false));
+            }
+        }
+        {
+            let e = self.engine.lock().unwrap();
+            self.step_velocity.validate(&e, self.selected, self.pattern);
+        }
 
         self.export_window(ctx);
         self.rhythm_trial_ui(ctx);
@@ -2732,7 +3147,9 @@ impl eframe::App for Studio {
                         im.save(&path).map_err(|e| e.to_string())
                     },
                     || {
-                        if let Some(capture) = &self.native_capture {
+                        if let Some(capture) = &self.p0a_capture {
+                            capture.manifest(self, ctx, &path, [w, h])
+                        } else if let Some(capture) = &self.native_capture {
                             capture.manifest(&path, &self.audio_check, ctx, [w, h])
                         } else if let Some(capture) = &self.arrangement_capture {
                             capture.manifest(self, ctx, &path, [w, h])
@@ -2744,10 +3161,10 @@ impl eframe::App for Studio {
                 let receipt = match saved {
                     Ok(receipt) => receipt,
                     Err(error) => {
-                        let _ = std::fs::remove_file(&path);
-                        if self.arrangement_capture.is_some() {
-                            let _ = std::fs::remove_file(path.with_extension("json"));
-                        }
+                        discard_capture_products(
+                            &path,
+                            self.arrangement_capture.is_some() || self.p0a_capture.is_some(),
+                        );
                         fail_screenshot(&error);
                     }
                 };
@@ -2777,6 +3194,21 @@ fn project_has_nothing_to_render(p: &crate::project::Project) -> bool {
         && p.playlist.is_empty()
         && p.audio_clips.is_empty()
         && p.vocal_map.is_none()
+}
+
+// Test-only observations from the production editor, not a parallel layout model.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct ParameterLayoutTrace {
+    entry: Rect,
+    choices: Vec<(String, Rect)>,
+    choice_ids: Vec<egui::Id>,
+    first_numeric_id: Option<egui::Id>,
+    choice_min_height: f32,
+    choice_padding: f32,
+    numeric_origin: Pos2,
+    first_numeric: Option<Rect>,
+    spacing: f32,
 }
 
 #[cfg(test)]
@@ -3598,5 +4030,1509 @@ mod checkpoint_comparison_tests {
             &json!({"facts":{"A":{"seconds":2.},"B":{"seconds":2.}},"loudness_matched":false})
         )
         .contains("not level matched"));
+    }
+}
+
+#[cfg(test)]
+mod p0a_persistence_tests {
+    use super::*;
+    #[test]
+    fn failed_sidecar_removes_both_products_without_close_receipt() {
+        let dir =
+            std::env::temp_dir().join(format!("beatbox-p0a-persistence-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("owned.png");
+        let saved = persist_screenshot(
+            || std::fs::write(&path, b"png").map_err(|e| e.to_string()),
+            || {
+                std::fs::write(path.with_extension("json"), b"partial").unwrap();
+                Err("sidecar failed".into())
+            },
+        );
+        assert!(saved.is_err());
+        discard_capture_products(&path, true);
+        assert!(!path.exists() && !path.with_extension("json").exists());
+        let mut close = QuitCloseState::default();
+        assert!(!close.approve_completed_capture(true, saved.ok()));
+        assert!(close.incoming_close(true, true));
+        std::fs::remove_dir(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod refinement_parameter_tests {
+    use super::*;
+
+    fn labels(shape: &egui::Shape, out: &mut Vec<egui::epaint::TextShape>) {
+        match shape {
+            egui::Shape::Text(text) => out.push(text.clone()),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    labels(shape, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn refinement_real_parameter_editor_preserves_all_presets_and_label_bounds() {
+        for &(preset, _) in instruments::PRESETS {
+            let instrument = instruments::preset(preset).unwrap();
+            let original = serde_json::to_value(&instrument).unwrap();
+            let numeric_labels: Vec<_> = original
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, value)| *key != "type" && value.is_number())
+                .map(|(key, _)| key.replace('_', " "))
+                .collect();
+            for scale in [1.0, 2.0] {
+                let ctx = egui::Context::default();
+                ctx.set_pixels_per_point(scale);
+                // Reflow the SAME editor, including narrowing after a wider frame.
+                for width in [244.0, 332.0, 212.0, 244.0] {
+                    let mut value = original.clone();
+                    let mut dragging = false;
+                    let mut body = Rect::NOTHING;
+                    let output = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(Rect::from_min_size(
+                                Pos2::ZERO,
+                                Vec2::new(width + 16.0, 3000.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                // Force the production card's logical content budget;
+                                // this is an egui paint test, not OS input/native proof.
+                                ui.set_width(width);
+                                body = ui.max_rect();
+                                assert!(!param_editor(
+                                    ui,
+                                    "inst",
+                                    instrument.kind_name(),
+                                    &mut value,
+                                    ACCENT,
+                                    &mut dragging
+                                ));
+                            });
+                        },
+                    );
+                    assert!(!dragging);
+                    assert_eq!(value, original);
+                    let mut text = Vec::new();
+                    for shape in &output.shapes {
+                        labels(&shape.shape, &mut text);
+                    }
+                    for label in &numeric_labels {
+                        let painted = text
+                            .iter()
+                            .find(|t| t.galley.job.text == *label)
+                            .unwrap_or_else(|| panic!("missing {preset} parameter {label}"));
+                        let rect = painted.galley.rect.translate(painted.pos.to_vec2());
+                        assert!(
+                            rect.left() >= body.left() - 0.1,
+                            "{preset} {label}: scale={scale} width={width} body={body:?} painted={rect:?} galley={:?} pos={:?}",
+                            painted.galley.rect, painted.pos
+                        );
+                        assert!(
+                            rect.right() <= body.right() + 0.1,
+                            "{preset} {label}: scale={scale} width={width} body={body:?} painted={rect:?} galley={:?} pos={:?}",
+                            painted.galley.rect, painted.pos
+                        );
+                        assert!(painted
+                            .galley
+                            .job
+                            .sections
+                            .iter()
+                            .all(|s| s.format.font_id.size >= 12.0));
+                    }
+                }
+            }
+        }
+    }
+
+    fn assert_choice_layout(
+        ctx: &egui::Context,
+        original: &Value,
+        kind: &str,
+        case: &str,
+        width: f32,
+        scale: f32,
+    ) -> ParameterLayoutTrace {
+        let mut value = original.clone();
+        let mut dragging = false;
+        let screen_rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width + 16.0, 6000.0));
+        let mut input = egui::RawInput {
+            screen_rect: Some(screen_rect),
+            ..Default::default()
+        };
+        // Model native DPI in the input. set_pixels_per_point queues zoom and
+        // replaces this pass's supplied screen rect with a scaled previous one.
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .expect("root viewport input")
+            .native_pixels_per_point = Some(scale);
+        let output = ctx.run(input, |ctx| {
+            assert_eq!(ctx.pixels_per_point(), scale, "actual native DPI: {case}");
+            assert_eq!(
+                ctx.input(|i| i.screen_rect),
+                screen_rect,
+                "actual viewport: {case}"
+            );
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_width(width);
+                assert!(!param_editor(
+                    ui,
+                    "inst",
+                    kind,
+                    &mut value,
+                    ACCENT,
+                    &mut dragging
+                ));
+            });
+        });
+        assert_eq!(&value, original, "idle mutation: {case}");
+        assert!(!dragging, "idle drag: {case}");
+        let trace = ctx.data(|data| {
+            data.get_temp::<ParameterLayoutTrace>(egui::Id::new(("parameter-layout", "inst")))
+                .expect("production editor trace")
+        });
+        let diagnostic = format!("{case} width={width} scale={scale} actual={trace:?}");
+        let mut text = Vec::new();
+        for shape in &output.shapes {
+            labels(&shape.shape, &mut text);
+        }
+        let choices: Vec<_> = original
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(key, value)| {
+                ENUMS.iter().any(|(name, _)| *name == key.as_str()) || value.is_boolean()
+            })
+            .collect();
+        assert_eq!(trace.choices.len(), choices.len(), "{diagnostic}");
+        let mut last_bottom = trace.entry.top() - trace.spacing;
+        for ((key, value), (rendered_key, bounds)) in choices.iter().zip(&trace.choices) {
+            assert_eq!(*key, rendered_key, "{diagnostic}");
+            assert!(bounds.is_finite() && bounds.height() > 0.0, "{diagnostic}");
+            assert!(
+                bounds.left() >= trace.entry.left() - 0.1
+                    && bounds.right() <= trace.entry.right() + 0.1,
+                "{diagnostic}"
+            );
+            assert!(
+                (bounds.top() - (last_bottom + trace.spacing)).abs() <= 0.1,
+                "{diagnostic}"
+            );
+            let expected = if let Some(selected) = value.as_str() {
+                format!("{}: {selected}", key.replace('_', " "))
+            } else {
+                key.replace('_', " ")
+            };
+            let painted = text
+                .iter()
+                .find(|t| t.galley.job.text == expected)
+                .unwrap_or_else(|| panic!("missing full choice {expected:?}: {diagnostic}"));
+            let rect = painted.galley.rect.translate(painted.pos.to_vec2());
+            assert!(
+                rect.left() >= bounds.left() - 0.1
+                    && rect.right() <= bounds.right() + 0.1
+                    && rect.top() >= bounds.top() - 0.1
+                    && rect.bottom() <= bounds.bottom() + 0.1,
+                "choice={expected:?} painted={rect:?}: {diagnostic}"
+            );
+            // A cell must consume its text, button chrome and at most normal
+            // interaction height, not the enclosing scroll viewport's height.
+            assert!(
+                bounds.height()
+                    <= (painted.galley.size().y + trace.choice_padding)
+                        .max(trace.choice_min_height)
+                        + 0.1,
+                "unexplained choice height for {expected:?}: {diagnostic}"
+            );
+            if value.is_string() {
+                assert!(
+                    painted
+                        .galley
+                        .job
+                        .sections
+                        .iter()
+                        .all(|section| section.format.font_id.size >= 12.0),
+                    "{diagnostic}"
+                );
+            }
+            last_bottom = bounds.bottom();
+        }
+        let expected_top = if choices.is_empty() {
+            trace.entry.top()
+        } else {
+            last_bottom + trace.spacing
+        };
+        assert!(
+            (trace.numeric_origin.y - expected_top).abs() <= 0.1,
+            "numeric cursor gap: expected_top={expected_top}: {diagnostic}"
+        );
+        if original.as_object().unwrap().values().any(Value::is_number) {
+            let first = trace.first_numeric.expect("actual first numeric cell");
+            assert!(
+                (first.top() - expected_top).abs() <= 0.1,
+                "actual numeric top drift: first={first:?}: {diagnostic}"
+            );
+            let (columns, _) = parameter_columns(trace.entry.width());
+            for (key, _) in original
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, value)| *key != "type" && value.is_number())
+                .take(columns)
+            {
+                let label = key.replace('_', " ");
+                let painted = text
+                    .iter()
+                    .find(|t| t.galley.job.text == label)
+                    .unwrap_or_else(|| panic!("missing first-row numeric {label}: {diagnostic}"));
+                let rect = painted.galley.rect.translate(painted.pos.to_vec2());
+                // The unchanged production knob allocates 84 points vertically,
+                // then parameter_knob adds one ordinary spacing before its label.
+                // Inspect actual paint too: an empty min_rect seed is not proof.
+                assert!(
+                    rect.top() >= expected_top - 0.1
+                        && rect.top() <= expected_top + 84.0 + trace.spacing + 0.1,
+                    "first-row label={label} painted={rect:?}: {diagnostic}"
+                );
+            }
+        }
+        trace
+    }
+
+    fn all_presets_choice_layout(width: f32, scale: f32) {
+        for &(preset, _) in instruments::PRESETS {
+            let instrument = instruments::preset(preset).unwrap();
+            let original = serde_json::to_value(&instrument).unwrap();
+            let ctx = egui::Context::default();
+            // First layout and cached layout must both obey the same bounds.
+            for _ in 0..2 {
+                assert_choice_layout(
+                    &ctx,
+                    &original,
+                    instrument.kind_name(),
+                    preset,
+                    width,
+                    scale,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inspector_choices_and_numeric_top_212_1x() {
+        all_presets_choice_layout(212.0, 1.0);
+    }
+    #[test]
+    fn inspector_choices_and_numeric_top_244_1x() {
+        all_presets_choice_layout(244.0, 1.0);
+    }
+    #[test]
+    fn inspector_choices_and_numeric_top_332_1x() {
+        all_presets_choice_layout(332.0, 1.0);
+    }
+    #[test]
+    fn inspector_choices_and_numeric_top_212_2x() {
+        all_presets_choice_layout(212.0, 2.0);
+    }
+    #[test]
+    fn inspector_choices_and_numeric_top_244_2x() {
+        all_presets_choice_layout(244.0, 2.0);
+    }
+    #[test]
+    fn inspector_choices_and_numeric_top_332_2x() {
+        all_presets_choice_layout(332.0, 2.0);
+    }
+
+    #[test]
+    fn inspector_choices_reflow_same_context_without_cursor_debt() {
+        for &(preset, _) in instruments::PRESETS {
+            let instrument = instruments::preset(preset).unwrap();
+            let original = serde_json::to_value(&instrument).unwrap();
+            let ctx = egui::Context::default();
+            let mut stable_ids = None;
+            for scale in [1.0, 2.0, 1.0] {
+                for width in [332.0, 212.0, 244.0, 332.0, 212.0] {
+                    let trace = assert_choice_layout(
+                        &ctx,
+                        &original,
+                        instrument.kind_name(),
+                        preset,
+                        width,
+                        scale,
+                    );
+                    let ids = (trace.choice_ids, trace.first_numeric_id);
+                    if let Some(expected) = &stable_ids {
+                        assert_eq!(&ids, expected, "parameter identity changed: {preset}");
+                    } else {
+                        stable_ids = Some(ids);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inspector_long_selected_text_and_boolean_are_not_clamped_or_hidden() {
+        // Deliberately preserve legal serialized selection text, even if not in
+        // the current options, rather than ellipsizing it to make layout pass.
+        let original = json!({
+            "type": "synth", "cutoff": 700.0, "drift_cents": 5.0,
+            "filter_mode": "lowpass with a long descriptive selected filter response",
+            "osc1": "triangle with a long descriptive selected oscillator waveform",
+            "osc2": "square with a long descriptive selected oscillator waveform",
+            "sync_enabled": true
+        });
+        let ctx = egui::Context::default();
+        for scale in [1.0, 2.0] {
+            for width in [212.0, 244.0, 332.0] {
+                assert_choice_layout(
+                    &ctx,
+                    &original,
+                    "synth",
+                    "long selections and bool",
+                    width,
+                    scale,
+                );
+            }
+        }
+        // Include every legitimate option, not just the selections present in
+        // factory presets, at both scales and each requested content budget.
+        for &(key, options) in ENUMS {
+            for &selected in options {
+                let mut value = json!({"cutoff": 700.0});
+                value[key] = json!(selected);
+                for scale in [1.0, 2.0] {
+                    for width in [212.0, 244.0, 332.0] {
+                        assert_choice_layout(&ctx, &value, "synth", selected, width, scale);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod empty_pattern_tests {
+    use super::*;
+
+    // Observations come only from sequencer's actual ScrollArea and RackSel.
+    // No second allocator or replacement rack is used.
+    #[derive(Clone)]
+    pub(super) struct Observation {
+        pass: u64,
+        id: egui::Id,
+        content: Vec2,
+        viewport: Rect,
+        offset: Vec2,
+        origin: Pos2,
+        end: Pos2,
+        clip: Rect,
+        rows: Vec<channel_rack::RackRow>,
+        requested: Option<f32>,
+        grew: bool,
+        pending: bool,
+    }
+
+    fn key() -> egui::Id {
+        egui::Id::new("empty-pattern-production-observation")
+    }
+
+    pub(super) fn observe(
+        ctx: &egui::Context,
+        output: &egui::scroll_area::ScrollAreaOutput<()>,
+        rack: (Pos2, Pos2, Rect, Vec<channel_rack::RackRow>),
+        requested: Option<f32>,
+        grew: bool,
+        pending: bool,
+    ) {
+        let pass = ctx.cumulative_pass_nr();
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                key(),
+                Some(Observation {
+                    pass,
+                    id: output.id,
+                    content: output.content_size,
+                    viewport: output.inner_rect,
+                    offset: output.state.offset,
+                    origin: rack.0,
+                    end: rack.1,
+                    clip: rack.2,
+                    rows: rack.3,
+                    requested,
+                    grew,
+                    pending,
+                }),
+            );
+        });
+    }
+
+    fn studio(ctx: &egui::Context, bars: u32, tracks: usize) -> Studio {
+        let mut engine = Engine::new(std::env::temp_dir().join(format!(
+            "beatbox-empty-pattern-fixture-{}",
+            std::process::id()
+        )));
+        engine
+            .call(
+                "new_project",
+                &json!({"patterns":[{"name":"A","bars":bars}]}),
+            )
+            .unwrap();
+        for i in 0..tracks {
+            engine.call("add_track", &json!({"name":format!("row{i}"),"preset":if i % 2 == 0 {"kick"} else {"pluck_lead"}})).unwrap();
+        }
+        // Future execution may open/start idle audio output via Player::new.
+        // Setup add_track may render calibration notes in memory on cache miss.
+        // Passive frames must preserve project/transport/player state below;
+        // they do not issue play, seek, audition, poll or launch Studio.
+        Studio {
+            saved_rev: 0,
+            seen_project_load: 0,
+            confirm_new: false,
+            quit_close: QuitCloseState::default(),
+            mixer_routing: false,
+            open_list: false,
+            pending_open: None,
+            engine: Arc::new(Mutex::new(engine)),
+            player: Player::new(),
+            project_path: None,
+            listen: String::new(),
+            server_ok: false,
+            show_about: false,
+            export: Default::default(),
+            pattern: 0,
+            selected: 0,
+            step_velocity: Default::default(),
+            rendered: None,
+            rendering: None,
+            render_state: Default::default(),
+            live: None,
+            live_applied: false,
+            inspector: None,
+            dragging: false,
+            toast: None,
+            render_job: None,
+            // The existing header uses this flag only for its initial open
+            // default. Remove the empty opener next frame; no report is injected.
+            mix_readout: None,
+            mix_job: None,
+            mix_readout_revision: None,
+            audio_check: audio_check::State::default(),
+            mix_comparison: None,
+            mix_comparison_job: None,
+            comparison_start_s: 0.0,
+            comparison_length_s: 8.0,
+            screenshot: None,
+            native_capture: None,
+            arrangement_capture: None,
+            p0a_capture: None,
+            frames: 0,
+            shot_requested: false,
+            perf: None,
+            perf_next: None,
+            perf_rec: None,
+            view: 0,
+            auto_sel: None,
+            piano: piano::PianoState {
+                snap: 2,
+                ..Default::default()
+            },
+            vocal_wave: None,
+            browser: Default::default(),
+            analyze: Default::default(),
+            clip_sel: None,
+            marker_name: String::new(),
+            tempo_edit_bpm: 120.0,
+            tempo_edit_ramp: false,
+            rail_search: String::new(),
+            note_editor: false,
+            workspace: workspace::Workspace::capture(ctx, 0),
+        }
+    }
+
+    fn passive_state(studio: &Studio) -> Value {
+        let e = studio.engine.lock().unwrap();
+        json!({
+            "project":serde_json::to_value(&e.project).unwrap(),
+            "revision":e.revision,
+            "generation":e.project_load_generation,
+            "history":e.history(),
+            "log":e.log.iter().map(|crate::engine::LogEntry { tool, summary, ok, source, .. }| (tool, summary, *ok, source)).collect::<Vec<_>>(),
+            "transport":format!("{:?}", e.transport),
+            "player_seek":studio.player.seek_revision,
+            "player_position":studio.player.position_secs(),
+            "player_playing":studio.player.is_playing(),
+        })
+    }
+
+    fn frame(
+        ctx: &egui::Context,
+        studio: &mut Studio,
+        width: f32,
+        height: f32,
+        scale: f32,
+    ) -> (Observation, egui::FullOutput) {
+        let before = passive_state(studio);
+        let p = studio.engine.lock().unwrap().project.clone();
+        ctx.data_mut(|d| d.insert_temp(key(), Option::<Observation>::None));
+        let screen_rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height));
+        let mut input = egui::RawInput {
+            screen_rect: Some(screen_rect),
+            ..Default::default()
+        };
+        // Match the existing Inspector fixture: native DPI does not queue zoom
+        // or replace the first measured pass's supplied logical viewport.
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .expect("root viewport input")
+            .native_pixels_per_point = Some(scale);
+        let output = ctx.run(input, |ctx| {
+            assert_eq!(ctx.pixels_per_point(), scale, "actual native DPI");
+            assert_eq!(ctx.screen_rect(), screen_rect, "actual logical viewport");
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none())
+                .show(ctx, |ui| {
+                    ui.push_id("live-sequencer", |ui| studio.sequencer(ui, &p));
+                });
+        });
+        assert_eq!(
+            passive_state(studio),
+            before,
+            "passive sequencer emitted an edit or transport effect"
+        );
+        let observed = ctx
+            .data(|d| d.get_temp::<Option<Observation>>(key()))
+            .flatten()
+            .unwrap();
+        (observed, output)
+    }
+
+    fn text_shapes(shape: &egui::Shape, found: &mut Vec<egui::epaint::TextShape>) {
+        match shape {
+            egui::Shape::Text(text) => found.push(text.clone()),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    text_shapes(shape, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn has_hint(output: &egui::FullOutput) -> bool {
+        output.shapes.iter().any(|shape| {
+            let mut text = Vec::new();
+            text_shapes(&shape.shape, &mut text);
+            text.iter()
+                .any(|t| t.galley.text().contains("More steps to the right"))
+        })
+    }
+
+    fn assert_empty(o: &Observation, output: &egui::FullOutput, scale: f32) {
+        let tolerance = 1.0 / scale;
+        assert_eq!(o.requested, None);
+        assert!(!has_hint(output));
+        assert!(o.rows.is_empty());
+        assert!((o.content.x - o.viewport.width()).max(0.0) <= tolerance);
+        assert!(o.offset.x.abs() <= tolerance && o.offset.y.abs() <= tolerance);
+        assert!((o.content.y - channel_rack::RACK_RULER_H).abs() <= tolerance);
+        assert!(o.end.y >= o.origin.y + channel_rack::RACK_RULER_H);
+        // First-frame placement matters independently of the post-show offset.
+        assert!(
+            (o.origin.x - o.viewport.left()).abs() <= tolerance,
+            "ruler painted with stale horizontal offset before end-of-show clamp"
+        );
+        assert!(
+            (o.origin.y - o.viewport.top()).abs() <= tolerance,
+            "ruler painted with stale vertical offset before end-of-show clamp"
+        );
+        assert!(o.clip.intersect(o.viewport).is_positive());
+    }
+
+    #[test]
+    fn live_empty_rack_uses_negotiated_viewport_at_scales_styles_and_lengths() {
+        for scale in [1.0, 2.0] {
+            for enlarged in [false, true] {
+                for bars in [1, 4, 64] {
+                    let ctx = egui::Context::default();
+
+                    if enlarged {
+                        let mut style = (*ctx.style()).clone();
+                        style
+                            .text_styles
+                            .insert(egui::TextStyle::Body, FontId::proportional(20.0));
+                        style
+                            .text_styles
+                            .insert(egui::TextStyle::Button, FontId::proportional(22.0));
+                        style.spacing.button_padding = Vec2::new(7.0, 7.0);
+                        style.spacing.interact_size.y = 32.0;
+                        ctx.set_style(style);
+                    }
+                    let mut studio = studio(&ctx, bars, 0);
+                    assert_eq!(
+                        studio.engine.lock().unwrap().project.patterns[0].steps(),
+                        bars * 16
+                    );
+                    for width in [420.0, 560.0, 820.0, 1180.0] {
+                        for _ in 0..3 {
+                            let (o, output) = frame(&ctx, &mut studio, width, 600.0, scale);
+                            assert_empty(&o, &output, scale);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn live_populated_rows_keep_old_width_and_last_step_geometry() {
+        for scale in [1.0, 2.0] {
+            for bars in [1, 4, 64] {
+                let ctx = egui::Context::default();
+
+                let mut studio = studio(&ctx, bars, 2);
+                for width in [420.0, 560.0, 820.0, 1180.0] {
+                    let (o, output) = frame(&ctx, &mut studio, width, 600.0, scale);
+                    let steps = (bars * 16) as usize;
+                    assert_eq!(
+                        o.requested,
+                        Some(channel_rack::rack_content_width(width, steps))
+                    );
+                    assert_eq!(has_hint(&output), o.requested.unwrap() > width);
+                    assert_eq!(o.rows.len(), 2);
+                    for row in &o.rows {
+                        assert!(row.cell >= 12.0);
+                        assert_eq!(
+                            *row,
+                            channel_rack::RackRow::layout(row.row, row.cell, steps)
+                        );
+                        assert!(row.step_rect(steps - 1).right() <= row.steps.right());
+                    }
+                    let mut state = egui::scroll_area::State::load(&ctx, o.id).unwrap();
+                    state.offset.x = (o.content.x - o.viewport.width()).max(0.0);
+                    state.store(&ctx, o.id);
+                    let (right, _) = frame(&ctx, &mut studio, width, 600.0, scale);
+                    assert_eq!(right.id, o.id);
+                    let last = right.rows[0].step_rect(steps - 1);
+                    assert!(right.viewport.contains(last.center()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn live_same_context_first_empty_snapshot_must_not_paint_shifted_ruler() {
+        for scale in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+
+            let mut studio = studio(&ctx, 64, 0);
+            let (empty, output) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert_empty(&empty, &output, scale);
+            studio
+                .engine
+                .lock()
+                .unwrap()
+                .call("add_track", &json!({"name":"first","preset":"kick"}))
+                .unwrap();
+            let (first, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert_eq!(first.id, empty.id);
+            assert!(first.requested.is_some() && first.grew && !first.pending);
+            assert!(first.rows[0].cell >= 12.0);
+            let mut state = egui::scroll_area::State::load(&ctx, first.id).unwrap();
+            state.offset.x = first.content.x - first.viewport.width();
+            assert!(state.offset.x > 1000.0);
+            state.store(&ctx, first.id);
+            studio
+                .engine
+                .lock()
+                .unwrap()
+                .call("remove_track", &json!({"track":"first"}))
+                .unwrap();
+            let (removed, output) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert_eq!(removed.id, first.id);
+            assert!(removed.pending && !removed.grew);
+            assert_empty(&removed, &output, scale);
+            let (settled, output) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert!(!settled.pending);
+            assert_empty(&settled, &output, scale);
+        }
+    }
+
+    #[test]
+    fn live_empty_transition_resets_both_axes_with_and_without_pending() {
+        for scale in [1.0, 2.0] {
+            for consume_pending in [false, true] {
+                for retained in [Vec2::ZERO, Vec2::new(4096.0, 2048.0)] {
+                    let ctx = egui::Context::default();
+
+                    let mut studio = studio(&ctx, 64, 0);
+                    let (empty, output) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+                    assert_empty(&empty, &output, scale);
+                    studio
+                        .engine
+                        .lock()
+                        .unwrap()
+                        .call("add_track", &json!({"name":"first","preset":"kick"}))
+                        .unwrap();
+                    let (mut first, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+                    assert!(first.grew && !first.pending);
+                    assert_eq!(first.id, empty.id);
+                    if consume_pending {
+                        let (consumed, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+                        assert!(consumed.pending && !consumed.grew);
+                        first = consumed;
+                    }
+                    let mut state = egui::scroll_area::State::load(&ctx, first.id).unwrap();
+                    state.offset = retained;
+                    state.store(&ctx, first.id);
+                    studio
+                        .engine
+                        .lock()
+                        .unwrap()
+                        .call("remove_track", &json!({"track":"first"}))
+                        .unwrap();
+                    let (removed, output) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+                    assert_eq!(removed.id, empty.id);
+                    assert_eq!(removed.pending, !consume_pending);
+                    assert!(!removed.grew);
+                    assert_empty(&removed, &output, scale);
+                    let (settled, output) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+                    assert_eq!(settled.id, empty.id);
+                    assert!(!settled.pending && !settled.grew);
+                    assert_empty(&settled, &output, scale);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn live_populated_pending_keeps_pre_layout_end_request_and_final_clamp() {
+        for scale in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+
+            let mut studio = studio(&ctx, 64, 24);
+            let (before, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            studio
+                .engine
+                .lock()
+                .unwrap()
+                .call("add_track", &json!({"name":"last","preset":"kick"}))
+                .unwrap();
+            let (grew, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert!(grew.grew && !grew.pending);
+            let mut state = egui::scroll_area::State::load(&ctx, grew.id).unwrap();
+            state.offset.x = 123.0;
+            state.store(&ctx, grew.id);
+            let (pending, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert_eq!(pending.id, before.id);
+            assert!(pending.pending && !pending.grew);
+            assert_eq!(pending.rows.len(), 25);
+            assert_eq!(pending.requested, grew.requested);
+            let tolerance = 1.0 / scale;
+            assert!((pending.origin.x - (pending.viewport.left() - 123.0)).abs() <= tolerance);
+            assert!((pending.origin.y - (pending.viewport.top() - 1.0e6)).abs() <= tolerance);
+            let end = (pending.content.y - pending.viewport.height()).max(0.0);
+            assert!(end > 0.0);
+            assert!((pending.offset.y - end).abs() <= tolerance);
+            assert!((pending.offset.x - 123.0).abs() <= tolerance);
+            let (settled, _) = frame(&ctx, &mut studio, 560.0, 300.0, scale);
+            assert!(!settled.pending && !settled.grew);
+            assert_eq!(settled.id, before.id);
+            assert!(
+                (settled.origin.y - (settled.viewport.top() - settled.offset.y)).abs() <= tolerance
+            );
+        }
+    }
+
+    #[test]
+    fn live_rack_bars_are_absent_only_when_trackless_on_the_first_pass() {
+        for scale in [1.0, 2.0] {
+            for scroll in [
+                egui::style::ScrollStyle::floating(),
+                egui::style::ScrollStyle::solid(),
+                egui::style::ScrollStyle::thin(),
+            ] {
+                for bars in [1, 4, 64] {
+                    for tracks in [0, 2] {
+                        let ctx = egui::Context::default();
+                        let mut style = (*ctx.style()).clone();
+                        style.spacing.scroll = scroll;
+                        ctx.set_style(style);
+                        let mut studio = studio(&ctx, bars, tracks);
+                        // First supplied viewport is measured, then resized.
+                        for width in [420.0, 820.0] {
+                            let (o, output) = frame(&ctx, &mut studio, width, 600.0, scale);
+                            for axis in [0_usize, 1] {
+                                assert_eq!(
+                                    ctx.read_response(o.id.with(axis)).is_some(),
+                                    tracks != 0,
+                                    "bar response at scale {scale}, bars {bars}, tracks {tracks}, width {width}"
+                                );
+                            }
+                            if tracks == 0 {
+                                assert_empty(&o, &output, scale);
+                                let stored = egui::scroll_area::State::load(&ctx, o.id).unwrap();
+                                assert_eq!(stored.offset, Vec2::ZERO);
+                                assert_eq!(stored.velocity(), Vec2::ZERO);
+                                if bars == 4 && width == 820.0 {
+                                    for label in ["1", "2", "3", "4"] {
+                                        assert!(output.shapes.iter().any(|shape| {
+                                            let egui::Shape::Text(text) = &shape.shape else {
+                                                return false;
+                                            };
+                                            text.galley.text() == label
+                                                && text.pos.y >= o.origin.y
+                                                && text.pos.y < o.end.y
+                                                && text.pos.x >= o.viewport.left()
+                                                && text.pos.x + text.galley.size().x
+                                                    <= o.viewport.right()
+                                        }));
+                                    }
+                                }
+                            } else {
+                                assert_eq!(o.rows.len(), tracks);
+                                assert_eq!(
+                                    o.requested,
+                                    Some(channel_rack::rack_content_width(
+                                        width,
+                                        (bars * 16) as usize
+                                    ))
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn velocity_passive_state(studio: &Studio) -> Value {
+        let mut value = passive_state(studio);
+        value["player_audition"] = json!(studio.player.auditioning());
+        value["player_launch_pending"] = json!(studio.player.launch_pending());
+        value["player_has_audio"] = json!(studio.player.has_audio());
+        value["render_pending"] = json!(
+            studio.rendering.is_some() || studio.render_job.is_some() || studio.live.is_some()
+        );
+        value
+    }
+
+    // These drive the same production seam as update, without ordinary render/audio polling.
+    fn velocity_frame(
+        ctx: &egui::Context,
+        studio: &mut Studio,
+        size: Vec2,
+        dpi: f32,
+        events: Vec<egui::Event>,
+    ) -> (Vec<shortcuts::Action>, egui::FullOutput) {
+        let p = studio.engine.lock().unwrap().project.clone();
+        let mut raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        };
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(dpi);
+        let mut actions = Vec::new();
+        let output = ctx.run(raw, |ctx| {
+            let active = studio.step_velocity.draft.is_some();
+            actions = studio.step_velocity_shortcuts(ctx, active);
+            for action in &actions {
+                studio.shortcut(*action, &p);
+            }
+            egui::CentralPanel::default().show(ctx, |ui| studio.sequencer(ui, &p));
+            let e = studio.engine.lock().unwrap();
+            studio
+                .step_velocity
+                .validate(&e, studio.selected, studio.pattern);
+        });
+        (actions, output)
+    }
+    fn velocity_frame_at(
+        ctx: &egui::Context,
+        studio: &mut Studio,
+        size: Vec2,
+        dpi: f32,
+        events: Vec<egui::Event>,
+        now: f64,
+        case: &str,
+    ) -> (Vec<shortcuts::Action>, egui::FullOutput) {
+        assert!(
+            now.is_finite() && now > ctx.input(|i| i.time),
+            "case={case} nonmonotonic time={now}"
+        );
+        let expected = step_velocity::tests::expected_keys(ctx, &events);
+        let supplied = events.clone();
+        let first_pass = ctx.cumulative_pass_nr();
+        let p = studio.engine.lock().unwrap().project.clone();
+        let mut raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            events,
+            time: Some(now),
+            ..Default::default()
+        };
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(dpi);
+        let mut actions = Vec::new();
+        let output = ctx.run(raw, |ctx| {
+            step_velocity::tests::input_trace(ctx, case, "before-shortcuts", ctx.cumulative_pass_nr());
+            assert_eq!(ctx.input(|i| i.time), now, "case={case}");
+            if ctx.cumulative_pass_nr() == first_pass {
+                let normalized = step_velocity::tests::normalized_keys(ctx);
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new("velocity-lifecycle-normalized"), normalized.clone()));
+                assert_eq!(normalized, expected, "case={case} supplied={supplied:?}");
+            }
+            let active = studio.step_velocity.draft.is_some();
+            let pass_actions = studio.step_velocity_shortcuts(ctx, active);
+            step_velocity::tests::input_trace(ctx, case, "after-shortcuts", ctx.cumulative_pass_nr());
+            eprintln!("case={case} pass={} time={now} active_at_start={active} draft_present={} actions={pass_actions:?} seek_revision={}", ctx.cumulative_pass_nr(), studio.step_velocity.draft.is_some(), studio.player.seek_revision);
+            for action in &pass_actions {
+                studio.shortcut(*action, &p);
+            }
+            actions.extend(pass_actions);
+            egui::CentralPanel::default().show(ctx, |ui| studio.sequencer(ui, &p));
+            let e = studio.engine.lock().unwrap();
+            studio
+                .step_velocity
+                .validate(&e, studio.selected, studio.pattern);
+        });
+        eprintln!(
+            "case={case} time={now} completed_passes={} cumulative_pass={}",
+            output.platform_output.num_completed_passes,
+            ctx.cumulative_pass_nr()
+        );
+        (actions, output)
+    }
+    fn velocity_normalized_keys(ctx: &egui::Context) -> Vec<(egui::Key, bool, bool)> {
+        ctx.data(|d| d.get_temp(egui::Id::new("velocity-lifecycle-normalized")))
+            .unwrap()
+    }
+    fn velocity_reveal_trace(ctx: &egui::Context, case: &str, phase: &str) {
+        step_velocity::tests::reveal_trace(ctx, case, phase, "entry");
+        let observed = ctx
+            .data(|d| d.get_temp::<Option<Observation>>(key()))
+            .flatten()
+            .unwrap();
+        assert_eq!(
+            observed.pass,
+            ctx.cumulative_pass_nr() - 1,
+            "case={case} phase={phase} stale rack output"
+        );
+        let scroll = egui::scroll_area::State::load(ctx, observed.id).unwrap();
+        eprintln!("case={case} phase={phase} pass={} time={} rack_id={:?} offset={:?} stored_offset={:?} content_size={:?} inner_rect={:?} clip={:?}",
+            ctx.cumulative_pass_nr() - 1, ctx.input(|i| i.time), observed.id, observed.offset,
+            scroll.offset, observed.content, observed.viewport, observed.clip);
+    }
+    fn velocity_response(ctx: &egui::Context, name: &str) -> egui::Response {
+        let rows = step_velocity::tests::responses(ctx);
+        let (pass, _, response) = rows.iter().rev().find(|(_, n, _)| n == name).expect(name);
+        assert_eq!(*pass, ctx.cumulative_pass_nr() - 1);
+        response.clone()
+    }
+    fn velocity_studio(ctx: &egui::Context) -> Studio {
+        let s = studio(ctx, 4, 0);
+        s.engine.lock().unwrap().project = step_velocity::tests::project();
+        s
+    }
+    #[test]
+    fn velocity_production_first_entry_activation_and_closing_shortcut_frames() {
+        for dpi in [1.0, 2.0] {
+            for key in [egui::Key::Space, egui::Key::Enter] {
+                let ctx = egui::Context::default();
+                let mut s = velocity_studio(&ctx);
+                let size = Vec2::new(620.0, 680.0);
+                let case = format!("Home lifecycle dpi={dpi} activation={key:?}");
+                let d = f64::from(egui::RawInput::default().predicted_dt);
+                velocity_frame_at(&ctx, &mut s, size, dpi, vec![], d, &case);
+                velocity_frame_at(&ctx, &mut s, size, dpi, vec![], 2.0 * d, &case);
+                let entry = velocity_response(&ctx, "entry");
+                ctx.memory_mut(|m| m.request_focus(entry.id));
+                let before = velocity_passive_state(&s);
+                let (actions, _) = velocity_frame_at(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key(key, egui::Modifiers::NONE)],
+                    3.0 * d,
+                    &case,
+                );
+                assert!(actions.is_empty());
+                assert!(s.step_velocity.draft.is_some());
+                assert_eq!(velocity_passive_state(&s), before);
+                velocity_frame_at(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key_up(key)],
+                    4.0 * d,
+                    &case,
+                );
+                let (actions, _) = velocity_frame_at(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![
+                        step_velocity::tests::key(egui::Key::Escape, egui::Modifiers::NONE),
+                        step_velocity::tests::key(egui::Key::Home, egui::Modifiers::NONE),
+                    ],
+                    5.0 * d,
+                    &case,
+                );
+                assert!(actions.is_empty());
+                assert!(s.step_velocity.draft.is_none());
+                assert_eq!(velocity_passive_state(&s), before);
+                // Next frame, outside the editor, the ordinary seek binding still works.
+                ctx.memory_mut(|m| m.surrender_focus(entry.id));
+                let seek = s.player.seek_revision;
+                assert!(ctx.input(|i| i.key_down(egui::Key::Home)));
+                let (held_actions, _) = velocity_frame_at(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key(
+                        egui::Key::Home,
+                        egui::Modifiers::NONE,
+                    )],
+                    6.0 * d,
+                    &format!("{case} held Home"),
+                );
+                assert!(velocity_normalized_keys(&ctx).contains(&(egui::Key::Home, true, true)));
+                assert!(!held_actions.contains(&shortcuts::Action::SeekStart));
+                assert_eq!(s.player.seek_revision, seek);
+                let (actions, _) = velocity_frame_at(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![
+                        step_velocity::tests::key_up(egui::Key::Escape),
+                        step_velocity::tests::key_up(egui::Key::Home),
+                        step_velocity::tests::key(egui::Key::Home, egui::Modifiers::NONE),
+                    ],
+                    7.0 * d,
+                    &format!("{case} released then fresh Home"),
+                );
+                assert!(velocity_normalized_keys(&ctx).contains(&(egui::Key::Home, false, false)));
+                assert!(velocity_normalized_keys(&ctx).contains(&(egui::Key::Home, true, false)));
+                assert!(actions.contains(&shortcuts::Action::SeekStart));
+                assert_eq!(s.player.seek_revision, seek + 1);
+            }
+        }
+    }
+    #[test]
+    fn velocity_production_pointer_open_type_enter_tab_apply_and_one_edit() {
+        for dpi in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+            let mut s = velocity_studio(&ctx);
+            let size = Vec2::new(620.0, 680.0);
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            let pos = velocity_response(&ctx, "entry").rect.center();
+            let before = velocity_passive_state(&s);
+            velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                dpi,
+                step_velocity::tests::pointer(pos, true),
+            );
+            velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                dpi,
+                step_velocity::tests::pointer(pos, false),
+            );
+            assert!(s.step_velocity.draft.is_some());
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            let (actions, _) = velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                dpi,
+                vec![
+                    egui::Event::Text("25".into()),
+                    step_velocity::tests::key(egui::Key::Enter, egui::Modifiers::NONE),
+                ],
+            );
+            assert!(actions.is_empty());
+            assert_eq!(velocity_passive_state(&s), before);
+            assert!(s.step_velocity.draft.is_some());
+            let (actions, _) = velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                dpi,
+                vec![step_velocity::tests::key(
+                    egui::Key::Tab,
+                    egui::Modifiers::NONE,
+                )],
+            );
+            assert!(actions.is_empty());
+            assert_eq!(velocity_passive_state(&s), before);
+            assert!(s.step_velocity.draft.is_some());
+            let apply = velocity_response(&ctx, "apply");
+            assert!(apply.enabled());
+            ctx.memory_mut(|m| m.request_focus(apply.id));
+            let revision = s.engine.lock().unwrap().revision;
+            let (actions, _) = velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                dpi,
+                vec![step_velocity::tests::key(
+                    egui::Key::Space,
+                    egui::Modifiers::NONE,
+                )],
+            );
+            assert!(actions.is_empty());
+            assert!(s.step_velocity.draft.is_none());
+            assert_eq!(s.engine.lock().unwrap().revision, revision + 1);
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            assert_eq!(s.engine.lock().unwrap().revision, revision + 1);
+            assert_eq!(
+                s.player.seek_revision,
+                before["player_seek"].as_u64().unwrap()
+            );
+            assert!(!s.player.auditioning());
+        }
+    }
+    #[test]
+    fn velocity_production_passive_keyboard_set_blur_and_selection_expiry() {
+        let ctx = egui::Context::default();
+        let mut s = velocity_studio(&ctx);
+        let size = Vec2::new(620.0, 680.0);
+        let p = s.engine.lock().unwrap().project.clone();
+        s.open_step_velocity(&p, 0);
+        velocity_frame(&ctx, &mut s, size, 1.0, vec![]);
+        let before = velocity_passive_state(&s);
+        for (key, mods) in [
+            (egui::Key::Space, egui::Modifiers::NONE),
+            (egui::Key::Home, egui::Modifiers::NONE),
+            (egui::Key::Delete, egui::Modifiers::NONE),
+            (egui::Key::Z, egui::Modifiers::CTRL),
+            (
+                egui::Key::Z,
+                egui::Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            (egui::Key::M, egui::Modifiers::NONE),
+            (egui::Key::S, egui::Modifiers::NONE),
+            (egui::Key::OpenBracket, egui::Modifiers::NONE),
+            (egui::Key::CloseBracket, egui::Modifiers::NONE),
+            (egui::Key::R, egui::Modifiers::COMMAND),
+        ] {
+            let (actions, _) = velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                1.0,
+                vec![step_velocity::tests::key(key, mods)],
+            );
+            assert!(actions.is_empty());
+            assert_eq!(velocity_passive_state(&s), before);
+        }
+        let (actions, _) = velocity_frame(
+            &ctx,
+            &mut s,
+            size,
+            1.0,
+            step_velocity::tests::pointer(egui::pos2(610.0, 670.0), true),
+        );
+        assert!(actions.is_empty());
+        assert!(s.step_velocity.draft.is_none());
+        assert_eq!(velocity_passive_state(&s), before);
+        s.open_step_velocity(&p, 0);
+        s.pattern = usize::MAX;
+        let _ = velocity_frame(&ctx, &mut s, size, 1.0, vec![]);
+        assert!(s.step_velocity.draft.is_none());
+    }
+    #[test]
+    fn velocity_production_disabled_apply_tab_reverse_and_cancel_shortcut_gate() {
+        for dpi in [1.0, 2.0] {
+            for text in ["", "invalid", "101"] {
+                let ctx = egui::Context::default();
+                let mut s = velocity_studio(&ctx);
+                let size = Vec2::new(620.0, 680.0);
+                let p = s.engine.lock().unwrap().project.clone();
+                s.open_step_velocity(&p, 0);
+                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                let before = velocity_passive_state(&s);
+                assert!(velocity_response(&ctx, "text").has_focus());
+                let (actions, _) = velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![
+                        egui::Event::Text(text.into()),
+                        step_velocity::tests::key(egui::Key::Enter, egui::Modifiers::NONE),
+                    ],
+                );
+                assert!(actions.is_empty());
+                assert!(s.step_velocity.draft.is_some());
+                assert!(!velocity_response(&ctx, "apply").enabled());
+                assert!(velocity_response(&ctx, "text").has_focus());
+                assert_eq!(velocity_passive_state(&s), before);
+                for _ in 0..2 {
+                    let (actions, _) = velocity_frame(
+                        &ctx,
+                        &mut s,
+                        size,
+                        dpi,
+                        vec![step_velocity::tests::key(
+                            egui::Key::Tab,
+                            egui::Modifiers::NONE,
+                        )],
+                    );
+                    assert!(actions.is_empty());
+                    assert!(s.step_velocity.draft.is_some());
+                    assert!(!velocity_response(&ctx, "apply").enabled());
+                    assert!(velocity_response(&ctx, "cancel").enabled());
+                    assert!(velocity_response(&ctx, "cancel").has_focus());
+                    assert_eq!(velocity_passive_state(&s), before);
+                    let (actions, _) = velocity_frame(
+                        &ctx,
+                        &mut s,
+                        size,
+                        dpi,
+                        vec![step_velocity::tests::key(
+                            egui::Key::Tab,
+                            egui::Modifiers::SHIFT,
+                        )],
+                    );
+                    assert!(actions.is_empty());
+                    assert!(s.step_velocity.draft.is_some());
+                    for _ in 0..2 {
+                        let (actions, _) = velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+                        assert!(actions.is_empty());
+                        assert!(s.step_velocity.draft.is_some());
+                        assert!(velocity_response(&ctx, "text").has_focus());
+                        assert_eq!(velocity_passive_state(&s), before);
+                    }
+                }
+                let (actions, _) = velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key(
+                        egui::Key::Tab,
+                        egui::Modifiers::NONE,
+                    )],
+                );
+                assert!(actions.is_empty());
+                assert!(s.step_velocity.draft.is_some());
+                assert!(velocity_response(&ctx, "cancel").has_focus());
+                let (actions, _) = velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![
+                        step_velocity::tests::key(egui::Key::Space, egui::Modifiers::NONE),
+                        step_velocity::tests::key(egui::Key::Home, egui::Modifiers::NONE),
+                    ],
+                );
+                assert!(actions.is_empty());
+                assert!(s.step_velocity.draft.is_none());
+                assert_eq!(velocity_passive_state(&s), before);
+            }
+        }
+    }
+
+    #[test]
+    fn velocity_footer_real_focus_reveals_both_axes_long_rack_and_trackless_omission() {
+        for dpi in [1.0, 2.0] {
+            for enlarged in [false, true] {
+                let ctx = egui::Context::default();
+                if enlarged {
+                    let mut style = (*ctx.style()).clone();
+                    for f in style.text_styles.values_mut() {
+                        f.size *= 1.3;
+                    }
+                    ctx.set_style(style);
+                }
+                let mut s = studio(&ctx, 64, 80);
+                let size = Vec2::new(460.0, 360.0);
+                let case = format!("footer dpi={dpi} enlarged={enlarged}");
+                let d = f64::from(egui::RawInput::default().predicted_dt);
+                let duration = step_velocity::tests::reveal_duration(&ctx);
+                velocity_frame_at(&ctx, &mut s, size, dpi, vec![], 1.0 * d, &case);
+                velocity_frame_at(&ctx, &mut s, size, dpi, vec![], 2.0 * d, &case);
+                let rows = step_velocity::tests::responses(&ctx);
+                let (_, _, entry) = rows.iter().rev().find(|(_, n, _)| n == "entry").unwrap();
+                let observed = ctx
+                    .data(|d| d.get_temp::<Option<Observation>>(key()))
+                    .flatten()
+                    .unwrap();
+                let mut scroll = egui::scroll_area::State::load(&ctx, observed.id).unwrap();
+                scroll.offset.x = 900.0;
+                scroll.store(&ctx, observed.id);
+                velocity_frame_at(&ctx, &mut s, size, dpi, vec![], 3.0 * d, &case);
+                // Keys precede the actual melodic lane on row 79. Traverse both.
+                let keys = velocity_response(&ctx, "rack-keys-79");
+                let entry_id = entry.id;
+                ctx.memory_mut(|m| m.request_focus(keys.id));
+                velocity_frame_at(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key(
+                        egui::Key::Tab,
+                        egui::Modifiers::NONE,
+                    )],
+                    4.0 * d,
+                    &case,
+                );
+                let lane = velocity_response(&ctx, "rack-lane-79");
+                assert!(lane.enabled());
+                assert!(lane.sense.click && lane.sense.focusable);
+                assert_ne!(lane.id, keys.id);
+                assert_ne!(lane.id, entry_id);
+                assert!(lane.has_focus());
+                assert_eq!(ctx.memory(|m| m.focused()), Some(lane.id));
+                let current = ctx
+                    .data(|d| d.get_temp::<Option<Observation>>(key()))
+                    .flatten()
+                    .unwrap();
+                assert_eq!(lane.rect, current.rows[79].steps);
+                velocity_frame_at(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![
+                        step_velocity::tests::key_up(egui::Key::Tab),
+                        step_velocity::tests::key(egui::Key::Tab, egui::Modifiers::NONE),
+                    ],
+                    5.0 * d,
+                    &case,
+                );
+                assert_eq!(ctx.memory(|m| m.focused()), Some(entry_id));
+                let t0 = 5.0 * d;
+                velocity_reveal_trace(&ctx, &case, "initiating");
+                let deadline = t0 + duration;
+                velocity_frame_at(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![step_velocity::tests::key_up(egui::Key::Tab)],
+                    deadline,
+                    &case,
+                );
+                velocity_reveal_trace(&ctx, &case, "configured deadline");
+                let deadline_offset = ctx
+                    .data(|d| d.get_temp::<Option<Observation>>(key()))
+                    .flatten()
+                    .unwrap()
+                    .offset;
+                let fresh_layout = deadline + d;
+                let (_, output) =
+                    velocity_frame_at(&ctx, &mut s, size, dpi, vec![], fresh_layout, &case);
+                velocity_reveal_trace(&ctx, &case, "fresh layout");
+                let fresh_offset = ctx
+                    .data(|d| d.get_temp::<Option<Observation>>(key()))
+                    .flatten()
+                    .unwrap()
+                    .offset;
+                assert_eq!(
+                    fresh_offset, deadline_offset,
+                    "case={case} offset changed after configured deadline; do not extend wait"
+                );
+                let entry = velocity_response(&ctx, "entry");
+                assert!(entry.has_focus());
+                assert!(entry.interact_rect.contains_rect(entry.rect));
+                assert!(output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()=="Step velocity..." && shape.clip_rect.expand(1.0/dpi).contains_rect(Rect::from_min_size(t.pos,t.galley.size())))));
+                let p = s.engine.lock().unwrap().project.clone();
+                s.engine.lock().unwrap().project.tracks.clear();
+                let pass = ctx.cumulative_pass_nr();
+                velocity_frame_at(&ctx, &mut s, size, dpi, vec![], fresh_layout + d, &case);
+                assert!(!step_velocity::tests::responses(&ctx)
+                    .iter()
+                    .any(|(stamp, n, _)| *stamp >= pass && n == "entry"));
+                assert!(!p.tracks.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn velocity_context_menu_keyboard_open_is_gated_on_its_first_activation_frame() {
+        for dpi in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+            let mut s = velocity_studio(&ctx);
+            let size = Vec2::new(800.0, 680.0);
+            {
+                let mut e = s.engine.lock().unwrap();
+                let mut t = e.project.tracks[0].clone();
+                t.name = "Menu owner".into();
+                t.id.clear();
+                e.project.tracks.push(t);
+                e.project.ensure_fx_ids();
+            }
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            let pos = velocity_response(&ctx, "rack-name-1").rect.center();
+            for pressed in [true, false] {
+                velocity_frame(
+                    &ctx,
+                    &mut s,
+                    size,
+                    dpi,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Secondary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            velocity_frame(&ctx, &mut s, size, dpi, vec![]);
+            let menu = velocity_response(&ctx, "velocity-menu-1");
+            ctx.memory_mut(|m| m.request_focus(menu.id));
+            let before = velocity_passive_state(&s);
+            let (actions, _) = velocity_frame(
+                &ctx,
+                &mut s,
+                size,
+                dpi,
+                vec![step_velocity::tests::key(
+                    egui::Key::Space,
+                    egui::Modifiers::NONE,
+                )],
+            );
+            assert!(actions.is_empty());
+            assert_eq!(s.selected, 1);
+            assert!(s.step_velocity.draft.is_some());
+            assert_eq!(velocity_passive_state(&s), before);
+        }
     }
 }

@@ -4,6 +4,11 @@ name: screenshots
 # `beatbox studio --screenshot` under xvfb-run when there is no display.
 on:
   workflow_dispatch:
+    inputs:
+      p0a_capture:
+        description: Bounded 24-cell P0A native appearance capture
+        type: boolean
+        default: false
   push:
     branches: [main]
 env:
@@ -12,10 +17,13 @@ env:
 jobs:
   shots:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.p0a_capture == true && 25 || 45 }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: initialize P0A diagnostics
+        if: ${{ always() && inputs.p0a_capture == true }}
+        run: mkdir -p shots && printf '%s\n' 'P0A capture not started; see workflow failure if no capture manifest.' > shots/p0a-preflight.txt
+      - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
       - name: system deps (GUI build + headless X)
         run: |
@@ -40,6 +48,7 @@ jobs:
               'run_id': os.environ.get('GITHUB_RUN_ID')},indent=2))
           PYPROV
       - name: produce demo beats (rich projects)
+        if: ${{ inputs.p0a_capture != true }}
         run: |
           mkdir -p demo
           ./target/release/beatbox call produce_track '{"brief":"dark desi hip-hop with vocal chops, dark plucks and a sliding 808, for a gully rap verse","genre":"desi_hiphop","bpm":92,"seed":21,"max_iterations":2,"out_dir":"demo/desi"}' > demo/desi.result.json
@@ -51,6 +60,7 @@ jobs:
           done
           ls -la demo
       - name: screenshots via the screenshot tool
+        if: ${{ inputs.p0a_capture != true }}
         run: |
           mkdir -p shots
           ok=0
@@ -78,6 +88,7 @@ jobs:
             test -s "shots/${SHOT_TAG}_${suffix}_melodic.png"
           done
       - name: tiny authored audio project (no additional producer run)
+        if: ${{ inputs.p0a_capture != true }}
         run: |
           mkdir -p shots/native-fixture
           python3 - <<'PYFIX'
@@ -101,6 +112,7 @@ jobs:
           call add_audio_clip '{"track":"Diagnostic signal","sample":"impulses","start_beat":0,"length_s":4}'
           sha256sum shots/native-fixture/* > shots/fixture-sha256.txt
       - name: tiny authored master-caption projects (existing JSON tools only)
+        if: ${{ inputs.p0a_capture != true }}
         run: |
           python3 - <<'PYCAPTIONFIX'
           import hashlib, json, os, subprocess
@@ -147,6 +159,7 @@ jobs:
           (folder/'fixture-sha256.json').write_text(json.dumps(hashes,indent=2))
           PYCAPTIONFIX
       - name: real native audio-check scenarios and exact manifest
+        if: ${{ inputs.p0a_capture != true }}
         run: |
           python3 - <<'PYNATIVE'
           import hashlib, json, os, shutil, struct, subprocess, wave, zlib
@@ -532,8 +545,17 @@ jobs:
           assert all(p.is_file() and p.stat().st_size>0 for p in required), 'exact required-file set incomplete'
           assert not failures, f'Native scenarios missing or invalid: {failures}'
           PYNATIVE
+      - name: bounded P0A native appearance
+        if: ${{ inputs.p0a_capture == true }}
+        run: python3 scripts/p0a_capture.py target/release/beatbox shots/p0a
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: ${{ always() && inputs.p0a_capture == true }}
+        with:
+          name: p0a-native-appearance
+          path: shots/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.p0a_capture != true }}
         with:
           name: screenshots
           path: shots/
