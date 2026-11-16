@@ -8079,10 +8079,54 @@ mod tests {
         }
         // Real workspace harness: same pre-global, DockArea/Viewer, finish order
         // as update, without native Frame, render pump or an audio launch.
+        // Observation-only copies: no Response acquisition or UI/state mutation.
+        // Fields are consumed by the failure-only Debug diagnostic below.
+        #[allow(dead_code)]
+        #[derive(Debug)]
+        struct PickerObservation {
+            phase: &'static str,
+            callback: usize,
+            viewport_full_id: u64,
+            cumulative_pass: u64,
+            open_list: bool,
+            picker_full_id: u64,
+            picker_layer: (egui::Order, u64),
+            area: Option<egui::containers::AreaState>,
+            source_derived_state_or_size_absent: bool,
+            visible_last_frame: bool,
+            is_visible: bool,
+            screen_rect: Rect,
+            time: f64,
+            raw_time: Option<f64>,
+            raw_screen_rect: Option<Rect>,
+            raw_focused: bool,
+            raw_event_phases: Vec<&'static str>,
+            // Original raw-layer order, including disabled rows; full IDs explicit.
+            picker_layer_rows: Vec<(u64, egui::Order, u64, egui::WidgetRect)>,
+            lifecycle_rows: Vec<PickerLifecycleObservation>,
+        }
+        #[allow(dead_code)]
+        #[derive(Debug)]
+        struct PickerLifecycleObservation {
+            captured_index: usize,
+            response_full_id: u64,
+            response_layer: (egui::Order, u64),
+            response_rect: Rect,
+            response_interact_rect: Rect,
+            response_enabled: bool,
+            response_sense: egui::Sense,
+            // Copied after the existing Response loop, still from this_pass.
+            raw_phase: &'static str,
+            raw: Option<egui::WidgetRect>,
+            raw_full_identity: Option<(u64, egui::Order, u64)>,
+            original_info: Option<egui::WidgetInfo>,
+            current_used_id: Option<Rect>,
+        }
         struct WorkspaceFrame {
             frame: Frame,
             widgets: Vec<(egui::Response, Option<egui::WidgetInfo>)>,
             finish_errors: Vec<String>,
+            picker_observations: Vec<PickerObservation>,
         }
         // UNRUN diagnostic only: observe this_pass/in-progress widget rectangles and
         // the real interaction snapshot without read_response. In egui 0.29.1,
@@ -8441,6 +8485,61 @@ mod tests {
             let mut controls = Vec::new();
             let mut widgets = Vec::new();
             let mut finish_errors = Vec::new();
+            let mut picker_observations = Vec::new();
+            // Window::new derives this ID from its title. Observation only:
+            // never assign it to a UI, load mutable state, or query a Response.
+            let picker_id = egui::Id::new("Open a project");
+            let picker_layer = egui::LayerId::new(egui::Order::Middle, picker_id);
+            let picker_snapshot = |ctx: &egui::Context, open_list, phase, callback| {
+                let area = egui::containers::AreaState::load(ctx, picker_id);
+                let (visible_last_frame, is_visible) = ctx.memory(|m| {
+                    (
+                        m.areas().visible_last_frame(&picker_layer),
+                        m.areas().is_visible(&picker_layer),
+                    )
+                });
+                // Context accessors lock internally: never nest them in input().
+                let viewport_full_id = ctx.viewport_id().0.value();
+                let cumulative_pass = ctx.cumulative_pass_nr();
+                ctx.input(|i| PickerObservation {
+                    phase,
+                    callback,
+                    viewport_full_id,
+                    cumulative_pass,
+                    open_list,
+                    picker_full_id: picker_id.value(),
+                    picker_layer: (picker_layer.order, picker_layer.id.value()),
+                    area,
+                    // This is a public branch-input inference, NOT Prepared.sizing_pass.
+                    source_derived_state_or_size_absent: area.is_none_or(|a| a.size.is_none()),
+                    visible_last_frame,
+                    is_visible,
+                    screen_rect: i.screen_rect(),
+                    time: i.time,
+                    raw_time: i.raw.time,
+                    raw_screen_rect: i.raw.screen_rect,
+                    raw_focused: i.raw.focused,
+                    // Classify raw input only; do not copy text/key/file payloads.
+                    raw_event_phases: i
+                        .raw
+                        .events
+                        .iter()
+                        .map(|e| match e {
+                            egui::Event::PointerMoved(_) => "PointerMoved",
+                            egui::Event::PointerButton { pressed: true, .. } => {
+                                "PointerButtonPress"
+                            }
+                            egui::Event::PointerButton { pressed: false, .. } => {
+                                "PointerButtonRelease"
+                            }
+                            egui::Event::PointerGone => "PointerGone",
+                            _ => "OtherPayloadOmitted",
+                        })
+                        .collect(),
+                    picker_layer_rows: Vec::new(),
+                    lifecycle_rows: Vec::new(),
+                })
+            };
             let mut placement_callbacks = 0_usize;
             let output = ctx.run(raw, |ctx| {
                 if let Some((_, Some(_))) = intended {
@@ -8458,7 +8557,14 @@ mod tests {
                     "discard must retain the explicit real-cycle timestamp"
                 );
                 trace_workspace_pointer(ctx, &state, "before_lifecycle_prepare");
+                let picker_callback = picker_observations.len() / 3;
+                picker_observations.push(picker_snapshot(
+                    ctx, s.open_list, "before_lifecycle", picker_callback,
+                ));
                 s.project_lifecycle_ui(ctx);
+                picker_observations.push(picker_snapshot(
+                    ctx, s.open_list, "after_lifecycle", picker_callback,
+                ));
                 // confirmed-close candidate begin
                 let close_candidate = maybe_confirmed_close_candidate(ctx, s, &state, velocity);
                 // confirmed-close candidate end
@@ -8489,6 +8595,14 @@ mod tests {
                         .filter_map(|id| ctx.read_response(*id))
                         .collect();
                 }
+                let mut picker_capture = picker_snapshot(
+                    ctx, s.open_list, "existing_current_pass_raw_capture", picker_callback,
+                );
+                picker_capture.picker_layer_rows = ctx.viewport(|v| {
+                    v.this_pass.widgets.get_layer(picker_layer).map(|w| {
+                        (w.id.value(), w.layer_id.order, w.layer_id.id.value(), *w)
+                    }).collect()
+                });
                 let ids = ctx.viewport(|v| {
                     v.this_pass
                         .widgets
@@ -8501,6 +8615,30 @@ mod tests {
                     .into_iter()
                     .filter_map(|(id, info)| ctx.read_response(id).map(|r| (r, info)))
                     .collect();
+                // Only already-acquired tuples, in their original capture order.
+                // Raw lookup is this_pass only, not read_response/get_response.
+                picker_capture.lifecycle_rows = ctx.viewport(|v| {
+                    widgets.iter().enumerate().filter(|(_, (_, info))| {
+                        info.as_ref().and_then(|i| i.label.as_deref()) == Some("lifecycle")
+                    }).map(|(captured_index, (r, info))| {
+                        let raw = v.this_pass.widgets.get(r.id).copied();
+                        PickerLifecycleObservation {
+                            captured_index,
+                            response_full_id: r.id.value(),
+                            response_layer: (r.layer_id.order, r.layer_id.id.value()),
+                            response_rect: r.rect,
+                            response_interact_rect: r.interact_rect,
+                            response_enabled: r.enabled(),
+                            response_sense: r.sense,
+                            raw_phase: "current_pass_after_existing_response_acquisition",
+                            raw,
+                            raw_full_identity: raw.map(|w| (w.id.value(), w.layer_id.order, w.layer_id.id.value())),
+                            original_info: info.clone(),
+                            current_used_id: v.this_pass.used_ids.get(&r.id).copied(),
+                        }
+                    }).collect()
+                });
+                picker_observations.push(picker_capture);
                 assert!(
                     widgets.iter().any(|(_, info)| info
                         .as_ref()
@@ -8648,6 +8786,7 @@ mod tests {
                 },
                 widgets,
                 finish_errors,
+                picker_observations,
             }
         }
         fn wf(
@@ -8674,6 +8813,9 @@ mod tests {
                         f.frame.output.platform_output.num_completed_passes,
                         f.frame.output.platform_output.request_discard_reasons,
                     );
+                    for observation in &f.picker_observations {
+                        eprintln!("ROTATE_PICKER_CAUSAL_OBSERVATION {observation:?}");
+                    }
                     for (r, info) in &f.widgets {
                         eprintln!(
                             "ROTATE_LABEL_CONTROL_WIDGET id={:?} layer_id={:?} rect={:?} interact_rect={:?} enabled={} sense={:?} type={:?} label={:?}",
