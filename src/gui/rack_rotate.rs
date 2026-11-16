@@ -8666,7 +8666,29 @@ mod tests {
                         && r.sense.click
                 })
                 .map(|(r, _)| r.clone())
-                .unwrap_or_else(|| panic!("missing actual enabled control {label}"))
+                .unwrap_or_else(|| {
+                    eprintln!(
+                        "ROTATE_LABEL_CONTROL_MISSING label={label:?} widgets={} finish_errors={:?} num_completed_passes={} request_discard_reasons={:?}",
+                        f.widgets.len(),
+                        f.finish_errors,
+                        f.frame.output.platform_output.num_completed_passes,
+                        f.frame.output.platform_output.request_discard_reasons,
+                    );
+                    for (r, info) in &f.widgets {
+                        eprintln!(
+                            "ROTATE_LABEL_CONTROL_WIDGET id={:?} layer_id={:?} rect={:?} interact_rect={:?} enabled={} sense={:?} type={:?} label={:?}",
+                            r.id,
+                            r.layer_id,
+                            r.rect,
+                            r.interact_rect,
+                            r.enabled(),
+                            r.sense,
+                            info.as_ref().map(|i| i.typ),
+                            info.as_ref().and_then(|i| i.label.as_deref()),
+                        );
+                    }
+                    panic!("missing actual enabled control {label}")
+                })
         }
         // The completed-pass Response names only the intended target. Prove
         // its liveness and geometry again from this pass before finish runs.
