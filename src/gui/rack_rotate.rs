@@ -8618,8 +8618,8 @@ mod tests {
                 // Only already-acquired tuples, in their original capture order.
                 // Raw lookup is this_pass only, not read_response/get_response.
                 picker_capture.lifecycle_rows = ctx.viewport(|v| {
-                    widgets.iter().enumerate().filter(|(_, (_, info))| {
-                        info.as_ref().and_then(|i| i.label.as_deref()) == Some("lifecycle")
+                    widgets.iter().enumerate().filter(|(_, (r, info))| {
+                        r.layer_id == picker_layer && info.as_ref().is_some_and(|i| i.typ == egui::WidgetType::Button && i.label.is_some())
                     }).map(|(captured_index, (r, info))| {
                         let raw = v.this_pass.widgets.get(r.id).copied();
                         PickerLifecycleObservation {
@@ -9115,12 +9115,306 @@ mod tests {
             );
             wf(ctx, s, pointer(point, false))
         }
+        // Finite test-harness initialization, not a production picker repair.
+        // No target is selected until the actual current capture is ready.
+        struct PickerSemanticSnapshot {
+            engine: RotationObservation,
+            player: (bool, u64, f64, f32, bool, String),
+            focus: Option<egui::Id>,
+            rotation: Value,
+            extra: Value,
+        }
+        fn picker_semantic_snapshot(
+            ctx: &egui::Context,
+            s: &super::super::super::Studio,
+        ) -> PickerSemanticSnapshot {
+            assert!(
+                s.open_list,
+                "real File > Open must already have opened the picker"
+            );
+            assert!(!ctx.input(|i| i.pointer.any_down()));
+            assert!(ctx.dragged_id().is_none());
+            assert_eq!(ctx.viewport_id(), egui::ViewportId::ROOT);
+            assert_eq!(ctx.pixels_per_point().to_bits(), 1.0_f32.to_bits());
+            // Idle-only eligibility avoids treating a natural playback clock or
+            // pending performance/audio command as initialization bookkeeping.
+            assert!(!s.player.is_playing() && !s.player.auditioning());
+            assert!(!s.player.launch_pending());
+            assert!(s.perf.is_none() && s.perf_next.is_none() && s.perf_rec.is_none());
+            assert!(!s.dragging && s.step_velocity.draft.is_none());
+            assert!(s.piano.drag.is_none() && s.piano.band.is_none());
+            let rotation = {
+                let state = rotation_state(ctx);
+                let state = state.lock().unwrap();
+                assert!(
+                    !state.active() && state.panel.is_none() && state.pending.is_none(),
+                    "picker preselection cannot own Rotate or a pending intent"
+                );
+                json!({"serial": state.serial, "controls": state.controls,
+                    "window_layer": state.window_layer})
+            };
+            let player = player_snapshot(s);
+            let focus = ctx.memory(|m| m.focused());
+            let e = s.engine.lock().unwrap();
+            assert!(!e.transport.playing && !e.transport.auditioning);
+            assert!(e.transport.position_s.is_finite());
+            assert!(e.transport.pending.is_empty() && e.transport.pending_audition.is_none());
+            assert!(e.transport.pending_launch.is_none() && e.transport.pending_notes.is_empty());
+            assert!(e.transport.perf_playing.is_none() && e.transport.perf_queued.is_none());
+            let inbox = e.midi.inbox.lock().unwrap();
+            assert!(inbox.is_empty(), "initialization cannot consume MIDI input");
+            assert!(e.midi.port.is_none() && !e.midi.record && e.midi.learn.is_none());
+            assert!(e.midi.quantize.is_finite() && e.midi.gate_s.is_finite());
+            let extra = json!({
+                "engine_identity": std::sync::Arc::as_ptr(&s.engine) as usize,
+                "midi_setup": crate::midi_in::snapshot(&e),
+                "midi_recent": e.midi.recent, "midi_port": e.midi.port,
+                "midi_inbox": &*inbox, "midi_learn": e.midi.learn,
+                "midi_record": e.midi.record,
+                "midi_quantize_bits": e.midi.quantize.to_bits(),
+                "midi_gate_bits": e.midi.gate_s.to_bits(),
+                "midi_track": e.midi.track,
+                "workdir": e.workdir,
+                "snapshots": e.snapshots.iter().map(|(n, v)|
+                    json!([n, v.note, v.revision, v.project])).collect::<Vec<_>>(),
+                "launch_pending": s.player.launch_pending(),
+                "player_device": s.player.device_name,
+                "has_audio": s.player.has_audio(),
+                "landing_bits": s.player.last_landing_secs().to_bits(),
+                "selection": [s.selected, s.pattern, s.view],
+                "piano": format!("{:?}", s.piano),
+                "clip": s.clip_sel, "auto": s.auto_sel, "note_editor": s.note_editor,
+                "marker": s.marker_name, "tempo_bits": s.tempo_edit_bpm.to_bits(),
+                "tempo_ramp": s.tempo_edit_ramp, "search": s.rail_search,
+                "toast": s.toast, "about": s.show_about, "routing": s.mixer_routing,
+                "frames": s.frames, "shot_requested": s.shot_requested,
+                "project_path": s.project_path, "saved_rev": s.saved_rev,
+                "seen_load": s.seen_project_load, "confirm_new": s.confirm_new,
+                "open_list": s.open_list, "pending_open": s.pending_open,
+                "quit_pending": s.quit_close.pending,
+                "quit_approved": s.quit_close.approved_once,
+                "popup_open": ctx.memory(|m| m.any_popup_open()),
+                "screen": ctx.screen_rect(), "dpi_bits": ctx.pixels_per_point().to_bits(),
+                "modifiers": ctx.input(|i| i.modifiers),
+            });
+            let engine = rotation_unchanged(&e);
+            PickerSemanticSnapshot {
+                engine,
+                player,
+                focus,
+                rotation,
+                extra,
+            }
+        }
+        fn assert_picker_semantics(
+            ctx: &egui::Context,
+            s: &super::super::super::Studio,
+            before: &PickerSemanticSnapshot,
+        ) {
+            let after = picker_semantic_snapshot(ctx, s);
+            assert_eq!(
+                after.extra, before.extra,
+                "picker changed semantic inputs/state"
+            );
+            assert_eq!(after.rotation, before.rotation);
+            assert_eq!(after.focus, before.focus, "no focus repair");
+            assert_rotation_unchanged(&s.engine.lock().unwrap(), &before.engine);
+            assert_player_editor_inert(s, &before.player);
+            // Window geometry/visibility, measurement/pass counters and egui
+            // transient registrations are deliberately not semantic equality.
+        }
+        fn picker_positive_area(a: &egui::containers::AreaState) {
+            let size = a.size.expect("Some AreaState without size is not eligible");
+            assert!(size.is_finite() && size.x > 0.0 && size.y > 0.0);
+            assert!(a.pivot_pos.is_some_and(|p| p.is_finite()));
+            assert!(a.rect().is_finite() && a.rect().is_positive());
+            assert!(a.interactable);
+            assert!(a.last_became_visible_at.is_none_or(|t| t.is_finite()));
+        }
+        fn picker_cycle<'a>(
+            f: &'a WorkspaceFrame,
+            label: &str,
+            previous_time: f64,
+        ) -> (&'a PickerObservation, bool) {
+            assert!(f.finish_errors.is_empty());
+            assert!(f.frame.actions.is_empty(), "picker cannot dispatch globals");
+            assert_eq!(f.frame.output.platform_output.num_completed_passes, 1);
+            assert!(f
+                .frame
+                .output
+                .platform_output
+                .request_discard_reasons
+                .is_empty());
+            assert_eq!(
+                f.picker_observations.len(),
+                3,
+                "exactly one callback required"
+            );
+            let before = &f.picker_observations[0];
+            let after = &f.picker_observations[1];
+            let capture = &f.picker_observations[2];
+            assert_eq!(
+                (before.phase, after.phase, capture.phase),
+                (
+                    "before_lifecycle",
+                    "after_lifecycle",
+                    "existing_current_pass_raw_capture"
+                )
+            );
+            let id = egui::Id::new("Open a project").value();
+            for o in [before, after, capture] {
+                assert_eq!(o.callback, 0);
+                assert_eq!(o.viewport_full_id, egui::ViewportId::ROOT.0.value());
+                assert_eq!(o.picker_full_id, id);
+                assert_eq!(o.picker_layer, (egui::Order::Middle, id));
+                assert!(o.open_list && o.raw_focused && o.raw_event_phases.is_empty());
+                assert_eq!(
+                    o.screen_rect,
+                    Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 1100.0))
+                );
+                assert_eq!(o.raw_screen_rect, Some(o.screen_rect));
+                assert!(o.time.is_finite());
+                assert_eq!(o.time.to_bits(), (previous_time + 1.0 / 30.0).to_bits());
+                assert_eq!(o.raw_time, Some(o.time));
+                assert_eq!(o.cumulative_pass, before.cumulative_pass);
+                assert_eq!(
+                    o.source_derived_state_or_size_absent,
+                    o.area.is_none_or(|a| a.size.is_none())
+                );
+            }
+            picker_positive_area(after.area.as_ref().expect("picker failed to measure"));
+            picker_positive_area(capture.area.as_ref().expect("picker lost measured state"));
+            assert_eq!(format!("{:?}", after.area), format!("{:?}", capture.area));
+            let initializing = before.area.is_none();
+            if let Some(a) = &before.area {
+                picker_positive_area(a);
+            }
+            let rows = capture
+                .lifecycle_rows
+                .iter()
+                .filter(|r| {
+                    r.original_info.as_ref().and_then(|i| i.label.as_deref()) == Some(label)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(rows.len(), 1, "actual unique exact picker row required");
+            let row = rows[0];
+            let info = row
+                .original_info
+                .as_ref()
+                .expect("original metadata required");
+            assert_eq!(info.typ, egui::WidgetType::Button);
+            let enabled = !initializing;
+            assert_eq!(
+                row.response_enabled, enabled,
+                "known-size disabled is fatal"
+            );
+            assert_eq!(info.enabled, enabled);
+            assert!(row.response_sense.click);
+            assert_eq!(row.response_layer, (egui::Order::Middle, id));
+            assert_eq!(
+                row.raw_phase,
+                "current_pass_after_existing_response_acquisition"
+            );
+            let raw = row.raw.as_ref().expect("current raw row required");
+            assert_eq!(
+                row.raw_full_identity,
+                Some((row.response_full_id, egui::Order::Middle, id))
+            );
+            assert_eq!(raw.id.value(), row.response_full_id);
+            assert_eq!(
+                (raw.layer_id.order, raw.layer_id.id.value()),
+                row.response_layer
+            );
+            assert_eq!(raw.enabled, enabled);
+            assert_eq!(raw.sense, row.response_sense);
+            assert_eq!(raw.rect, row.response_rect);
+            assert_eq!(raw.interact_rect, row.response_interact_rect);
+            assert_eq!(row.current_used_id, Some(raw.rect));
+            let matching = capture
+                .picker_layer_rows
+                .iter()
+                .filter(|(rid, _, _, _)| *rid == row.response_full_id)
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1);
+            assert_eq!((matching[0].1, matching[0].2), (egui::Order::Middle, id));
+            assert_eq!(&matching[0].3, raw);
+            let (response, original) = f.widgets.get(row.captured_index).expect("capture index");
+            assert_eq!(response.id, raw.id);
+            assert_eq!(response.layer_id, raw.layer_id);
+            assert_eq!(response.rect, raw.rect);
+            assert_eq!(response.interact_rect, raw.interact_rect);
+            assert_eq!(response.sense, raw.sense);
+            assert_eq!(response.enabled(), raw.enabled);
+            let original = original.as_ref().expect("original captured WidgetInfo");
+            assert_eq!(original.typ, info.typ);
+            assert_eq!(original.label, info.label);
+            assert_eq!(original.enabled, info.enabled);
+            // Reject an exact-label duplicate anywhere in the original capture,
+            // including a wrong layer that unchanged label_control might select.
+            assert_eq!(
+                f.widgets
+                    .iter()
+                    .filter(|(_, i)| i.as_ref().and_then(|i| i.label.as_deref()) == Some(label))
+                    .count(),
+                1
+            );
+            for rect in [raw.rect, raw.interact_rect] {
+                assert!(rect.is_finite() && rect.is_positive());
+                assert!(capture.screen_rect.contains_rect(rect));
+            }
+            let point = raw.interact_rect.center();
+            assert!(point.is_finite() && raw.rect.contains(point));
+            (before, initializing)
+        }
+        fn picker_preselection(
+            ctx: &egui::Context,
+            s: &mut super::super::super::Studio,
+            label: &str,
+        ) -> WorkspaceFrame {
+            let semantic = picker_semantic_snapshot(ctx, s);
+            let time = ctx.input(|i| i.time);
+            let pass = ctx.cumulative_pass_nr();
+            let f = wf(ctx, s, vec![]); // Original first empty cycle.
+            let (before, initializing) = picker_cycle(&f, label, time);
+            assert_eq!(before.cumulative_pass, pass);
+            assert_eq!(ctx.cumulative_pass_nr(), pass + 1);
+            assert_picker_semantics(ctx, s, &semantic);
+            if !initializing {
+                return f;
+            }
+            // Known-size returns above with zero additional cycles.
+            // Exact positive absent-state conjunction was validated above.
+            // No Response is selected/frozen from the disabled sizing cycle.
+            let measured = format!("{:?}", f.picker_observations[2].area);
+            let time = ctx.input(|i| i.time);
+            let f = wf(ctx, s, vec![]); // Sole additional ordinary empty cycle.
+            let (before, initializing) = picker_cycle(&f, label, time);
+            assert_eq!(before.cumulative_pass, pass + 1);
+            assert!(!initializing, "second cycle must start with measured state");
+            assert_eq!(
+                format!("{:?}", before.area),
+                measured,
+                "same measured state must survive to sole selection cycle"
+            );
+            assert_eq!(ctx.cumulative_pass_nr(), pass + 2);
+            assert_picker_semantics(ctx, s, &semantic);
+            f // Only now can unchanged label_control freeze the ready Response.
+        }
+
         fn click_label(
             ctx: &egui::Context,
             s: &mut super::super::super::Studio,
             label: &str,
         ) -> WorkspaceFrame {
-            let f = wf(ctx, s, vec![]);
+            let picker_row = s.open_list
+                && s.saved_projects()
+                    .iter()
+                    .any(|path| path.to_string_lossy().replace(".beatbox.json", "") == label);
+            let f = if picker_row {
+                picker_preselection(ctx, s, label)
+            } else {
+                wf(ctx, s, vec![])
+            };
             let r = label_control(&f, label);
             click_response(ctx, s, &r)
         }
