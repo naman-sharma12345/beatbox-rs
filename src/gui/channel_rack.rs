@@ -89,6 +89,8 @@ impl RackRow {
 pub struct RackSel {
     pub selected: usize,
     pub open_editor: bool,
+    pub open_step_velocity: Option<usize>,
+    pub step_velocity_entries: Vec<egui::Response>,
     pub rows: Vec<RackRow>,
 }
 
@@ -108,6 +110,8 @@ pub fn channel_rack(
 ) -> Vec<(&'static str, Value)> {
     let mut actions: Vec<(&'static str, Value)> = Vec::new();
     sel.rows.clear();
+    sel.open_step_velocity = None;
+    sel.step_velocity_entries.clear();
     let Some(pat) = p.patterns.get(pattern) else {
         return actions;
     };
@@ -285,8 +289,26 @@ pub fn channel_rack(
         if nr.clicked() {
             sel.selected = ti;
         }
+        #[cfg(test)]
+        super::step_velocity::tests::observe(ui.ctx().clone(), &format!("rack-name-{ti}"), &nr);
         let mut start_rename = nr.double_clicked();
         nr.context_menu(|ui| {
+            let response = ui.add_enabled(drum, egui::Button::new("Edit step velocity..."));
+            #[cfg(test)]
+            super::step_velocity::tests::observe(
+                ui.ctx().clone(),
+                &format!("velocity-menu-{ti}"),
+                &response,
+            );
+            sel.step_velocity_entries.push(response.clone());
+            if response.clicked() {
+                sel.selected = ti;
+                sel.open_step_velocity = Some(ti);
+                ui.close_menu();
+            }
+            if !drum {
+                ui.label(super::step_velocity::DRUM_ONLY);
+            }
             if ui.button("Rename").clicked() {
                 start_rename = true;
                 ui.close_menu();
@@ -295,7 +317,14 @@ pub fn channel_rack(
         if start_rename {
             ui.data_mut(|d| d.insert_temp(rid, (t.name.clone(), t.name.clone(), true)));
         }
-        if keys_button(ui, g.keys, keys_id, selected, color).clicked() {
+        let keys_response = keys_button(ui, g.keys, keys_id, selected, color);
+        #[cfg(test)]
+        super::step_velocity::tests::observe(
+            ui.ctx().clone(),
+            &format!("rack-keys-{ti}"),
+            &keys_response,
+        );
+        if keys_response.clicked() {
             sel.selected = ti;
             sel.open_editor = true;
         }
@@ -738,6 +767,208 @@ pub fn pattern_bar(
         }
     }
     actions
+}
+
+/// Populated-rack presentation only. Commands retain pattern_bar's arguments;
+/// rename/duplicate intents are dispatched by Studio under its existing owner.
+#[derive(Default)]
+pub struct CompactPatternResult {
+    pub actions: Vec<(&'static str, Value)>,
+    pub rename: Option<String>,
+    pub duplicate: bool,
+}
+
+pub fn compact_pattern_bar(
+    ui: &mut egui::Ui,
+    p: &Project,
+    current: &mut usize,
+    target: Option<(u32, u32)>,
+    pattern_rename: &mut Option<(String, String)>,
+) -> CompactPatternResult {
+    let mut result = CompactPatternResult::default();
+    let width = ui.available_width();
+    #[cfg(test)]
+    compact_pattern_tests::begin(ui.ctx());
+    #[cfg(test)]
+    compact_pattern_tests::begin_responses(ui.ctx());
+    let row = ui.horizontal_wrapped(|ui| {
+        // width() is only a minimum in egui 0.29.1. Retain the finite child
+        // and truncated text; diagnostics observe actual widget/wrapper growth.
+        let picker_width = width.min(100.0);
+        // Match ComboBox's content + padding and interaction minimum before
+        // the centered wrapping row allocates the selector's outer child.
+        let picker_spacing = ui.spacing();
+        let picker_text_width = picker_width
+            - 2.0 * picker_spacing.button_padding.x
+            - picker_spacing.icon_spacing
+            - picker_spacing.icon_width;
+        let picker_galley = egui::WidgetText::from(
+            p.patterns.get(*current).map(|q| q.name.as_str()).unwrap_or("Choose pattern"),
+        ).into_galley(ui, Some(egui::TextWrapMode::Truncate), picker_text_width, egui::TextStyle::Button);
+        let picker_height = (picker_galley.size().y.max(picker_spacing.icon_width)
+            + 2.0 * picker_spacing.button_padding.y)
+            .max(picker_spacing.interact_size.y);
+        #[cfg(test)]
+        compact_pattern_tests::trace_budget(ui, "selector", vec2(picker_width, picker_height),
+            p.patterns.get(*current).map(|q| q.name.as_str()).unwrap_or("Choose pattern"), true);
+        let picker = ui.allocate_ui_with_layout(
+            vec2(picker_width, picker_height), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                let picker_enabled = ui.is_enabled();
+                egui::ComboBox::from_id_salt("all-rack-patterns")
+                    .width(picker_width)
+                    .truncate()
+                    .selected_text(p.patterns.get(*current).map(|q| q.name.as_str()).unwrap_or("Choose pattern"))
+                    .show_ui(ui, |ui| {
+                        // Popup Areas do not inherit the owning Ui enabled state.
+                        if !picker_enabled { ui.disable(); }
+                        // The built-in vertical ScrollArea keeps every entry;
+                        // wrap full names instead of allowing an offscreen menu.
+                        ui.set_width(width.clamp(100.0, 320.0));
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                        for (i, pat) in p.patterns.iter().enumerate().filter(|(_, q)| !q.name.starts_with(crate::tools_fl::PL)) {
+                            let choice = ui.selectable_value(current, i, &pat.name).on_hover_text(format!("{}\nPattern ID: {}", pat.name, pat.id));
+                            #[cfg(test)]
+                            compact_pattern_tests::record(ui.ctx(), &format!("choice:{i}"), choice.rect);
+                            #[cfg(test)]
+                            compact_pattern_tests::record_response(ui.ctx(), &format!("choice:{i}"), &choice);
+                            let _ = choice;
+                        }
+                    }).response
+            },
+        );
+        #[cfg(test)]
+        compact_pattern_tests::trace_wrapper(ui, "selector-wrapper", &picker.response);
+        let picker = picker.inner;
+        #[cfg(test)]
+        compact_pattern_tests::record(ui.ctx(), "selector", picker.rect);
+        #[cfg(test)]
+        compact_pattern_tests::record_response(ui.ctx(), "selector", &picker);
+        if let Some(selected) = p.patterns.get(*current) {
+            picker.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), format!("Pattern: {}", selected.name)));
+            picker.on_hover_text(format!("{}\nPattern ID: {}\nChoose from all editable patterns", selected.name, selected.id));
+        }
+        if let Some(cur) = p.patterns.get(*current) {
+            let bars = cur.bars;
+            let new_end = (bars.saturating_sub(1) * cur.steps_per_bar()) as f32;
+            let shrink_blocked = cur.clips.values().any(|v| v.iter().any(|n| n.start >= new_end));
+            let minus = ui.add_enabled(bars > 1 && !shrink_blocked, egui::Button::new("\u{2212}"))
+                .on_hover_text(if shrink_blocked { "The last bar has notes. Clear them first (nothing is deleted for you)." } else { "Shorter pattern" });
+            #[cfg(test)]
+            compact_pattern_tests::record(ui.ctx(), "minus", minus.rect);
+            #[cfg(test)]
+            compact_pattern_tests::record_response(ui.ctx(), "minus", &minus);
+            if minus.clicked() {
+                result.actions.push(("set_pattern_length", json!({"pattern":cur.name,"bars":bars-1})));
+            }
+            // Pre-layout against the FULL row, not its trailing sliver. Passing
+            // this same galley to Label selects its normal atomic allocation:
+            // the parent wraps the whole widget before Label paints any glyphs.
+            let length_text = format!("{bars} bar{}", if bars == 1 { "" } else { "s" });
+            let length_galley = egui::WidgetText::from(length_text.as_str()).into_galley(
+                ui, Some(egui::TextWrapMode::Wrap), width, egui::TextStyle::Body,
+            );
+            #[cfg(test)]
+            compact_pattern_tests::trace_length(ui, &length_text, &length_galley);
+            let length = ui.add(egui::Label::new(length_galley));
+            #[cfg(test)]
+            compact_pattern_tests::record(ui.ctx(), "bars", length.rect);
+            #[cfg(test)]
+            compact_pattern_tests::record_response(ui.ctx(), "bars", &length);
+            let _ = length;
+            let plus = ui.add_enabled(bars < 64, egui::Button::new("+"))
+                .on_hover_text("Longer pattern: more steps to fill, and a longer loop");
+            #[cfg(test)]
+            compact_pattern_tests::record(ui.ctx(), "plus", plus.rect);
+            #[cfg(test)]
+            compact_pattern_tests::record_response(ui.ctx(), "plus", &plus);
+            if plus.clicked() {
+                result.actions.push(("set_pattern_length", json!({"pattern":cur.name,"bars":bars+1})));
+            }
+        }
+        let add = ui.add(egui::Button::new("New").wrap()).on_hover_text("New empty pattern, as long as the selected pattern");
+        #[cfg(test)]
+        compact_pattern_tests::record(ui.ctx(), "new", add.rect);
+        #[cfg(test)]
+        compact_pattern_tests::record_response(ui.ctx(), "new", &add);
+        if add.clicked() {
+            let bars = p.patterns.get(*current).map(|q| q.bars).unwrap_or(1).max(1);
+            result.actions.push(("add_pattern", json!({"name":new_pattern_name(p),"bars":bars})));
+            *current = p.patterns.len();
+        }
+        let selected = p.patterns.get(*current).filter(|q| !q.name.starts_with(crate::tools_fl::PL));
+        let send = ui.add_enabled(selected.is_some(), egui::Button::new("Send to song").wrap());
+        #[cfg(test)]
+        compact_pattern_tests::record(ui.ctx(), "send", send.rect);
+        #[cfg(test)]
+        compact_pattern_tests::record_response(ui.ctx(), "send", &send);
+        if let Some(pat) = selected {
+            let (lane, bar) = drop_spot(p, pat.bars, target);
+            if send.on_hover_text(format!("place {} on playlist track {} at bar {}", pat.name, lane+1, bar+1)).clicked() {
+                result.actions.push(("place_pattern", json!({"pattern":pat.name,"start_bar":bar,"lane":lane})));
+            }
+            let identity = format!("{}:{}", pat.id, pat.name);
+            if pattern_rename.as_ref().is_none_or(|v| v.0 != identity) {
+                *pattern_rename = Some((identity, pat.name.clone()));
+            }
+        }
+        #[cfg(test)]
+        compact_pattern_tests::trace_menu_budget(ui, width);
+        // Negotiate an atomic finite budget with the outer wrapping placer
+        // before a child scope can inherit only the trailing row sliver.
+        let menu_width = (egui::WidgetText::from("Pattern actions").into_galley(
+            ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button,
+        ).size().x + 2.0 * ui.spacing().button_padding.x).min(width);
+        let menu = ui.allocate_ui_with_layout(
+            vec2(menu_width, ui.spacing().interact_size.y),
+            egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            if selected.is_none() { ui.disable(); }
+            let management_enabled = ui.is_enabled();
+            egui::menu::menu_custom_button(ui, egui::Button::new("Pattern actions").wrap(), |ui| {
+                // Reapply the current owner state, including an inherited disable,
+                // before TextEdit can process focus/keyboard input in this Area.
+                if !management_enabled { ui.disable(); }
+                ui.set_width(width.clamp(100.0, 320.0));
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                if let Some(pat) = selected {
+                    ui.add(egui::Label::new(&pat.name).wrap());
+                    ui.label("Pattern name");
+                    let draft = &mut pattern_rename.as_mut().unwrap().1;
+                    let edit = ui.add(egui::TextEdit::singleline(draft).interactive(management_enabled).desired_width(ui.available_width()));
+                    #[cfg(test)]
+                    compact_pattern_tests::record(ui.ctx(), "draft", edit.rect);
+                    #[cfg(test)]
+                    compact_pattern_tests::record_response(ui.ctx(), "draft", &edit);
+                    let _ = edit;
+                    let rename = ui.add_enabled(!draft.trim().is_empty() && draft.trim()!=pat.name, egui::Button::new("Rename").wrap())
+                        .on_hover_text("Rename this pattern and its song/playlist references. Notes, stable IDs and timing stay unchanged. Undo restores.");
+                    #[cfg(test)]
+                    compact_pattern_tests::record(ui.ctx(), "rename", rename.rect);
+                    #[cfg(test)]
+                    compact_pattern_tests::record_response(ui.ctx(), "rename", &rename);
+                    if rename.clicked() { result.rename = Some(draft.trim().to_owned()); }
+                    let duplicate = ui.add(egui::Button::new("Duplicate pattern").wrap())
+                        .on_hover_text("Make an independent copy with the same notes and meter. Selects the copy for editing, without placing it in the song. Undo removes it.");
+                    #[cfg(test)]
+                    compact_pattern_tests::record(ui.ctx(), "duplicate", duplicate.rect);
+                    #[cfg(test)]
+                    compact_pattern_tests::record_response(ui.ctx(), "duplicate", &duplicate);
+                    result.duplicate = duplicate.clicked();
+                }
+            }).response
+        });
+        #[cfg(test)]
+        compact_pattern_tests::trace_wrapper(ui, "manage-wrapper", &menu.response);
+        let menu = menu.inner;
+        #[cfg(test)]
+        compact_pattern_tests::record(ui.ctx(), "manage", menu.rect);
+        #[cfg(test)]
+        compact_pattern_tests::record_response(ui.ctx(), "manage", &menu);
+        let _ = menu;
+    });
+    #[cfg(test)]
+    compact_pattern_tests::finish(ui.ctx(), row.response.rect);
+    let _ = row;
+    result
 }
 
 #[cfg(test)]
@@ -1283,5 +1514,965 @@ mod tests {
             .iter()
             .all(|(_, a)| a["vel_add"].as_f64().unwrap() < 0.0));
         assert_eq!(offset, 0.0, "the page scrolled under the wheel");
+    }
+}
+
+#[cfg(test)]
+mod compact_pattern_tests {
+    use super::*;
+    use egui::{Event, Modifiers, PointerButton};
+
+    #[derive(Clone)]
+    pub(super) struct Observation {
+        pub row: Rect,
+        pub controls: Vec<(String, Rect)>,
+    }
+
+    fn observation_key() -> egui::Id {
+        egui::Id::new("compact-pattern-header-current-pass")
+    }
+
+    pub(super) fn begin(ctx: &egui::Context) {
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                observation_key(),
+                Observation {
+                    row: Rect::NOTHING,
+                    controls: Vec::new(),
+                },
+            )
+        });
+    }
+
+    pub(super) fn record(ctx: &egui::Context, name: &str, rect: Rect) {
+        ctx.data_mut(|d| {
+            let mut o = d.get_temp::<Observation>(observation_key()).unwrap();
+            o.controls.push((name.to_owned(), rect));
+            d.insert_temp(observation_key(), o);
+        });
+    }
+
+    pub(super) fn finish(ctx: &egui::Context, row: Rect) {
+        ctx.data_mut(|d| {
+            let mut o = d.get_temp::<Observation>(observation_key()).unwrap();
+            o.row = row;
+            d.insert_temp(observation_key(), o);
+        });
+    }
+
+    fn fixture() -> Project {
+        let mut patterns: Vec<_> = (0..40)
+            .map(|i| {
+                let mut q = crate::project::Pattern::new(
+                    &format!("Variation {i}: extended chorus groove with bass fills"),
+                    4,
+                );
+                q.id = format!("pattern-{i}");
+                q
+            })
+            .collect();
+        patterns.push(crate::project::Pattern::new("pl:generated", 4));
+        Project {
+            patterns,
+            ..Project::default()
+        }
+    }
+
+    #[derive(Default)]
+    struct HeaderState {
+        current: usize,
+        draft: Option<(String, String)>,
+        time: usize,
+    }
+
+    fn header_frame(
+        ctx: &egui::Context,
+        p: &Project,
+        state: &mut HeaderState,
+        width: f32,
+        scale: f32,
+        events: Vec<Event>,
+    ) -> (CompactPatternResult, Observation, egui::FullOutput) {
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 2000.0));
+        let mut input = egui::RawInput {
+            screen_rect: Some(screen),
+            time: Some(5000.0 + state.time as f64 * 0.05),
+            events,
+            ..Default::default()
+        };
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(scale);
+        state.time += 1;
+        let mut result = CompactPatternResult::default();
+        let output = ctx.run(input, |ctx| {
+            assert_eq!(ctx.pixels_per_point(), scale);
+            assert_eq!(ctx.screen_rect(), screen);
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none())
+                .show(ctx, |ui| {
+                    result = compact_pattern_bar(ui, p, &mut state.current, None, &mut state.draft);
+                    trace_current_pass(ctx, width, scale);
+                });
+        });
+        let observed = ctx
+            .data(|d| d.get_temp::<Observation>(observation_key()))
+            .unwrap();
+        for shape in &output.shapes {
+            if let egui::Shape::Text(text) = &shape.shape {
+                eprintln!("compact paint width={width} dpi={scale} text={:?} pos={:?} size={:?} mesh_bound={:?} clip={:?} elided={}",
+                    text.galley.text(), text.pos, text.galley.size(),
+                    text.galley.mesh_bounds.translate(text.pos.to_vec2()), shape.clip_rect, text.galley.elided);
+            }
+        }
+        (result, observed, output)
+    }
+
+    fn control(o: &Observation, name: &str) -> Rect {
+        o.controls
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("missing {name}"))
+            .1
+    }
+
+    fn click_control(
+        ctx: &egui::Context,
+        p: &Project,
+        state: &mut HeaderState,
+        name: &str,
+    ) -> CompactPatternResult {
+        let (_, o, _) = header_frame(ctx, p, state, 580.0, 1.0, vec![]);
+        let at = control(&o, name).center();
+        let mut result = CompactPatternResult::default();
+        for events in [
+            vec![Event::PointerMoved(at)],
+            vec![Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::default(),
+            }],
+            vec![Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::default(),
+            }],
+        ] {
+            let (r, _, _) = header_frame(ctx, p, state, 580.0, 1.0, events);
+            result.actions.extend(r.actions);
+            if r.rename.is_some() {
+                result.rename = r.rename;
+            }
+            result.duplicate |= r.duplicate;
+        }
+        result
+    }
+
+    #[test]
+    fn compact_header_first_pass_widgets_and_paint_fit_native_dpi_and_styles() {
+        let p = fixture();
+        for scale in [1.0, 2.0] {
+            for enlarged in [false, true] {
+                for width in [100.0, 184.0, 286.0, 292.0, 320.0, 580.0, 1000.0] {
+                    let ctx = egui::Context::default();
+                    if enlarged {
+                        let mut style = (*ctx.style()).clone();
+                        style
+                            .text_styles
+                            .insert(egui::TextStyle::Body, FontId::proportional(20.0));
+                        style
+                            .text_styles
+                            .insert(egui::TextStyle::Button, FontId::proportional(22.0));
+                        style.spacing.button_padding = vec2(7.0, 7.0);
+                        style.spacing.interact_size.y = 32.0;
+                        ctx.set_style(style);
+                    }
+                    let mut state = HeaderState {
+                        current: 31,
+                        ..Default::default()
+                    };
+                    let (r, o, output) = header_frame(&ctx, &p, &mut state, width, scale, vec![]);
+                    assert!(r.actions.is_empty() && r.rename.is_none() && !r.duplicate);
+                    assert_eq!(state.current, 31);
+                    assert_eq!(
+                        state.draft.as_ref().unwrap().0,
+                        format!("{}:{}", p.patterns[31].id, p.patterns[31].name)
+                    );
+                    for (i, (_, rect)) in o.controls.iter().enumerate() {
+                        assert!(o.row.expand(1.0 / scale).contains_rect(*rect));
+                        assert!(rect.left() >= -1.0 / scale && rect.right() <= width + 1.0 / scale);
+                        for (_, other) in o.controls.iter().skip(i + 1) {
+                            assert!(
+                                !rect.intersect(*other).is_positive(),
+                                "overlap {rect:?} {other:?}"
+                            );
+                        }
+                    }
+                    for label in ["4 bars", "New", "Send to song", "Pattern actions"] {
+                        assert!(
+                            output.shapes.iter().any(|s| {
+                                let egui::Shape::Text(t) = &s.shape else {
+                                    return false;
+                                };
+                                t.galley.text() == label && !t.galley.elided
+                            }),
+                            "missing full label {label} at {width}"
+                        );
+                    }
+                    for s in &output.shapes {
+                        if let egui::Shape::Text(t) = &s.shape {
+                            let painted = Rect::from_min_size(t.pos, t.galley.size());
+                            assert!(s.clip_rect.expand(1.0 / scale).contains_rect(painted));
+                            assert!(o.row.expand(1.0 / scale).contains_rect(painted));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_header_reclaims_a_management_row_at_narrow_inspector_width() {
+        let p = fixture();
+        for scale in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+            let mut state = HeaderState::default();
+            let (_, compact, _) = header_frame(&ctx, &p, &mut state, 580.0, scale, vec![]);
+            let tallest = compact
+                .controls
+                .iter()
+                .map(|(_, r)| r.height())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                compact.row.height() <= tallest + 1.0 / scale,
+                "primary row wrapped at 580"
+            );
+            // Source-layout reference: unchanged production pattern_bar, followed
+            // by the baseline's visible management widgets. Not a native image.
+            let legacy_ctx = egui::Context::default();
+            let mut input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(580.0, 2000.0))),
+                time: Some(5000.0),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(scale);
+            let mut legacy_height = 0.0;
+            let _ = legacy_ctx.run(input, |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::none())
+                    .show(ctx, |ui| {
+                        let top = ui.next_widget_position().y;
+                        let mut current = 0;
+                        let mut geo = PatternBarGeo::default();
+                        let _ = pattern_bar(ui, &p, &mut current, None, &mut geo);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Pattern name");
+                            let mut draft = p.patterns[0].name.clone();
+                            ui.add(egui::TextEdit::singleline(&mut draft).desired_width(180.0));
+                            let _ = ui.add_enabled(false, egui::Button::new("Rename"));
+                            let _ = ui.button("Duplicate pattern");
+                        });
+                        legacy_height = ui.next_widget_position().y - top;
+                    });
+            });
+            assert!(
+                legacy_height - compact.row.height() >= 20.0,
+                "no material height gain"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_real_widgets_request_selection_length_new_send_and_management() {
+        let p = fixture();
+        let ctx = egui::Context::default();
+        let mut state = HeaderState::default();
+        assert!(click_control(&ctx, &p, &mut state, "selector")
+            .actions
+            .is_empty());
+        let (_, open, _) = header_frame(&ctx, &p, &mut state, 580.0, 1.0, vec![]);
+        assert!(open.controls.iter().any(|(n, _)| n == "choice:39"));
+        assert!(!open.controls.iter().any(|(n, _)| n == "choice:40"));
+        // A visible entry's real response, not a cached prior-pass response.
+        let chosen = click_control(&ctx, &p, &mut state, "choice:1");
+        assert!(chosen.actions.is_empty());
+        assert_eq!(state.current, 1);
+        let plus = click_control(&ctx, &p, &mut state, "plus");
+        assert_eq!(
+            plus.actions,
+            vec![(
+                "set_pattern_length",
+                json!({"pattern":p.patterns[1].name,"bars":5})
+            )]
+        );
+        let minus = click_control(&ctx, &p, &mut state, "minus");
+        assert_eq!(
+            minus.actions,
+            vec![(
+                "set_pattern_length",
+                json!({"pattern":p.patterns[1].name,"bars":3})
+            )]
+        );
+        let send = click_control(&ctx, &p, &mut state, "send");
+        assert_eq!(
+            send.actions,
+            vec![(
+                "place_pattern",
+                json!({"pattern":p.patterns[1].name,"start_bar":0,"lane":0})
+            )]
+        );
+        let _ = click_control(&ctx, &p, &mut state, "manage");
+        state.draft.as_mut().unwrap().1 = "Renamed variation".to_owned();
+        let rename = click_control(&ctx, &p, &mut state, "rename");
+        assert_eq!(rename.rename.as_deref(), Some("Renamed variation"));
+        let duplicate = click_control(&ctx, &p, &mut state, "duplicate");
+        assert!(duplicate.duplicate && duplicate.actions.is_empty());
+        // These are UI request assertions. Stable-id dispatch, independent copy
+        // and stale-snapshot return remain in Studio, not a fake engine log here.
+        let fresh_ctx = egui::Context::default();
+        let mut fresh = HeaderState::default();
+        let new = click_control(&fresh_ctx, &p, &mut fresh, "new");
+        assert_eq!(
+            new.actions,
+            vec![("add_pattern", json!({"name":"Pattern 1","bars":4}))]
+        );
+        assert_eq!(fresh.current, p.patterns.len());
+    }
+
+    // Diagnostic-only probes: no allocation, painting, response substitution,
+    // or wrapper insertion into the independent-control observation list.
+    pub(super) fn trace_budget(
+        ui: &egui::Ui,
+        name: &str,
+        requested: egui::Vec2,
+        text: &str,
+        selector: bool,
+    ) {
+        let natural = egui::WidgetText::from(text).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Button,
+        );
+        eprintln!("compact budget pass={} name={name} requested={requested:?} parent_cursor={:?} parent_max={:?} available_before={:?} clip={:?} natural_text_size={:?} icon_width={} icon_spacing={} button_padding={:?} selector={selector}; requested is not a hard cap; internal ComboBox content min_rect is not observed here",
+            ui.ctx().cumulative_pass_nr(), ui.cursor(), ui.max_rect(), ui.available_rect_before_wrap(), ui.clip_rect(),
+            natural.size(), ui.spacing().icon_width, ui.spacing().icon_spacing, ui.spacing().button_padding);
+    }
+
+    pub(super) fn trace_menu_budget(ui: &egui::Ui, width: f32) {
+        let measured = egui::WidgetText::from("Pattern actions").into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Button,
+        );
+        let requested = (measured.size().x + 2.0 * ui.spacing().button_padding.x).min(width);
+        trace_budget(
+            ui,
+            "manage",
+            vec2(requested, ui.spacing().interact_size.y),
+            "Pattern actions",
+            false,
+        );
+    }
+
+    pub(super) fn trace_wrapper(ui: &egui::Ui, tag: &str, response: &egui::Response) {
+        eprintln!("compact wrapper-only pass={} tag={tag} rect={:?} interact_rect={:?} clip={:?}; NOT an independent control",
+            ui.ctx().cumulative_pass_nr(), response.rect, response.interact_rect, ui.clip_rect());
+    }
+
+    pub(super) fn trace_length(ui: &egui::Ui, text: &str, atomic: &egui::Galley) {
+        // Reconstruct the old inline layout JOB only, from archive-bound Label
+        // source. This is a counterfactual probe, not an old real Response.
+        let mut old_job = egui::WidgetText::from(text).into_layout_job(
+            ui.style(),
+            egui::FontSelection::Default,
+            ui.text_valign(),
+        );
+        old_job.wrap.max_width = ui.available_width();
+        old_job.first_row_min_height = ui.cursor().height();
+        old_job.halign = egui::Align::Min;
+        old_job.justify = false;
+        if let Some(section) = old_job.sections.first_mut() {
+            section.leading_space = ui.available_width() - ui.available_size_before_wrap().x;
+        }
+        let old = ui.fonts(|fonts| fonts.layout_job(old_job));
+        let old_pos = pos2(ui.max_rect().left(), ui.cursor().top());
+        eprintln!("compact length-before pass={} cursor={:?} max={:?} available_before={:?} full_budget={} clip={:?} Body={:?}",
+            ui.ctx().cumulative_pass_nr(), ui.cursor(), ui.max_rect(), ui.available_rect_before_wrap(),
+            atomic.job.wrap.max_width, ui.clip_rect(), ui.style().text_styles.get(&egui::TextStyle::Body));
+        for (index, row) in old.rows.iter().enumerate() {
+            eprintln!("compact old-inline-JOB-PROBE row={index} rect={:?} mesh_bound={:?} origin={old_pos:?}; NO allocation or actual old response",
+                row.rect.translate(old_pos.to_vec2()), row.visuals.mesh_bounds.translate(old_pos.to_vec2()));
+        }
+        for (index, row) in atomic.rows.iter().enumerate() {
+            eprintln!("compact new-atomic-SAME-galley row={index} local_rect={:?} local_mesh_bound={:?} size={:?} elided={}; actual paint position follows in paint log",
+                row.rect, row.visuals.mesh_bounds, atomic.size(), atomic.elided);
+        }
+    }
+
+    fn trace_current_pass(ctx: &egui::Context, width: f32, scale: f32) {
+        let pass = ctx.cumulative_pass_nr();
+        let style = ctx.style();
+        let enlarged = style.text_styles.get(&egui::TextStyle::Body)
+            == Some(&FontId::proportional(20.0))
+            && style.text_styles.get(&egui::TextStyle::Button) == Some(&FontId::proportional(22.0));
+        let rows = ctx
+            .data(|d| d.get_temp::<Vec<(u64, String, egui::Response)>>(responses_key()))
+            .unwrap();
+        let observation = ctx
+            .data(|d| d.get_temp::<Observation>(observation_key()))
+            .unwrap();
+        eprintln!("compact case width={width} dpi={scale} enlarged={enlarged} pass={pass} row={:?} Body={:?} Button={:?} padding={:?}",
+            observation.row, style.text_styles.get(&egui::TextStyle::Body), style.text_styles.get(&egui::TextStyle::Button), style.spacing.button_padding);
+        for (stamp, name, response) in &rows {
+            eprintln!("compact real-response case=({width},{scale},{enlarged}) pass={pass} stamp={stamp} name={name} rect={:?} interact_rect={:?} id={:?} enabled={}",
+                response.rect, response.interact_rect, response.id, response.enabled());
+            assert_eq!(
+                *stamp, pass,
+                "diagnostic primary/popup response must belong to this ctx.run pass"
+            );
+        }
+        for (name, _) in &observation.controls {
+            assert!(
+                rows.iter().any(|(_, n, _)| n == name),
+                "missing real primary response {name}"
+            );
+        }
+        // Log every named/indexed pair before the untouched old assertions.
+        // No intersection, shrink, clipping, or substitution is done here.
+        for (i, (name, rect)) in observation.controls.iter().enumerate() {
+            eprintln!("compact control width={width} dpi={scale} enlarged={enlarged} pass={pass} index={i} name={name} rect={rect:?} row={:?}", observation.row);
+            for (j, (other_name, other)) in observation.controls.iter().enumerate().skip(i + 1) {
+                eprintln!("compact pair width={width} dpi={scale} enlarged={enlarged} pass={pass} i={i} name={name} rect={rect:?} j={j} other_name={other_name} other={other:?} row={:?}", observation.row);
+            }
+        }
+    }
+
+    fn responses_key() -> egui::Id {
+        egui::Id::new("compact-pattern-header-current-responses")
+    }
+
+    pub(super) fn begin_responses(ctx: &egui::Context) {
+        ctx.data_mut(|d| {
+            d.insert_temp(responses_key(), Vec::<(u64, String, egui::Response)>::new())
+        });
+    }
+
+    pub(super) fn record_response(ctx: &egui::Context, name: &str, response: &egui::Response) {
+        let pass = ctx.cumulative_pass_nr();
+        ctx.data_mut(|d| {
+            let mut rows = d
+                .get_temp::<Vec<(u64, String, egui::Response)>>(responses_key())
+                .unwrap();
+            rows.push((pass, name.to_owned(), response.clone()));
+            d.insert_temp(responses_key(), rows);
+        });
+    }
+
+    struct OwnerFrame {
+        result: CompactPatternResult,
+        observed: Observation,
+        responses: Vec<(String, egui::Response)>,
+    }
+
+    fn owner_frame(
+        ctx: &egui::Context,
+        p: &Project,
+        state: &mut HeaderState,
+        enabled: bool,
+        events: Vec<Event>,
+    ) -> OwnerFrame {
+        let mut result = CompactPatternResult::default();
+        let mut responses = Vec::new();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(580.0, 2000.0))),
+            time: Some(5000.0 + state.time as f64 * 0.05),
+            events,
+            ..Default::default()
+        };
+        state.time += 1;
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none())
+                .show(ctx, |ui| {
+                    if !enabled {
+                        ui.disable();
+                    }
+                    // The owner child inherits a disabled ancestor, with the same
+                    // ID path on every enabled/disabled frame.
+                    ui.scope(|ui| {
+                        result =
+                            compact_pattern_bar(ui, p, &mut state.current, None, &mut state.draft);
+                    });
+                    let rows = ctx
+                        .data(|d| d.get_temp::<Vec<(u64, String, egui::Response)>>(responses_key()))
+                        .unwrap();
+                    responses = rows
+                        .into_iter()
+                        .map(|(pass, name, response)| {
+                            assert_eq!(
+                                pass,
+                                ctx.cumulative_pass_nr(),
+                                "not a current-pass response"
+                            );
+                            (name, response)
+                        })
+                        .collect();
+                });
+        });
+        let observed = ctx
+            .data(|d| d.get_temp::<Observation>(observation_key()))
+            .unwrap();
+        OwnerFrame {
+            result,
+            observed,
+            responses,
+        }
+    }
+
+    fn actual_response<'a>(frame: &'a OwnerFrame, name: &str) -> &'a egui::Response {
+        &frame
+            .responses
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("missing current response {name}"))
+            .1
+    }
+
+    fn no_intents(frame: &OwnerFrame) {
+        assert!(frame.result.actions.is_empty());
+        assert!(frame.result.rename.is_none());
+        assert!(!frame.result.duplicate);
+    }
+
+    fn owner_click(
+        ctx: &egui::Context,
+        p: &Project,
+        state: &mut HeaderState,
+        enabled: bool,
+        name: &str,
+    ) -> OwnerFrame {
+        let settled = owner_frame(ctx, p, state, enabled, vec![]);
+        no_intents(&settled);
+        let at = control(&settled.observed, name).center();
+        let moved = owner_frame(ctx, p, state, enabled, vec![Event::PointerMoved(at)]);
+        no_intents(&moved);
+        let pressed = owner_frame(
+            ctx,
+            p,
+            state,
+            enabled,
+            vec![Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::default(),
+            }],
+        );
+        no_intents(&pressed);
+        owner_frame(
+            ctx,
+            p,
+            state,
+            enabled,
+            vec![Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::default(),
+            }],
+        )
+    }
+
+    #[test]
+    fn open_management_popup_inherits_current_disabled_owner_before_editing_or_requests() {
+        let p = fixture(); // Plain Project, no EnginePlayer or audio fixture.
+        let ctx = egui::Context::default();
+        let mut state = HeaderState::default();
+        no_intents(&owner_click(&ctx, &p, &mut state, true, "manage"));
+        // Finish the opening Area's sizing frame while still enabled.
+        let _ = owner_frame(&ctx, &p, &mut state, true, vec![]);
+        let ready = owner_frame(&ctx, &p, &mut state, true, vec![]);
+        assert!(actual_response(&ready, "draft").enabled());
+        let stable_id = actual_response(&ready, "draft").id;
+        state.draft.as_mut().unwrap().1 = "Preserved draft intent".to_owned();
+        let intended = state.draft.clone();
+        let focused = owner_click(&ctx, &p, &mut state, true, "draft");
+        no_intents(&focused);
+        assert!(
+            actual_response(&focused, "draft").has_focus(),
+            "keyboard precondition must be real focus"
+        );
+        // First disabled frame gets a real keyboard event while the TextEdit
+        // had focus. No prior-frame response lookup or forced memory focus oracle.
+        let blocked = owner_frame(
+            &ctx,
+            &p,
+            &mut state,
+            false,
+            vec![Event::Text("BLOCKED".to_owned())],
+        );
+        no_intents(&blocked);
+        assert_eq!(state.draft, intended);
+        assert_eq!(state.current, 0);
+        for name in ["draft", "rename", "duplicate"] {
+            assert!(!actual_response(&blocked, name).enabled());
+        }
+        let edit = actual_response(&blocked, "draft");
+        assert_eq!(edit.id, stable_id);
+        assert!(!edit.has_focus() && !edit.changed());
+        for name in ["rename", "duplicate", "draft"] {
+            let blocked = owner_click(&ctx, &p, &mut state, false, name);
+            no_intents(&blocked);
+            assert!(!actual_response(&blocked, name).enabled());
+            assert_eq!(actual_response(&blocked, "draft").id, stable_id);
+            assert_eq!(state.draft, intended);
+            assert_eq!(state.current, 0);
+        }
+        // Reenabling does not throw away the pending draft or retag the menu.
+        let resumed = owner_frame(&ctx, &p, &mut state, true, vec![]);
+        assert_eq!(actual_response(&resumed, "draft").id, stable_id);
+        assert!(actual_response(&resumed, "draft").enabled());
+        assert_eq!(state.draft, intended);
+        let rename = owner_click(&ctx, &p, &mut state, true, "rename");
+        assert!(actual_response(&rename, "rename").clicked());
+        assert_eq!(
+            rename.result.rename.as_deref(),
+            Some("Preserved draft intent")
+        );
+        assert!(rename.result.actions.is_empty() && !rename.result.duplicate);
+        let duplicate = owner_click(&ctx, &p, &mut state, true, "duplicate");
+        assert!(actual_response(&duplicate, "duplicate").clicked());
+        assert!(
+            duplicate.result.duplicate
+                && duplicate.result.rename.is_none()
+                && duplicate.result.actions.is_empty()
+        );
+        let focused = owner_click(&ctx, &p, &mut state, true, "draft");
+        assert!(actual_response(&focused, "draft").has_focus());
+        let edited = owner_frame(
+            &ctx,
+            &p,
+            &mut state,
+            true,
+            vec![Event::Text("RESUMED".to_owned())],
+        );
+        no_intents(&edited);
+        assert!(actual_response(&edited, "draft").changed());
+        assert!(state.draft.as_ref().unwrap().1.contains("RESUMED"));
+        // Primary-row controls remain owned by the disabled normal Ui too.
+        for name in ["minus", "plus", "new", "send", "manage", "selector"] {
+            let blocked = owner_click(&ctx, &p, &mut state, false, name);
+            no_intents(&blocked);
+            assert_eq!(state.current, 0);
+        }
+        // Intent assertions only: real Studio stable-ID dispatch is unchanged.
+    }
+
+    #[test]
+    fn open_selection_popup_cannot_change_identity_under_a_disabled_ancestor() {
+        let p = fixture();
+        let ctx = egui::Context::default();
+        let mut state = HeaderState::default();
+        no_intents(&owner_click(&ctx, &p, &mut state, true, "selector"));
+        let _ = owner_frame(&ctx, &p, &mut state, true, vec![]);
+        let ready = owner_frame(&ctx, &p, &mut state, true, vec![]);
+        assert!(actual_response(&ready, "choice:1").enabled());
+        let intended = state.draft.clone();
+        let blocked = owner_frame(&ctx, &p, &mut state, false, vec![]);
+        no_intents(&blocked);
+        assert!(!actual_response(&blocked, "choice:1").enabled());
+        let clicked = owner_click(&ctx, &p, &mut state, false, "choice:1");
+        no_intents(&clicked);
+        assert!(!actual_response(&clicked, "choice:1").enabled());
+        assert!(!actual_response(&clicked, "choice:1").clicked());
+        assert_eq!(state.current, 0);
+        assert_eq!(state.draft, intended);
+        // ComboBox's CloseOnClick may close even a disabled popup after the
+        // release. Reopen normally rather than assuming that lifecycle away.
+        let settled = owner_frame(&ctx, &p, &mut state, true, vec![]);
+        if !settled
+            .observed
+            .controls
+            .iter()
+            .any(|(n, _)| n == "choice:1")
+        {
+            no_intents(&owner_click(&ctx, &p, &mut state, true, "selector"));
+        }
+        let _ = owner_frame(&ctx, &p, &mut state, true, vec![]);
+        let resumed = owner_frame(&ctx, &p, &mut state, true, vec![]);
+        assert!(actual_response(&resumed, "choice:1").enabled());
+        let chosen = owner_click(&ctx, &p, &mut state, true, "choice:1");
+        no_intents(&chosen);
+        assert!(actual_response(&chosen, "choice:1").clicked());
+        assert_eq!(state.current, 1);
+        assert_eq!(
+            state.draft.as_ref().unwrap().0,
+            format!("{}:{}", p.patterns[1].id, p.patterns[1].name)
+        );
+        assert_eq!(state.draft.as_ref().unwrap().1, p.patterns[1].name);
+    }
+
+    #[test]
+    fn held_editor_selection_drag_cannot_edit_on_first_disabled_owner_frame() {
+        let p = fixture(); // Real Project and widgets, no EnginePlayer.
+        let ctx = egui::Context::default();
+        let mut state = HeaderState::default();
+        no_intents(&owner_click(&ctx, &p, &mut state, true, "manage"));
+        state.draft.as_mut().unwrap().1 = "Held drag selection draft".to_owned();
+        // Finish the Area sizing and settle the real editor before input.
+        no_intents(&owner_frame(&ctx, &p, &mut state, true, vec![]));
+        let ready = owner_frame(&ctx, &p, &mut state, true, vec![]);
+        no_intents(&ready);
+        let edit = actual_response(&ready, "draft");
+        assert!(edit.enabled());
+        let stable_id = edit.id;
+        let rect = edit.rect;
+        let start = pos2(rect.left() + rect.width() * 0.1, rect.center().y);
+        let end = pos2(rect.left() + rect.width() * 0.7, rect.center().y);
+        assert!(rect.contains(start) && rect.contains(end));
+        let intended = state.draft.clone();
+        no_intents(&owner_frame(
+            &ctx,
+            &p,
+            &mut state,
+            true,
+            vec![Event::PointerMoved(start)],
+        ));
+        let pressed = owner_frame(
+            &ctx,
+            &p,
+            &mut state,
+            true,
+            vec![Event::PointerButton {
+                pos: start,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::default(),
+            }],
+        );
+        no_intents(&pressed);
+        assert_eq!(actual_response(&pressed, "draft").id, stable_id);
+        assert!(actual_response(&pressed, "draft").has_focus());
+        assert!(ctx.input(|i| i.pointer.primary_down()));
+        let dragged = owner_frame(&ctx, &p, &mut state, true, vec![Event::PointerMoved(end)]);
+        no_intents(&dragged);
+        let edit = actual_response(&dragged, "draft");
+        assert_eq!(edit.id, stable_id);
+        assert!(edit.enabled() && edit.dragged() && edit.has_focus());
+        assert_eq!(ctx.dragged_id(), Some(stable_id));
+        assert!(ctx.is_being_dragged(stable_id));
+        assert!(ctx.input(|i| i.pointer.primary_down()));
+        let selection = egui::text_edit::TextEditState::load(&ctx, stable_id)
+            .unwrap()
+            .cursor
+            .char_range()
+            .unwrap();
+        assert_ne!(
+            selection.primary.index, selection.secondary.index,
+            "real pointer drag must select text"
+        );
+        assert_eq!(state.draft, intended);
+        // No release, Escape, forced focus or drag-state injection intervenes.
+        let blocked = owner_frame(
+            &ctx,
+            &p,
+            &mut state,
+            false,
+            vec![Event::Text("BLOCKED_HELD_DRAG".to_owned())],
+        );
+        no_intents(&blocked);
+        assert!(ctx.input(|i| i.pointer.primary_down()));
+        assert_eq!(ctx.dragged_id(), Some(stable_id));
+        assert!(ctx.is_being_dragged(stable_id));
+        assert_eq!(state.draft, intended);
+        assert_eq!(state.current, 0);
+        let edit = actual_response(&blocked, "draft");
+        assert_eq!(edit.id, stable_id);
+        assert!(!edit.enabled() && !edit.has_focus() && !edit.changed());
+        assert!(!ctx.memory(|m| m.has_focus(stable_id)));
+        for name in ["rename", "duplicate"] {
+            assert!(!actual_response(&blocked, name).enabled());
+            assert!(!actual_response(&blocked, name).clicked());
+        }
+        // Release normally before reenabling and pointer-focus the same editor.
+        let released = owner_frame(
+            &ctx,
+            &p,
+            &mut state,
+            false,
+            vec![Event::PointerButton {
+                pos: end,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::default(),
+            }],
+        );
+        no_intents(&released);
+        assert!(!ctx.input(|i| i.pointer.primary_down()));
+        assert_eq!(state.draft, intended);
+        let resumed = owner_frame(&ctx, &p, &mut state, true, vec![]);
+        no_intents(&resumed);
+        assert_eq!(actual_response(&resumed, "draft").id, stable_id);
+        assert!(actual_response(&resumed, "draft").enabled());
+        let focused = owner_click(&ctx, &p, &mut state, true, "draft");
+        no_intents(&focused);
+        assert_eq!(actual_response(&focused, "draft").id, stable_id);
+        assert!(actual_response(&focused, "draft").has_focus());
+        let edited = owner_frame(
+            &ctx,
+            &p,
+            &mut state,
+            true,
+            vec![Event::Text("RESUMED_HELD_DRAG".to_owned())],
+        );
+        no_intents(&edited);
+        let edit = actual_response(&edited, "draft");
+        assert_eq!(edit.id, stable_id);
+        assert!(edit.enabled() && edit.has_focus() && edit.changed());
+        assert!(state
+            .draft
+            .as_ref()
+            .unwrap()
+            .1
+            .contains("RESUMED_HELD_DRAG"));
+        assert_ne!(state.draft, intended);
+        assert_eq!(state.current, 0);
+    }
+}
+
+#[cfg(test)]
+mod velocity_menu_tests {
+    use super::super::step_velocity::tests::{key, pointer, project, responses};
+    use super::*;
+    fn run(
+        ctx: &egui::Context,
+        p: &Project,
+        sel: &mut RackSel,
+        dpi: f32,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(960.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(dpi);
+        ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let actions = channel_rack(ui, p, 0, sel, None);
+                assert!(actions.is_empty());
+            });
+        })
+    }
+    fn real(ctx: &egui::Context, name: &str) -> egui::Response {
+        let rows = responses(ctx);
+        let (pass, _, r) = rows.iter().rev().find(|(_, n, _)| n == name).unwrap();
+        assert_eq!(*pass, ctx.cumulative_pass_nr() - 1);
+        r.clone()
+    }
+    #[test]
+    fn menu_is_row_specific_and_uses_exact_drum_or_one_shot_predicate() {
+        for dpi in [1.0, 2.0] {
+            for mode in 0..3 {
+                let ctx = egui::Context::default();
+                let mut p = project();
+                let mut t = p.tracks[0].clone();
+                t.name = "Clicked row".into();
+                t.id = "t9999".into();
+                if mode == 1 {
+                    t.instrument = crate::instruments::Instrument::Sampler(Default::default());
+                }
+                if mode == 2 {
+                    t.instrument = crate::instruments::preset("epiano").unwrap();
+                }
+                p.tracks.push(t);
+                let mut sel = RackSel::default();
+                run(&ctx, &p, &mut sel, dpi, vec![]);
+                run(&ctx, &p, &mut sel, dpi, vec![]);
+                let name = real(&ctx, "rack-name-1");
+                let pos = name.rect.center();
+                let secondary = |pressed| {
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Secondary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]
+                };
+                run(&ctx, &p, &mut sel, dpi, secondary(true));
+                run(&ctx, &p, &mut sel, dpi, secondary(false));
+                run(&ctx, &p, &mut sel, dpi, vec![]);
+                let item = sel.step_velocity_entries.last().unwrap().clone();
+                assert_eq!(item.enabled(), mode != 2);
+                if mode != 2 {
+                    run(&ctx, &p, &mut sel, dpi, pointer(item.rect.center(), true));
+                    run(&ctx, &p, &mut sel, dpi, pointer(item.rect.center(), false));
+                    assert_eq!(sel.open_step_velocity, Some(1));
+                    assert_eq!(sel.selected, 1);
+                    assert!(!sel.open_editor);
+                } else {
+                    let output = run(&ctx, &p, &mut sel, dpi, vec![]);
+                    assert!(output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()==super::super::step_velocity::DRUM_ONLY)));
+                    assert!(sel.open_step_velocity.is_none());
+                }
+            }
+        }
+    }
+    #[test]
+    fn context_item_keyboard_activation_preserves_rename_and_no_piano_request() {
+        let ctx = egui::Context::default();
+        let p = project();
+        let mut sel = RackSel::default();
+        run(&ctx, &p, &mut sel, 1.0, vec![]);
+        let pos = real(&ctx, "rack-name-0").rect.center();
+        for pressed in [true, false] {
+            run(
+                &ctx,
+                &p,
+                &mut sel,
+                1.0,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        run(&ctx, &p, &mut sel, 1.0, vec![]);
+        let item = sel.step_velocity_entries.last().unwrap().clone();
+        ctx.memory_mut(|m| m.request_focus(item.id));
+        let output = run(
+            &ctx,
+            &p,
+            &mut sel,
+            1.0,
+            vec![key(egui::Key::Space, egui::Modifiers::NONE)],
+        );
+        assert_eq!(sel.open_step_velocity, Some(0));
+        assert!(!sel.open_editor);
+        assert!(output
+            .shapes
+            .iter()
+            .any(|shape| matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()=="Rename")));
     }
 }

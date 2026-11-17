@@ -32,6 +32,12 @@ fn section_navigation(ui: &mut egui::Ui, row: Option<&Value>) -> Option<f32> {
     ui.small_button("Jump").on_hover_text("Seek to this section's exact start using the current tempo map. Does not edit the project or start playback.").clicked().then_some(start as f32)
 }
 
+/// Bound expanded P0A section controls to at most 160 points and leave
+/// 280 points for the timeline and its heading/remaining chrome when possible.
+fn section_order_height(available: f32) -> f32 {
+    (available - 280.0).clamp(48.0, 160.0)
+}
+
 const HEAD_W: f32 = 150.0;
 const RULER_H: f32 = 18.0;
 const LANE_H: f32 = 40.0;
@@ -122,7 +128,13 @@ fn playlist_meter_map(p: &Project) -> TempoMap {
 }
 
 impl Studio {
-    pub(super) fn playlist_view(&mut self, ui: &mut egui::Ui, p: &Project, rev: u64) {
+    pub(super) fn playlist_view(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: &Project,
+        rev: u64,
+        compact: bool,
+    ) {
         let tk = Tokens::DARK;
         let map = playlist_meter_map(p);
         let clips = placed_clips(p);
@@ -354,10 +366,17 @@ impl Studio {
                 }
             });
         }
-        egui::CollapsingHeader::new("SECTION ORDER - move and repeat song parts")
-            .id_salt("arrangement_section_order")
-            .default_open(true)
+        let section_height = section_order_height(ui.available_height());
+        egui::CollapsingHeader::new(format!("SECTION ORDER - {} parts - move and repeat", p.arrangement.len()))
+            // Keep legacy expansion memory; P0A has its own compact default.
+            .id_salt(if compact { "p0a_arrangement_section_order" } else { "arrangement_section_order" })
+            .default_open(!compact)
             .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("section_order_controls")
+                    .max_height(if compact { section_height } else { f32::INFINITY })
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
                 if !p.playlist.is_empty() {
                     ui.label("Playlist clips control this song. Move clips in the pattern grid instead.");
                 } else if p.arrangement.is_empty() {
@@ -402,6 +421,7 @@ impl Studio {
                         }
                     });
                 }
+                });
             });
         egui::CollapsingHeader::new(format!("Song tempo ({} points)", p.tempo_points.len()))
             .id_salt("song_tempo_edit")
@@ -925,6 +945,17 @@ pub fn clip_menu(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refinement_section_order_height_reserves_timeline_budget() {
+        for available in [328.0, 400.0, 500.0, 610.0, 810.0] {
+            let height = section_order_height(available);
+            assert!((48.0..=160.0).contains(&height));
+            assert!(available - height >= 280.0);
+        }
+        assert_eq!(section_order_height(610.0), 160.0);
+        assert_eq!(section_order_height(300.0), 48.0);
+    }
 
     #[test]
     fn every_clip_menu_item_is_a_registered_tool_with_valid_args() {
